@@ -433,6 +433,51 @@ fn a_watched_tank_draws_the_dragon_in_person() {
     assert!(d.stats.oil_drunk_mb > 0, "{:?}", d.stats);
 }
 
+/// docs/replay-gate.md §6.1, RP-72: the same watched tank while a session's replay runs. The
+/// player's walk is the last session's, so the dragon comes to nobody: the tanks are raided once
+/// and drunk from as before (the books of a live run), and it rests on the field. Today (the
+/// base): it materializes in the middle of the replay.
+#[test]
+fn a_watched_tank_in_the_replayed_window_is_raided_without_the_dragon_coming() {
+    let (mut w, _) = synth::world(13);
+    let mut d = Dragons::new(13, quick_oil(300), Tick::ZERO);
+    d.begin_replay(true);
+    let l = fire_lair(&mut w, &mut d, 4, 1800, 2500);
+    let x = d.add_dragon(&mut w, adult("x", l, 100), Tick(0));
+    d.ingest(&mut w, &mut NoInfrastructure, &field(21, 81, 3), Tick(0));
+    let mut tanks = Tanks::at(
+        &[(7, 310, 1300, true)],
+        DistrictSignals {
+            oil_sample: false,
+            polluted: false,
+            fuel_mb: 50_000,
+        },
+    );
+    let mut cmds = Vec::new();
+    let mut t = Tick(0);
+    while t.0 < 24_000 {
+        t += 200;
+        d.observe_player(&mut w, PLAYER, Pos::new(0, 100, 1150), t);
+        d.run_until(&mut w, &mut tanks, t);
+        cmds.extend(d.take_commands());
+    }
+    assert!(
+        materializations(&cmds)
+            .iter()
+            .all(|m| dragon_of(m.agent) != Some(x)),
+        "nobody to come to in a replay"
+    );
+    assert!(d.replay_gate_counts().deferred >= 1);
+    assert_eq!(d.replay_gate_counts().never, 0);
+    // The tanks were raided once, in the dragon's flight, and it drank.
+    assert_eq!(tanks.raids.len(), 1, "{:?}", tanks.raids);
+    assert_eq!(tanks.raids[0].0, DistrictId(7));
+    assert!(d.stats.oil_drunk_mb > 0, "{:?}", d.stats);
+    d.check(&w, None).unwrap();
+    d.replay_done(&mut w, t);
+    d.check(&w, None).unwrap();
+}
+
 // ---- The oil audit's F2: the field watches its own ground (OGC52, OGC53) ----------------------
 
 /// A field 70 chunks long by 3 wide from chunk (0, 0): blocks 0 to 1,119 east, 0 to 47 south.

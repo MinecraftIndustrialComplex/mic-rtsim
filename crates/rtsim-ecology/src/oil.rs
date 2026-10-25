@@ -930,8 +930,12 @@ impl Dragons {
                     };
                     self.record_hunt(at, d, quarry, r.food, r.taken);
                 }
+                // While the session's replay runs the dragon comes in person to nobody
+                // (docs/replay-gate.md §6, RP-72): the tanks were drawn above, and it rests on
+                // the field (or is done, if full) as for a district nobody watches.
                 if site.watched
                     && let Some(p) = self.player_near(site.pos, 2 * self.tun.view_radius)
+                    && !self.outbox.defer()
                 {
                     let cruise = self.tun.species(self.dragons[d].species).cruise_y;
                     self.note(
@@ -1187,6 +1191,12 @@ impl Dragons {
         {
             if r.any {
                 self.record_hunt(at, d, quarry, r.food, r.taken);
+            }
+            // While the session's replay runs no real fight is placed (docs/replay-gate.md §6,
+            // RP-72): the raid stands, and the dragon goes home as after a fight that ended.
+            if self.outbox.defer() {
+                self.fly(w, d, Purpose::Home, at);
+                return;
             }
             let cruise = self.tun.species(self.dragons[d].species).cruise_y;
             self.materialize(w, d, p, true, true, Some((site.pos, cruise)), at);

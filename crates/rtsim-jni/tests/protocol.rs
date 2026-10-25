@@ -2360,6 +2360,386 @@ mod dragons {
         assert_eq!(e.dragons_restore_check(), (None, false));
         e.close(false, Duration::from_secs(5)).unwrap();
     }
+
+    /// RP-75: a record dropped while the dragons are switched off names an epoch all the same, so
+    /// the dragon it names takes it when they are switched on (the switch-on's replay end folds
+    /// the floor). Before: the record raised no floor, and the dragon's epoch stayed where it was.
+    #[test]
+    fn a_record_ignored_while_switched_off_still_raises_the_epoch_floor() {
+        let dir = tmpdir("dragons-off-floor");
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        j.module_mask = MODULES;
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        j.dragon_obs(&O::LairFound(db::LairFound {
+            lair: LAIR,
+            late: false,
+            dimension: dim,
+            species: Species::Fire,
+            kind: LairKind::Roost,
+            min: (HOME.0 - 30, 60, HOME.2 - 30),
+            max: (HOME.0 + 30, 140, HOME.2 + 30),
+            home: HOME,
+        }));
+        let mut fed = untagged((0xD2, 0x1), SpawnKind::Structure, LAIR, dim);
+        if let O::Untagged(u) = &mut fed {
+            u.hunger = 100;
+        }
+        j.dragon_obs(&fed);
+        j.idle();
+        j.idle();
+        let a = adoptions(&j)[0];
+        let epoch_of = |e: &Engine| e.with_dragons(|d, _| d.dragons.iter().next().unwrap().1.epoch);
+        // Off: a capture at epoch 7, the engine never decided, is ignored.
+        j.modules(0b1111);
+        j.idle();
+        j.dragon_obs(&captured(a.agent, 7, dim, 400.0));
+        j.idle();
+        assert!(e.dragons_ignored() >= 1, "the capture was ignored");
+        // On again: the switch-on's replay end folds the floor into the dragon's epoch.
+        j.modules(MODULES);
+        j.idle();
+        assert_eq!(epoch_of(&e), 7, "the ignored record's epoch is taken");
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// A lair's own dragon, adopted (embodied) and saved, then killed by a player. The session
+    /// ends in a crash (the journal holds the death the pages lack, and the next session replays
+    /// it) or, for the control, in a clean close (the pages hold it). The dragons after the
+    /// restart and its replay.
+    fn dragons_after_a_death(tag: &str, crash: bool) -> usize {
+        let dir = tmpdir(tag);
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        j.module_mask = MODULES;
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        j.dragon_obs(&O::LairFound(db::LairFound {
+            lair: LAIR,
+            late: false,
+            dimension: dim,
+            species: Species::Fire,
+            kind: LairKind::Roost,
+            min: (HOME.0 - 30, 60, HOME.2 - 30),
+            max: (HOME.0 + 30, 140, HOME.2 + 30),
+            home: HOME,
+        }));
+        j.dragon_obs(&untagged((0xD1, 0x1), SpawnKind::Structure, LAIR, dim));
+        j.idle();
+        j.idle();
+        let first = adoptions(&j);
+        assert_eq!(first.len(), 1, "the lair's own dragon is adopted");
+        let (agent, epoch) = (first[0].agent, first[0].epoch);
+        save_durable(&e, &mut j);
+        assert_eq!(summary(&e).0, 1, "one dragon at the save");
+
+        j.dragon_obs(&O::Died(db::Died {
+            agent,
+            epoch,
+            killer_kind: AttackerKind::Player,
+            killer: PLAYER,
+            dimension: dim,
+            pos: (f64::from(HOME.0), f64::from(HOME.1), f64::from(HOME.2)),
+        }));
+        j.idle();
+        j.idle();
+        assert_eq!(
+            summary(&e).0,
+            0,
+            "the session that went on: the dragon is dead"
+        );
+        let saved = if crash {
+            let saved = j.crash();
+            assert!(
+                saved
+                    .journal
+                    .iter()
+                    .any(|(_, r)| wire::u16_at(r, wire::R_KIND) == db::DRAGON_DIED),
+                "the journal holds the death the pages lack"
+            );
+            saved
+        } else {
+            let saved = j.world_save();
+            e.close(true, Duration::from_secs(5)).unwrap();
+            saved
+        };
+
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), saved);
+        j.module_mask = MODULES;
+        j.idle();
+        j.idle();
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        let alive = summary(&e).0;
+        e.close(true, Duration::from_secs(5)).unwrap();
+        alive
+    }
+
+    /// docs/replay-gate.md §5.1 (RP-70): the bodies the pages hold embodied stay embodied through
+    /// the replay, so the journal's DRAGON_DIED of the last session's body finds it. Today (the
+    /// base): the session start made every dragon abstract first, the death found nothing, and
+    /// the dead dragon was back (1 alive, 0 expected).
+    #[test]
+    fn a_dragon_killed_after_a_save_stays_dead_after_a_crash() {
+        assert_eq!(
+            dragons_after_a_death("dragon-died-crash", true),
+            0,
+            "the replayed death counts: the dragon stays dead"
+        );
+    }
+
+    /// The control: without the crash the pages hold the death.
+    #[test]
+    fn a_dragon_killed_after_a_save_stays_dead_after_a_clean_restart() {
+        assert_eq!(dragons_after_a_death("dragon-died-clean", false), 0);
+    }
+
+    // ---- a test's order waits for the replay end (docs/replay-gate.md §4.5, RP-74) ------------
+
+    /// The replay ends this engine ran.
+    fn replays_ended(e: &Engine) -> u64 {
+        e.stats
+            .replays_ended
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Hands Java's whole journal over.
+    fn hand_over_all(j: &mut Java) {
+        let last = j.world_save().journal.back().map_or(0, |(s, _)| *s);
+        for _ in 0..64 {
+            j.idle();
+            if j.sent_obs >= last {
+                break;
+            }
+        }
+        assert!(j.sent_obs >= last, "the whole journal handed over");
+        assert!(j.e.protocol_error().is_none(), "{:?}", j.e.protocol_error());
+    }
+
+    /// A restart whose replay takes several hand-overs: a lair saved, then 8,000 wounds to a body
+    /// that never was (about 64 bytes each, so a minimum-size buffer takes the replay in eight or
+    /// more), the session ended in a crash. Returns the next session's engine and Java after its
+    /// first hand-over, the replay still under way.
+    fn a_replay_under_way(tag: &str) -> (std::sync::Arc<Engine>, Java) {
+        let dir = tmpdir(tag);
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        j.module_mask = MODULES;
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        j.dragon_obs(&O::LairFound(db::LairFound {
+            lair: LAIR,
+            late: false,
+            dimension: dim,
+            species: Species::Fire,
+            kind: LairKind::Roost,
+            min: (HOME.0 - 30, 60, HOME.2 - 30),
+            max: (HOME.0 + 30, 140, HOME.2 + 30),
+            home: HOME,
+        }));
+        j.idle();
+        j.idle();
+        save_durable(&e, &mut j);
+        let first = j.world_save().next_obs;
+        for _ in 0..8_000 {
+            j.dragon_obs(&O::Hurt(db::Hurt {
+                agent: 0,
+                epoch: 0,
+                attacker_kind: AttackerKind::Player,
+                attacker: PLAYER,
+                hits: 1,
+                amount: 1.0,
+                health_after: 1.0,
+            }));
+        }
+        j.idle();
+        let gt = j.game_time;
+        let saved = j.crash();
+        let bytes = saved
+            .journal
+            .iter()
+            .filter(|(s, _)| *s >= first)
+            .map(|(_, r)| r.len())
+            .sum::<usize>();
+        assert!(
+            bytes > 6 * wire::MIN_CAPACITY,
+            "the replay's records: {bytes} bytes"
+        );
+        let e = engine(&dir, wire::MIN_CAPACITY);
+        let mut j = Java::open(e.clone(), saved);
+        j.module_mask = MODULES;
+        j.game_time = gt;
+        j.idle();
+        assert_eq!(
+            replays_ended(&e),
+            0,
+            "the replay runs past its first hand-over"
+        );
+        (e, j)
+    }
+
+    /// A STEER of a body the engine never had, as a test would order it.
+    fn a_steer_order(agent: u64) -> Order {
+        let mut record = Vec::new();
+        db::encode_cmd(
+            0,
+            &D::Steer(db::Steer {
+                agent,
+                epoch: 1,
+                flags: 1,
+                target: (1.0, 90.0, -4.0),
+            }),
+            &db::SpeciesDict::default(),
+            &mut record,
+        );
+        Order::DragonCommand {
+            names: vec![(wire::DICT_BODY, 1, Species::Fire.entity_id().to_string())],
+            record,
+        }
+    }
+
+    fn steered(j: &Java, agent: u64) -> bool {
+        j.iaf
+            .iter()
+            .any(|(_, c)| matches!(c, D::Steer(s) if s.agent == agent))
+    }
+
+    /// RP-74 (the audit of the routes around the gate): a test's dragon command joins the
+    /// dragons' queue around their gate, as a conflict command (RP-66) and a herd command
+    /// (RP-85) do, so one ordered while the replay runs waits for the replay end with the orders
+    /// that run the clock.
+    #[test]
+    fn a_dragon_command_ordered_while_replaying_waits_for_the_replay_end() {
+        let (e, mut j) = a_replay_under_way("dragon-rp74-order");
+        let agent = 0x44 << 56 | 0x74;
+        e.order(vec![a_steer_order(agent)]).unwrap();
+        j.idle();
+        assert_eq!(replays_ended(&e), 0, "still replaying");
+        assert!(!steered(&j, agent), "not written while the replay runs");
+        hand_over_all(&mut j);
+        j.idle();
+        assert_eq!(replays_ended(&e), 1, "the replay ended");
+        assert!(steered(&j, agent), "written once it has ended");
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// Control: no replay, the order is written at the first step that takes it.
+    #[test]
+    fn a_dragon_command_ordered_without_a_replay_is_written_at_once() {
+        let dir = tmpdir("dragon-rp74-order-live");
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        j.module_mask = MODULES;
+        j.idle();
+        let agent = 0x44 << 56 | 0x74;
+        e.order(vec![a_steer_order(agent)]).unwrap();
+        j.idle();
+        assert!(steered(&j, agent), "written at once");
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// RP-74: NEST_DAY books the nests' next watch from the engine's own clock, so taken while
+    /// the replay runs it would watch the replayed past at its new cadence. It waits too.
+    #[test]
+    fn a_nest_day_ordered_while_replaying_waits_for_the_replay_end() {
+        let (e, mut j) = a_replay_under_way("dragon-rp74-nestday");
+        let was = e.with_dragons(|d, _| d.nest_day_ticks());
+        assert_ne!(was, 1_234, "the tunable's own day");
+        e.order(vec![Order::NestDay(1_234)]).unwrap();
+        j.idle();
+        assert_eq!(replays_ended(&e), 0, "still replaying");
+        assert_eq!(
+            e.with_dragons(|d, _| d.nest_day_ticks()),
+            was,
+            "not set while the replay runs"
+        );
+        hand_over_all(&mut j);
+        j.idle();
+        assert_eq!(replays_ended(&e), 1, "the replay ended");
+        assert_eq!(
+            e.with_dragons(|d, _| d.nest_day_ticks()),
+            1_234,
+            "set once it has ended"
+        );
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// Control: no replay, the nests' day is set at once.
+    #[test]
+    fn a_nest_day_ordered_without_a_replay_is_set_at_once() {
+        let dir = tmpdir("dragon-rp74-nestday-live");
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        j.module_mask = MODULES;
+        j.idle();
+        e.order(vec![Order::NestDay(1_234)]).unwrap();
+        j.idle();
+        assert_eq!(e.with_dragons(|d, _| d.nest_day_ticks()), 1_234);
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// The dragons' clock, in ticks.
+    fn dragons_now(e: &Engine) -> u64 {
+        e.with_dragons(|d, _| d.now().0)
+    }
+
+    /// A test's phase 1 advance, far past anything the replayed journal holds.
+    const ADVANCE: u64 = 5_000_000;
+
+    /// RP-74: a phase 1 advance raises the offset that every record's game time takes, so taken
+    /// while the replay runs it would shift the replayed records still to come, the dragons'
+    /// among them, years into the future. It waits for the replay end too.
+    #[test]
+    fn a_phase1_advance_ordered_while_replaying_waits_for_the_replay_end() {
+        let (e, mut j) = a_replay_under_way("dragon-rp74-advance");
+        e.order(vec![Order::Phase1Advance(ADVANCE)]).unwrap();
+        j.idle();
+        assert_eq!(replays_ended(&e), 0, "still replaying");
+        assert!(
+            dragons_now(&e) < ADVANCE,
+            "the replayed records are not shifted: the dragons are at {}",
+            dragons_now(&e)
+        );
+        hand_over_all(&mut j);
+        j.idle();
+        assert_eq!(replays_ended(&e), 1, "the replay ended");
+        assert!(
+            dragons_now(&e) >= ADVANCE,
+            "applied once it has ended: the dragons are at {}",
+            dragons_now(&e)
+        );
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// Control: no replay, the advance is taken at the first step.
+    #[test]
+    fn a_phase1_advance_ordered_without_a_replay_is_taken_at_once() {
+        let dir = tmpdir("dragon-rp74-advance-live");
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        j.module_mask = MODULES;
+        j.idle();
+        assert!(dragons_now(&e) < ADVANCE);
+        e.order(vec![Order::Phase1Advance(ADVANCE)]).unwrap();
+        j.idle();
+        // A record of the dragons' own, which takes the clock the offset gives it.
+        j.dragon_obs(&O::Hurt(db::Hurt {
+            agent: 0,
+            epoch: 0,
+            attacker_kind: AttackerKind::Player,
+            attacker: PLAYER,
+            hits: 1,
+            amount: 1.0,
+            health_after: 1.0,
+        }));
+        j.idle();
+        assert!(
+            dragons_now(&e) >= ADVANCE,
+            "the dragons are at {}",
+            dragons_now(&e)
+        );
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
 }
 
 // ---- ships (docs/boundary.md §7) ------------------------------------------------------------------
