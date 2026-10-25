@@ -284,6 +284,7 @@ public final class Reconciler {
                 order[k++] = i;
 
         long[][] results = new long[n][4]; // inventory, good, requested, applied
+        Industry.DepositWrite deposits = new Industry.DepositWrite(opId); // stores of other files a deposit also books (RP-207)
         for (int j = 0; j < n; j++) {
             int i = order[j];
             int e = IndRecords.ChunkReconcile.DELTAS + i * IndRecords.ChunkReconcile.DELTA_SIZE;
@@ -295,7 +296,7 @@ public final class Reconciler {
             if (inventory == IndRecords.DEPOSIT_INVENTORY) {
                 // A finite deposit of this chunk (class d): its plugin writes it (Ore Excavation's vein,
                 // Destroy's crude oil), in this tick, with the epoch below (I11, F15).
-                applied = ind.applyDeposit(level, cp.x, cp.z, ind.engineName(IndRecords.DICT_GOOD, goodId), delta);
+                applied = ind.applyDeposit(level, cp.x, cp.z, ind.engineName(IndRecords.DICT_GOOD, goodId), delta, deposits);
             } else if ((pos.getX() >> 4) == cp.x && (pos.getZ() >> 4) == cp.z) {
                 Goods.Name good = Goods.parse(ind.engineName(IndRecords.DICT_GOOD, goodId));
                 if (good != null) {
@@ -383,7 +384,7 @@ public final class Reconciler {
         chunk.setData(IndustryAttachments.RECONCILE.get(), epochs.with(new IndustryAttachments.EpochEntry(districtId, epoch, Optional.of(res.array()), life, ind.boundary.gen())));
         chunk.setUnsaved(true);
         ind.journalDependsOn(chunk); // the journal's next file waits for this chunk's (R21)
-        ind.commandResult(cmdSeq, opId, Obs.CommandResult.APPLIED);
+        deposits.stamp(ind.commandResult(cmdSeq, opId, Obs.CommandResult.APPLIED));
         recommitted.add(level.dimension().location() + "/" + cp.toLong() + "/" + districtId + "/" + epoch);
         dropResultWhenAcked(level, cp, districtId, epoch, seq);
         applied++;

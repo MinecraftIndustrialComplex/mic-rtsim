@@ -234,6 +234,32 @@ public interface IndustryPlugin {
     }
 
     /**
+     * The engine op a deposit write belongs to (docs/choices-journal-barrier.md RP-207): an IND_DEPOSIT_DELTA's, or
+     * the IND_CHUNK_RECONCILE's whose deposits these are. For a plugin whose write also changes a store in a file of
+     * its own (Destroy's pollution ledger): it asks that store's ring whether this op already changed it
+     * ({@code ring.contains(key)}, after a crash that kept the store and lost the rest), and keeps the op in it
+     * ({@link #keepIn}) whether it changed it now or found it changed.
+     */
+    interface DepositOp {
+        /** The op id. */
+        long id();
+
+        /**
+         * Stamps {@code key} in {@code ring} with the op's answer once it is journaled, in this tick. {@code key} is
+         * {@code DurableOpRing.keyOf(id(), good)} when the store is written once per good (a reconcile's).
+         */
+        void keepIn(com.minecraftindustrialcomplex.mic_rtsim.journal.DurableOpRing ring, long key);
+    }
+
+    /**
+     * {@link #applyDeposit(ServerLevel, int, int, String, long)} with the op it belongs to (RP-207); the core calls
+     * this one. The default ignores the op.
+     */
+    default Long applyDeposit(ServerLevel level, int chunkX, int chunkZ, String good, long delta, DepositOp op) {
+        return applyDeposit(level, chunkX, chunkZ, good, delta);
+    }
+
+    /**
      * The applied ops kept in the same file as the deposit {@code good} in chunk (chunkX, chunkZ), or null when the
      * good is not this plugin's (docs/choices-journal-barrier.md RP-204). IND_DEPOSIT_DELTA's dedup is this ring or
      * the journal: the store's file can be newer on disk than the journal's after a crash, and its ring then still
