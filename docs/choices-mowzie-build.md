@@ -2893,6 +2893,28 @@ Not run: no GameTest was run for these records; the Rust tests are, and the Java
   replaces this wait with `ChunkWait.inMemory`. For that conversion: the converted wait (the `w[0]` wait near line
   2115) must still wait on the object's own `isRemoved()`, not only on `ChunkWait.inMemory`, or the C2ME dropped-unload
   case (the object alive in a chunk that is no longer loaded) comes back as a pass of the wrong condition.
+  Amended after the slice C merge, for the two `mowziesmobs -Pc2me` failures on fd8eff01
+  (`aHolderJournalsItsRecordAgainBeforeTheCampsNextCensus`, `aRobbedFrostmawIsKeptAndAResetDoesNotGiveItsCrystalBack`;
+  plain `mowziesmobs` passed 39). Both trusted `getEntity == null` or `!hasChunk` as "saved and unloaded", and under
+  C2ME a re-force inside the hide window tracks the same object again with no join. No product bug. The fix is one
+  helper for all seven such waits:
+  - `MowzieKit.removed(level, Supplier<Entity>...)` waits on each object's `isRemoved()`. `MowzieKit.unloadedWithout`
+    (which keeps its `!hasChunk`) and both tests' `gone()` delegate to it. The callers keep the objects: the warriors
+    and the Frostmaw as made, and the markers resolved with `getEntity` before the release.
+  - The objects go as suppliers, read at each poll. A sequence's arguments are evaluated when it is built, before
+    its `thenExecute` steps fill the arrays. The old waits got the UUIDs then, null, and `getEntity(null)` is null,
+    so their entity checks passed at once.
+  - A dropped unload (MZB-664) would make `isRemoved` wait for the next autosave, up to 6,000 ticks, past the robbed
+    Frostmaw test's 3,000. When an object is still alive `REQUEUE_AFTER` (40) ticks into the wait, its chunk reads
+    HIDDEN and the chunk is not in `chunksToUnload`, the helper adds it there through MZB-660's accessor (vanilla's
+    retry: a chunk whose entities could not be stored yet stays queued) and logs a `[gametest]` warning naming the
+    entity and chunk.
+  - The robbed Frostmaw test's check after the reload is split in two: "the Frostmaw is back" (not null) and "a new
+    object" (the old one was saved, not tracked again). `aHolderJournals...`'s stale marker check also asks for a new
+    object.
+  - Trap: under C2ME any test meaning "saved and loaded again" waits on the object's own `isRemoved()`, never on
+    `getEntity` or `hasChunk`, and hands the wait the object through a supplier, not a value read when the sequence
+    is built.
 - **MZB-663** (P3, tests): the timings measure from what the camp sees. The poll test starts its out-clock at the
   first tick a footprint holder's level reads above FULL (or has no holder), not at the test's release; the held
   Frostmaw test bounds "placed" against the first tick `camps().heldLines() > 0`, not the test's send; the
