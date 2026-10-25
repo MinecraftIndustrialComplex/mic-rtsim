@@ -189,6 +189,11 @@ public final class ConflictBridge implements SessionPlugin {
         double hdx = 1.0, hdz = 0.0;
         /** M10 (MZB-472): the walk-in and the clamp run at the next pass (a record has just put the band in the stop). */
         boolean stopBeat;
+        /**
+         * M10 (MZB-473): a record has changed the march. {@code trimNow}: the trim runs at the end of this tick;
+         * {@code trimDue}: it found a member to cut that a player can see, and tries again on the stop's beat.
+         */
+        boolean trimNow, trimDue;
         UUID targetPlayer;
         boolean recalling;
         long recallDeadline;
@@ -1243,8 +1248,11 @@ public final class ConflictBridge implements SessionPlugin {
             case ENDED -> marchEnds++;
             case KEPT -> {
                 Party p = byAgent.get(m.agent());
-                if (p != null && m.stopped() && (old == null || !old.stopped()))
-                    p.stopBeat = true; // the record put the band in the stop: its walk-in runs this tick (MZB-472)
+                if (p != null) {
+                    p.trimNow = true; // the books may hold fewer members than the bridge does (MZB-473)
+                    if (m.stopped() && (old == null || !old.stopped()))
+                        p.stopBeat = true; // the record put the band in the stop: its walk-in runs this tick (MZB-472)
+                }
             }
         }
     }
@@ -1667,6 +1675,9 @@ public final class ConflictBridge implements SessionPlugin {
                 continue;
             // The stop (MZB-472): on its beat a stopped band's pending stacks walk into the player's square before
             // they are tested, and its placed stacks are held in it.
+            // The trim comes first: a pending member the books have lost is cut before it is placed, not after.
+            if (p.trimNow || (p.trimDue && now % STOP_BEAT == 0))
+                trim(p, level, now);
             boolean stop = (p.stopBeat || now % STOP_BEAT == 0) && stopped(p);
             for (Stack st : p.stacks) {
                 if (st.state != StackState.PENDING)
@@ -1780,6 +1791,109 @@ public final class ConflictBridge implements SessionPlugin {
             double[] end = StopSquare.clampInto(st.ex, st.ez, sq);
             st.walk(end[0], end[1], p.speed, st.t1 > now ? st.t1 : 0L, now);
             clamps++;
+        }
+    }
+
+    // ---- the trim (MZB-473) ---------------------------------------------------------------------
+
+    /**
+     * The books lose members no player saw go (an ambush, a raid resolved from afar, a unit left behind at a camp):
+     * the march record says how many of each body the band has, and the bridge cuts what it holds beyond that, per body,
+     * the war chief too when the record lacks one. A cut member is no survivor and books nothing. A member a player
+     * can see is never cut; the band stays due and the trim tries again on the stop's beat.
+     */
+    private void trim(Party p, ServerLevel level, long now) {
+        p.trimNow = false;
+        p.trimDue = false;
+        MarchPath m = marches.get(p.agent);
+        // A record of another level than the band's (or of a dimension the dictionary lacks) is not the band's books.
+        if (m == null || p.envoy || m.dimension() == null || !m.dimension().equals(p.dimension.location().toString()))
+            return;
+        Map<String, Integer> living = new LinkedHashMap<>();
+        boolean chief = false;
+        for (Stack st : p.stacks) {
+            if (st.state == StackState.GONE)
+                continue;
+            for (Slot sl : st.slots) {
+                if (!trimmable(sl))
+                    continue;
+                if (sl.chief)
+                    chief = true;
+                else
+                    living.merge(sl.body, 1, Integer::sum);
+            }
+        }
+        boolean blocked = false;
+        for (var e : living.entrySet()) {
+            int extra = e.getValue() - m.count(e.getKey());
+            if (extra > 0)
+                blocked |= cutFrom(p, level, e.getKey(), extra);
+        }
+        if (chief && !m.chief())
+            blocked |= cutFrom(p, level, null, 1);
+        p.trimDue = blocked;
+    }
+
+    /** A member the trim may cut: in the books, not dying, not already removed. */
+    private static boolean trimmable(Slot sl) {
+        return sl.alive && sl.pendingDeath == null && !sl.removing;
+    }
+
+    /**
+     * Cuts up to {@code cuts} members of {@code body} (the chief for null), the pending ones first and each the
+     * rearmost ({@link MarchTrim}). True when it stopped short because every member left to cut is in a player's sight.
+     */
+    private boolean cutFrom(Party p, ServerLevel level, String body, int cuts) {
+        List<MarchTrim.Candidate> cands = new ArrayList<>();
+        List<Slot> slots = new ArrayList<>();
+        for (Stack st : p.stacks) {
+            if (st.state == StackState.GONE)
+                continue;
+            boolean pending = st.state == StackState.PENDING;
+            for (int i = 0; i < st.slots.size(); i++) {
+                Slot sl = st.slots.get(i);
+                if (!trimmable(sl) || (body == null ? !sl.chief : sl.chief || !body.equals(sl.body)))
+                    continue;
+                cands.add(new MarchTrim.Candidate(st.index, i, st.back, pending, pending || !inSight(sl, level)));
+                slots.add(sl);
+            }
+        }
+        for (; cuts > 0; cuts--) {
+            int k = MarchTrim.pick(cands);
+            if (k < 0)
+                return true;
+            cut(slots.get(k));
+            cands.remove(k);
+            slots.remove(k);
+        }
+        return false;
+    }
+
+    /** Whether a player (not a spectator) in the level is within {@link #OUT_OF_VIEW} of the member's body. */
+    private static boolean inSight(Slot sl, ServerLevel level) {
+        Mob e = sl.entity;
+        if (e == null || e.isRemoved())
+            return false;
+        double r2 = OUT_OF_VIEW * OUT_OF_VIEW;
+        for (ServerPlayer pl : level.players())
+            if (!pl.isSpectator() && pl.distanceToSqr(e) <= r2)
+                return true;
+        return false;
+    }
+
+    /**
+     * Takes a member out of the band and the world with no record: its body and extras go, it is no survivor, and a
+     * stack left with no member is gone.
+     */
+    private void cut(Slot sl) {
+        despawn(sl);
+        sl.alive = false;
+        sl.removing = true;
+        trimmed++;
+        Stack st = sl.stack;
+        if (st.state != StackState.GONE && st.alive() == 0) {
+            unwatch(st);
+            st.state = StackState.GONE;
         }
     }
 
