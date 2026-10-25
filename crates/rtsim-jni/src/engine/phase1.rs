@@ -571,6 +571,11 @@ impl Link {
         Ok(link)
     }
 
+    /// How many inputs heard while phase 1 was off wait to be applied (RP-300).
+    pub(super) fn kept_len(&self) -> usize {
+        self.kept.len()
+    }
+
     /// Whether the world came back from its pages: the dragons' page is only good with the world
     /// it was saved with.
     pub(super) fn world_restored(&self) -> bool {

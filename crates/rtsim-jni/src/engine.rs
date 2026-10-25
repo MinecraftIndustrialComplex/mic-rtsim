@@ -940,6 +940,12 @@ impl Engine {
         )
     }
 
+    /// How many inputs phase 1 heard while it was switched off and has not applied yet (RP-300).
+    /// Takes the state lock: tests only.
+    pub fn phase1_kept(&self) -> usize {
+        lock(&self.state).phase1.kept_len()
+    }
+
     /// The modules' clocks, between steps ([`CLOCKS`] values): the last hand-over's game time,
     /// phase 1's test offset (a world tick is a game time plus it), the world ticks of phase 1's
     /// world, the dragons, the ships, the herds and the conflict engine, and the industry
