@@ -323,7 +323,7 @@ public final class SavedAheadGameTests {
     private static final String GOOD_DIAMOND = "i/64/minecraft:diamond";
 
     /**
-     * I2 (RP-214): a reconcile breaks a chest, whose contents and the chest itself drop as item entities, stored
+     * I2 (RP-213): a reconcile breaks a chest, whose contents and the chest itself drop as item entities, stored
      * in their own entity chunk. The crash keeps what is on disk at the first tick the drops are in the world:
      * if the chunk on disk still holds the chest, it goes back to that (the chest, its contents, no epoch), the
      * journal goes back to before the reconcile, the drops stay, and the engine resends the reconcile under the
@@ -393,6 +393,8 @@ public final class SavedAheadGameTests {
                     check("the chest's contents dropped once: " + diamonds + " diamonds and " + chests + " chests lie there",
                             diamonds == 100 && chests == 1);
                     check("the resend was a duplicate", IndustryTestKit.commandResults(op).get(1) == Obs.CommandResult.DUPLICATE_OP);
+                    check("the drops are marked as ported", level.getEntitiesOfClass(ItemEntity.class, around).stream()
+                            .allMatch(i -> i.hasData(IndustryAttachments.PORTED.get()) && i.getData(IndustryAttachments.PORTED.get())));
                 })
                 .thenExecute(() -> {
                     level.getEntitiesOfClass(ItemEntity.class, around).forEach(Entity::discard);
@@ -402,10 +404,36 @@ public final class SavedAheadGameTests {
                 .thenSucceed();
     }
 
+    /**
+     * The audit's uncertainty 6.5 (RP-214): a drop marked as already ported (the contents of a stock block a
+     * player or a reconcile broke) must still be marked after its entity chunk is saved and loaded, or a player
+     * picking it up then is booked as a second outflow (PLAYER_PICKUP), which the engine's learner reads as
+     * production. Saved and loaded the way vanilla stores an entity; an unmarked drop saves no mark at all.
+     */
+    @GameTest(template = RtsimTests.TEMPLATE, batch = "mic_rtsim_saved_ahead")
+    public static void aPortedDropKeepsItsMarkThroughASave(GameTestHelper helper) {
+        String t = "aPortedDropKeepsItsMarkThroughASave";
+        ServerLevel level = helper.getLevel();
+        BlockPos at = helper.absolutePos(new BlockPos(1, 2, 1));
+        ItemEntity ported = new ItemEntity(level, at.getX() + 0.5, at.getY(), at.getZ() + 0.5, new ItemStack(Items.DIAMOND, 5));
+        ported.setData(IndustryAttachments.PORTED.get(), Boolean.TRUE);
+        CompoundTag saved = new CompoundTag();
+        check("the drop saves", ported.save(saved));
+        Entity back = net.minecraft.world.entity.EntityType.create(saved, level).orElse(null);
+        boolean still = back != null && back.hasData(IndustryAttachments.PORTED.get()) && back.getData(IndustryAttachments.PORTED.get());
+        record(t, "loaded back as ported", still);
+        check("the drop loads back as ported", still);
+        ItemEntity plain = new ItemEntity(level, at.getX() + 0.5, at.getY(), at.getZ() + 0.5, new ItemStack(Items.DIAMOND, 5));
+        CompoundTag p = new CompoundTag();
+        check("the plain drop saves", plain.save(p));
+        check("an unmarked drop saves no mark", !p.getCompound("neoforge:attachments").contains("mic_rtsim:ported"));
+        helper.succeed();
+    }
+
     // ---- I1: a double chest across a chunk border --------------------------------------------------
 
     /**
-     * I1, verifying only (RP-218; the audit's uncertainty 6.3): a double chest across a chunk border, its first
+     * I1, verifying only (RP-215; the audit's uncertainty 6.3): a double chest across a chunk border, its first
      * half P in chunk A full of stone, the other half Q in chunk N empty. A reconcile of A puts diamonds into P's
      * position; NeoForge's chest item handler is the pair's, so they go into Q, in N, which no command names and
      * no note covers. The crash keeps N (direction B: Q's chunk on disk ahead), while A and the journal are from
