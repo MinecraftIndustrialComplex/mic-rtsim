@@ -1528,7 +1528,8 @@ fn a_closure_is_lifted_when_the_ships_switch_off() {
         let dk = &c.ships.docks[home as usize];
         let at_dock = rtsim_settle::Pos::new(dk.frame, dk.x, dk.z);
         c.world.observe_area(PLAYER, at_dock, on, tun.view_radius);
-        c.ships.session_start();
+        c.ships.begin_replay(true);
+        c.ships.replay_done(&mut c.world);
         let put = c.ships.stats.relaunches_put_off;
         c.ships.run_until(&mut c.world, &mut NoInfrastructure, on);
         c.ships
@@ -1766,7 +1767,8 @@ fn a_long_switch_off_decides_nothing_in_the_missed_time() {
             let st = c.ships.stats;
             let on = off + 60 * TICKS_PER_DAY;
             c.world.run_until(on);
-            c.ships.session_start();
+            c.ships.begin_replay(true);
+            c.ships.replay_done(&mut c.world);
             c.ships.run_until(&mut c.world, &mut NoInfrastructure, on);
             c.ships
                 .check(&c.world)
@@ -1887,7 +1889,8 @@ fn a_held_cargo_lands_in_the_catch_up() {
         let on = last + 2 * TICKS_PER_DAY;
         c.world.run_until(on);
         c.world.check_conserved(on).expect("conserved while off");
-        c.ships.session_start();
+        c.ships.begin_replay(true);
+        c.ships.replay_done(&mut c.world);
         c.ships.run_until(&mut c.world, &mut NoInfrastructure, on);
         for &(id, _, _) in &held {
             assert!(
@@ -1976,7 +1979,8 @@ fn a_lift_clears_the_open_spell() {
         );
         let on = c.ships.now() + 10 * TICKS_PER_DAY;
         c.world.run_until(on);
-        c.ships.session_start();
+        c.ships.begin_replay(true);
+        c.ships.replay_done(&mut c.world);
         c.ships.run_until(&mut c.world, &mut NoInfrastructure, on);
         c.ships.check(&c.world).expect("checks");
         let p = *c.ships.port(TARGET).expect("a state");
