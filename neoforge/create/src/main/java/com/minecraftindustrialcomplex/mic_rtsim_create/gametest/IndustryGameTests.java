@@ -292,7 +292,8 @@ public final class IndustryGameTests {
     // ---- I3: the boundary stock sampler ---------------------------------------------------------
 
     /**
-     * A chest and a Create vault (two chunks, one district) and a postbox holding a package: a sweep
+     * A chest and a Create vault (two chunks, one district: two test markers face to face across the border join
+     * them, as no bare adjacency does since S6) and a postbox holding a package: a sweep
      * reports every boundary inventory, the package by its contents, ends with IND_SWEEP_END whose record
      * count matches, and is live. With an unloaded chunk in the district the next sweep is not live.
      */
@@ -307,6 +308,7 @@ public final class IndustryGameTests {
         set(helper, chestPos, Blocks.CHEST.defaultBlockState());
         set(helper, vaultPos, block("create:item_vault").defaultBlockState());
         set(helper, postPos, block("create:white_postbox").defaultBlockState());
+        joinAcrossX(helper, bx, y + 2, z);
         chest(helper, chestPos).setItem(0, new ItemStack(Items.IRON_INGOT, 10));
         chest(helper, chestPos).setItem(1, new ItemStack(Items.GOLD_INGOT, 5));
         playerPlaced(helper, chestPos);
@@ -1311,6 +1313,7 @@ public final class IndustryGameTests {
         BlockPos vaultPos = new BlockPos(bx + 2, y, z);
         set(helper, chestPos, Blocks.CHEST.defaultBlockState());
         set(helper, vaultPos, block("create:item_vault").defaultBlockState());
+        joinAcrossX(helper, bx, y + 2, z); // the chest's chunk and the vault's: one district by a join (J1)
         playerPlaced(helper, chestPos);
         playerPlaced(helper, vaultPos);
         Industry[] industry = {null};
@@ -1401,11 +1404,12 @@ public final class IndustryGameTests {
                     set(helper, p, vault);
                     blocks.add(p);
                 }
-        // within 15 blocks of every vault block, so the three never sit two chunks apart (which would be two districts)
         BlockPos single = new BlockPos(o.getX() + 14, y, o.getZ() + 14);
         BlockPos chestPos = new BlockPos(o.getX() + 16, y, o.getZ() + 14);
         set(helper, single, vault);
         set(helper, chestPos, Blocks.CHEST.defaultBlockState());
+        // The three are one district wherever the yard's chunk borders fall: stores side by side join no chunks (S6).
+        joinChunks(helper, new BlockPos(0, 1, 0), new BlockPos(33, 6, 33));
         net.minecraft.world.item.Item[] kinds = {Items.IRON_INGOT, Items.GOLD_INGOT, Items.COPPER_INGOT, Items.COBBLESTONE, Items.DIRT,
                 Items.OAK_LOG, Items.REDSTONE, Items.COAL, Items.DIAMOND, Items.EMERALD, Items.QUARTZ, Items.GRAVEL, Items.SAND,
                 Items.STONE, Items.ANDESITE, Items.GRANITE, Items.DIORITE, Items.LAPIS_LAZULI, Items.BONE, Items.STRING};
