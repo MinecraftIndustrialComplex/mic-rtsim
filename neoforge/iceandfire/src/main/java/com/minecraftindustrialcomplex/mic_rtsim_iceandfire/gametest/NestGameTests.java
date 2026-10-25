@@ -27,6 +27,7 @@ import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.entity.SpawnerBlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.chunk.LevelChunk;
+import net.minecraft.world.level.chunk.storage.ChunkSerializer;
 import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
@@ -725,6 +726,237 @@ public final class NestGameTests {
                     setRequiredRange(level, nests().nest(id).heart, 0);
                     record(test, "inert", "a player 2 blocks from the heart for 200 ticks: no worm; RequiredPlayerRange 16 for 300 ticks: no worm, "
                             + c + " spawn(s) cancelled at FinalizeSpawn");
+                })
+                .thenSucceed();
+    }
+
+    // ---- slice N2: a nest the saved state lost (RP-240 to RP-242) ------------------------------------------
+
+    /**
+     * RP-240 (audit row D4): a nest's chamber is found again by the nest id its heart carries. The nest is placed, then
+     * dropped from the Nests the way a restore of an older file drops it, and the engine asks for it again (PLACE_NEST,
+     * which it resends until it has the answer). The chunk keeps the chamber, and a second chamber would fit in it (a
+     * spot six above or below the first clears the old chamber's air: asserted, so the test fails without the fix): none
+     * is carved, the nest is registered at the old heart and answered placed with it. A spawner of the world's own, in
+     * the same chunk and carrying no id, is not mistaken for the heart. The heart's mark is in the chunk's saved tag.
+     */
+    @GameTest(template = DragonKit.ARENA, timeoutTicks = 1200, batch = "nest_heart_found")
+    public static void aNestPlacedAgainFindsItsChamber(GameTestHelper helper) {
+        String test = "aNestPlacedAgainFindsItsChamber";
+        Site s = new Site(helper, 1);
+        ServerLevel level = s.level;
+        long[] id = {0};
+        BlockPos[] heart = {null}, second = {null}, foreign = {null};
+        long[] counts = new long[2];
+        helper.startSequence()
+                .thenWaitUntil(() -> check("the site's chunks loaded", s.ready()))
+                .thenExecute(() -> {
+                    s.build();
+                    // The world's own spawner, below every chamber's shell: a heart that is not a nest's.
+                    foreign[0] = new BlockPos(s.chunk.getMinBlockX(), s.ground, s.chunk.getMinBlockZ());
+                    level.setBlock(foreign[0], Blocks.SPAWNER.defaultBlockState(), 2);
+                    check("a block entity at the world's spawner", level.getBlockEntity(foreign[0]) instanceof SpawnerBlockEntity);
+                    LevelChunk chunk = level.getChunk(s.chunk.x, s.chunk.z);
+                    for (int i = 0; i < 1000 && id[0] == 0; i++) {
+                        long c = ThreadLocalRandom.current().nextLong(1L << 40, 1L << 50);
+                        List<BlockPos> spots = Nests.spots(c, chunk, 30, s.floor);
+                        for (BlockPos p : spots.subList(1, spots.size()))
+                            if (Math.abs(p.getY() - spots.get(0).getY()) == Nests.SHIFT) {
+                                id[0] = c;
+                                break;
+                            }
+                    }
+                    check("a nest id with a spot six above or below its first", id[0] != 0);
+                    s.nests.add(id[0]);
+                    DragonKit.placeNest(id[0], s.dim, s.chunk.x, s.chunk.z, 30);
+                })
+                .thenWaitUntil(() -> check("the nest placed and answered (" + nests().placedCount + " placed)",
+                        nests().nest(id[0]) != null && found(id[0]).size() == 1))
+                .thenExecute(() -> {
+                    Nests.Nest n = nests().nest(id[0]);
+                    heart[0] = n.heart;
+                    LevelChunk chunk = level.getChunk(s.chunk.x, s.chunk.z);
+                    SpawnerBlockEntity sp = (SpawnerBlockEntity) level.getBlockEntity(heart[0]);
+                    check("the heart carries the nest id", sp.getPersistentData().getLong(Nests.HEART_TAG) == id[0]);
+                    check("the world's spawner carries none", !((SpawnerBlockEntity) level.getBlockEntity(foreign[0])).getPersistentData().contains(Nests.HEART_TAG));
+                    // In the chunk's saved tag, beside the blocks.
+                    boolean inFile = false;
+                    for (net.minecraft.nbt.Tag t : ChunkSerializer.write(level, chunk).getList("block_entities", net.minecraft.nbt.Tag.TAG_COMPOUND)) {
+                        CompoundTag b = (CompoundTag) t;
+                        if (b.getInt("x") == heart[0].getX() && b.getInt("y") == heart[0].getY() && b.getInt("z") == heart[0].getZ())
+                            inFile = b.getCompound("NeoForgeData").getLong(Nests.HEART_TAG) == id[0];
+                    }
+                    check("the mark is in the chunk's saved tag", inFile);
+                    // The premise: a second chamber would fit now.
+                    for (BlockPos p : Nests.spots(id[0], chunk, 30, s.floor))
+                        if (Nests.fits(chunk, p)) {
+                            second[0] = p;
+                            break;
+                        }
+                    check("a second chamber would fit at a later spot", second[0] != null && !second[0].equals(heart[0]));
+                    // N from before: the nest is not in it.
+                    nests().forgetForTest(id[0]);
+                    check("the nest dropped", nests().nest(id[0]) == null);
+                    counts[0] = nests().heartsRecognised;
+                    counts[1] = nests().placedCount;
+                    DragonKit.placeNest(id[0], s.dim, s.chunk.x, s.chunk.z, 30);
+                })
+                .thenWaitUntil(() -> check("NEST_FOUND again (" + found(id[0]).size() + ")", found(id[0]).size() == 2))
+                .thenExecute(() -> {
+                    Nests.Nest n = nests().nest(id[0]);
+                    check("the nest is back at its old heart", n != null && n.heart.equals(heart[0]) && !n.broken);
+                    ScriptedEngine.Received again = found(id[0]).get(1);
+                    check("answered placed with the old heart", again.aux() == DragonRecords.NestFound.PLACED && heartOf(again).equals(heart[0]));
+                    check("a standing chamber recognised (" + (nests().heartsRecognised - counts[0]) + ")", nests().heartsRecognised == counts[0] + 1);
+                    check("none carved (" + (nests().placedCount - counts[1]) + ")", nests().placedCount == counts[1]);
+                    int spawners = 0;
+                    for (BlockPos p : BlockPos.betweenClosed(s.chunk.getMinBlockX(), s.ground, s.chunk.getMinBlockZ(), s.chunk.getMaxBlockX(),
+                            s.floor + 12, s.chunk.getMaxBlockZ()))
+                        if (level.getBlockState(p).is(Blocks.SPAWNER))
+                            spawners++;
+                    check("the world's spawner and one heart (" + spawners + ")", spawners == 2);
+                    check("the second spot is still stone", level.getBlockState(second[0]).is(Blocks.STONE));
+                    record(test, "found", "nest " + id[0] + " dropped from the Nests and asked for again: its chamber found by the id its heart carries ("
+                            + "also in the chunk's saved tag), registered at " + heart[0].toShortString() + ", nothing carved although a second chamber fitted at "
+                            + second[0].toShortString() + "; the world's own spawner was not taken for it; NEST_FOUND placed with the old heart");
+                })
+                .thenSucceed();
+    }
+
+    /**
+     * RP-242 (audit row D6), a worm the saved count lost: the nest's file is older than the worm's entity file. The nest
+     * is put back as it was when it owed its worm (nothing spawned, the worm unlisted, one owed, due now), and the worm
+     * loads again in that same tick, with its ordinal and a nest that has spawned fewer than that. It is adopted: listed,
+     * its ordinal counted, the owed worm taken off. No second worm is spawned for it, whatever the owed count would have
+     * placed on the next check (asserted by the one worm left alive: without the fix the worm joins unlisted and a second
+     * is placed).
+     */
+    @GameTest(template = DragonKit.ARENA, timeoutTicks = 1200, batch = "nest_worm_adopt")
+    public static void aWormTheSavedCountLostIsAdopted(GameTestHelper helper) {
+        String test = "aWormTheSavedCountLostIsAdopted";
+        Site s = new Site(helper, 1);
+        ServerLevel level = s.level;
+        long id = s.nest();
+        CompoundTag[] saved = {null};
+        UUID[] uuid = {null};
+        long[] before = new long[3];
+        helper.startSequence()
+                .thenWaitUntil(() -> check("the site's chunks loaded", s.ready()))
+                .thenExecute(() -> {
+                    s.build();
+                    DragonKit.placeNest(id, s.dim, s.chunk.x, s.chunk.z, 30);
+                })
+                .thenWaitUntil(() -> check("the nest placed", nests().nest(id) != null))
+                .thenExecute(() -> DragonKit.nestRenew(id, s.dim, 1, 1))
+                .thenWaitUntil(() -> check("one worm placed (" + s.worms(id).size() + ", " + nests().nest(id).owed + " owed)",
+                        s.worms(id).size() == 1 && nests().nest(id).owed == 0))
+                .thenExecute(() -> {
+                    DeathWormEntity w = s.worms(id).get(0);
+                    check("it carries ordinal 0 (" + w.getPersistentData().getInt(Nests.ORDINAL_TAG) + ")",
+                            w.getPersistentData().contains(Nests.ORDINAL_TAG) && w.getPersistentData().getInt(Nests.ORDINAL_TAG) == 0);
+                    check("the nest has spawned 1 (" + nests().nest(id).spawned + ")", nests().nest(id).spawned == 1);
+                    CompoundTag t = new CompoundTag();
+                    check("the worm saves as an entity", w.save(t));
+                    saved[0] = t;
+                    uuid[0] = w.getUUID();
+                    w.discard();
+                    // N from before the spawn: one owed, due, nothing spawned, no worm listed.
+                    Nests.Nest n = nests().nest(id);
+                    n.worms.clear();
+                    n.spawned = 0;
+                    n.owed = 1;
+                    n.dueAt = 0;
+                    before[0] = nests().adoptedWorms;
+                    before[1] = nests().wormsPlaced;
+                    before[2] = nests().staleWorms;
+                    // The entity file, newer than N: the worm loads again before the owed worm is placed.
+                    net.minecraft.world.entity.Entity back = EntityType.loadEntityRecursive(saved[0], level, e -> e);
+                    check("the worm loads from its tag", back instanceof DeathWormEntity && back.getUUID().equals(uuid[0]));
+                    check("and joins the level", level.addFreshEntity(back));
+                    Nests.Nest m = nests().nest(id);
+                    check("adopted: listed (" + m.worms.size() + ")", m.worms.contains(uuid[0]) && m.worms.size() == 1);
+                    check("its ordinal counted: spawned 1 (" + m.spawned + ")", m.spawned == 1);
+                    check("the owed worm taken off (" + m.owed + ")", m.owed == 0);
+                    check("counted as an adoption (" + (nests().adoptedWorms - before[0]) + ")", nests().adoptedWorms == before[0] + 1);
+                })
+                .thenIdle(60)
+                .thenExecute(() -> {
+                    Nests.Nest n = nests().nest(id);
+                    check("no worm placed again (" + (nests().wormsPlaced - before[1]) + ")", nests().wormsPlaced == before[1]);
+                    check("one worm alive near the site (" + s.allWorms().size() + ")", s.allWorms().size() == 1);
+                    check("it is the adopted one", s.allWorms().get(0).getUUID().equals(uuid[0]) && n.worms.size() == 1);
+                    check("none discarded as stale (" + (nests().staleWorms - before[2]) + ")", nests().staleWorms == before[2]);
+                    check("spawned still 1 (" + n.spawned + ")", n.spawned == 1);
+                    record(test, "adopted", "the nest put back to one owed, none spawned; the worm (ordinal 0) loaded again: listed, spawned 1, owed 0, "
+                            + "no second worm placed in 60 ticks (one worm alive)");
+                })
+                .thenSucceed();
+    }
+
+    /**
+     * RP-242 (audit row D6), a stale copy: the worm the nest spawned again after a rollback of its file, and the
+     * older copy of that worm which a newer entity file still holds, loading under another UUID. The copy's ordinal is
+     * below the nest's count and it is not in the list: its join is refused, it is discarded the way a stale puppet is,
+     * and nothing is journaled for it (no NEST_LOSS, no loss counted). The nest's books are untouched and one worm is
+     * alive. Then the nest forgets the live worm (an unlisted worm of an ordinal, which its books never counted) and it
+     * is killed: still no NEST_LOSS (the {@code onDeath} guard), counted as skipped.
+     */
+    @GameTest(template = DragonKit.ARENA, timeoutTicks = 1200, batch = "nest_worm_stale")
+    public static void aStaleWormCopyIsDiscardedAndJournalsNothing(GameTestHelper helper) {
+        String test = "aStaleWormCopyIsDiscardedAndJournalsNothing";
+        Site s = new Site(helper, 1);
+        ServerLevel level = s.level;
+        long id = s.nest();
+        long[] before = new long[4];
+        UUID[] live = {null};
+        helper.startSequence()
+                .thenWaitUntil(() -> check("the site's chunks loaded", s.ready()))
+                .thenExecute(() -> {
+                    s.build();
+                    DragonKit.placeNest(id, s.dim, s.chunk.x, s.chunk.z, 30);
+                })
+                .thenWaitUntil(() -> check("the nest placed", nests().nest(id) != null))
+                .thenExecute(() -> DragonKit.nestRenew(id, s.dim, 1, 1))
+                .thenWaitUntil(() -> check("one worm placed (" + s.worms(id).size() + ")", s.worms(id).size() == 1))
+                .thenExecute(() -> {
+                    DeathWormEntity w = s.worms(id).get(0);
+                    live[0] = w.getUUID();
+                    CompoundTag t = new CompoundTag();
+                    check("the worm saves as an entity", w.save(t));
+                    // The older copy: the same tags (ordinal 0 of this nest), another UUID.
+                    net.minecraft.world.entity.Entity copy = EntityType.loadEntityRecursive(t, level, e -> e);
+                    check("the copy loads from the tag", copy instanceof DeathWormEntity);
+                    copy.setUUID(UUID.randomUUID());
+                    before[0] = nests().staleWorms;
+                    before[1] = nests().losses;
+                    before[2] = nests().lossesSkipped;
+                    before[3] = losses(id).size();
+                    boolean joined = level.addFreshEntity(copy);
+                    check("its join is refused", !joined);
+                    check("it is discarded", copy.isRemoved());
+                    check("counted as stale (" + (nests().staleWorms - before[0]) + ")", nests().staleWorms == before[0] + 1);
+                    Nests.Nest n = nests().nest(id);
+                    check("the nest's books are untouched (worms " + n.worms.size() + ", spawned " + n.spawned + ", owed " + n.owed + ")",
+                            n.worms.size() == 1 && n.worms.contains(live[0]) && n.spawned == 1 && n.owed == 0);
+                    check("one worm alive near the site (" + s.allWorms().size() + ")", s.allWorms().size() == 1);
+                })
+                .thenIdle(40)
+                .thenExecute(() -> {
+                    check("no loss counted (" + (nests().losses - before[1]) + ")", nests().losses == before[1]);
+                    check("no NEST_LOSS for the nest (" + (losses(id).size() - before[3]) + ")", losses(id).size() == before[3]);
+                    // The onDeath guard: a worm of an ordinal the nest does not hold dies.
+                    nests().nest(id).worms.remove(live[0]);
+                    DeathWormEntity w = (DeathWormEntity) level.getEntity(live[0]);
+                    check("the live worm is still there", w != null && w.isAlive());
+                    w.kill();
+                })
+                .thenIdle(40)
+                .thenExecute(() -> {
+                    check("its death counted as skipped (" + (nests().lossesSkipped - before[2]) + ")", nests().lossesSkipped == before[2] + 1);
+                    check("no loss counted (" + (nests().losses - before[1]) + ")", nests().losses == before[1]);
+                    check("still no NEST_LOSS for the nest (" + (losses(id).size() - before[3]) + ")", losses(id).size() == before[3]);
+                    record(test, "stale", "a copy of the nest's worm under another UUID: its join refused and discarded, counted stale, no loss and "
+                            + "no NEST_LOSS; the worm the nest did not hold then killed: counted skipped, no NEST_LOSS");
                 })
                 .thenSucceed();
     }
