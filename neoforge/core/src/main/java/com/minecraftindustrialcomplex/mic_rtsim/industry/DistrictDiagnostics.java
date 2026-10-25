@@ -142,25 +142,42 @@ public final class DistrictDiagnostics {
      * nothing.
      */
     private List<MutableComponent> glassLines(District d) {
-        com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession s = com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession.current();
-        if (s == null || !(s.engine() instanceof com.minecraftindustrialcomplex.mic_rtsim.engine.NativeEngine n))
-            return List.of();
-        GlassReport r;
-        try {
-            r = GlassReport.decode(n.glassReport(d.id));
-        } catch (RuntimeException e) {
-            return List.of(Component.literal("  glass: no report (" + e.getMessage() + ")"));
-        }
+        Fetch f = glassReportOf(d);
+        GlassReport r = f.report();
         if (r == null)
-            return List.of(Component.literal("  glass: no complete compile yet"));
+            return f.stub() ? List.of() : List.of(Component.literal("  glass: " + f.note()));
         List<MutableComponent> out = new java.util.ArrayList<>();
         out.add(Component.literal("  glass: " + r.summary()));
         out.add(Component.literal("  glass checksum: " + r.checksum().summary()));
+        out.add(Component.literal("  glass sections: " + r.sections().size() + ", " + r.sectionsMayReplay() + " may replay, "
+                + r.sectionsReplaying() + " replaying, " + r.shared().size() + " shared stores (/rtsim district sections)"));
         for (GlassReport.Good g : r.goods().stream().limit(MAX_LISTED).toList()) {
             String name = ind.goodName(g.good());
             out.add(Component.literal("    " + g.describe(name == null ? "good " + g.good() : name)));
         }
         return out;
+    }
+
+    /** A district's glass report, or why there is none: {@code note} is null on the stub engine (no glass box). */
+    public record Fetch(GlassReport report, String note, boolean stub) {}
+
+    /**
+     * The engine's report for a district, asked between steps (built on request, nothing is kept per tick). The
+     * note says in one line why there is none: no session, the stub engine, a decode failure or no complete compile.
+     */
+    public Fetch glassReportOf(District d) {
+        com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession s = com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession.current();
+        if (s == null)
+            return new Fetch(null, "no session", false);
+        if (!(s.engine() instanceof com.minecraftindustrialcomplex.mic_rtsim.engine.NativeEngine n))
+            return new Fetch(null, "the stub engine has no glass box", true);
+        GlassReport r;
+        try {
+            r = GlassReport.decode(n.glassReport(d.id));
+        } catch (RuntimeException e) {
+            return new Fetch(null, "no report (" + e.getMessage() + ")", false);
+        }
+        return r == null ? new Fetch(null, "no complete compile yet", false) : new Fetch(r, null, false);
     }
 
     /** {@code debug} adds the member chunks (loaded or not), the boundary inventories and the stations. */

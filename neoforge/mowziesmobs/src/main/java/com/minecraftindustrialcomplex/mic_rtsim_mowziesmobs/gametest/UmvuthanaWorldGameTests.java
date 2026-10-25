@@ -15,6 +15,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictRecords;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.OwedHunts;
 import com.minecraftindustrialcomplex.mic_rtsim.engine.NativeEngine;
 import com.minecraftindustrialcomplex.mic_rtsim.engine.ScriptedEngine;
+import com.minecraftindustrialcomplex.mic_rtsim.gametest.ChunkWait;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.ConflictKit;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.IndustryTestKit;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests;
@@ -58,7 +59,6 @@ import net.minecraft.world.item.Items;
 import net.minecraft.world.level.GameType;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.entity.BlockEntity;
-import net.minecraft.world.level.block.entity.BlockEntityType;
 import net.minecraft.world.level.block.entity.ChestBlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.chunk.LevelChunk;
@@ -335,10 +335,6 @@ public final class UmvuthanaWorldGameTests {
                     for (Mob m : all)
                         nearest = Math.min(nearest, m.distanceTo(masked[0]));
                     check("a body is within 14 blocks of the masked player (" + nearest + ")", nearest <= 14);
-                    for (ConflictBridge.Slot s : ConflictKit.party(agent[0]).stacks().get(0).slots())
-                        if (struck[0] == null && s.entity() instanceof EntityUmvuthanaMinion w)
-                            struck[0] = w;
-                    check("a warrior to strike", struck[0] != null);
                     MowzieKit.everyTick(helper, () -> {
                         if (watching[0] == 0)
                             return;
@@ -359,12 +355,22 @@ public final class UmvuthanaWorldGameTests {
                     record(test, "unprovoked", "the bare player was first targeted at tick " + bareFirst[0] + " of the watch");
                     check("no body targeted the masked player (" + violations + ")", violations.isEmpty());
                     watching[0] = 2;
+                    // the warrior nearest the masked player now: the band has walked toward the bare one since
+                    for (ConflictBridge.Slot s : ConflictKit.party(agent[0]).stacks().get(0).slots())
+                        if (s.entity() instanceof EntityUmvuthanaMinion w && !w.isRemoved() && w.isAlive()
+                                && (struck[0] == null || w.distanceTo(masked[0]) < struck[0].distanceTo(masked[0])))
+                            struck[0] = w;
+                    check("a warrior to strike", struck[0] != null);
+                    double hurtByReach = 1.7 * struck[0].getAttributeValue(Attributes.FOLLOW_RANGE);
+                    check("it is within the hurt-by goal's reach (" + struck[0].distanceTo(masked[0]) + " of " + hurtByReach + ")",
+                            struck[0].distanceTo(masked[0]) < hurtByReach);
                     boolean hit = struck[0].hurt(level.damageSources().playerAttack(masked[0]), 1f);
                     check("the masked player's blow lands", hit);
                 })
                 .thenIdle(20)
                 .thenExecute(() -> {
-                    check("the struck warrior turns on the masked player (" + struck[0].getTarget() + ")", struck[0].getTarget() == masked[0]);
+                    check("the struck warrior turns on the masked player (" + struck[0].getTarget() + ", " + struck[0].distanceTo(masked[0]) + " blocks)",
+                            struck[0].getTarget() == masked[0]);
                     // The raptor's followers are extras, no members: a player's kill of each drops no loot and no experience
                     // (MZB-643; the stack is made again with new ones, so each would be a mask and experience to farm).
                     AABB around = new AABB(st.centre, st.centre).inflate(40);
@@ -404,8 +410,9 @@ public final class UmvuthanaWorldGameTests {
      * result of a trade of 4 gold nuggets with a warrior standing in the grove: exactly one TRADED, with 4 nuggets and
      * the payer. A second Umvuthi standing outside every grove, paid the same way, writes nothing.
      */
-    @GameTest(template = ARENA, timeoutTicks = 2400, batch = "umvuthana_trade", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "umvuthana_trade", skyAccess = true)
     public static void theUmvuthisTradeIsReportedAsTributeAtTheCamp(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 2400);
         String test = "theUmvuthisTradeIsReportedAsTributeAtTheCamp";
         if (!(RtsimTests.engine() instanceof NativeEngine)) {
             record(test, "skipped", "the grove is the engine's only on the native engine");
@@ -425,13 +432,13 @@ public final class UmvuthanaWorldGameTests {
 
         helper.startSequence()
                 .thenExecute(g::force)
-                .thenWaitUntil(far.ready())
+                .thenWaitUntil(waits.chunks(far.ready()))
                 .thenExecute(() -> {
                     g.lay().declare(MicRtsimMowziesMobs.GROVE_STRUCTURE, GroveKind.INSTANCE);
                     u[0] = MowzieKit.umvuthi(level, g.at(-10, 0));
                     outside[0] = MowzieKit.umvuthi(level, g.at(36, 0));
                 })
-                .thenWaitUntil(adopted(u))
+                .thenWaitUntil(waits.logic(adopted(u)))
                 .thenExecute(() -> {
                     generation[0] = MowzieKit.tag(u[0]).generation();
                     check("the Umvuthi outside is no camp's", MowzieKit.tag(outside[0]) == null);
@@ -442,7 +449,7 @@ public final class UmvuthanaWorldGameTests {
                     check("no CHIEF_PAID yet", paidRecords(g).isEmpty());
                     check("the jar remembers the payer after the trade", MowzieKit.payUmvuthi(payer[0], u[0]));
                 })
-                .thenWaitUntil(() -> check("one CHIEF_PAID reached the engine (" + paidRecords(g).size() + ")", paidRecords(g).size() == 1))
+                .thenWaitUntil(waits.logic(() -> check("one CHIEF_PAID reached the engine (" + paidRecords(g).size() + ")", paidRecords(g).size() == 1)))
                 .thenExecute(() -> {
                     ScriptedEngine.Received r = paidRecords(g).get(0);
                     check("one item entry (aux " + r.aux() + ")", r.aux() == 1);
@@ -478,8 +485,8 @@ public final class UmvuthanaWorldGameTests {
                     payer[0].setPos(outside[0].getX() + 1.5, outside[0].getY(), outside[0].getZ());
                     check("the jar remembers the payer at the outside Umvuthi too", MowzieKit.payUmvuthi(payer[0], outside[0]));
                 })
-                .thenWaitUntil(() -> check("one TRADED reached the engine", RtsimTests.recordsWith(RtsimTests.engine(), ConflictRecords.TRADED,
-                        ConflictRecords.Traded.FACTION, g.faction).size() == 1))
+                .thenWaitUntil(waits.logic(() -> check("one TRADED reached the engine", RtsimTests.recordsWith(RtsimTests.engine(), ConflictRecords.TRADED,
+                        ConflictRecords.Traded.FACTION, g.faction).size() == 1)))
                 .thenIdle(20)
                 .thenExecute(() -> {
                     ScriptedEngine.Received t = RtsimTests.recordsWith(RtsimTests.engine(), ConflictRecords.TRADED, ConflictRecords.Traded.FACTION, g.faction).get(0);
@@ -700,8 +707,9 @@ public final class UmvuthanaWorldGameTests {
      * 0: a second player's payment (the engine owes another gift) puts nothing in it over 100 ticks, and with room
      * made again (the scan is brought forward) the gift lands.
      */
-    @GameTest(template = ARENA, timeoutTicks = 6000, batch = "umvuthana_chest", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "umvuthana_chest", skyAccess = true)
     public static void tributeLandsInAGroveChestWhenTheGroveLoads(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 6000);
         String test = "tributeLandsInAGroveChestWhenTheGroveLoads";
         if (!(RtsimTests.engine() instanceof NativeEngine)) {
             record(test, "skipped", "the grove is the engine's only on the native engine");
@@ -722,13 +730,13 @@ public final class UmvuthanaWorldGameTests {
 
         helper.startSequence()
                 .thenExecute(g::force)
-                .thenWaitUntil(far.ready())
+                .thenWaitUntil(waits.chunks(far.ready()))
                 .thenExecute(() -> {
                     g.lay().declare(MicRtsimMowziesMobs.GROVE_STRUCTURE, GroveKind.INSTANCE);
                     u[0] = MowzieKit.umvuthi(level, g.at(-10, 0));
                     id[0] = u[0].getUUID();
                 })
-                .thenWaitUntil(adopted(u))
+                .thenWaitUntil(waits.logic(adopted(u)))
                 .thenExecute(() -> {
                     payer[0] = MowzieKit.player(helper, g.at(0, 8).add(0, 1, 0), "mowzie-chest-payer-1");
                     payer[1] = MowzieKit.player(helper, g.at(0, 10).add(0, 1, 0), "mowzie-chest-payer-2");
@@ -739,16 +747,16 @@ public final class UmvuthanaWorldGameTests {
                     check("the grove has told no chest", chests.chestOf(g.faction) == null && havens(g).isEmpty());
                     check("the jar remembers the payer", MowzieKit.payUmvuthi(payer[0], u[0]));
                 })
-                .thenWaitUntil(() -> check("CHIEF_PAID reached the engine", paidRecords(g).size() == 1))
+                .thenWaitUntil(waits.logic(() -> check("CHIEF_PAID reached the engine", paidRecords(g).size() == 1)))
                 .thenIdle(40)
                 .thenExecute(() -> {
                     check("still no chest told, so no HAVEN_CHEST (" + havens(g).size() + ")", havens(g).isEmpty() && chests.chestOf(g.faction) == null);
                     far.releaseRect(g.cx - 2, g.cz - 2, g.cx + 2, g.cz + 2);
                 })
-                .thenWaitUntil(() -> check("CAMP_OUT", !ConflictKit.campOuts(g.faction).isEmpty()))
-                .thenWaitUntil(gone(level, () -> u[0]))
+                .thenWaitUntil(waits.logic(() -> check("CAMP_OUT", !ConflictKit.campOuts(g.faction).isEmpty())))
+                .thenWaitUntil(waits.chunks(gone(level, () -> u[0])))
                 .thenExecute(() -> far.force(g.cx, g.cz))
-                .thenWaitUntil(far.ready())
+                .thenWaitUntil(waits.chunks(far.ready()))
                 .thenExecute(() -> {
                     chest[0] = BlockPos.containing(g.at(4, 4));
                     level.setBlock(chest[0], Blocks.CHEST.defaultBlockState(), 3);
@@ -757,11 +765,11 @@ public final class UmvuthanaWorldGameTests {
                     check("only the middle chunk is loaded: the camp is out", !g.site().in());
                     g.far.forceRect(g.cx - 2, g.cz - 2, g.cx + 2, g.cz + 2);
                 })
-                .thenWaitUntil(() -> {
+                .thenWaitUntil(waits.logic(() -> {
                     chests.scanNextTick();
                     g.far.ready().run();
                     check("HAVEN_CHEST has come", !havens(g).isEmpty());
-                })
+                }))
                 .thenExecute(() -> {
                     ByteBuffer h = havens(g).get(0).view();
                     check("the chest's place (" + h.getInt(ConflictRecords.HavenChest.X) + ", " + h.getInt(ConflictRecords.HavenChest.Y) + ", "
@@ -771,11 +779,11 @@ public final class UmvuthanaWorldGameTests {
                     check("the dimension", h.getInt(ConflictRecords.HavenChest.DIM) == RtsimTests.session().dimId(level.dimension()));
                     check("all 27 slots free (" + h.getInt(ConflictRecords.HavenChest.FREE) + ")", h.getInt(ConflictRecords.HavenChest.FREE) == 27);
                 })
-                .thenWaitUntil(() -> {
+                .thenWaitUntil(waits.logic(() -> {
                     chests.scanNextTick();
                     check("the chest holds the gift (" + nuggetsIn(chestAt(level, chest[0])) + " of " + expected[0] + ")",
                             nuggetsIn(chestAt(level, chest[0])) == expected[0]);
-                })
+                }))
                 .thenIdle(100)
                 .thenExecute(() -> {
                     Container c = chestAt(level, chest[0]);
@@ -798,7 +806,7 @@ public final class UmvuthanaWorldGameTests {
                         }
                     chests.scanNextTick();
                 })
-                .thenWaitUntil(() -> check("the grove told the full chest as 0 (" + chests.freeOf(g.faction) + ")", chests.freeOf(g.faction) == 0))
+                .thenWaitUntil(waits.logic(() -> check("the grove told the full chest as 0 (" + chests.freeOf(g.faction) + ")", chests.freeOf(g.faction) == 0)))
                 .thenExecute(() -> {
                     Entity e = level.getEntity(id[0]);
                     check("the Umvuthi is loaded again, tagged", e instanceof EntityUmvuthi && MowzieKit.tag(e) != null);
@@ -808,7 +816,7 @@ public final class UmvuthanaWorldGameTests {
                     check("the second payer is a stranger to the Umvuthi", !((EntityUmvuthi) e).hasTradedWith(payer[1]));
                     check("the jar remembers the second payer", MowzieKit.payUmvuthi(payer[1], (EntityUmvuthi) e));
                 })
-                .thenWaitUntil(() -> check("a second CHIEF_PAID reached the engine (" + paidRecords(g).size() + ")", paidRecords(g).size() == 2))
+                .thenWaitUntil(waits.logic(() -> check("a second CHIEF_PAID reached the engine (" + paidRecords(g).size() + ")", paidRecords(g).size() == 2)))
                 .thenIdle(100)
                 .thenExecute(() -> {
                     Container c = chestAt(level, chest[0]);
@@ -819,26 +827,29 @@ public final class UmvuthanaWorldGameTests {
                         c.setItem(slot, ItemStack.EMPTY);
                     chests.scanNextTick();
                 })
-                .thenWaitUntil(() -> {
+                .thenWaitUntil(waits.logic(() -> {
                     chests.scanNextTick();
                     check("the second gift lands (" + nuggetsIn(chestAt(level, chest[0])) + " of " + expected[0] + " and more)",
                             nuggetsIn(chestAt(level, chest[0])) > expected[0]);
-                })
+                }))
                 .thenExecute(() -> record(test, "second gift", nuggetsIn(chestAt(level, chest[0])) + " nuggets in all after the room was made"))
                 .thenSucceed();
     }
 
     /**
      * A chest that nothing can insert into (MZB-642): a {@code ChestBlockEntity} on a block NeoForge registers no item
-     * handler for, as Lootr's chests are (they keep their loot table, so show all slots free). Made on the enchanting
-     * table's block with a type of its own, not registered, so the test removes it before its chunk can be saved.
+     * handler for (capabilities are keyed by block), as Lootr's chests are (they keep their loot table, so show all
+     * slots free). Vanilla's chest type stands on the enchanting table's block: no type of its own, since the registries
+     * are frozen by test time. The test removes it before its chunk can be saved.
      */
     private static final class HandlerlessChest extends ChestBlockEntity {
-        static final BlockEntityType<HandlerlessChest> TYPE =
-                BlockEntityType.Builder.of(HandlerlessChest::new, Blocks.ENCHANTING_TABLE).build(null);
-
         HandlerlessChest(BlockPos pos, BlockState state) {
-            super(TYPE, pos, state);
+            super(pos, state);
+        }
+
+        @Override
+        public boolean isValidBlockState(BlockState state) {
+            return true;
         }
     }
 
@@ -857,8 +868,9 @@ public final class UmvuthanaWorldGameTests {
      * with only it there, a scan sends no HAVEN_CHEST and the grove names no chest; once the vanilla chest stands, the
      * first HAVEN_CHEST names that one, with 27 free. Runs on either engine (the record is the Java side's).
      */
-    @GameTest(template = ARENA, timeoutTicks = 1200, batch = "umvuthana_chest_handler", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "umvuthana_chest_handler", skyAccess = true)
     public static void aChestWithNoItemHandlerIsNeverTheGrovesHaven(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 1200);
         String test = "aChestWithNoItemHandlerIsNeverTheGrovesHaven";
         Far far = new Far(helper, test);
         ServerLevel level = far.level;
@@ -868,7 +880,7 @@ public final class UmvuthanaWorldGameTests {
 
         helper.startSequence()
                 .thenExecute(g::force)
-                .thenWaitUntil(far.ready())
+                .thenWaitUntil(waits.chunks(far.ready()))
                 .thenExecute(() -> {
                     g.lay().declare();
                     stuck[0] = BlockPos.containing(g.at(3, 3));
@@ -883,7 +895,7 @@ public final class UmvuthanaWorldGameTests {
                     check("and nothing can insert into it", level.getCapability(Capabilities.ItemHandler.BLOCK, stuck[0], null) == null);
                     check("it is in the grove's footprint", g.site().contains(Vec3.atCenterOf(stuck[0])));
                 })
-                .thenWaitUntil(() -> check("the grove is in", g.site().in()))
+                .thenWaitUntil(waits.logic(() -> check("the grove is in", g.site().in())))
                 .thenExecute(chests::scanNextTick)
                 .thenIdle(45)
                 .thenExecute(() -> {
@@ -894,7 +906,7 @@ public final class UmvuthanaWorldGameTests {
                             && level.getCapability(Capabilities.ItemHandler.BLOCK, real[0], null) != null);
                     chests.scanNextTick();
                 })
-                .thenWaitUntil(() -> check("HAVEN_CHEST has come for the vanilla chest", !havens(g).isEmpty()))
+                .thenWaitUntil(waits.logic(() -> check("HAVEN_CHEST has come for the vanilla chest", !havens(g).isEmpty())))
                 .thenExecute(() -> {
                     ByteBuffer h = havens(g).get(0).view();
                     check("the first names the vanilla chest, not the nearer one ("
@@ -992,8 +1004,9 @@ public final class UmvuthanaWorldGameTests {
      * together (MZB-645): the leashed sheep, whose leash is data until its first tick, are what a hunt that counted
      * isLeashed would kill (count 10); it finds nothing and kills none, though it is answered.
      */
-    @GameTest(template = ARENA, timeoutTicks = 6000, batch = "umvuthana_owed_hunt", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "umvuthana_owed_hunt", skyAccess = true)
     public static void anOwedHuntIsAppliedWhenItsDistrictLoadsAndKillsTheNearestEligibleAnimals(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 6000);
         String test = "anOwedHuntIsAppliedWhenItsDistrictLoadsAndKillsTheNearestEligibleAnimals";
         Stage st = new Stage(helper, test);
         ServerLevel level = st.level;
@@ -1004,7 +1017,7 @@ public final class UmvuthanaWorldGameTests {
         // The eligible prey, nearest first, then the ineligible.
         double[][] eligible = {{3, 0}, {0, -5}, {-7, 0}, {0, 9}, {-8, -8}, {14, 0}, {0, -17}};
         UUID[] prey = new UUID[eligible.length], no = new UUID[5];
-        // The objects the unload waits wait on (MZB-662): as made, then as loaded again before the second release.
+        // The objects the unload checks look at (MZB-662): as made, then as loaded again before the second release.
         Entity[] preyMade = new Entity[eligible.length], noMade = new Entity[5], noLoaded = new Entity[5];
         long[] received0 = new long[1], ignored0 = new long[1], applied0 = new long[1], killed0 = new long[1];
         int[] held0 = new int[1];
@@ -1012,7 +1025,7 @@ public final class UmvuthanaWorldGameTests {
 
         helper.startSequence()
                 .thenExecute(() -> st.force(2))
-                .thenWaitUntil(st.far.ready())
+                .thenWaitUntil(waits.logic(st.far.ready()))
                 .thenExecute(() -> {
                     st.lay();
                     for (int i = 0; i < eligible.length; i++) {
@@ -1055,7 +1068,7 @@ public final class UmvuthanaWorldGameTests {
                         no[i] = noMade[i].getUUID();
                     st.far.releaseRect(st.cx - 2, st.cz - 2, st.cx + 2, st.cz + 2);
                 })
-                .thenWaitUntil(gone(level, preyMade, noMade))
+                .thenWaitUntil(waits.chunks(gone(level, preyMade, noMade)))
                 .thenExecute(() -> {
                     received0[0] = hunts.received;
                     ignored0[0] = hunts.ignored;
@@ -1064,13 +1077,13 @@ public final class UmvuthanaWorldGameTests {
                     held0[0] = hunts.heldCount();
                     ConflictKit.owedHunt(faction, district, op1, 0, dim, 5, cxBlock, czBlock, radius, 0);
                 })
-                .thenWaitUntil(() -> check("OWED_HUNT received", hunts.received == received0[0] + 1))
+                .thenWaitUntil(waits.logic(() -> check("OWED_HUNT received", hunts.received == received0[0] + 1)))
                 .thenIdle(45)
                 .thenExecute(() -> {
                     check("held with every chunk out (" + hunts.heldCount() + ")", hunts.heldCount() == held0[0] + 1 && hunts.appliedHunts == applied0[0]);
                     st.force(1);
                 })
-                .thenWaitUntil(st.far.ready())
+                .thenWaitUntil(waits.logic(st.far.ready()))
                 .thenIdle(60)
                 .thenExecute(() -> {
                     check("still held with only the middle 3 x 3 loaded", hunts.heldCount() == held0[0] + 1 && hunts.appliedHunts == applied0[0]);
@@ -1084,7 +1097,7 @@ public final class UmvuthanaWorldGameTests {
                         check("the ineligible " + no[i] + " lives", alive(level, no[i]));
                     st.force(2);
                 })
-                .thenWaitUntil(() -> check("the hunt is applied", hunts.appliedHunts == applied0[0] + 1))
+                .thenWaitUntil(waits.logic(() -> check("the hunt is applied", hunts.appliedHunts == applied0[0] + 1)))
                 .thenExecute(() -> {
                     check("held no more", hunts.heldCount() == held0[0]);
                     check("five killed (" + (hunts.killed - killed0[0]) + ")", hunts.killed == killed0[0] + 5);
@@ -1098,31 +1111,31 @@ public final class UmvuthanaWorldGameTests {
                         drops += d.getItem().getCount();
                     check("the drops lie on the ground (" + drops + ")", drops >= 5);
                 })
-                .thenWaitUntil(() -> check("the outer sheep's leash is restored", level.getEntity(no[4]) instanceof Mob m && m.isLeashed()))
-                .thenWaitUntil(() -> {
+                .thenWaitUntil(waits.logic(() -> check("the outer sheep's leash is restored", level.getEntity(no[4]) instanceof Mob m && m.isLeashed())))
+                .thenWaitUntil(waits.logic(() -> {
                     List<ScriptedEngine.Received> r = RtsimTests.recordsWith(RtsimTests.engine(), ConflictRecords.HUNT_APPLIED, ConflictRecords.HuntApplied.OP_ID, op1);
                     check("HUNT_APPLIED is journaled", r.size() == 1);
                     check("with five killed", r.get(0).view().getInt(ConflictRecords.HuntApplied.KILLED) == 5);
                     check("for the grove's faction", r.get(0).view().getLong(ConflictRecords.HuntApplied.FACTION) == faction
                             && r.get(0).view().getLong(ConflictRecords.HuntApplied.DISTRICT) == district);
-                })
+                }))
                 .thenExecute(() -> {
                     ConflictKit.owedHunt(faction, district, op1, 0, dim, 5, cxBlock, czBlock, radius, 0);
                 })
-                .thenWaitUntil(() -> check("the same op again is ignored", hunts.ignored == ignored0[0] + 1))
+                .thenWaitUntil(waits.logic(() -> check("the same op again is ignored", hunts.ignored == ignored0[0] + 1)))
                 .thenIdle(25)
                 .thenExecute(() -> {
                     check("nothing more was applied or killed", hunts.appliedHunts == applied0[0] + 1 && hunts.killed == killed0[0] + 5 && hunts.heldCount() == held0[0]);
                     check("no second HUNT_APPLIED", RtsimTests.recordsWith(RtsimTests.engine(), ConflictRecords.HUNT_APPLIED, ConflictRecords.HuntApplied.OP_ID, op1).size() == 1);
                     ConflictKit.owedHunt(faction, district, op2, op1, dim, 10, cxBlock, czBlock, radius, 1);
                 })
-                .thenWaitUntil(() -> check("the replacing hunt is applied", hunts.appliedHunts == applied0[0] + 2))
+                .thenWaitUntil(waits.logic(() -> check("the replacing hunt is applied", hunts.appliedHunts == applied0[0] + 2)))
                 .thenExecute(() -> {
                     check("it killed the rest, 1 (" + (hunts.killed - killed0[0]) + ")", hunts.killed == killed0[0] + 6);
                     check("the 14-block cow is dead, the 17-block cow lives", !alive(level, prey[5]) && alive(level, prey[6]));
                     ConflictKit.owedHunt(faction, district, op3, op1, dim, 1, cxBlock, czBlock, radius, 9);
                 })
-                .thenWaitUntil(() -> check("the stale-replacing hunt is applied", hunts.appliedHunts == applied0[0] + 3))
+                .thenWaitUntil(waits.logic(() -> check("the stale-replacing hunt is applied", hunts.appliedHunts == applied0[0] + 3)))
                 .thenExecute(() -> {
                     check("it killed its count, 1 (" + (hunts.killed - killed0[0]) + ")", hunts.killed == killed0[0] + 7);
                     check("the 17-block cow is dead", !alive(level, prey[6]));
@@ -1132,28 +1145,28 @@ public final class UmvuthanaWorldGameTests {
                     }
                     st.far.releaseRect(st.cx - 2, st.cz - 2, st.cx + 2, st.cz + 2); // the fourth meets the district as it loads
                 })
-                .thenWaitUntil(gone(level, noLoaded))
+                .thenWaitUntil(waits.chunks(gone(level, noLoaded)))
                 .thenExecute(() -> {
                     received0[0] = hunts.received;
                     ConflictKit.owedHunt(faction, district, op4, 0, dim, 10, cxBlock, czBlock, radius, 0);
                 })
-                .thenWaitUntil(() -> check("OWED_HUNT received", hunts.received == received0[0] + 1))
+                .thenWaitUntil(waits.logic(() -> check("OWED_HUNT received", hunts.received == received0[0] + 1)))
                 .thenIdle(45)
                 .thenExecute(() -> {
                     check("held with every chunk out", hunts.heldCount() == held0[0] + 1 && hunts.appliedHunts == applied0[0] + 3);
                     st.force(2);
                 })
-                .thenWaitUntil(() -> check("the last hunt is applied", hunts.appliedHunts == applied0[0] + 4))
+                .thenWaitUntil(waits.logic(() -> check("the last hunt is applied", hunts.appliedHunts == applied0[0] + 4)))
                 .thenExecute(() -> {
                     check("it found nothing (" + (hunts.killed - killed0[0]) + ")", hunts.killed == killed0[0] + 7);
                     for (UUID p : no)
                         check("the ineligible " + p + " lives", alive(level, p));
                 })
-                .thenWaitUntil(() -> {
+                .thenWaitUntil(waits.logic(() -> {
                     check("both leashed sheep are leashed again", level.getEntity(no[3]) instanceof Mob a && a.isLeashed()
                             && level.getEntity(no[4]) instanceof Mob b && b.isLeashed());
-                })
-                .thenWaitUntil(() -> {
+                }))
+                .thenWaitUntil(waits.logic(() -> {
                     long[] ops = {op2, op3, op4};
                     int[] want = {1, 1, 0};
                     for (int i = 0; i < ops.length; i++) {
@@ -1161,7 +1174,7 @@ public final class UmvuthanaWorldGameTests {
                         check("HUNT_APPLIED for op " + (i + 2) + " is journaled", r.size() == 1);
                         check("with " + want[i] + " killed", r.get(0).view().getInt(ConflictRecords.HuntApplied.KILLED) == want[i]);
                     }
-                })
+                }))
                 .thenExecute(() -> record(test, "hunts", "5 of 5, then 1, 1, 0; the named cow, the owned horse, the tame horse and the two leashed sheep lived"))
                 .thenSucceed();
     }

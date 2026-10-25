@@ -12,6 +12,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictNews;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictRecords;
 import com.minecraftindustrialcomplex.mic_rtsim.engine.NativeEngine;
 import com.minecraftindustrialcomplex.mic_rtsim.engine.ScriptedEngine;
+import com.minecraftindustrialcomplex.mic_rtsim.gametest.ChunkWait;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.ConflictKit;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.ConflictKit.CampLine;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.FakePlayers;
@@ -37,6 +38,7 @@ import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.ExperienceOrb;
+import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.entity.animal.Wolf;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.monster.Zombie;
@@ -150,8 +152,9 @@ public final class UmvuthiGameTests {
      * hearing player's chat (no line of rtsim's), action bar or talk list, and the jar's double death event
      * (EntityUmvuthi.die posts it twice) books one death for each.
      */
-    @GameTest(template = ARENA, timeoutTicks = 3000, batch = "umvuthi_kill", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "umvuthi_kill", skyAccess = true)
     public static void aChiefKilledAtTheGroveIsReportedWithTheKiller(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 3000);
         String test = "aChiefKilledAtTheGroveIsReportedWithTheKiller";
         Far far = new Far(helper, test);
         ServerLevel level = far.level;
@@ -170,14 +173,14 @@ public final class UmvuthiGameTests {
 
         GameTestSequence seq = helper.startSequence()
                 .thenExecute(g::force)
-                .thenWaitUntil(far.ready())
+                .thenWaitUntil(waits.chunks(far.ready()))
                 .thenExecute(() -> {
                     g.lay().declare();
                     markers[0] = new Markers(helper, level, g.area());
                     hearer[0] = FakePlayers.hearing(level, g.at(0, 24).add(0, 1, 0), "mowzie-hearer");
                     ConflictKit.onEnd(helper, () -> FakePlayers.remove(hearer[0]));
                 })
-                .thenWaitUntil(censused(g))
+                .thenWaitUntil(waits.logic(censused(g)))
                 .thenExecute(() -> {
                     news[0] = ConflictNews.posted();
                     heard[0] = hearer[0].raw.size();
@@ -191,7 +194,7 @@ public final class UmvuthiGameTests {
                         u[i] = MowzieKit.umvuthi(level, g.at(-12 + 6 * i, 0));
                         op[i] = adoptChief(g, u[i], i + 1);
                     })
-                    .thenWaitUntil(() -> MowzieKit.answered(g.faction, op[i], 1))
+                    .thenWaitUntil(waits.logic(() -> MowzieKit.answered(g.faction, op[i], 1)))
                     .thenExecute(() -> {
                         MowzieKit.allOutcomes("ADOPT " + i, ConflictKit.outcomes(g.faction, op[i]), DONE);
                         check("Umvuthi " + i + " is tagged (faction, -1, " + (i + 1) + ")", MowzieKit.tagged(u[i], g.faction, CHIEF_SLOT, i + 1));
@@ -228,7 +231,7 @@ public final class UmvuthiGameTests {
                     MowzieKit.kill(u[i], level.damageSources().genericKill());
                 });
             seq = seq
-                    .thenWaitUntil(() -> check("CAMP_DEATH " + i, ConflictKit.campDeaths(g.faction).size() == i + 1))
+                    .thenWaitUntil(waits.logic(() -> check("CAMP_DEATH " + i, ConflictKit.campDeaths(g.faction).size() == i + 1)))
                     .thenExecute(() -> {
                         chiefDeath(what[i], ConflictKit.campDeaths(g.faction).get(i), by[i],
                                 by[i] == ConflictRecords.BY_PLAYER ? hearer[0].getUUID() : null, i + 1);
@@ -270,8 +273,9 @@ public final class UmvuthiGameTests {
      * same player (Sun's Blessing) journals nothing more. What the engine does with the payment (a settled demand or a
      * gift, the engine's P) is the engine's and is not read from Java (MZB-601).
      */
-    @GameTest(template = ARENA, timeoutTicks = 2000, batch = "umvuthi_paid", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "umvuthi_paid", skyAccess = true)
     public static void aMaskedPaymentToTheAdoptedUmvuthiReachesTheEngine(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 2000);
         String test = "aMaskedPaymentToTheAdoptedUmvuthiReachesTheEngine";
         if (!(RtsimTests.engine() instanceof NativeEngine)) {
             record(test, "skipped", "the grove is the engine's only on the native engine");
@@ -289,15 +293,15 @@ public final class UmvuthiGameTests {
 
         helper.startSequence()
                 .thenExecute(g::force)
-                .thenWaitUntil(far.ready())
+                .thenWaitUntil(waits.chunks(far.ready()))
                 .thenExecute(() -> {
                     g.lay().declare(MicRtsimMowziesMobs.GROVE_STRUCTURE, GroveKind.INSTANCE);
                     u[0] = MowzieKit.umvuthi(level, g.at(-10, 0));
                 })
-                .thenWaitUntil(() -> {
+                .thenWaitUntil(waits.logic(() -> {
                     var tag = MowzieKit.tag(u[0]);
                     check("the engine adopted the Umvuthi into the chief's slot", tag != null && tag.slot() == CHIEF_SLOT);
-                })
+                }))
                 .thenExecute(() -> {
                     generation[0] = MowzieKit.tag(u[0]).generation();
                     desires[0] = u[0].getDesires().copy();
@@ -307,7 +311,7 @@ public final class UmvuthiGameTests {
                     check("no CHIEF_PAID yet", paidRecords(g).isEmpty());
                     check("the jar remembers the payer after the trade", MowzieKit.payUmvuthi(payer[0], u[0]));
                 })
-                .thenWaitUntil(() -> check("one CHIEF_PAID reached the engine (" + paidRecords(g).size() + ")", paidRecords(g).size() == 1))
+                .thenWaitUntil(waits.logic(() -> check("one CHIEF_PAID reached the engine (" + paidRecords(g).size() + ")", paidRecords(g).size() == 1)))
                 .thenExecute(() -> {
                     ScriptedEngine.Received r = paidRecords(g).get(0);
                     check("one item entry (aux " + r.aux() + ")", r.aux() == 1);
@@ -347,8 +351,9 @@ public final class UmvuthiGameTests {
      * body (two writes, the set is A, B and C). No CHIEF_PAID is journaled and the reconciler counts no payment: a
      * copy of a memory is no trade.
      */
-    @GameTest(template = ARENA, timeoutTicks = 1500, batch = "umvuthi_memory", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "umvuthi_memory", skyAccess = true)
     public static void aChiefsTradeMemoryIsWrittenOntoItsBodyAndJournalsNothing(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 1500);
         String test = "aChiefsTradeMemoryIsWrittenOntoItsBodyAndJournalsNothing";
         Far far = new Far(helper, test);
         ServerLevel level = far.level;
@@ -360,14 +365,14 @@ public final class UmvuthiGameTests {
 
         helper.startSequence()
                 .thenExecute(g::force)
-                .thenWaitUntil(far.ready())
+                .thenWaitUntil(waits.chunks(far.ready()))
                 .thenExecute(() -> {
                     g.lay().declare();
                     String[] names = {"mowzie-trader-a", "mowzie-trader-b", "mowzie-trader-c"};
                     for (int i = 0; i < 3; i++)
                         pl[i] = MowzieKit.player(helper, off(g, 300, 0), names[i]);
                 })
-                .thenWaitUntil(censused(g))
+                .thenWaitUntil(waits.logic(censused(g)))
                 .thenExecute(() -> {
                     Camps camps = MowzieKit.camps();
                     counters[0] = camps.chiefBodies;
@@ -375,7 +380,7 @@ public final class UmvuthiGameTests {
                     counters[2] = camps.chiefPaid;
                     ConflictKit.chiefBody(g.faction, epochOf(g), 0f, List.of(pl[0].getUUID(), pl[1].getUUID()));
                 })
-                .thenWaitUntil(() -> check("the memory is kept for the epoch", MowzieKit.camps().chiefMemory(g.faction) != null))
+                .thenWaitUntil(waits.logic(() -> check("the memory is kept for the epoch", MowzieKit.camps().chiefMemory(g.faction) != null)))
                 .thenExecute(() -> {
                     Camps camps = MowzieKit.camps();
                     check("one CHIEF_BODY was taken (" + (camps.chiefBodies - counters[0]) + ")", camps.chiefBodies == counters[0] + 1);
@@ -384,7 +389,7 @@ public final class UmvuthiGameTests {
                     throne[0] = g.at(8, 8);
                     op[0] = MowzieKit.reconcile(g.faction, epochOf(g), throne[0], 3f, List.of(CampLine.of(CHIEF_SLOT, 1, UMVUTHI, SPAWN, CHIEF)));
                 })
-                .thenWaitUntil(() -> MowzieKit.answered(g.faction, op[0], 1))
+                .thenWaitUntil(waits.logic(() -> MowzieKit.answered(g.faction, op[0], 1)))
                 .thenExecute(() -> {
                     MowzieKit.allOutcomes("SPAWN", ConflictKit.outcomes(g.faction, op[0]), DONE);
                     List<Entity> held = MowzieKit.held(g.faction, CHIEF_SLOT, 1);
@@ -403,7 +408,7 @@ public final class UmvuthiGameTests {
                     check("and no CHIEF_PAID was journaled", paidRecords(g).isEmpty());
                     ConflictKit.chiefBody(g.faction, epochOf(g), 0f, List.of(pl[2].getUUID()));
                 })
-                .thenWaitUntil(() -> check("the second memory was written at once", MowzieKit.camps().chiefBodiesWritten == counters[1] + 2))
+                .thenWaitUntil(waits.logic(() -> check("the second memory was written at once", MowzieKit.camps().chiefBodiesWritten == counters[1] + 2)))
                 .thenExecute(() -> {
                     EntityUmvuthi u = (EntityUmvuthi) MowzieKit.held(g.faction, CHIEF_SLOT, 1).get(0);
                     check("it remembers A, B and C (" + u.getTradedPlayers() + ")",
@@ -428,8 +433,9 @@ public final class UmvuthiGameTests {
      * his hit). The 35-block warrior (still tagged) and the follower live; the Umvuthi's loot has a Sol Visage (at
      * least one; the count is recorded).
      */
-    @GameTest(template = ARENA, timeoutTicks = 2500, batch = "umvuthi_devoted", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "umvuthi_devoted", skyAccess = true)
     public static void killingTheUmvuthiKillsTheDevotedUmvuthanaWithin30Blocks(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 2500);
         String test = "killingTheUmvuthiKillsTheDevotedUmvuthanaWithin30Blocks";
         Far far = new Far(helper, test);
         ServerLevel level = far.level;
@@ -444,7 +450,7 @@ public final class UmvuthiGameTests {
 
         helper.startSequence()
                 .thenExecute(g::force)
-                .thenWaitUntil(far.ready())
+                .thenWaitUntil(waits.chunks(far.ready()))
                 .thenExecute(() -> {
                     g.lay().declare();
                     u[0] = MowzieKit.umvuthi(level, g.at(-22, 0));
@@ -456,14 +462,16 @@ public final class UmvuthiGameTests {
                     }
                     follower[0] = MowzieKit.stray(level, EntityHandler.UMVUTHANA_FOLLOWER_TO_PLAYER.get(), g.at(-22, 10).x, g.at(-22, 10).y,
                             g.at(-22, 10).z, true, false);
+                    // a follower with no leader retracts and discards itself after 30 ticks; an inactive one never does
+                    follower[0].setActive(false);
                     player[0] = MowzieKit.player(helper, g.at(0, 12).add(0, 1, 0), "mowzie-slayer");
+                    // the warriors' deaths in the world, timed against the kill (the booking may come later)
                     MowzieKit.everyTick(helper, () -> {
-                        int deaths = ConflictKit.campDeaths(g.faction).size();
-                        if (killedAt[1] == 0 && deaths >= 3)
+                        if (killedAt[1] == 0 && killedAt[0] != 0 && w[0].isDeadOrDying() && w[1].isDeadOrDying())
                             killedAt[1] = level.getGameTime();
                     });
                 })
-                .thenWaitUntil(censused(g))
+                .thenWaitUntil(waits.logic(censused(g)))
                 .thenExecute(() -> {
                     check("the warriors stand 10, 25 and 35 blocks from the Umvuthi (" + dist[0] + ", " + dist[1] + ", " + dist[2] + ")",
                             Math.abs(dist[0] - 10) < 1 && Math.abs(dist[1] - 25) < 1 && Math.abs(dist[2] - 35) < 1);
@@ -473,7 +481,7 @@ public final class UmvuthiGameTests {
                         lines.add(CampLine.of(i, 1, WARRIOR, ADOPT, 0, w[i].getUUID()));
                     op[0] = MowzieKit.reconcile(g.faction, epochOf(g), lines);
                 })
-                .thenWaitUntil(() -> MowzieKit.answered(g.faction, op[0], 4))
+                .thenWaitUntil(waits.logic(() -> MowzieKit.answered(g.faction, op[0], 4)))
                 .thenExecute(() -> {
                     MowzieKit.allOutcomes("ADOPT", ConflictKit.outcomes(g.faction, op[0]), DONE);
                     check("the Umvuthi is tagged (faction, -1, 1)", MowzieKit.tagged(u[0], g.faction, CHIEF_SLOT, 1));
@@ -490,8 +498,12 @@ public final class UmvuthiGameTests {
                     killedAt[0] = level.getGameTime();
                     MowzieKit.kill(u[0], level.damageSources().playerAttack(player[0]));
                 })
-                .thenWaitUntil(() -> check("three deaths are booked (" + ConflictKit.campDeaths(g.faction).size() + ")",
-                        ConflictKit.campDeaths(g.faction).size() >= 3))
+                .thenWaitUntil(waits.logic(() -> {
+                    // the wait passes before the tick's Post hook runs: it times the deaths too
+                    if (killedAt[1] == 0 && killedAt[0] != 0 && w[0].isDeadOrDying() && w[1].isDeadOrDying())
+                        killedAt[1] = level.getGameTime();
+                    check("three deaths are booked (" + ConflictKit.campDeaths(g.faction).size() + ")", ConflictKit.campDeaths(g.faction).size() >= 3);
+                }))
                 .thenExecute(() -> {
                     List<ScriptedEngine.Received> deaths = ConflictKit.campDeaths(g.faction);
                     check("exactly three (" + deaths.size() + ")", deaths.size() == 3);
@@ -520,7 +532,7 @@ public final class UmvuthiGameTests {
                     for (int i = 0; i < 2; i++)
                         check("the dead warriors lost their tags", MowzieKit.tag(w[i]) == null);
                 })
-                .thenWaitUntil(() -> check("the Umvuthi dropped a Sol Visage (" + visages(level, g) + ")", visages(level, g) >= 1))
+                .thenWaitUntil(waits.logic(() -> check("the Umvuthi dropped a Sol Visage (" + visages(level, g) + ")", visages(level, g) >= 1)))
                 .thenIdle(60)
                 .thenExecute(() -> {
                     check("still three deaths (" + ConflictKit.campDeaths(g.faction).size() + ")", ConflictKit.campDeaths(g.faction).size() == 3);
@@ -561,8 +573,9 @@ public final class UmvuthiGameTests {
      * Umvuthi are gone, a record marker (tagged, carrying records) stands where each stood, no death is booked and the
      * held lines are back to the start.
      */
-    @GameTest(template = ARENA, timeoutTicks = 8000, batch = "umvuthi_hold_removal", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "umvuthi_hold_removal", skyAccess = true)
     public static void theUmvuthisRemovalsWaitWhileAPlayerIsNearOrFightsIt(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 8000);
         String test = "theUmvuthisRemovalsWaitWhileAPlayerIsNearOrFightsIt";
         Far far = new Far(helper, test);
         ServerLevel level = far.level;
@@ -594,12 +607,14 @@ public final class UmvuthiGameTests {
                     for (Grove x : g)
                         x.force();
                 })
-                .thenWaitUntil(far.ready())
+                .thenWaitUntil(waits.chunks(far.ready()))
                 .thenExecute(() -> {
                     for (int i = 0; i < 2; i++) {
                         g[i].lay().declare();
                         markers[i] = new Markers(helper, level, g[i].area());
                         u[i] = MowzieKit.umvuthi(level, g[i].at(0, 0));
+                        // the player stands 170 blocks off: past the follow range of 40 the Umvuthi's own tick drops its target
+                        u[i].getAttribute(Attributes.FOLLOW_RANGE).setBaseValue(1000);
                         stood[i] = u[i].position();
                         p[i] = MowzieKit.player(helper, off(g[i], 0, 150), "mowzie-near-" + i);
                     }
@@ -610,15 +625,15 @@ public final class UmvuthiGameTests {
                                     u[i].setTarget(p[i]);
                     });
                 })
-                .thenWaitUntil(censused(g))
+                .thenWaitUntil(waits.logic(censused(g)))
                 .thenExecute(() -> {
                     for (int i = 0; i < 2; i++)
                         op[i] = adoptChief(g[i], u[i], 1);
                 })
-                .thenWaitUntil(() -> {
+                .thenWaitUntil(waits.logic(() -> {
                     for (int i = 0; i < 2; i++)
                         MowzieKit.answered(g[i].faction, op[i], 1);
-                })
+                }))
                 .thenExecute(() -> {
                     for (int i = 0; i < 2; i++) {
                         MowzieKit.allOutcomes("ADOPT " + i, ConflictKit.outcomes(g[i].faction, op[i]), DONE);
@@ -635,8 +650,11 @@ public final class UmvuthiGameTests {
                 .thenIdle(Camps.HOLD_MAX + 100)
                 .thenExecute(() -> {
                     stillHeld.run();
-                    for (int i = 0; i < 2; i++)
+                    for (int i = 0; i < 2; i++) {
+                        // targeted before the move: Camps' Post pass would play the held removal this tick otherwise
+                        u[i].setTarget(p[i]);
                         p[i].moveTo(off(g[i], 0, 170).x, off(g[i], 0, 170).y, off(g[i], 0, 170).z);
+                    }
                     fight[0] = true;
                 })
                 .thenIdle(5)
@@ -653,10 +671,10 @@ public final class UmvuthiGameTests {
                     for (int i = 0; i < 2; i++)
                         u[i].setTarget(null);
                 })
-                .thenWaitUntil(() -> {
+                .thenWaitUntil(waits.logic(() -> {
                     for (int i = 0; i < 2; i++)
                         MowzieKit.answered(g[i].faction, op[i], 1);
-                })
+                }))
                 .thenExecute(() -> {
                     for (int i = 0; i < 2; i++) {
                         MowzieKit.allOutcomes("line " + i, ConflictKit.outcomes(g[i].faction, op[i]), DONE);
@@ -682,8 +700,9 @@ public final class UmvuthiGameTests {
      * unchanged. D's player stays: D is still unanswered 5,900 ticks after the reconcile, and answered within a few
      * ticks of 6,000 (the Umvuthi is made with the player still within 160 blocks).
      */
-    @GameTest(template = ARENA, timeoutTicks = 7500, batch = "umvuthi_hold_spawn", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "umvuthi_hold_spawn", skyAccess = true)
     public static void aChiefSpawnWaitsForThePlayerToLeaveOrSixThousandTicks(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 7500);
         String test = "aChiefSpawnWaitsForThePlayerToLeaveOrSixThousandTicks";
         Far far = new Far(helper, test);
         ServerLevel level = far.level;
@@ -700,7 +719,7 @@ public final class UmvuthiGameTests {
                     for (Grove x : g)
                         x.force();
                 })
-                .thenWaitUntil(far.ready())
+                .thenWaitUntil(waits.chunks(far.ready()))
                 .thenExecute(() -> {
                     for (int i = 0; i < 2; i++) {
                         g[i].lay().declare();
@@ -711,7 +730,7 @@ public final class UmvuthiGameTests {
                             answeredAt[0] = level.getGameTime();
                     });
                 })
-                .thenWaitUntil(censused(g))
+                .thenWaitUntil(waits.logic(censused(g)))
                 .thenExecute(() -> {
                     spawns0[0] = MowzieKit.camps().heldSpawns;
                     t0[0] = level.getGameTime();
@@ -731,7 +750,7 @@ public final class UmvuthiGameTests {
                     }
                     p[0].moveTo(off(g[0], 6, 170).x, off(g[0], 6, 170).y, off(g[0], 6, 170).z);
                 })
-                .thenWaitUntil(() -> MowzieKit.answered(g[0].faction, op[0], 1))
+                .thenWaitUntil(waits.logic(() -> MowzieKit.answered(g[0].faction, op[0], 1)))
                 .thenExecute(() -> {
                     MowzieKit.allOutcomes("C's SPAWN", ConflictKit.outcomes(g[0].faction, op[0]), DONE);
                     List<Entity> held = MowzieKit.held(g[0].faction, CHIEF_SLOT, 1);
@@ -742,12 +761,12 @@ public final class UmvuthiGameTests {
                     check("the held-spawn counter did not move again", MowzieKit.camps().heldSpawns == spawns0[0] + 2);
                     check("D is still held", unanswered(g[1].faction, op[1]) && MowzieKit.held(g[1].faction).isEmpty());
                 })
-                .thenWaitUntil(() -> check("5,900 ticks after the reconcile (" + (level.getGameTime() - t0[0]) + ")", level.getGameTime() >= t0[0] + 5900))
+                .thenWaitUntil(waits.logic(() -> check("5,900 ticks after the reconcile (" + (level.getGameTime() - t0[0]) + ")", level.getGameTime() >= t0[0] + 5900)))
                 .thenExecute(() -> {
                     check("D is still unanswered with no body", unanswered(g[1].faction, op[1]) && MowzieKit.held(g[1].faction).isEmpty());
                     check("its player is still within 160 blocks of the throne", p[1].distanceToSqr(throne[1]) < 160 * 160);
                 })
-                .thenWaitUntil(() -> check("D is answered", answeredAt[0] != 0))
+                .thenWaitUntil(waits.logic(() -> check("D is answered", answeredAt[0] != 0)))
                 .thenExecute(() -> {
                     long after = answeredAt[0] - t0[0];
                     check("D was answered 6,000 ticks after the reconcile, give or take a few (" + after + ")", after >= 5990 && after <= 6040);
@@ -769,8 +788,9 @@ public final class UmvuthiGameTests {
      * Forced again, the new census opens a new epoch, and the Umvuthi that loads (the same UUID, another object) is
      * still tagged (faction, -1, 1): a held TAKE never played.
      */
-    @GameTest(template = ARENA, timeoutTicks = 3000, batch = "umvuthi_hold_epoch", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "umvuthi_hold_epoch", skyAccess = true)
     public static void anEpochsEndAnswersEveryHeldLineStale(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 3000);
         String test = "anEpochsEndAnswersEveryHeldLineStale";
         Far far = new Far(helper, test);
         ServerLevel level = far.level;
@@ -783,19 +803,19 @@ public final class UmvuthiGameTests {
 
         helper.startSequence()
                 .thenExecute(g::force)
-                .thenWaitUntil(far.ready())
+                .thenWaitUntil(waits.chunks(far.ready()))
                 .thenExecute(() -> {
                     g.lay().declare();
                     u[0] = MowzieKit.umvuthi(level, g.at(0, 0));
                     id[0] = u[0].getUUID();
                     MowzieKit.player(helper, off(g, 0, 100), "mowzie-near");
                 })
-                .thenWaitUntil(censused(g))
+                .thenWaitUntil(waits.logic(censused(g)))
                 .thenExecute(() -> {
                     epoch[0] = epochOf(g);
                     op[0] = adoptChief(g, u[0], 1);
                 })
-                .thenWaitUntil(() -> MowzieKit.answered(g.faction, op[0], 1))
+                .thenWaitUntil(waits.logic(() -> MowzieKit.answered(g.faction, op[0], 1)))
                 .thenExecute(() -> {
                     MowzieKit.allOutcomes("ADOPT", ConflictKit.outcomes(g.faction, op[0]), DONE);
                     lines0[0] = MowzieKit.camps().heldLines();
@@ -809,20 +829,20 @@ public final class UmvuthiGameTests {
                     check("no answer", unanswered(g.faction, op[1]));
                     far.releaseRect(g.cx - 2, g.cz - 2, g.cx + 2, g.cz + 2);
                 })
-                .thenWaitUntil(() -> check("CAMP_OUT", !ConflictKit.campOuts(g.faction).isEmpty()))
-                .thenWaitUntil(gone(level, () -> u[0]))
-                .thenWaitUntil(() -> MowzieKit.answered(g.faction, op[1], 2))
+                .thenWaitUntil(waits.logic(() -> check("CAMP_OUT", !ConflictKit.campOuts(g.faction).isEmpty())))
+                .thenWaitUntil(waits.chunks(gone(level, () -> u[0])))
+                .thenWaitUntil(waits.logic(() -> MowzieKit.answered(g.faction, op[1], 2)))
                 .thenExecute(() -> {
                     MowzieKit.allOutcomes("the held lines", ConflictKit.outcomes(g.faction, op[1]), STALE);
                     check("the held lines are back to the start (" + MowzieKit.camps().heldLines() + ")", MowzieKit.camps().heldLines() == lines0[0]);
                     g.far.forceRect(g.cx - 2, g.cz - 2, g.cx + 2, g.cz + 2);
                 })
-                .thenWaitUntil(far.ready())
-                .thenWaitUntil(() -> check("a second census", MowzieKit.censusCount(g.faction) >= 2))
-                .thenWaitUntil(io(() -> {
+                .thenWaitUntil(waits.chunks(far.ready()))
+                .thenWaitUntil(waits.logic(() -> check("a second census", MowzieKit.censusCount(g.faction) >= 2)))
+                .thenWaitUntil(waits.chunks(io(() -> {
                     Entity e = level.getEntity(id[0]);
                     check("the Umvuthi is loaded again", e != null && MowzieKit.tagged(e, g.faction, CHIEF_SLOT, 1));
-                }))
+                })))
                 .thenExecute(() -> {
                     check("a new epoch (" + epoch[0] + " then " + MowzieKit.epoch(MowzieKit.census(g.faction, 2)) + ")",
                             MowzieKit.epoch(MowzieKit.census(g.faction, 2)) != epoch[0]);
@@ -844,8 +864,9 @@ public final class UmvuthiGameTests {
      * Sol Visage and experience. C's and D's are nobody's: no CAMP_DEATH of any kind, no Sol Visage, no experience,
      * and the warrior alive and still tagged. C's REMOVE, held when its body died, is answered NOTHING.
      */
-    @GameTest(template = ARENA, timeoutTicks = 3000, batch = "umvuthi_second_body", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "umvuthi_second_body", skyAccess = true)
     public static void aSecondChiefBodysDeathIsNobodys(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 3000);
         String test = "aSecondChiefBodysDeathIsNobodys";
         Far far = new Far(helper, test);
         ServerLevel level = far.level;
@@ -864,7 +885,7 @@ public final class UmvuthiGameTests {
                     for (Grove x : g)
                         x.force();
                 })
-                .thenWaitUntil(far.ready())
+                .thenWaitUntil(waits.chunks(far.ready()))
                 .thenExecute(() -> {
                     for (int i = 0; i < 3; i++) {
                         g[i].lay().declare();
@@ -874,17 +895,17 @@ public final class UmvuthiGameTests {
                         p[i] = MowzieKit.player(helper, off(g[i], 0, 150), "mowzie-second-" + name[i]);
                     }
                 })
-                .thenWaitUntil(censused(g))
+                .thenWaitUntil(waits.logic(censused(g)))
                 .thenExecute(() -> {
                     for (int i = 0; i < 3; i++)
                         adopt[i] = MowzieKit.reconcile(g[i].faction, epochOf(g[i]), List.of(
                                 CampLine.of(CHIEF_SLOT, 1, UMVUTHI, ADOPT, CHIEF, u[i].getUUID()),
                                 CampLine.of(0, 1, WARRIOR, ADOPT, 0, w[i].getUUID())));
                 })
-                .thenWaitUntil(() -> {
+                .thenWaitUntil(waits.logic(() -> {
                     for (int i = 0; i < 3; i++)
                         MowzieKit.answered(g[i].faction, adopt[i], 2);
-                })
+                }))
                 .thenExecute(() -> {
                     for (int i = 0; i < 3; i++) {
                         MowzieKit.allOutcomes("ADOPT " + name[i], ConflictKit.outcomes(g[i].faction, adopt[i]), DONE);
@@ -905,10 +926,10 @@ public final class UmvuthiGameTests {
                     check("E's Umvuthi is not", !MowzieKit.camps().secondBody(u[2]));
                     MowzieKit.camps().forceRecount(g[1].faction);
                 })
-                .thenWaitUntil(() -> {
+                .thenWaitUntil(waits.logic(() -> {
                     check("D counted again", MowzieKit.censusCount(g[1].faction) >= 2);
                     MowzieKit.answered(g[1].faction, remove[1], 1);
-                })
+                }))
                 .thenExecute(() -> {
                     MowzieKit.allOutcomes("D's REMOVE", ConflictKit.outcomes(g[1].faction, remove[1]), STALE);
                     check("only C's REMOVE is held now (" + (MowzieKit.camps().heldLines() - lines0[0]) + ")", MowzieKit.camps().heldLines() == lines0[0] + 1);
@@ -922,12 +943,12 @@ public final class UmvuthiGameTests {
                         MowzieKit.kill(u[i], level.damageSources().playerAttack(p[i]));
                     }
                 })
-                .thenWaitUntil(() -> {
+                .thenWaitUntil(waits.logic(() -> {
                     check("E dropped a Sol Visage (" + visages(level, g[2]) + ")", visages(level, g[2]) >= 1);
                     check("E dropped experience (" + xp(level, g[2]) + ")", xp(level, g[2]) >= 1);
                     check("E booked its chief and its warrior (" + ConflictKit.campDeaths(g[2].faction).size() + ")",
                             ConflictKit.campDeaths(g[2].faction).size() >= 2);
-                })
+                }))
                 .thenIdle(80)
                 .thenExecute(() -> {
                     check("E's warrior died with its Umvuthi", !w[2].isAlive());
@@ -967,8 +988,9 @@ public final class UmvuthiGameTests {
      * 159, 151 and 143 blocks from the player (every one within 160) and the throne 175 (no hold). The pair is played
      * at once and takes the farthest of the three, slot 1: not the lowest slot and not the nearest.
      */
-    @GameTest(template = ARENA, timeoutTicks = 3000, batch = "umvuthi_heir", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "umvuthi_heir", skyAccess = true)
     public static void anUmvuthiHeirTakesTheFarthestFreeWarrior(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 3000);
         String test = "anUmvuthiHeirTakesTheFarthestFreeWarrior";
         Far far = new Far(helper, test);
         ServerLevel level = far.level;
@@ -990,7 +1012,7 @@ public final class UmvuthiGameTests {
                     g3.force();
                     g4.force();
                 })
-                .thenWaitUntil(far.ready())
+                .thenWaitUntil(waits.chunks(far.ready()))
                 .thenExecute(() -> {
                     g1.lay().declare(MowzieKit.TEST_GROVE, HoldingKind.INSTANCE);
                     g2.lay().declare();
@@ -1008,7 +1030,7 @@ public final class UmvuthiGameTests {
                     throne[0] = g1.at(0, 8);
                     p1[0] = MowzieKit.player(helper, new Vec3(throne[0].x, throne[0].y + 1, throne[0].z + 100), "mowzie-heir-p1");
                 })
-                .thenWaitUntil(censused(g1, g2, g3, g4))
+                .thenWaitUntil(waits.logic(censused(g1, g2, g3, g4)))
                 .thenExecute(() -> {
                     List<CampLine> lines = new java.util.ArrayList<>();
                     List<CampLine> lines4 = new java.util.ArrayList<>();
@@ -1020,11 +1042,11 @@ public final class UmvuthiGameTests {
                     op[1] = MowzieKit.reconcile(g3.faction, epochOf(g3), List.of(CampLine.of(0, 1, WARRIOR, ADOPT, 0, w3[0].getUUID())));
                     op[7] = MowzieKit.reconcile(g4.faction, epochOf(g4), lines4);
                 })
-                .thenWaitUntil(() -> {
+                .thenWaitUntil(waits.logic(() -> {
                     MowzieKit.answered(g1.faction, op[0], 3);
                     MowzieKit.answered(g3.faction, op[1], 1);
                     MowzieKit.answered(g4.faction, op[7], 3);
-                })
+                }))
                 .thenExecute(() -> {
                     MowzieKit.allOutcomes("G1's ADOPT", ConflictKit.outcomes(g1.faction, op[0]), DONE);
                     MowzieKit.allOutcomes("G3's ADOPT", ConflictKit.outcomes(g3.faction, op[1]), DONE);
@@ -1050,11 +1072,11 @@ public final class UmvuthiGameTests {
                     // G4: every warrior has a player within 160 blocks, the throne has none: the farthest warrior goes (P3-10)
                     op[8] = MowzieKit.reconcile(g4.faction, epochOf(g4), g4.at(0, 10), 3f, pair);
                 })
-                .thenWaitUntil(() -> {
+                .thenWaitUntil(waits.logic(() -> {
                     MowzieKit.answered(g2.faction, op[2], 2);
                     MowzieKit.answered(g3.faction, op[3], 2);
                     MowzieKit.answered(g4.faction, op[8], 2);
-                })
+                }))
                 .thenExecute(() -> {
                     MowzieKit.allOutcomes("G2's pair, no warrior", ConflictKit.outcomes(g2.faction, op[2]), STALE);
                     check("no Umvuthi stands in G2", MowzieKit.held(g2.faction).isEmpty());
@@ -1106,7 +1128,7 @@ public final class UmvuthiGameTests {
                     // the player steps 170 blocks west of the centre: 155, 175 and 190 blocks from the warriors
                     p1[0].moveTo(g1.spot.x - 170, g1.spot.y + 1, g1.spot.z);
                 })
-                .thenWaitUntil(() -> MowzieKit.answered(g1.faction, op[5], 2))
+                .thenWaitUntil(waits.logic(() -> MowzieKit.answered(g1.faction, op[5], 2)))
                 .thenExecute(() -> {
                     MowzieKit.allOutcomes("G1's pair", ConflictKit.outcomes(g1.faction, op[5]), DONE);
                     Map<Integer, MowzieKit.Answered> a = MowzieKit.answeredLines(g1.faction, op[5]);
@@ -1143,8 +1165,9 @@ public final class UmvuthiGameTests {
      * every tick) and a player hit it: the pair is held (one held pair, no answer, the warrior home) until the fight
      * is 600 ticks old, then played in place (DONE, the heir at the old position, the old gone).
      */
-    @GameTest(template = ARENA, timeoutTicks = 3000, batch = "umvuthi_heir_in_place", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "umvuthi_heir_in_place", skyAccess = true)
     public static void anUmvuthiHeirSeatedInPlaceReplacesTheOldChief(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 3000);
         String test = "anUmvuthiHeirSeatedInPlaceReplacesTheOldChief";
         Far far = new Far(helper, test);
         ServerLevel level = far.level;
@@ -1162,13 +1185,15 @@ public final class UmvuthiGameTests {
                     g4.force();
                     g5.force();
                 })
-                .thenWaitUntil(far.ready())
+                .thenWaitUntil(waits.chunks(far.ready()))
                 .thenExecute(() -> {
                     g4.lay().declare();
                     g5.lay().declare();
                     old[0] = MowzieKit.umvuthi(level, g4.at(-8, 0));
+                    old[0].getAttribute(Attributes.FOLLOW_RANGE).setBaseValue(1000); // the player stands 50 blocks off
                     w[0] = MowzieKit.warrior(level, g4.at(10, 0));
                     old[1] = MowzieKit.umvuthi(level, g5.at(-8, 0));
+                    old[1].getAttribute(Attributes.FOLLOW_RANGE).setBaseValue(1000);
                     w[1] = MowzieKit.warrior(level, g5.at(10, 0));
                     p[0] = MowzieKit.player(helper, off(g4, 0, 150), "mowzie-seat-p4");
                     p[1] = MowzieKit.player(helper, off(g5, 0, 50), "mowzie-seat-p5");
@@ -1177,17 +1202,17 @@ public final class UmvuthiGameTests {
                             old[1].setTarget(p[1]);
                     });
                 })
-                .thenWaitUntil(censused(g4, g5))
+                .thenWaitUntil(waits.logic(censused(g4, g5)))
                 .thenExecute(() -> {
                     op[0] = MowzieKit.reconcile(g4.faction, epochOf(g4), List.of(
                             CampLine.of(CHIEF_SLOT, 1, UMVUTHI, ADOPT, CHIEF, old[0].getUUID()), CampLine.of(0, 1, WARRIOR, ADOPT, 0, w[0].getUUID())));
                     op[1] = MowzieKit.reconcile(g5.faction, epochOf(g5), List.of(
                             CampLine.of(CHIEF_SLOT, 1, UMVUTHI, ADOPT, CHIEF, old[1].getUUID()), CampLine.of(0, 1, WARRIOR, ADOPT, 0, w[1].getUUID())));
                 })
-                .thenWaitUntil(() -> {
+                .thenWaitUntil(waits.logic(() -> {
                     MowzieKit.answered(g4.faction, op[0], 2);
                     MowzieKit.answered(g5.faction, op[1], 2);
-                })
+                }))
                 .thenExecute(() -> {
                     MowzieKit.allOutcomes("G4's ADOPT", ConflictKit.outcomes(g4.faction, op[0]), DONE);
                     MowzieKit.allOutcomes("G5's ADOPT", ConflictKit.outcomes(g5.faction, op[1]), DONE);
@@ -1209,14 +1234,15 @@ public final class UmvuthiGameTests {
                     check("the REMOVE is held (" + (camps.heldRemovals - counters[3]) + ")", camps.heldRemovals == counters[3] + 1);
                     check("it has no answer", unanswered(g4.faction, op[2]));
                     check("the old Umvuthi is a second body", camps.secondBody(old[0]));
-                    check("it remembers a trade and is hurt", !old[0].getTradedPlayers().isEmpty() && old[0].getHealth() <= 10f);
+                    // set to 10 five ticks ago; an untargeted Umvuthi heals 0.3 a tick
+                    check("it remembers a trade and is hurt (" + old[0].getHealth() + ")", !old[0].getTradedPlayers().isEmpty() && old[0].getHealth() <= 12f);
                     op[3] = MowzieKit.reconcile(g4.faction, epochOf(g4), g4.at(0, 8), 3f, List.of(
                             CampLine.of(0, 0, WARRIOR, MASK, 0), new CampLine(CHIEF_SLOT, 2, UMVUTHI, SEAT_HEIR, CHIEF, 1L, 0L)));
                 })
-                .thenWaitUntil(() -> {
+                .thenWaitUntil(waits.logic(() -> {
                     MowzieKit.answered(g4.faction, op[3], 2);
                     MowzieKit.answered(g4.faction, op[2], 1);
-                })
+                }))
                 .thenExecute(() -> {
                     MowzieKit.allOutcomes("G4's pair", ConflictKit.outcomes(g4.faction, op[3]), DONE);
                     check("the held REMOVE is STALE", ConflictKit.outcomes(g4.faction, op[2]).get(0) == STALE);
@@ -1257,9 +1283,9 @@ public final class UmvuthiGameTests {
                             && MowzieKit.tagged(old[1], g5.faction, CHIEF_SLOT, 1));
                     check("the old Umvuthi has the player as its target", old[1].getTarget() == p[1]);
                 })
-                .thenWaitUntil(() -> check("590 ticks after the hit (" + (level.getGameTime() - hitAt[0]) + ")", level.getGameTime() >= hitAt[0] + 590))
+                .thenWaitUntil(waits.logic(() -> check("590 ticks after the hit (" + (level.getGameTime() - hitAt[0]) + ")", level.getGameTime() >= hitAt[0] + 590)))
                 .thenExecute(() -> check("still held at 590 ticks", unanswered(g5.faction, op[4]) && old[1].isAlive()))
-                .thenWaitUntil(() -> MowzieKit.answered(g5.faction, op[4], 2))
+                .thenWaitUntil(waits.logic(() -> MowzieKit.answered(g5.faction, op[4], 2)))
                 .thenExecute(() -> {
                     long after = level.getGameTime() - hitAt[0];
                     check("played when the fight was 600 ticks old (" + after + ")", after >= 600 && after <= 640);

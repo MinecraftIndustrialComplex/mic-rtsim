@@ -21,6 +21,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.conflict.LurkSpots;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.RailAxes;
 import com.minecraftindustrialcomplex.mic_rtsim.engine.ScriptedEngine;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Layout;
+import com.minecraftindustrialcomplex.mic_rtsim.gametest.ChunkWait;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.ConflictKit;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.ConflictKit.CampLine;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.ConflictKit.CensusBody;
@@ -122,8 +123,9 @@ public final class MowzieGameTests {
      * stands: restricted 8 round the spot, still no puppet, still saved, its persistence as the jar left it
      * (MZB-210), and its saved NBT carries the camp tag, so a world without rtsim loads it as the jar's own.
      */
-    @GameTest(template = ARENA, timeoutTicks = 12000, batch = "mowzie_den", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "mowzie_den", skyAccess = true)
     public static void aDensFrostmawStaysVanillaAndTheCensusReadsItsCrystalAndHealth(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 1500);
         String test = "aDensFrostmawStaysVanillaAndTheCensusReadsItsCrystalAndHealth";
         Far far = new Far(helper, test);
         ServerLevel level = far.level;
@@ -143,7 +145,7 @@ public final class MowzieGameTests {
                     for (int i = 0; i < n; i++)
                         far.forceRect(cx[i] - 1, cz - 1, cx[i] + 1, cz + 1);
                 })
-                .thenWaitUntil(far.ready())
+                .thenWaitUntil(waits.chunks(far.ready()))
                 .thenExecute(() -> {
                     Structure structure = level.registryAccess().registryOrThrow(Registries.STRUCTURE)
                             .get(ResourceLocation.parse(MicRtsimMowziesMobs.DEN_STRUCTURE));
@@ -176,10 +178,10 @@ public final class MowzieGameTests {
                         check("den " + i + " is declared", faction[i] != 0);
                     }
                 })
-                .thenWaitUntil(() -> {
+                .thenWaitUntil(waits.logic(() -> {
                     for (int i = 0; i < n; i++)
                         check("den " + i + "'s census", MowzieKit.censusCount(faction[i]) >= 1);
-                })
+                }))
                 .thenExecute(() -> {
                     for (int i = 0; i < n; i++) {
                         List<ScriptedEngine.Received> found = ConflictKit.factionsFound(faction[i]);
@@ -209,10 +211,10 @@ public final class MowzieGameTests {
                                 frost[i].getUUID())));
                     }
                 })
-                .thenWaitUntil(() -> {
+                .thenWaitUntil(waits.logic(() -> {
                     for (int i = 0; i < n; i++)
                         MowzieKit.answered(faction[i], op[i], 1);
-                })
+                }))
                 .thenExecute(() -> {
                     for (int i = 0; i < n; i++) {
                         MowzieKit.allOutcomes("den " + i + " ADOPT", ConflictKit.outcomes(faction[i], op[i]), DONE);
@@ -249,8 +251,9 @@ public final class MowzieGameTests {
      * census listing every adopted body by UUID with its slot (not as a stray); FACTION_FOUND stays once.
      * The session reset that recounts a grove is MZB-228's gap.
      */
-    @GameTest(template = ARENA, timeoutTicks = 12000, batch = "mowzie_grove", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "mowzie_grove", skyAccess = true)
     public static void aGroveIsCountedAndAResetRecountsTheWarriorsStandingInIt(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 2000);
         String test = "aGroveIsCountedAndAResetRecountsTheWarriorsStandingInIt";
         Far far = new Far(helper, test);
         ServerLevel level = far.level;
@@ -267,7 +270,7 @@ public final class MowzieGameTests {
 
         MowzieKit.seq(helper)
                 .thenExecute(g::force)
-                .thenWaitUntil(far.ready())
+                .thenWaitUntil(waits.chunks(far.ready()))
                 .thenExecute(() -> {
                     g.lay(63); // the jar's fire pit makes no warrior on ground at y 0 or below, and the world's is at -61
                     Structure structure = level.registryAccess().registryOrThrow(Registries.STRUCTURE)
@@ -313,7 +316,7 @@ public final class MowzieGameTests {
                     check("its spot is the centre block's middle " + g.spot, g.spot.x == centre[0].getX() + 0.5 && g.spot.z == centre[0].getZ() + 0.5);
                     check("the 27-block warrior is outside the footprint", !g.site().contains(extra[2].position()));
                 })
-                .thenWaitUntil(() -> check("census 1", MowzieKit.censusCount(g.faction) >= 1))
+                .thenWaitUntil(waits.logic(() -> check("census 1", MowzieKit.censusCount(g.faction) >= 1)))
                 .thenExecute(() -> {
                     Camps.Site site = g.site();
                     List<EntityUmvuthanaMinion> all = level.getEntitiesOfClass(EntityUmvuthanaMinion.class, g.area());
@@ -368,7 +371,7 @@ public final class MowzieGameTests {
                     }
                     op[0] = MowzieKit.reconcile(g.faction, e1[0], lines);
                 })
-                .thenWaitUntil(() -> MowzieKit.answered(g.faction, op[0], order.size()))
+                .thenWaitUntil(waits.logic(() -> MowzieKit.answered(g.faction, op[0], order.size())))
                 .thenExecute(() -> {
                     MowzieKit.allOutcomes("ADOPT", ConflictKit.outcomes(g.faction, op[0]), DONE);
                     BlockPos spotBlock = BlockPos.containing(g.spot);
@@ -384,17 +387,17 @@ public final class MowzieGameTests {
                     // the footprint out and in
                     far.releaseRect(g.cx - 2, g.cz - 2, g.cx + 2, g.cz + 2);
                 })
-                .thenWaitUntil(() -> check("CAMP_OUT", ConflictKit.campOuts(g.faction).size() == 1))
-                .thenWaitUntil(io(() -> {
+                .thenWaitUntil(waits.logic(() -> check("CAMP_OUT", ConflictKit.campOuts(g.faction).size() == 1)))
+                .thenWaitUntil(waits.chunks(io(() -> {
                     for (UUID id : order)
                         check("warrior " + id + " is unloaded", level.getEntity(id) == null);
-                }))
+                })))
                 .thenExecute(() -> {
                     check("one census so far", MowzieKit.censusCount(g.faction) == 1);
                     g.force();
                 })
-                .thenWaitUntil(far.ready())
-                .thenWaitUntil(() -> check("census 2", MowzieKit.censusCount(g.faction) >= 2))
+                .thenWaitUntil(waits.chunks(far.ready()))
+                .thenWaitUntil(waits.logic(() -> check("census 2", MowzieKit.censusCount(g.faction) >= 2)))
                 .thenExecute(() -> {
                     ScriptedEngine.Received c = MowzieKit.census(g.faction, 2);
                     check("a new epoch", MowzieKit.epoch(c) != e1[0]);
@@ -427,8 +430,9 @@ public final class MowzieGameTests {
      * apart as BODY_ELSEWHERE and BODY_CHIEF, and the chief fields still read it (it is in the faction's
      * index): CHIEF and CRYSTAL with its health (MZB-232).
      */
-    @GameTest(template = ARENA, timeoutTicks = 12000, batch = "mowzie_den_asleep_away", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "mowzie_den_asleep_away", skyAccess = true)
     public static void aFrostmawAsleepAwayFromItsSpotIsTheDensBodyAndAnIndexedOneOutsideStillAnswersAsChief(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 1500);
         String test = "aFrostmawAsleepAwayFromItsSpotIsTheDensBodyAndAnIndexedOneOutsideStillAnswersAsChief";
         Far far = new Far(helper, test);
         ServerLevel level = far.level;
@@ -439,7 +443,7 @@ public final class MowzieGameTests {
 
         MowzieKit.seq(helper)
                 .thenExecute(() -> den.force())
-                .thenWaitUntil(far.ready())
+                .thenWaitUntil(waits.chunks(far.ready()))
                 .thenExecute(() -> {
                     den.lay().declare();
                     f[0] = MowzieKit.frostmaw(level, den.at(6, 4.5), true);
@@ -450,7 +454,7 @@ public final class MowzieGameTests {
                     check("between 5 and 8 blocks from the spot (" + off + ")", off >= 5 && off <= 8);
                     check("in the den's cylinder", den.site().contains(f[0].position()));
                 })
-                .thenWaitUntil(() -> check("census 1", MowzieKit.censusCount(den.faction) >= 1))
+                .thenWaitUntil(waits.logic(() -> check("census 1", MowzieKit.censusCount(den.faction) >= 1)))
                 .thenExecute(() -> {
                     ScriptedEngine.Received c = MowzieKit.census(den.faction, 1);
                     List<CensusBody> bodies = ConflictKit.censusBodies(c);
@@ -465,7 +469,7 @@ public final class MowzieGameTests {
                     e1[0] = MowzieKit.epoch(c);
                     op[0] = MowzieKit.reconcile(den.faction, e1[0], List.of(CampLine.of(0, 1, MowzieKit.FROSTMAW, ADOPT, CHIEF, f[0].getUUID())));
                 })
-                .thenWaitUntil(() -> MowzieKit.answered(den.faction, op[0], 1))
+                .thenWaitUntil(waits.logic(() -> MowzieKit.answered(den.faction, op[0], 1)))
                 .thenExecute(() -> {
                     MowzieKit.allOutcomes("ADOPT", ConflictKit.outcomes(den.faction, op[0]), DONE);
                     check("tagged (faction, 0, 1)", MowzieKit.tagged(f[0], den.faction, 0, 1));
@@ -475,11 +479,11 @@ public final class MowzieGameTests {
                     check("now outside the footprint", !den.site().contains(f[0].position()));
                     den.release();
                 })
-                .thenWaitUntil(() -> check("CAMP_OUT", ConflictKit.campOuts(den.faction).size() == 1))
-                .thenWaitUntil(io(() -> check("the Frostmaw is unloaded", level.getEntity(f[0].getUUID()) == null)))
+                .thenWaitUntil(waits.logic(() -> check("CAMP_OUT", ConflictKit.campOuts(den.faction).size() == 1)))
+                .thenWaitUntil(waits.chunks(io(() -> check("the Frostmaw is unloaded", level.getEntity(f[0].getUUID()) == null))))
                 .thenExecute(() -> den.force())
-                .thenWaitUntil(far.ready())
-                .thenWaitUntil(() -> check("census 2", MowzieKit.censusCount(den.faction) >= 2))
+                .thenWaitUntil(waits.chunks(far.ready()))
+                .thenWaitUntil(waits.logic(() -> check("census 2", MowzieKit.censusCount(den.faction) >= 2)))
                 .thenExecute(() -> {
                     ScriptedEngine.Received c = MowzieKit.census(den.faction, 2);
                     CensusBody b = MowzieKit.bodyOf(c, f[0].getUUID());
@@ -504,8 +508,9 @@ public final class MowzieGameTests {
      * its one Frostmaw and the pool has nothing to spawn. A den that is not late, with its Frostmaw as far,
      * lists none: the jar's own is outside its books.
      */
-    @GameTest(template = ARENA, timeoutTicks = 12000, batch = "mowzie_den_late", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "mowzie_den_late", skyAccess = true)
     public static void aLateDensFrostmawThatWanderedOffIsFoundAndAdoptedAtTheFirstCensus(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 1500);
         String test = "aLateDensFrostmawThatWanderedOffIsFoundAndAdoptedAtTheFirstCensus";
         Far far = new Far(helper, test);
         ServerLevel level = far.level;
@@ -518,7 +523,7 @@ public final class MowzieGameTests {
                     late.force(1);
                     plain.force(1);
                 })
-                .thenWaitUntil(far.ready())
+                .thenWaitUntil(waits.chunks(far.ready()))
                 .thenExecute(() -> {
                     late.lay(1);
                     plain.lay(1);
@@ -532,10 +537,10 @@ public final class MowzieGameTests {
                     check("the first is late and the second is not", late.site().late() && !plain.site().late());
                     check("each Frostmaw is beyond its den's cylinder", !late.site().contains(f[0].position()) && !plain.site().contains(f[1].position()));
                 })
-                .thenWaitUntil(() -> {
+                .thenWaitUntil(waits.logic(() -> {
                     check("census of the late den", MowzieKit.censusCount(late.faction) >= 1);
                     check("census of the plain den", MowzieKit.censusCount(plain.faction) >= 1);
-                })
+                }))
                 .thenExecute(() -> {
                     ScriptedEngine.Received c = MowzieKit.census(late.faction, 1);
                     List<CensusBody> bodies = ConflictKit.censusBodies(c);
@@ -559,7 +564,7 @@ public final class MowzieGameTests {
                     op[0] = MowzieKit.reconcile(late.faction, MowzieKit.epoch(c),
                             List.of(CampLine.of(0, 1, MowzieKit.FROSTMAW, ADOPT, CHIEF, f[0].getUUID())));
                 })
-                .thenWaitUntil(() -> MowzieKit.answered(late.faction, op[0], 1))
+                .thenWaitUntil(waits.logic(() -> MowzieKit.answered(late.faction, op[0], 1)))
                 .thenExecute(() -> {
                     MowzieKit.allOutcomes("ADOPT", ConflictKit.outcomes(late.faction, op[0]), DONE);
                     check("tagged (faction, 0, 1) and restricted 8 round the spot", MowzieKit.tagged(f[0], late.faction, 0, 1)
@@ -577,8 +582,9 @@ public final class MowzieGameTests {
      * (MZB-232): the next census lists it as a stray chief and ADOPT takes it. With the slot taken, a second
      * Frostmaw joining as near asks for nothing: no recount, no census, and it stays the jar's.
      */
-    @GameTest(template = ARENA, timeoutTicks = 12000, batch = "mowzie_den_joiner", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "mowzie_den_joiner", skyAccess = true)
     public static void aFrostmawJoiningNearADenWithAFreeSlotAsksForARecountAndOneJoiningAtAFullDenDoesNot(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 1500);
         String test = "aFrostmawJoiningNearADenWithAFreeSlotAsksForARecountAndOneJoiningAtAFullDenDoesNot";
         Far far = new Far(helper, test);
         ServerLevel level = far.level;
@@ -588,11 +594,11 @@ public final class MowzieGameTests {
 
         MowzieKit.seq(helper)
                 .thenExecute(() -> den.force(1))
-                .thenWaitUntil(far.ready())
+                .thenWaitUntil(waits.chunks(far.ready()))
                 .thenExecute(() -> {
                     den.lay(1).declare();
                 })
-                .thenWaitUntil(() -> check("census 1", MowzieKit.censusCount(den.faction) >= 1))
+                .thenWaitUntil(waits.logic(() -> check("census 1", MowzieKit.censusCount(den.faction) >= 1)))
                 .thenExecute(() -> {
                     ScriptedEngine.Received c = MowzieKit.census(den.faction, 1);
                     check("census 1 lists no one", c.aux() == 0 && MowzieKit.chiefFlags(c) == 0);
@@ -600,7 +606,7 @@ public final class MowzieGameTests {
                     f[0] = MowzieKit.frostmaw(level, den.at(30, 0.5), true);
                     check("the join was noticed (" + (MowzieKit.camps().strayWatches - watches[0]) + ")", MowzieKit.camps().strayWatches == watches[0] + 1);
                 })
-                .thenWaitUntil(() -> check("census 2", MowzieKit.censusCount(den.faction) >= 2))
+                .thenWaitUntil(waits.logic(() -> check("census 2", MowzieKit.censusCount(den.faction) >= 2)))
                 .thenExecute(() -> {
                     ScriptedEngine.Received c = MowzieKit.census(den.faction, 2);
                     List<CensusBody> bodies = ConflictKit.censusBodies(c);
@@ -609,7 +615,7 @@ public final class MowzieGameTests {
                             && bodies.get(0).flags() == (ConflictRecords.CampCensus.BODY_STRAY | ConflictRecords.CampCensus.BODY_CHIEF | ConflictRecords.CampCensus.BODY_CRYSTAL));
                     op[0] = MowzieKit.reconcile(den.faction, MowzieKit.epoch(c), List.of(CampLine.of(0, 1, MowzieKit.FROSTMAW, ADOPT, CHIEF, f[0].getUUID())));
                 })
-                .thenWaitUntil(() -> MowzieKit.answered(den.faction, op[0], 1))
+                .thenWaitUntil(waits.logic(() -> MowzieKit.answered(den.faction, op[0], 1)))
                 .thenExecute(() -> {
                     MowzieKit.allOutcomes("ADOPT", ConflictKit.outcomes(den.faction, op[0]), DONE);
                     watches[0] = MowzieKit.camps().strayWatches;
@@ -633,8 +639,9 @@ public final class MowzieGameTests {
      * the camp's index (MZB-231): a TAKE of its slot and generation, by tag, is DONE, the body goes and its record
      * rides on a marker. The leave was seen with no removal reason and the body was never removed.
      */
-    @GameTest(template = ARENA, timeoutTicks = 12000, batch = "mowzie_flicker", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "mowzie_flicker", skyAccess = true)
     public static void aBodyKeepsItsIndexEntryThroughAHiddenAndTrackedFlickerAndIsStillTaken(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 1500);
         String test = "aBodyKeepsItsIndexEntryThroughAHiddenAndTrackedFlickerAndIsStillTaken";
         Far far = new Far(helper, test);
         ServerLevel level = far.level;
@@ -647,15 +654,15 @@ public final class MowzieGameTests {
 
         MowzieKit.seq(helper)
                 .thenExecute(() -> den.force())
-                .thenWaitUntil(far.ready())
+                .thenWaitUntil(waits.chunks(far.ready()))
                 .thenExecute(() -> {
                     den.lay().declare();
                     f[0] = MowzieKit.frostmaw(level, den.at(3, 0.5), true);
                 })
-                .thenWaitUntil(() -> check("census 1", MowzieKit.censusCount(den.faction) >= 1))
+                .thenWaitUntil(waits.logic(() -> check("census 1", MowzieKit.censusCount(den.faction) >= 1)))
                 .thenExecute(() -> op[0] = MowzieKit.reconcile(den.faction, MowzieKit.epoch(MowzieKit.census(den.faction, 1)),
                         List.of(CampLine.of(0, 1, MowzieKit.FROSTMAW, ADOPT, CHIEF, f[0].getUUID()))))
-                .thenWaitUntil(() -> MowzieKit.answered(den.faction, op[0], 1))
+                .thenWaitUntil(waits.logic(() -> MowzieKit.answered(den.faction, op[0], 1)))
                 .thenExecute(() -> {
                     MowzieKit.allOutcomes("ADOPT", ConflictKit.outcomes(den.faction, op[0]), DONE);
                     check("held by the camp", MowzieKit.camps().held(den.faction).contains(f[0]));
@@ -674,7 +681,7 @@ public final class MowzieGameTests {
                     check("no join came back for it (still one leave: " + leaves[0][0] + ")", leaves[0][0] == 1);
                     op[1] = MowzieKit.reconcile(den.faction, den.site().epoch(), List.of(CampLine.of(0, 1, MowzieKit.FROSTMAW, TAKE, CHIEF)));
                 })
-                .thenWaitUntil(() -> MowzieKit.answered(den.faction, op[1], 1))
+                .thenWaitUntil(waits.logic(() -> MowzieKit.answered(den.faction, op[1], 1)))
                 .thenExecute(() -> {
                     MowzieKit.allOutcomes("TAKE by tag", ConflictKit.outcomes(den.faction, op[1]), DONE);
                     check("the Frostmaw is gone", f[0].isRemoved());
@@ -694,8 +701,9 @@ public final class MowzieGameTests {
      * three are STALE: the Frostmaw is still there and tagged, nothing was taken, spawned or set out, and no
      * marker was made. Forced again, the next census lists the Frostmaw by its slot.
      */
-    @GameTest(template = ARENA, timeoutTicks = 12000, batch = "mowzie_play_time", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "mowzie_play_time", skyAccess = true)
     public static void aLineArrivingInTheTickACampGoesOutIsAnsweredStale(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 1500);
         String test = "aLineArrivingInTheTickACampGoesOutIsAnsweredStale";
         Far far = new Far(helper, test);
         ServerLevel level = far.level;
@@ -706,21 +714,21 @@ public final class MowzieGameTests {
 
         MowzieKit.seq(helper)
                 .thenExecute(() -> den.force())
-                .thenWaitUntil(far.ready())
+                .thenWaitUntil(waits.chunks(far.ready()))
                 .thenExecute(() -> {
                     den.lay().declare();
                     f[0] = MowzieKit.frostmaw(level, den.at(3, 0.5), true);
                 })
-                .thenWaitUntil(() -> check("census 1", MowzieKit.censusCount(den.faction) >= 1))
+                .thenWaitUntil(waits.logic(() -> check("census 1", MowzieKit.censusCount(den.faction) >= 1)))
                 .thenExecute(() -> op[0] = MowzieKit.reconcile(den.faction, MowzieKit.epoch(MowzieKit.census(den.faction, 1)),
                         List.of(CampLine.of(0, 1, MowzieKit.FROSTMAW, ADOPT, CHIEF, f[0].getUUID()))))
-                .thenWaitUntil(() -> MowzieKit.answered(den.faction, op[0], 1))
+                .thenWaitUntil(waits.logic(() -> MowzieKit.answered(den.faction, op[0], 1)))
                 .thenExecute(() -> {
                     MowzieKit.allOutcomes("ADOPT", ConflictKit.outcomes(den.faction, op[0]), DONE);
                     check("the camp is in", den.site().in());
                     den.release();
                 })
-                .thenWaitUntil(() -> {
+                .thenWaitUntil(waits.logic(() -> {
                     // The holder's own level from the chunk map, not the camp's cached one (MZB-592): under C2ME the
                     // camp's levels move only in the poll inside Camps.tick, which takes the camp out in that same tick.
                     ChunkMapInvoker map = (ChunkMapInvoker) level.getChunkSource().chunkMap;
@@ -730,7 +738,7 @@ public final class MowzieGameTests {
                         top = Math.max(top, h == null ? Camps.NO_HOLDER : h.getTicketLevel());
                     }
                     check("a footprint chunk's holder is above FULL (" + top + ")", top > Camps.FULL);
-                })
+                }))
                 .thenExecute(() -> {
                     // the same tick: the camp has not been looked at yet, so it is still in
                     check("the camp is still in when the line lands", den.site().in());
@@ -746,7 +754,7 @@ public final class MowzieGameTests {
                             CampLine.of(1, 1, MowzieKit.FROSTMAW, SPAWN, CHIEF),
                             CampLine.party(0, 1, MowzieKit.FROSTMAW, SET_OUT, CHIEF, 4242L, 1)));
                 })
-                .thenWaitUntil(() -> MowzieKit.answered(den.faction, op[1], 3))
+                .thenWaitUntil(waits.logic(() -> MowzieKit.answered(den.faction, op[1], 3)))
                 .thenExecute(() -> {
                     MowzieKit.allOutcomes("a line in the tick the camp goes out", ConflictKit.outcomes(den.faction, op[1]), STALE);
                     Camps c = MowzieKit.camps();
@@ -759,10 +767,10 @@ public final class MowzieGameTests {
                     check("the Frostmaw was not taken (" + f[0].getRemovalReason() + ") and is still tagged", (f[0].getRemovalReason() == null
                             || f[0].getRemovalReason() == Entity.RemovalReason.UNLOADED_TO_CHUNK) && MowzieKit.tagged(f[0], den.faction, 0, 1));
                 })
-                .thenWaitUntil(() -> check("CAMP_OUT", ConflictKit.campOuts(den.faction).size() == 1))
+                .thenWaitUntil(waits.logic(() -> check("CAMP_OUT", ConflictKit.campOuts(den.faction).size() == 1)))
                 .thenExecute(() -> den.force())
-                .thenWaitUntil(far.ready())
-                .thenWaitUntil(() -> check("census 2", MowzieKit.censusCount(den.faction) >= 2))
+                .thenWaitUntil(waits.chunks(far.ready()))
+                .thenWaitUntil(waits.logic(() -> check("census 2", MowzieKit.censusCount(den.faction) >= 2)))
                 .thenExecute(() -> {
                     ScriptedEngine.Received c = MowzieKit.census(den.faction, 2);
                     CensusBody b = MowzieKit.bodyOf(c, f[0].getUUID());
@@ -904,8 +912,9 @@ public final class MowzieGameTests {
      * the band's, with nothing taken off the party and no recall. With the handler gone, the same line
      * again is DONE: the body is the camp's, the puppet is gone, the other puppet still stands.
      */
-    @GameTest(template = ARENA, timeoutTicks = 12000, batch = "mowzie_handback_cancelled", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "mowzie_handback_cancelled", skyAccess = true)
     public static void aHandBackWhoseJoinAnotherModCancelsKeepsThePuppetAndIsStale(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 2000);
         String test = "aHandBackWhoseJoinAnotherModCancelsKeepsThePuppetAndIsStale";
         Far far = new Far(helper, test);
         Grove grove = new Grove(far, far.k, far.z0);
@@ -914,16 +923,16 @@ public final class MowzieGameTests {
 
         MowzieKit.seq(helper)
                 .thenExecute(() -> grove.force())
-                .thenWaitUntil(far.ready())
+                .thenWaitUntil(waits.chunks(far.ready()))
                 .thenExecute(() -> {
                     grove.lay().declare();
                     watcher(helper, grove, "mowzie-watcher");
                     agent[0] = bandAt(grove, helper, 2);
                 })
-                .thenWaitUntil(() -> {
+                .thenWaitUntil(waits.logic(() -> {
                     check("census 1", MowzieKit.censusCount(grove.faction) >= 1);
                     bandStands(agent[0], 2);
-                })
+                }))
                 .thenExecute(() -> {
                     puppet[0] = bandStands(agent[0], 2);
                     check("the puppets are puppets and unsaved", RtsimApi.isPuppet(puppet[0][0]) && !puppet[0][0].shouldBeSaved());
@@ -932,7 +941,7 @@ public final class MowzieGameTests {
                     op[0] = MowzieKit.reconcile(grove.faction, grove.site().epoch(), List.of(
                             CampLine.party(0, 1, MowzieKit.WARRIOR, HAND_BACK, 0, agent[0], ConflictKit.party(agent[0]).epoch)));
                 })
-                .thenWaitUntil(() -> MowzieKit.answered(grove.faction, op[0], 1))
+                .thenWaitUntil(waits.logic(() -> MowzieKit.answered(grove.faction, op[0], 1)))
                 .thenExecute(() -> {
                     MowzieKit.allOutcomes("HAND_BACK with the join cancelled", ConflictKit.outcomes(grove.faction, op[0]), STALE);
                     check("the puppet still stands", puppet[0][0].isAlive() && !puppet[0][0].isRemoved() && RtsimApi.isPuppet(puppet[0][0]));
@@ -945,7 +954,7 @@ public final class MowzieGameTests {
                     op[1] = MowzieKit.reconcile(grove.faction, grove.site().epoch(), List.of(
                             CampLine.party(0, 1, MowzieKit.WARRIOR, HAND_BACK, 0, agent[0], ConflictKit.party(agent[0]).epoch)));
                 })
-                .thenWaitUntil(() -> MowzieKit.answered(grove.faction, op[1], 1))
+                .thenWaitUntil(waits.logic(() -> MowzieKit.answered(grove.faction, op[1], 1)))
                 .thenExecute(() -> {
                     MowzieKit.allOutcomes("HAND_BACK again", ConflictKit.outcomes(grove.faction, op[1]), DONE);
                     List<Entity> held = MowzieKit.held(grove.faction, 0, 1);
@@ -965,8 +974,9 @@ public final class MowzieGameTests {
      * Both lines in one CAMP_RECONCILE at Peaceful: the SPAWN of slot 1 STALE with no body made, the
      * HAND_BACK of slot 0 DONE; the body it made is still there 40 ticks later.
      */
-    @GameTest(template = ARENA, timeoutTicks = 12000, batch = "mowzie_peaceful", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "mowzie_peaceful", skyAccess = true)
     public static void onPeacefulASpawnIsStaleAndAHandBackStillBringsTheBodyHome(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 2000);
         String test = "onPeacefulASpawnIsStaleAndAHandBackStillBringsTheBodyHome";
         Far far = new Far(helper, test);
         Grove grove = new Grove(far, far.k, far.z0);
@@ -975,16 +985,16 @@ public final class MowzieGameTests {
 
         MowzieKit.seq(helper)
                 .thenExecute(() -> grove.force())
-                .thenWaitUntil(far.ready())
+                .thenWaitUntil(waits.chunks(far.ready()))
                 .thenExecute(() -> {
                     grove.lay().declare();
                     watcher(helper, grove, "mowzie-watcher");
                     agent[0] = bandAt(grove, helper, 2);
                 })
-                .thenWaitUntil(() -> {
+                .thenWaitUntil(waits.logic(() -> {
                     check("census 1", MowzieKit.censusCount(grove.faction) >= 1);
                     bandStands(agent[0], 2);
-                })
+                }))
                 .thenExecute(() -> {
                     puppet[0] = bandStands(agent[0], 2);
                     far.difficulty(Difficulty.PEACEFUL);
@@ -993,7 +1003,7 @@ public final class MowzieGameTests {
                             CampLine.of(1, 1, MowzieKit.WARRIOR, SPAWN, 0),
                             CampLine.party(0, 1, MowzieKit.WARRIOR, HAND_BACK, 0, agent[0], ConflictKit.party(agent[0]).epoch)));
                 })
-                .thenWaitUntil(() -> MowzieKit.answered(grove.faction, op[0], 2))
+                .thenWaitUntil(waits.logic(() -> MowzieKit.answered(grove.faction, op[0], 2)))
                 .thenExecute(() -> {
                     Map<Integer, Integer> o = ConflictKit.outcomes(grove.faction, op[0]);
                     check("the SPAWN is STALE on Peaceful, not " + MowzieKit.outcomeName(o.get(0)), o.get(0) == STALE);
@@ -1021,8 +1031,9 @@ public final class MowzieGameTests {
      * adopted Frostmaw is teleported to the Nether: the camp holds nothing, no CAMP_DEATH is booked, and a
      * TAKE of its slot is NOTHING (the copy stands, untouched).
      */
-    @GameTest(template = ARENA, timeoutTicks = 12000, batch = "mowzie_dimension", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "mowzie_dimension", skyAccess = true)
     public static void aBodyThatChangesDimensionLeavesItsCampsIndex(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 1500);
         String test = "aBodyThatChangesDimensionLeavesItsCampsIndex";
         Far far = new Far(helper, test);
         ServerLevel level = far.level;
@@ -1048,18 +1059,18 @@ public final class MowzieGameTests {
                     ConflictKit.force(nether, far.k, far.z0, true);
                     den.force();
                 })
-                .thenWaitUntil(far.ready())
-                .thenWaitUntil(io(() -> check("the Nether chunk is loaded with its entities (chunk " + nether.hasChunk(far.k, far.z0)
+                .thenWaitUntil(waits.chunks(far.ready()))
+                .thenWaitUntil(waits.chunks(io(() -> check("the Nether chunk is loaded with its entities (chunk " + nether.hasChunk(far.k, far.z0)
                         + ", entities " + nether.areEntitiesLoaded(ChunkPos.asLong(far.k, far.z0)) + ")", nether.hasChunk(far.k, far.z0)
-                        && nether.areEntitiesLoaded(ChunkPos.asLong(far.k, far.z0)))))
+                        && nether.areEntitiesLoaded(ChunkPos.asLong(far.k, far.z0))))))
                 .thenExecute(() -> {
                     den.lay().declare();
                     f[0] = MowzieKit.frostmaw(level, den.at(3, 0.5), true);
                 })
-                .thenWaitUntil(() -> check("census 1", MowzieKit.censusCount(den.faction) >= 1))
+                .thenWaitUntil(waits.logic(() -> check("census 1", MowzieKit.censusCount(den.faction) >= 1)))
                 .thenExecute(() -> op[0] = MowzieKit.reconcile(den.faction, MowzieKit.epoch(MowzieKit.census(den.faction, 1)),
                         List.of(CampLine.of(0, 1, MowzieKit.FROSTMAW, ADOPT, CHIEF, f[0].getUUID()))))
-                .thenWaitUntil(() -> MowzieKit.answered(den.faction, op[0], 1))
+                .thenWaitUntil(waits.logic(() -> MowzieKit.answered(den.faction, op[0], 1)))
                 .thenExecute(() -> {
                     MowzieKit.allOutcomes("ADOPT", ConflictKit.outcomes(den.faction, op[0]), DONE);
                     check("the camp holds it", MowzieKit.camps().held(den.faction).contains(f[0]));
@@ -1076,7 +1087,7 @@ public final class MowzieGameTests {
                     check("the camp holds neither (" + MowzieKit.camps().held(den.faction).size() + ")", MowzieKit.camps().held(den.faction).isEmpty());
                     op[1] = MowzieKit.reconcile(den.faction, den.site().epoch(), List.of(CampLine.of(0, 1, MowzieKit.FROSTMAW, TAKE, CHIEF)));
                 })
-                .thenWaitUntil(() -> MowzieKit.answered(den.faction, op[1], 1))
+                .thenWaitUntil(waits.logic(() -> MowzieKit.answered(den.faction, op[1], 1)))
                 .thenExecute(() -> {
                     MowzieKit.allOutcomes("TAKE of the slot whose body left", ConflictKit.outcomes(den.faction, op[1]), NOTHING);
                     check("nothing taken", MowzieKit.camps().taken == taken[0]);
@@ -1128,8 +1139,9 @@ public final class MowzieGameTests {
      * party is still unsaved and the party is on its way home. A REMOVE of the slot then leaves a record marker
      * (tagged {@code mic_rtsim.record}, carrying {@code mic_rtsim:pending}) that is discarded once acknowledged.
      */
-    @GameTest(template = ARENA, timeoutTicks = 12000, batch = "mowzie_homecoming", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "mowzie_homecoming", skyAccess = true)
     public static void aMemberComingHomeGetsASavedVanillaBodyAndAnAwayPuppetIsNotSaved(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 2000);
         String test = "aMemberComingHomeGetsASavedVanillaBodyAndAnAwayPuppetIsNotSaved";
         Far far = new Far(helper, test);
         ServerLevel level = far.level;
@@ -1144,17 +1156,17 @@ public final class MowzieGameTests {
 
         MowzieKit.seq(helper)
                 .thenExecute(grove::force)
-                .thenWaitUntil(far.ready())
+                .thenWaitUntil(waits.chunks(far.ready()))
                 .thenExecute(() -> {
                     grove.lay().declare();
                     markers[0] = new Markers(helper, level, grove.area());
                     watcher(helper, grove, "mowzie-watcher");
                     agent[0] = bandAt(grove, helper, 2);
                 })
-                .thenWaitUntil(() -> {
+                .thenWaitUntil(waits.logic(() -> {
                     check("census 1", MowzieKit.censusCount(grove.faction) >= 1);
                     bandStands(agent[0], 2);
-                })
+                }))
                 .thenExecute(() -> {
                     puppet[0] = bandStands(agent[0], 2);
                     for (Mob p : puppet[0])
@@ -1167,7 +1179,7 @@ public final class MowzieGameTests {
                     op[0] = MowzieKit.reconcile(grove.faction, grove.site().epoch(), List.of(
                             CampLine.party(0, 1, MowzieKit.WARRIOR, HAND_BACK, 0, agent[0], ConflictKit.party(agent[0]).epoch)));
                 })
-                .thenWaitUntil(() -> MowzieKit.answered(grove.faction, op[0], 1))
+                .thenWaitUntil(waits.logic(() -> MowzieKit.answered(grove.faction, op[0], 1)))
                 .thenExecute(() -> {
                     MowzieKit.allOutcomes("HAND_BACK", ConflictKit.outcomes(grove.faction, op[0]), DONE);
                     List<Entity> held = MowzieKit.held(grove.faction);
@@ -1191,7 +1203,7 @@ public final class MowzieGameTests {
                     check("its party is recalling or gone", party == null || party.recalling());
                     op[1] = MowzieKit.reconcile(grove.faction, grove.site().epoch(), List.of(CampLine.of(0, 1, MowzieKit.WARRIOR, REMOVE, 0)));
                 })
-                .thenWaitUntil(() -> MowzieKit.answered(grove.faction, op[1], 1))
+                .thenWaitUntil(waits.logic(() -> MowzieKit.answered(grove.faction, op[1], 1)))
                 .thenExecute(() -> {
                     MowzieKit.allOutcomes("REMOVE", ConflictKit.outcomes(grove.faction, op[1]), DONE);
                     check("the body is gone", level.getEntity(bodyId[0]) == null || level.getEntity(bodyId[0]).isRemoved());
@@ -1203,7 +1215,7 @@ public final class MowzieGameTests {
                     record(test, "marker", "NBT tags " + m.nbt().getList("Tags", 8) + ", attachments " + m.nbt().getCompound("neoforge:attachments").getAllKeys());
                     MowzieKit.acknowledge();
                 })
-                .thenWaitUntil(() -> check("the marker is discarded once acknowledged", markers[0].gone(markerId[0])))
+                .thenWaitUntil(waits.logic(() -> check("the marker is discarded once acknowledged", markers[0].gone(markerId[0]))))
                 .thenSucceed();
     }
 
@@ -1218,8 +1230,9 @@ public final class MowzieGameTests {
      * NOTHING. With the player gone the den's line is DONE: a sleeping Frostmaw with its crystal at the spot,
      * restricted 8, tagged (faction, 0, 1).
      */
-    @GameTest(template = ARENA, timeoutTicks = 12000, batch = "mowzie_refill", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "mowzie_refill", skyAccess = true)
     public static void aRefilledPoolIsSpawnedAtTheNextCensus(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 2500);
         String test = "aRefilledPoolIsSpawnedAtTheNextCensus";
         Far far = new Far(helper, test);
         ServerLevel level = far.level;
@@ -1235,7 +1248,7 @@ public final class MowzieGameTests {
                     den.force();
                     grove.force();
                 })
-                .thenWaitUntil(far.ready())
+                .thenWaitUntil(waits.chunks(far.ready()))
                 .thenExecute(() -> {
                     den.lay().declare();
                     grove.lay().declare();
@@ -1250,10 +1263,10 @@ public final class MowzieGameTests {
                         }
                     });
                 })
-                .thenWaitUntil(() -> {
+                .thenWaitUntil(waits.logic(() -> {
                     check("the den's census", MowzieKit.censusCount(den.faction) >= 1);
                     check("the grove's census", MowzieKit.censusCount(grove.faction) >= 1);
-                })
+                }))
                 .thenExecute(() -> {
                     ScriptedEngine.Received gc = MowzieKit.census(grove.faction, 1);
                     CensusBody b = MowzieKit.bodyOf(gc, stray[0].getUUID());
@@ -1264,7 +1277,7 @@ public final class MowzieGameTests {
                             CampLine.of(0, 1, MowzieKit.WARRIOR, ADOPT, 0, stray[0].getUUID()),
                             CampLine.of(1, 1, MowzieKit.WARRIOR, SPAWN, 0)));
                 })
-                .thenWaitUntil(() -> MowzieKit.answered(grove.faction, op[1], 2))
+                .thenWaitUntil(waits.logic(() -> MowzieKit.answered(grove.faction, op[1], 2)))
                 .thenExecute(() -> {
                     MowzieKit.allOutcomes("the grove's ADOPT and SPAWN", ConflictKit.outcomes(grove.faction, op[1]), DONE);
                     check("the den's SPAWN is held: one held line (" + MowzieKit.camps().heldLines() + ")", MowzieKit.camps().heldLines() == 1);
@@ -1284,7 +1297,7 @@ public final class MowzieGameTests {
                     check("persistence-required", w.isPersistenceRequired());
                     op[2] = MowzieKit.reconcile(grove.faction, grove.site().epoch(), List.of(CampLine.of(1, 1, MowzieKit.WARRIOR, SPAWN, 0)));
                 })
-                .thenWaitUntil(() -> MowzieKit.answered(grove.faction, op[2], 1))
+                .thenWaitUntil(waits.logic(() -> MowzieKit.answered(grove.faction, op[2], 1)))
                 .thenExecute(() -> {
                     MowzieKit.allOutcomes("a second SPAWN for the slot", ConflictKit.outcomes(grove.faction, op[2]), NOTHING);
                     check("still one body in slot 1", MowzieKit.held(grove.faction, 1, 1).size() == 1 && MowzieKit.held(grove.faction).size() == 2);
@@ -1297,7 +1310,7 @@ public final class MowzieGameTests {
                             && level.getEntitiesOfClass(EntityFrostmaw.class, den.area()).isEmpty());
                     FakePlayers.remove(player[0]);
                 })
-                .thenWaitUntil(() -> MowzieKit.answered(den.faction, op[0], 1))
+                .thenWaitUntil(waits.logic(() -> MowzieKit.answered(den.faction, op[0], 1)))
                 .thenExecute(() -> {
                     MowzieKit.allOutcomes("the den's SPAWN once the player is gone", ConflictKit.outcomes(den.faction, op[0]), DONE);
                     List<Entity> h = MowzieKit.held(den.faction, 0, 1);
@@ -1321,8 +1334,9 @@ public final class MowzieGameTests {
      * and not before: the line is DONE no sooner than HOLD_MAX ticks after it was sent (2 ticks of slack for the
      * tick it was applied in) and within 40 ticks after that, the Frostmaw standing at the spot.
      */
-    @GameTest(template = ARENA, timeoutTicks = 18000, batch = "mowzie_hold_max", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "mowzie_hold_max", skyAccess = true)
     public static void aHeldFrostmawIsPlacedAfterHoldMaxWithAPlayerStillNear(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 9000);
         String test = "aHeldFrostmawIsPlacedAfterHoldMaxWithAPlayerStillNear";
         Far far = new Far(helper, test);
         ServerLevel level = far.level;
@@ -1332,7 +1346,7 @@ public final class MowzieGameTests {
 
         MowzieKit.seq(helper)
                 .thenExecute(den::force)
-                .thenWaitUntil(far.ready())
+                .thenWaitUntil(waits.chunks(far.ready()))
                 .thenExecute(() -> {
                     den.lay().declare();
                     player[0] = FakePlayers.add(level, den.spot.add(40, 1, 0), "mowzie-hold");
@@ -1346,13 +1360,13 @@ public final class MowzieGameTests {
                             placed[0] = level.getGameTime();
                     });
                 })
-                .thenWaitUntil(() -> check("census 1", MowzieKit.censusCount(den.faction) >= 1))
+                .thenWaitUntil(waits.logic(() -> check("census 1", MowzieKit.censusCount(den.faction) >= 1)))
                 .thenExecute(() -> {
                     sent[0] = level.getGameTime();
                     op[0] = MowzieKit.reconcile(den.faction, MowzieKit.epoch(MowzieKit.census(den.faction, 1)),
                             List.of(CampLine.of(0, 1, MowzieKit.FROSTMAW, SPAWN, CHIEF | CRYSTAL)));
                 })
-                .thenWaitUntil(() -> MowzieKit.answered(den.faction, op[0], 1))
+                .thenWaitUntil(waits.logic(() -> MowzieKit.answered(den.faction, op[0], 1)))
                 .thenExecute(() -> {
                     check("the camp held the line (" + heldAt[0] + ")", heldAt[0] != 0 && heldAt[0] >= sent[0]);
                     long waited = placed[0] - heldAt[0];
@@ -1377,8 +1391,9 @@ public final class MowzieGameTests {
      * A grove (footprint columns c - 2 to c + 2) with only columns c - 2 and c - 1 forced: column c + 2 stands
      * at level 34, the camp stays out and sends nothing in 40 ticks; with the rest forced, its census comes.
      */
-    @GameTest(template = ARENA, timeoutTicks = 12000, batch = "mowzie_cold", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "mowzie_cold", skyAccess = true)
     public static void theCensusWaitsForEntitiesOnACampsColdLoad(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 3000);
         String test = "theCensusWaitsForEntitiesOnACampsColdLoad";
         Far far = new Far(helper, test);
         ServerLevel level = far.level;
@@ -1395,14 +1410,14 @@ public final class MowzieGameTests {
                     den.force();
                     far.forceRect(grove.cx - 2, grove.cz - 2, grove.cx - 1, grove.cz + 2);
                 })
-                .thenWaitUntil(far.ready())
+                .thenWaitUntil(waits.chunks(far.ready()))
                 .thenExecute(() -> {
                     den.lay().declare();
                     id[0] = MowzieKit.frostmaw(level, den.at(3, 0.5), true).getUUID();
                     grove.declare();
                     declaredAt[0] = level.getGameTime();
                 })
-                .thenWaitUntil(() -> check("the den's census 1", MowzieKit.censusCount(den.faction) >= 1))
+                .thenWaitUntil(waits.logic(() -> check("the den's census 1", MowzieKit.censusCount(den.faction) >= 1)))
                 .thenIdle(40)
                 .thenExecute(() -> {
                     ScriptedEngine.Received c = MowzieKit.census(den.faction, 1);
@@ -1417,12 +1432,12 @@ public final class MowzieGameTests {
                     check("the grove sent no census, is not in and is not waiting", MowzieKit.censusCount(grove.faction) == 0 && !g.in() && !g.waiting());
                     den.release();
                 })
-                .thenWaitUntil(() -> check("CAMP_OUT", ConflictKit.campOuts(den.faction).size() == 1))
-                .thenWaitUntil(io(() -> {
+                .thenWaitUntil(waits.logic(() -> check("CAMP_OUT", ConflictKit.campOuts(den.faction).size() == 1)))
+                .thenWaitUntil(waits.chunks(io(() -> {
                     for (int dx = -1; dx <= 1; dx++)
                         for (int dz = -1; dz <= 1; dz++)
                             check("den chunk (" + (den.cx + dx) + ", " + (den.cz + dz) + ") is unloaded", !level.hasChunk(den.cx + dx, den.cz + dz));
-                }))
+                })))
                 .thenExecute(() -> {
                     check("one census so far", MowzieKit.censusCount(den.faction) == 1);
                     seen[0] = 1;
@@ -1441,7 +1456,7 @@ public final class MowzieGameTests {
                     });
                     den.force();
                 })
-                .thenWaitUntil(() -> check("census 2", MowzieKit.censusCount(den.faction) >= 2))
+                .thenWaitUntil(waits.logic(() -> check("census 2", MowzieKit.censusCount(den.faction) >= 2)))
                 .thenExecute(() -> {
                     // Waiting is seen only when the levels move ahead of the entities, which the ticket event path does; under
                     // C2ME (no event) the poll moves them with the load and the camp may never be seen waiting (MZB-593).
@@ -1457,8 +1472,8 @@ public final class MowzieGameTests {
                     check("with its crystal", (MowzieKit.chiefFlags(c) & ConflictRecords.CampCensus.CRYSTAL) != 0);
                     far.forceRect(grove.cx, grove.cz - 2, grove.cx + 2, grove.cz + 2);
                 })
-                .thenWaitUntil(far.ready())
-                .thenWaitUntil(() -> check("the grove's census", MowzieKit.censusCount(grove.faction) >= 1))
+                .thenWaitUntil(waits.chunks(far.ready()))
+                .thenWaitUntil(waits.logic(() -> check("the grove's census", MowzieKit.censusCount(grove.faction) >= 1)))
                 .thenExecute(() -> {
                     check("the grove is in", grove.site().in());
                     record(test, "cold load", "waiting seen, no early census; the grove came in with all its columns");
@@ -1474,8 +1489,9 @@ public final class MowzieGameTests {
      * e2 is DONE; the same op again leaves the same tags and the same two bodies. A SPAWN at e2 is DONE; the
      * same op again is NOTHING, with one body in the slot.
      */
-    @GameTest(template = ARENA, timeoutTicks = 12000, batch = "mowzie_epochs", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "mowzie_epochs", skyAccess = true)
     public static void aSecondCensusStalesTheFirstsLinesAndARepeatIsIdempotent(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 3000);
         String test = "aSecondCensusStalesTheFirstsLinesAndARepeatIsIdempotent";
         Far far = new Far(helper, test);
         ServerLevel level = far.level;
@@ -1488,7 +1504,7 @@ public final class MowzieGameTests {
 
         MowzieKit.seq(helper)
                 .thenExecute(g::force)
-                .thenWaitUntil(far.ready())
+                .thenWaitUntil(waits.chunks(far.ready()))
                 .thenExecute(() -> {
                     g.lay().declare();
                     w[0] = warriorAt(g, 4, 0);
@@ -1496,18 +1512,18 @@ public final class MowzieGameTests {
                     id[0] = w[0].getUUID();
                     id[1] = w[1].getUUID();
                 })
-                .thenWaitUntil(() -> check("census 1", MowzieKit.censusCount(g.faction) >= 1))
+                .thenWaitUntil(waits.logic(() -> check("census 1", MowzieKit.censusCount(g.faction) >= 1)))
                 .thenExecute(() -> {
                     ScriptedEngine.Received c = MowzieKit.census(g.faction, 1);
                     e[0] = MowzieKit.epoch(c);
                     check("two strays listed", ConflictKit.censusBodies(c).size() == 2);
                     far.releaseRect(g.cx - 2, g.cz - 2, g.cx + 2, g.cz + 2);
                 })
-                .thenWaitUntil(() -> check("CAMP_OUT", ConflictKit.campOuts(g.faction).size() == 1))
-                .thenWaitUntil(gone(level, () -> w[0], () -> w[1]))
+                .thenWaitUntil(waits.logic(() -> check("CAMP_OUT", ConflictKit.campOuts(g.faction).size() == 1)))
+                .thenWaitUntil(waits.chunks(gone(level, () -> w[0], () -> w[1])))
                 .thenExecute(g::force)
-                .thenWaitUntil(far.ready())
-                .thenWaitUntil(() -> check("census 2", MowzieKit.censusCount(g.faction) >= 2))
+                .thenWaitUntil(waits.chunks(far.ready()))
+                .thenWaitUntil(waits.logic(() -> check("census 2", MowzieKit.censusCount(g.faction) >= 2)))
                 .thenExecute(() -> {
                     ScriptedEngine.Received c = MowzieKit.census(g.faction, 2);
                     e[1] = MowzieKit.epoch(c);
@@ -1517,13 +1533,13 @@ public final class MowzieGameTests {
                         adopt.add(CampLine.of(i, 1, MowzieKit.WARRIOR, ADOPT, 0, id[i]));
                     op[0] = MowzieKit.reconcile(g.faction, e[0], adopt);
                 })
-                .thenWaitUntil(() -> MowzieKit.answered(g.faction, op[0], 2))
+                .thenWaitUntil(waits.logic(() -> MowzieKit.answered(g.faction, op[0], 2)))
                 .thenExecute(() -> {
                     MowzieKit.allOutcomes("ADOPT at the first epoch", ConflictKit.outcomes(g.faction, op[0]), STALE);
                     check("it tagged nothing", MowzieKit.held(g.faction).isEmpty());
                     op[1] = MowzieKit.reconcile(g.faction, e[1], adopt);
                 })
-                .thenWaitUntil(() -> MowzieKit.answered(g.faction, op[1], 2))
+                .thenWaitUntil(waits.logic(() -> MowzieKit.answered(g.faction, op[1], 2)))
                 .thenExecute(() -> {
                     MowzieKit.allOutcomes("ADOPT at the second epoch", ConflictKit.outcomes(g.faction, op[1]), DONE);
                     for (int i = 0; i < 2; i++)
@@ -1532,22 +1548,22 @@ public final class MowzieGameTests {
                     check("two bodies", bodies.size() == 2);
                     ConflictKit.reconcile(g.faction, e[1], op[1], adopt); // the same op again
                 })
-                .thenWaitUntil(() -> check("the repeat is answered too (" + ConflictKit.campBodies(g.faction, op[1]).size() + " records)",
-                        ConflictKit.campBodies(g.faction, op[1]).size() >= 4))
+                .thenWaitUntil(waits.logic(() -> check("the repeat is answered too (" + ConflictKit.campBodies(g.faction, op[1]).size() + " records)",
+                        ConflictKit.campBodies(g.faction, op[1]).size() >= 4)))
                 .thenExecute(() -> {
                     for (int i = 0; i < 2; i++)
                         check("warrior " + i + " is still tagged (faction, " + i + ", 1)", MowzieKit.tagged(level.getEntity(id[i]), g.faction, i, 1));
                     check("the same two bodies", new HashSet<>(MowzieKit.held(g.faction)).equals(bodies));
                     op[2] = MowzieKit.reconcile(g.faction, e[1], List.of(CampLine.of(2, 1, MowzieKit.WARRIOR, SPAWN, 0)));
                 })
-                .thenWaitUntil(() -> MowzieKit.answered(g.faction, op[2], 1))
+                .thenWaitUntil(waits.logic(() -> MowzieKit.answered(g.faction, op[2], 1)))
                 .thenExecute(() -> {
                     MowzieKit.allOutcomes("SPAWN at the second epoch", ConflictKit.outcomes(g.faction, op[2]), DONE);
                     check("a body in slot 2 and three in all", MowzieKit.held(g.faction, 2, 1).size() == 1 && MowzieKit.held(g.faction).size() == 3);
                     ConflictKit.reconcile(g.faction, e[1], op[2], List.of(CampLine.of(2, 1, MowzieKit.WARRIOR, SPAWN, 0)));
                 })
-                .thenWaitUntil(() -> check("the repeat is answered (" + ConflictKit.campBodies(g.faction, op[2]).size() + " records)",
-                        ConflictKit.campBodies(g.faction, op[2]).size() >= 2))
+                .thenWaitUntil(waits.logic(() -> check("the repeat is answered (" + ConflictKit.campBodies(g.faction, op[2]).size() + " records)",
+                        ConflictKit.campBodies(g.faction, op[2]).size() >= 2)))
                 .thenExecute(() -> {
                     List<ScriptedEngine.Received> r = ConflictKit.campBodies(g.faction, op[2]);
                     int again = MowzieKit.outcomesOf(r.get(r.size() - 1)).get(0);
@@ -1565,8 +1581,9 @@ public final class MowzieGameTests {
      * then the den's chunks released: CAMP_OUT, the line STALE, nothing held. With the player gone and the den
      * forced again: census 2, no held line, and no Frostmaw (the stale line is not played later).
      */
-    @GameTest(template = ARENA, timeoutTicks = 12000, batch = "mowzie_held_out", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "mowzie_held_out", skyAccess = true)
     public static void aHeldSpawnIsAnsweredStaleWhenTheDenGoesOut(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 2500);
         String test = "aHeldSpawnIsAnsweredStaleWhenTheDenGoesOut";
         Far far = new Far(helper, test);
         ServerLevel level = far.level;
@@ -1576,13 +1593,13 @@ public final class MowzieGameTests {
 
         MowzieKit.seq(helper)
                 .thenExecute(den::force)
-                .thenWaitUntil(far.ready())
+                .thenWaitUntil(waits.chunks(far.ready()))
                 .thenExecute(() -> {
                     den.lay().declare();
                     player[0] = FakePlayers.add(level, den.spot.add(40, 1, 0), "mowzie-held-out");
                     ConflictKit.onEnd(helper, () -> FakePlayers.remove(player[0]));
                 })
-                .thenWaitUntil(() -> check("census 1", MowzieKit.censusCount(den.faction) >= 1))
+                .thenWaitUntil(waits.logic(() -> check("census 1", MowzieKit.censusCount(den.faction) >= 1)))
                 .thenExecute(() -> op[0] = MowzieKit.reconcile(den.faction, MowzieKit.epoch(MowzieKit.census(den.faction, 1)),
                         List.of(CampLine.of(0, 1, MowzieKit.FROSTMAW, SPAWN, CHIEF | CRYSTAL))))
                 .thenIdle(20)
@@ -1591,16 +1608,16 @@ public final class MowzieGameTests {
                     check("with no answer", ConflictKit.outcomes(den.faction, op[0]).isEmpty());
                     den.release();
                 })
-                .thenWaitUntil(() -> check("CAMP_OUT", ConflictKit.campOuts(den.faction).size() == 1))
-                .thenWaitUntil(() -> MowzieKit.answered(den.faction, op[0], 1))
+                .thenWaitUntil(waits.logic(() -> check("CAMP_OUT", ConflictKit.campOuts(den.faction).size() == 1)))
+                .thenWaitUntil(waits.logic(() -> MowzieKit.answered(den.faction, op[0], 1)))
                 .thenExecute(() -> {
                     MowzieKit.allOutcomes("the held SPAWN when the den went out", ConflictKit.outcomes(den.faction, op[0]), STALE);
                     check("nothing is held now", MowzieKit.camps().heldLines() == 0);
                     FakePlayers.remove(player[0]);
                     den.force();
                 })
-                .thenWaitUntil(far.ready())
-                .thenWaitUntil(() -> check("census 2", MowzieKit.censusCount(den.faction) >= 2))
+                .thenWaitUntil(waits.chunks(far.ready()))
+                .thenWaitUntil(waits.logic(() -> check("census 2", MowzieKit.censusCount(den.faction) >= 2)))
                 .thenIdle(20)
                 .thenExecute(() -> {
                     check("no held line", MowzieKit.camps().heldLines() == 0);
@@ -1646,8 +1663,9 @@ public final class MowzieGameTests {
      * "taken" with the player, and the tag is gone. The Frostmaw killed is a CAMP_DEATH flagged chief, with
      * the Frostmaw's body id.
      */
-    @GameTest(template = ARENA, timeoutTicks = 12000, batch = "mowzie_deaths", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "mowzie_deaths", skyAccess = true)
     public static void aCampBodysDeathIsBookedOnAMarkerAndAStraysIsNot(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 4000);
         String test = "aCampBodysDeathIsBookedOnAMarkerAndAStraysIsNot";
         Far far = new Far(helper, test);
         ServerLevel level = far.level;
@@ -1675,7 +1693,7 @@ public final class MowzieGameTests {
                     den.force();
                     grove.force();
                 })
-                .thenWaitUntil(far.ready())
+                .thenWaitUntil(waits.chunks(far.ready()))
                 .thenExecute(() -> {
                     den.lay().declare();
                     grove.lay().declare();
@@ -1689,10 +1707,10 @@ public final class MowzieGameTests {
                     player[0] = FakePlayers.add(level, grove.spot.add(12, 1, 12), "mowzie-killer");
                     ConflictKit.onEnd(helper, () -> FakePlayers.remove(player[0]));
                 })
-                .thenWaitUntil(() -> {
+                .thenWaitUntil(waits.logic(() -> {
                     check("the grove's census", MowzieKit.censusCount(grove.faction) >= 1);
                     check("the den's census", MowzieKit.censusCount(den.faction) >= 1);
-                })
+                }))
                 .thenExecute(() -> {
                     op[0] = MowzieKit.reconcile(grove.faction, MowzieKit.epoch(MowzieKit.census(grove.faction, 1)), List.of(
                             CampLine.of(0, 1, MowzieKit.WARRIOR, ADOPT, 0, w[0].getUUID()),
@@ -1701,10 +1719,10 @@ public final class MowzieGameTests {
                     op[1] = MowzieKit.reconcile(den.faction, MowzieKit.epoch(MowzieKit.census(den.faction, 1)),
                             List.of(CampLine.of(0, 1, MowzieKit.FROSTMAW, ADOPT, CHIEF, f[0].getUUID())));
                 })
-                .thenWaitUntil(() -> {
+                .thenWaitUntil(waits.logic(() -> {
                     MowzieKit.answered(grove.faction, op[0], 3);
                     MowzieKit.answered(den.faction, op[1], 1);
-                })
+                }))
                 .thenExecute(() -> {
                     for (int i = 0; i < 3; i++)
                         check("warrior " + i + " is tagged", MowzieKit.tagged(w[i], grove.faction, i, 1));
@@ -1713,7 +1731,7 @@ public final class MowzieGameTests {
                     fell[0] = w[0].position();
                     MowzieKit.kill(w[0], level.damageSources().playerAttack(player[0]));
                 })
-                .thenWaitUntil(() -> check("CAMP_DEATH", ConflictKit.campDeaths(grove.faction).size() == 1))
+                .thenWaitUntil(waits.logic(() -> check("CAMP_DEATH", ConflictKit.campDeaths(grove.faction).size() == 1)))
                 .thenExecute(() -> {
                     ScriptedEngine.Received d = ConflictKit.campDeaths(grove.faction).get(0);
                     check("by a player (" + d.aux() + ")", d.aux() == ConflictRecords.BY_PLAYER);
@@ -1735,7 +1753,7 @@ public final class MowzieGameTests {
                             ConflictKit.campDeaths(grove.faction).size() == 1);
                     w[1].discard();
                 })
-                .thenWaitUntil(() -> check("CAMP_DEATH for the discard", ConflictKit.campDeaths(grove.faction).size() == 2))
+                .thenWaitUntil(waits.logic(() -> check("CAMP_DEATH for the discard", ConflictKit.campDeaths(grove.faction).size() == 2)))
                 .thenExecute(() -> {
                     ScriptedEngine.Received d = ConflictKit.campDeaths(grove.faction).get(1);
                     check("by none (" + d.aux() + ")", d.aux() == ConflictRecords.BY_NONE);
@@ -1743,7 +1761,7 @@ public final class MowzieGameTests {
                             && d.view().getInt(ConflictRecords.CampDeath.GENERATION) == 1);
                     check("taken by the player", RtsimApi.takeCampBody(w[2], player[0]));
                 })
-                .thenWaitUntil(() -> check("CAMP_DEATH for the take", ConflictKit.campDeaths(grove.faction).size() == 3))
+                .thenWaitUntil(waits.logic(() -> check("CAMP_DEATH for the take", ConflictKit.campDeaths(grove.faction).size() == 3)))
                 .thenExecute(() -> {
                     ScriptedEngine.Received d = ConflictKit.campDeaths(grove.faction).get(2);
                     check("by taken (" + d.aux() + ")", d.aux() == ConflictRecords.BY_TAKEN);
@@ -1762,7 +1780,7 @@ public final class MowzieGameTests {
                     fell[1] = f[0].position();
                     MowzieKit.kill(f[0], level.damageSources().generic());
                 })
-                .thenWaitUntil(() -> check("CAMP_DEATH for the Frostmaw", ConflictKit.campDeaths(den.faction).size() == 1))
+                .thenWaitUntil(waits.logic(() -> check("CAMP_DEATH for the Frostmaw", ConflictKit.campDeaths(den.faction).size() == 1)))
                 .thenExecute(() -> {
                     ScriptedEngine.Received d = ConflictKit.campDeaths(den.faction).get(0);
                     check("flagged chief", (d.view().getInt(ConflictRecords.CampDeath.FLAGS) & ConflictRecords.CampDeath.FLAG_CHIEF) != 0);
@@ -1792,11 +1810,11 @@ public final class MowzieGameTests {
                     // applying the copy that names it (MZB-655).
                     den.release();
                 })
-                .thenWaitUntil(MowzieKit.unloadedWithout(level, den.cx, den.cz, () -> deathMarkerObject[0]))
+                .thenWaitUntil(waits.chunks(MowzieKit.unloadedWithout(level, den.cx, den.cz, () -> deathMarkerObject[0])))
                 .thenExecute(den::force)
-                .thenWaitUntil(far.ready())
-                .thenWaitUntil(() -> check("the marker's records were journaled again",
-                        ConflictKit.bodiesCopies(den.faction).size() > copiesBefore[0]))
+                .thenWaitUntil(waits.chunks(far.ready()))
+                .thenWaitUntil(waits.logic(() -> check("the marker's records were journaled again",
+                        ConflictKit.bodiesCopies(den.faction).size() > copiesBefore[0])))
                 .thenExecute(() -> {
                     seen[0] = earlierCopyApplied(den.faction, copiesBefore[0], op[1]);
                     check("the marker is back", level.getEntity(deathMarker[0]) instanceof Marker);
@@ -1808,7 +1826,7 @@ public final class MowzieGameTests {
                             + "loaded again journaled copies " + seen[0]);
                     MowzieKit.acknowledge();
                 })
-                .thenWaitUntil(() -> check("the death marker is discarded once its copies are acknowledged", denMarkers[0].gone(deathMarker[0])))
+                .thenWaitUntil(waits.logic(() -> check("the death marker is discarded once its copies are acknowledged", denMarkers[0].gone(deathMarker[0]))))
                 .thenSucceed();
     }
 
@@ -1829,8 +1847,9 @@ public final class MowzieGameTests {
      * journals the earlier record under the generation that journaled it, and the engine applies that copy,
      * once, as a record it never heard.
      */
-    @GameTest(template = ARENA, timeoutTicks = 12000, batch = "mowzie_reassert", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "mowzie_reassert", skyAccess = true)
     public static void aHolderJournalsItsRecordAgainBeforeTheCampsNextCensus(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 5000);
         String test = "aHolderJournalsItsRecordAgainBeforeTheCampsNextCensus";
         Far far = new Far(helper, test);
         ServerLevel level = far.level;
@@ -1854,19 +1873,19 @@ public final class MowzieGameTests {
 
         MowzieKit.seq(helper)
                 .thenExecute(den::force)
-                .thenWaitUntil(far.ready())
+                .thenWaitUntil(waits.chunks(far.ready()))
                 .thenExecute(() -> {
                     den.lay().declare();
                     markers[0] = new Markers(helper, level, den.area());
                     f[0] = MowzieKit.frostmaw(level, den.at(3, 0.5), true);
                     id[0] = f[0].getUUID();
                 })
-                .thenWaitUntil(() -> check("census 1", MowzieKit.censusCount(den.faction) >= 1))
+                .thenWaitUntil(waits.logic(() -> check("census 1", MowzieKit.censusCount(den.faction) >= 1)))
                 .thenExecute(() -> op[0] = MowzieKit.reconcile(den.faction, MowzieKit.epoch(MowzieKit.census(den.faction, 1)),
                         List.of(CampLine.of(0, 1, MowzieKit.FROSTMAW, ADOPT, CHIEF, id[0]))))
-                .thenWaitUntil(() -> MowzieKit.answered(den.faction, op[0], 1))
+                .thenWaitUntil(waits.logic(() -> MowzieKit.answered(den.faction, op[0], 1)))
                 .thenExecute(MowzieKit::acknowledge)
-                .thenWaitUntil(() -> check("acknowledged: the Frostmaw carries no records", !f[0].hasData(RtsimAttachments.PENDING)))
+                .thenWaitUntil(waits.logic(() -> check("acknowledged: the Frostmaw carries no records", !f[0].hasData(RtsimAttachments.PENDING))))
                 .thenExecute(() -> {
                     byte[] adopt = ConflictKit.campBodies(den.faction, op[0]).get(0).bytes();
                     adoptBytes[0] = adopt;
@@ -1900,15 +1919,15 @@ public final class MowzieGameTests {
                     stale[1] = RtsimSession.current().reasserted();
                     den.release();
                 })
-                .thenWaitUntil(() -> check("CAMP_OUT", ConflictKit.campOuts(den.faction).size() == 1))
-                .thenWaitUntil(MowzieKit.unloadedWithout(level, den.cx, den.cz, () -> f[0], () -> mk[0], () -> mk[1]))
+                .thenWaitUntil(waits.logic(() -> check("CAMP_OUT", ConflictKit.campOuts(den.faction).size() == 1)))
+                .thenWaitUntil(waits.chunks(MowzieKit.unloadedWithout(level, den.cx, den.cz, () -> f[0], () -> mk[0], () -> mk[1])))
                 .thenExecute(() -> {
                     check("the old Frostmaw object is removed", f[0].isRemoved());
                     check("no second census yet", MowzieKit.censusCount(den.faction) == 1);
                     den.force();
                 })
-                .thenWaitUntil(far.ready())
-                .thenWaitUntil(() -> check("census 2", MowzieKit.censusCount(den.faction) >= 2))
+                .thenWaitUntil(waits.chunks(far.ready()))
+                .thenWaitUntil(waits.logic(() -> check("census 2", MowzieKit.censusCount(den.faction) >= 2)))
                 .thenExecute(() -> {
                     Entity e = level.getEntity(id[0]);
                     check("the Frostmaw is back, a new object", e instanceof EntityFrostmaw && e != f[0]);
@@ -1945,8 +1964,8 @@ public final class MowzieGameTests {
                             + "; a record of another engine life dropped, none journaled for it");
                     MowzieKit.acknowledge();
                 })
-                .thenWaitUntil(() -> check("the marker is discarded once acknowledged", markers[0].gone(id[1])))
-                .thenWaitUntil(() -> check("acknowledged: the new Frostmaw carries no records again", !back[0].hasData(RtsimAttachments.PENDING)))
+                .thenWaitUntil(waits.logic(() -> check("the marker is discarded once acknowledged", markers[0].gone(id[1]))))
+                .thenWaitUntil(waits.logic(() -> check("acknowledged: the new Frostmaw carries no records again", !back[0].hasData(RtsimAttachments.PENDING))))
                 .thenExecute(() -> {
                     // A camp takes the holder over: the engine orders its body removed, and the records it carries
                     // ride on a marker where it stood. The Frostmaw carries a record that an earlier session
@@ -1958,7 +1977,7 @@ public final class MowzieGameTests {
                     removeOp[0] = MowzieKit.reconcile(den.faction, den.site().epoch(),
                             List.of(CampLine.of(0, 1, MowzieKit.FROSTMAW, REMOVE, 0)));
                 })
-                .thenWaitUntil(() -> MowzieKit.answered(den.faction, removeOp[0], 1))
+                .thenWaitUntil(waits.logic(() -> MowzieKit.answered(den.faction, removeOp[0], 1)))
                 .thenExecute(() -> {
                     MowzieKit.allOutcomes("REMOVE", ConflictKit.outcomes(den.faction, removeOp[0]), DONE);
                     check("the Frostmaw is gone", back[0].isRemoved());
@@ -1973,11 +1992,11 @@ public final class MowzieGameTests {
                             ConflictKit.bodiesCopies(den.faction).size() == copiesBefore[0]);
                     den.release();
                 })
-                .thenWaitUntil(MowzieKit.unloadedWithout(level, den.cx, den.cz, () -> takenObject[0]))
+                .thenWaitUntil(waits.chunks(MowzieKit.unloadedWithout(level, den.cx, den.cz, () -> takenObject[0])))
                 .thenExecute(den::force)
-                .thenWaitUntil(far.ready())
-                .thenWaitUntil(() -> check("the marker's records were journaled again",
-                        ConflictKit.bodiesCopies(den.faction).size() > copiesBefore[0]))
+                .thenWaitUntil(waits.chunks(far.ready()))
+                .thenWaitUntil(waits.logic(() -> check("the marker's records were journaled again",
+                        ConflictKit.bodiesCopies(den.faction).size() > copiesBefore[0])))
                 .thenExecute(() -> {
                     seen[0] = earlierCopyApplied(den.faction, copiesBefore[0], op[0]);
                     check("the marker is back", level.getEntity(taken[0]) instanceof Marker);
@@ -1985,7 +2004,7 @@ public final class MowzieGameTests {
                             + "went as a copy of that generation and was applied once (copies " + seen[0] + ")");
                     MowzieKit.acknowledge();
                 })
-                .thenWaitUntil(() -> check("the taking marker is discarded once its copies are acknowledged", markers[0].gone(taken[0])))
+                .thenWaitUntil(waits.logic(() -> check("the taking marker is discarded once its copies are acknowledged", markers[0].gone(taken[0]))))
                 .thenSucceed();
     }
 
@@ -1997,8 +2016,9 @@ public final class MowzieGameTests {
      * BAND_MATERIALIZE of A with one warrior. Slot 0 is handed off: the puppet stands where the body stood, with
      * its health and mask. Slot 1 is taken. Both are DONE, and the camp holds only warrior 2.
      */
-    @GameTest(template = ARENA, timeoutTicks = 12000, batch = "mowzie_set_out", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "mowzie_set_out", skyAccess = true)
     public static void aSetOutHandsTheCampBodyToItsPuppetAndAnUnclaimedSetOutIsATake(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 2500);
         String test = "aSetOutHandsTheCampBodyToItsPuppetAndAnUnclaimedSetOutIsATake";
         Far far = new Far(helper, test);
         ServerLevel level = far.level;
@@ -2011,7 +2031,7 @@ public final class MowzieGameTests {
 
         MowzieKit.seq(helper)
                 .thenExecute(grove::force)
-                .thenWaitUntil(far.ready())
+                .thenWaitUntil(waits.chunks(far.ready()))
                 .thenExecute(() -> {
                     grove.lay().declare();
                     markers[0] = new Markers(helper, level, grove.area());
@@ -2019,14 +2039,14 @@ public final class MowzieGameTests {
                     w[1] = warriorAt(grove, -4, 0);
                     w[2] = warriorAt(grove, 0, 4);
                 })
-                .thenWaitUntil(() -> check("census 1", MowzieKit.censusCount(grove.faction) >= 1))
+                .thenWaitUntil(waits.logic(() -> check("census 1", MowzieKit.censusCount(grove.faction) >= 1)))
                 .thenExecute(() -> {
                     List<CampLine> adopt = new ArrayList<>();
                     for (int i = 0; i < 3; i++)
                         adopt.add(CampLine.of(i, 1, MowzieKit.WARRIOR, ADOPT, 0, w[i].getUUID()));
                     op[0] = MowzieKit.reconcile(grove.faction, MowzieKit.epoch(MowzieKit.census(grove.faction, 1)), adopt);
                 })
-                .thenWaitUntil(() -> MowzieKit.answered(grove.faction, op[0], 3))
+                .thenWaitUntil(waits.logic(() -> MowzieKit.answered(grove.faction, op[0], 3)))
                 .thenExecute(() -> {
                     MowzieKit.allOutcomes("ADOPT", ConflictKit.outcomes(grove.faction, op[0]), DONE);
                     w[0].setHealth(9f);
@@ -2051,10 +2071,10 @@ public final class MowzieGameTests {
                         ConflictKit.materialize(b, List.of(new ConflictKit.StackSpec(MowzieKit.WARRIOR, 1, false)));
                     });
                 })
-                .thenWaitUntil(() -> {
+                .thenWaitUntil(waits.logic(() -> {
                     MowzieKit.answered(grove.faction, op[1], 2);
                     bandStands(agent[0], 1);
-                })
+                }))
                 .thenExecute(() -> {
                     MowzieKit.allOutcomes("SET_OUT", ConflictKit.outcomes(grove.faction, op[1]), DONE);
                     Camps c = MowzieKit.camps();
@@ -2087,8 +2107,9 @@ public final class MowzieGameTests {
      * chunk is released until it has gone and forced again: {@code recounts} goes up 1, and a census comes with
      * no CAMP_OUT, listing w0 as ELSEWHERE again.
      */
-    @GameTest(template = ARENA, timeoutTicks = 12000, batch = "mowzie_elsewhere", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "mowzie_elsewhere", skyAccess = true)
     public static void aRemoveByUuidTakesAStrayAndAnElsewhereBodyIsCountedApart(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 3500);
         String test = "aRemoveByUuidTakesAStrayAndAnElsewhereBodyIsCountedApart";
         Far far = new Far(helper, test);
         ServerLevel level = far.level;
@@ -2105,7 +2126,7 @@ public final class MowzieGameTests {
                     grove.force();
                     far.force(outChunk, grove.cz);
                 })
-                .thenWaitUntil(far.ready())
+                .thenWaitUntil(waits.chunks(far.ready()))
                 .thenExecute(() -> {
                     grove.lay().declare();
                     markers[0] = new Markers(helper, level, grove.area());
@@ -2115,7 +2136,7 @@ public final class MowzieGameTests {
                     for (int i = 0; i < 3; i++)
                         id[i] = w[i].getUUID();
                 })
-                .thenWaitUntil(() -> check("census 1", MowzieKit.censusCount(grove.faction) >= 1))
+                .thenWaitUntil(waits.logic(() -> check("census 1", MowzieKit.censusCount(grove.faction) >= 1)))
                 .thenExecute(() -> {
                     was[0] = MowzieKit.camps().removed;
                     w1At[0] = w[1].position();
@@ -2123,7 +2144,7 @@ public final class MowzieGameTests {
                             CampLine.of(0, 1, MowzieKit.WARRIOR, ADOPT, 0, id[0]),
                             CampLine.of(1, 1, MowzieKit.WARRIOR, REMOVE, 0, id[1])));
                 })
-                .thenWaitUntil(() -> MowzieKit.answered(grove.faction, op[0], 2))
+                .thenWaitUntil(waits.logic(() -> MowzieKit.answered(grove.faction, op[0], 2)))
                 .thenExecute(() -> {
                     MowzieKit.allOutcomes("ADOPT and REMOVE", ConflictKit.outcomes(grove.faction, op[0]), DONE);
                     check("the stray w1 is removed", w[1].isRemoved());
@@ -2136,11 +2157,11 @@ public final class MowzieGameTests {
                     check("w0 stands in the forced chunk", w[0].chunkPosition().x == outChunk && w[0].chunkPosition().z == grove.cz);
                     grove.far.releaseRect(grove.cx - 2, grove.cz - 2, grove.cx + 2, grove.cz + 2);
                 })
-                .thenWaitUntil(() -> check("CAMP_OUT", ConflictKit.campOuts(grove.faction).size() == 1))
-                .thenWaitUntil(gone(level, () -> w[2]))
+                .thenWaitUntil(waits.logic(() -> check("CAMP_OUT", ConflictKit.campOuts(grove.faction).size() == 1)))
+                .thenWaitUntil(waits.chunks(gone(level, () -> w[2])))
                 .thenExecute(grove::force)
-                .thenWaitUntil(far.ready())
-                .thenWaitUntil(() -> check("census 2", MowzieKit.censusCount(grove.faction) >= 2))
+                .thenWaitUntil(waits.chunks(far.ready()))
+                .thenWaitUntil(waits.logic(() -> check("census 2", MowzieKit.censusCount(grove.faction) >= 2)))
                 .thenExecute(() -> {
                     ScriptedEngine.Received c = MowzieKit.census(grove.faction, 2);
                     CensusBody b0 = MowzieKit.bodyOf(c, id[0]), b2 = MowzieKit.bodyOf(c, id[2]);
@@ -2157,14 +2178,14 @@ public final class MowzieGameTests {
                 })
                 // The object's own removal, not hasChunk and getEntity: under C2ME both flip before setRemoved (MZB-662).
                 // A body hidden and alive past the bound is C2ME's dropped entity unload, named in the failure.
-                .thenWaitUntil(RtsimTests.io(() -> check("the old w0 object is removed (alive " + w[0].isAlive() + ", removal "
+                .thenWaitUntil(waits.chunks(RtsimTests.io(() -> check("the old w0 object is removed (alive " + w[0].isAlive() + ", removal "
                         + w[0].getRemovalReason() + ", chunk loaded " + level.hasChunk(outChunk, grove.cz)
-                        + "; alive in an unloaded chunk is C2ME's dropped entity unload, a case of its own)", w[0].isRemoved())))
+                        + "; alive in an unloaded chunk is C2ME's dropped entity unload, a case of its own)", w[0].isRemoved()))))
                 .thenExecute(() -> {
                     far.force(outChunk, grove.cz);
                 })
-                .thenWaitUntil(far.ready())
-                .thenWaitUntil(() -> check("a third census (" + MowzieKit.censusCount(grove.faction) + ")", MowzieKit.censusCount(grove.faction) > was[2]))
+                .thenWaitUntil(waits.chunks(far.ready()))
+                .thenWaitUntil(waits.logic(() -> check("a third census (" + MowzieKit.censusCount(grove.faction) + ")", MowzieKit.censusCount(grove.faction) > was[2])))
                 .thenExecute(() -> {
                     check("one recount (" + (MowzieKit.camps().recounts - was[0]) + ")", MowzieKit.camps().recounts - was[0] == 1);
                     check("no new CAMP_OUT", ConflictKit.campOuts(grove.faction).size() == was[1]);
@@ -2187,8 +2208,9 @@ public final class MowzieGameTests {
      * levels first); the chunks unloaded and forced again: census 2 within a poll period of the chunks
      * being ready, a new epoch.
      */
-    @GameTest(template = ARENA, timeoutTicks = 12000, batch = "mowzie_poll", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "mowzie_poll", skyAccess = true)
     public static void aCampFollowsItsChunksThroughThePollWhenTheTicketEventIsSilent(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 2500);
         String test = "aCampFollowsItsChunksThroughThePollWhenTheTicketEventIsSilent";
         Far far = new Far(helper, test);
         ServerLevel level = far.level;
@@ -2200,7 +2222,7 @@ public final class MowzieGameTests {
 
         MowzieKit.seq(helper)
                 .thenExecute(den::force)
-                .thenWaitUntil(far.ready())
+                .thenWaitUntil(waits.chunks(far.ready()))
                 .thenExecute(() -> {
                     camps.ticketEventsSilentUntil = level.getGameTime() + 1_500;
                     ConflictKit.onEnd(helper, () -> camps.ticketEventsSilentUntil = 0);
@@ -2233,7 +2255,7 @@ public final class MowzieGameTests {
                             t[4] = now;
                     });
                 })
-                .thenWaitUntil(() -> check("census 1", MowzieKit.censusCount(den.faction) >= 1))
+                .thenWaitUntil(waits.logic(() -> check("census 1", MowzieKit.censusCount(den.faction) >= 1)))
                 .thenExecute(() -> {
                     epoch[0] = MowzieKit.epoch(MowzieKit.census(den.faction, 1));
                     n[0] = camps.polls;
@@ -2241,7 +2263,7 @@ public final class MowzieGameTests {
                     t[0] = level.getGameTime();
                     den.release();
                 })
-                .thenWaitUntil(() -> check("CAMP_OUT", ConflictKit.campOuts(den.faction).size() == 1))
+                .thenWaitUntil(waits.logic(() -> check("CAMP_OUT", ConflictKit.campOuts(den.faction).size() == 1)))
                 .thenExecute(() -> {
                     check("out within a poll period of a holder reading above FULL (" + (t[1] - t[5]) + " ticks; released at " + t[0]
                             + ", first seen at " + t[5] + ")", t[5] != 0 && t[1] != 0 && t[1] - t[5] <= Camps.POLL_PERIOD + 3);
@@ -2250,16 +2272,16 @@ public final class MowzieGameTests {
                     check("the poll found the levels moved (" + (camps.pollChanges - n[1]) + " chunks), not the event", camps.pollChanges > n[1]);
                     record(test, "out", (t[1] - t[5]) + " ticks after a holder read above FULL, " + (camps.pollChanges - n[1]) + " chunk levels found by the poll");
                 })
-                .thenWaitUntil(io(() -> {
+                .thenWaitUntil(waits.chunks(io(() -> {
                     for (ChunkPos p : den.site().footprintChunks())
                         check("chunk (" + p.x + ", " + p.z + ") is unloaded", !level.hasChunk(p.x, p.z));
-                }))
+                })))
                 .thenExecute(() -> {
                     n[2] = camps.pollChanges;
                     t[2] = level.getGameTime();
                     den.force();
                 })
-                .thenWaitUntil(() -> check("census 2", MowzieKit.censusCount(den.faction) >= 2))
+                .thenWaitUntil(waits.logic(() -> check("census 2", MowzieKit.censusCount(den.faction) >= 2)))
                 .thenExecute(() -> {
                     check("in within a poll period of the chunks being ready (" + (t[4] - t[3]) + " ticks)",
                             t[3] != 0 && t[4] != 0 && t[4] - t[3] <= Camps.POLL_PERIOD + 3);
@@ -2282,8 +2304,9 @@ public final class MowzieGameTests {
      * with one 60 blocks away (the near ring and the far edge both tried). With the leaves cleared the same
      * line is DONE, the warrior in the open: the stale answer was not final.
      */
-    @GameTest(template = ARENA, timeoutTicks = 12000, batch = "mowzie_no_room", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "mowzie_no_room", skyAccess = true)
     public static void aGroveWithNoFreePlaceAnswersASpawnStaleAndMakesNoBody(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 2000);
         String test = "aGroveWithNoFreePlaceAnswersASpawnStaleAndMakesNoBody";
         Far far = new Far(helper, test);
         ServerLevel level = far.level;
@@ -2296,9 +2319,9 @@ public final class MowzieGameTests {
 
         MowzieKit.seq(helper)
                 .thenExecute(() -> grove.force())
-                .thenWaitUntil(far.ready())
+                .thenWaitUntil(waits.chunks(far.ready()))
                 .thenExecute(() -> grove.lay().declare())
-                .thenWaitUntil(() -> check("census 1", MowzieKit.censusCount(grove.faction) >= 1))
+                .thenWaitUntil(waits.logic(() -> check("census 1", MowzieKit.censusCount(grove.faction) >= 1)))
                 .thenExecute(() -> {
                     y[0] = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, (int) Math.floor(grove.spot.x), (int) Math.floor(grove.spot.z));
                     leaves(level, grove, y[0], true);
@@ -2308,7 +2331,7 @@ public final class MowzieGameTests {
                     check("the kind finds no place", GroveKind.INSTANCE.spawnAt(level, grove.site(), MowzieKit.WARRIOR, 0) == null);
                     op[0] = MowzieKit.reconcile(grove.faction, grove.site().epoch(), List.of(CampLine.of(1, 1, MowzieKit.WARRIOR, SPAWN, 0)));
                 })
-                .thenWaitUntil(() -> MowzieKit.answered(grove.faction, op[0], 1))
+                .thenWaitUntil(waits.logic(() -> MowzieKit.answered(grove.faction, op[0], 1)))
                 .thenExecute(() -> {
                     MowzieKit.allOutcomes("the SPAWN with no player near", ConflictKit.outcomes(grove.faction, op[0]), STALE);
                     noBody(level, grove, camps, spawned[0]);
@@ -2317,7 +2340,7 @@ public final class MowzieGameTests {
                     check("the kind finds no place with the player near", GroveKind.INSTANCE.spawnAt(level, grove.site(), MowzieKit.WARRIOR, 0) == null);
                     op[1] = MowzieKit.reconcile(grove.faction, grove.site().epoch(), List.of(CampLine.of(1, 1, MowzieKit.WARRIOR, SPAWN, 0)));
                 })
-                .thenWaitUntil(() -> MowzieKit.answered(grove.faction, op[1], 1))
+                .thenWaitUntil(waits.logic(() -> MowzieKit.answered(grove.faction, op[1], 1)))
                 .thenExecute(() -> {
                     MowzieKit.allOutcomes("the SPAWN with a player 60 blocks east", ConflictKit.outcomes(grove.faction, op[1]), STALE);
                     noBody(level, grove, camps, spawned[0]);
@@ -2325,7 +2348,7 @@ public final class MowzieGameTests {
                     leaves(level, grove, y[0], false);
                     op[2] = MowzieKit.reconcile(grove.faction, grove.site().epoch(), List.of(CampLine.of(1, 1, MowzieKit.WARRIOR, SPAWN, 0)));
                 })
-                .thenWaitUntil(() -> MowzieKit.answered(grove.faction, op[2], 1))
+                .thenWaitUntil(waits.logic(() -> MowzieKit.answered(grove.faction, op[2], 1)))
                 .thenExecute(() -> {
                     MowzieKit.allOutcomes("the same SPAWN with the leaves cleared", ConflictKit.outcomes(grove.faction, op[2]), DONE);
                     List<Entity> h = MowzieKit.held(grove.faction, 1, 1);
@@ -2363,8 +2386,9 @@ public final class MowzieGameTests {
      * ({@code Camps.held}) holds no removed entity. Forced again, the census comes in again and the index holds
      * the Frostmaw the load made (another object, the same UUID), tagged, with no removed entity.
      */
-    @GameTest(template = ARENA, timeoutTicks = 12000, batch = "mowzie_index_unload", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "mowzie_index_unload", skyAccess = true)
     public static void anUnloadedBodyLeavesTheIndexAtTheNextPollAndALoadIndexesItAgain(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 2500);
         String test = "anUnloadedBodyLeavesTheIndexAtTheNextPollAndALoadIndexesItAgain";
         Far far = new Far(helper, test);
         ServerLevel level = far.level;
@@ -2376,7 +2400,7 @@ public final class MowzieGameTests {
 
         MowzieKit.seq(helper)
                 .thenExecute(() -> den.force())
-                .thenWaitUntil(far.ready())
+                .thenWaitUntil(waits.chunks(far.ready()))
                 .thenExecute(() -> {
                     den.lay().declare();
                     f[0] = MowzieKit.frostmaw(level, den.at(3, 0.5), true);
@@ -2390,17 +2414,17 @@ public final class MowzieGameTests {
                         }
                     });
                 })
-                .thenWaitUntil(() -> check("census 1", MowzieKit.censusCount(den.faction) >= 1))
+                .thenWaitUntil(waits.logic(() -> check("census 1", MowzieKit.censusCount(den.faction) >= 1)))
                 .thenExecute(() -> op[0] = MowzieKit.reconcile(den.faction, MowzieKit.epoch(MowzieKit.census(den.faction, 1)),
                         List.of(CampLine.of(0, 1, MowzieKit.FROSTMAW, ADOPT, CHIEF, id[0]))))
-                .thenWaitUntil(() -> MowzieKit.answered(den.faction, op[0], 1))
+                .thenWaitUntil(waits.logic(() -> MowzieKit.answered(den.faction, op[0], 1)))
                 .thenExecute(() -> {
                     MowzieKit.allOutcomes("ADOPT", ConflictKit.outcomes(den.faction, op[0]), DONE);
                     check("held by the camp", MowzieKit.camps().held(den.faction).contains(f[0]));
                     den.release();
                 })
-                .thenWaitUntil(() -> check("CAMP_OUT", ConflictKit.campOuts(den.faction).size() == 1))
-                .thenWaitUntil(gone(level, () -> f[0]))
+                .thenWaitUntil(waits.logic(() -> check("CAMP_OUT", ConflictKit.campOuts(den.faction).size() == 1)))
+                .thenWaitUntil(waits.chunks(gone(level, () -> f[0])))
                 .thenExecute(() -> check("the Frostmaw object is removed", f[0].isRemoved()))
                 .thenIdle(Camps.POLL_PERIOD + 3)
                 .thenExecute(() -> {
@@ -2410,8 +2434,8 @@ public final class MowzieGameTests {
                     record(test, "pruned", "removed at tick " + removedAt[0] + ", still in the raw index for " + heldRemovedFor[0] + " ticks after, then dropped");
                     den.force();
                 })
-                .thenWaitUntil(far.ready())
-                .thenWaitUntil(() -> check("census 2", MowzieKit.censusCount(den.faction) >= 2))
+                .thenWaitUntil(waits.chunks(far.ready()))
+                .thenWaitUntil(waits.logic(() -> check("census 2", MowzieKit.censusCount(den.faction) >= 2)))
                 .thenExecute(() -> {
                     List<Entity> held = MowzieKit.camps().held(den.faction);
                     check("the index holds the one Frostmaw again (" + held.size() + ")", held.size() == 1);
@@ -2436,8 +2460,9 @@ public final class MowzieGameTests {
      * recall that times out takes the raptors and every follower out of the world: the wait reads each object's
      * own {@code isRemoved()}, as the recall walks them out of the grove's area before it removes them (MZB-673).
      */
-    @GameTest(template = ARENA, timeoutTicks = 12000, batch = "mowzie_raptor_standin", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "mowzie_raptor_standin", skyAccess = true)
     public static void anUmvuthanaPartyWithARaptorUnitBringsNoUntaggedFollowers(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 1500);
         String test = "anUmvuthanaPartyWithARaptorUnitBringsNoUntaggedFollowers";
         Far far = new Far(helper, test);
         ServerLevel level = far.level;
@@ -2449,12 +2474,12 @@ public final class MowzieGameTests {
 
         MowzieKit.seq(helper)
                 .thenExecute(() -> grove.force())
-                .thenWaitUntil(far.ready())
+                .thenWaitUntil(waits.chunks(far.ready()))
                 .thenExecute(() -> {
                     grove.lay().declare();
                     agent[0] = bandAt(grove, helper, MowzieKit.RAPTOR, 2);
                 })
-                .thenWaitUntil(() -> bandStands(agent[0], 2))
+                .thenWaitUntil(waits.logic(() -> bandStands(agent[0], 2)))
                 .thenIdle(40)
                 .thenExecute(() -> {
                     puppet[0] = bandStands(agent[0], 2);
@@ -2478,7 +2503,7 @@ public final class MowzieGameTests {
                         taken[2 + i] = followers.get(i);
                     ConflictKit.recall(agent[0], 1, ConflictRecords.RECALL_DONE, 1, grove.spot.x - 200, grove.spot.z);
                 })
-                .thenWaitUntil(gone(level, taken))
+                .thenWaitUntil(waits.chunks(gone(level, taken)))
                 .thenExecute(() -> {
                     // The recall discards them: none was saved with a chunk instead (MZB-673).
                     for (Entity e : taken)
@@ -2499,8 +2524,9 @@ public final class MowzieGameTests {
      * 40 ticks later the stray watch counter has not moved, the den made no second census and is in under the
      * epoch it had.
      */
-    @GameTest(template = ARENA, timeoutTicks = 12000, batch = "mowzie_puppet_stray", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "mowzie_puppet_stray", skyAccess = true)
     public static void aSetOutPuppetOfTheDensFrostmawJoiningNearTheDenCausesNoRecount(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 2000);
         String test = "aSetOutPuppetOfTheDensFrostmawJoiningNearTheDenCausesNoRecount";
         Far far = new Far(helper, test);
         ServerLevel level = far.level;
@@ -2510,15 +2536,15 @@ public final class MowzieGameTests {
 
         MowzieKit.seq(helper)
                 .thenExecute(() -> den.force())
-                .thenWaitUntil(far.ready())
+                .thenWaitUntil(waits.chunks(far.ready()))
                 .thenExecute(() -> {
                     den.lay().declare();
                     f[0] = MowzieKit.frostmaw(level, den.at(3, 0.5), true);
                 })
-                .thenWaitUntil(() -> check("census 1", MowzieKit.censusCount(den.faction) >= 1))
+                .thenWaitUntil(waits.logic(() -> check("census 1", MowzieKit.censusCount(den.faction) >= 1)))
                 .thenExecute(() -> op[0] = MowzieKit.reconcile(den.faction, MowzieKit.epoch(MowzieKit.census(den.faction, 1)),
                         List.of(CampLine.of(0, 1, MowzieKit.FROSTMAW, ADOPT, CHIEF, f[0].getUUID()))))
-                .thenWaitUntil(() -> MowzieKit.answered(den.faction, op[0], 1))
+                .thenWaitUntil(waits.logic(() -> MowzieKit.answered(den.faction, op[0], 1)))
                 .thenExecute(() -> {
                     MowzieKit.allOutcomes("ADOPT", ConflictKit.outcomes(den.faction, op[0]), DONE);
                     Camps c = MowzieKit.camps();
@@ -2540,10 +2566,10 @@ public final class MowzieGameTests {
                         ConflictKit.materialize(b, List.of(new ConflictKit.StackSpec(MowzieKit.FROSTMAW, 1, false)));
                     });
                 })
-                .thenWaitUntil(() -> {
+                .thenWaitUntil(waits.logic(() -> {
                     MowzieKit.answered(den.faction, op[1], 1);
                     bandStands(agent[0], 1);
-                })
+                }))
                 .thenIdle(40)
                 .thenExecute(() -> {
                     MowzieKit.allOutcomes("SET_OUT", ConflictKit.outcomes(den.faction, op[1]), DONE);
@@ -2667,8 +2693,9 @@ public final class MowzieGameTests {
      * den's chunks, so the premise (the event path is live) holds; where it does not (C2ME), the test only
      * records that. The silent-event test beside it is what shows the poll finds the changes alone.
      */
-    @GameTest(template = ARENA, timeoutTicks = 12000, batch = "mowzie_poll_agrees", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "mowzie_poll_agrees", skyAccess = true)
     public static void withTheTicketEventLiveAnUnloadLeavesThePollNothingToCorrect(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 2500);
         String test = "withTheTicketEventLiveAnUnloadLeavesThePollNothingToCorrect";
         Far far = new Far(helper, test);
         ServerLevel level = far.level;
@@ -2679,22 +2706,22 @@ public final class MowzieGameTests {
 
         MowzieKit.seq(helper)
                 .thenExecute(den::force)
-                .thenWaitUntil(far.ready())
+                .thenWaitUntil(waits.chunks(far.ready()))
                 .thenExecute(() -> {
                     den.lay().declare();
                     events[0] = MowzieKit.watchTicketEvents(helper, den.site().footprintChunks());
                 })
-                .thenWaitUntil(() -> check("census 1", MowzieKit.censusCount(den.faction) >= 1))
+                .thenWaitUntil(waits.logic(() -> check("census 1", MowzieKit.censusCount(den.faction) >= 1)))
                 .thenExecute(den::release)
-                .thenWaitUntil(() -> check("CAMP_OUT", ConflictKit.campOuts(den.faction).size() == 1))
+                .thenWaitUntil(waits.logic(() -> check("CAMP_OUT", ConflictKit.campOuts(den.faction).size() == 1)))
                 .thenExecute(() -> {
                     n[0] = camps.pollChanges;
                     n[1] = camps.polls;
                 })
-                .thenWaitUntil(io(() -> {
+                .thenWaitUntil(waits.chunks(io(() -> {
                     for (ChunkPos p : den.site().footprintChunks())
                         check("chunk (" + p.x + ", " + p.z + ") is unloaded", !level.hasChunk(p.x, p.z));
-                }))
+                })))
                 .thenIdle(Camps.POLL_PERIOD + 3)
                 .thenExecute(() -> {
                     check("the poll ran on the den (" + (camps.polls - n[1]) + " polls of any camp)", camps.polls > n[1]);
@@ -2706,7 +2733,7 @@ public final class MowzieGameTests {
                     record(test, "agree", events[0][0] + " ticket events, " + (camps.pollChanges - n[0]) + " chunk levels found by the poll after the unload");
                 })
                 // In a wait of its own: under C2ME a level still changing is waited out, not raced (re-check P3).
-                .thenWaitUntil(() -> {
+                .thenWaitUntil(waits.logic(() -> {
                     // Where no ticket event fired (C2ME) the chunks may still hold a holder above FULL when they are
                     // unloaded to memory, so only that the camp reads them out is asserted (MZB-663).
                     int[] stored = den.site().levels();
@@ -2725,7 +2752,7 @@ public final class MowzieGameTests {
                             check("footprint chunk " + i + " stores the holder's current level (" + l + " against " + now + ")", l == now);
                         }
                     }
-                })
+                }))
                 .thenSucceed();
     }
 
@@ -2754,8 +2781,9 @@ public final class MowzieGameTests {
      * census lists the two as tagged and the away one as ELSEWHERE, and an ADOPT of each, away body included,
      * retags it into its new slot.
      */
-    @GameTest(template = ARENA, timeoutTicks = 12000, batch = "mowzie_reset_away", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "mowzie_reset_away", skyAccess = true)
     public static void aGroveFoundAfterAResetCountsItsTaggedBodiesAwayAndAdoptsThemAll(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 12000);
         String test = "aGroveFoundAfterAResetCountsItsTaggedBodiesAwayAndAdoptsThemAll";
         Far far = new Far(helper, test);
         ServerLevel level = far.level;
@@ -2770,7 +2798,7 @@ public final class MowzieGameTests {
                     grove.force();
                     far.force(outChunk, grove.cz);
                 })
-                .thenWaitUntil(far.ready())
+                .thenWaitUntil(waits.chunks(far.ready()))
                 .thenExecute(() -> {
                     grove.lay().declare();
                     // In the step that declares it, before the camp is looked at: the census sees them as it would a reset's.
@@ -2786,7 +2814,7 @@ public final class MowzieGameTests {
                     });
                     check("the third stands in the chunk forced alone", w[2].chunkPosition().x == outChunk && w[2].chunkPosition().z == grove.cz);
                 })
-                .thenWaitUntil(() -> check("census 1", MowzieKit.censusCount(grove.faction) >= 1))
+                .thenWaitUntil(waits.logic(() -> check("census 1", MowzieKit.censusCount(grove.faction) >= 1)))
                 .thenExecute(() -> {
                     List<ScriptedEngine.Received> found = ConflictKit.factionsFound(grove.faction);
                     check("FACTION_FOUND once (" + found.size() + ")", found.size() == 1);
@@ -2806,7 +2834,7 @@ public final class MowzieGameTests {
                         lines.add(CampLine.of(i, 1, MowzieKit.WARRIOR, ADOPT, 0, id[i]));
                     op[0] = MowzieKit.reconcile(grove.faction, MowzieKit.epoch(c), lines);
                 })
-                .thenWaitUntil(() -> MowzieKit.answered(grove.faction, op[0], 3))
+                .thenWaitUntil(waits.logic(() -> MowzieKit.answered(grove.faction, op[0], 3)))
                 .thenExecute(() -> {
                     MowzieKit.allOutcomes("ADOPT of tagged bodies, one away", ConflictKit.outcomes(grove.faction, op[0]), DONE);
                     for (int i = 0; i < 3; i++)
@@ -2822,8 +2850,9 @@ public final class MowzieGameTests {
      * its loaded entities, and a level query no longer finds them). A TAKE by tag arriving then is STALE, the
      * Frostmaw stays and nothing is counted taken; with the chunk tracked again the same line is DONE.
      */
-    @GameTest(template = ARENA, timeoutTicks = 12000, batch = "mowzie_hidden_chunk", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "mowzie_hidden_chunk", skyAccess = true)
     public static void aLineIsStaleWhileAFootprintChunkIsHiddenWithItsEntitiesLoaded(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 12000);
         String test = "aLineIsStaleWhileAFootprintChunkIsHiddenWithItsEntitiesLoaded";
         Far far = new Far(helper, test);
         ServerLevel level = far.level;
@@ -2836,7 +2865,7 @@ public final class MowzieGameTests {
 
         MowzieKit.seq(helper)
                 .thenExecute(den::force)
-                .thenWaitUntil(far.ready())
+                .thenWaitUntil(waits.chunks(far.ready()))
                 .thenExecute(() -> {
                     den.lay().declare();
                     f[0] = MowzieKit.frostmaw(level, den.at(3, 0.5), true);
@@ -2847,10 +2876,10 @@ public final class MowzieGameTests {
                             f[0].discard();
                     });
                 })
-                .thenWaitUntil(() -> check("census 1", MowzieKit.censusCount(den.faction) >= 1))
+                .thenWaitUntil(waits.logic(() -> check("census 1", MowzieKit.censusCount(den.faction) >= 1)))
                 .thenExecute(() -> op[0] = MowzieKit.reconcile(den.faction, MowzieKit.epoch(MowzieKit.census(den.faction, 1)),
                         List.of(CampLine.of(0, 1, MowzieKit.FROSTMAW, ADOPT, CHIEF, f[0].getUUID()))))
-                .thenWaitUntil(() -> MowzieKit.answered(den.faction, op[0], 1))
+                .thenWaitUntil(waits.logic(() -> MowzieKit.answered(den.faction, op[0], 1)))
                 .thenExecute(() -> {
                     MowzieKit.allOutcomes("ADOPT", ConflictKit.outcomes(den.faction, op[0]), DONE);
                     hide(level, cp);
@@ -2860,7 +2889,7 @@ public final class MowzieGameTests {
                     taken[0] = MowzieKit.camps().taken;
                     op[1] = MowzieKit.reconcile(den.faction, den.site().epoch(), List.of(CampLine.of(0, 1, MowzieKit.FROSTMAW, TAKE, CHIEF)));
                 })
-                .thenWaitUntil(() -> MowzieKit.answered(den.faction, op[1], 1))
+                .thenWaitUntil(waits.logic(() -> MowzieKit.answered(den.faction, op[1], 1)))
                 .thenExecute(() -> {
                     check("the chunk stayed hidden and loaded until the line (an autosave stores it)", level.areEntitiesLoaded(cp.toLong()));
                     MowzieKit.allOutcomes("a TAKE while the chunk is hidden", ConflictKit.outcomes(den.faction, op[1]), STALE);
@@ -2869,7 +2898,7 @@ public final class MowzieGameTests {
                     manager.updateChunkStatus(cp, FullChunkStatus.ENTITY_TICKING);
                     op[2] = MowzieKit.reconcile(den.faction, den.site().epoch(), List.of(CampLine.of(0, 1, MowzieKit.FROSTMAW, TAKE, CHIEF)));
                 })
-                .thenWaitUntil(() -> MowzieKit.answered(den.faction, op[2], 1))
+                .thenWaitUntil(waits.logic(() -> MowzieKit.answered(den.faction, op[2], 1)))
                 .thenExecute(() -> {
                     MowzieKit.allOutcomes("the same TAKE once the chunk is tracked again", ConflictKit.outcomes(den.faction, op[2]), DONE);
                     check("the Frostmaw is taken", f[0].isRemoved() && MowzieKit.camps().taken == taken[0] + 1);
@@ -2885,8 +2914,9 @@ public final class MowzieGameTests {
      * body lived on). The grove's warrior is adopted, moved 80 blocks out into a chunk forced alone, and that chunk
      * hidden by the entity manager.
      */
-    @GameTest(template = ARENA, timeoutTicks = 12000, batch = "mowzie_hidden_elsewhere", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "mowzie_hidden_elsewhere", skyAccess = true)
     public static void aRemoveByUuidFindsAnElsewhereBodyInAHiddenChunk(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 12000);
         String test = "aRemoveByUuidFindsAnElsewhereBodyInAHiddenChunk";
         Far far = new Far(helper, test);
         ServerLevel level = far.level;
@@ -2903,7 +2933,7 @@ public final class MowzieGameTests {
                     grove.force();
                     far.force(outChunk, grove.cz);
                 })
-                .thenWaitUntil(far.ready())
+                .thenWaitUntil(waits.chunks(far.ready()))
                 .thenExecute(() -> {
                     grove.lay().declare();
                     w[0] = warriorAt(grove, 4, 0);
@@ -2915,10 +2945,10 @@ public final class MowzieGameTests {
                             w[0].discard();
                     });
                 })
-                .thenWaitUntil(() -> check("census 1", MowzieKit.censusCount(grove.faction) >= 1))
+                .thenWaitUntil(waits.logic(() -> check("census 1", MowzieKit.censusCount(grove.faction) >= 1)))
                 .thenExecute(() -> op[0] = MowzieKit.reconcile(grove.faction, MowzieKit.epoch(MowzieKit.census(grove.faction, 1)),
                         List.of(CampLine.of(0, 1, MowzieKit.WARRIOR, ADOPT, 0, id[0]))))
-                .thenWaitUntil(() -> MowzieKit.answered(grove.faction, op[0], 1))
+                .thenWaitUntil(waits.logic(() -> MowzieKit.answered(grove.faction, op[0], 1)))
                 .thenExecute(() -> {
                     MowzieKit.allOutcomes("ADOPT", ConflictKit.outcomes(grove.faction, op[0]), DONE);
                     Vec3 away = grove.at(80, 0);
@@ -2929,7 +2959,7 @@ public final class MowzieGameTests {
                             && MowzieKit.camps().held(grove.faction).contains(w[0]));
                     op[1] = MowzieKit.reconcile(grove.faction, grove.site().epoch(), List.of(CampLine.of(0, 1, MowzieKit.WARRIOR, REMOVE, 0, id[0])));
                 })
-                .thenWaitUntil(() -> MowzieKit.answered(grove.faction, op[1], 1))
+                .thenWaitUntil(waits.logic(() -> MowzieKit.answered(grove.faction, op[1], 1)))
                 .thenExecute(() -> {
                     check("the chunk stayed hidden and loaded until the line (an autosave stores it)", level.areEntitiesLoaded(out.toLong()));
                     MowzieKit.allOutcomes("REMOVE by UUID of a body in a hidden chunk", ConflictKit.outcomes(grove.faction, op[1]), DONE);
@@ -2962,8 +2992,9 @@ public final class MowzieGameTests {
      * as a chief. A REMOVE by UUID of that stray after its chunk is hidden again finds it through the census's
      * stray index (MZB-661) and it goes.
      */
-    @GameTest(template = ARENA, timeoutTicks = 12000, batch = "mowzie_hidden_stray", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "mowzie_hidden_stray", skyAccess = true)
     public static void aStrayInAHiddenChunkInsideTheRadiusIsListedOnceItsChunkShows(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 12000);
         String test = "aStrayInAHiddenChunkInsideTheRadiusIsListedOnceItsChunkShows";
         Far far = new Far(helper, test);
         ServerLevel level = far.level;
@@ -2975,7 +3006,7 @@ public final class MowzieGameTests {
 
         MowzieKit.seq(helper)
                 .thenExecute(() -> den.force(1))
-                .thenWaitUntil(far.ready())
+                .thenWaitUntil(waits.chunks(far.ready()))
                 .thenExecute(() -> {
                     den.lay(1).declare();
                     ConflictKit.onEnd(helper, () -> {
@@ -2985,7 +3016,7 @@ public final class MowzieGameTests {
                             f[0].discard();
                     });
                 })
-                .thenWaitUntil(() -> check("census 1", MowzieKit.censusCount(den.faction) >= 1))
+                .thenWaitUntil(waits.logic(() -> check("census 1", MowzieKit.censusCount(den.faction) >= 1)))
                 .thenExecute(() -> {
                     check("census 1 lists no one", MowzieKit.census(den.faction, 1).aux() == 0);
                     f[0] = MowzieKit.frostmaw(level, den.at(32, 0.5), true);
@@ -2999,7 +3030,7 @@ public final class MowzieGameTests {
                     check("no census was made while it is hidden (" + MowzieKit.censusCount(den.faction) + ")", MowzieKit.censusCount(den.faction) == 1);
                     manager.updateChunkStatus(east, FullChunkStatus.ENTITY_TICKING);
                 })
-                .thenWaitUntil(() -> check("census 2 once the chunk shows", MowzieKit.censusCount(den.faction) >= 2))
+                .thenWaitUntil(waits.logic(() -> check("census 2 once the chunk shows", MowzieKit.censusCount(den.faction) >= 2)))
                 .thenExecute(() -> {
                     ScriptedEngine.Received c = MowzieKit.census(den.faction, 2);
                     List<CensusBody> bodies = ConflictKit.censusBodies(c);
@@ -3011,7 +3042,7 @@ public final class MowzieGameTests {
                     op[0] = MowzieKit.reconcile(den.faction, MowzieKit.epoch(c),
                             List.of(CampLine.of(0, 1, MowzieKit.FROSTMAW, REMOVE, 0, f[0].getUUID())));
                 })
-                .thenWaitUntil(() -> MowzieKit.answered(den.faction, op[0], 1))
+                .thenWaitUntil(waits.logic(() -> MowzieKit.answered(den.faction, op[0], 1)))
                 .thenExecute(() -> {
                     check("the chunk stayed hidden and loaded until the line (an autosave stores it)", level.areEntitiesLoaded(east.toLong()));
                     MowzieKit.allOutcomes("REMOVE by UUID of a stray in a hidden chunk", ConflictKit.outcomes(den.faction, op[0]), DONE);
@@ -3031,8 +3062,9 @@ public final class MowzieGameTests {
      * while the stray stands, and the line is not answered until the census; once the chunk shows the census
      * lists the stray and answers the SPAWN STALE.
      */
-    @GameTest(template = ARENA, timeoutTicks = 12000, batch = "mowzie_hidden_spawn", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "mowzie_hidden_spawn", skyAccess = true)
     public static void aSpawnWaitsWhileACensusIsHeldForAHiddenChunkAndIsStaleAfterIt(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 12000);
         String test = "aSpawnWaitsWhileACensusIsHeldForAHiddenChunkAndIsStaleAfterIt";
         Far far = new Far(helper, test);
         ServerLevel level = far.level;
@@ -3044,7 +3076,7 @@ public final class MowzieGameTests {
 
         MowzieKit.seq(helper)
                 .thenExecute(() -> den.force(1))
-                .thenWaitUntil(far.ready())
+                .thenWaitUntil(waits.chunks(far.ready()))
                 .thenExecute(() -> {
                     den.lay(1).declare();
                     ConflictKit.onEnd(helper, () -> {
@@ -3054,7 +3086,7 @@ public final class MowzieGameTests {
                             f[0].discard();
                     });
                 })
-                .thenWaitUntil(() -> check("census 1", MowzieKit.censusCount(den.faction) >= 1))
+                .thenWaitUntil(waits.logic(() -> check("census 1", MowzieKit.censusCount(den.faction) >= 1)))
                 .thenExecute(() -> {
                     hide(level, east);
                     f[0] = MowzieKit.frostmaw(level, den.at(3, 0.5), true);
@@ -3071,7 +3103,7 @@ public final class MowzieGameTests {
                             level.getEntitiesOfClass(EntityFrostmaw.class, den.area()).size() == 1);
                     manager.updateChunkStatus(east, FullChunkStatus.ENTITY_TICKING);
                 })
-                .thenWaitUntil(() -> MowzieKit.answered(den.faction, op[0], 1))
+                .thenWaitUntil(waits.logic(() -> MowzieKit.answered(den.faction, op[0], 1)))
                 .thenExecute(() -> {
                     MowzieKit.allOutcomes("the SPAWN once the census ended the hold", ConflictKit.outcomes(den.faction, op[0]), STALE);
                     List<CensusBody> bodies = ConflictKit.censusBodies(MowzieKit.census(den.faction, 2));
@@ -3089,8 +3121,9 @@ public final class MowzieGameTests {
      * given its records after it joined is. A Frostmaw is given one record of the next engine life before the
      * camp's first census; the census drops it and counts it in {@code stalePending}, journaling nothing.
      */
-    @GameTest(template = ARENA, timeoutTicks = 12000, batch = "mowzie_census_stale_life", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "mowzie_census_stale_life", skyAccess = true)
     public static void theCensusDropsTheRecordsOfAnotherEngineLifeAFootprintBodyCarries(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 12000);
         String test = "theCensusDropsTheRecordsOfAnotherEngineLifeAFootprintBodyCarries";
         Far far = new Far(helper, test);
         ServerLevel level = far.level;
@@ -3100,7 +3133,7 @@ public final class MowzieGameTests {
 
         MowzieKit.seq(helper)
                 .thenExecute(den::force)
-                .thenWaitUntil(far.ready())
+                .thenWaitUntil(waits.chunks(far.ready()))
                 .thenExecute(() -> {
                     RtsimSession s = RtsimSession.current();
                     f[0] = MowzieKit.frostmaw(level, den.at(3, 0.5), true);
@@ -3111,7 +3144,7 @@ public final class MowzieGameTests {
                     reasserted[0] = s.reasserted();
                     den.lay().declare();
                 })
-                .thenWaitUntil(() -> check("census 1", MowzieKit.censusCount(den.faction) >= 1))
+                .thenWaitUntil(waits.logic(() -> check("census 1", MowzieKit.censusCount(den.faction) >= 1)))
                 .thenExecute(() -> {
                     RtsimSession s = RtsimSession.current();
                     check("the record of the other life is gone from the Frostmaw", !f[0].hasData(RtsimAttachments.PENDING));

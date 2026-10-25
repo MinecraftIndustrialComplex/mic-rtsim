@@ -347,6 +347,9 @@ pub struct Stats {
 
 pub const STATS_LEN: usize = 16;
 
+/// The length of [`Engine::clocks`]'s array (Java's `NativeEngine.CLOCKS`).
+pub const CLOCKS: usize = 8;
+
 struct State {
     replay: Replay,
     outbox: Outbox<TransferCmd>,
@@ -612,14 +615,22 @@ fn runs_the_clock(o: &Order) -> bool {
 }
 
 /// A test's order that waits for the replay end, with every unit after it (RP-33): one that runs
-/// the clock, a conflict command (RP-66), a herd command (RP-85) and a ship command (RP-96),
-/// which join their module's queue around its gate (docs/replay-gate.md §4.4, §4.6, §4.7) and so
-/// must not go while the replay runs.
+/// the clock, a conflict command (RP-66), a herd command (RP-85), a ship command (RP-96) and a
+/// dragon command (RP-74), which join their module's queue around its gate (docs/replay-gate.md
+/// §4.4, §4.5, §4.6, §4.7), NEST_DAY (RP-74), which books the nests' next watch from the engine's
+/// own clock, and a phase 1 advance (RP-74), which raises the offset every record's game time
+/// takes (`phase1::world_tick`) and so shifts the replayed records still to come: none of them
+/// must go while the replay runs.
 fn waits_for_the_replay_end(o: &Order) -> bool {
     runs_the_clock(o)
         || matches!(
             o,
-            Order::ConflictCommand { .. } | Order::HerdCommand { .. } | Order::ShipCommand { .. }
+            Order::ConflictCommand { .. }
+                | Order::HerdCommand { .. }
+                | Order::ShipCommand { .. }
+                | Order::DragonCommand { .. }
+                | Order::NestDay(_)
+                | Order::Phase1Advance(_)
         )
 }
 
@@ -927,6 +938,26 @@ impl Engine {
             st.phase1.replay_diverged.is_none(),
             st.phase1.capture_mismatches,
         )
+    }
+
+    /// The modules' clocks, between steps ([`CLOCKS`] values): the last hand-over's game time,
+    /// phase 1's test offset (a world tick is a game time plus it), the world ticks of phase 1's
+    /// world, the dragons, the ships, the herds and the conflict engine, and the industry
+    /// engine's tick (a game time). Each module resumes at its pages' clock and never runs back,
+    /// so a GameTest server, which starts its world's game time again near 0, moves the game time
+    /// up past them first (`GameTestClock`).
+    pub fn clocks(&self) -> [i64; CLOCKS] {
+        let st = lock(&self.state);
+        [
+            st.game_time,
+            st.phase1.offset as i64,
+            st.phase1.world.now().0 as i64,
+            st.dragons.engine.now().0 as i64,
+            st.ships.engine.now().0 as i64,
+            st.herds.engine.now().0 as i64,
+            st.conflict.engine.now().0 as i64,
+            st.industry.engine.now().0 as i64,
+        ]
     }
 
     /// Phase 1's counters as of the last step (`phase1::stat` indexes).
@@ -1391,7 +1422,8 @@ impl Engine {
         // the replay end, and so does every unit after it, in order (docs/replay-gate.md §3.6,
         // RP-33): taken now it would carry the modules past the replayed records still to come.
         // A conflict command, a herd command and a ship command wait too, as they bypass the gate
-        // (RP-66, RP-85, RP-96).
+        // (RP-66, RP-85, RP-96), and so do a dragon command, NEST_DAY and a phase 1 advance
+        // (RP-74).
         if !st.replaying {
             for unit in std::mem::take(&mut st.held_units) {
                 self.take_unit(&mut st, unit);

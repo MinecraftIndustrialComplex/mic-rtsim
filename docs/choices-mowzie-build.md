@@ -5878,8 +5878,9 @@ M9b takes MZB-600 to 624 (M9c takes 625 to 649); the M9b build choices are under
     answer to a stack no placing holds is booked by its op, so the census decides the next stack, not those
     again. The repro is fed its answers as the host replays them and renamed
     `a_crash_after_several_answered_stacks_books_them_and_gifts_nothing`. What is left is RP-134's: the
-    stack in flight at the crash (a gift of at most one stack per camp), and a crash inside a world save
-    between the journal and the chest's chunk (a loss, the class of Java's own dedupe).
+    stack in flight at the crash (a gift of at most one stack per camp). A crash inside a world save
+    between the journal and the chest's chunk loses nothing: the chunk write barrier keeps the journal
+    file off disk until the chest's chunk is written (RP-134, P3-4).
   - Amended at review, P3-6, memory: `Conflict::memory()` counts `placing` (a Vec of at most one stack for
     each grove with a chest, 40 bytes or so each) as "tribute stacks". HUNT_APPLIED left `applied_ops` (see
     MZB-449). CHIEF_PAID and TRADED stay in it, for correctness first: their op ids are the plugin's, one
@@ -6999,11 +7000,58 @@ M9c (the bands and the world) takes MZB-625 to 649; MZB-616 is step 0 of the bri
   and record the residual. Taken: the fix (RP-134), since it changes no format, no op and no wire field,
   and books by the rule Java's dedupe already keeps (a journaled APPLIED is applied). It moves MZB-446
   R4's accepted bound, which the coordinator settled as a gift: the gift of every stack answered since the
-  save goes, and a crash inside a world save between the journal and the chest's chunk now loses a stack
-  whose re-decided op would have differed (RP-134's residuals). Reverting 98aedab6 and 0ce1f55a and taking
-  the reword is the other branch. The search is bounded by the camps owing tribute in the replay, 8
+  save goes, and nothing takes its place: a crash inside a world save between the journal and the chest's
+  chunk cannot lose a stack, as the chunk write barrier keeps the journal file off disk until the chest's
+  chunk is written (RP-134, P3-4). Reverting 98aedab6 and 0ce1f55a and taking the reword is the other
+  branch. The search is bounded by the camps owing tribute in the replay, 8
   indexes, the goods owed and 64 amounts: about 512 hashes a camp for each COMMAND_RESULT no placing
   holds while replaying, none live.
+
+### The M9 GameTest round (MZB-675 to MZB-678)
+
+The first run of M9's Mowzie GameTests on the real engine (86a99d6b, after the ChunkWait conversion): the
+suite died in a class initialiser, and three Umvuthi tests failed at their first poll. None came from the
+conversion or the merge: the tests had been compiled but never run.
+
+- **MZB-675** (core, a real bug: a held heir pair doubled every pass). `Camps.playHeld`'s `HELD_PAIR` case
+  called `pairNow`, whose `holdPair` already puts a still-held pair back on `held`, and then added the
+  entry again on `PAIR_HELD`: each pass doubled the line, and `anUmvuthiHeirTakesTheFarthestFreeWarrior`
+  counted the TAKE and 16 pair copies (17) where it wanted two. The case now answers stale on
+  `PAIR_STALE` and leaves the re-hold to `holdPair`. `heldPairs` counts only `first` holds, which this
+  call never is, so the gauge was right before and stays right.
+- **MZB-676** (the HandlerlessChest of MZB-642): it built a `BlockEntityType` in its class initialiser,
+  which the frozen registries refuse at test time ("Registry is already frozen"), and the throw ended
+  the whole mowziesmobs suite. It is now vanilla's chest type on the enchanting table's block, with
+  `isValidBlockState` widened for it: NeoForge keys item handlers by block, so the table still has
+  none, and `setBlockEntity` skips its type check when the entity's state is the block's own. Nothing is
+  registered, and the test still removes it before its chunk can be saved. Trap: a test-only block
+  entity type built at runtime kills the suite, not the test.
+- **MZB-677** (two Umvuthi test set-ups). A follower made with no leader retracts and discards itself
+  after 30 ticks (`EntityUmvuthanaFollowerToPlayer.tick`), so "so does the follower" saw it gone
+  whatever the devoted kill did: it is made inactive, which `deactivate` leaves alone. An Umvuthi drops
+  its target in its own tick once the target is past its follow range of 40, before the test's
+  `ServerTickEvent.Post` hook sets it again, so a player 170 (or 50) blocks off was never its target at
+  the check: both tests that stand a player that far off raise the follow range to 1000 on their
+  Umvuthi.
+- **MZB-678** (the round's second run, 6ed91fc1 and 353c0f02 in): the suite ran to the end with four
+  Mowzie failures and one core, all on the tests' side.
+  - `killingTheUmvuthiKillsTheDevotedUmvuthanaWithin30Blocks` read -376: the wait on the booked deaths
+    passes in the GameTest step, before the tick's `ServerTickEvent.Post` hook that timed the deaths had run,
+    so the end time was still 0. The deaths are now timed in the world (both warriors `isDeadOrDying`), in
+    the wait and in the hook, not by the engine's booking.
+  - `theUmvuthisRemovalsWaitWhileAPlayerIsNearOrFightsIt`: with no player within 160 and no target, Camps'
+    own Post pass played the held removal in the tick the players moved off, before the test's hook set the
+    target. The Umvuthi are targeted in the step that moves the players (MZB-677's follow range stays).
+  - `aMaskedPlayerIsNotTargetedByTheBand`: the warrior to strike was picked at set-up, and by the strike the
+    band had walked toward the bare player, so the struck warrior could stand past the hurt-by goal's reach
+    (1.7 x its follow range of 16) and drop the masked player for the bare one. The warrior nearest the
+    masked player at the strike is struck, with its reach checked and its distance logged.
+  - `anUmvuthiHeirSeatedInPlaceReplacesTheOldChief`: health set to 10 is read five ticks later, and an
+    untargeted Umvuthi heals 0.3 a tick: the bound is 12.
+  - Core's `aBigDetectionsLongestTickIsBelowTheOneCallTime` (not M9's code): its wait read the one-call
+    rescans' slice count in the tick they ran. On a host slow enough that one call passes the 5 ms slice
+    limit (11 ms here against 2.5 ms on main), those rescans split into slices too, and the wait passed on
+    them. It now waits for one more detection by `Districts.rescans()`.
 
 ## M10 March
 
@@ -8443,7 +8491,7 @@ conservative option at its fork.
 | A conflict record that does not decode | unknown | Skipped with a warning before any module code (rtsim-jni `journaled`), as before: its epoch cannot be read |
 | Any conflict record while the conflict is switched off (U10) | | Ignored whole, without its fold, as every journaled record is (MZB-30; rtsim-jni `engine/conflict.rs:565`). A residual, not built (the coordinator's ruling, fixes6 item 6; docs/boundary.md, the conflict's switch): a session crashes with the conflict on; the next start has it off and saves past the crashed window (the journal is trimmed); a later start turns it on, and that session can issue the crashed window's epochs again, from pages that never saw them. Not RG5 and RG6's old life (Java's, the whole directory, drawn only when the pages include no observation). The option not taken, no format change: the jni conflict module detects the gap at switch-on (its pages' `now` older than the journal's start) and raises every party's epoch past the window before it ingests |
 | Herds (HERD_*) | the herds' own | Built by slice H: RP-81 (every kind that names an epoch folds, `Obs::group_epoch`), RP-84 (the session's handle bound). |
-| Dragons (DRAGON_*) | the module's own | No floor yet (until slice D lands): its `replay_end` is empty (rtsim-jni `dragons.rs:280`) and a copy is applied as a live record. Its epochs come from rtsim-ecology `engine.rs:3011`, `:4364` and `:4402`. Slice D builds it (§9.2), to this rule: every kind of its that names an epoch, not only the *_MATERIALIZED. Reported, not built here (slice C is the conflict's) |
+| Dragons (DRAGON_*) | the module's own | Built by slice D: RP-75 (the floor is in memory, folded into the dragon's epoch at the next body and at the replay end, kept for an agent nothing has allocated), RP-76 (every kind with its answer, `Obs::agent_epoch`), RP-78 (a copy folds and does nothing more), RP-70 (the session's index bound, taken once). The list is `every_replayed_kind_raises_the_epoch_floor_or_carries_no_epoch` (rtsim-ecology tests/replay.rs). |
 | Ships (SHIP_*) | the ships' own | Built by slice S: RP-99 (every kind that names an epoch folds, `Obs::ship_epoch`, with the list), RP-97 (a copy folds and does nothing more), RP-120 to RP-122 (the session's handle bound, the blockade's bump, the fold before the module's switch). |
 
   A live copy's floor stays in memory until the party's next body (`next_epoch`), as RP-30's did,
@@ -8897,8 +8945,9 @@ doc now says `ingest_copy` drops a HAVEN_CHEST copy, RP-130). No format change: 
     `a_raids_hunt_answered_before_the_save_is_not_sent_again`. Before the fix the first two killed
     16 for 8 (the next session got the hunt under a new op), the never-answered case sent the next
     session another op than the live one, and the two raids killed 24 for 16; the control passed.
-  - Residuals: a watched fight whose hold a HUNT_APPLIED for the same district ends in the 1 to 2
-    ticks before its BAND_MATERIALIZED resolves unwatched (RP-59's class, below in §6.1's losses);
+  - Residuals: a watched fight whose hold a HUNT_APPLIED ends in the 1 to 2 ticks before its
+    BAND_MATERIALIZED resolves unwatched (RP-59's class, wider than its deaths and chief kills:
+    docs/replay-gate.md §6.1's losses, the bullet after RP-59's);
     `resolve`'s industry threat ids still hash the poll's tick (an observation only, never sent).
 - **RP-134** (a tribute stack answered after the save; P3-1). A stack decided and answered
   APPLIED after the pages' save, then a crash: the replay's camps are out, so it decides no stack,
@@ -8918,8 +8967,9 @@ doc now says `ingest_copy` drops a HAVEN_CHEST copy, RP-130). No format change: 
   flight is a placing.
   - Why this is the core's own truth: Java answers a TRANSFER_TO_CONTAINER DUPLICATE_OP while the
     journal holds its APPLIED (`Journal.commandOpApplied`, `CommandDispatcher.transferToContainer`),
-    and the journal is in the level save, written before the chunks: an APPLIED that replays was
-    saved with the world that holds the stack.
+    and the journal is in the level save, written before the chunks but kept off disk by the chunk
+    write barrier until the chest's chunk is written: an APPLIED that replays was saved with the
+    world that holds the stack.
   - Tests: tests/grove.rs `a_stack_answered_after_the_save_is_booked_from_its_replayed_answer`
     (before the fix 70 owed after the replay for 40, so the census decided a stack of 64, an op
     Java never saw), `a_replayed_failure_of_a_stack_after_the_save_passes_its_index` (before: 30
@@ -8930,13 +8980,67 @@ doc now says `ingest_copy` drops a HAVEN_CHEST copy, RP-130). No format change: 
   - Residuals, each bounded: the stack in flight at the crash, whose answer the journal lacks, is
     decided again at its index, the same op when nothing moved (Java answers DUPLICATE_OP if its
     chunk kept it) and another when the stock or what is owed moved, a gift of at most that one
-    stack per camp (`a_stack_decided_again_from_more_is_another_op`). A crash inside a world save,
-    after the journal's SavedData and before the chest's chunk, books an answer whose stack the
-    chest lost: a loss of the stacks answered since the chest's last save, the class Java's own
-    dedupe has for a re-sent op; before RP-134 such a stack went down again when its re-decided op
-    differed. The replay holds a stack's goods from its decision to its answer, where the session
-    took them at the decision, so a market draw in that window reads a stock that much higher; the
-    booking takes what is left.
+    stack per camp (`a_stack_decided_again_from_more_is_another_op`). The replay holds a stack's
+    goods from its decision to its answer, where the session took them at the decision, so a market
+    draw in that window reads a stock that much higher; the booking takes what is left.
+  - No loss from a crash inside a world save (the re-check's P3-4 struck the residual this bullet
+    first named, and MZB-674's and MZB-446 R4's repeats of it). Vanilla writes the journal's
+    SavedData before the chunks, but `transferToContainer` stores each APPLIED in the chest's chunk
+    (`PendingRecords`) and `RtsimSession.carryInChunk` notes that chunk with
+    `ChunkWriteBarrier.dependsOn`: the journal file stays off disk until the chunk is written, so an
+    APPLIED that replays has its stack in the world. The barrier gives up only after
+    `GIVE_UP_ROUNDS` (3) rounds in a row held, logged and counted (`late`). RP-134 depends on it:
+    were it bypassed, the loss would be every stack answered since the chest's chunk was last
+    written, more than one per camp, which is worse than the gift it replaced
+    (docs/choices-journal-barrier.md, docs/choices-repair.md R21).
+
+### The M9 re-check (RP-135 to RP-136)
+
+The Opus re-check of 42e8fcc3 found no P1 or P2 and four P3s (/tmp/mzbuild/m9-recheck-report.md). P3-1
+and P3-2 are RP-135 and RP-136 below; P3-3 is a bullet in docs/replay-gate.md §6.1's losses and the
+pointer above; P3-4 is the RP-134 wording above. No format change: RTC9 / META 8.
+
+- **RP-135** (the op chain when a later hold ends first; P3-1). RP-133's hunts hash the district, the
+  decision's tick and the op in flight, so each raid's op folds in the one before it. Two bands of
+  one faction raid the refinery unwatched (A at T, B at T + 380, B's hunt replaces A's) and a record
+  names B's hold only: a stray BAND_CASUALTIES for B at its epoch, which `release_before` listed
+  alone, or Peaceful, which listed the holds in handle order, not by `since`. B's hold ended first
+  and owed `op(d, B's arrival, 0)`; A's answer then ended A's hold under `op(d, A's arrival, that)`,
+  a chain the session never sent, and neither answer matched: the next session's plugin was sent a
+  hunt and killed again (24 animals for 16 live). Fixed as the re-check sketched: each listed hold's
+  older holds of the same faction whose party raids the same district (a `Target::District`) join
+  the list, and the whole list ends by `since` (ties by handle), whatever record listed it. Live
+  nothing moves: `held` is empty.
+  - Fork, the conservative one (the re-check's sketch): a hold whose party has a position target
+    takes no older holds with it, since the district its raid lands on is chosen when it resolves.
+    What is left is a position-target hold ended before an older hold of its faction bound to the
+    district it then raids, a case no test builds.
+  - Tests, tests/mowzie_records.rs (122 pass with RP-136's): `a_later_hold_ended_first_by_a_straggler_leaves_the_older_hold_its_live_op`
+    and `peaceful_ends_the_holds_in_the_order_they_were_decided` (the Peaceful variant: the bands'
+    handles run against their arrivals). Both failed before the fix (24 animals for 16, the next
+    session sent a hunt) and pass after.
+  - Residual: an older band's hold that is a watched fight awaiting its BAND_MATERIALIZED ends
+    with the later band's, unwatched, as a HUNT_APPLIED already ends it (RP-59's class, normally 1
+    to 2 ticks, docs/replay-gate.md §6.1's losses); the two bands raid one district within the
+    older one's slack.
+- **RP-136** (a decision after the replay end hashes the arrival; P3-2). A raid decided at a poll
+  after a replay's end owed its hunt under an op hashed from the poll's tick, while a later replay
+  of the same journals holds the arrival and decides it at its own tick: S1 owes the hunt at T and
+  crashes; S2's replay ends inside T's slack, a poll after it decides live under `op(d, P, ·)`, and
+  S2's Java applies it; S2 crashes before a page holds that; S3's replay ends the hold under
+  `op(d, T, ·)`, S2's HUNT_APPLIED names another op, and S3's plugin killed the animals again
+  (docs/replay-gate.md §7.4's "More than one crash"). `resolve` now takes the decision's tick, the
+  arrival's or the siege round's (`hold_ending` while a hold ends), `raid_district` passes it and
+  `owe_hunt_decided` hashes it; the public `owe_hunt` keeps its signature and means `hold_ending`
+  or `at`. A live arrival's event runs at its arrival (`arrival` is `times.last().min(at)`, a
+  round is `until.min(at)`), so no op moves: `sim conflict` and `sim mowzie` reproduce byte for
+  byte but for `wall_ms`.
+  - Test, `a_decision_after_the_replay_end_is_owed_under_the_live_op_for_a_second_crash`: three
+    sessions over one raid (the first never applies its hunt, the second's plugin answers it, the
+    third replays both journals from the first pages). Before the fix session 2 sent another op and
+    session 3 was sent the hunt again; after, session 2 sends session 1's op and session 3 nothing.
+  - Residual: `resolve`'s industry threat ids still hash the poll's tick (an observation only, never
+    sent), as RP-133 said.
 
 ### The M8 second-pass merges (RP-155 to RP-156)
 
@@ -9770,5 +9874,528 @@ Merge notes for the integration (S lands after slice H and before D; the merge o
   pins it). The merge corrected both: the arm's leave does nothing to the ships, whose bodies end
   at the replay end.
 - RP-57's table in this file had one row for "Dragons, ships"; the merge split it as H split the
-  herds' (a dragons row, still without a floor until D, and a ships row pointing at RP-99, RP-97
-  and RP-120 to RP-122).
+  herds' (a dragons row, which slice D's merge points at RP-70, RP-75, RP-76 and RP-78, and a
+  ships row pointing at RP-99, RP-97 and RP-120 to RP-122).
+
+### Slice D (dragons)
+
+fix/replay-dragons, base f2cf3d69; docs/replay-gate.md §9.2. RP-70 to RP-79. No page, record or
+wire layout changes: the dragons' pages hold what they held (the outbox is the same queue behind a
+gate), and no rtsim-view fixture needs regenerating for this slice. One wire meaning is now
+written down: DRAGON_DEMATERIALIZED reason 6 for a DEPART (docs/boundary.md §2.3, RP-73). No Java
+changed; the lead runs `gametest.sh iceandfire`.
+
+- **RP-70** (`begin_replay` and `replay_done` replace `session_start`; bodies stay embodied
+  through the replay; the honoured DRAGON_MATERIALIZED; §5.1, §5.2, §5.6; RP-5, RP-6, RP-31):
+  `Dragons::session_start` is gone. `begin_replay(from_pages)` changes no dragon: a dragon the
+  pages hold embodied stays embodied at its epoch, so the journal's records of the last session's
+  bodies (a wound, a death, a capture) find them. It opens the outbox's gate (§4.1; what is queued
+  takes its verdict) and clears the lair chests (the plugin's, reported again as its chests load).
+  `replay_done(w, at)` is a no-op unless a replay runs; else, at `at.max(now)`, every embodied
+  dragon resumes where it was last seen (`resume(.., left = true)`, the work `session_start` did at
+  the start), `by_entity` is cleared, every player's interest leg is cancelled (the host routes the
+  positions again), the gate opens and the floors fold (RP-75). The honour: a replayed
+  DRAGON_MATERIALIZED on an engine from its pages, whose epoch is above the dragon's own, embodies
+  the dragon as the last session's materialize left it, without the command: the record's epoch,
+  Embodied since the record's time, never departing, purpose Home, not harassing, health fixed as
+  `materialize` fixes it, its rest its current position, its abstract leg cancelled, `by_entity`
+  and the tracking set updated. A fresh engine (RP-31) only raises the floor. A record at or below
+  the dragon's epoch changes nothing. Nor does one for a dragon the pages do not hold (the review
+  of the first pass): `begin_replay` records the arena's next index (`replay_next`, in memory
+  only), and the honour takes only a dragon below it. The arena hands indices out in order, never
+  reuses one, and its generation is always 1, so an agent whose index is at or above it names a
+  dragon the last session allocated after the pages, and a dragon the replay itself allocates at
+  that index (a clutch's young, a newcomer after a death, a field visitor, RP-72(b)) is another
+  one that merely has the same agent number. Honoured, the replayed MATERIALIZED would embody it
+  and the HURT and DIED that follow would wound or kill it. Not honoured: its epoch is a floor
+  (RP-75) and the records that follow find no body. Failing first (run on
+  41d3f2b8): `a_replayed_body_of_an_index_the_replay_allocates_embodies_nothing` (a dragon the
+  replay allocated at index 1, then the last session's MATERIALIZED, HURT and DIED for index 1):
+  embodied by the record, "the last session's body is not this dragon's"; after, it is untouched,
+  with its health, and alive. Control `a_replayed_body_of_a_dragon_in_the_pages_is_honoured` (the
+  second dragon in the pages, record at epoch 1, then a wound to 100) passes on both: embodied at
+  epoch 1, health 100. Option not taken: honouring a dragon the replay allocated when its draw is
+  the same as the last session's (the visitor's roll is a stream of seed, frame and tick): the
+  engine cannot tell it from a different dragon at the same index, and a wrong embodiment kills an
+  innocent dragon while a missed one only drops a wound.
+
+  **The replay's own adoption (the second review).** The bound above covers the honour only. A
+  replayed UNTAGGED adopts a dragon through `add_dragon` at an index at or above `replay_next` and
+  embodies it at `next_epoch`, and every other record kind finds its dragon by `embodied(agent,
+  epoch)`, which had no bound. Failing ordering: the pages hold X (index 0); the last session
+  drew a visitor V at index 1 more than 200 ticks after the save (the replay's rolls do not draw
+  it, RP-72(b)), adopted U at index 2, and V materialized and was killed; the replay adopts U at
+  index 1, epoch 1, which is V's agent and V's epoch, so V's MATERIALIZED mapped V's entity to U
+  and V's HURT and DIED wounded and killed U. The epochs collide every time: both take the highest
+  seen plus one. Taken (third version, an allow-list): while replaying, a body at an index the replay owns
+  (`replay_owns`: replaying, index at or above `replay_next`) is matched only after its own
+  answer. `embodied()` returns None for an owned agent not in `confirmed` (in memory, cleared at
+  `replay_done`), and a replayed MATERIALIZED puts the agent there only when it answers an
+  adoption the replay made. What tells the answer from V's is the entity. DragonBridge answers an
+  ADOPT with a DRAGON_MATERIALIZED that carries the adopted entity (its `adopt`,
+  journalMaterialized), so the answer to the replay's own adoption names an entity that `adopted`
+  maps to the dragon at that agent; V's names V's body, which `adopted` does not know. Until that
+  answer no record of the agent (HURT, DIED, STATE, SPAWN_REJECTED, DEMATERIALIZED) finds a body.
+  Two earlier versions, both failed review. (1) My first contested every MATERIALIZED of an owned
+  index, on the premise that an adoption is never answered by one; rtsim-jni's
+  `dragons_are_adopted_hurt_captured_materialized_and_replayed_across_a_crash` failed on it (the
+  egg dragon's capture after the save lost, health 442 against 300). (2) The second kept a deny-list
+  (`contested`: agents whose MATERIALIZED was not the answer) and so missed every by-agent record
+  whose MATERIALIZED never reached the engine: a MODULES switch off and on inside the replay (the
+  dragons' `journaled` folds V's MATERIALIZED and drops it while off), dropped dragon pages
+  (`replay_next` 0, a page-era body X embodied before the save has no MATERIALIZED in the journal,
+  and X's DIED named U at index 0, epoch 1), and a refused spawn (V's SPAWN_REJECTED or
+  DEMATERIALIZED with NOT_EMBODIED resumed U into its abstract life mid-replay). The allow-list
+  has no residual of its own: only the confirmed answer opens an owned body.
+  Copies (`ingest_copy`) name a session before the last, whose bodies are gone: a copy that names a
+  dragon's agent and epoch folds the floor only (`finds_no_body = o.agent_epoch().is_some()`),
+  after the replay end and during the replay, for a body of the pages and for a replay-owned one
+  alike (docs/replay-gate.md §5.7; before, a copy of an index below the bound went through
+  `ingest` while replaying and could wound or kill the body the pages hold; DragonBridge sends no
+  dragon copies today, so the change is latent). Failing first, on 00b69da7 for the allow-list and
+  the copy: `a_switch_off_and_on_inside_the_replay_leaves_the_last_sessions_records_nobody`
+  (U killed), `a_dragon_of_the_dropped_pages_does_not_die_with_the_replays_adoption` (U killed),
+  `a_refused_spawn_of_the_last_sessions_body_does_not_resume_the_replays_adoption` (U abstract) and
+  `a_copy_during_the_replay_wounds_no_body_the_pages_hold` (the copy of DIED killed the dragon of
+  the pages). Failing first on 41d3f2b8 plus 90a1a3f0: `the_last_sessions_body_at_an_index_does_
+  not_wound_the_dragon_the_replay_adopted` (U killed by V's records), `a_second_begin_replay_inside_
+  the_replay_keeps_the_first_bound` (U killed) and `a_copy_after_the_replay_end_folds_the_floor_
+  and_wounds_no_live_body` (health 100 against 250). Controls
+  `a_replayed_adoptions_own_wounds_and_death_still_count` (the answer with the adopted entity,
+  then the wound and the death) and `a_live_wound_of_the_live_body_counts` pass on all.
+  Options not taken: (1) a bound in `embodied()` alone (no record finds any body of the replay's
+  own while replaying), and (2) an adoption decided while replaying is not embodied. Both close
+  the ordering and both lose what the base did right: a dragon the replay adopts again from the
+  same UNTAGGED the last session adopted has the same index and epoch because it is the same
+  dragon, so its wounds and its death count (the control, and the jni test above; the lair dragon
+  killed in the unsaved window would otherwise live on as an abstract phantom after the restart).
+  The confirmation is exact on the one thing that tells the two apart. Not covered, as before: the
+  wounds of a dragon the replay allocates at another index than the last session's are lost, as a
+  visitor's are (above).
+  Option not taken: reading the purpose and the harass flag
+  from the command (the record carries neither; the dragon is abstract at the replay end whatever
+  they were, and what matters is that the records that follow count against the body). Failing
+  first: rtsim-jni's `a_dragon_killed_after_a_save_stays_dead_after_a_crash` (a lair's dragon
+  saved embodied, killed by a player, crash): 1 dragon alive against 0 on f2cf3d69, because the
+  session start made it abstract and the replayed DRAGON_DIED found no body; its control without
+  the crash (`a_dragon_killed_after_a_save_stays_dead_after_a_clean_restart`) passes on both. At
+  engine level `a_dragon_killed_after_a_save_is_dead_after_the_replay` (1 against 0) and
+  `a_replayed_body_takes_the_wounds_that_follow` (a replayed MATERIALIZED then a HURT to 200: the
+  dragon's health 442 on the base, 200 after, and the grudge the wound is).
+- **RP-71** (nothing embodies while the replay runs; §6; RP-11): `seen` and `Ev::SeenAtLair`
+  return early while replaying (`Outbox::defer`, counted as deferred), after the stale and
+  already-embodied checks and before `stats.seen`, so the books count no sighting that did not
+  happen; `materialize` has the same return as a backstop at its top. The dragon goes on
+  abstractly. Nothing is lost: `shared::simulate` routes every player's area at the replay end,
+  and `book_interest` books the meetings of the legs the area crosses and `seen_at_lairs` the lairs
+  it covers, so a dragon on a leg through the area, or at rest in a covered lair, is seen at once;
+  the dragons keep no list of deferred sightings to replay. Failing first:
+  `no_dragon_materializes_while_a_long_replay_runs_with_a_player_near` (two days, a player at the
+  lair): the base materialized the dragon (epoch 1) in the middle of
+  the replay; after, none, the sighting counted as deferred, and one materialization (epoch 1) when
+  the area is routed again at the replay end. Control: the same window with no replay
+  (`a_dragon_materializes_when_no_replay_runs_with_a_player_near`) materializes at once and defers
+  nothing.
+- **RP-72** (step 6: every decision of the replayed window that asks whether a player watches;
+  §6.1's last point): each answer, with why the books stand.
+  - `seen` (a leg meeting) and `Ev::SeenAtLair`: deferred (RP-71). Nothing was booked yet.
+  - `raid_home` (a grudge raid on a player's home, `r.watched`): the abstract raid stands
+    (`raid_sites` raided the district and booked its damage, watched or not: P28, OGC56), the dragon
+    is fed and the hunt recorded as before, and instead of materializing it flies home as after a
+    fight that ended (`fly(Home)`).
+  - `raid_district` (a district-targeted raid, a field flight's, with `player_near`): the same.
+  - `refuel_arrive` (a field flight's dragon at a watched tank): the tanks are raided and drunk
+    from (`raid_sites`, `feed`, `record_hunt`) as before; the in-person branch is skipped through
+    the let-chain's `&& !self.outbox.defer()`, so it falls through to what an unwatched district
+    gets: rest on the field, or `after_refuel` when full.
+  - A nest's sortie (nest.rs `raid_in_sight`): the abstract raid stands and `stats.sorties` still
+    counts; the NEST_SORTIE command is dropped by the gate (RP-15, §4.5), as its only effect is a
+    body.
+  - Held, as conflict's arrivals are (§6.1's `held`)? No, gated. A conflict arrival resolves
+    abstractly only when no one watches, so a watched one replayed unwatched is resolved twice;
+    a dragon's raid books the same damage and the same hunt either way, so there is no second
+    resolution to avoid and nothing to hold. What is dropped is only the dragon's coming in
+    person, and the real fight's records (MATERIALIZED, HURT, BREATHS, DIED, DEMATERIALIZED) apply
+    to the body the honour embodies (RP-70).
+  - Residuals, not changed: (a) `player_near` and the raids' `in_person` read `homes.last_seen`,
+    the pages' and not the last session's, since positions are routed only at the replay end. In
+    a replay `in_person` can differ from the session that went on, which spares a raid its own oil
+    burn and wounds (OGC57); the replayed BREATHS and HURT of a real fight then apply over a raid
+    that did or did not also burn and wound: bounded by one raid's passes. (b) The field-flight
+    rolls read `presence`, set by `player_at`, which waits for the replay end. Presence IS saved
+    (persist.rs, the oil gate's block, in and out), and a presence is fresh for
+    `presence_fresh_ticks` (200) after its last report, so a roll in the replayed window within 200
+    ticks of the save still finds a fresh presence and can draw a visitor (`field_roll`, a stream
+    of seed, frame and tick): a dragon the replay allocates at the arena's next index. The last
+    session's own draw, with presence it kept up to date, may have allocated a dragon at that same
+    index, embodied it, and had it wounded or killed. Its replayed records name an agent the
+    replay now holds as a different dragon; RP-70's bound refuses to embody it, so a visitor is
+    abstract at the replay end and its wounds are not applied (bounded by one visitor per roll in
+    a 200-tick window), and its epochs are floors (RP-75). An earlier version of this line said
+    presence is not saved and no visitor is drawn in the window; both were wrong. Failing first:
+    `a_watched_raid_in_the_replayed_window_is_booked_and_the_dragon_stays_abstract` (a grudge
+    raid on a watched farm, the whole run a replay): 1 materialization on the base, none after,
+    the raid's outcome, damage and count equal to the live run's; and
+    `a_watched_tank_in_the_replayed_window_is_raided_without_the_dragon_coming` (a watched tank
+    with a player near, the whole run a replay): the base materialized the dragon, after none, the
+    tanks raided once and drunk from. Both check the books after the replay end.
+- **RP-73** (the DEPART trap; §5.8; RP-16): DragonBridge answers a DRAGON_DEPART for a body it
+  does not hold (no puppet for the agent, or one of another epoch: DragonBridge.java L655 to
+  L668) with DRAGON_DEMATERIALIZED, reason 6 (`NOT_EMBODIED`), carrying only the agent and the
+  epoch. The engine's arm read no reason and took the zeros: health 0, hunger 0, a rest at (0, 0, 0)
+  in dimension 0. Now `boundary::DEMAT_NOT_EMBODIED` (6, the number conflict's and the herds'
+  NOT_EMBODIED have): the arm removes the dragon's `by_entity` entries, leaves health, hunger and
+  rest as the engine had them, and resumes as a SPAWN_REJECTED does (`left` if it was leaving, the
+  visit over). Its adoption (`adopted`) stands, unlike a capture's: no entity is known gone, and a
+  report of the entity untagged again adopts the same dragon (`adopt_again`). Only reason 6
+  changes; every other reason is as it was. Failing first:
+  `a_depart_answered_not_embodied_keeps_the_dragon_where_it_was` (a starving dragon told to leave
+  at health 350 and rest (4100, 4100)): health 0 at (0, 0) on the base, 350 at (4100, 4100) after.
+  Control: `a_dematerialized_of_a_held_dragon_takes_its_health_and_position` (reason 1, health
+  275 at (4200, 4300)) takes both on both.
+- **RP-74** (the gate as built; §4.5): `outbox::gate` is an exhaustive `match` over `Cmd`, no `_`
+  arm; nest.rs, oil.rs and engine.rs push only through `Outbox::push`. Queued / while replaying:
+  Materialize drop / never; Steer drop / drop (the engine pushes none today); Depart drop / drop;
+  Adopt drop / drop; Discard keep / drop; PlaceLair keep / send; OilSurvey keep / send; PlaceNest
+  keep / send; NestRenew keep / drop; NestSortie drop / drop. NestRenew drops while replaying in
+  this slice (it is not idempotent until it carries a serial, §7.1); slice N makes it send. A
+  "never" kind decided while replaying is counted, not queued, and `debug_assert!`s in debug
+  builds only (no release panic): `materialize` returns before it, so it is a bug if it is ever
+  reached. Why dropping leaves the books right, per kind: a Materialize or Depart is a body's
+  order and the replay has no body; an Adopt is decided from a replayed UNTAGGED whose entity
+  reports again (RP-79); a Discard likewise; a NestSortie's only effect is the body (RP-72). The
+  tests are the module's own: `every_command_kind_has_its_replay_verdicts` (the table) and
+  `a_never_kind_decided_while_replaying_is_counted_and_not_queued` (run once with `--release`).
+  The outbox the pages hold is unchanged; a queued command restored from a page takes its queued
+  verdict at `begin_replay`.
+
+  **Routes around the gate (the follow-up audit; amends RP-74, since the range's ten ids are
+  used).** Every `Cmd` the engine decides goes through `Outbox::push` (above). What else hands the
+  dragons or the nests a command or a decision, each with its answer:
+  - `Order::DragonCommand` (rtsim-jni dragons.rs `order_command`, TEST mode): puts a command of
+    any kind straight into the host's queue, as `Order::ConflictCommand` did until RP-66 and
+    `Order::HerdCommand` until RP-85. Answer: wait. It joins `waits_for_the_replay_end`
+    (engine.rs), so a unit holding one, and every unit after it, is held to the replay end with
+    RP-33's orders; a "never" kind ordered in a replay is no longer written. Failing first:
+    `a_dragon_command_ordered_while_replaying_waits_for_the_replay_end` (a lair saved, 8,000
+    records behind it, a crash, a minimum-size buffer; a STEER ordered after the first hand-over):
+    "not written while the replay runs" on cd2e1ca6, which wrote it; after, it is written once
+    the replay has ended. Control `a_dragon_command_ordered_without_a_replay_is_written_at_once`
+    passes on both.
+  - `Order::NestDay` (`dragons::nest_day`, TEST mode): not a command, but a decision input:
+    `set_nest_day` books the nests' next watch from the engine's own clock, which in a replay is
+    the replay clock in the past, so the replayed window would be watched at the new cadence (its
+    sorties and renewals decided on a past world). Answer: wait, with the same units. Failing
+    first: `a_nest_day_ordered_while_replaying_waits_for_the_replay_end`: the nests' day 1234
+    against the tunable's 24000 while the replay runs, on cd2e1ca6; after, 24000 until the end and
+    1234 after it. Control `a_nest_day_ordered_without_a_replay_is_set_at_once`.
+  - `Order::TributeStart`: starts a tribute row and runs the clock to the hand-over's time. It
+    waits already (RP-33). The coin leaves through `write_tribute`, below.
+  - World orders: `WorksGrant` and `WorksRaid` (inputs to the phase 1 world that run the clock)
+    and `HerdFound` wait already (RP-33). `ScriptVillage` and `Phase1SpawnNear` reach neither
+    engine (the second is skipped while replaying, RP-44). `Phase1Advance` moves the offset every
+    module's record times add (`phase1::world_tick`), so one taken in a replay would put the
+    replayed records after it an offset later, the dragons' among them. It is held: it joins
+    `waits_for_the_replay_end` with the rest (the review of the first pass; first reported as a
+    fork). Failing first: `a_phase1_advance_ordered_while_replaying_waits_for_the_replay_end` (the
+    same replay under way, an advance of 5,000,000 ordered after the first hand-over): the
+    dragons' clock at 5,001,006 while the replay runs, with the hold removed; held, it stays
+    below until the replay ends and is at least 5,000,000 after. Control
+    `a_phase1_advance_ordered_without_a_replay_is_taken_at_once`. `IndustryThreat` and
+    `IndustryCommand` go to the industry engine, which is not held during the replay (the
+    coordinator's decision of 2026-10-24: industry keeps its own clock and replay rules, and its
+    orders embody nothing); `TalkReport` reaches no dragon.
+  - Test orders written straight to Java by the engine's `take_unit` (SpawnGroup, DespawnGroup,
+    SteerGroup, TransferToContainer, and the scripted phase 1 commands Market, MerchantOffers,
+    WriteGossip, Sentiment, PlaceHouse, SpawnResident) are not gated: phase 1 is not an RP
+    module, and they are a test's. The dragons' gate covers the dragons' own commands only.
+  - Founding paths, inside the engine, all state and none a command: LAIR_FOUND (a journaled
+    record, replayed in order) makes a lair; a clutch's young (`Breed`), a newcomer after a
+    death (the respawn) and a field visitor (`draw_visitor`) make an abstract dragon, which
+    embodies only through `materialize` (gated, RP-71); an UNTAGGED makes a dragon and its ADOPT or
+    DISCARD goes through the gate (drop, RP-74, RP-79). The visitor's roll waits for
+    `player_at`, which waits for the replay end (RP-72).
+  - Lair and nest placement: PLACE_LAIR and PLACE_NEST are `Cmd`s through the gate (send; Java
+    places once per field and idempotently). `write_queue` adds no command of its own: the only
+    record the host makes itself is the SPAWN_REJECTED answer for a materialization in a dimension
+    Java never named, and a Materialize is not written (not decided) while replaying.
+  - Oil: OIL_SURVEY is a query through the gate (send), answered by a journaled OIL_CHUNKS.
+    OIL_CONFIG and OIL_CHUNKS are records in. No `Order` reaches the oil gate.
+  - Tribute coin: `write_tribute` sends TRANSFER_TO_CONTAINER from the engine's `placing`, with op
+    ids drawn from the lair's key and a per-lair counter (`place_tribute`), so a stack decided
+    again in the replayed window is the same op, and Java answers a duplicate. It is not a puppet
+    command; sent while replaying, as the core's transfers are.
+  - Reads: `with_dragons` takes `&Dragons`; rtsim-host and the sims run engines of their own with
+    no session, and read this one.
+- **RP-75** (no epoch is used twice; §5.3; RP-7, RP-30, RP-37, RP-57): the floor is an in-memory
+  map, agent to the highest epoch seen that the dragon's own `epoch` does not hold. A dragon's
+  next epoch is `max(epoch, floor) + 1`, wrapping to 1 and never 0 for an epoch off the wire at
+  `u32::MAX` (`next_epoch`; `materialize` computes it without spending
+  (`epoch_after`) and spends the floor only after the Materialize is pushed, so a return across an
+  edge_stop seam keeps it). `untagged` and `adopt_again` take their epochs from it too (the first
+  adoption's epoch was a literal 1). The fold is the top of `ingest` while replaying and of
+  `ingest_copy` always, before any check that drops the record (a refusal, a stale despawn, a body
+  not held, a dragon not in the pages yet). `replay_done` folds each floor of a dragon in the arena into
+  its epoch, so the pages carry it. A floor of an agent nothing has allocated stays in the map
+  past the replay end (the review of the first pass): the last session allocated a dragon at that
+  index after the pages (RP-70) and a record of its body named an epoch, so a dragon allocated at
+  that index later (`add_dragon`) starts at the floor (its `epoch`), and its first body is above
+  it. A killed dragon's agent is a handle with a generation, never reissued, so its floor would
+  never be spent, and costs a map entry in memory until the next restart. The floors are in
+  memory only: a second restart before the allocation loses them, and the replay of the records
+  after the later save does not name them again. Accepted: the last session's bodies are gone,
+  and only a copy or a record in flight could use the epoch. Failing first:
+  `the_floor_of_an_unallocated_agent_stays_for_the_dragon_born_there_later` (records of an
+  unallocated agent at epoch 3, the replay end, a dragon born at its index): the dragon's epoch 0
+  on 41d3f2b8 (so a first body at epoch 1, as the control's); after, 3 and a first body at 4. Control
+  `a_dragon_born_after_the_replay_with_no_record_starts_at_epoch_one`. Overflow:
+  `the_largest_replayed_epoch_does_not_overflow_the_next_one` (a record at `u32::MAX`: the next
+  body's epoch is 1, not a panic in a checked build or 0 in an unchecked one). A record the
+  dragons drop because they are switched off raises its floor all the same (rtsim-jni
+  `dragons::journaled` decodes it and calls `fold_epoch` before its early return; the switch-on's
+  replay end folds it): `a_record_ignored_while_switched_off_still_raises_the_epoch_floor` (a
+  capture at epoch 7 ignored while off; the dragon's epoch 1 against 7 after the switch-on). A live
+  copy's floor waits for the dragon's next materialize, as RP-57's does. Failing first, the epoch
+  test (RP-7): `a_replayed_body_does_not_give_its_epoch_to_the_next_one` (the last session's
+  MATERIALIZED at epoch 1 and its capture, then a new body): epoch 1 again on the base, 2 after;
+  `without_a_replayed_body_the_first_epoch_is_one` is the control. A fresh engine
+  (`a_replayed_body_on_a_fresh_engine_only_raises_the_floor`, record at epoch 4): 1 against 5, and
+  the dragon is not embodied by a record.
+- **RP-76** (RP-57 for the dragons: every kind with its answer): `Obs::agent_epoch` (exhaustive,
+  no `_` arm) names it; this table replaces the dragons' part of RP-57's last row ("Herds,
+  dragons, ships: no floor yet"), which stays as written for the herds and the ships (their slices
+  edit it at the merge).
+
+| Kind | Epoch | Reaches the floor |
+| --- | --- | --- |
+| 0x0060 DRAGON_STATE | the body's | `ingest`'s fold while replaying, `ingest_copy`'s always; latest-wins and never journaled, so it is replayed or copied only if a host feeds one |
+| 0x0500 DRAGON_MATERIALIZED | the body's | the fold; honoured when it is above the dragon's own epoch and the engine is from its pages (RP-70), else the floor only; a copy only raises the floor |
+| 0x0501 DRAGON_SPAWN_REJECTED | the body's | the fold, held or not |
+| 0x0502 DRAGON_DEMATERIALIZED | the body's | the fold, a stale epoch and a NOT_EMBODIED too |
+| 0x0503 DRAGON_HURT | the body's | the fold |
+| 0x0504 DRAGON_DIED | the body's | the fold, before the check that drops a death of a body not held |
+| 0x0508 DRAGON_ATE | the body's | the fold |
+| 0x050A DRAGON_BREATHS | the body's | the fold |
+| 0x0505 LAIR_FOUND, 0x0061 LAIR_CHEST, 0x0506 HOARD_ROBBED, 0x0509 OIL_CHUNKS, 0x050B OIL_CONFIG, 0x050C NEST_FOUND, 0x050D NEST_CENSUS, 0x050E NEST_LOSS, 0x050F NEST_HEART | none | nothing to fold (a lair, a chest, a hoard, the oil, the nests: no body) |
+| 0x0507 DRAGON_UNTAGGED | none | the epoch is the engine's own, decided at the adopt (`next_epoch`), not the record's |
+
+  The test is `every_replayed_kind_raises_the_epoch_floor_or_carries_no_epoch`: one record of each
+  of the 18 `Obs` kinds at epoch 7 on an engine from its pages, then the replay end and the next
+  body's epoch: 8 for the eight kinds that raise, 1 for the ten that carry none. On the base the
+  dragons had no floor, so all eighteen read 1 and the eight that raise fail.
+- **RP-77** (rtsim-jni: the reset, the replay end and the clock; §3.2, §3.6): `session_start`
+  marks the dragons' reset due. The reset (`reset`) runs when the dragons run, or when a record
+  reaches them first (`ingest` begins with it): it calls `begin_replay(from_pages)` (the link
+  knows whether the engine came from its pages, `Link::load`), marks the replay end due and takes
+  the gate's first verdicts. Starting at the first record, not the first step, means the gate holds
+  from the record that reaches an enabled but inactive engine. When no replay runs (a switch-on
+  mid-session) the end runs at once at the hand-over's time. `dragons::replay_end` runs at the
+  session's replay end, at the replay clock (RP-24), before the other modules' ends; it calls
+  `replay_done`, turns the far feed on (Java's far table is per session: far.rs) and takes the
+  commands. Switched off, the end stays due and the switch-on's reset runs it. `begin_replay` can run more than once a
+  session: a MODULES switch off and on before the replay end makes `reset` run again. Any bound it
+  takes is taken once: `replay_next` is set only when no replay runs (the first call), so the
+  second call does not move it past the dragons the replay allocated meanwhile; a switch-on once
+  the replay has ended takes it afresh, as every dragon then held is in the pages that session
+  had. Trap (RP-70, third review): a deny-list keyed on a replayed MATERIALIZED misses every
+  by-agent record whose MATERIALIZED never reached the engine (dropped while switched off, never
+  journaled for a page-era body, or a refusal that names none); a bound on what the replay owns is
+  an allow-list, opened by the answer to its own adoption. The arm's `leave_area` (shared.rs
+  `session_start`) still reaches the dragons, and does nothing there: the dragons' `Viewer` has
+  no `player_left` override, so the trait's no-op default runs. It is as if the dragons were left
+  out of the arm; their bodies are kept to the replay end (RP-70), whose `replay_done` does the
+  player work. `take_commands`
+  logs a rise in the gate's "never" count at once with the kind, and the replay end's log line
+  carries the dragons' dropped, never and deferred counts beside conflict's. `ingest` routes a
+  copy (`st.applying_copy`) to `ingest_copy`.
+- **RP-78** (ending epochs, copies, chests and the far feed): an epoch that ended in the replayed
+  window (a capture, a refusal) is never decided again:
+  `an_epoch_that_ended_in_the_replayed_window_is_never_reused` (captured, left tracking, refused:
+  the next body is above 1; the base fails on the first, taking 1 again). A killed dragon's agent has
+  no next body (RP-75). A copy (S4p's REASSERT) embodies nothing and raises the floor
+  (`a_copied_body_raises_the_floor_and_embodies_nothing`: 6 after a copy at 5; the base 1). The
+  chests are cleared at `begin_replay` (not at the end as `session_start` did at the start): the
+  replayed LAIR_CHEST records and the chests loading in the new session report them again, and a
+  tribute stack placed meanwhile goes through `placing` and `write_tribute`, idempotent by op id,
+  not through the outbox.
+- **RP-79** (step 7, read only: a dragon adopted in the replayed window reports untagged again;
+  RP-13): the replayed UNTAGGED adopts the dragon (an entity the new session may not even
+  have), but its DRAGON_ADOPT is dropped by the gate (RP-74), so the entity is untagged when it
+  joins. DragonBridge reports untagged entities once each per session in `reportUntagged`
+  (called at DragonBridge.java L803, defined at L1282; `untaggedReported.add` at L1290 is choice
+  Z9, once per entity per session, cleared at L262), and the tag (`RtsimAttachments.AGENT`) reaches
+  disk only with its chunk's save, which a crash can precede. The live UNTAGGED after the replay
+  end finds the entity in `adopted` (the engine's memory) and `adopt_again` sends an ADOPT at a
+  new epoch (`next_epoch`), for the same dragon, never a second one. Test:
+  `a_replayed_untagged_dragon_is_adopted_again_by_its_live_report` (no ADOPT while replaying, the
+  gate counting the drop; the live report after the end re-adopts at epoch 2 with the dragon
+  count unchanged; a third report while embodied adds nothing): the base sent the ADOPT in the
+  replay (epoch 1). Control: `a_live_untagged_dragon_is_adopted_at_once`.
+
+### Slice N (nest renewals)
+
+fix/replay-nest-serial, base 1a46bec3 (slice D, fix/replay-dragons, merged with origin/main);
+docs/replay-gate.md §7.1 and §9.3. RP-230 to RP-239. Format changes: the dragons' pages MAGIC
+RTD7 to RTD8 (each nest row gains `renewals`) and their meta page RTN7 to RTN8, with no migration
+(nothing is released), so the rtsim-view fixtures need regenerating from fresh real-engine worlds
+(five tests fail on the bump: rtsim-host `gametest_worlds_open_in_the_host_with_their_saved_state`,
+rtsim-view fixtures `the_core_gametest_save_draws_every_layer_and_writes_nothing` and
+`the_create_gametest_save_draws_every_layer_and_writes_nothing`, rtsim-view hashes
+`every_gametest_save_carries_and_matches_each_modules_hash` and `a_hash_that_differs_is_flagged`).
+Wire: NEST_RENEW is 40 bytes before and after (the serial takes the reserved slot at 32). Java's
+Nests SavedData gains `serial` and `life` per placed nest. The GameTest compiles and was not run.
+
+- **RP-230** (the serial, the wire, the gate; §7.1, §4.5; RP-14): the nest row gains `renewals:
+  u32`, the count of NEST_RENEWs the nest has decided, first brood included. `renew` takes it up by
+  one (saturating) and puts the new value on the command as `serial`, so the first renewal of a
+  nest is serial 1 and 0 is never sent. The row saves it (`put_nest` and `get_nest`, so the
+  resident save and the pages both give it back). NEST_RENEW carries it at offset 32 as a u32, in
+  the slot that was reserved; offset 36 stays reserved; the size stays 40, so no size pin changes
+  (the Rust codec test pins the offset and the size, and `DragonRecords.NestRenew.SIZE` is 40).
+  The gate's NestRenew is now `Keep` queued and `Send` while replaying (it was `Drop` while
+  replaying in slice D), the match still exhaustive with no `_` arm. Rejected: an absolute owed
+  count (§7.1 option b), which races Java's own placing. No migration: a dragons store of version
+  RTD7 starts the dragons engine afresh, as every page version bump does.
+- **RP-231** (whose serial it is, and the D5 route; §7.1): the serial is the nest's own count, a
+  field of the saved row, not a session's. A restored engine opens the row at the pages' count and
+  numbers on from there. In the replayed window it re-derives the first run's renewals in the
+  same order, each at the number it had. A renewal decided live after the replay end, one the
+  last session decided after its last page save and Java applied (the audit's D5), is numbered the
+  same way: a nest's Nth renewal is the Nth call of `renew` on its row, whichever clock makes the
+  call. The two runs need not agree on when (a wait is a day count on the row), only on how many
+  came before. If they disagree on how many (the restored engine sees a world that differs: a kill
+  the journal lost), the rule still holds per number: Java applies a number at most once, and a
+  number it has not seen once, with the count of the decision that carried it. The price is that
+  when the second timeline's renewal N differs in count from the first's, Java keeps the first
+  run's. A loss of that kind, never a double. Test: the named test below, both routes.
+- **RP-232** (Java's rule and where it reads the engine life; RP-19, RG13): each placed nest keeps
+  `serial` and `life` (longs; the wire's serial is read unsigned with `Integer.toUnsignedLong`),
+  its current life and that life's last serial, and `earlier`, the last serial of each life before
+  it (see the cap below), all saved in Nests.Data beside `owed`, in the same file, so they reach
+  disk together. `Nest.renewed(life, serial, count, stage, now)` is the whole rule: when `life`
+  differs from the nest's, the nest takes it (the life it leaves goes to `earlier` with its serial)
+  and its serial is the one that life had reached if the nest remembers it, else 0 (owed, stage
+  and dueAt are not touched, RP-19); then a serial above the nest's is applied (the heart's reform
+  flag, `owed += count`, the stage, `dueAt`), and anything else is a repeat that changes nothing
+  but the life the nest is judged under. One serial per nest (the first build) let a double
+  through a hand-mixed restore: lives A, then B, then A again (world/rtsim restored from a backup
+  while world/data stayed) reset the serial on the return to A, and the renewals the restored
+  pages decide again applied a second time. Hence the list: a return to a remembered life counts on
+  from where that life stopped. The cap is 8 lives (`Nest.LIVES`: the current life and the seven
+  before it), and the least recently used life is dropped first, so the current life is never the
+  one dropped. An entry with serial 0 is the same as none and is not kept. Saved as a list `lives`
+  of (life, serial) compounds beside `serial` and `life`; a missing list, an old file's or one
+  written before the list, loads empty, and a loaded list leaves out the current life, a serial 0
+  and a repeated life, and keeps the newest eight. The residual: a double needs more than eight
+  lives of one nest and then a hand-mixed restore back to the forgotten one, which counts from 0
+  again. Test: `aReturnToAnEarlierLifeKeepsThatLivesSerial` (fails on the one-life rule: "back
+  under A, its serial 3 is a repeat", expected false, was true),
+  `aNestRemembersTheLastEightLivesAndForgetsTheOldestFirst` (the residual too) and
+  `theEarlierLivesAreSavedAndAnOldOrMissingListLoadsEmpty`. `Nests.renew` takes the life from `bridge.session().engineLife()` at each NEST_RENEW:
+  `RtsimSession.engineLife` is a final long set in the session's constructor from
+  `ReinstallRules.engineLife(world/rtsim, startsOver, ..)`, so a session that applies a command
+  already knows its life. A repeat is counted (`renewsRepeated`) and logged with the serial, the
+  nest's last and the life. What a nest's life is before the session knows one: 0, for a nest never
+  renewed, one placed this session and one loaded from an old file; 0 is also the life of a first
+  install and of pages from before the token. It is a life like any other, not "unknown": nest and
+  engine both at 0 compare equal and the serial rule alone decides. The first renewal under a
+  nonzero life moves the nest to it at serial 0, so serial 1 is new. A reset that lands on life 0
+  again (a deleted page directory whose engine did not start over) drops new serials up to the
+  nest's old one: a loss, never a double.
+- **RP-233** (every path, and none doubles; §7.1):
+  | Path | What Java sees | Owed |
+  |---|---|---|
+  | a restore, the renewal decided again (the catch-up, or live after the replay end) | the serial it had, at or below the nest's last | once: the repeat is dropped and counted |
+  | a renewal the saved pages still queue (NestRenew is Keep queued, so it would be resent after a restore) | the same serial a second time | once, whether or not the first copy reached Java before the crash. Reachable only in engine-level tests: rtsim-jni's `dragons::save` (engine/dragons.rs) takes the commands before `paging::save`, so the saved outbox is always empty, and a renewal still in the host link's unsaved queue is lost with the crash (the census heals it: a loss, never a double) |
+  | an old Nests file | no `serial` and no `life` key (either missing is an old file): owed 0, serial 0, life 0 | nothing from the file; the engine's next renewal is new and owed once |
+  | a new engine life | a life the nest has not seen: its serial starts afresh, owed stays; one it remembers (RP-232): that life's serial | the new life's serial 1 is new; its repeats are dropped. A started-over engine founds the nest again under the same id, and if its hatch runs before a census reaches it, it sends a first brood of k at serial 1, which Java places on top of the live old worms (`nest_census` clamps `seen` to k): as on the base (RP-19) |
+  | two renewals in one tick (the catch-up runs a day each) | serials n and n+1 in the queue's order | both; in the other order the lower would be dropped (a loss), the wire being one ordered queue |
+  | a nest removed and placed again | RP-234 | |
+  | the serial at u32::MAX | `renewals` saturates, every later serial repeats | none after the top: a loss, never a double (billions of renewals of one nest) |
+  | a gap in the serials | the higher is applied | the gap is a renewal lost before Java (RP-235) |
+  The old file does not double because its engine does not remember: the file's pages are RTD7, and
+  an engine on RTD8 pages and a file with no serials cannot be a pair Java and the engine wrote
+  together (Java writes the serial with the same save it writes `owed` in).
+- **RP-234** (a nest removed and placed again, id reuse): a nest id is (frame, cell x, cell z), one
+  per cell, so a cell's id is the same each time. The engine never removes a nest row: it changes
+  state (Asked, Placed, Broken, Failed), and a broken heart reforms by PLACE_NEST for the same id on
+  the same row, whose `renewals` goes on counting. Java's `placed` map drops a nest only in
+  `forgetForTest` (the GameTests' reused world), and keeps a broken one with `broken` and `reform`;
+  PLACE_NEST for a placed id carves nothing. So in play no id is removed and placed with a reset
+  serial on either side. A reset on one side alone: (a) Java's row gone and the engine's kept (the
+  Nests file deleted, or an older copy): serial 0, the engine's next serial is above it and is owed
+  once; Java had nothing of the renewals before, so nothing doubles. (b) the engine's row gone and
+  Java's kept (the pages deleted): RG13 gives a started-over engine a new life, RP-19 restarts the
+  serial; if the new directory lands on life 0 again the low serials are dropped until the engine
+  passes the old one (RP-232). When only the dragons' pages are dropped (a page version bump),
+  `pagesObsSeq` is non-zero, so the engine life stays (RtsimSession.java, the constructor), and the
+  fresh engine's serials 1 to s are dropped as repeats until they pass Java's last one: a loss,
+  never a double. The GameTests' `forgetForTest` removes the Java row, so the next
+  test's nest starts at 0 as a new nest.
+- **RP-235** (directions A and B; §7.1): B is the Nests newer than the pages (the audit's D5 under
+  journal-last): the engine decides the renewal again, Java has applied it, and the serial makes it a
+  repeat: owed once, shown by the named test. A is the Nests older than the pages: the pages' row
+  holds a count above Java's last, and the engine does not decide the missing renewal again, nor
+  keep it: NestRenew is `Keep` only while queued, and a command the host has already taken is gone
+  from the outbox, so a renewal Java lost with its save is never resent. Those worms are never
+  owed. Java's next renewal arrives above its old last and is applied; the gap is the loss. The
+  rule is lose, never double. Rejected: a kept renewal resent until acknowledged (no
+  acknowledgement exists; a larger change than RP-14), and an absolute owed total, which would
+  repair the loss but races Java's own placing and can double (§7.1 option b).
+- **RP-236** (the books; rp-slice-common rule 3, for NestRenew now sent while replaying): the
+  engine's own books do not depend on the command. `renew` runs after the row's `worms`,
+  `renewed`, `hatched` and `wait_milli` change and in the same step, and the gate only decides
+  whether Java hears of it, so those are what a live run leaves. Java's `owed` is the book of the
+  sent kind: sent while replaying, with the serial rule, it ends at what a live run leaves,
+  each renewal number counted once (a number Java had is a repeat, a number it lacked is applied).
+  Dropped, as slice D had it, a renewal of the replayed window that Java never saw was lost:
+  Java owed fewer worms than the nest's `worms` count held. A renewal queued in the pages stays
+  `Keep` and applies at most once for its serial (reachable only in engine-level tests, RP-233). NestSortie stays dropped (RP-15); NEST_CENSUS is
+  Java's report, not a command.
+- **RP-237** (RP-57, the floors): NEST_RENEW names no epoch and no agent (`Cmd::agent()` is None),
+  so it raises no floor, and the replayed or copied record that carries it has nothing to fold.
+  The serial is not an epoch: it is per nest and per engine life, where an epoch is per agent and
+  per body, and it never reaches the epoch floors. The other nest commands (PLACE_NEST,
+  NEST_SORTIE) name none either. Of this slice's kinds, no kind carries an epoch.
+- **RP-238** (the tests and their values on the base): the named test
+  `a_renewal_after_the_save_is_not_owed_twice_after_a_restore` (rtsim-ecology tests/nests.rs, at
+  engine level) models Java's `owed += count` with `FakeIaf` (synth.rs), the model of Java used by
+  the engine-level tests, which applies a renewal only above the nest's last serial and counts
+  repeats. It runs the audit's D5 on two routes: the renewal decided again in the replayed window
+  (`begin_replay`, a day, `replay_done`) and live after the replay end. The first run decides the
+  renewal after the pages' save and Java applies it; the engine is restored from the pages from
+  before; it decides the renewal again with the first run's serial (2); Java owes it once (world
+  equals engine) and counts one repeat; the next renewal is serial 3 and is owed. On the base
+  (a copy of 1a46bec3's crates, with the lines that read a serial taken out): the after-the-replay
+  route fails with engine 2 worms, world 3 (the audit's double); the catch-up route fails earlier,
+  because the base gate drops the renewal while replaying (no renewal sent: a loss), and with
+  the base gate flipped to Send in the copy it fails the same way, engine 2, world 3. After: both
+  routes pass. The control `two_renewals_carry_two_serials_and_both_are_owed` (serials 1, 2, 3,
+  counts 2, 1, 1, the world owes what the engine renewed, no repeat) passes on the base and after.
+  Also new: `the_serial_is_saved_with_the_nest_row` (resident and paged),
+  `nest_renew_carries_its_serial_at_offset_32_and_stays_40_bytes` (rtsim-ecology boundary.rs), and
+  the outbox table's NestRenew row now `Keep` and `Send`.
+- **RP-239** (Java's tests, the GameTest, the build): `neoforge/iceandfire` had no unit tests;
+  its build.gradle takes JUnit as the create module does, and gives the test source set Minecraft and
+  NeoForge with MDG's `neoForge.addModdingDependenciesTo(sourceSets.test)`, because the nest's rule
+  touches `BlockPos` and `CompoundTag` (the first build put the main compile classpath there, which
+  pulled in the compileOnly Ice and Fire jars; the main output is on the test classpath already). The rule is a method of `Nests.Nest` (`acceptRenewal`, `renewed`), so the tests need
+  no server: `NestRenewalSerialTest` (twelve tests: a repeated serial adds nothing, a higher one adds
+  its count, a gap is applied, two renewals in a row, a new engine life restarts the serial and keeps
+  owed, A then B then A keeps A's serial, the eight-life cap, the earlier lives saved and an old or
+  missing list loading empty, an old file loads owed 0 and serial 0 and life 0 (and a file with one
+  key missing too), the serial and life round trip including a negative life, a repeat re-forms
+  nothing, `nextSerial`). `:iceandfire:test --rerun-tasks` runs all twelve, none from the cache.
+  On the base none of them can be written: `Nest.renewed` does not exist and the rule is
+  `owed += count`, which gives 4 where the first test wants 2. The GameTest
+  `aRenewalDecidedAgainIsNotOwedTwice` (NestGameTests.java, its own batch nest_renew_serial, since each
+  site's cleanUp calls `DragonConfig.Test.reset()`, which switches `placeNests` off server-wide, and a
+  late site's PLACE_NEST could be refused; compiled, not run)
+  extends the scripted `nestRenewPlacesTaggedWorms` pattern: serial 1 owes two worms and they are
+  placed, serial 1 again and serial 0 owe nothing and count as repeats, serial 2 owes a third.
+  That is Java's half of direction B. The full direction B (the engine restored from older pages
+  while Java keeps its Nests) has no pattern in the iceandfire GameTests: they script the engine
+  through `DragonKit` and none saves and restores pages, and the one native test does not restart
+  the engine. The engine half is the rtsim-ecology test (RP-238). `DragonKit.nestRenew` numbers
+  its scripted renewal as the engine would (one above the nest's last under the session's life)
+  unless a serial is given, so the existing nest GameTests need no change.
