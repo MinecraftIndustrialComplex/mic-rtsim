@@ -386,6 +386,44 @@ fn tribute_goes_to_the_lairs_chest_in_stacks() {
     assert_eq!(run(), run(), "the same op ids every run");
 }
 
+/// A stack whose chest's chunk was not loaded (NOT_LOADED, RP-210) forgets the lair's chest only
+/// when that chest is the stack's own: a chest reported since, elsewhere, keeps taking new coin.
+#[test]
+fn an_unloaded_stack_forgets_only_its_own_chest() {
+    let (mut w, mut d) = start(7, &[spec(ASHPEAK)]);
+    let l = lair(&d, ASHPEAK);
+    let t0 = Tick::from_days(1);
+    assert!(tributary(&mut w, &mut d, ASHBY, ASHPEAK, 1_000, t0));
+    d.ingest(&mut w, &mut NoInfrastructure, &chest_of(ASHPEAK), t0);
+    let first = d.chest(l).expect("reported");
+    let ops: Vec<u64> = d.placing().map(|(op, _)| op).collect();
+    assert_eq!(ops.len(), 4);
+    // The lair's chest is reported elsewhere (the first one broken, another placed).
+    let s = spec(ASHPEAK);
+    let moved = Obs::LairChest(LairChest {
+        lair: ASHPEAK,
+        dimension: 0,
+        pos: (s.x - 3, s.y, s.z + 2),
+    });
+    d.ingest(&mut w, &mut NoInfrastructure, &moved, Tick(t0.0 + 10));
+    let other = d.chest(l).expect("reported again");
+    assert_ne!(other, first);
+    // A stack sent to the first chest comes back NOT_LOADED: the chest reported since stays.
+    assert!(d.tribute_unloaded(ops[0]));
+    assert_eq!(
+        d.chest(l),
+        Some(other),
+        "only the stack's own chest is forgotten"
+    );
+    d.check(&w, None).unwrap();
+    // The first chest is reported again: a stack sent to it that comes back NOT_LOADED forgets it.
+    d.ingest(&mut w, &mut NoInfrastructure, &chest_of(ASHPEAK), Tick(t0.0 + 20));
+    assert_eq!(d.chest(l), Some(first));
+    assert!(d.tribute_unloaded(ops[1]));
+    assert_eq!(d.chest(l), None, "its own chest is forgotten");
+    d.check(&w, None).unwrap();
+}
+
 // ---- a long run: conservation, restarts, paging ---------------------------------------------
 
 const META: PageKey = PageKey::new(0x4400, 0);
