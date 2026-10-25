@@ -18,8 +18,9 @@
 //!   `Conflict::ingest`, at their own time with the other
 //!   modules and the world run to it first (the shared clock, `engine/shared.rs`); DIFFICULTY
 //!   among them (no war party leaves on Peaceful, MZB-17), and HAVEN_CHEST (M9, MZB-446: a replay
-//!   after a crash knows the chest the session knew; it names the chest's state, so a copy is
-//!   idempotent). The Mowzie kinds whose engine half comes with a later
+//!   after a crash knows the chest the session knew; it names the chest's state, latest wins,
+//!   and has no op id, so `Conflict::ingest_copy` drops a copy, RP-130). The Mowzie kinds whose
+//!   engine half comes with a later
 //!   slice (`Conflict::later`: TRAIN_PASSED) are decoded, counted as deferred and given to the
 //!   conflict at its present, before the clock runs, so that it spends their op ids as `Replay`
 //!   does (MZB-23). RAIL_PASS is live (M7): its times are translated to world ticks and the
