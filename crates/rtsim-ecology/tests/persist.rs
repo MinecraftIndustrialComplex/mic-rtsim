@@ -276,7 +276,8 @@ fn an_untagged_dragon_reported_again_after_a_restart_is_adopted_once() {
     assert_eq!(d.dragons.len(), 1);
 
     let (mut w2, mut d2) = restart(&w, &d, seed);
-    d2.session_start(&mut w2, Tick(5_000));
+    d2.begin_replay(true);
+    d2.replay_done(&mut w2, Tick(5_000));
     d2.ingest(&mut w2, &mut NoInfrastructure, &u, Tick(5_100));
     let again = adopt(d2.take_commands());
     assert_eq!(d2.dragons.len(), 1, "no second dragon");

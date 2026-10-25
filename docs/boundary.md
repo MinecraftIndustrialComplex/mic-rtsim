@@ -226,7 +226,11 @@ captured member before it), TAKEN or DIED.
   chest holds; cargo is never dropped silently).
 - DEMATERIALIZED reasons: 1 command, 2 a member stopped entity-ticking, 3 a member left tracking or
   unloaded, 4 session end, 5 no members left (all taken or dead), 6 not embodied: the answer to a
-  DESPAWN_GROUP for an agent or epoch with no puppet (0 members), so the engine never waits.
+  DESPAWN_GROUP for an agent or epoch with no puppet (0 members), so the engine never waits. A
+  dragon's DEMATERIALIZED (0x0502) uses the same codes, and DragonBridge answers a DRAGON_DEPART for
+  a dragon it does not hold with reason 6 too; that record carries only the agent and the epoch
+  (the rest is zero and means nothing), and the engine takes no position, health or hunger from it
+  (docs/replay-gate.md §5.8, RP-73).
 - TAKEN how: 1 lead, 2 taming, 3 pickup (Carry On, later plugin), 4 removed by vanilla or another mod,
   5 a plugin.
 - TRANSFER kinds: 1 generic (the only one so far).
@@ -1032,7 +1036,7 @@ The bridge and the industry ranges (`docs/industry-boundary.md` §1) stay as the
 | 0x8505 | PLACE_LAIR | 0 | 16 u64 field (the engine's id, for logs), 24 u32 dimension, 28 u32 structure (dictionary 4), 32 i32 x, 36 i32 z, 40 u32 radius, 44 reserved | 48 | LAIR_FOUND (flag 1 LATE) when placed; nothing when no site is found |
 | 0x8506 | OIL_SURVEY | 0 | 16 u32 dimension, 20 i32 x, 24 i32 z, 28 u32 radius | 32 | OIL_CHUNKS (source 2), as many as it takes; nothing when it finds none |
 | 0x8507 | PLACE_NEST | 0 | 16 u64 nest, 24 u32 dimension, 28 i32 chunkX, 32 i32 chunkZ, 36 u32 depth (the chamber's floor this many blocks below the surface) | 40 | NEST_FOUND, at once if the chunk is loaded, else on its next load |
-| 0x8508 | NEST_RENEW | count | 16 u64 nest, 24 u32 dimension, 28 u32 stage (1 to 3, the worms' size), 32 reserved | 40 | NEST_CENSUS once they spawn |
+| 0x8508 | NEST_RENEW | count | 16 u64 nest, 24 u32 dimension, 28 u32 stage (1 to 3, the worms' size), 32 u32 serial (the engine's count of this nest's renewals, this one in it, from 1), 36 reserved | 40 | NEST_CENSUS once they spawn |
 | 0x8509 | NEST_SORTIE | count | 16 u64 nest, 24 u32 dimension, 28 i32 x, 32 i32 z (a block of the raided district), 36 u32 timeoutTicks | 40 | |
 
 **Tribute** (SINK.md §4.6) needs no command of its own: the coin a village pays a lair goes into the
@@ -1081,7 +1085,10 @@ Write its NBT before it ticks (verified keys and types, `DragonBaseEntity.addAdd
 **Depart.** Steer the dragon to the target and, when it is outside every player's entity-ticking
 range (or `timeoutTicks` pass), capture it and despawn it: DRAGON_DEMATERIALIZED with its health,
 hunger, age and position. Any other loss of the body (its chunk unloads, the session ends) is
-captured the same way with §2.3's reasons.
+captured the same way with §2.3's reasons. A Depart for a dragon the plugin does not hold (no
+puppet for the agent, or one of another epoch) is answered with DRAGON_DEMATERIALIZED of reason 6
+(not embodied), agent and epoch only; the engine leaves the dragon's health, hunger and rest as it
+had them and lets it go on from there.
 
 **Adopt** tags an untagged entity with the agent and epoch, makes it persistent, and sets its home
 when flag 1 is set; from then on it is an embodied puppet like a materialized one, and leaves view
@@ -1189,8 +1196,12 @@ instead. The engine side is `crates/rtsim-ecology/src/oil.rs`; the synthetic plu
   no fluid and no block entity (up to 8 seeded spots), sets an inert Death Worm spawner as its heart and
   answers NEST_FOUND (placed or failed). A PLACE_NEST for a nest already placed answers NEST_FOUND
   placed again, carves nothing, and re-forms a broken heart. NEST_RENEW owes worms (Ice and Fire's
-  Death Worms, sized by the stage), placed on the chamber floor when the heart's chunk ticks entities
-  with no player within 128 blocks; NEST_CENSUS follows, and goes out on each load of the heart's
+  Death Worms, sized by the stage), only when its serial is above the last one the nest applied under
+  the same engine life (RP-14, RP-19, RP-232: a renewal the engine decides again carries the serial it
+  had and owes nothing; a life the nest has not seen starts its serial afresh, and the owed count
+  stays; the nest remembers the last serial of its last eight lives; a Nests file from before the
+  serial loads every nest owed 0, serial 0, life 0), placed on the chamber floor
+  when the heart's chunk ticks entities with no player within 128 blocks; NEST_CENSUS follows, and goes out on each load of the heart's
   chunk. A nest worm breaks no blocks. A worm's death is NEST_LOSS (the boss rule), the heart's breaking
   NEST_HEART. NEST_SORTIE glides the nest's loaded worms through the ground to the raided column and up
   it; a worm stops under a block tagged `#mic_rtsim:armoured_floor` or `#mic_rtsim:burrow_spared` and

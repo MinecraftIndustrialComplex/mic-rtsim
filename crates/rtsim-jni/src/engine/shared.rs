@@ -85,8 +85,8 @@ fn with_viewers<R>(
 }
 
 /// The modules that hear a player leave through [`with_viewers_of`], beyond those that always do
-/// (the dragons, until their slice moves their player work into their replay end, and the ships,
-/// which hear it and do nothing).
+/// (the dragons and the ships, which hear it and do nothing at SESSION_START: neither `Viewer`
+/// overrides `player_left`, so the trait's no-op default runs).
 #[derive(Clone, Copy)]
 struct Hear {
     herds: bool,
@@ -189,9 +189,10 @@ pub(super) fn introduce_conflict(st: &mut State) {
 // ---- the interest areas ---------------------------------------------------------------------------
 
 /// SESSION_START: every player's area goes (the world forgets where players were). The dragons
-/// and the ships hear it: the dragons' bodies end at the arm until their slice moves that work
-/// into their replay end, and it does nothing to the ships, whose `Viewer` has no `player_left`
-/// override (their bodies end at the replay end, RP-91). The herds and the conflict do not hear it
+/// and the ships hear it, and it does nothing to either (RP-70, RP-76, RP-91): their `Viewer`s have
+/// no `player_left` override, so the trait's no-op default runs, as if they were left out of the
+/// arm. The dragons' bodies are kept to the replay end, whose `replay_done` does the player work
+/// (§5.6), and the ships' end at the replay end too. The herds and the conflict do not hear it
 /// (docs/replay-gate.md §2.1, §5.1, RP-26, RP-87): a `player_left` would recall the bands and
 /// despawn the groups the pages hold in view, whose replayed records count against them, and
 /// their replay ends do that player work for every player (§5.6).
@@ -413,18 +414,23 @@ fn replay_end(st: &mut State) {
     st.replaying = false;
     st.replays_ended += 1;
     let g = conflict::gate_counts(st);
+    let dg = dragons::gate_counts(st);
     let h = herds::gate_counts(st);
     log_info(&format!(
         "the session's replay is over after {} hand-overs: {} records applied while replaying; \
          totals since each engine started: conflict: {} commands dropped while replaying, {} of \
-         a kind that embodies (a bug), {} decisions that embody deferred; herds: {} commands \
-         dropped, {} of a kind that embodies (a bug), {} decisions that embody deferred, {} \
-         groups honoured",
+         a kind that embodies (a bug), {} decisions that embody deferred; dragons: {} commands \
+         dropped, {} of a kind that embodies (a bug), {} decisions that embody deferred; herds: \
+         {} commands dropped, {} of a kind that embodies (a bug), {} decisions that embody \
+         deferred, {} groups honoured",
         st.replay_handovers,
         st.replay_records,
         g.dropped,
         g.never,
         g.deferred,
+        dg.dropped,
+        dg.never,
+        dg.deferred,
         h.dropped,
         h.never,
         h.deferred,
