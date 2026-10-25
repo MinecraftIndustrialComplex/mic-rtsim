@@ -1103,8 +1103,11 @@ public final class Camps {
                     b.get(o + ConflictRecords.CampReconcile.L_ACTION) & 0xFF, b.get(o + ConflictRecords.CampReconcile.L_FLAGS) & 0xFF,
                     b.getLong(o + ConflictRecords.CampReconcile.L_A), b.getLong(o + ConflictRecords.CampReconcile.L_B)));
         }
-        // Every band a HAND_BACK names is home whatever the line's outcome, the camp not in, a stale line or a failed
-        // addFreshEntity included: the engine has ended the party and sends nothing more (MZB-464).
+        // Every band a HAND_BACK names is home whatever the line's outcome, the camp not in or a stale line included: the
+        // engine has ended the party and sends nothing more (MZB-464). One exception, a band whose puppet stays in the world
+        // because the camp body's join was cancelled (a failed addFreshEntity, MZB-236): it is not sent home, for walking it
+        // off would despawn the puppet the line answered STALE for (MZB-726, P3-1).
+        Set<Long> staying = new LinkedHashSet<>();
         for (Line ln : ls) {
             if (ln.action() != ConflictRecords.CampReconcile.HAND_BACK)
                 continue;
@@ -1135,7 +1138,7 @@ public final class Camps {
                 }
                 outcome = ConflictRecords.CampBodies.STALE; // alone, or the camp is not in
             } else {
-                outcome = in ? play(level, c, epoch, op, ln, homecoming, now) : ConflictRecords.CampBodies.STALE;
+                outcome = in ? play(level, c, epoch, op, ln, homecoming, staying, now) : ConflictRecords.CampBodies.STALE;
             }
             if (outcome != 0) {
                 quiet.add(ln);
@@ -1144,6 +1147,7 @@ public final class Camps {
         }
         if (!quiet.isEmpty())
             answerAll(faction, epoch, op, quiet, quietOutcomes, now);
+        homecoming.keySet().removeAll(staying);
         // A band handed back is home: what is left of it walks off and goes (no BAND_RECALL comes, MZB-211). With no
         // site it walks off from its own front (MZB-464); a band with no stack in play has no one to walk.
         for (ConflictBridge.Party p : homecoming.values()) {
@@ -1161,7 +1165,8 @@ public final class Camps {
      * Plays one line. Returns the outcome of a line answered with no holder (nothing to do, stale), or 0
      * when the line was answered on its holder or is waiting.
      */
-    private int play(ServerLevel level, Site c, long epoch, long op, Line ln, Map<Long, ConflictBridge.Party> homecoming, long now) {
+    private int play(ServerLevel level, Site c, long epoch, long op, Line ln, Map<Long, ConflictBridge.Party> homecoming,
+            Set<Long> staying, long now) {
         if (ln.body() == null)
             return ConflictRecords.CampBodies.STALE;
         boolean chiefLine = (ln.flags() & ConflictRecords.CampReconcile.LINE_CHIEF) != 0;
@@ -1175,7 +1180,7 @@ public final class Camps {
                 setOuts.add(new SetOut(c, epoch, op, ln));
                 yield 0;
             }
-            case ConflictRecords.CampReconcile.HAND_BACK -> handBack(level, c, epoch, op, ln, homecoming, now);
+            case ConflictRecords.CampReconcile.HAND_BACK -> handBack(level, c, epoch, op, ln, homecoming, staying, now);
             default -> ConflictRecords.CampBodies.STALE; // the heir's pair is played whole by heirPair
         };
     }
@@ -1387,7 +1392,8 @@ public final class Camps {
      * HAND_BACK: the party's puppet of that body becomes the camp's body where it stands (its state kept),
      * the puppet goes; with no puppet in the world, as a spawn (MZB-213). The party's rest goes home after.
      */
-    private int handBack(ServerLevel level, Site c, long epoch, long op, Line ln, Map<Long, ConflictBridge.Party> homecoming, long now) {
+    private int handBack(ServerLevel level, Site c, long epoch, long op, Line ln, Map<Long, ConflictBridge.Party> homecoming,
+            Set<Long> staying, long now) {
         ConflictBridge.Party p = bridge.party(ln.a());
         if (p != null && p.epoch == (int) ln.b()) {
             ConflictBridge.Slot sl = bridge.puppetOf(p, ln.body());
@@ -1419,6 +1425,7 @@ public final class Camps {
                         return 0;
                     }
                 }
+                staying.add(p.agent); // its puppet stays, so the band is not walked home (MZB-726)
                 return ConflictRecords.CampBodies.STALE; // the puppet stays; the next census orders it again
             }
             homecoming.put(p.agent, p);
