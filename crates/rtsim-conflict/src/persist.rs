@@ -76,9 +76,9 @@ use crate::tunables::ConflictTunables;
 /// (M9, MZB-437, MZB-448). RTC10, whose four magic bytes are `RTCA` (A for ten): the stats end
 /// with the lurk's five (lurks, lurks_ended, passes, passes_watched, lurk_robberies), after M9's
 /// three and M7's seven (M8, MZB-690). RTC11, `RTCB`: a party ends with its march record's
-/// revision, whether one is due, and the tick its watcher's unseen check is booked for (M10,
-/// MZB-453, MZB-458); the list of the parties whose record is due is not saved, and a load builds
-/// it from the flags.
+/// revision, whether one is due, the tick its watcher's unseen check is booked for and the epoch
+/// ranges of the fights its held arrivals resolved unwatched (M10, MZB-453, MZB-458, MZB-706); the
+/// list of the parties whose record is due is not saved, and a load builds it from the flags.
 const MAGIC: u32 = u32::from_le_bytes(*b"RTCB");
 /// The meta page of a paged save ([`Conflict::save_paged`]). 2: the indexes, parties and wheel
 /// are in pages of their own, their headers after the row counts (PF10). 3: the resident state
@@ -87,7 +87,8 @@ const MAGIC: u32 = u32::from_le_bytes(*b"RTCB");
 /// event may differ. 6: a camp carries its pressure and arrival (M6). 7: the rail meter (M7). 8: a
 /// camp carries its heir, memory and tribute, and a faction its hunts (M9, MZB-448). 9: the
 /// resident state's stats end with the lurk's five (M8, MZB-690). 10: a party's row ends with its
-/// march revision, its due flag and its unseen tick (M10, MZB-453).
+/// march revision, its due flag, its unseen tick and its unwatched epoch ranges (M10, MZB-453,
+/// MZB-706).
 const META_MAGIC: u32 = u32::from_le_bytes(*b"RTCM");
 const META_VERSION: u16 = 10;
 
@@ -880,6 +881,11 @@ fn put_party(w: &mut Writer, x: &Party) {
     w.var_u64(u64::from(x.march_rev));
     w.bool(x.march_due);
     w.u64(x.unseen_due.0);
+    put_usize(w, x.unwatched.len());
+    for (lo, hi) in &x.unwatched {
+        w.var_u64(u64::from(*lo));
+        w.var_u64(u64::from(*hi));
+    }
 }
 
 fn get_party(r: &mut Reader<'_>) -> codec::Result<Party> {
@@ -943,6 +949,12 @@ fn get_party(r: &mut Reader<'_>) -> codec::Result<Party> {
         march_rev: get_u32(r)?,
         march_due: r.bool()?,
         unseen_due: Tick(r.u64()?),
+        unwatched: {
+            let n = r.len_prefix(2)?;
+            (0..n)
+                .map(|_| Ok((get_u32(r)?, get_u32(r)?)))
+                .collect::<codec::Result<Vec<_>>>()?
+        },
     })
 }
 

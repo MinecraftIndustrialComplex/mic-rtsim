@@ -452,6 +452,11 @@ pub(super) fn replay_end(st: &mut State) {
     }
     st.conflict.replay_end_due = false;
     st.conflict.engine.replay_done();
+    // The hand-over's time is the session's present: an arrival the engine decides between the
+    // replay clock and it is the last session's, with records the replay may not have reached
+    // (MZB-706).
+    let present = Tick(phase1::world_tick(st, st.game_time));
+    st.conflict.engine.replay_present(present);
     take_commands(st);
     // The gate dropped every notice and every AMBUSH_SPOT a replayed record made again
     // (docs/replay-gate.md §4.4), and the session start cleared the queue: what is kept is what

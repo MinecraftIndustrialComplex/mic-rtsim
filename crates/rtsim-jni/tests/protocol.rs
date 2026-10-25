@@ -10830,19 +10830,21 @@ mod conflict {
         }
     }
 
-    /// The order the journal alone cannot make exact (MZB-705): the crash cut the journal before
-    /// the walk-in's echo, so the replay resolved the arrival unwatched (RP-48), and the fight's
-    /// deaths are in the journal's lost tail. A holder that carried them (the entity's pending
-    /// records, saved with the chunk and so apart from the journal) reasserts them in the next
-    /// session. The copies count against the band by identity, once (a second copy is dropped):
-    /// the band ends with the deaths of the fight Minecraft ran, and the fight is settled once,
-    /// as an unwatched raid. The abstract raid here costs the band nothing (the camp's base has
-    /// nothing to raid); one that did (a district or a village that defends itself) would cost
-    /// units on top of the copied deaths, which no record in the journal can tell apart: that
-    /// double depends on the holders' store, not on the journal, and is SEC-1's slice U to close
-    /// (an op the abstract raid took and a copy of the same deaths need one identity).
+    /// The order the journal alone cannot make exact (MZB-705, closed by MZB-706): the crash cut
+    /// the journal before the walk-in's echo, so the replay's end resolved the arrival unwatched
+    /// (RP-48), and the fight's deaths are in the journal's lost tail. A holder that carried them
+    /// (the entity's pending records, saved with the chunk and so apart from the journal)
+    /// reasserts them in the next session. The abstract resolve took that fight's losses already
+    /// (here the camp's base has nothing to raid and costs the band nothing; a district that
+    /// routs the raid does, which mowzie_records.rs counts at engine level), so the party books
+    /// that its arrival was resolved unwatched and the copies count nothing: the band ends with
+    /// the abstract resolve's losses alone, the deaths Minecraft saw are lost (a loss of realism,
+    /// not a double), and the fight is settled once, as an unwatched raid. The arrival here
+    /// falls between the replay clock and the session's present, which the host tells the engine
+    /// at the replay end. The copies are still found new by the host (S4p), once: the second set
+    /// is dropped there.
     #[test]
-    fn a_holders_copy_of_the_deaths_of_an_unanswered_walk_in_counts_once() {
+    fn a_holders_copy_of_the_deaths_of_an_unanswered_walk_in_counts_nothing_more() {
         let w = a_walk_in_then_a_crash("conflict-walk-in-copy");
         let echoes = w
             .saved
@@ -10870,6 +10872,52 @@ mod conflict {
         reassert_all(&mut j, &w.kept, w.kept.nonce);
         assert_eq!(
             books(&e, w.p).0,
+            w.n,
+            "the copies count nothing: the abstract resolve took the fight's losses"
+        );
+        assert_eq!(copies(&e), (k, 0));
+        reassert_all(&mut j, &w.kept, w.kept.nonce);
+        assert_eq!(books(&e, w.p).0, w.n, "a second copy counts nothing");
+        assert_eq!(copies(&e), (k, k));
+        assert_eq!(unwatched_resolutions(&e), 0, "the fight was settled once");
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// The control (MZB-706): the same crash, the journal ending at the walk-in's echo. The
+    /// arrival is answered, the replay honours the fight as the watched fight it was (nothing is
+    /// resolved abstractly), and a holder's copies of its deaths count: the band ends with the
+    /// fight's deaths, once, and a second set counts nothing.
+    #[test]
+    fn a_holders_copy_of_the_deaths_of_an_answered_walk_in_still_counts_once() {
+        let w = a_walk_in_then_a_crash("conflict-walk-in-copy-answered");
+        let echoes = w
+            .saved
+            .journal
+            .iter()
+            .filter(|(s, r)| {
+                *s > w.durable && wire::u16_at(r, wire::R_KIND) == cb::BAND_MATERIALIZED
+            })
+            .map(|(s, _)| *s)
+            .collect::<Vec<u64>>();
+        assert_eq!(echoes.len(), 2, "the sighting's echo and the walk-in's");
+        let (e, mut j) = reopen_logging(&w.dir, journal_cut_at(&w, echoes[1]), w.gt);
+        assert_eq!(unwatched_resolutions(&e), 0, "the arrival was answered");
+        assert_eq!(
+            e.conflict_stats().0.raids_watched,
+            w.watched + 1,
+            "honoured as the watched fight"
+        );
+        assert_eq!(
+            books(&e, w.p).0,
+            w.n,
+            "the fight's deaths were lost with the tail"
+        );
+        let k = w.kept.records.len() as u64;
+        reassert_all(&mut j, &w.kept, w.kept.nonce);
+        assert_eq!(
+            books(&e, w.p).0,
             w.live,
             "the copies count the fight's deaths"
         );
@@ -10877,7 +10925,6 @@ mod conflict {
         reassert_all(&mut j, &w.kept, w.kept.nonce);
         assert_eq!(books(&e, w.p).0, w.live, "a second copy counts nothing");
         assert_eq!(copies(&e), (k, k));
-        assert_eq!(unwatched_resolutions(&e), 0, "the fight was settled once");
         assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
         drop(j);
         e.close(true, Duration::from_secs(5)).unwrap();

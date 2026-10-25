@@ -82,6 +82,11 @@ pub const REPLAY_HOLD_TICKS: u64 = 20;
 /// record then embodies the band: a double. `ConflictStats::fight_record_gap_max` measures the
 /// delay live, so the value can be set from data (RP-51).
 pub const REPLAY_HOLD_SLACK_TICKS: u64 = 600;
+/// How many ranges of epochs a party keeps for the fights its held arrivals resolved unwatched
+/// (`Party::unwatched`, MZB-706): the oldest goes first. A raid party is held once in its life, a
+/// siege once for each restart that finds a round held, so the list is short; the bound keeps a
+/// long siege's row from growing with the restarts.
+pub const UNWATCHED_KEPT: usize = 8;
 /// The settlers actor's external id (P14: one shared actor for unowned signals).
 pub const SETTLERS_KEY: u64 = fnv1a64(b"mic_rtsim.conflict.settlers");
 
@@ -442,9 +447,24 @@ pub struct Party {
     /// it books, and an `Unseen` popped at another tick finds it moved and does nothing, so a
     /// re-bind adds no event that fires with the old ones. Saved with the party.
     pub unseen_due: Tick,
+    /// The epochs, as inclusive ranges (low, high), that a fight the last session may have run
+    /// could carry and that this one resolved unwatched, because no record answered the party's
+    /// held arrival, or its arrival in the window the replay did not reach (MZB-706): a copy of casualties naming one of them is dropped, as the abstract
+    /// resolve took that fight's losses already (`casualties`). Booked by
+    /// [`Conflict::book_unwatched_hold`], cut short when the party's next body takes an epoch
+    /// ([`Conflict::next_epoch`]), at most [`UNWATCHED_KEPT`] of them. Saved with the party
+    /// (RTC11, META 10: the format as M10 has it).
+    pub unwatched: Vec<(u32, u32)>,
 }
 
 impl Party {
+    /// Whether a fight at `epoch` is one this party's held arrival resolved unwatched (MZB-706).
+    pub fn resolved_unwatched(&self, epoch: u32) -> bool {
+        self.unwatched
+            .iter()
+            .any(|&(lo, hi)| lo <= epoch && epoch <= hi)
+    }
+
     pub fn alive(&self) -> u32 {
         self.units.iter().map(|u| u.1).sum()
     }
@@ -990,6 +1010,25 @@ pub struct Conflict {
     /// and a hunt it owes takes its op from this tick, the one the session that went on decided
     /// at (`owe_hunt`, RP-133). In memory only.
     pub(crate) hold_ending: Option<Tick>,
+    /// The holds the replay end let go (MZB-706): per party, the plan of its poll and whether its
+    /// bodies were in Minecraft (the pages' or a replayed record's) just before the end made every
+    /// party abstract. The poll that follows decides the arrival as live, and finds here that it
+    /// was a held one, so that an unwatched resolve of it is booked as one
+    /// ([`Conflict::book_unwatched_hold`]), however late the poll comes. Replaced at each replay
+    /// end. In memory only.
+    pub(crate) held_over: BTreeMap<Handle<Party>, (u32, bool)>,
+    /// The parties whose bodies were in Minecraft just before the replay end made every party
+    /// abstract (MZB-706): the arrival of one that falls in the lost window (see `lost_until`)
+    /// is decided with no record of the last session's fight, and its walk-in, if there was one,
+    /// was at the party's own epoch. Replaced at each replay end. In memory only.
+    pub(crate) left_embodied: BTreeSet<Handle<Party>>,
+    /// The session's present, told at the replay end ([`Conflict::replay_present`], MZB-706):
+    /// the replay clock stops at the last replayed record, and the first run after the end goes
+    /// on to the present. A war party's arrival or a siege's round that falls in between was a
+    /// moment of the last session whose records may be in a journal's lost tail, so that an
+    /// unwatched resolve of it is booked as a held one's is. `Tick::ZERO` when not told. In
+    /// memory only.
+    pub(crate) lost_until: Tick,
     /// The replayed fights that found no hold (RP-56): per party, the epoch of its fight
     /// recorded at or past its hold's slack, counted once in `ConflictStats::fights_unheld`;
     /// its loot counts against nothing, as its bodies. In memory only, cleared at the replay end.
@@ -1134,6 +1173,9 @@ impl Conflict {
             fill_deaths: BTreeMap::new(),
             held: BTreeMap::new(),
             hold_ending: None,
+            held_over: BTreeMap::new(),
+            left_embodied: BTreeSet::new(),
+            lost_until: Tick::ZERO,
             unheld_fights: BTreeMap::new(),
             fights_unanswered: BTreeMap::new(),
             home_open: BTreeMap::new(),
@@ -3299,6 +3341,7 @@ impl Conflict {
             march_rev: 0,
             march_due: false,
             unseen_due: Tick::ZERO,
+            unwatched: Vec::new(),
         });
         self.march_changed(p);
         self.stats.parties[kind.index()] += 1;
@@ -3978,18 +4021,21 @@ impl Conflict {
                 // the arrival waits for its replayed fight or for the replay end (§6.1, RP-23),
                 // up to the hold's slack. Past it no fight answered the hold, and it resolves
                 // unwatched, as the last session did (RP-48).
-                let watcher = if self.outbox.defer() {
+                let (watcher, held) = if self.outbox.defer() {
                     if self.hold_ending.is_none() && at < arrival + REPLAY_HOLD_SLACK_TICKS {
                         self.hold(p, arrival, at, true);
                         return;
                     }
-                    None
+                    (None, Some(self.parties[p].embodied))
                 } else {
-                    self.watcher(w, tpos, at)
+                    (self.watcher(w, tpos, at), self.held_over_embodied(p, at))
                 };
                 if let Some(player) = watcher {
                     self.start_fight(w, p, player, at);
                 } else {
+                    if let Some(embodied) = held {
+                        self.book_unwatched_hold(p, embodied);
+                    }
                     if self.parties[p].embodied {
                         // A band that walked here in its bodies with a player still near it is
                         // that player's to watch: it resolves abstractly, its losses falling
@@ -4018,6 +4064,46 @@ impl Conflict {
                     }
                 }
             }
+        }
+    }
+
+    /// Whether party `p`'s decision at `at` is one the last session may have made with records
+    /// the replay did not reach (MZB-706), live after the replay end: the held arrival the end
+    /// let go (the poll that follows it), or an arrival in the lost window (`lost_until`). If so,
+    /// whether its bodies were in Minecraft when the end made every party abstract. Taken, so a
+    /// later decision of the party is its own.
+    fn held_over_embodied(&mut self, p: Handle<Party>, at: Tick) -> Option<bool> {
+        let plan = self.parties[p].plan;
+        let embodied = self.left_embodied.remove(&p);
+        match self.held_over.remove(&p) {
+            Some((q, held)) if q == plan => Some(held),
+            _ if at <= self.lost_until => Some(embodied),
+            _ => None,
+        }
+    }
+
+    /// A held arrival (or a siege's round), or one in the window the replay did not reach,
+    /// resolved unwatched, because no record answered it (MZB-706): the last session may have
+    /// fought it watched all the same, with its BAND_MATERIALIZED lost in a journal's tail. If it did, its casualties were journaled on
+    /// the entities that carried them, and a holder's copy of them is yet to come: the abstract
+    /// resolve took that fight's losses already, so such a copy must count nothing more (lose,
+    /// never double). The fight's epoch is the party's own when it walked in in its bodies
+    /// (`embodied`: MZB-461), else the one its next body takes (`next_epoch`); the party books
+    /// both, and `casualties` drops a copy naming either. A band that was not in its bodies at
+    /// the arrival books the second alone, so that the copy of a death on the march, at the
+    /// party's own epoch, still counts. Booked also when nothing was fought: no copy of that
+    /// epoch exists then, or it is a death on the march of a band that was in view, which is
+    /// dropped with the rest (a loss).
+    fn book_unwatched_hold(&mut self, p: Handle<Party>, embodied: bool) {
+        let floor = self.floors.get(&Party::agent(p)).copied().unwrap_or(0);
+        let x = &mut self.parties[p];
+        let fresh = x.epoch.max(floor).saturating_add(1);
+        let range = (if embodied { x.epoch } else { fresh }, fresh);
+        if !x.unwatched.contains(&range) {
+            x.unwatched.push(range);
+        }
+        if x.unwatched.len() > UNWATCHED_KEPT {
+            x.unwatched.remove(0);
         }
     }
 
@@ -4137,7 +4223,9 @@ impl Conflict {
             Obs::Casualties(cs)
                 if Party::of_agent(cs.agent)
                     .and_then(|p| self.parties.get(p))
-                    .is_some_and(|x| x.casualty_ops.contains(&cs.op)) =>
+                    .is_some_and(|x| {
+                        x.casualty_ops.contains(&cs.op) || (copy && x.resolved_unwatched(cs.epoch))
+                    }) =>
             {
                 return;
             }
@@ -4274,19 +4362,22 @@ impl Conflict {
         let round = x.until.min(at);
         if kind == PartyKind::Siege && round < x.bored_at && x.alive() > 0 && !self.peaceful {
             // As `arrive`'s (§6.1, RP-23, RP-48).
-            let watcher = if self.outbox.defer() {
+            let (watcher, held) = if self.outbox.defer() {
                 if self.hold_ending.is_none() && at < round + REPLAY_HOLD_SLACK_TICKS {
                     self.hold(p, round, at, false);
                     return;
                 }
-                None
+                (None, Some(self.parties[p].embodied))
             } else {
                 let tpos = self.target_pos(w, self.parties[p].target);
-                self.watcher(w, tpos, at)
+                (self.watcher(w, tpos, at), self.held_over_embodied(p, at))
             };
             if let Some(player) = watcher {
                 self.start_fight(w, p, player, at);
                 return;
+            }
+            if let Some(embodied) = held {
+                self.book_unwatched_hold(p, embodied);
             }
             self.resolve(w, infra, p, at);
             if self.parties[p].alive() > 0 && round < self.parties[p].bored_at {
@@ -5907,7 +5998,14 @@ impl Conflict {
     /// and above its floor, which it spends.
     fn next_epoch(&mut self, p: Handle<Party>) -> u32 {
         let floor = self.floors.remove(&Party::agent(p)).unwrap_or(0);
-        self.parties[p].epoch.max(floor) + 1
+        let epoch = self.parties[p].epoch.max(floor) + 1;
+        // The body this epoch is for is the engine's own: a fight unwatched before it may have
+        // owned epochs below it only (`Party::unwatched`, MZB-706).
+        self.parties[p].unwatched.retain_mut(|r| {
+            r.1 = r.1.min(epoch - 1);
+            r.0 <= r.1
+        });
+        epoch
     }
 
     /// No epoch is used twice (§5.3, RP-7, RP-57): a replayed record or a copy that names a party's
@@ -6121,6 +6219,20 @@ impl Conflict {
             return;
         }
         self.outbox.replay_done();
+        // The holds the end lets go, with whether their bodies were in Minecraft, and every party
+        // whose bodies were (MZB-706).
+        let held_over = self
+            .held
+            .iter()
+            .filter_map(|(&p, h)| Some((p, (h.plan, self.parties.get(p)?.embodied))))
+            .collect();
+        self.left_embodied = self
+            .parties
+            .iter()
+            .filter(|(_, x)| x.embodied)
+            .map(|(p, _)| p)
+            .collect();
+        self.lost_until = Tick::ZERO;
         let ids: Vec<Handle<Party>> = self.parties.iter().map(|(h, _)| h).collect();
         for p in ids {
             let x = &mut self.parties[p];
@@ -6136,6 +6248,7 @@ impl Conflict {
         self.fill_deaths.clear();
         // The held arrivals' polls run `arrive` or `wait_over` as live (§6.1).
         self.held.clear();
+        self.held_over = held_over;
         self.unheld_fights.clear();
         // Live, every stack in flight is a placing (RP-134).
         self.tribute_owing = Vec::new();
@@ -6156,6 +6269,17 @@ impl Conflict {
             self.chief_state(&c, now);
         }
         self.presence.every_player_left();
+    }
+
+    /// The session's present, told by the host right after the replay end (MZB-706): the game time
+    /// of the hand-over that ended it. A war party's arrival (or a siege's round) that the engine
+    /// decides on or before it, unwatched, is a moment of the last session that the replay's
+    /// records did not reach (the journal ended before it, or before its fight's BAND_MATERIALIZED):
+    /// that session may have fought it watched, so a holder's copy of the fight's deaths must
+    /// count nothing once the abstract resolve took its losses. An arrival after the present is
+    /// this session's own.
+    pub fn replay_present(&mut self, present: Tick) {
+        self.lost_until = present;
     }
 
     /// A world save made the records through journal sequence `durable` durable (WORLD_SAVED):
@@ -6906,10 +7030,11 @@ impl Conflict {
     /// body is gone, so a copy embodies nothing and is applied by identity. Every copy that names
     /// a party's epoch raises the agent's epoch floor to it, live or replayed (RP-57). Then a
     /// BAND_CASUALTIES against the party's alive units of that body kind, at any epoch, from no
-    /// stack, with the killer's signal and the rout as for a live one; a BAND_MATERIALIZED
-    /// nothing more. Every other kind (CHIEF_KILLED by party and op id among them) as
-    /// [`Conflict::ingest`]. The host refuses a BAND_CASUALTIES copy of generation 0 before it
-    /// gets here (RP-21).
+    /// stack, with the killer's signal and the rout as for a live one, unless its party and epoch
+    /// name a fight an arrival resolved unwatched (`Party::unwatched`), which the abstract resolve took already
+    /// (it counts nothing, MZB-706); a BAND_MATERIALIZED nothing more. Every other kind
+    /// (CHIEF_KILLED by party and op id among them) as [`Conflict::ingest`]. The host refuses a
+    /// BAND_CASUALTIES copy of generation 0 before it gets here (RP-21).
     pub fn ingest_copy(
         &mut self,
         w: &mut World,
@@ -7015,6 +7140,24 @@ impl Conflict {
         // or a copy of one (MZB-589). By the party's own list, not the world's `applied_ops`,
         // which never shrinks and would hold an op for every member death of the world's life.
         if self.parties[p].casualty_ops.contains(&cs.op) {
+            return;
+        }
+        // A copy of the deaths of a fight this party's held arrival resolved unwatched (MZB-706):
+        // the abstract resolve took that fight's losses, so the copy counts nothing more. A live
+        // record is left to the rules below: after the replay end the party is not in its bodies,
+        // so one for such an epoch is a straggler and counts nothing, and while replaying it is
+        // the original of a death the session that went on counted (RP-59).
+        if copy && self.parties[p].resolved_unwatched(cs.epoch) {
+            let f = self.parties[p].faction;
+            self.note(
+                at,
+                Some(f),
+                "unwatched",
+                format!(
+                    "a copy of {} of body {} of party {:#x} (epoch {}) counts nothing: its fight was resolved unwatched",
+                    cs.count, cs.body, cs.agent, cs.epoch
+                ),
+            );
             return;
         }
         let x = &self.parties[p];
@@ -7518,6 +7661,7 @@ impl Conflict {
                 + x.route.len() * 16
                 + x.units.len() * 8
                 + x.casualty_ops.len() * 8
+                + x.unwatched.len() * 8
         };
         BTreeMap::from([
             ("factions", self.factions.rows.heap_bytes()),
