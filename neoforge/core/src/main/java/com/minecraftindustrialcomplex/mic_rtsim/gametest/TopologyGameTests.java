@@ -23,7 +23,6 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests.check;
-import static com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests.io;
 import static com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests.record;
 
 /**
@@ -79,7 +78,7 @@ public final class TopologyGameTests {
     }
 
     /**
-     * Checks (inside an {@link RtsimTests#io} wait) that every chunk is at entity-ticking status with its
+     * Checks (inside a {@link ChunkWait#chunks} wait) that every chunk is at entity-ticking status with its
      * entities loaded: a chunk is FULL as soon as {@code getChunk} returns, but its entities come in from
      * the entity storage's own IO afterwards, and entities tick only once they have.
      */
@@ -130,9 +129,10 @@ public final class TopologyGameTests {
      * wrap folds it back into the lap (as Toroidal World does at the end of a tick, with no event), it is
      * steered on from where it is: still the same live puppet, never captured, never a stale copy (TP11).
      */
-    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 2400, batch = "mic_rtsim_topology_steer")
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "mic_rtsim_topology_steer")
     public static void aLeaderFoldedAcrossTheSeamIsSteeredOnNotCaptured(GameTestHelper helper) {
         ServerLevel level = helper.getLevel();
+        ChunkWait waits = ChunkWait.of(helper, 2400);
         var session = RtsimTests.session();
         Vec3 c = RtsimTests.centre(helper);
         long cx = (long) Math.floor(c.x);
@@ -143,42 +143,42 @@ public final class TopologyGameTests {
         double target = x0 + 4.5; // canonical, at the lap's west end: 28 blocks east of the arena, through the seam
         helper.startSequence()
                 // The strip's chunks load their entities on the world's IO, which the unthrottled tick can
-                // outrun (a timeout in ticks passes in under a second): wait for them before the wrap is
-                // installed (it lapses by game time) and the group is spawned.
-                .thenWaitUntil(io(() -> chunksReady(level, forced)))
+                // outrun (a timeout in ticks passes in under a second): wait for them, in real time, before
+                // the wrap is installed (it lapses by game time) and the group is spawned.
+                .thenWaitUntil(waits.chunks(() -> chunksReady(level, forced)))
                 .thenExecute(() -> {
                     TopologySources.setToroidalProbe(fakeWrap(level, x0, level.getGameTime() + 1200));
                     RtsimApi.topologyChanged();
                     RtsimTests.engine().spawnGroup(agent, 1, "minecraft:wandering_trader", RtsimTests.dimension(helper), c.x, c.y, c.z,
                             List.of(ScriptedEngine.MemberSpec.plain(0)));
                 })
-                .thenWaitUntil(() -> RtsimTests.embodied(agent))
-                .thenWaitUntil(() -> check("the wrap is in force", session.topology(level).kind == LevelTopology.Kind.X_WRAP))
+                .thenWaitUntil(waits.logic(() -> RtsimTests.embodied(agent)))
+                .thenWaitUntil(waits.logic(() -> check("the wrap is in force", session.topology(level).kind == LevelTopology.Kind.X_WRAP)))
                 .thenExecute(() -> {
                     before[0] = session.capturedGroups();
                     before[1] = session.staleDiscarded();
                     before[2] = session.resteered();
                     RtsimTests.engine().steerGroup(agent, 1, target, c.y, c.z, 0.5f);
                 })
-                .thenWaitUntil(() -> {
+                .thenWaitUntil(waits.logic(() -> {
                     PuppetGroup g = RtsimTests.group(agent);
                     check("the steer arrived", g != null && g.steerImage != null);
                     record("topology", "steered toward", g.steerImage);
                     check("toward the target's image on the leader's side, east through the seam: " + g.steerImage,
                             Math.abs(g.steerImage.x - (target + PERIOD)) < 1e-6);
-                })
-                .thenWaitUntil(io(() -> check("the lap's west end ticks entities",
+                }))
+                .thenWaitUntil(waits.chunks(() -> check("the lap's west end ticks entities",
                         level.isPositionEntityTicking(net.minecraft.core.BlockPos.containing(x0 + 1.5, c.y, c.z)))))
                 .thenExecute(() -> {
                     // The leader crosses the east edge and the wrap folds it into the lap's west end.
                     Entity leader = RtsimTests.member(RtsimTests.group(agent), 0);
                     leader.moveTo(x0 + PERIOD + 1.5 - PERIOD, leader.getY(), leader.getZ());
                 })
-                .thenWaitUntil(() -> {
+                .thenWaitUntil(waits.logic(() -> {
                     PuppetGroup g = RtsimTests.group(agent);
                     check("still embodied", g != null);
                     check("re-steered from where it is now: " + g.steerImage, Math.abs(g.steerImage.x - target) < 1e-6);
-                })
+                }))
                 .thenExecute(() -> {
                     long resteered = session.resteered() - before[2];
                     record("topology", "leaders re-steered after the fold", resteered);
@@ -190,7 +190,7 @@ public final class TopologyGameTests {
                     RtsimApi.topologyChanged();
                     unforce(level, forced);
                 })
-                .thenWaitUntil(() -> check("despawned", RtsimTests.group(agent) == null))
+                .thenWaitUntil(waits.logic(() -> check("despawned", RtsimTests.group(agent) == null)))
                 .thenSucceed();
     }
 }
