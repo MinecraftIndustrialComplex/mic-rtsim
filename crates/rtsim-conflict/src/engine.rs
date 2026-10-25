@@ -3624,8 +3624,9 @@ impl Conflict {
         (d2 <= r * r).then_some(d2)
     }
 
-    /// When a party walking its current segment leaves a circle of `radius` around `c`: `None`
-    /// when it is still inside at the segment's end; `at` when it is not inside now.
+    /// When a party walking its current segment leaves a circle of `radius` around `c`, as
+    /// [`Conflict::inside_now`] reads it (the first tick its chart position is outside, MZB-701):
+    /// `None` when it is still inside at the segment's end; `at` when it is not inside now.
     fn exit_time(&self, p: Handle<Party>, c: (i32, i32), radius: u32, at: Tick) -> Option<Tick> {
         if self.inside_now(p, c, radius, at).is_none() {
             return Some(at);
@@ -3659,7 +3660,19 @@ impl Conflict {
         let qc = ax * ax + az * az - r * r;
         let disc = (qb * qb - 4.0 * qa * qc).max(0.0);
         let f = ((-qb + disc.sqrt()) / (2.0 * qa)).clamp(0.0, 1.0);
-        Some(Tick(t0.0 + ((t1.0 - t0.0) as f64 * f).floor() as u64).max(at))
+        let mut t = Tick(t0.0 + ((t1.0 - t0.0) as f64 * f).floor() as u64).max(at);
+        // The root is the continuous path's exit, but `inside_now` (and so `rebind_to`) reads the
+        // truncated chart position, up to sqrt 2 blocks off the path, and that can still be
+        // inside here: booked at the root, `unseen` would find the same player inside and book a
+        // tick on, again and again, until the truncated position left (MZB-701). So step on to
+        // the first tick it is outside, which the segment's end (`b`, outside) bounds. The steps
+        // are `inside_now` calls, no events: the worst case is a near-tangent road, where the
+        // path needs sqrt(2 sqrt 2 R + 2) blocks of walk to put the truncated position beyond
+        // the circle of radius R, so at most that over the march speed, in ticks.
+        while t < t1 && self.inside_now(p, c, radius, t).is_some() {
+            t += 1;
+        }
+        Some(t)
     }
 
     /// Books the time an embodied party on the road, out or home, walks out of its watcher's view
