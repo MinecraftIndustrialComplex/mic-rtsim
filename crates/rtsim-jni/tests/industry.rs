@@ -3146,6 +3146,16 @@ mod ack_never_resends {
             s
         }
 
+        /// A world save whose journal file landed and whose WORLD_SAVED never came (the process
+        /// dies, or the write is held, before it): the engine is asked for pages through the
+        /// file's end and keeps them as a pending generation. Nothing acknowledges them.
+        fn autosave_held(&mut self) -> Saved {
+            let s = self.c.save(&self.j);
+            self.j.e.request_save(s.end);
+            self.last = Some(s.clone());
+            s
+        }
+
         /// Runs until Java has read an ack at or past `seq`.
         fn until_read(&mut self, seq: u64) {
             let limit = self.j.mc().t + 24_000;
@@ -3274,6 +3284,52 @@ mod ack_never_resends {
             !start.settled.is_empty(),
             "the second restart settled what it read"
         );
+        r.finish();
+    }
+
+    /// Case 1b (U-h, P29 option a): the last autosave's journal file landed and its WORLD_SAVED
+    /// never came, so its pages are a pending generation nothing acknowledged. The world restarts
+    /// from the autosave before it (the file that did land and was confirmed), as it would if the
+    /// newer file never reached the disk: the engine rolls the pending pages back, its replay
+    /// brings it to that world's present, and the world's books close against the engine's, the
+    /// checker on every op through two more sessions. Before U-h the pages were acknowledged at
+    /// the commit, so they sat ahead of the world the restart loaded.
+    #[test]
+    fn an_autosave_whose_world_saved_never_came_is_rolled_back_and_the_world_conserves() {
+        let mut r = Rig::new("ack-c1b", true);
+        r.run_to(day(3.0));
+        r.every = 0;
+        let w0 = r.last.clone().expect("an autosave by day 3");
+        r.run("the last autosave's pages", day(4.0), |r| {
+            r.j.e.durable_obs_seq() >= w0.end
+        });
+        let pages = r.j.e.durable_obs_seq();
+        let past = |r: &Rig| r.c.lives_in(0).filter(|l| l.seq > pages).count();
+        r.run("ten answers past the pages", day(6.0), |r| past(r) >= 10);
+        let w1 = r.autosave_held();
+        assert!(w1.end > pages);
+        let committed = r.j.e.stats.saves_committed.load(Ordering::Acquire);
+        r.run("the held autosave's pages commit", day(6.0), |r| {
+            r.j.e.stats.saves_committed.load(Ordering::Acquire) > committed
+        });
+        let t = r.j.mc().t;
+        r.run_to(t + 400);
+        assert_eq!(
+            r.j.e.durable_obs_seq(),
+            pages,
+            "a world save no WORLD_SAVED confirmed is not acknowledged"
+        );
+        let sent = r.c.crash(&r.j);
+        assert!(sent <= pages, "the engine sent ack {sent} past the pages {pages}");
+        let start = r.restart(&w0);
+        assert_eq!(
+            r.j.pages_obs, pages,
+            "the pending pages were rolled back to the confirmed save"
+        );
+        assert!(start.provable);
+        r.every = 3_000;
+        r.run_to(day(6.0));
+        r.crash_after_a_read_ack();
         r.finish();
     }
 

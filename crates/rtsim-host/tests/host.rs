@@ -674,6 +674,78 @@ fn a_save_during_the_copy_makes_the_export_copy_again() {
     let _ = fs::remove_dir_all(&world);
 }
 
+/// U-h (P29 option a, docs/choices-leg-purge.md LP12): the engine's world save is a pending
+/// generation until its WORLD_SAVED, and the viewer and the fork read the confirmed one, so
+/// while a save waits they show the save before it: one world save behind, never a generation the
+/// journal's file may not hold. The fork's pages and the journal it copies stay a pair the
+/// engine's start accepts (the journal's first observation is at most one past the pages').
+#[test]
+fn the_viewer_and_the_fork_read_the_save_before_an_unconfirmed_one() {
+    let world = scratch("lag");
+    let pages = world.join(save::PAGES);
+    let e = java::engine(&pages, 1 << 20);
+    let mut j = Java::open(e.clone(), WorldSave::fresh());
+    j.module_mask = save::ALL_MODULES;
+    populate(&mut j);
+    let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+    j.players = vec![(PLAYER, dim, [10.0, 64.0, 0.0])];
+    play(&mut j, DAY, 3_000);
+    // The first save: the engine's pages, the journal's file, and WORLD_SAVED.
+    let first = j.next_obs - 1;
+    let file = j.save_world();
+    Journal {
+        save: file,
+        data_version: Some(3955),
+    }
+    .write(&world)
+    .unwrap();
+    write_level(&world, j.game_time);
+    j.run_until("the first save's confirm", |j| j.e.durable_obs_seq() >= first);
+    // More happens, and a second save lands its journal file; its WORLD_SAVED does not come.
+    j.transfer(wire::JAVA_OP_BIT | 77, 1, 2, 1);
+    play(&mut j, DAY, 3_000);
+    let second = j.next_obs - 1;
+    assert!(second > first, "the second save holds more: {second} after {first}");
+    let committed = e.stats.saves_committed.load(Ordering::Acquire);
+    let through = save_as_the_bridge(&world, &mut j);
+    assert_eq!(through, second);
+    j.run_until("the second save's pages", |j| {
+        j.e.stats.saves_committed.load(Ordering::Acquire) > committed
+    });
+    assert_eq!(e.committed_obs_seq(), second);
+    assert_eq!(
+        e.durable_obs_seq(),
+        first,
+        "the second save waits for its WORLD_SAVED"
+    );
+
+    let v = rtsim_view::View::open(&world, Limits::default()).unwrap();
+    assert_eq!(
+        v.saved().generation.obs_seq,
+        first,
+        "the viewer shows the confirmed save"
+    );
+    drop(v);
+    let dir = scratch("lag-fork").join("fork");
+    let info = fork::export(&world, &dir).unwrap();
+    assert_eq!(info.pages_obs_seq, first, "the fork holds the confirmed save: {info:?}");
+    assert!(
+        info.journal_first_obs <= info.pages_obs_seq + 1,
+        "the journal it copied covers those pages: {info:?}"
+    );
+    assert!(
+        info.notes.iter().all(|n| !n.contains("in neither")),
+        "{:?}",
+        info.notes
+    );
+    let host = Host::open(&dir, &opts(true)).unwrap();
+    assert_eq!(restore_failures(&host.e), Vec::<String>::new());
+    host.close().unwrap();
+    j.crash();
+    let _ = fs::remove_dir_all(dir.parent().unwrap());
+    let _ = fs::remove_dir_all(&world);
+}
+
 /// A compaction, then a flush, landing between the export's read of the archive's index and its
 /// copy of the chunk files the index names (where a live server's fall by chance) make the export
 /// copy the archive again, and the fork's index names exactly the chunk files copied with it: the

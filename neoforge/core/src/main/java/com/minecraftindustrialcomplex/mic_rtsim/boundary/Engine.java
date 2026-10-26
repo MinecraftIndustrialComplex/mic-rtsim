@@ -37,9 +37,13 @@ public interface Engine extends AutoCloseable {
     /**
      * Once per session, before the first hand-over: the engine loads its pages and reports what they
      * include. {@code lastAppliedCmdSeq} is the journal's; the engine's commands this session carry
-     * sequences above it. May block (it runs at server start, not on a tick).
+     * sequences above it. {@code worldNextObsSeq} is the world's journal's {@code nextObsSeq}: the
+     * journal file on disk holds every observation through {@code worldNextObsSeq - 1}, and the engine
+     * opens the page generation that file holds (a generation it took for a world save whose file
+     * never landed is rolled back, one the file holds is kept and confirmed; P29,
+     * docs/choices-leg-purge.md LP12). May block (it runs at server start, not on a tick).
      */
-    SessionStart start(long lastAppliedCmdSeq);
+    SessionStart start(long lastAppliedCmdSeq, long worldNextObsSeq);
 
     /**
      * Starts step {@code handover}: read observation buffer {@code handover & 1}, mark it consumed,

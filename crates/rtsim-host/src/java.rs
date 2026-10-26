@@ -149,6 +149,11 @@ pub struct Java {
     /// Leave acknowledgements unapplied (the journal untrimmed): the world save a test takes next
     /// is one the bridge wrote before it read the acknowledgement.
     pub hold_acks: bool,
+    /// The journal file's `writtenThrough` as the bridge last had it (JB9, docs/choices-journal-
+    /// barrier.md): set by [`Java::save_world`], and the header's acknowledgement never trims
+    /// past it. `None`: no world save yet, so no clamp (a test that never saves the world sees the
+    /// old rule).
+    pub written_through: Option<u64>,
     /// The FAILED flag was seen on a command buffer.
     pub failed_seen: bool,
     /// SESSION_START's module mask (the bridge's `Module` bits).
@@ -312,6 +317,7 @@ impl Java {
             held_ops: Vec::new(),
             held_transfers: Vec::new(),
             hold_acks: false,
+            written_through: None,
             failed_seen: false,
             module_mask: 0,
             p1: Vec::new(),
@@ -355,6 +361,31 @@ impl Java {
             last_applied_cmd: self.last_applied_cmd,
             dict: self.dict.clone(),
         }
+    }
+
+    /// WORLD_SAVED (`BridgeEvents`' save hook, once the journal's file is written): the world's
+    /// save holds every observation through `durable_obs_seq`. A record in the open buffer, so
+    /// the engine hears it at the next hand-over, in the same one as the world's save request if
+    /// no hand-over came between.
+    pub fn world_saved(&mut self, durable_obs_seq: u64) {
+        assert!(self.preamble(), "room for the preamble before WORLD_SAVED");
+        let r = self
+            .reserve(obs::WORLD_SAVED, obs::world_saved::SIZE, 0)
+            .expect("room for WORLD_SAVED");
+        wire::put_u64(r, obs::world_saved::DURABLE_OBS_SEQ, durable_obs_seq);
+    }
+
+    /// One world save as the bridge runs it (`BridgeEvents`): the engine is asked for pages
+    /// through the journal's end, the journal is written (the returned [`WorldSave`] is that
+    /// file), and WORLD_SAVED follows with the file's `writtenThrough`. The save the engine takes
+    /// is confirmed only by that WORLD_SAVED (docs/choices-leg-purge.md LP12).
+    pub fn save_world(&mut self) -> WorldSave {
+        let through = self.next_obs - 1;
+        self.e.request_save(through);
+        let file = self.world_save();
+        self.written_through = Some(through);
+        self.world_saved(through);
+        file
     }
 
     pub fn obs_buf(&self, i: u64) -> &Buf {
@@ -669,7 +700,10 @@ impl Java {
                 self.failed_seen = true;
             }
             let highest = c.get_u64(wire::H_WORD_C);
-            self.pending_ack = ack.min(self.sent_obs.max(self.pages_obs));
+            // JB9: never past the journal's file on disk, as `BoundarySession.onHeader` clamps.
+            self.pending_ack = ack
+                .min(self.sent_obs.max(self.pages_obs))
+                .min(self.written_through.unwrap_or(u64::MAX));
             // SAFETY: the step published k; it does not touch this buffer until Java stores
             // consumed = k (and submits k + 2).
             let area = unsafe { c.area(used) }.to_vec();

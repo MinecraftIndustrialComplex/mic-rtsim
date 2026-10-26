@@ -67,7 +67,7 @@ public final class BoundarySession {
         this.gameTimeAtStart = gameTime;
         this.journalFirstAtStart = journal.firstSeq();
         this.worldNextAtStart = journal.nextObsSeq();
-        this.start = engine.start(journal.lastAppliedCmdSeq());
+        this.start = engine.start(journal.lastAppliedCmdSeq(), 0L); // STUB: not wired yet (U-h failing-first)
         this.observationsLost = observationsLost(start.pagesObsSeq(), journalFirstAtStart, worldNextAtStart);
         journal.reserveBeyond(start.pagesObsSeq());
         this.replayUpTo = journal.nextObsSeq() - 1;
@@ -132,6 +132,13 @@ public final class BoundarySession {
         long first = journalFirst == 0 ? worldNext : journalFirst;
         return first > pagesObsSeq + 1;
     }
+
+    /** Never trims past what the journal's file on disk holds (JB9). */
+    public void trimsClampedTo(java.util.function.LongSupplier writtenThrough) { // STUB: not wired yet (U-h failing-first)
+        this.writtenThrough = writtenThrough;
+    }
+
+    private java.util.function.LongSupplier writtenThrough = () -> Long.MAX_VALUE;
 
     /** Called with each acknowledgement (the highest sequence the engine's saved pages include). */
     public void onAck(java.util.function.LongConsumer listener) {
