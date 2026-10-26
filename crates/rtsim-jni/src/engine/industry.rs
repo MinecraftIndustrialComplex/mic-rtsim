@@ -17,11 +17,12 @@
 //!   [`KEY_LINK`];
 //! - **orders** ([`threat`]): a threat from another system (or a test) for the engine.
 //!
-//! **What is kept for resend.** IND_CARRIAGE_DELTA, IND_CHANNEL_DELTA, IND_DEPOSIT_DELTA,
-//! IND_WRITE_PACKAGE and IND_WRITE_CHAIN stay in the link's outbox from the moment they are written until Java's
-//! answer is admitted through `Replay` (IND_CARRIAGE_RESULT, or COMMAND_RESULT applied, duplicate
-//! or failed), so a snapshot taken at observation N holds exactly the ones the world save at N
-//! lacks; after a restart they are resent first. IND_CHUNK_RECONCILE is not: the industry engine
+//! **What is kept for resend.** IND_CARRIAGE_DELTA, IND_DEPOSIT_DELTA, IND_WRITE_PACKAGE and
+//! IND_WRITE_CHAIN (0x8402, IND_CHANNEL_DELTA, is retired: rtsim-industry wire.rs) stay in the
+//! link's outbox from the moment they are written until Java's answer is admitted through
+//! `Replay` (IND_CARRIAGE_RESULT, or COMMAND_RESULT applied, duplicate or failed), so a snapshot
+//! taken at observation N holds exactly the ones the world save at N lacks; after a restart they
+//! are resent first. IND_CHUNK_RECONCILE is not: the industry engine
 //! keeps every pending delta until its result and resends it at the chunk's next IND_CHUNK_LOADED
 //! (F27).
 
@@ -361,6 +362,11 @@ impl Link {
         }
     }
 
+    /// Kept commands still to resend this session (all of them right after [`Self::resume`]).
+    pub(super) fn resend_len(&self) -> usize {
+        self.resend.len()
+    }
+
     fn gauges(&mut self) {
         self.stats.outbox = self.outbox.len() as u64;
         self.stats.queued = self.queue.len() as u64;
@@ -430,9 +436,9 @@ impl Link {
     /// Takes a command out of the queue, or out of the engine's commands not drained yet: Java
     /// answered its op. A kept command waits in the queue after it was written when the switch or
     /// a session start with the module off moved it back (`set_enabled`, [`write_resends`]);
-    /// written again, Java would apply it twice once its journal had forgotten the op at the
-    /// answer's acknowledgement (RP-285). The engine's own are searched too: one decided again under the op
-    /// Java applied waits there until the module is on.
+    /// written again, Java would apply it twice once its rings and its journal had forgotten the
+    /// op at the answer's acknowledgement (RP-209, RP-285). The engine's own are searched too: one
+    /// decided again under the op Java applied waits there until the module is on.
     fn unqueue(&mut self, op: OpId) -> Option<Cmd> {
         let c = match self.queue.iter().position(|c| c.op() == Some(op)) {
             Some(i) => self.queue.remove(i),
@@ -515,10 +521,10 @@ pub(super) fn session_start(st: &mut State, game_time: i64, module_mask: u32) {
 /// The switch changed in a session (MODULES, U10). Off: the engine is frozen where it stands (its
 /// queue and outbox wait, its clock stays, every record but Java's answers is ignored). Off, it
 /// still hears Java's answers to commands it already sent ([`keep_answer`], RP-285): an answer is
-/// not a new op, and Java trims its journal, and with it the op index that refuses an op it
-/// applied, at the engine's acknowledgement of it with the module off too, so an acknowledged
-/// answer must never be dropped. Each takes its command
-/// at once and waits, with its own game time, for the switch. On: those answers are booked at
+/// not a new op, and Java prunes its op rings, and trims its journal and with it the op index that
+/// refuses an op it applied, at the engine's acknowledgement of it with the module off too
+/// (RP-209, T2), so an acknowledged answer must never be dropped. Each takes its command at once
+/// and waits, with its own game time, for the switch. On: those answers are booked at
 /// their times, then the engine's own session start runs at this game time, so it catches up to
 /// now (every breakpoint and wake of the time it was off fires) and takes every district as
 /// unloaded until Java reports them again; Java announces its districts and load states again
@@ -536,7 +542,7 @@ fn set_enabled(st: &mut State, on: bool) {
         // it applied), and Java answers it by op id (DUPLICATE if it had applied it). The answers
         // that came while off took theirs out (RP-285), so this sends only commands Java never
         // answered as far as the engine heard: none whose answer it acknowledged, which Java's
-        // journal no longer holds.
+        // rings and journal no longer hold.
         let kept: Vec<Cmd> = l.outbox.drain(..).map(|(_, c)| c).collect();
         l.resend.clear();
         for c in kept.into_iter().rev() {
@@ -753,16 +759,16 @@ pub(super) fn answered_again(st: &mut State, rec: &Rec<'_>) {
 /// COMMAND_RESULT, an IND_CARRIAGE_RESULT or IND_RECONCILE_RESULT, or the `CHAIN_IN` a write made
 /// (it carries the write's op, SC113). It takes its command at once, out of the outbox, the queue
 /// or the engine's commands not drained yet ([`Link::unqueue`]), so the switch never sends it
-/// again: Java trims its journal, and with it the op index that refuses an op it applied, at the
-/// engine's acknowledgement of the answer whatever the switch, and would apply it twice. Its book effect waits: the
-/// record is kept whole, with its own game time, in the link page (saved with the pages while
-/// off: `take_save` calls [`save`] whatever the switch), and the switch books it at that time
-/// ([`book_kept_answers`]), before the engine's own session start catches up. Booked at once,
-/// at the engine's frozen time, it would land ahead of the breakpoints and wakes due before it,
-/// and every decision after it would differ from those of a restart that replays the same answer
-/// with the module on, op ids included, since they derive from their ticks (J3). An APPLIED
-/// COMMAND_RESULT has no book effect but the taking: not kept. Returns false for a record that is
-/// no answer.
+/// again: Java prunes its op rings, and trims its journal and with it the op index that refuses an
+/// op it applied, at the engine's acknowledgement of the answer whatever the switch (RP-209, T2),
+/// and would apply it twice. Its book effect waits: the record is kept whole, with its own game
+/// time, in the link page (saved with the pages while off: `take_save` calls [`save`] whatever the
+/// switch), and the switch books it at that time ([`book_kept_answers`]), before the engine's own
+/// session start catches up. Booked at once, at the engine's frozen time, it would land ahead of
+/// the breakpoints and wakes due before it, and every decision after it would differ from those of
+/// a restart that replays the same answer with the module on, op ids included, since they derive
+/// from their ticks (J3). An APPLIED COMMAND_RESULT has no book effect but the taking: not kept.
+/// Returns false for a record that is no answer.
 fn keep_answer(l: &mut Link, rec: &Rec<'_>) -> bool {
     let op = match rec.kind {
         obs::COMMAND_RESULT => OpId(wire::u64_at(rec.bytes, obs::command_result::OP_ID)),

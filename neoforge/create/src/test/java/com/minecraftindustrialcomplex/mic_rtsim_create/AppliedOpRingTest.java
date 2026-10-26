@@ -1,5 +1,6 @@
 package com.minecraftindustrialcomplex.mic_rtsim_create;
 
+import com.minecraftindustrialcomplex.mic_rtsim.journal.RingView;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;

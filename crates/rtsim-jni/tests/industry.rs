@@ -937,6 +937,11 @@ fn a_kept_command_is_resent_after_a_crash_with_its_sequence_and_op() {
         c.industry_seed = Some(cfg.seed)
     });
     let mut j = restart(e, jsave, mc, MODULE_INDUSTRY);
+    // The start counts every module's resends for Java's perf line (RP-205).
+    assert!(
+        j.e.stats_array()[16] >= 1,
+        "the start counts the kept delta among its resends"
+    );
     j.mc_tick();
     let first = j
         .ind_commands
@@ -4326,10 +4331,12 @@ mod ack_never_resends {
     /// its answer S, so MODULES goes ahead of S in that hand-over (BoundarySession.handOver writes
     /// the preamble, MODULES included, before it drains the journal, so every answer not drained
     /// yet when the switch comes lands behind it: this tick's, and any a full open buffer left
-    /// over). Java's autosave then takes the pages past S and Java reads that ack: Java trims its
-    /// journal through it, and the journal's op index, which refuses an op Java applied, forgets X
-    /// with it. The fake world's applied set never prunes, so the probe drops X from it there, as
-    /// that index does. On again, the engine sends its outbox under new sequences (`set_enabled`).
+    /// over). Java's autosave then takes the pages past S and Java reads that ack: S was live in
+    /// this session, so its rings prune X (they prune with the module off, RP-257), and Java trims
+    /// its journal through it, and the journal's op index, which refuses an op Java applied,
+    /// forgets X with it. The fake world's applied set never prunes, so the probe drops X from it
+    /// there, as those do. On again, the engine sends its outbox under new sequences
+    /// (`set_enabled`).
     ///
     /// Before RP-285 (at 37b2dcfb) the engine ignored S while off (U10), kept X in its outbox and
     /// sent it again after the ack past S, and the world, which no longer knew X, applied it a
@@ -4490,10 +4497,11 @@ mod ack_never_resends {
     }
 
     /// With industry off since the answer S of X: a page save past S lands and Java reads its ack
-    /// (its journal, and the op index that refuses X, is trimmed past S), the world saves after a long run of
-    /// records the engine ignores, and the engine crashes with the module still off. Restarts on a
-    /// minimum-size buffer with the module off, checks the replay spans hand-overs, and returns
-    /// the restart's settle and the engine's clock before the crash.
+    /// (its rings forget X, and its journal, with the op index that refuses X, is trimmed past S),
+    /// the world saves after a long run of records the engine ignores, and the engine crashes with
+    /// the module still off. Restarts on a minimum-size buffer with the module off, checks the
+    /// replay spans hand-overs, and returns the restart's settle and the engine's clock before the
+    /// crash.
     fn crash_while_off_after_the_ack(r: &mut Rig, x: u64, s: u64) -> (Start, Tick) {
         let through = r.j.next_obs - 1;
         assert!(through >= s);
@@ -4697,8 +4705,28 @@ mod ack_never_resends {
     /// the engine never sends P. Before RP-285 the copy was ignored and P went out at the switch.
     #[test]
     fn a_carried_answer_heard_with_industry_off_takes_its_queued_command() {
+        carried_answer("ack-off-carried", false);
+    }
+
+    /// RP-285 with a postbox's carried answer (`Industry.carryAppliedInChunk`, RP-206), as
+    /// [`a_carried_answer_heard_with_industry_off_takes_its_queued_command`] but with the second
+    /// record a postbox carries: Java applies P and answers it live (S1), then the postbox takes
+    /// its buffer back and its chunk carries P's APPLIED again, journaled with no command sequence
+    /// (S2, as `resultInChunk` writes it). The crash loses both (J3 for the chunk). The restart,
+    /// industry off, hears S2 again (REASSERT under the first session's generation) as a first
+    /// answer for P, which takes P out of the queue; Java reads an ack past it (its chunk then
+    /// drops the carry and its rings forget P, so nothing refuses P any more), and once on the
+    /// engine never sends P.
+    #[test]
+    fn a_postbox_carried_answer_heard_with_industry_off_takes_its_queued_command() {
+        carried_answer("ack-off-postbox", true);
+    }
+
+    /// The carried cases. `postbox`: the chunk carries the postbox's own record of P (S2, no
+    /// command sequence), journaled after the live answer S1; otherwise it carries S1 itself.
+    fn carried_answer(tag: &str, postbox: bool) {
         use rtsim_industry::cmd::{IndustryOps, WritePackage};
-        let mut r = Rig::new("ack-off-carried", false);
+        let mut r = Rig::new(tag, false);
         r.run_to(day(3.0));
         r.every = 0;
         let name = "mic:ack_test_postbox".to_string();
@@ -4752,16 +4780,34 @@ mod ack_never_resends {
                     if let Some(a) = answers.iter().find(|a| a.0 == pk) {
                         assert_eq!(a.2, APPLIED);
                         s1 = Some(a.1);
-                        // Main's `commandResultInChunk` carries the live answer itself.
-                        carried = Some((a.1, j.journaled(a.1).expect("journaled")));
+                        let at = if postbox {
+                            // The postbox takes its buffer back: its chunk carries P's APPLIED
+                            // again, with no command sequence (`carryAppliedInChunk`).
+                            j.journal(
+                                obs::COMMAND_RESULT,
+                                obs::command_result::SIZE,
+                                APPLIED,
+                                |rec| {
+                                    wire::put_u64(rec, obs::command_result::CMD_SEQ, 0);
+                                    wire::put_u64(rec, obs::command_result::OP_ID, pk);
+                                },
+                            )
+                        } else {
+                            // `commandResultInChunk` carries the live answer itself.
+                            a.1
+                        };
+                        carried = Some((at, j.journaled(at).expect("journaled")));
                     }
                 },
             );
             r.after_tick();
             assert!(Instant::now() < deadline);
         }
-        let (_, bytes) = carried.unwrap();
+        let (carry, bytes) = carried.unwrap();
         let s1 = s1.unwrap();
+        if postbox {
+            r.c.answered(pk, carry, APPLIED);
+        }
         r.run("the pages", day(4.0), |r| {
             r.j.e.durable_obs_seq() >= through
         });
@@ -4793,7 +4839,7 @@ mod ack_never_resends {
         r.autosave();
         r.until_read(s);
         eprintln!(
-            "carried: P {pk:#x} live S1 {s1}, carried in its chunk, lost with the journal; \
+            "{tag}: P {pk:#x} live S1 {s1}, carried {carry} in its chunk, lost with the journal; \
              REASSERT at {s}, heard while off and acknowledged"
         );
         on_again_to_the_end(r, pk, 1, |_| false);
