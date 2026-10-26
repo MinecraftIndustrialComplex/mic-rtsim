@@ -236,6 +236,26 @@ public final class FakePlayers {
         public void send(net.minecraft.network.protocol.Packet<?> packet) {
             if (this.player instanceof Hearer h)
                 h.record(packet);
+            // A mod's custom payload is recorded and not sent: the mock connection negotiated no channel, so NeoForge's check throws
+            // "may not be sent to the client" for it (a Mowzie boss bar update reaches a hearer that tracks the chief).
+            if (packet instanceof net.minecraft.network.protocol.common.ClientboundCustomPayloadPacket)
+                return;
+            if (packet instanceof net.minecraft.network.protocol.game.ClientboundBundlePacket bundle) {
+                java.util.List<net.minecraft.network.protocol.Packet<? super net.minecraft.network.protocol.game.ClientGamePacketListener>> kept =
+                        new java.util.ArrayList<>();
+                boolean dropped = false;
+                for (net.minecraft.network.protocol.Packet<? super net.minecraft.network.protocol.game.ClientGamePacketListener> part : bundle.subPackets()) {
+                    if (part instanceof net.minecraft.network.protocol.common.ClientboundCustomPayloadPacket)
+                        dropped = true;
+                    else
+                        kept.add(part);
+                }
+                if (dropped) {
+                    if (!kept.isEmpty())
+                        super.send(new net.minecraft.network.protocol.game.ClientboundBundlePacket(kept));
+                    return;
+                }
+            }
             super.send(packet);
         }
     }
