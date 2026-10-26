@@ -70,6 +70,15 @@ public final class SavedDataWrites {
         this.info = info;
     }
 
+    /** A log line that cannot throw: a failed write's rethrow, and the IO chain behind it, must not depend on a logger. */
+    private static void say(Consumer<String> sink, String line) {
+        try {
+            sink.accept(line);
+        } catch (RuntimeException ignored) {
+            // nothing to do with a logger that fails
+        }
+    }
+
     private static Path key(Path file) {
         return file.toAbsolutePath().normalize();
     }
@@ -97,12 +106,12 @@ public final class SavedDataWrites {
             }
             failures.incrementAndGet();
             if (first)
-                error.accept("[mic_rtsim] the write of " + k + " failed (" + why + "): the journal's file is kept as it was until that file is"
+                say(error, "[mic_rtsim] the write of " + k + " failed (" + why + "): the journal's file is kept as it was until that file is"
                         + " written again, and the next world save tries it again. A stop or crash before then restarts from the journal's"
                         + " last good file, and the ops decided since replay from it; further failures of this file are counted, not"
                         + " logged (docs/choices-journal-barrier.md U-g1)");
         } catch (RuntimeException e) {
-            error.accept("[mic_rtsim] could not record the failed write of " + file + ": " + e);
+            say(error, "[mic_rtsim] could not record the failed write of " + file + ": " + e);
         }
     }
 
@@ -118,10 +127,10 @@ public final class SavedDataWrites {
             }
             if (e != null) {
                 recovered.incrementAndGet();
-                info.accept("[mic_rtsim] " + e.file + " was written again after " + e.failed + " failed write(s): the journal's file goes on");
+                say(info, "[mic_rtsim] " + e.file + " was written again after " + e.failed + " failed write(s): the journal's file goes on");
             }
         } catch (RuntimeException e) {
-            error.accept("[mic_rtsim] could not record the write of " + file + ": " + e);
+            say(error, "[mic_rtsim] could not record the write of " + file + ": " + e);
         }
     }
 
@@ -153,7 +162,7 @@ public final class SavedDataWrites {
         }
         for (Entry e : gone) {
             abandoned.incrementAndGet();
-            error.accept("[mic_rtsim] the data of " + e.file + " is gone (its level unloaded?) after " + e.failed + " failed write(s) and cannot be"
+            say(error, "[mic_rtsim] the data of " + e.file + " is gone (its level unloaded?) after " + e.failed + " failed write(s) and cannot be"
                     + " written again: the journal's file goes on without it; what it held that the journal's file counts on is lost"
                     + " (docs/choices-journal-barrier.md U-g1)");
         }
