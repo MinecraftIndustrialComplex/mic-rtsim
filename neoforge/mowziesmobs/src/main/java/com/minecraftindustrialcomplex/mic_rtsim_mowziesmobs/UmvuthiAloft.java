@@ -165,6 +165,12 @@ public final class UmvuthiAloft implements Traveller {
         return false;
     }
 
+    /** It floats while its gravity is off: in the air or hovering; not settled on the ground, not dying (MZB-810). */
+    @Override
+    public boolean aloft(Mob body, Memo memo) {
+        return body.isNoGravity();
+    }
+
     @Override
     public void release(Mob body, Memo memo) {
         body.setNoGravity(false);

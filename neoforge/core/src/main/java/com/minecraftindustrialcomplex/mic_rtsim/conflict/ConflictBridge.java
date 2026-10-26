@@ -624,6 +624,8 @@ public final class ConflictBridge implements SessionPlugin {
     public long repairs, repairsSkipped;
     /** M11's (this session): CHIEF_BODYs sent ahead of a materialize that never claimed them (MZB-805); a Traveller call that threw (MZB-807). */
     public long chiefBodiesUnmatched, travellerErrors;
+    /** M11's (this session): pushes of a floating puppet zeroed and portal trips of a puppet cancelled (MZB-810, MZB-815). */
+    public long knockbacksZeroed, portalsCancelled;
     /** The last DEMAND_SETTLED's outcome (GameTests). */
     public int lastSettled;
 
@@ -691,7 +693,7 @@ public final class ConflictBridge implements SessionPlugin {
         lurksKept = lurksRemoved = trainPasses = lurkStrikes = roarsTold = roarsPlayed = roarHearers = lurksRefused = 0;
         marchRecords = marchStale = marchEnds = trimmed = walkIns = clamps = unbookedHomeDeaths = 0;
         repairs = repairsSkipped = 0;
-        chiefBodiesUnmatched = travellerErrors = 0;
+        chiefBodiesUnmatched = travellerErrors = knockbacksZeroed = portalsCancelled = 0;
         lastSettled = 0;
         owedHunts.clear();
         clearLurks();
@@ -1875,6 +1877,42 @@ public final class ConflictBridge implements SessionPlugin {
                     MicRtsim.LOGGER.error("[mic_rtsim] a traveller's step failed for {}", sl.body, ex);
             }
         }
+    }
+
+    /**
+     * Whether an explosion's push of this entity is to be zeroed (M11, MZB-810): it is a live puppet of a band whose
+     * Traveller says it floats. One identity lookup in the map of live puppets, which is empty with no band out (D1).
+     * The step zeroes a push that lands after the entities tick; this is for the one that lands before them, which
+     * the jar's own tick would carry up (it zeroes only the horizontal motion).
+     */
+    public boolean zeroKnockback(Entity e) {
+        if (byUuid.isEmpty())
+            return false;
+        Slot sl = byUuid.get(e.getUUID());
+        if (sl == null || sl.entity != e || !sl.alive || sl.traveller == null || !(e instanceof Mob m)
+                || !sl.traveller.aloft(m, sl.travelMemo))
+            return false;
+        knockbacksZeroed++;
+        return true;
+    }
+
+    /**
+     * Whether a trip to another dimension is cancelled (M11, MZB-815): the entity is a live puppet of a band, aloft or not
+     * (or one of a body's extras, a raptor's follower): a portal use would make a copy the bridge refuses to admit and
+     * lose the body, and the party's book is of the level it is in. One identity lookup, empty with no band out.
+     */
+    public boolean cancelPortal(Entity e) {
+        if (byUuid.isEmpty() && extraOf.isEmpty())
+            return false;
+        Slot sl = byUuid.get(e.getUUID());
+        boolean puppet = sl != null && sl.entity == e && sl.alive;
+        if (!puppet) {
+            sl = extraOf.get(e.getUUID());
+            puppet = sl != null && sl.extras.contains(e);
+        }
+        if (puppet)
+            portalsCancelled++;
+        return puppet;
     }
 
     /**

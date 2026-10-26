@@ -10212,6 +10212,28 @@ and the reviews' fixes.
   - A Traveller that throws is logged (the first 3 a session) and counted (`travellerErrors`), and the pass goes on
     with the next body: one plugin bug must not fail the session and with it every party. Next tick it is tried again.
 
+- **MZB-879** (step 4: the two listeners; MZB-810, MZB-815):
+  - `BridgeEvents.register` adds a listener for `ExplosionKnockbackEvent` at `EventPriority.LOWEST` (so no other
+    listener's velocity outlives the zeroing; the event is not cancellable) and one for `EntityTravelToDimensionEvent`.
+    Each handler is a server-side call to one method of `ConflictBridge`, which is one `byUuid` lookup, behind
+    `byUuid.isEmpty()` (D1: nothing for a pack with no band out, and one `HashMap` read per affected entity of an
+    explosion otherwise).
+  - `ConflictBridge.zeroKnockback(entity)`: the entity is the exact live body of a live slot with a Traveller, and the
+    Traveller says it floats (`Traveller.aloft(body, memo)`, a new default method that answers false). The handler then
+    sets the knockback to `Vec3.ZERO`, counted in `knockbacksZeroed`. `UmvuthiAloft.aloft` is `body.isNoGravity()`:
+    gravity is off in the air and hovering over a fluid, and is back once it has set down (`land`) or is dying
+    (`died`), so a settled body on the ground and a dying one are pushed as any mob is (MZB-810 says "aloft"; the
+    design's step zeroing, `setDeltaMovement(ZERO)`, covers a push after the entities tick as the design says).
+  - `ConflictBridge.cancelPortal(entity)`: true for the exact live body of a live slot (aloft or not, any kind of band)
+    and for a live slot's extra (`extraOf`: a raptor's follower, or the Umvuthi's summons once step 7 adopts them). The
+    handler cancels the trip and counts `portalsCancelled`. FORK: the design says "a live puppet of a band"; the
+    extras are the band's own bodies in the bridge's book (MZB-428), and `admit` would refuse the copy a portal use
+    makes anyway, so the trip would only lose the body. Cancelling is the conservative pick.
+  - The lead's invariant (BAND_DEMATERIALIZED only after the chief puppet is gone or its death is journaled): a
+    cancelled portal is a body kept, not a body gone with no record. Both counters reset at `sessionStarted`.
+  - No JUnit: both methods need a live `Slot` and a server entity, which core's JUnit has none of. MZB-810 and MZB-815
+    are covered by M11c's GameTest 23c, as the design says.
+
 ## M12 S9
 
 (none yet)
