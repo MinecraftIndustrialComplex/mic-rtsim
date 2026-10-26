@@ -13,6 +13,7 @@ use rtsim_conflict::synth::{self, CampRun};
 use rtsim_ecology::infra::NoInfrastructure;
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 use rtsim_kernel::handle::Handle;
+use rtsim_kernel::renewal::LossCause;
 use rtsim_settle::Pos;
 
 // ---- set-up -------------------------------------------------------------------------------------
@@ -824,6 +825,197 @@ fn an_unmet_chief_comes_home_as_a_spawn() {
     // Nor does it hold the chief (MZB-853): no puppet of it was ever in the world.
     assert_eq!(ended(&r), None, "an unmet band holds nothing");
     ok(&mut r);
+}
+
+// ---- A5: a payment to the puppet ----------------------------------------------------------------
+
+/// A second player, who pays the puppet.
+const PAYER: boundary::Uuid = (0xA5A5, 0x5A5A);
+
+/// A payment of 9 gold nuggets to an Umvuthi body, as the plugin reports it: the slot, generation
+/// and flags, and the op id.
+fn pay(r: &mut CampRun, generation: u32, flags: u32, op: u64) {
+    let g =
+        r.w.goods
+            .find("gold_nugget")
+            .expect("a good of the synthetic world");
+    let id = rtsim_conflict::engine::item_of(g);
+    r.c.define(2, id, "gold_nugget");
+    let at = r.c.now();
+    r.c.ingest(
+        &mut r.w,
+        &mut *r.infra,
+        &Obs::ChiefPaid(boundary::ChiefPaid {
+            faction: r.key,
+            slot: CHIEF_SLOT,
+            generation,
+            flags,
+            player: PAYER,
+            op,
+            items: vec![boundary::Item { item: id, count: 9 }],
+        }),
+        at,
+    );
+}
+
+/// The tribute the engine has booked, every good.
+fn tribute(r: &CampRun) -> i128 {
+    r.c.ledger.tribute.values().sum()
+}
+
+/// The camp's memory.
+fn traded(r: &CampRun) -> Vec<boundary::Uuid> {
+    r.c.camp(r.f).expect("a camp").traded.clone()
+}
+
+/// A5 (MZB-819): a payment to the chief's puppet (CHIEF_PAID with PAID_PUPPET, the chief's slot,
+/// generation 0) out on the road is booked as tribute once (its copy, the same op id, books
+/// nothing), the payer joins the camp's memory, and the next CHIEF_BODY carries it, away (the band
+/// met again) and home (ahead of the chief's HAND_BACK). Without the change the payer is not
+/// remembered: `index` finds no slot of generation 0. The controls: the chief killed away (its slot
+/// Dead, or freed when its body had set out), a puppet's payment is tribute and the heir's memory
+/// stays empty; a payment with flags 0 and generation 0 is a stray's tribute, as before.
+#[test]
+fn a_payment_to_the_puppet_is_remembered() {
+    let (mut r, p) = led_invasion_out(111);
+    let agent = Party::agent(p);
+    let generation = chief(&r).expect("a chief").1;
+    let t0 = tribute(&r);
+    pay(&mut r, 0, boundary::PAID_PUPPET, 0x8541);
+    let t1 = tribute(&r);
+    assert!(t1 > t0, "booked as tribute");
+    assert_eq!(traded(&r), {
+        let mut v = vec![synth::PLAYER, PAYER];
+        v.sort();
+        v
+    });
+    pay(&mut r, 0, boundary::PAID_PUPPET, 0x8541);
+    assert_eq!(tribute(&r), t1, "a copy books nothing");
+    assert_eq!(traded(&r).len(), 2, "remembered once");
+    // Away: the band met on the road.
+    let cmds = meet(&mut r, p);
+    let away = cmds
+        .iter()
+        .find_map(|c| match c {
+            Cmd::ChiefBody(b) if b.agent == agent => Some(b.clone()),
+            _ => None,
+        })
+        .expect("an away CHIEF_BODY");
+    assert!(
+        away.traded.contains(&PAYER),
+        "the away CHIEF_BODY carries the payer"
+    );
+    // Home, the grove in.
+    let home = followed_home(&mut r, p);
+    let mark = r.cmds.len();
+    r.run(home + 1);
+    let (_, _, l, ahead) = chief_line(&since(&r, mark)).expect("a chief line at home");
+    assert_eq!(
+        (l.action, l.generation),
+        (boundary::ACTION_HAND_BACK, generation)
+    );
+    match ahead {
+        Some(Cmd::ChiefBody(b)) => {
+            assert_eq!(b.agent, 0, "home");
+            assert!(
+                b.traded.contains(&PAYER),
+                "the home CHIEF_BODY carries the payer"
+            );
+        }
+        other => panic!("no CHIEF_BODY ahead: {other:#?}"),
+    }
+    ok(&mut r);
+
+    // The controls: the chief killed away, its slot Dead (Left) or freed (Gone).
+    for left in [true, false] {
+        let (mut r, _) = if left {
+            left_invasion_out(112)
+        } else {
+            led_invasion_out(113)
+        };
+        let at = r.c.now();
+        assert!(
+            r.c.chief_died_away(r.f, LossCause::Player, at),
+            "killed away"
+        );
+        let state = chief(&r).map(|s| s.0);
+        assert_eq!(state, left.then_some(SlotState::Dead), "left {left}");
+        assert!(traded(&r).is_empty(), "the memory cleared");
+        let t0 = tribute(&r);
+        pay(&mut r, 0, boundary::PAID_PUPPET, 0x8542);
+        assert!(tribute(&r) > t0, "left {left}: booked as tribute");
+        assert!(
+            traded(&r).is_empty(),
+            "left {left}: the heir's memory stays empty"
+        );
+    }
+    // A stray's: flags 0, generation 0.
+    let (mut r, _) = led_invasion_out(114);
+    let before = traded(&r);
+    let t0 = tribute(&r);
+    pay(&mut r, 0, 0, 0x8543);
+    assert!(tribute(&r) > t0, "booked as tribute");
+    assert_eq!(traded(&r), before, "not remembered");
+}
+
+/// MZB-855: the Umvuthi killed away (`chief_killed_by`, the CHIEF_KILLED of the band it leads)
+/// while its grove is out and the pool holds a whole warrior the ledger has not followed yet (the
+/// band left with the camp out, so no census has added its slot). `chief_died_away` follows the
+/// ledger first, and the slot it adds sorts below the chief's: the chief's own slot is made Dead,
+/// its throne body standing, and no warrior's slot changes. On the base the index was taken before
+/// the ledger moved, so the new warrior's slot was freed in the chief's place and the chief's slot
+/// stayed Left with its party routed. The control: a band whose chief's slot had set out (Gone),
+/// with the ledger up to date, frees the chief's slot on both.
+#[test]
+fn a_chief_killed_away_after_the_pool_grew_dies_in_its_own_slot() {
+    for (left, seed) in [(true, 112), (false, 116)] {
+        let (mut r, p) = if left {
+            left_invasion_out(seed)
+        } else {
+            led_invasion_out(seed)
+        };
+        let (_, generation) = chief(&r).expect("a chief");
+        let warriors = |r: &CampRun| -> Vec<(u32, u32, SlotState)> {
+            r.c.camp(r.f)
+                .map(|c| {
+                    c.slots
+                        .iter()
+                        .filter(|s| s.id != CHIEF_SLOT)
+                        .map(|s| (s.id, s.generation, s.state))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let before = warriors(&r);
+        // Days on, the band still out.
+        let at = r.c.now() + 2 * TICKS_PER_DAY;
+        r.c.run_until(&mut r.w, &mut NoInfrastructure, at);
+        r.flush(at);
+        assert!(r.c.parties.contains(p), "left {left}: still out");
+        assert_eq!(
+            warriors(&r),
+            before,
+            "left {left}: the ledger has not followed yet"
+        );
+        let who = r.player;
+        r.c.chief_killed_by(&mut r.w, p, Some(who), boundary::BY_PLAYER, None, at);
+        r.flush(at);
+        let after = warriors(&r);
+        assert_eq!(
+            after.len() > before.len(),
+            left,
+            "left {left}: the ledger followed a gain ({after:?})"
+        );
+        for s in &before {
+            assert!(
+                after.contains(s),
+                "left {left}: warrior slot {s:?} changed: {after:?}"
+            );
+        }
+        let want = left.then_some((SlotState::Dead, generation));
+        assert_eq!(chief(&r), want, "left {left}: the chief's own slot");
+        ok(&mut r);
+    }
 }
 
 // ---- A6: a death after home ---------------------------------------------------------------------

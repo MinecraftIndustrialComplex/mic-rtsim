@@ -1887,7 +1887,10 @@ impl Conflict {
     /// A player's first payment to an Umvuthi body (CHIEF_PAID, MZB-418): booked as tribute through
     /// [`Conflict::pay_tribute`], and the payer joins the trade memory only when the slot and
     /// generation are the live chief's (Body). A stray Umvuthi's payment (`PAID_STRAY`) is tribute
-    /// with no memory.
+    /// with no memory. A payment to the chief's puppet (`PAID_PUPPET`, MZB-819) names the chief's
+    /// slot and generation 0, as Java's tagged puppet carries no generation: the slot is found by its
+    /// id, and the payer is remembered unless the chief is dead (killed away, its memory the heir's,
+    /// which starts empty).
     pub(super) fn chief_paid(&mut self, w: &mut World, c: &boundary::ChiefPaid, at: Tick) {
         let Some(&f) = self.by_key.get(&c.faction) else {
             return;
@@ -1895,11 +1898,16 @@ impl Conflict {
         if c.flags & boundary::PAID_STRAY == 0
             && c.slot == CHIEF_SLOT
             && let Some(camp) = self.camp_mut(f)
-            && camp
-                .index(c.slot, c.generation)
-                .is_some_and(|i| camp.slots[i].state == SlotState::Body)
         {
-            camp.remember(c.player);
+            let live = if c.flags & boundary::PAID_PUPPET != 0 {
+                camp.chief().is_some_and(|s| s.state != SlotState::Dead)
+            } else {
+                camp.index(c.slot, c.generation)
+                    .is_some_and(|i| camp.slots[i].state == SlotState::Body)
+            };
+            if live {
+                camp.remember(c.player);
+            }
         }
         let goods = self.goods_of(w, &c.items);
         if goods.is_empty() {
@@ -2612,15 +2620,18 @@ impl Conflict {
     /// removed or seated over; a gone slot is freed. Both retire the generation at a death and set
     /// the heir. False if the camp has no chief slot away.
     pub fn chief_died_away(&mut self, f: u32, cause: LossCause, at: Tick) -> bool {
-        let Some(i) = self
+        if !self
             .camp(f)
-            .and_then(Camp::chief_index)
-            .filter(|&i| self.camp(f).is_some_and(|c| c.slots[i].state.away()))
-        else {
+            .and_then(Camp::chief)
+            .is_some_and(|s| s.state.away())
+        {
             return false;
-        };
+        }
+        // The ledger first, then the chief's index: a slot `camp_sync` adds for the pool's gain
+        // sorts below the chief's, which moves up (MZB-855).
         self.camp_sync(f, at);
         let camp = self.camp_mut(f).expect("a ledger");
+        let i = camp.chief_index().expect("the chief slot");
         match camp.slots[i].state {
             SlotState::Left => {
                 let s = &mut camp.slots[i];
