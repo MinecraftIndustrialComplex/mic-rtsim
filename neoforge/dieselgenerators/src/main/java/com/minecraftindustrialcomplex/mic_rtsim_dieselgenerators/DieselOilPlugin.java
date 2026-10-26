@@ -6,6 +6,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.industry.Deposits;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.District;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.IndRecords;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.IndustryPlugin;
+import com.minecraftindustrialcomplex.mic_rtsim.journal.DurableOpRing;
 import com.minecraftindustrialcomplex.mic_rtsim_dieselgenerators.mixin.OilChunksSavedDataAccessor;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.resources.ResourceLocation;
@@ -29,9 +30,11 @@ import java.util.Map;
  *       with the infinite flag: never stock.</li>
  *   <li><b>Good:</b> {@code d/0/createdieselgenerators:oil/<chunk hash>} ({@link Deposits}).</li>
  *   <li><b>Write</b> at once with IND_DEPOSIT_DELTA (F15: level SavedData, writable unloaded):
- *       {@code OilChunksSavedData.setChunkOilAmount}, clamped at 0. The store and the journal reach disk at
- *       the same save, so the journal's applied set is the dedup (the core's
- *       {@code Industry.depositDelta}).</li>
+ *       {@code OilChunksSavedData.setChunkOilAmount}, clamped at 0. The dedup is the oil file's own ring of
+ *       applied ops or the journal (the core's {@code Industry.depositDelta}): {@code cdg_oil_chunks} is a file
+ *       of its own, written before the journal's in a world save, and keeps the ops of its draws beside them
+ *       ({@link OilRingHolder}), so a crash between the two writes neither draws a chunk twice nor leaves a
+ *       draw the journal knows off the deposit (docs/choices-journal-barrier.md RP-200, RP-204).</li>
  * </ul>
  */
 public final class DieselOilPlugin implements IndustryPlugin {
@@ -78,6 +81,14 @@ public final class DieselOilPlugin implements IndustryPlugin {
             return; // no oil here: nothing to deplete
         boolean infinite = amount == Integer.MAX_VALUE;
         out.add(IndRecords.DepositPlugin.DIESEL_OIL, Deposits.name(OIL, level.dimension(), cp.x, cp.z), infinite ? 0 : amount, infinite);
+    }
+
+    /** The applied ops kept in this dimension's {@code cdg_oil_chunks}, beside the draws (RP-204). */
+    @Override
+    public DurableOpRing depositRing(ServerLevel level, int chunkX, int chunkZ, String good) {
+        if (!OIL.equals(Deposits.kindIn(good, level.dimension(), chunkX, chunkZ)))
+            return null;
+        return OilChunksSavedData.load(level) instanceof OilRingHolder h ? h.mic_rtsim$ring() : null;
     }
 
     @Override

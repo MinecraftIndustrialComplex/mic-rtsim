@@ -94,6 +94,9 @@ pub mod mirrored {
     pub use super::conflict::KEY_CONFLICT;
     pub use super::dragons::KEY_DRAGONS;
     pub use super::herds::KEY_HERDS;
+    /// The industry link's page tables (`stored_keys`, `deletions`): what a load reads and a fresh
+    /// start deletes. `tests/tables.rs` checks the engine's tables against it.
+    pub use super::industry::TABLES as INDUSTRY_TABLES;
     pub use super::paging::{HASH_MAGIC, hash_key};
     pub use super::ships::KEY_SHIPS;
     pub use super::worldmodel::KEY_META as WORLD_MODEL_META;
@@ -305,6 +308,10 @@ pub struct Stats {
     pub gaps: AtomicU64,
     pub commands_written: AtomicU64,
     pub save_failures: AtomicU64,
+    /// Kept commands this session's start resends, every module's (the core's, phase 1's and
+    /// industry's resend queues): the commands Java's journal on disk did not hold as applied
+    /// (docs/choices-journal-barrier.md RP-205).
+    pub resend_at_start: AtomicU64,
     pub steps_submitted: AtomicU64,
     /// Phase 1's counters (`nPhase1Stats`, phase1::stat).
     pub phase1: [AtomicU64; phase1::STATS],
@@ -345,7 +352,7 @@ pub struct Stats {
     pub window_grew: AtomicU64,
 }
 
-pub const STATS_LEN: usize = 16;
+pub const STATS_LEN: usize = 17;
 
 /// The length of [`Engine::clocks`]'s array (Java's `NativeEngine.CLOCKS`).
 pub const CLOCKS: usize = 8;
@@ -890,6 +897,7 @@ impl Engine {
             l(&s.gaps),
             l(&s.commands_written),
             l(&s.save_failures),
+            l(&s.resend_at_start),
         ]
     }
 
@@ -1182,14 +1190,19 @@ impl Engine {
                 b.put_u64(off, 0);
             }
         }
+        let resends = st.resend.len() + st.phase1.resend_len() + st.industry.resend_len();
+        self.stats
+            .resend_at_start
+            .store(resends as u64, Ordering::Release);
         self.publish_stats(&st);
         if self.cfg.test {
             self.publish_inspect(&st);
         }
         log_info(&format!(
-            "engine started: pages include observation {pages_obs}, {} agents, {} outbox commands to resend, next command {next_cmd}",
+            "engine started: pages include observation {pages_obs}, {} agents, {} outbox commands to resend ({} of every module), next command {next_cmd}",
             st.world.agents.len(),
-            st.resend.len()
+            st.resend.len(),
+            resends
         ));
         Ok((pages_obs, next_cmd))
     }
@@ -1972,6 +1985,7 @@ impl Engine {
                 shared::catch_up(st, rec);
                 phase1::after_core(st, rec);
                 dragons::after_core(st, rec);
+                conflict::after_core(st, rec);
             }
             Verdict::AlreadyApplied => {
                 self.stats.stale_skipped.fetch_add(1, Ordering::AcqRel);
@@ -1997,6 +2011,7 @@ impl Engine {
             industry::answered_again(st, rec);
         }
         dragons::answered_again(st, rec);
+        conflict::answered_again(st, rec);
         st.world.refused_journaled(rec);
     }
 

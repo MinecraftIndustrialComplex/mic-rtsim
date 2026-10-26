@@ -4,6 +4,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.MicRtsim;
 import com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession;
 import com.minecraftindustrialcomplex.mic_rtsim.journal.ChunkWriteBarrier;
 import com.minecraftindustrialcomplex.mic_rtsim.journal.JournalSavedData;
+import com.minecraftindustrialcomplex.mic_rtsim.journal.WorldSaveOrder;
 import com.minecraftindustrialcomplex.mic_rtsim.mixin.EntitySectionManagerAccessor;
 import com.minecraftindustrialcomplex.mic_rtsim.mixin.EntityStorageAccessor;
 import com.minecraftindustrialcomplex.mic_rtsim.mixin.ServerLevelAccessor;
@@ -42,6 +43,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -57,9 +59,10 @@ import static com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests.recor
  * journal's file waits for the chunks it speaks for and for nothing else, and a write it cannot order is held
  * to the next world save, never made late.
  *
- * <p>Each test but the marker's drives its own {@link JournalSavedData} (not the server's), through the same
- * {@code save(File, ...)} vanilla calls from {@code saveLevelData}, so the server's autosaves never count in its
- * rounds. Its file goes under {@code <world>/mic_rtsim-test/}.
+ * <p>Each test but the marker's and the direct save's drives its own {@link JournalSavedData} (not the server's),
+ * through the same {@code save(File, ...)} vanilla calls from {@code saveLevelData}, inside a world save's start and
+ * return ({@link WorldSaveOrder#asWorldSaveForTest}), so the server's autosaves never count in its rounds. Its file
+ * goes under {@code <world>/mic_rtsim-test/}.
  */
 @GameTestHolder(MicRtsim.MODID)
 @PrefixGameTestTemplate(false)
@@ -142,7 +145,7 @@ public final class JournalBarrierGameTests {
                         throw new RuntimeException(e);
                     }
                     started[0] = System.nanoTime();
-                    data.save(file[0].toFile(), level.registryAccess());
+                    WorldSaveOrder.asWorldSaveForTest(level.getServer(), () -> data.save(file[0].toFile(), level.registryAccess()));
                     peekAfter(level, chestPos, file[0], backlog, peek);
                 })
                 .thenWaitUntil(io(() -> check("the IO chain ran the journal's write and the peek", peek.get() != null)))
@@ -255,7 +258,7 @@ public final class JournalBarrierGameTests {
     private static void saveAndLook(ServerLevel level, JournalSavedData data, Path file, AtomicReference<Round> out) {
         out.set(null);
         data.setDirty();
-        data.save(file.toFile(), level.registryAccess());
+        WorldSaveOrder.asWorldSaveForTest(level.getServer(), () -> data.save(file.toFile(), level.registryAccess()));
         ChunkWriteBarrier b = data.chunks();
         IOUtilities.withIOWorker(() -> out.set(new Round(Files.isRegularFile(file), data.writes(), b.held(), b.late(), data.isDirty(), b.lastHeld())));
     }
@@ -266,8 +269,8 @@ public final class JournalBarrierGameTests {
      * serializes the chunk off the server thread: nothing has reached the storage. Here it is a detached
      * {@code LevelChunk} that never was in its level. The write is held (the file is not written, the journal
      * stays dirty for the next save); after the chunk's {@code ChunkEvent.Unload} the next save writes it. Then the
-     * valve: a chunk that never resolves holds {@link ChunkWriteBarrier#GIVE_UP_ROUNDS} - 1 saves, and the next
-     * one is written without it, counted late.
+     * give-up (RP-205): a chunk whose unload is never seen holds {@link ChunkWriteBarrier#GIVE_UP_ROUNDS} - 1
+     * saves, and the next one gives that note up at its arm and is written without it, counted late, not held.
      */
     @GameTest(template = RtsimTests.TEMPLATE, batch = "mic_rtsim_journal_barrier", timeoutTicks = 6000)
     public static void aChunkStillBeingUnloadedHoldsTheJournalsFileToTheNextSave(GameTestHelper helper) {
@@ -321,9 +324,120 @@ public final class JournalBarrierGameTests {
         seq.thenWaitUntil(io(() -> check("the chain looked", round.get() != null)))
                 .thenExecute(() -> {
                     Round r = round.get();
-                    record("aChunkStillBeingUnloadedHoldsTheJournalsFileToTheNextSave", "the valve", r);
-                    check("written without it after " + ChunkWriteBarrier.GIVE_UP_ROUNDS + " held saves, counted late: " + r,
-                            r.writes() == 2 && r.held() == ChunkWriteBarrier.GIVE_UP_ROUNDS + 1 && r.late() == 1 && !r.dirty());
+                    record("aChunkStillBeingUnloadedHoldsTheJournalsFileToTheNextSave", "the give-up", r);
+                    check("written without it at the " + ChunkWriteBarrier.GIVE_UP_ROUNDS + "th save, given up and counted late: " + r,
+                            r.writes() == 2 && r.held() == ChunkWriteBarrier.GIVE_UP_ROUNDS && r.late() == 1 && !r.dirty());
+                    check("no note left", data.chunks().pending() == 0 && data.chunks().heldInARow() == 0);
+                    try {
+                        Files.deleteIfExists(file[0]);
+                    } catch (IOException ignored) {
+                    }
+                })
+                .thenSucceed();
+    }
+
+    /**
+     * A hold a later save can clear has no limit (RP-205): a chunk in the arena is noted and every round is held as
+     * one whose chunks were not on disk in time ({@link ChunkWriteBarrier#holdForTest}).
+     * {@link ChunkWriteBarrier#GIVE_UP_ROUNDS} + 2 saves in a row are held, none written and none late, the journal
+     * dirty after each; once the writes land, the next save writes the file.
+     */
+    @GameTest(template = RtsimTests.TEMPLATE, batch = "mic_rtsim_journal_barrier_nolimit", timeoutTicks = 6000)
+    public static void aWriteHeldForItsChunksIsHeldAtEverySaveWithNoLimit(GameTestHelper helper) {
+        ServerLevel level = helper.getLevel();
+        JournalSavedData data = JournalSavedData.fresh();
+        LevelChunk chunk = level.getChunkAt(helper.absolutePos(BlockPos.ZERO));
+        AtomicReference<Round> round = new AtomicReference<>();
+        Path[] file = {null};
+        int saves = ChunkWriteBarrier.GIVE_UP_ROUNDS + 2;
+        var seq = helper.startSequence()
+                .thenExecute(() -> {
+                    try {
+                        file[0] = testFile(level);
+                    } catch (IOException e) {
+                        throw new RuntimeException(e);
+                    }
+                    data.chunks().holdForTest = "a test's chunks not on disk in time";
+                    data.chunks().dependsOn(chunk);
+                    saveAndLook(level, data, file[0], round);
+                });
+        for (int i = 1; i < saves; i++) {
+            int n = i;
+            seq = seq.thenWaitUntil(io(() -> check("the chain looked", round.get() != null)))
+                    .thenExecute(() -> {
+                        Round r = round.get();
+                        check("held " + n + " time(s) in a row, nothing written or late: " + r,
+                                !r.onDisk() && r.writes() == 0 && r.held() == n && r.late() == 0 && r.dirty() && data.chunks().heldInARow() == n);
+                        saveAndLook(level, data, file[0], round);
+                    });
+        }
+        seq.thenWaitUntil(io(() -> check("the chain looked", round.get() != null)))
+                .thenExecute(() -> {
+                    Round r = round.get();
+                    record("aWriteHeldForItsChunksIsHeldAtEverySaveWithNoLimit", "after " + saves + " saves", r);
+                    check("held at every save: " + r, r.writes() == 0 && r.held() == saves && r.late() == 0 && r.dirty());
+                    check("the note stays", data.chunks().pending() == 1);
+                    data.chunks().holdForTest = null;
+                    saveAndLook(level, data, file[0], round);
+                })
+                .thenWaitUntil(io(() -> check("the chain looked", round.get() != null)))
+                .thenExecute(() -> {
+                    Round r = round.get();
+                    record("aWriteHeldForItsChunksIsHeldAtEverySaveWithNoLimit", "once its writes land", r);
+                    check("written once its chunks are on disk: " + r, r.onDisk() && r.writes() == 1 && r.late() == 0 && !r.dirty());
+                    check("no longer held", data.chunks().heldInARow() == 0);
+                    try {
+                        Files.deleteIfExists(file[0]);
+                    } catch (IOException ignored) {
+                    }
+                })
+                .thenSucceed();
+    }
+
+    /**
+     * A flush save never hangs on the journal, and never writes it ahead of its chunks (RP-205). A held round at a
+     * flush save (the stop, {@code /save-all flush}) tries once more after the chain has written the save: a chunk
+     * whose unload is seen by then is written with the file. A chunk whose unload is never seen holds the second
+     * try too: the file on disk stays byte for byte as it was, the journal stays dirty, it is counted
+     * ({@code flushKept}), and the second try does not count toward the note's give-up.
+     */
+    @GameTest(template = RtsimTests.TEMPLATE, batch = "mic_rtsim_journal_barrier_flush", timeoutTicks = 6000)
+    public static void aFlushSaveTriesOnceMoreThenKeepsTheOlderFile(GameTestHelper helper) {
+        ServerLevel level = helper.getLevel();
+        JournalSavedData data = JournalSavedData.fresh();
+        LevelChunk inFlight = new LevelChunk(level, spare(2));
+        LevelChunk never = new LevelChunk(level, spare(3));
+        Path[] file = {null};
+        CompletableFuture<?> anchor = writeAnchor(level);
+        helper.startSequence()
+                .thenWaitUntil(() -> check("the region file is there", anchor.isDone()))
+                .thenExecute(() -> {
+                    try {
+                        file[0] = testFile(level);
+                    } catch (IOException e) {
+                        throw new RuntimeException(e);
+                    }
+                    ChunkWriteBarrier b = data.chunks();
+                    // a flush save, held at its first try, written at its second: the unload is seen in between
+                    b.dependsOn(inFlight);
+                    data.setDirty();
+                    WorldSaveOrder.beforeFlushRetryForTest = () -> b.onUnload(inFlight);
+                    WorldSaveOrder.asWorldSaveForTest(level.getServer(), () -> data.save(file[0].toFile(), level.registryAccess()), true);
+                    String first = "writes " + data.writes() + ", held " + b.held() + " (" + b.lastHeld() + "), kept " + data.flushKept() + ", late " + b.late();
+                    record("aFlushSaveTriesOnceMoreThenKeepsTheOlderFile", "held, then the unload", first);
+                    check("held once, written at the second try: " + first,
+                            data.writes() == 1 && b.held() == 1 && data.flushKept() == 0 && b.late() == 0 && !data.isDirty() && Files.isRegularFile(file[0]));
+                    byte[] written = bytesOrEmpty(file[0]);
+                    // a flush save held at both tries: the older file stays
+                    b.dependsOn(never);
+                    data.journal().reserveBeyond(data.journal().nextObsSeq() + 10); // the journal moves on: a write would differ
+                    WorldSaveOrder.asWorldSaveForTest(level.getServer(), () -> data.save(file[0].toFile(), level.registryAccess()), true);
+                    String second = "writes " + data.writes() + ", held " + b.held() + " (" + b.lastHeld() + "), kept " + data.flushKept() + ", late " + b.late();
+                    record("aFlushSaveTriesOnceMoreThenKeepsTheOlderFile", "held twice", second);
+                    check("held at both tries, kept as it was: " + second, data.writes() == 1 && b.held() == 3 && data.flushKept() == 1 && b.late() == 0);
+                    check("the file on disk is byte for byte the first", java.util.Arrays.equals(written, bytesOrEmpty(file[0])));
+                    check("still dirty for the next world save", data.isDirty());
+                    check("the second try did not count toward the give-up: still noted", b.pending() == 1);
                     try {
                         Files.deleteIfExists(file[0]);
                     } catch (IOException ignored) {
@@ -405,6 +519,69 @@ public final class JournalBarrierGameTests {
     }
 
     /**
+     * A level saved by itself, outside a world save, leaves the journal's file on disk as it was (RP-203). The
+     * overworld's own {@code ServerLevel.save}, as a mod might call it, with the server's journal dirty: on the IO
+     * chain right after it, the file's bytes are the bytes from before, nothing was written, the journal is still
+     * dirty, and the skip is counted. The file could otherwise claim an op whose effect lives in another level's
+     * SavedData, which that save did not write. The next world save writes it (or its barrier holds it, counted).
+     */
+    @GameTest(template = RtsimTests.TEMPLATE, batch = "mic_rtsim_journal_direct_save", timeoutTicks = 6000)
+    public static void aLevelSavedByItselfLeavesTheJournalOnDiskAsItWas(GameTestHelper helper) {
+        String test = "aLevelSavedByItselfLeavesTheJournalOnDiskAsItWas";
+        ServerLevel overworld = helper.getLevel().getServer().overworld();
+        JournalSavedData data = RtsimTests.session().journal();
+        Path file = overworld.getServer().getWorldPath(LevelResource.ROOT).resolve("data").resolve(JournalSavedData.FILE + ".dat");
+        AtomicReference<byte[]> before = new AtomicReference<>();
+        AtomicReference<Look> after = new AtomicReference<>();
+        long[] at = new long[3];
+        helper.startSequence()
+                .thenExecute(() -> {
+                    overworld.getServer().saveEverything(true, false, false); // so the file is there
+                    IOUtilities.withIOWorker(() -> before.set(bytesOrEmpty(file)));
+                })
+                .thenWaitUntil(io(() -> check("the chain looked", before.get() != null)))
+                .thenExecute(() -> {
+                    at[0] = data.writes();
+                    at[1] = data.skipped();
+                    at[2] = data.chunks().held();
+                    data.setDirty();
+                    overworld.save(null, false, false);
+                    IOUtilities.withIOWorker(() -> after.set(new Look(bytesOrEmpty(file), data.writes(), data.isDirty())));
+                })
+                .thenWaitUntil(io(() -> check("the chain looked", after.get() != null)))
+                .thenExecute(() -> {
+                    Look a = after.get();
+                    record(test, "after the direct save", "bytes " + before.get().length + " -> " + a.bytes().length + ", writes "
+                            + at[0] + " -> " + a.writes() + ", skipped " + at[1] + " -> " + data.skipped() + ", dirty " + a.dirty());
+                    check("the file on disk is the file from before", Arrays.equals(a.bytes(), before.get()));
+                    check("nothing was written", a.writes() == at[0]);
+                    check("the journal is still dirty", a.dirty());
+                    check("the skip is counted", data.skipped() == at[1] + 1);
+                    after.set(null);
+                    overworld.getServer().saveEverything(true, false, false);
+                    IOUtilities.withIOWorker(() -> after.set(new Look(bytesOrEmpty(file), data.writes(), data.isDirty())));
+                })
+                .thenWaitUntil(io(() -> check("the chain looked", after.get() != null)))
+                .thenExecute(() -> {
+                    Look a = after.get();
+                    record(test, "after the world save", "writes " + a.writes() + ", held " + at[2] + " -> " + data.chunks().held());
+                    check("the world save wrote it, or its barrier held it", a.writes() > at[0] || data.chunks().held() > at[2]);
+                })
+                .thenSucceed();
+    }
+
+    private record Look(byte[] bytes, long writes, boolean dirty) {}
+
+    /** A file's bytes, or none when it is not there; on the IO chain, so it never throws. */
+    private static byte[] bytesOrEmpty(Path file) {
+        try {
+            return Files.isRegularFile(file) ? Files.readAllBytes(file) : new byte[0];
+        } catch (IOException | RuntimeException e) {
+            return new byte[0];
+        }
+    }
+
+    /**
      * A camp record's holder is noted by its UUID and the chunk is decided at the arm (MZB-238): a holder that
      * walks into the next chunk between its record and the journal's save is noted where it stands then, not
      * where it stood. Four forced chunks in a row; holder A stands in the first when its record is committed and
@@ -454,7 +631,7 @@ public final class JournalBarrierGameTests {
                     bb.discard();
                     b.forgetHolderReferences();
                     data.setDirty();
-                    data.save(file[0].toFile(), level.registryAccess());
+                    WorldSaveOrder.asWorldSaveForTest(level.getServer(), () -> data.save(file[0].toFile(), level.registryAccess()));
                     record(test, "counters", "resolved " + b.holdersResolved() + ", moved " + b.holdersMoved() + ", remembered " + b.holdersRemembered()
                             + ", not found " + b.holdersUnresolved() + ", stored " + b.entityStores());
                     check("A's new chunk is noted", b.entityChunkNoted(level, new ChunkPos(k + 1, z0)));
@@ -521,7 +698,7 @@ public final class JournalBarrierGameTests {
                     check("the level no longer finds it", level.getEntity(h.getUUID()) == null);
                     check("it last stood in the second chunk", h.chunkPosition().equals(new ChunkPos(k + 1, z0)));
                     data.setDirty();
-                    data.save(file[0].toFile(), level.registryAccess());
+                    WorldSaveOrder.asWorldSaveForTest(level.getServer(), () -> data.save(file[0].toFile(), level.registryAccess()));
                     record(test, "counters", "resolved " + b.holdersResolved() + ", moved " + b.holdersMoved() + ", remembered " + b.holdersRemembered()
                             + ", not found " + b.holdersUnresolved());
                     check("the chunk it was last seen in is noted", b.entityChunkNoted(level, new ChunkPos(k + 1, z0)));

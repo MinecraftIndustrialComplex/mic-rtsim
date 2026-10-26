@@ -24,7 +24,7 @@
   "vengeance_per_item": 0.2,
   "units": [
     { "name": "warrior", "body": "mic_rtsim:conflict/umvuthana/warrior", "class": "ground_melee", "strength": 0.4, "carry": 0, "breaks": 0 },
-    { "name": "raptor", "body": "mic_rtsim:conflict/umvuthana/raptor", "class": "ground_melee", "strength": 2.6, "carry": 0, "breaks": 0 },
+    { "name": "raptor", "body": "mic_rtsim:conflict/umvuthana/raptor", "class": "ground_melee", "strength": 2.6, "carry": 0, "breaks": 0, "hunts": 2 },
     { "name": "envoy", "body": "mic_rtsim:conflict/umvuthana/envoy", "class": "ground_melee", "strength": 0.4, "carry": 0, "breaks": 0 }
   ],
   "parties": {
@@ -53,5 +53,11 @@
   "chief_lifespan_days": 1000000,
   "source": "boss",
   "loot_destroyed": true,
-  "camp_bodies": true
+  "camp_bodies": true,
+  "chief_body": "mic_rtsim:conflict/umvuthana/umvuthi",
+  "chief_renewal": { "base_days": 6.0, "cap_days": 192.0, "half_life_days": 96.0, "boss": true },
+  "chief_leads": ["invasion"],
+  "chief_strength": 5.0,
+  "plunder_goods": ["leather", "wool"],
+  "hunt_cap": 8
 }
