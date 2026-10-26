@@ -362,7 +362,7 @@ fn tribute_goes_to_the_lairs_chest_in_stacks() {
         assert!(!d.tribute_placed(a.0), "answered once");
         assert_eq!(d.lairs.get(l).unwrap().placed, a.1);
         assert_eq!(d.stats.tribute_stacks, 1);
-        assert!(d.tribute_failed(b.0));
+        assert!(d.tribute_failed(b.0, true));
         assert_eq!(d.chest(l), None, "a failure forgets the chest");
         assert_eq!(d.lairs.get(l).unwrap().unplaced[&Item::World(g)], b.1);
         d.check(&w, None).unwrap();
@@ -458,7 +458,7 @@ fn a_failed_stack_forgets_only_its_own_chest() {
             .any(|(o, p)| o == op && p.chest == first)
     );
     // The chunk is loaded now, and the chest has no room: FAILED.
-    assert!(d.tribute_failed(op));
+    assert!(d.tribute_failed(op, true));
     assert_eq!(
         d.chest(l),
         Some(other),
@@ -475,8 +475,64 @@ fn a_failed_stack_forgets_only_its_own_chest() {
     d.check(&w, None).unwrap();
     // A failed stack of the chest the lair still holds forgets it, as before.
     let new_op = again[0].0;
-    assert!(d.tribute_failed(new_op));
+    assert!(d.tribute_failed(new_op, true));
     assert_eq!(d.chest(l), None, "its own chest is forgotten");
+    d.check(&w, None).unwrap();
+}
+
+/// MZB-767 (re-check P2): a FAILED answer taken with the dragons off is a record and decides
+/// nothing (RP-291). Stack s parked at chest X, a chest Y reported, s sent to X again, the
+/// dragons switched off, FAILED: the coin is booked back and Y is kept, as with the dragons on,
+/// but no stack is made and no op id is drawn, for the switch on forgets Y. The next stack comes
+/// with the lair's next chest report.
+#[test]
+fn a_failed_stack_answered_with_the_dragons_off_makes_no_stack() {
+    let (mut w, mut d) = start(7, &[spec(ASHPEAK)]);
+    let (l, g) = (lair(&d, ASHPEAK), emerald(&w));
+    let t0 = Tick::from_days(1);
+    assert!(tributary(&mut w, &mut d, ASHBY, ASHPEAK, 1_000, t0));
+    d.ingest(&mut w, &mut NoInfrastructure, &chest_of(ASHPEAK), t0);
+    let first = d.chest(l).expect("reported");
+    let mut ops: Vec<(u64, i64)> = d.placing().map(|(op, p)| (op, p.count)).collect();
+    ops.sort_by_key(|s| s.0);
+    let (op, count) = ops[0];
+    assert!(d.tribute_unloaded(op));
+    let s = spec(ASHPEAK);
+    let moved = Obs::LairChest(LairChest {
+        lair: ASHPEAK,
+        dimension: 0,
+        pos: (s.x - 3, s.y, s.z + 2),
+    });
+    d.ingest(&mut w, &mut NoInfrastructure, &moved, Tick(t0.0 + 10));
+    let other = d.chest(l).expect("reported again");
+    assert_ne!(other, first);
+    let (stacks, ids) = (
+        d.lairs.get(l).unwrap().stacks,
+        d.placing().map(|(o, _)| o).collect::<Vec<_>>(),
+    );
+    // Off: the answer books the coin back and keeps the chest, and makes nothing.
+    assert!(d.tribute_failed(op, false));
+    assert_eq!(d.chest(l), Some(other), "only the stack's own chest goes");
+    assert_eq!(d.lairs.get(l).unwrap().unplaced[&Item::World(g)], count);
+    assert_eq!(d.lairs.get(l).unwrap().stacks, stacks, "no op id drawn");
+    let left: Vec<u64> = d.placing().map(|(o, _)| o).collect();
+    assert_eq!(left.len() + 1, ids.len(), "only the answered stack leaves");
+    assert!(left.iter().all(|o| ids.contains(o)), "no stack is made");
+    d.check(&w, None).unwrap();
+    // The switch on forgets the chest; the lair's next report places the coin once.
+    d.begin_replay(false);
+    d.replay_done(&mut w, Tick(t0.0 + 20));
+    assert_eq!(d.chest(l), None);
+    assert_eq!(d.lairs.get(l).unwrap().unplaced[&Item::World(g)], count);
+    d.ingest(
+        &mut w,
+        &mut NoInfrastructure,
+        &chest_of(ASHPEAK),
+        Tick(t0.0 + 30),
+    );
+    let again: Vec<_> = d.placing().filter(|(o, _)| !ids.contains(o)).collect();
+    assert_eq!(again.len(), 1, "the coin goes once, at the report");
+    assert_eq!(again[0].1.count, count);
     d.check(&w, None).unwrap();
 }
 
@@ -515,7 +571,7 @@ fn day(r: &mut Run, day: u64) {
     let ops: Vec<u64> = r.d.placing().map(|(op, _)| op).collect();
     for op in ops {
         if op % 3 == 0 {
-            assert!(r.d.tribute_failed(op));
+            assert!(r.d.tribute_failed(op, true));
         } else {
             assert!(r.d.tribute_placed(op));
         }

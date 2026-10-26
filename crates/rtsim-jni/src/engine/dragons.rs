@@ -554,7 +554,12 @@ pub(super) fn after_core(st: &mut State, rec: &Rec<'_>) {
         obs::command_result::APPLIED | obs::command_result::DUPLICATE_OP => {
             st.dragons.engine.tribute_placed(op)
         }
-        obs::command_result::FAILED => st.dragons.engine.tribute_failed(op),
+        // Off, the answer decides nothing (RP-291, MZB-767): the coin is booked back and no
+        // stack is made, for the switch on forgets the chest it would go to.
+        obs::command_result::FAILED => {
+            let place = running(st);
+            st.dragons.engine.tribute_failed(op, place)
+        }
         obs::command_result::NOT_LOADED => st.dragons.engine.tribute_unloaded(op),
         _ => false,
     };
@@ -916,12 +921,15 @@ fn write_tribute(st: &mut State, w: &mut RecordWriter<'_>) -> (u64, bool) {
             Item::Industry(_) => None,
         };
         let (Some(dimension), Some(item)) = (dimension, item) else {
-            // Never written: the coin waits for the chest to be reported again.
+            // Never written: the coin goes back to its lair's unplaced. A chest the lair reported
+            // since, elsewhere, takes it at once while the dragons run (MZB-762, MZB-767); else it
+            // waits for the chest to be reported again.
             log_error(&format!(
                 "a tribute stack (op {op:#x}) to a chest in dimension {} Java never named, or of a good no item stands for; back to its lair",
                 p.chest.dimension
             ));
-            st.dragons.engine.tribute_failed(op);
+            let place = running(st);
+            st.dragons.engine.tribute_failed(op, place);
             continue;
         };
         let t = TransferCmd {
