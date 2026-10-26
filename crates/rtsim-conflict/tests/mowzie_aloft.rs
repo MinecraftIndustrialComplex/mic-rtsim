@@ -546,3 +546,381 @@ fn an_away_chief_body_is_dropped_with_its_materialize() {
     );
     assert!(!r.c.parties[p].embodied);
 }
+
+// ---- A4: the chief comes home by a hand-back ----------------------------------------------------
+
+/// The scripted player follows the band, looking where it is every 50 ticks, until `to` or until
+/// it is home.
+fn follow(r: &mut CampRun, p: Handle<Party>, to: Tick) {
+    while r.c.now() < to && r.c.parties.contains(p) {
+        let at = r.c.now();
+        let pos = here(r, p);
+        r.c.observe_player(&mut r.w, synth::PLAYER, pos, at);
+        let next = (at + 50).min(to);
+        r.run(next);
+    }
+}
+
+/// The band, past its fight and on its way home, met 300 ticks short of its camp and followed to
+/// a tick before it is there: embodied as it comes home. The tick it is home.
+fn followed_home(r: &mut CampRun, p: Handle<Party>) -> Tick {
+    let arrive = *r.c.parties[p].times.last().expect("a route");
+    r.run(arrive + 400);
+    assert_eq!(r.c.parties[p].phase, Phase::Home, "walking home");
+    let home = *r.c.parties[p].times.last().expect("a route home");
+    r.run(Tick(home.0 - 300));
+    follow(r, p, Tick(home.0 - 1));
+    assert!(r.c.parties[p].embodied, "embodied as it comes home");
+    home
+}
+
+/// The chief's line in `cmds` (a CAMP_RECONCILE's line on `CHIEF_SLOT`): the reconcile, the line's
+/// index there, and the line; and the command just ahead of the reconcile.
+fn chief_line(
+    cmds: &[Cmd],
+) -> Option<(
+    boundary::CampReconcile,
+    u32,
+    boundary::ReconcileLine,
+    Option<Cmd>,
+)> {
+    cmds.iter().enumerate().find_map(|(i, c)| match c {
+        Cmd::Reconcile(r) => r.lines.iter().position(|l| l.slot == CHIEF_SLOT).map(|k| {
+            (
+                r.clone(),
+                k as u32,
+                r.lines[k],
+                i.checked_sub(1).map(|j| cmds[j].clone()),
+            )
+        }),
+        _ => None,
+    })
+}
+
+/// The outcome the plugin gave the line `index` of reconcile `op`, once applied.
+fn applied(r: &CampRun, op: u64, index: u32) -> Option<u8> {
+    r.plugin
+        .applied
+        .iter()
+        .find(|a| a.op == op && a.index == index)
+        .map(|a| a.outcome)
+}
+
+/// Runs until the plugin has answered the line, a day at most: its outcome.
+fn answered(r: &mut CampRun, op: u64, index: u32) -> u8 {
+    let limit = r.c.now() + TICKS_PER_DAY;
+    while applied(r, op, index).is_none() && r.c.now() < limit {
+        let to = r.c.now() + 10;
+        r.run(to);
+    }
+    let outcome = applied(r, op, index).expect("answered");
+    // The answer reaches the engine `answer_ticks` after the plugin applied it.
+    let to = r.c.now() + r.plugin.answer_ticks + 2;
+    r.run(to);
+    outcome
+}
+
+/// Asserts the reconcile at home is the chief's HAND_BACK of `p`'s agent and epoch (LINE_CHIEF),
+/// with the camp's memory just ahead of it as a home CHIEF_BODY (agent 0, the camp's epoch).
+fn assert_handed_back(r: &CampRun, cmds: &[Cmd], agent: u64, epoch: u32, generation: u32) {
+    let (rec, _, l, ahead) = chief_line(cmds).expect("a chief line at home");
+    assert_eq!(
+        l.action,
+        boundary::ACTION_HAND_BACK,
+        "the chief is handed back"
+    );
+    assert_eq!((l.a, l.b), (agent, u64::from(epoch)), "its band and epoch");
+    assert_eq!(l.generation, generation);
+    assert_ne!(l.flags & boundary::LINE_CHIEF, 0, "LINE_CHIEF");
+    let camp = r.c.camp(r.f).expect("a camp");
+    match ahead {
+        Some(Cmd::ChiefBody(b)) => {
+            assert_eq!((b.faction, b.agent, b.epoch), (r.key, 0, rec.epoch), "home");
+            assert_eq!(b.traded, vec![synth::PLAYER], "the camp's memory");
+            assert_eq!(rec.epoch, camp.epoch, "the camp's epoch");
+        }
+        other => panic!("no CHIEF_BODY ahead of the hand-back: {other:#?}"),
+    }
+}
+
+/// A4 (MZB-821): an embodied Invasion its Umvuthi leads comes home, and the chief comes home by a
+/// HAND_BACK of its own, the camp's memory just ahead of it: (1) to a grove that is in, its slot
+/// Gone, answered DONE (the throne body made from the puppet), the slot Body; (2) the slot Left,
+/// its throne body standing (the grove was out at the muster's end, and the TAKE its census sent
+/// was held on a player at the throne and answered STALE as the puppet came near, MZB-823),
+/// answered NOTHING (case B), the slot Body and one throne body; (3) to a grove that is out, the
+/// band recalled with RECALL_DONE and no line, the slot Owed and spawned by the next census. Without
+/// the change (1) is a SPAWN and (2) has no chief line at all.
+#[test]
+fn the_chief_is_handed_back_at_home() {
+    // 1. The grove in, the slot Gone (its body set out at the muster's end).
+    let (mut r, p) = led_invasion_out(88);
+    let agent = Party::agent(p);
+    let generation = chief(&r).expect("a chief").1;
+    assert_eq!(chief(&r), Some((SlotState::Gone, generation)), "set out");
+    let home = followed_home(&mut r, p);
+    let epoch = r.c.parties[p].epoch;
+    let mark = r.cmds.len();
+    r.run(home + 1);
+    assert!(!r.c.parties.contains(p), "home");
+    let cmds = since(&r, mark);
+    assert_handed_back(&r, &cmds, agent, epoch, generation);
+    let (rec, index, ..) = chief_line(&cmds).expect("a chief line");
+    assert_eq!(answered(&mut r, rec.op, index), boundary::LINE_DONE);
+    assert_eq!(chief(&r), Some((SlotState::Body, generation)), "body again");
+    assert_eq!(
+        r.plugin.camp_held(r.key, CHIEF_SLOT, generation).len(),
+        1,
+        "one throne body"
+    );
+    ok(&mut r);
+
+    // 2. The grove out at the muster's end, in again while the band is away, the slot Left.
+    let mut r = quiet_grove(89);
+    let generation = seat_chief(&mut r);
+    pay_at_home(&mut r, generation);
+    let at = r.c.now();
+    let target = Target::District(synth::REFINERY, synth::REFINERY_POS);
+    let p =
+        r.c.order_party(&mut r.w, r.key, PartyKind::Invasion, target, None, at)
+            .expect("an invasion");
+    r.flush(at);
+    r.camp_out();
+    let muster = r.c.parties[p].until;
+    r.run(muster + 200);
+    assert_eq!(r.c.parties[p].phase, Phase::Out, "on the road");
+    assert_eq!(
+        chief(&r),
+        Some((SlotState::Left, generation)),
+        "left, its body standing"
+    );
+    let agent = Party::agent(p);
+    // A player at the throne as the grove comes in: the census's TAKE of the throne body is held
+    // (Java's `holdRemoval`).
+    let at = r.c.now();
+    r.plugin.hold_chief(r.key, true, false, at);
+    let mark = r.cmds.len();
+    r.camp_in();
+    let to = r.c.now() + 10;
+    r.run(to);
+    let (take, take_index, l, _) = chief_line(&since(&r, mark)).expect("the census's chief line");
+    assert_eq!(
+        l.action,
+        boundary::ACTION_TAKE,
+        "the census takes the throne body"
+    );
+    assert!(applied(&r, take.op, take_index).is_none(), "held");
+    let home = followed_home(&mut r, p);
+    let epoch = r.c.parties[p].epoch;
+    // Java answers the held TAKE stale once the puppet is within 32 blocks of the throne (MZB-823).
+    let at = r.c.now();
+    r.c.ingest(
+        &mut r.w,
+        &mut NoInfrastructure,
+        &Obs::CampBodies(boundary::CampBodies {
+            faction: r.key,
+            epoch: take.epoch,
+            op: take.op,
+            lines: vec![boundary::LineAnswer {
+                line: take_index,
+                slot: CHIEF_SLOT,
+                generation,
+                action: boundary::ACTION_TAKE,
+                outcome: boundary::LINE_STALE,
+            }],
+        }),
+        at,
+    );
+    let s = r.c.camp(r.f).and_then(|c| c.chief()).expect("a chief");
+    assert_eq!(
+        (s.state, s.line.is_none()),
+        (SlotState::Left, true),
+        "left, no line"
+    );
+    let mark = r.cmds.len();
+    r.run(home + 1);
+    assert!(!r.c.parties.contains(p), "home");
+    let cmds = since(&r, mark);
+    assert_handed_back(&r, &cmds, agent, epoch, generation);
+    assert_eq!(chief(&r), Some((SlotState::Body, generation)), "body");
+    let books = (
+        r.c.stats.chiefs_killed,
+        r.c.camp(r.f).expect("a camp").slots.len(),
+    );
+    let (rec, index, ..) = chief_line(&cmds).expect("a chief line");
+    assert_eq!(
+        answered(&mut r, rec.op, index),
+        boundary::LINE_NOTHING,
+        "case B: the throne body stands"
+    );
+    assert_eq!(chief(&r), Some((SlotState::Body, generation)), "still body");
+    assert_eq!(
+        (
+            r.c.stats.chiefs_killed,
+            r.c.camp(r.f).expect("a camp").slots.len()
+        ),
+        books,
+        "the books unchanged"
+    );
+    assert_eq!(
+        r.plugin.camp_held(r.key, CHIEF_SLOT, generation).len(),
+        1,
+        "one throne body"
+    );
+
+    // 3. The grove out at home.
+    let (mut r, p) = led_invasion_out(90);
+    let agent = Party::agent(p);
+    let generation = chief(&r).expect("a chief").1;
+    r.camp_out();
+    let home = followed_home(&mut r, p);
+    let epoch = r.c.parties[p].epoch;
+    let mark = r.cmds.len();
+    r.run(home + 1);
+    assert!(!r.c.parties.contains(p), "home");
+    let cmds = since(&r, mark);
+    assert!(
+        chief_line(&cmds).is_none(),
+        "no line at a grove that is out"
+    );
+    assert!(
+        cmds.iter().any(|c| matches!(c, Cmd::Recall(x)
+            if x.agent == agent && x.epoch == epoch && x.reason == boundary::RECALL_DONE)),
+        "recalled: {cmds:#?}"
+    );
+    assert_eq!(chief(&r), Some((SlotState::Owed, generation)), "owed");
+    let mark = r.cmds.len();
+    r.camp_in();
+    let to = r.c.now() + r.plugin.leave_ticks + 50;
+    r.run(to);
+    let (_, _, l, ahead) = chief_line(&since(&r, mark)).expect("the census's chief line");
+    assert_eq!(
+        l.action,
+        boundary::ACTION_SPAWN,
+        "the next census spawns it"
+    );
+    assert!(matches!(ahead, Some(Cmd::ChiefBody(b)) if b.agent == 0));
+    ok(&mut r);
+}
+
+/// A4's control: a band never embodied comes home to a grove that is in, and its chief, Gone, gets
+/// a SPAWN as before (`chief_puppet` false).
+#[test]
+fn an_unmet_chief_comes_home_as_a_spawn() {
+    let (mut r, p) = led_invasion_out(91);
+    let arrive = *r.c.parties[p].times.last().expect("a route");
+    r.run(arrive + 400);
+    assert_eq!(r.c.parties[p].phase, Phase::Home, "walking home");
+    let home = *r.c.parties[p].times.last().expect("a route home");
+    r.run(Tick(home.0 - 1));
+    assert!(!r.c.parties[p].embodied, "unmet");
+    let mark = r.cmds.len();
+    r.run(home + 1);
+    let (_, _, l, ahead) = chief_line(&since(&r, mark)).expect("a chief line at home");
+    assert_eq!(l.action, boundary::ACTION_SPAWN, "a spawn, as before");
+    assert!(matches!(ahead, Some(Cmd::ChiefBody(b)) if b.agent == 0));
+    ok(&mut r);
+}
+
+// ---- A6: a death after home ---------------------------------------------------------------------
+
+/// The books of a chief's death: (falls, player losses, an heir due, the memory).
+fn death_books(r: &CampRun) -> (u64, u64, bool, usize) {
+    let camp = r.c.camp(r.f).expect("a camp");
+    (
+        r.c.stats.chiefs_killed,
+        r.c.stats.renewal_losses,
+        camp.heir.is_some(),
+        camp.traded.len(),
+    )
+}
+
+fn chief_death(r: &CampRun, generation: u32) -> Obs {
+    Obs::CampDeath(boundary::CampDeath {
+        faction: r.key,
+        by: boundary::BY_PLAYER,
+        body: chief_body(r),
+        flags: boundary::DEATH_CHIEF,
+        slot: CHIEF_SLOT,
+        generation,
+        killer: synth::PLAYER,
+        op: 0x6001,
+    })
+}
+
+/// A6 (MZB-824): home with the grove in, the chief's HAND_BACK in flight (the puppet floating to
+/// the throne), the puppet is killed: CAMP_DEATH of the chief's slot and generation, BY_PLAYER, and
+/// the line's STALE, in both orders. The chief dies once: one fall at its camp, one player's loss,
+/// the heir due and the memory cleared; no CHIEF_KILLED goes into it, and the slot is freed, its
+/// generation retired (`chief_death` frees an Owed slot; the design's "Dead" is the state of a
+/// chief that died away while its body stood). Without the change the chief's line is a SPAWN.
+/// The control, a throne death at home with no line, books the same.
+#[test]
+fn a_camp_death_after_home_books_once() {
+    for death_first in [true, false] {
+        let (mut r, p) = led_invasion_out(92);
+        let generation = chief(&r).expect("a chief").1;
+        let home = followed_home(&mut r, p);
+        // The hand-back is decided and never reaches the plugin: in flight.
+        let cmds = r.decide(home + 1);
+        let (rec, index, l, _) = chief_line(&cmds).expect("a chief line at home");
+        assert_eq!(
+            l.action,
+            boundary::ACTION_HAND_BACK,
+            "a hand-back in flight"
+        );
+        let s = r.c.camp(r.f).and_then(|c| c.chief()).expect("a chief");
+        assert!(s.line.is_some(), "in flight");
+        let before = death_books(&r);
+        assert_eq!(before.2, false, "no heir yet");
+        assert_eq!(before.3, 1, "the payer remembered");
+        let stale = Obs::CampBodies(boundary::CampBodies {
+            faction: r.key,
+            epoch: rec.epoch,
+            op: rec.op,
+            lines: vec![boundary::LineAnswer {
+                line: index,
+                slot: CHIEF_SLOT,
+                generation,
+                action: boundary::ACTION_HAND_BACK,
+                outcome: boundary::LINE_STALE,
+            }],
+        });
+        let death = chief_death(&r, generation);
+        let order = if death_first {
+            [death, stale]
+        } else {
+            [stale, death]
+        };
+        for o in &order {
+            let at = r.c.now();
+            r.c.ingest(&mut r.w, &mut NoInfrastructure, o, at);
+        }
+        let after = death_books(&r);
+        assert_eq!(
+            after,
+            (before.0 + 1, before.1 + 1, true, 0),
+            "death first {death_first}: one fall, one loss, the heir due, the memory cleared"
+        );
+        assert!(
+            r.c.camp(r.f)
+                .expect("a camp")
+                .index(CHIEF_SLOT, generation)
+                .is_none(),
+            "the slot freed"
+        );
+        let bad = r.check();
+        assert!(bad.is_empty(), "{bad:#?}");
+    }
+
+    // The control: the seated chief killed on its throne, no line in flight.
+    let mut r = quiet_grove(93);
+    let generation = seat_chief(&mut r);
+    pay_at_home(&mut r, generation);
+    let before = death_books(&r);
+    let death = chief_death(&r, generation);
+    let at = r.c.now();
+    r.c.ingest(&mut r.w, &mut NoInfrastructure, &death, at);
+    assert_eq!(death_books(&r), (before.0 + 1, before.1 + 1, true, 0));
+    assert!(chief(&r).is_none(), "the slot freed");
+}
