@@ -1141,6 +1141,21 @@ public final class RtsimSession {
         dropFromChunkWhenAcked(chunk, opId, seq);
     }
 
+    /** GameTests: chunks (by position) whose carried records an acknowledgement does not drop. */
+    private static final java.util.Set<Long> KEPT_FOR_TEST = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    /**
+     * GameTests: while a chunk is kept, an acknowledgement does not drop the records it carries. The stub engine
+     * acknowledges whenever a world save asks it to (an autosave, another test's), so a crash emulation that needs
+     * its carried record to survive until its resend keeps the chunk, and lets it go in its cleanup.
+     */
+    public static void keepCarriedForTest(net.minecraft.world.level.ChunkPos pos, boolean keep) {
+        if (keep)
+            KEPT_FOR_TEST.add(pos.toLong());
+        else
+            KEPT_FOR_TEST.remove(pos.toLong());
+    }
+
     void dropFromChunkWhenAcked(net.minecraft.world.level.chunk.LevelChunk chunk, long opId, long seq) {
         ResourceKey<Level> dim = chunk.getLevel().dimension();
         net.minecraft.world.level.ChunkPos pos = chunk.getPos();
@@ -1149,6 +1164,8 @@ public final class RtsimSession {
             net.minecraft.world.level.chunk.LevelChunk c = level == null ? null : level.getChunkSource().getChunkNow(pos.x, pos.z);
             if (c == null)
                 return; // unloaded: it is journaled again when it loads
+            if (!KEPT_FOR_TEST.isEmpty() && KEPT_FOR_TEST.contains(pos.toLong()))
+                return;
             com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords p = c.getExistingDataOrNull(RtsimAttachments.PENDING);
             if (p == null)
                 return;
