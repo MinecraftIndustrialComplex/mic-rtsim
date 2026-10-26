@@ -7559,7 +7559,10 @@ the slice's head.
   passes on 2a975cc3 too: it is coverage, not a regression test. The "more than 256 derivations"
   edge above is closed for decisions of one tick, the only ones an ordinal separates. Amended again
   by RP-259's step 3 (the re-check): the window keeps every tick at or above the step's oldest, not
-  only the tick being derived, and trims at the next step.
+  only the tick being derived, and trims at the next step. Amended a third time by RP-259's step 3b:
+  at most 4,096 of those past the 256 (the cap; past it a long step forgets its oldest ticks' ids, a
+  loss), trimmed at the step's end to 256 plus the step's newest tick, and probed by a map. "A loss,
+  never a double" holds barring a 56-bit collision.
 - **RP-276** (crash tests replay over several hand-overs; the default shape): crates/rtsim-jni/tests/industry.rs
   has `REPLAY_FILLERS` (2,000 filler records after the pages), `restart` (reopens on a minimum-size
   buffer with the world's present as game time) and `replayed_over_several` (asserts at least 2 replay
@@ -7887,3 +7890,58 @@ above are at a9886680 (engine.rs has moved by 9 lines past 846 since).
   rtsim-industry and rtsim-jni (all targets, `-D warnings`): clean. Rustfmt (stdin) on the 4
   touched Rust files, all clean at a9886680: clean. The six sims against 2a975cc3: only `wall_ms`
   differs (within the load's noise), so the window rule moves no result.
+
+#### The re-check's step 3b (RP-259): the window's cap and probe
+
+The lead's bench of 13ca1423's window rule, one step at nice 19: 1,000 derivations 2.3 ms, 10,000
+0.16 s, 30,000 1.45 s, 100,000 17.2 s. Each derivation walked the whole window three times (the
+probe's `any`, `remember`'s count, and its trim loop, which removed nothing while every id was at or
+above the floor), and a page saved at the step's end wrote the whole window. Long steps are real:
+rtsim-jni's replay since the last durable pages (one step), A's switch-on catch-up (`session_start`
+and `run_to`, one step over the whole time off), a restart whose world is far past its pages, and
+`glass_replay_offline`. Lines here are at the step 3b commit.
+
+- **The window** (`IndustryOps`, cmd.rs:176): the derived ids in a map keyed by (tick, order of
+  arrival), so the oldest tick's go first; the key tags in a queue of their own (256 of them, as
+  before); and a map of how many ids have each low 56 bits, which is the probe (one lookup,
+  cmd.rs:263). `remember` (285) inserts and trims from the oldest tick; each id goes in once and out
+  once, so a derivation costs O(log n) amortized. The ignored `one_step_of_derivations_timed`
+  (cmd.rs:827, the test profile, nice 19, load 10 to 15): 2bd1d828 2.7 ms, 257 ms, 2.1 s and 19.2 s
+  for 1,000, 10,000, 30,000 and 100,000; now 0.98 ms, 11.5 ms, 34 ms and 113 ms.
+- **The cap.** `CAP` (cmd.rs:223) = 4,096, TUNABLE, PLACEHOLDER: the ids at or above the step's
+  oldest tick kept past the 256. Past it the step forgets its own oldest ticks' ids, whatever the
+  floor, so the window never holds more than 4,352 derived ids and 256 key tags. **The loss
+  residual:** two identical decisions of one tick more than 4,352 derivations apart in one step, the
+  first's tick among the window's oldest by the second (a stale cluster deciding at one old tick
+  through a long catch-up): the second takes the first's op, answered DUPLICATE, a loss, live or
+  replayed. Never a double: ordinals are still taken lowest free first.
+- **The trim at the step's end.** `end_step` (cmd.rs:350, called by `Engine::advance_to`,
+  engine.rs:851) keeps the last 256 and every id at or above the step's newest tick (the next step
+  may decide at it again), so a page saved at a step's end (globals, engine.rs:5973) holds 256 or
+  the ids at or above that tick, whichever is more (4,352 at most), never the step's whole run. The session start and a held raid's `run_to`
+  still do not end a step; the cap bounds what a page saved before the next `advance_to` holds.
+- **The page bytes.** The same codec, a length and `(Tick, u64)` pairs (cmd.rs:476), now the derived
+  ids oldest tick first and the key tags last, where they were in arrival order; a restored window
+  numbers its ids again in page order, so it is the same window and trims the same way.
+- **"Barring a 56-bit collision."** The safety claim (a window that forgets differently on two runs
+  gives at most a loss) now says so in the code and here: the probe compares low 56 bits, so an
+  unrelated id with an ordinal's low bits in one run's window and not the other's moves that
+  decision to the next ordinal, past the prefix, and could double. The chance is about the window
+  over 2^56 a derivation (4,608 / 7.2e16, under 1e-13).
+- **The window bytes depend on the hand-over stride** once a step passes 256 derivations: which ids
+  a page holds depends on where steps end, and a live run ends one each hand-over while a jni replay
+  is one step and a catch-up another. So pages taken at one game time on two runs can differ in the
+  window there, and a page-equality test across such runs could fail on it; behaviour only loses,
+  since an id one run keeps and the other forgot gives at most a loss.
+- **Test** `a_step_of_100000_derivations_keeps_a_bounded_window_and_pages_the_trimmed_one`
+  (cmd.rs:755): a catch-up step of 100,000 derivations (ten a tick, a stale record every 1,000, a
+  last tick of 1,000 with twenty identical decisions of each of fifty commands) and three key tags.
+  Every 5,000 the page holds at most 4,352 derived ids and the three tags; the busy tick's 1,000 ops
+  are distinct; after `end_step` the page holds the busy tick's 1,000 and the tags, nothing older,
+  and a window restored from it derives the busy tick's next decision as the live window does. On
+  2bd1d828 (with a `CAP` constant added so it compiles) it fails: "after 5000 derivations the window
+  holds 5000 derived ids". Mutations: no cap fails it the same way; no trim at `end_step` fails it
+  (4,352 against 1,000) and `an_older_ticks_decision_never_makes_the_step_forget_a_newer_ticks_ids`
+  (cmd.rs:651, which now also asserts the trim at the step's end: 268, the 100s). The other window
+  tests read the page pairs; `the_window_keeps_its_page_bytes` (723) now pins the order with a stale
+  record and a key tag.
