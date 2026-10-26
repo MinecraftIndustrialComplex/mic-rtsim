@@ -17,11 +17,12 @@
 //!   [`KEY_LINK`];
 //! - **orders** ([`threat`]): a threat from another system (or a test) for the engine.
 //!
-//! **What is kept for resend.** IND_CARRIAGE_DELTA, IND_CHANNEL_DELTA, IND_DEPOSIT_DELTA,
-//! IND_WRITE_PACKAGE and IND_WRITE_CHAIN stay in the link's outbox from the moment they are written until Java's
-//! answer is admitted through `Replay` (IND_CARRIAGE_RESULT, or COMMAND_RESULT applied, duplicate
-//! or failed), so a snapshot taken at observation N holds exactly the ones the world save at N
-//! lacks; after a restart they are resent first. IND_CHUNK_RECONCILE is not: the industry engine
+//! **What is kept for resend.** IND_CARRIAGE_DELTA, IND_DEPOSIT_DELTA, IND_WRITE_PACKAGE and
+//! IND_WRITE_CHAIN (0x8402, IND_CHANNEL_DELTA, is retired: rtsim-industry wire.rs) stay in the
+//! link's outbox from the moment they are written until Java's answer is admitted through
+//! `Replay` (IND_CARRIAGE_RESULT, or COMMAND_RESULT applied, duplicate or failed), so a snapshot
+//! taken at observation N holds exactly the ones the world save at N lacks; after a restart they
+//! are resent first. IND_CHUNK_RECONCILE is not: the industry engine
 //! keeps every pending delta until its result and resends it at the chunk's next IND_CHUNK_LOADED
 //! (F27).
 
@@ -32,9 +33,9 @@ use rtsim_conflict::engine::StationEnd;
 use rtsim_industry::cmd::{Cmd, IndustryOps};
 use rtsim_industry::engine::{ChangedPages, Engine as Industry, SaveTicket};
 use rtsim_industry::ids::{DistrictId, Good, GoodInfo};
-use rtsim_industry::obs::{Obs, Timed};
+use rtsim_industry::obs::{ChainDirection, Obs, Timed};
 use rtsim_industry::persist::{
-    CLUSTER_TABLE, DISTRICT_TABLE, GLASS_TABLE, GLOBAL_TABLE, LEG_TABLE,
+    CLUSTER_TABLE, DISTRICT_TABLE, GLASS_TABLE, GLOBAL_TABLE, LEG_TABLE, STORE_TABLE,
 };
 use rtsim_industry::threat::Threat;
 use rtsim_industry::tunables::Tunables;
@@ -45,22 +46,25 @@ use rtsim_kernel::journal::OpId;
 use rtsim_kernel::page::{PageError, PageKey, PageStore};
 
 use super::{Config, Engine, State, lock, log_error, log_info, log_warn};
-use crate::wire::{self, Rec, RecordWriter, cmd, obs};
+use crate::wire::{self, Rec, RecordWriter, Records, cmd, obs};
 
 /// The link's own page: its command queue and outbox. Table 1 is rtsim-jni's (J9); id 0x49 keeps
 /// clear of the core's 1:0 and 1:1 and of whatever the core adds next (W6).
 pub const KEY_LINK: PageKey = PageKey::new(1, 0x49);
 const LINK_MAGIC: u32 = u32::from_le_bytes(*b"RTJI");
-const LINK_VERSION: u16 = 1;
+const LINK_VERSION: u16 = 2;
 
 /// The industry engine's own page tables (rtsim-industry `persist.rs`, F36; the glass box's, G2-9;
-/// the booked train legs', ID10).
-pub const TABLES: [u16; 5] = [
+/// the booked train legs', ID10; the package stores', slice S4). A table left out is written at
+/// every save and never read back: the package stores' was, so a restart lost every store, with
+/// its debts, pools and write marks (found by RP-285's chain case).
+pub const TABLES: [u16; 6] = [
     GLOBAL_TABLE,
     DISTRICT_TABLE,
     CLUSTER_TABLE,
     GLASS_TABLE,
     LEG_TABLE,
+    STORE_TABLE,
 ];
 
 /// docs/industry-boundary.md §2.2.
@@ -135,11 +139,17 @@ pub(super) struct Link {
     /// Latest-wins industry records of this hand-over not handed to the engine yet: they go in
     /// game-time order with the journaled ones, journaled first on a tie (W9).
     deferred: VecDeque<Timed>,
+    /// Java's answers heard with the module off, whole records in the order Java journaled them,
+    /// each with its own game time: booked there when the module is on again, before the engine's
+    /// own session start ([`book_kept_answers`], RP-285). Saved.
+    answers: VecDeque<Vec<u8>>,
     /// The bridge's industry module switch (C25, U10): off, the engine applies no record, runs
-    /// nothing and sends nothing; on again, it catches up.
+    /// nothing and sends nothing (Java's answers only take their commands, and wait in
+    /// `answers`); on again, it books those and catches up.
     enabled: bool,
     /// SESSION_START's game time, until the engine's own session start runs: after the replayed
-    /// journal, before this session's first record (W19).
+    /// journal, before this session's first record (W19), and never with the module off: the
+    /// switch on replaces it with its own game time (RP-285).
     session_start_at: Option<Tick>,
     /// Threats ordered this step, applied at the simulate point (W12).
     threats: Vec<Threat>,
@@ -197,6 +207,7 @@ impl Link {
             outbox: VecDeque::new(),
             resend: VecDeque::new(),
             deferred: VecDeque::new(),
+            answers: VecDeque::new(),
             enabled: false,
             session_start_at: None,
             threats: Vec::new(),
@@ -214,7 +225,10 @@ impl Link {
     }
 
     /// The engine's own session start, once: after the replayed journal (whose records keep their
-    /// game times), before anything of this session (W19).
+    /// game times), before anything of this session (W19). Never with the module off: `simulate`
+    /// calls this ahead of its switch, and a restart with the module off ran the session start
+    /// there, at the restart's game time, so the engine caught up the time it had been off while
+    /// frozen, and its decisions waited for the switch (RP-285). The switch on sets its own time.
     ///
     /// The chain writes the link holds go to Java from here on: resent from the outbox at a
     /// restart, or written from the queue, where the switch-on moved the outbox. The engine awaits
@@ -222,8 +236,12 @@ impl Link {
     /// only new decisions). Else, after a stretch with the module off (a switch-off in a session,
     /// or a stop with it off and a start with it on), the catch-up would take each as lost ten
     /// periods after the drain that first handed it on (SC113) and write its frogport again under
-    /// a new op, and Java would write the same goods twice.
+    /// a new op, and Java would write the same goods twice. One Java answered while off left the
+    /// link then ([`keep_answer`]), so only unanswered ones are handed on.
     fn begin_session(&mut self) {
+        if !self.enabled {
+            return;
+        }
         if let Some(t) = self.session_start_at.take() {
             let held = self.queue.iter().chain(self.outbox.iter().map(|(_, c)| c));
             for c in held {
@@ -304,23 +322,25 @@ impl Link {
         let link_page = store
             .get(KEY_LINK)
             .map_err(|e| format!("cannot read the industry link page: {e}"))?;
-        let (queue, outbox) = match link_page {
-            Some(_) if fresh => (VecDeque::new(), VecDeque::new()),
+        let none = || (VecDeque::new(), VecDeque::new(), VecDeque::new());
+        let (queue, outbox, answers) = match link_page {
+            Some(_) if fresh => none(),
             Some(b) => match decode_link(&b) {
                 Ok(page) => page,
                 Err(e) => {
                     log_error(&format!(
-                        "the industry link page does not decode ({e}): another build's format; its queue and outbox are dropped"
+                        "the industry link page does not decode ({e}): another build's format; its queue, outbox and kept answers are dropped"
                     ));
-                    (VecDeque::new(), VecDeque::new())
+                    none()
                 }
             },
-            None => (VecDeque::new(), VecDeque::new()),
+            None => none(),
         };
         let mut link = Link::empty();
         link.engine = engine;
         link.queue = queue;
         link.outbox = outbox;
+        link.answers = answers;
         link.fresh = fresh;
         Ok(link)
     }
@@ -343,6 +363,11 @@ impl Link {
                 self.queue.len()
             ));
         }
+    }
+
+    /// Kept commands still to resend this session (all of them right after [`Self::resume`]).
+    pub(super) fn resend_len(&self) -> usize {
+        self.resend.len()
     }
 
     fn gauges(&mut self) {
@@ -411,6 +436,21 @@ impl Link {
         Some(c)
     }
 
+    /// Takes a command out of the queue, or out of the engine's commands not drained yet: Java
+    /// answered its op. A kept command waits in the queue after it was written when the switch or
+    /// a session start with the module off moved it back (`set_enabled`, [`write_resends`]);
+    /// written again, Java would apply it twice once its rings and its journal had forgotten the
+    /// op at the answer's acknowledgement (RP-209, RP-285). The engine's own are searched too: one
+    /// decided again under the op Java applied waits there until the module is on.
+    fn unqueue(&mut self, op: OpId) -> Option<Cmd> {
+        let c = match self.queue.iter().position(|c| c.op() == Some(op)) {
+            Some(i) => self.queue.remove(i),
+            None => self.engine.take_out(op),
+        };
+        self.stats.queued = self.queue.len() as u64;
+        c
+    }
+
     fn name(&self, kind: u32, id: u32) -> Option<String> {
         if let Some(n) = self.java_names.get(&(kind, id)) {
             return Some(n.clone());
@@ -435,10 +475,11 @@ fn encode_link(l: &Link) -> Vec<u8> {
     w.u16(LINK_VERSION);
     rtsim_industry::persist::Persist::put(&l.queue, &mut w);
     rtsim_industry::persist::Persist::put(&l.outbox, &mut w);
+    rtsim_industry::persist::Persist::put(&l.answers, &mut w);
     w.into_bytes()
 }
 
-type LinkPage = (VecDeque<Cmd>, VecDeque<(u64, Cmd)>);
+type LinkPage = (VecDeque<Cmd>, VecDeque<(u64, Cmd)>, VecDeque<Vec<u8>>);
 
 fn decode_link(b: &[u8]) -> rtsim_kernel::codec::Result<LinkPage> {
     let mut r = Reader::new(b);
@@ -453,8 +494,9 @@ fn decode_link(b: &[u8]) -> rtsim_kernel::codec::Result<LinkPage> {
     }
     let queue = rtsim_industry::persist::Persist::get(&mut r)?;
     let outbox = rtsim_industry::persist::Persist::get(&mut r)?;
+    let answers = rtsim_industry::persist::Persist::get(&mut r)?;
     r.finish()?;
-    Ok((queue, outbox))
+    Ok((queue, outbox, answers))
 }
 
 // ---- observations ---------------------------------------------------------------------------
@@ -467,17 +509,30 @@ fn decode_link(b: &[u8]) -> rtsim_kernel::codec::Result<LinkPage> {
 pub(super) fn session_start(st: &mut State, game_time: i64, module_mask: u32) {
     let l = &mut st.industry;
     l.enabled = module_mask & MODULE_INDUSTRY != 0;
-    // Switched off, the engine's own session start waits for the switch (U10): run now, it would
-    // advance the engine while it is meant to be frozen.
+    // Answers an earlier session heard with the module off and saved with the pages are older
+    // than anything the journal replays: booked first, at their own times (RP-285). Off, they wait
+    // for the switch with those the replay brings.
+    if l.enabled {
+        book_kept_answers(l);
+    }
+    // Switched off, the engine's own session start waits for the switch (U10,
+    // [`Link::begin_session`]): run now, it would advance the engine while it is meant to be
+    // frozen.
     l.session_start_at = Some(tick(game_time));
 }
 
 /// The switch changed in a session (MODULES, U10). Off: the engine is frozen where it stands (its
-/// queue and outbox wait, its pages stay what they are, every record is ignored). On: its own
-/// session start runs at once, at this game time, so it catches up to now (every breakpoint and
-/// wake of the time it was off fires) and takes every district as unloaded until Java reports
-/// them again; Java announces its districts and load states again when the module turns on, as
-/// at a session start.
+/// queue and outbox wait, its clock stays, every record but Java's answers is ignored). Off, it
+/// still hears Java's answers to commands it already sent ([`keep_answer`], RP-285): an answer is
+/// not a new op, and Java prunes its op rings, and trims its journal and with it the op index that
+/// refuses an op it applied, at the engine's acknowledgement of it with the module off too
+/// (RP-209, T2), so an acknowledged answer must never be dropped. Each takes its command at once
+/// and waits, with its own game time, for the switch. On: those answers are booked at
+/// their times, then the engine's own session start runs at this game time, so it catches up to
+/// now (every breakpoint and wake of the time it was off fires) and takes every district as
+/// unloaded until Java reports them again; Java announces its districts and load states again
+/// when the module turns on, as at a session start. A session start still waiting (a restart
+/// with the module off) takes this game time instead of the restart's.
 ///
 /// The chain writes the link held while off (queued, or kept in the outbox) go to Java now: the
 /// engine's session start awaits their answers from its game time (`Link::begin_session`,
@@ -488,10 +543,13 @@ fn set_enabled(st: &mut State, on: bool) {
     let was = l.enabled;
     l.enabled = on;
     if on && !was {
+        book_kept_answers(l);
         l.session_start_at = Some(gt.max(l.engine.now()));
-        // An answer that came while off was ignored: every kept command goes again, under a new
-        // sequence (Java skips any at or below the last it applied), and Java answers it by op id
-        // (DUPLICATE if it had applied it), so none waits in the outbox for an answer already gone.
+        // Every kept command goes again, under a new sequence (Java skips any at or below the last
+        // it applied), and Java answers it by op id (DUPLICATE if it had applied it). The answers
+        // that came while off took theirs out (RP-285), so this sends only commands Java never
+        // answered as far as the engine heard: none whose answer it acknowledged, which Java's
+        // rings and journal no longer hold.
         let kept: Vec<Cmd> = l.outbox.drain(..).map(|(_, c)| c).collect();
         l.resend.clear();
         for c in kept.into_iter().rev() {
@@ -585,13 +643,15 @@ pub(super) fn op_of(rec: &Rec<'_>) -> u64 {
 
 /// A journaled record `Replay` admitted (see [`claims`]). Switched off, the industry ignores it,
 /// as the dragons and ships do (U10, replacing W8's "journaled records are still applied"): it is
-/// admitted for its sequence and op id, counted, and dropped; a COMMAND_RESULT too, so a kept
-/// command stays in the outbox and goes again once the module is on.
+/// admitted for its sequence and op id, counted, and dropped. Not one of Java's answers to a
+/// command the engine sent (RP-285): those are kept for the switch ([`keep_answer`]).
 pub(super) fn journaled(st: &mut State, rec: &Rec<'_>) {
     let this_session = wire::u64_at(rec.bytes, obs::OBS_SEQ) >= st.session_first;
     let l = &mut st.industry;
     if !l.enabled {
-        l.stats.ignored += 1;
+        if !keep_answer(l, rec) {
+            l.stats.ignored += 1;
+        }
         return;
     }
     if this_session {
@@ -650,11 +710,95 @@ fn rail_line(e: &Industry, o: &Obs) -> Option<(u64, Option<(StationEnd, StationE
 
 /// A journaled record `Replay` refused by op id: an answer for an op it already heard. A kept
 /// command written under that op id again (a test's order, or the same decision resent) is
-/// answered all the same, so it leaves the outbox.
+/// answered all the same, so it leaves the outbox. A train's loot re-decided after a crash is
+/// such a command: the replay heard the live application's APPLIED, so Java's DUPLICATE comes
+/// here, not to `command_result`, and the exchange is dropped here (RP-182; it is gone already
+/// when the replayed IND_CARRIAGE_RESULT came first). With the module off, as a first answer
+/// ([`keep_answer`], RP-285): the command is taken at once, and a DUPLICATE kept for the switch,
+/// which books it then as [`command_result`] does with the module on, the exchange dropped there.
 pub(super) fn answered_again(st: &mut State, rec: &Rec<'_>) {
     if rec.kind == obs::COMMAND_RESULT {
         let op = OpId(wire::u64_at(rec.bytes, obs::command_result::OP_ID));
-        st.industry.complete(op);
+        let l = &mut st.industry;
+        let duplicate = rec.aux == obs::command_result::DUPLICATE_OP;
+        if !l.enabled {
+            if l.complete(op).is_none() {
+                l.unqueue(op);
+            }
+            if duplicate {
+                l.answers.push_back(rec.bytes.to_vec());
+            }
+            return;
+        }
+        l.complete(op);
+        if duplicate {
+            l.engine.command_duplicate(op);
+        }
+    }
+}
+
+/// With the module off, one of Java's answers to a command the engine sent (RP-285): a
+/// COMMAND_RESULT, an IND_CARRIAGE_RESULT or IND_RECONCILE_RESULT, or the `CHAIN_IN` a write made
+/// (it carries the write's op, SC113). It takes its command at once, out of the outbox, the queue
+/// or the engine's commands not drained yet ([`Link::unqueue`]), so the switch never sends it
+/// again: Java prunes its op rings, and trims its journal and with it the op index that refuses an
+/// op it applied, at the engine's acknowledgement of the answer whatever the switch (RP-209, T2),
+/// and would apply it twice. Its book effect waits: the record is kept whole, with its own game
+/// time, in the link page (saved with the pages while off: `take_save` calls [`save`] whatever the
+/// switch), and the switch books it at that time ([`book_kept_answers`]), before the engine's own
+/// session start catches up. Booked at once, at the engine's frozen time, it would land ahead of
+/// the breakpoints and wakes due before it, and every decision after it would differ from those of
+/// a restart that replays the same answer with the module on, op ids included, since they derive
+/// from their ticks (J3). An APPLIED COMMAND_RESULT has no book effect but the taking: not kept.
+/// Returns false for a record that is no answer.
+fn keep_answer(l: &mut Link, rec: &Rec<'_>) -> bool {
+    let op = match rec.kind {
+        obs::COMMAND_RESULT => OpId(wire::u64_at(rec.bytes, obs::command_result::OP_ID)),
+        iw::IND_CARRIAGE_RESULT | iw::IND_RECONCILE_RESULT | iw::IND_CHAIN_PACKAGE => {
+            let Some(t) = l.decode(rec) else {
+                return false;
+            };
+            match t.obs {
+                Obs::CarriageResult(r) => r.op,
+                Obs::ReconcileResult(r) => r.op,
+                Obs::ChainPackage(p) if p.direction == ChainDirection::In => {
+                    match p.op.filter(|o| o.0 != 0) {
+                        Some(op) => op,
+                        None => return false,
+                    }
+                }
+                _ => return false,
+            }
+        }
+        _ => return false,
+    };
+    if l.complete(op).is_none() {
+        l.unqueue(op);
+    }
+    if rec.kind != obs::COMMAND_RESULT || rec.aux != obs::command_result::APPLIED {
+        l.answers.push_back(rec.bytes.to_vec());
+    }
+    true
+}
+
+/// The answers heard with the module off ([`keep_answer`]), booked in the order Java journaled
+/// them, each at its own game time, as [`journaled`] books them with the module on: at the switch
+/// on, and at a session start with the module on (an earlier session's pages saved while off
+/// keep them), always before the engine's own session start, so its catch-up decides after them
+/// as with the module on (RP-285). No latest-wins record waits ahead of them: those are ignored
+/// while off.
+fn book_kept_answers(l: &mut Link) {
+    while let Some(b) = l.answers.pop_front() {
+        let Some(rec) = Records::new(&b).next() else {
+            continue;
+        };
+        let at = tick(wire::i64_at(rec.bytes, obs::GAME_TIME));
+        if rec.kind == obs::COMMAND_RESULT {
+            let op = OpId(wire::u64_at(rec.bytes, obs::command_result::OP_ID));
+            command_result(l, op, rec.aux, at);
+        } else if let Some(t) = l.decode(&rec) {
+            l.ingest(&t);
+        }
     }
 }
 
@@ -677,12 +821,22 @@ pub(super) fn order_command(st: &mut State, names: &[(u32, u32, String)], record
     }
 }
 
-/// Java's answer to an industry command. A kept command leaves the outbox. A failed carriage
-/// delta moved nothing: the engine takes it back from its own exchange record (it holds one until
-/// the result, so this works whether or not the outbox still had the command: a restart trims the
-/// outbox by the world save's `lastAppliedCmdSeq`, which already counts a failed command). W10.
+/// Java's answer to an industry command. A kept command leaves the outbox, or the queue the switch
+/// moved it back to ([`Link::unqueue`], RP-285; with the module off it is taken there and the rest
+/// waits for the switch, [`keep_answer`]). A failed carriage delta moved nothing: the engine
+/// takes it back from its own exchange record (it holds one until the result, so this works
+/// whether or not the outbox still had the command: a restart trims the outbox by the world
+/// save's `lastAppliedCmdSeq`, which already counts a failed command). W10.
+/// A duplicate carriage delta was decided again after a crash under the op Java applied before
+/// (a train's loot, or a station exchange the replay derived again) and the journal that would
+/// have carried that application's answers was lost (J3): its goods moved once, so the engine
+/// drops the exchange, whatever its reason (RP-182, RP-199).
 fn command_result(l: &mut Link, op: OpId, status: u32, at: Tick) {
-    let kept = l.complete(op);
+    let kept = l.complete(op).or_else(|| l.unqueue(op));
+    if status == obs::command_result::DUPLICATE_OP {
+        l.engine.command_duplicate(op);
+        return;
+    }
     if status != obs::command_result::FAILED {
         return;
     }
@@ -1381,9 +1535,12 @@ mod tests {
                 entries: vec![(0, Good(1), 12)],
             }),
         ));
-        let (q, o) = decode_link(&encode_link(&l)).unwrap();
+        l.answers
+            .push_back(vec![0x21, 0x04, 0x10, 0x00, 7, 0, 0, 0]);
+        let (q, o, a) = decode_link(&encode_link(&l)).unwrap();
         assert_eq!(q, l.queue);
         assert_eq!(o, l.outbox);
+        assert_eq!(a, l.answers);
         assert!(decode_link(&encode_link(&l)[..5]).is_err());
     }
 

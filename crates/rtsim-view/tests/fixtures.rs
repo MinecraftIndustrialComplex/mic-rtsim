@@ -4,8 +4,13 @@
 //! copied without its `rtsim/archive` (the event timeline): `events.rs` needs a real save with no
 //! archive and writes its own archive onto a copy of this one. The create save keeps its archive.
 //!
-//! - `tests/data/core`: neoforge/core's GameTest world, a fresh one, run from commit c934042f
-//!   (replay-gate slice N, the nest renewal serial, on slice D and merged with main bc669502; N's
+//! - `tests/data/core`: neoforge/core's GameTest world, a fresh one, run from commit c1bd6472
+//!   (Mowzie's Mobs M9, the chiefs' heirs, trade memory, tribute and hunts, merged with main
+//!   4e694452, which carries slice N; M9's formats: the conflict's pages are RTC9 with meta
+//!   version 8, a camp's ledger going on with its heir, its chief's trade memory, the tribute it
+//!   owes and is placing and the heir's pair in flight, a faction ending with its owed hunts, the
+//!   wheel's events may be a camp heir, and the resident state ends with the tribute stacks being
+//!   placed, MZB-437, MZB-448); before that, c934042f (replay-gate slice N, the nest renewal serial, on slice D and merged with main bc669502; N's
 //!   formats: the dragons' pages are RTD8, each nest row ending with its renewal serial, and their
 //!   meta page RTN8, RP-230 to RP-239); before that, 4f152abc
 //!   (Mowzie's Mobs M7, the rail: 32726818, M7 merged with main a11311aa, which carries M6 and
@@ -58,8 +63,8 @@
 //!   when the server stops: 6638edc's save had one, while both runs of 98d6d34 and main's 7e4042a
 //!   had every herd staying put. So the route layer is not required here; it still has to draw or
 //!   say why.
-//! - `tests/data/create`: neoforge/create's GameTest world, run from c934042f (the core save's
-//!   formats); before that, 32726818 (the core save's
+//! - `tests/data/create`: neoforge/create's GameTest world, run from c1bd6472 (the core save's
+//!   formats, M9's); before that, c934042f (slice N's formats); before that, 32726818 (the core save's
 //!   formats before slice N and before its merge with main 588b229c; before that, 1290d0b7, M6's, and fe87a92, S5-2
 //!   merged with main f66cb73, b643465, 37a34e40 as part of the plain `./gametest.sh core create
 //!   mowziesmobs` round, 8188cc0, cee946f, S4c1, edbb390, 5d648ce, ec57cd7, 21e57d2 and S3's arm

@@ -573,6 +573,11 @@ impl Link {
         self.resend = self.outbox.iter().cloned().collect();
     }
 
+    /// Kept commands still to resend this session (all of them right after [`Self::resume`]).
+    pub(super) fn resend_len(&self) -> usize {
+        self.resend.len()
+    }
+
     /// The world tick for a game time (the test's offset added).
     fn wt(&self, game_time: i64) -> u64 {
         (game_time.max(0) as u64).saturating_add(self.offset)

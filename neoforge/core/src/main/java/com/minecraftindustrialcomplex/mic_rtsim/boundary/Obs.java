@@ -325,6 +325,12 @@ public final class Obs {
         public static final int NOT_FREE = 4;
         /** WRITE_GOSSIP refused: vanilla already records this act first-hand (PLAN.md §8.7). */
         public static final int VANILLA_KNOWS = 5;
+        /**
+         * TRANSFER_TO_CONTAINER: the container's chunk is not loaded, so whether it already holds the op
+         * (its carried COMMAND_RESULT) cannot be read. Nothing was put; the engine keeps the op and sends it
+         * again under the same id (RP-210).
+         */
+        public static final int NOT_LOADED = 6;
     }
 
     // ---- phase 1 --------------------------------------------------------------------------------

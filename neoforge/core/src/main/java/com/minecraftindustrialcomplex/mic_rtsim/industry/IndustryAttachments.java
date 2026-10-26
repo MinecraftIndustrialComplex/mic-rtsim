@@ -147,10 +147,13 @@ public final class IndustryAttachments {
 
     /**
      * {@code mic_rtsim:ported}: an item entity whose items already crossed the boundary as a port (the
-     * drops of a stock block a player broke), so picking it up is not counted again. Never saved.
+     * drops of a stock block a player broke, or a reconcile's breaks), so picking it up is not counted
+     * again. Saved with the item when true (RP-214): a drop that unloads and loads again is still a port,
+     * not a second PLAYER_PICKUP outflow, which the engine's learner would read as production. A world
+     * without rtsim drops the unknown attachment and keeps the item (UR-1).
      */
     public static final Supplier<AttachmentType<Boolean>> PORTED = TYPES.register("ported",
-            () -> AttachmentType.builder(() -> Boolean.FALSE).build());
+            () -> AttachmentType.builder(() -> Boolean.FALSE).serialize(com.mojang.serialization.Codec.BOOL, b -> b).build());
 
     static void register(IEventBus modBus) {
         TYPES.register(modBus);
