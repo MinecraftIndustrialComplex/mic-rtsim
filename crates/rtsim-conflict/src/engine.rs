@@ -616,10 +616,13 @@ pub struct ConflictStats {
     pub rail_stale: u64,
     /// The lurk (MOWZIE.md §4.4, M8): lurks begun at a track (an AMBUSH_SPOT sent) and ended
     /// (its REMOVED sent), and the trains that passed one (TRAIN_PASSED taken), those of them
-    /// watched by a player, and the robberies that were told (TRAIN_ROBBED sent: only a lurk's
-    /// ambush sends it, so `ambushes` also counts the on-the-way ones and is not this). A pass
-    /// the replay brings back counts in `passes` and rolls nothing (RP-154), so `lurk_robberies`
-    /// counts only robberies told to Java, by a live session.
+    /// watched by a player, and the robberies that took anything (`train_passed` pushes
+    /// TRAIN_ROBBED for each: only a lurk's ambush sends it, so `ambushes` also counts the
+    /// on-the-way ones and is not this). A pass the replay brings back rolls again (RP-187): it
+    /// counts in `passes` and, when it robs, in `lurk_robberies` a second time, as the live
+    /// session counted it, and Java answers the robbery DUPLICATE. Its TRAIN_ROBBED is dropped at
+    /// the gate while replaying (a roar is lost, RP-12), so `lurk_robberies` can exceed the
+    /// TRAIN_ROBBED told to Java.
     pub lurks: u64,
     pub lurks_ended: u64,
     pub passes: u64,
