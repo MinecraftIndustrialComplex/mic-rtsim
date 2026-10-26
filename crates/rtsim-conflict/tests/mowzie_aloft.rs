@@ -876,7 +876,7 @@ fn a_camp_death_after_home_books_once() {
         let s = r.c.camp(r.f).and_then(|c| c.chief()).expect("a chief");
         assert!(s.line.is_some(), "in flight");
         let before = death_books(&r);
-        assert_eq!(before.2, false, "no heir yet");
+        assert!(!before.2, "no heir yet");
         assert_eq!(before.3, 1, "the payer remembered");
         let stale = Obs::CampBodies(boundary::CampBodies {
             faction: r.key,
