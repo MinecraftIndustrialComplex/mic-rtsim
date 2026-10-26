@@ -55,8 +55,10 @@ public interface Engine extends AutoCloseable {
     /**
      * Minecraft is saving, and its journal holds every observation up to {@code throughObsSeq}. The
      * engine snapshots its pages after applying exactly the observations up to that sequence (no
-     * further: pages ahead of the world save are Proposal P29's case), writes them off-thread, and once
-     * they are on disk a later command header acknowledges them. A signal only: never blocks.
+     * further) and writes them off-thread as a pending generation. The pages are acknowledged only once
+     * the bridge reports the journal's file written, with a WORLD_SAVED record
+     * ({@link BoundarySession#worldSaveDurable}): the engine confirms the generation then, and a later
+     * command header acknowledges it (P29, docs/choices-leg-purge.md LP12). A signal only: never blocks.
      */
     void requestSave(long throughObsSeq);
 

@@ -102,10 +102,10 @@ fn a_world_save_is_acknowledged_only_after_its_world_saved() {
     wait_for("the confirm", || e.durable_obs_seq() == t);
     j.idle();
     assert!(j.acks.contains(&t), "the ack follows: {:?}", j.acks);
-    assert_eq!(
-        j.journal.front().map(|(s, _)| *s),
-        Some(t + 1),
-        "the journal is trimmed to the save"
+    assert!(
+        j.journal.front().is_none_or(|(s, _)| *s > t),
+        "the journal is trimmed to the save: {:?}",
+        j.journal.front().map(|(s, _)| *s)
     );
     assert_eq!(e.stats_array()[SAVES_DONE], 1, "one save done, at the confirm");
     assert_eq!(e.stats.confirms.load(Acquire), 1);
@@ -336,6 +336,7 @@ fn a_budget_save_waits_for_the_world_saved_of_the_save_under_it() {
     j.idle();
     wait_committed(&e, 1);
     let free_peak = days(&mut j, &e, STEPS);
+    let free_end = resident(&e);
     assert!(e.stats.pressure_saves.load(Acquire) > 0, "the control's budget saves ran");
     assert_eq!(e.stats.budget_saves_held.load(Acquire), 0);
     let _ = j.crash();
@@ -354,11 +355,12 @@ fn a_budget_save_waits_for_the_world_saved_of_the_save_under_it() {
     settle(&e, &mut j, 1);
     let pressure = e.stats.pressure_saves.load(Acquire);
     let held_peak = days(&mut j, &e, STEPS);
+    let held_end = resident(&e);
     let total = e.with_herds(|h, _| h.rows_budget());
     eprintln!(
-        "F6 herd row peak over {STEPS} hand-overs, budget {total} B: {held_peak} B held behind \
-         an unconfirmed world save, {free_peak} B with budget saves running, {unpaged} B unpaged; \
-         {} budget steps held",
+        "F6 herd rows over {STEPS} hand-overs, budget {total} B: peak {held_peak} B and {held_end} B \
+         at the end held behind an unconfirmed world save; {free_peak} B and {free_end} B with budget \
+         saves running; {unpaged} B unpaged; {} budget steps held",
         e.stats.budget_saves_held.load(Acquire)
     );
     assert_eq!(
@@ -405,15 +407,17 @@ fn a_world_saved_that_never_comes_lets_the_budget_save_after_the_hold() {
     e.request_save(t);
     settle(&e, &mut j, 1);
     let grew = e.stats.window_grew.load(Acquire);
+    // The founding's own budget save (before the world save was asked for) is not the hold's.
+    let before = e.stats.pressure_saves.load(Acquire);
     // Inside the hold: nothing.
     days(&mut j, &e, BUDGET_HOLD_HANDOVERS - 100);
-    assert_eq!(e.stats.pressure_saves.load(Acquire), 0, "held");
+    assert_eq!(e.stats.pressure_saves.load(Acquire), before, "held");
     assert!(e.stats.budget_saves_held.load(Acquire) > 0);
     assert_eq!(e.stats.window_grew.load(Acquire), grew, "no log line yet");
     // Past it: the valve lets one through, and logs once.
     days(&mut j, &e, 300);
     wait_for("a budget save past the hold", || {
-        e.stats.pressure_saves.load(Acquire) > 0
+        e.stats.pressure_saves.load(Acquire) > before
     });
     assert_eq!(
         e.stats.window_grew.load(Acquire),

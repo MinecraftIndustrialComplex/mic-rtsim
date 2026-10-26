@@ -261,7 +261,7 @@ impl Java {
     /// of one world write the same pages; every other session is random, as the bridge's are.
     pub fn try_open_as(e: Arc<Engine>, save: WorldSave, nonce: u64) -> Result<Java, String> {
         assert_ne!(nonce, 0, "generation 0 is a record from before generations");
-        let (pages_obs, next_cmd_seq) = e.start(save.last_applied_cmd)?;
+        let (pages_obs, next_cmd_seq) = e.start(save.last_applied_cmd, save.next_obs)?;
         if next_cmd_seq <= save.last_applied_cmd {
             return Err(format!(
                 "the engine's nextCmdSeq {next_cmd_seq} is not above the journal's lastAppliedCmdSeq {}",

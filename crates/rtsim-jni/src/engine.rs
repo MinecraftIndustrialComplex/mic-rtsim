@@ -8,10 +8,14 @@
 //!   records (journaled ones through the kernel's `Replay`), saves if a save is due, writes command
 //!   buffer h & 1 and stores `published = h` (release).
 //! - A save snapshots the pages at a step boundary on the step thread and writes them on the
-//!   host's IO lane; the acknowledgement (`ackedObsSeq`) only ever names pages already on disk.
-//!   The paged modules write only their pages changed since the last save, and a module over its
-//!   row budget gets an extra save at a step boundary, kept as a pending generation that a crash
-//!   rolls back (`paging`, docs/choices-paging-followups.md PF12 to PF21).
+//!   host's IO lane. A world save Java asked for (`requestSave`) is committed as a pending
+//!   generation and confirmed by the bridge's WORLD_SAVED, once the world's journal file holds every
+//!   observation the pages include; the acknowledgement (`ackedObsSeq`) names only confirmed pages
+//!   (P29, docs/choices-leg-purge.md LP12 option a). A start opens the generation the journal's
+//!   file holds. The paged modules write only their pages changed since the last save, and a
+//!   module over its row budget gets an extra save at a step boundary, kept as a pending
+//!   generation too, but not while a world save waits for its WORLD_SAVED (`paging`,
+//!   docs/choices-paging-followups.md PF12 to PF21).
 //!
 //! At most one step runs at a time (the bridge submits h only once step h - 1 published). The
 //! state lock is taken by the step and, outside any step, by `start` and `close`: no game thread
@@ -436,6 +440,10 @@ struct State {
     gens_failures: u64,
     pages_obs_seq: u64,
     last_applied_cmd: u64,
+    /// Steps in a row that began with a world save waiting for its WORLD_SAVED
+    /// ([`Engine::awaiting`]); 0 when none waits. A step past [`BUDGET_HOLD_HANDOVERS`] lets a
+    /// budget save through. Not saved.
+    budget_hold: u64,
     /// A test's rewound command sequence (`REWIND_CMD_SEQ`): the next commands take sequences
     /// from here until it catches up with the outbox's counter.
     rewind: Option<u64>,
@@ -504,6 +512,7 @@ impl State {
             gens_failures: 0,
             pages_obs_seq: 0,
             last_applied_cmd: 0,
+            budget_hold: 0,
             rewind: None,
             game_time: 0,
             op_salt: std::collections::hash_map::RandomState::new(),
@@ -782,8 +791,23 @@ pub struct Engine {
     /// none is pending.
     save_through: AtomicU64,
     save_at_step_end: AtomicBool,
-    /// The observation sequence the pages on disk include.
+    /// The observation sequence the confirmed pages include: what the headers acknowledge. It
+    /// moves at a confirm, never at a world save's commit (P29, LP12).
     durable: AtomicU64,
+    /// The highest observation sequence the journal's file on disk is known to hold: the world's
+    /// `nextObsSeq - 1` at start, then the highest WORLD_SAVED heard. A WORLD_SAVED can arrive
+    /// before the save it covers is committed (the same hand-over takes the save), so the engine
+    /// remembers it and tries a confirm after every commit.
+    world_saved: AtomicU64,
+    /// The store's current generation is a world save no WORLD_SAVED has confirmed: a module's
+    /// budget save waits ([`BUDGET_HOLD_HANDOVERS`]). Set before the save's tickets go back to the
+    /// step, so the step that drains them sees it.
+    awaiting: AtomicBool,
+    /// World saves committed since the last confirm: what `saves_done` gains when one confirms.
+    unconfirmed_world: AtomicU64,
+    /// The archive serial of the last committed save that recorded events: what the archive may
+    /// compact through once its generation is confirmed.
+    committed_serial: AtomicU64,
     started: AtomicBool,
     closing: AtomicBool,
     /// A crash: queued saves write nothing.
@@ -829,6 +853,10 @@ impl Engine {
             save_through: AtomicU64::new(0),
             save_at_step_end: AtomicBool::new(false),
             durable: AtomicU64::new(0),
+            world_saved: AtomicU64::new(0),
+            awaiting: AtomicBool::new(false),
+            unconfirmed_world: AtomicU64::new(0),
+            committed_serial: AtomicU64::new(0),
             started: AtomicBool::new(false),
             closing: AtomicBool::new(false),
             dead: AtomicBool::new(false),
@@ -1057,7 +1085,16 @@ impl Engine {
     // ---- start ----------------------------------------------------------------------------------
 
     /// Loads the pages and zeroes the buffers. Returns `(pagesObsSeq, nextCmdSeq)`.
-    pub fn start(&self, last_applied_cmd: u64) -> Result<(u64, u64), String> {
+    ///
+    /// `world_next_obs_seq` is the world's journal's `nextObsSeq`: its file on disk holds every
+    /// observation through `world_next_obs_seq - 1`, and the store opens the generation that file
+    /// holds (P29, docs/choices-leg-purge.md LP12): a world save's pages whose journal never
+    /// landed are rolled back and replayed from the journal, ones it holds are kept and confirmed.
+    pub fn start(
+        &self,
+        last_applied_cmd: u64,
+        world_next_obs_seq: u64,
+    ) -> Result<(u64, u64), String> {
         if self.started.swap(true, Ordering::AcqRel) {
             return Err("start called twice".into());
         }
@@ -1067,16 +1104,44 @@ impl Engine {
                 self.cfg.pages_dir.display()
             )
         })?;
-        // A save taken for a module's budget past the last save Java asked for (a pending
-        // generation, PF15) never had the journal trimmed behind it: the journal replays it.
-        if store
-            .rollback()
-            .map_err(|e| format!("cannot roll back the engine pages' pending saves: {e}"))?
-        {
-            log_info(
-                "rolled back the pages of saves taken for the modules' budgets since the last save; the journal replays them",
-            );
+        // The generation the journal's file holds, before anything reads a page (the archive and
+        // every module load from it). A save the engine took past it, a world save whose file
+        // never landed or a budget save past the last one, never had the journal trimmed behind
+        // it: the journal replays it.
+        let held = world_next_obs_seq.saturating_sub(1);
+        if store.obs_seq() > held && store.confirmed().obs_seq > held {
+            // Both generations include observations the world's save lacks: a world older than
+            // its pages (a backup restored over a newer rtsim folder). Today's answer, never a
+            // refusal: what is pending rolls back, the confirmed generation stays, and the
+            // replay skips what the pages have (`Reconcile::EngineAhead`).
+            let rolled = store
+                .rollback()
+                .map_err(|e| format!("cannot roll back the engine pages' pending saves: {e}"))?;
+            log_warn(&format!(
+                "both page generations hold observations the world's save lacks (the pages include {}, the world's journal file {held}): a world older than its pages; {}the replay skips what the pages have",
+                store.obs_seq(),
+                if rolled { "the pending save is rolled back; " } else { "" }
+            ));
+        } else {
+            let (pending, before) = (store.current() != store.confirmed(), store.current());
+            let at = store.select_for_journal(held).map_err(|e| {
+                format!("cannot select the engine pages' generation the journal holds: {e}")
+            })?;
+            if pending {
+                if at == before {
+                    log_info(&format!(
+                        "kept and confirmed the pages of the save the world's journal file holds (observations through {}; the file holds {held})",
+                        before.obs_seq
+                    ));
+                } else {
+                    log_info(&format!(
+                        "rolled back the pages of the saves the world's journal file lacks (they included {}, the file holds {held}); the journal replays them",
+                        before.obs_seq
+                    ));
+                }
+            }
         }
+        self.world_saved.store(held, Ordering::Release);
         let meta = store
             .get(KEY_META)
             .map_err(|e| format!("cannot read the engine's meta page: {e}"))?;
@@ -1335,7 +1400,7 @@ impl Engine {
             log_info("closed while the session's replay runs: the pages stay as they were");
         }
         if save && !replaying {
-            let save = self.take_save(&mut lock(&self.state), false);
+            let save = self.take_save(&mut lock(&self.state), self.close_kind());
             let this = Arc::clone(self);
             result = self.run_io_waiting(move || this.commit(save));
         } else {
@@ -1345,6 +1410,16 @@ impl Engine {
         self.dead.store(true, Ordering::Release);
         *lock(&self.store) = None;
         result
+    }
+
+    /// What the stop's final save is, in one place. Confirmed at once ([`SaveKind::Script`]): the
+    /// engine closes after the world's last save has been asked for, and the folder a viewer or the
+    /// next start reads holds it. A stop whose journal write was held (U-g's hold on a failed
+    /// SavedData write) then leaves pages ahead of the journal file: the start's both-ahead case,
+    /// logged as EngineAhead. Slice U-i changes this one line: `nClose` carries `writtenThrough` and
+    /// the save is [`SaveKind::World`] unless the file holds it.
+    fn close_kind(&self) -> SaveKind {
+        SaveKind::Script
     }
 
     fn run_io_waiting(&self, f: impl FnOnce() + Send + 'static) -> Result<(), String> {
@@ -1514,20 +1589,36 @@ impl Engine {
         let req = self.save_through.load(Ordering::Acquire);
         if !st.replaying {
             if self.save_at_step_end.swap(false, Ordering::AcqRel) {
-                self.save_now(&mut st, false);
+                self.save_now(&mut st, SaveKind::Script);
             } else if req != 0 && st.replay.applied_through().0 >= req - 1 {
                 let _ =
                     self.save_through
                         .compare_exchange(req, 0, Ordering::AcqRel, Ordering::Acquire);
-                self.save_now(&mut st, false);
+                self.save_now(&mut st, SaveKind::World);
             }
         }
         // The paged modules' budgets, at this step boundary: saved rows leave; a module whose
         // resident rows all changed since the last save gets a save of its own, one at a time
-        // (PF15).
+        // (PF15). Not while a world save waits for its WORLD_SAVED (LP12): a budget generation on
+        // top could include observations the journal's file lacks, and the confirm could then
+        // never cover the world save under it. Saved rows still leave and the rest stay resident,
+        // over their budget, as they do while a save is in flight; the valve lets a budget save
+        // through after [`BUDGET_HOLD_HANDOVERS`] steps of waiting, so a WORLD_SAVED that never
+        // comes cannot hold the rows for good.
         paging::drain(&mut st);
+        let awaiting = self.awaiting.load(Ordering::Acquire);
+        st.budget_hold = if awaiting { st.budget_hold + 1 } else { 0 };
+        if awaiting && st.budget_hold == BUDGET_HOLD_HANDOVERS + 1 {
+            self.window_grows(&format!(
+                "a world save is not confirmed: no WORLD_SAVED in {BUDGET_HOLD_HANDOVERS} hand-overs, so the modules' budget saves are taken on top of it"
+            ));
+        }
         if paging::enforce_budget(&mut st) && st.paging.in_flight == 0 && !st.replaying {
-            self.save_now(&mut st, true);
+            if awaiting && st.budget_hold <= BUDGET_HOLD_HANDOVERS {
+                self.stats.budget_saves_held.fetch_add(1, Ordering::AcqRel);
+            } else {
+                self.save_now(&mut st, SaveKind::Budget);
+            }
         }
         archive::absorb(&mut st, &self.stats);
 
@@ -1781,6 +1872,11 @@ impl Engine {
                 // The camp ledgers forget the answers of those records as they next book one
                 // (MZB-177), from the conflict's replay end on (RP-68).
                 st.conflict.engine.world_saved(durable);
+                // The journal's file holds every observation through `durable`: the world save
+                // the engine took for it (or takes next, when this reached the engine first) is
+                // confirmed on the IO lane (LP12).
+                self.world_saved.fetch_max(durable, Ordering::AcqRel);
+                self.confirm_on_io();
                 Self::log_received(st, h, rec, 0, false);
             }
             _ => {
@@ -1829,7 +1925,7 @@ impl Engine {
             let _ = self
                 .save_through
                 .compare_exchange(req, 0, Ordering::AcqRel, Ordering::Acquire);
-            self.save_now(st, false);
+            self.save_now(st, SaveKind::World);
         }
         if rec.kind == obs::JOURNAL_GEN {
             self.journal_gen(st, h, rec, seq);
@@ -2040,18 +2136,19 @@ impl Engine {
         st.world.refused_journaled(rec);
     }
 
-    /// Snapshots the pages at this step boundary and writes them on the IO lane. `pending`: a
-    /// save for the paged modules' budgets, past the last save Java asked for (PF15).
-    fn save_now(self: &Arc<Self>, st: &mut State, pending: bool) {
-        let save = self.take_save(st, pending);
+    /// Snapshots the pages at this step boundary and writes them on the IO lane. `kind` says what
+    /// the save is for ([`SaveKind`]); a budget's save not made costs nothing, any other logs that
+    /// the replay window grows.
+    fn save_now(self: &Arc<Self>, st: &mut State, kind: SaveKind) {
+        let save = self.take_save(st, kind);
         let this = Arc::clone(self);
-        if !self.spawn_io(move || this.commit(save)) && !pending {
+        if !self.spawn_io(move || this.commit(save)) && kind != SaveKind::Budget {
             self.window_grows(NOT_MADE);
         }
     }
 
     /// One save's pages, taken at this step boundary on the step thread.
-    fn take_save(&self, st: &mut State, pending: bool) -> Save {
+    fn take_save(&self, st: &mut State, kind: SaveKind) -> Save {
         let _z = rt::zone!("rtsim.snapshot");
         // Results that came back first: a failed save's pages go into this one (PF14).
         paging::drain(st);
@@ -2106,7 +2203,7 @@ impl Engine {
             p1,
             job,
             obs_seq,
-            pending,
+            kind,
             events,
         }
     }
@@ -2123,7 +2220,7 @@ impl Engine {
             p1,
             job,
             obs_seq,
-            pending,
+            kind,
             events,
         } = save;
         // From here on, a return before `job.succeeded()` reports the save failed (the job's
@@ -2147,7 +2244,7 @@ impl Engine {
         // A save Java asked for that is not made: the window grows (RP-49). A budget's save
         // is a pending generation, which a crash rolls back anyway.
         let lost = || {
-            if !pending {
+            if kind != SaveKind::Budget {
                 self.window_grows(NOT_MADE);
             }
         };
@@ -2201,10 +2298,10 @@ impl Engine {
             batch.put(*k, b);
         }
         let bytes = batch.raw_bytes() as u64;
-        let r = if pending {
-            store.commit_pending(batch, obs_seq)
-        } else {
+        let r = if kind == SaveKind::Script {
             store.commit(batch, obs_seq)
+        } else {
+            store.commit_pending(batch, obs_seq)
         };
         match r {
             Ok(_) => {
@@ -2212,14 +2309,38 @@ impl Engine {
                 self.stats.committed_obs.store(obs_seq, Ordering::Release);
                 self.stats.saves_committed.fetch_add(1, Ordering::AcqRel);
                 p1.done();
-                if pending {
-                    // Past the last save Java asked for: the journal is not trimmed behind it.
-                    self.stats.pressure_saves.fetch_add(1, Ordering::AcqRel);
-                } else {
-                    self.durable.fetch_max(obs_seq, Ordering::AcqRel);
-                    self.stats.saves_done.fetch_add(1, Ordering::AcqRel);
-                    if let Some(s) = serial {
-                        self.stats.archive_confirmed.store(s, Ordering::Release);
+                if let Some(s) = serial {
+                    self.committed_serial.store(s, Ordering::Release);
+                }
+                // The state the step that drains `job` sees (the budget's hold) is set before
+                // `job.succeeded()`, the confirm included.
+                match kind {
+                    SaveKind::World => {
+                        // Pending until the journal's file holds it: neither the acknowledgement
+                        // nor `saves_done` moves here, and a module's budget save waits.
+                        self.unconfirmed_world.fetch_add(1, Ordering::AcqRel);
+                        self.awaiting.store(true, Ordering::Release);
+                        self.confirm_locked(store);
+                    }
+                    SaveKind::Budget => {
+                        // Past the last save Java asked for: the journal is not trimmed behind it
+                        // unless the file already holds it (a quiet world: it shares the world
+                        // save's observations).
+                        self.stats.pressure_saves.fetch_add(1, Ordering::AcqRel);
+                        self.awaiting.store(false, Ordering::Release);
+                        self.confirm_locked(store);
+                    }
+                    SaveKind::Script => {
+                        // Committed confirmed, with every generation under it.
+                        self.durable.fetch_max(obs_seq, Ordering::AcqRel);
+                        let under = self.unconfirmed_world.swap(0, Ordering::AcqRel);
+                        self.stats.saves_done.fetch_add(1 + under, Ordering::AcqRel);
+                        self.stats.confirms.fetch_add(1, Ordering::AcqRel);
+                        self.awaiting.store(false, Ordering::Release);
+                        self.stats.archive_confirmed.store(
+                            self.committed_serial.load(Ordering::Acquire),
+                            Ordering::Release,
+                        );
                     }
                 }
                 drop(guard);
@@ -2233,6 +2354,68 @@ impl Engine {
                 recover_store(store);
                 lost();
             }
+        }
+    }
+
+    /// Confirms the store's pending generation if the journal's file holds every observation it
+    /// includes (`world_saved`), as the bridge's WORLD_SAVED says: the acknowledgement, `saves_done`
+    /// and the archive's confirmed serial move here, and the budget's hold ends. True if it
+    /// confirmed. A confirm that fails (its log record torn) leaves the generation pending and
+    /// reopens the store from its files, which cut the record; the next WORLD_SAVED or commit tries
+    /// again.
+    fn confirm_locked(&self, store: &mut PageStore) -> bool {
+        match store.confirm_through(self.world_saved.load(Ordering::Acquire)) {
+            Ok(true) => {
+                self.durable
+                    .fetch_max(store.confirmed().obs_seq, Ordering::AcqRel);
+                let under = self.unconfirmed_world.swap(0, Ordering::AcqRel);
+                self.stats.saves_done.fetch_add(under, Ordering::AcqRel);
+                self.stats.archive_confirmed.store(
+                    self.committed_serial.load(Ordering::Acquire),
+                    Ordering::Release,
+                );
+                self.awaiting.store(false, Ordering::Release);
+                self.stats.confirms.fetch_add(1, Ordering::AcqRel);
+                true
+            }
+            Ok(false) => false,
+            Err(e) => {
+                self.stats.confirm_failures.fetch_add(1, Ordering::AcqRel);
+                log_error(&format!(
+                    "confirming the engine pages' pending save failed: {e}; the save stays pending until the next WORLD_SAVED"
+                ));
+                recover_store(store);
+                false
+            }
+        }
+    }
+
+    /// A WORLD_SAVED came (or the save it covers just committed): confirm on the IO lane, in
+    /// order with the saves. Not a save, so a refusal is no save failure: the next commit's confirm
+    /// covers it.
+    fn confirm_on_io(self: &Arc<Self>) {
+        if self.dead.load(Ordering::Acquire) {
+            return;
+        }
+        let this = Arc::clone(self);
+        let job = move || {
+            if this.dead.load(Ordering::Acquire) {
+                return;
+            }
+            let confirmed = {
+                let mut guard = lock(&this.store);
+                guard.as_mut().is_some_and(|s| this.confirm_locked(s))
+            };
+            if confirmed {
+                let serial = this.stats.archive_confirmed.load(Ordering::Acquire);
+                archive::compact(&this.archive, serial, &this.stats);
+            }
+        };
+        match self.cfg.exec {
+            Exec::Host => {
+                let _ = rt::io(job);
+            }
+            Exec::Inline => job(),
         }
     }
 
@@ -2358,6 +2541,23 @@ impl Engine {
     }
 }
 
+/// What a save is for, which says when its generation is confirmed (P29, docs/choices-leg-purge.md
+/// LP12 option a).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SaveKind {
+    /// A save Java asked for (`requestSave`, at a world save): a pending generation until the
+    /// bridge's WORLD_SAVED says the journal's file holds every observation it includes. Neither
+    /// the acknowledgement, `saves_done` nor the archive's confirmed serial moves before.
+    World,
+    /// A save for a paged module's budget (PF15): a pending generation too, taken only when no
+    /// world save waits for its WORLD_SAVED (or past the valve, [`BUDGET_HOLD_HANDOVERS`]). It is
+    /// confirmed if the journal's file already holds its observations.
+    Budget,
+    /// A test's SaveAtNextStep and the stop's final save ([`Engine::close_kind`]): committed
+    /// confirmed, with every generation under it.
+    Script,
+}
+
 /// The lower of two next sequences, `None` standing for none at all.
 /// One save on its way from the step thread to the IO lane: the core's pages, the pages written
 /// outside the batch (the industry engine's changed ones and the world model's), and the paged
@@ -2374,7 +2574,7 @@ struct Save {
     p1: phase1::Saved,
     job: paging::Job,
     obs_seq: u64,
-    pending: bool,
+    kind: SaveKind,
     /// The events up to this snapshot, when the session records (`archive.rs`).
     events: Option<archive::Taken>,
 }
