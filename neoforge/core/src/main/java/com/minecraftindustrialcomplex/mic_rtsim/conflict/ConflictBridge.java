@@ -520,6 +520,21 @@ public final class ConflictBridge implements SessionPlugin {
             return alive;
         }
 
+        /** What its Traveller keeps for it, or null for a slot that walks (GameTests, M11c). */
+        public Traveller.Memo travelMemo() {
+            return travelMemo;
+        }
+
+        /** Where a chief puppet called home floats to; null while it travels (GameTests, M11c). */
+        public Vec3 homeSpot() {
+            return homeSpot;
+        }
+
+        /** Whether its body's death is waiting to be journaled (GameTests, M11c). */
+        public boolean dying() {
+            return pendingDeath != null;
+        }
+
         /** Blocks between its body and its place now; NaN with no body (GameTests). */
         public double lag() {
             return entity == null ? Double.NaN : lag(entity);
