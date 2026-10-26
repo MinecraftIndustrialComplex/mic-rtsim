@@ -75,12 +75,394 @@ no longer grows with the backlog.
 | JB1 | **Never ahead: a journal write whose chunks are not on disk is held, not written late.** The file stays as it was and the journal stays dirty (`JournalSavedData.retry`), so the next world save writes it. A note stays until a write that covered it is confirmed (`confirmedRound`), so a held round's chunks are waited for again. The world-save marker (WORLD_SAVED) reports `min(through, writtenThrough)`, the last sequence actually in the file, instead of the journal in memory. A journal write that fails (an IOException) is retried at the next save the same way and never reported by the marker. | A file older than its chunks is the safe order (docs/boundary.md): the chunks carry their records (`mic_rtsim:pending`, the reconcile epoch) until the engine acknowledges them, and dedup by op id and epoch handles a replay. A file ahead of a chunk loses goods. The marker had the same flaw as the late write: it told the engine a world save held observations its journal file did not have (also for a failed write, which `SavedData.save` only logs: the "Still open" gap in docs/boundary.md). It also fits P29's recommended design (K12): WORLD_SAVED becomes `confirm_through`, so a held journal leaves the older page generation confirmed. |
 | JB2 | **Vanilla: the noted chunks are written by foreground tasks, ahead of the background queue.** A mixin on `IOWorker` (PATCHES.md row 40) adds `writeNow`: a foreground task that takes a position's entry out of `pendingWrites` and writes it as vanilla's `runStore` does (`storage.write`, then the entry's future, so vanilla's own store futures and `synchronize` stay right; a failure is logged as vanilla logs it and returned). One position per task, the next queued when the last is done. Only when the worker's class is exactly `IOWorker`. | Foreground tasks run before every background task, so the wait is the foreground queue (7 ms measured) plus the noted chunks' own writes, not the level's backlog. The chunks are written once, earlier, never twice: the entry leaves the map, and the background pass writes the next one. One per task lets a chunk read the server thread is waiting for (a synchronous load is a foreground task too) run between two of them, as it would between two of vanilla's own writes. Rejected: `synchronize(true)` (the backlog: 34 s); writing through a second `RegionFile` handle (two writers of one region file break its sector table); a priority flag on `store` (more of vanilla to change for the same result). C2ME's subclass overrides `store` and keeps its own queue, so the mixin's map is empty there. |
 | JB3 | **C2ME: wait for the noted positions to leave its write cache, then fsync their region files.** `C2meWrites` (PATCHES.md row 42) reads C2ME's storage thread by reflection: its `executor`, its `cache` and its `RegionFileStorage`. Every 20 ms a small task on that thread looks whether the positions are still in `cache`; C2ME removes a position and writes it in the same task (`if (cache.remove(pos, future)) invokeWriteChunk`), so a position gone from it is written. C2ME turns DSYNC off, so once written the barrier forces the noted chunks' region files to disk itself (`FileChannel.force`, on the IO chain); with DSYNC on (vanilla's default) it does not. Another `IOWorker` subclass gets `synchronize(true)` (warned); a chunk storage that is not an `IOWorker` cannot be ordered (warned once) and is not waited for. A C2ME whose fields differ falls back to `synchronize(true)` with a warning. | C2ME writes each chunk as soon as its compression is done, in no queue order, so there is nothing to move ahead; waiting for the positions themselves replaces a full flush (every queued write, then every region file fsynced, chunk reads stalled meanwhile) with a poll that costs one tiny task per 20 ms on C2ME's thread. Reflection, not a mixin: C2ME is an alpha with no API, and a mixin on it would fail the launch (defaultRequire 1) on any update; reflection degrades to the old behaviour with a warning. The fsync keeps the order across a power cut (the journal's own write is atomic and flushed by NeoForge); it only costs where it is needed. |
-| JB4 | **Two limits: 10 s per wait (`WAIT_MILLIS`), and 3 held world saves in a row (`GIVE_UP_ROUNDS`) before one goes ahead without its chunks** (logged as an error, counted `late`). Both PLACEHOLDER. | The wait blocks a shared IO thread and, at a flush save, the server thread, so it needs a bound; 10 s is about a thousand times the waits measured with JB2 and keeps a shutdown short. Expiry costs nothing but a journal file one world save older (JB1). The second limit is for a chunk that never resolves (an unknown storage, a chunk lost without an unload event): without it the journal's file would never be written again, and a crash would then roll back everything since. 3 saves is 15 minutes of autosaves; a hold that lasts that long needs a disk that writes nothing for 10 s three times in a row. |
-| JB5 | **What holds a round without waiting.** A noted chunk that is neither loaded nor seen unloading: C2ME's asynchronous unload is serializing it off the server thread and nothing has reached the storage yet. `ChunkEvent.Unload` (LOWEST) marks it; vanilla posts it before the unload's save in the same task, C2ME after queuing the write, so from then on the round waits for its write as usual. A chunk vanilla could not serialize (`ChunkMap.save` false or throwing) is marked unsaved again and holds. A failed write seen by JB2 holds, and marks the chunk unsaved again (vanilla cleared the flag before writing) so the next save writes it; a chunk that has left its level by then cannot be saved again, and holds every round until JB4's valve. | Waiting for the unload on the IO chain would stall a flush save: the server thread would be waiting for the chain while the chain waited for an event only the server thread posts. A hold is free and the chunk is resolved by the next save. |
-| JB6 | **No early retry: a held journal write waits for the next world save.** | Holds are rare: with vanilla's storage only a failure or a 10 s stall holds; with C2ME also a noted chunk caught in its asynchronous unload at the moment of the save, a window of milliseconds. A retry on a timer would add a save path outside vanilla's and, under a stalled disk, more load on it. The cost is a journal file up to one autosave interval older, which until P29 is wired means a crash in that window starts with the engine's pages ahead of the world save (`EngineAhead`, logged), as a crash between a page save and its journal write already did. "For Ben" 3. |
+| JB4 | **Two limits: 10 s per wait (`WAIT_MILLIS`), and 3 held world saves in a row (`GIVE_UP_ROUNDS`) before one goes ahead without its chunks** (logged as an error, counted `late`). Both PLACEHOLDER. | The wait blocks a shared IO thread and, at a flush save, the server thread, so it needs a bound; 10 s is about a thousand times the waits measured with JB2 and keeps a shutdown short. Expiry costs nothing but a journal file one world save older (JB1). The second limit is for a chunk that never resolves (an unknown storage, a chunk lost without an unload event): without it the journal's file would never be written again, and a crash would then roll back everything since. 3 saves is 15 minutes of autosaves; a hold that lasts that long needs a disk that writes nothing for 10 s three times in a row. *Superseded in part by RP-205 (slice U):* the second limit now applies only to a note no later save can clear (a chunk that cannot be serialized or stored, or whose unload is never seen), which is given up alone; a hold for any other reason has no limit, since a give-up opened direction A for every noted chunk, and some of those hold goods twice then. |
+| JB5 | **What holds a round without waiting.** A noted chunk that is neither loaded nor seen unloading: C2ME's asynchronous unload is serializing it off the server thread and nothing has reached the storage yet. `ChunkEvent.Unload` (LOWEST) marks it; vanilla posts it before the unload's save in the same task, C2ME after queuing the write, so from then on the round waits for its write as usual. A chunk vanilla could not serialize (`ChunkMap.save` false or throwing) is marked unsaved again and holds. A failed write seen by JB2 holds, and marks the chunk unsaved again (vanilla cleared the flag before writing) so the next save writes it; a chunk that has left its level by then cannot be saved again, and holds every round until JB4's valve (*since RP-205:* it is given up at once, at the arm). | Waiting for the unload on the IO chain would stall a flush save: the server thread would be waiting for the chain while the chain waited for an event only the server thread posts. A hold is free and the chunk is resolved by the next save. |
+| JB6 | **No early retry: a held journal write waits for the next world save.** | Holds are rare: with vanilla's storage only a failure or a 10 s stall holds; with C2ME also a noted chunk caught in its asynchronous unload at the moment of the save, a window of milliseconds. A retry on a timer would add a save path outside vanilla's and, under a stalled disk, more load on it. The cost is a journal file up to one autosave interval older, which until P29 is wired means a crash in that window starts with the engine's pages ahead of the world save (`EngineAhead`, logged), as a crash between a page save and its journal write already did. "For Ben" 3. *Superseded in part by RP-205 (slice U):* a flush save (the stop, `/save-all flush`) whose write was held tries once more after every chunk is flushed, then keeps the older file; an autosave's hold still waits for the next world save. |
 | JB7 | **The cost on a potato and on OmegaSrv (D1).** The server thread: at each journal write with notes, one `ChunkMap.save` per noted chunk still unsaved (the autosave saves every unsaved chunk outside the 10 s cooldown anyway) and one small task per level; it never waits. A save with no notes costs an empty check. The chunk worker (vanilla): the same writes it would have made later, made first. C2ME: a poll task every 20 ms while waiting and an fsync of the noted chunks' region files (usually one to four) on the IO chain, instead of a full flush at each autosave. Flush saves: vanilla's own flush has written everything before the server thread joins the chain, so the barrier adds nothing there. | D1: smoothness on a potato first, and the barrier never stalls the server thread. On OmegaSrv (4 cores, about 90 "Can't keep up" a day, view distance 16, C2ME) the first barrier's full C2ME flush at autosaves stalled chunk reads; that is gone. A slow disk (an SD card, a busy HDD) makes each noted chunk's write slower, not the whole backlog's. |
 | JB8 | **The tests.** Core: `aJournalWriteGoesAheadOfTheChunkQueueButNotAheadOfItsChunk` (a chest with random counts, 1,000 chunk writes of 16 KB queued ahead of it on the real worker: the journal's file is written, the chunk on disk has the chest, most of the backlog is still queued); `aChunkStillBeingUnloadedHoldsTheJournalsFileToTheNextSave` (JB5 and JB4's valve: a chunk in flight holds the file with no wait, its unload releases it, a chunk that never resolves holds 2 saves and the third is written late); `theWorldSavedMarkerNeverPassesTheJournalOnDisk` (JB1 on the real session). Create: the crash test waits on the real condition: after each `saveEverything` it reads the journal's file and the region file on the IO chain, and while the file does not yet hold the reconcile (a held round) it saves again, then checks the chunk on disk holds it and that nothing was late. It records every save and load of the far chunk (`ChunkDataEvent`: what each tag held, on which thread) and the region file's write time for the chunk, so a failure says which write is on disk. `-Pc2me` runs the core suite with the pack's C2ME jar (JB3's path); the tests check the strategy the barrier picked. | The old crash test waited for the barrier's first write and failed when it went over its limit; now a hold is a legal outcome and the test asserts the invariant itself (never ahead), under any IO latency. The 1,000-write backlog reproduces the GameTest server's backlog on demand, so the vanilla test fails against the first barrier whatever the load. |
-| JB9 | **Not covered.** Entities (R24: a reconcile's spilled items, residents); other mods' SavedData written in the same loop (R24); C2ME's failed writes, which C2ME only logs (the position leaves the cache either way); P29 itself: the engine's pages are still saved at the world save, ahead of a held journal file. When P29 is wired, `Journal.trim` and the drop of pending records at an acknowledgement should be gated by `min(ack, writtenThrough)`. | |
+| JB9 | **Not covered.** Entities (R24: a reconcile's spilled items, residents); other mods' SavedData written in the same loop (R24); C2ME's failed writes, which C2ME only logs (the position leaves the cache either way); P29 itself: the engine's pages are still saved at the world save, ahead of a held journal file. When P29 is wired, `Journal.trim` and the drop of pending records at an acknowledgement should be gated by `min(ack, writtenThrough)`. *Since slice U:* other mods' SavedData of the same save reach disk before the journal's file (RP-200), and the ops whose effects they hold are kept beside them (RP-204, RP-206, RP-207); the entities R24 names are slice U-b's; what is still not covered is the residual list in docs/replay-gate.md 9.6. | |
+
+## Slice U: the journal's file last, and the ops kept beside their effects
+
+Slice U audited every state-changing op kind against a crash that splits a world save (the audit's
+outcomes are in docs/replay-gate.md 9.6). Its two directions:
+- **A:** the journal's file on disk, a store from before. The journal knows the op, so the engine never
+  sends it again; the effect is missing (or, for an op that took goods, the goods are back).
+- **B:** the store on disk, the journal's file from before. The engine sends the op again, and only a
+  dedup saved with the effect stands between it and a second application.
+
+Before the slice the journal's applied set was the only dedup of four effects that live in another
+SavedData file: Diesel's `cdg_oil_chunks` (IND_DEPOSIT_DELTA), Destroy's level pollution in
+`neoforge_data_attachments` (IND_DEPOSIT_DELTA), and Create's `create_tracks` (IND_CARRIAGE_DELTA, and
+IND_WRITE_PACKAGE's offline buffer). Vanilla writes a level's SavedData in its HashMap's order and the
+overworld before the other levels, so which direction a pair took depended on the map's capacity: both
+happened. Slice U makes it one direction (RP-200) and makes that direction exact with a ring saved with
+the effect (RP-204, RP-206, RP-207). Slice U-b (below the "For Ben" list) takes the chunk and entity rows.
+
+- **RP-200, the journal's file is the last SavedData a world save writes (JL).**
+  - *Chosen.* During `MinecraftServer.saveAllChunks` (every autosave, `/save-all`, the stop) the journal's
+    write task and the WORLD_SAVED marker behind it are held by `WorldSaveOrder` and go on NeoForge's
+    SavedData IO chain when saveAllChunks returns, behind every level's SavedData
+    (`MinecraftServerSaveMixin`, PATCHES.md row 86). The chain runs one task at a time, so a journal file on
+    disk means every SavedData file of its save is on disk too. The barrier's wait for its noted chunks
+    (JB1 to JB5) still runs first, inside the journal's task. If saveAllChunks throws, the held tasks go out
+    at the next one's return: later, the safe side.
+  - *Why.* Direction A is the dangerous one for a SavedData pair: the op is never resent, so nothing can
+    repair it, and for a draw it is goods from nothing (Diesel's oil delivered and not drawn). Direction B
+    can be made exact by a ring in the store's own file (RP-204). One direction for every pair is simpler to
+    reason about than an order per pair.
+  - *Tests.* dieselgenerators `DepositCrashGameTests`, which read the oil file, its ring and the journal's
+    file at one instant of the journal's write on the IO chain and restart from them. The two "after" tests
+    (nether, and overworld with the map grown until the journal came first) failed first on c1008dd3 with
+    5,000,000 mB left after a 1,234 mB draw (the dupe), and pass with 4,998,766.
+  - *Left.* JL orders SavedData only. saveAllChunks returns once the chunk and entity writes are queued on
+    their own IOWorkers, and the autosave skips a chunk the background saver wrote less than 10 s earlier,
+    so a chunk or entity effect that the barrier does not note can still reach disk after the journal (the
+    residual list in docs/replay-gate.md 9.6).
+- **RP-201, directory syncs (the coordinator's power-loss option (a)).**
+  - *Chosen.* The journal's task syncs every level's `data/` directory before its write, and its own
+    directory after it, so WORLD_SAVED never claims a rename a power loss undoes. The barrier syncs the
+    region and entity folders of its round's chunks after their files (a region file made in this save is
+    a new entry in its folder). `DirectorySync` never throws; on Windows, where Java cannot open a
+    directory, the sync is skipped, the first failure is logged once and every one is counted.
+  - *Why.* NeoForge's `atomicWrite` forces a file's bytes and then renames it into place, but nothing syncs
+    the rename. A power loss could keep the journal's rename and lose an earlier store's: direction A again.
+  - *Cost (D1).* A few directory fsyncs per world save, on the IO chain, never on the server thread;
+    `/rtsim perf` shows the count, the failures and the time.
+  - *Tests.* `DirectorySyncTest` (the sync, and the Windows log-once with three failures counted). A
+    GameTest cannot cut the power; crash GameTests read the files the way the IO chain leaves them, and an
+    fsync call is not taken as proof.
+  - *Left.* Windows: NTFS orders its metadata but does not promise a rename across a power loss.
+- **RP-202, the double draw (superseded by RP-204).** With JL alone, a crash right before the journal's
+  write leaves the oil file with the draw and the journal without the op: the resend drew the deposit
+  again (4,997,532 mB left, measured by `aNetherDrawIsTakenOnceWhenTheServerDiesRightBeforeTheJournal`).
+  That is a loss, the safe side, and was first recorded as accepted; RP-204 removes it.
+- **RP-203, the journal's file is written only in a world save.**
+  - *Chosen.* A save of the overworld outside saveAllChunks (a mod's own `ServerLevel.save`, or one off the
+    server thread) leaves the journal dirty and its barrier's notes in place for the next world save. The
+    first is logged with its stack; every one is counted ("outside a world save" in `/rtsim perf`).
+  - *Why.* Outside a world save the other levels' SavedData are not being written, so a journal written
+    then could claim an effect that lives in the nether's `cdg_oil_chunks` while that file is older on
+    disk. Vanilla saves a level only inside saveAllChunks, so on the pack this never fires.
+  - *Left.* A mod that saves the overworld on its own schedule only delays the journal to the next world
+    save.
+- **RP-204, rings of applied ops beside the effect.**
+  - *Amended by RP-209.* The trim by the journal's file mark, the PENDING state and `allPending` below
+    are replaced by T2's rule: an entry leaves at the engine's acknowledgement of its answer, and a ring
+    another session answered is settled at the session's start. The rest stands.
+  - *Chosen.* `DurableOpRing` (core `journal/`): the engine ops applied to one SavedData store, saved in the
+    store's own file under `mic_rtsim:applied_ops`, each with the sequence of the COMMAND_RESULT that
+    answered it. The dedup is "the store's ring, or the journal".
+    - *Trim.* At the store's save, an entry goes once the journal's file on disk holds its answer: the
+      journal is then the dedup, and once the engine has acknowledged a result it never sends the op again.
+      For an APPLIED answer that dedup is the journal's applied index. An entry stamped by a DUPLICATE_OP
+      answer is not in that index; its guard is the resend's own command sequence, at or below the
+      journal's last applied one, which `BoundarySession` skips as stale.
+    - *Entries read from disk.* Those at or below what the journal's file held at this start go at the first
+      trim. Those above it are what a crash between the store's write and the journal's left; their
+      sequences are handed out again in this life, so they wait (PENDING) until the engine resends the op,
+      and the answer stamps them with its own sequence.
+    - *Cap.* 4,096 entries (TUNABLE): the oldest goes first, and one pushed out before the journal's file
+      held it is counted as an overflow (`/rtsim perf`).
+    - *Diesel.* A mixin on CDG's `OilChunksSavedData` save and static load (`OilChunksSavedDataRingMixin`,
+      PATCHES.md row 88) keeps one ring in each dimension's `cdg_oil_chunks`; the plugin hands it to
+      `Industry.depositDelta` through `IndustryPlugin.depositRing`. A resend the ring refuses and the journal
+      did not know is counted ("deposit deltas refused by a store's ring"). A plugin that throws while asked
+      for its ring is reported and the next plugin asked.
+    - *Corrupt.* A ring whose two arrays differ in length keeps every op as PENDING
+      (`DurableOpRing.allPending`): their resends are refused, an effect left out (for a draw, ore the
+      world keeps), never one applied twice.
+    - *The module switch.* The ring is written whatever the industry module's switch: the rule for every
+      ring (docs/replay-gate.md 9.6, "Rings and the module switch"; the coordinator, 2026-10-25). A save
+      that left it out after a switch off could die before the journal's write, and an op applied before
+      the switch would be applied again at its resend. UR-1 does not need a gate: CDG ignores the key at
+      load and its save writes into the fresh tag vanilla's `SavedData.save(File)` makes, NeoForge skips an
+      unknown level attachment, and the ledger is mic_rtsim_destroy's own file. With the module off the
+      entries read from disk stay, trimmed as the journal's file moves, at most 4,096 a store.
+  - *Why.* Under JL, B is the only direction for a SavedData pair, and B is exact when the op's dedup is in
+    the same file as its effect. "Ring or journal", with the trim by the journal's durable mark, keeps a
+    store's ring to about two autosaves of entries however busy the store is; a fixed window sized for
+    the busiest store would be a guess. The ring is U's own class: T2's `AppliedOpRing` (create) is a fixed
+    window of 256 with no trim, which suits one train, not every Diesel draw of a dimension.
+  - *Tests.* `DurableOpRingTest` (6: the trim, entries from disk, the cap and its overflow count, the trim
+    before the cap, a corrupt ring's ops kept until their resends, a malformed ring). `aNetherDrawIsTakenOnceWhenTheServerDiesRightBeforeTheJournal`: 4,997,532
+    with JL alone (RP-202), 4,998,766 with the ring.
+  - *Left.* An entry the cap pushes out before the journal's file holds it (counted): its op's resend
+    would be applied again. A PENDING entry whose op is never resent stays until the cap pushes it out; it
+    can only refuse that op. UR-1: CDG loads `cdg_oil_chunks` with the extra key and drops it at its next
+    save.
+    Hole (a), found by slice T's implementer: the trim by the journal's file mark drops an entry the engine
+    may still re-decide under the same op id after a replay consumed its answer. A normal restart re-decides
+    it in the same step, while the journal's applied index and the ring still hold it; a restart with the
+    industry module off, switched on after a world save, applies it again (replay-gate 9.6 residual 7). The
+    follow-on is T2's rule (prune by the engine's durable page ack, settle at the session start by the
+    journal's newest gen), taken for both ring classes at the merge with T2.
+- **RP-205, a hold has no limit; only notes no save can clear are given up (supersedes JB4's second
+  limit and JB6 in part; the coordinator's decision).**
+  - *Chosen.*
+    - A round held for a reason a later save can clear (a noted chunk's write not on disk within
+      `WAIT_MILLIS`, a failed write while the chunk is still in its level, a failed fsync) is held at every
+      world save, with no round limit. The journal's file only grows older.
+    - A note no later save can clear is given up alone, at the arm, and the round goes on without it: a
+      chunk that left its level after its write failed, at once; a chunk that cannot be serialized, an
+      entity chunk that cannot be stored, or a chunk whose unload is never seen, after `GIVE_UP_ROUNDS`
+      (3) world saves in a row. Each is logged at error and counted `late`.
+    - A flush save (the stop, `/save-all flush`) whose journal write was held tries once more on the server
+      thread after every chunk is flushed. Held again, it keeps the older file, logged at error and counted
+      ("kept at a flush save"). The stop never waits longer than two of the barrier's waits, and the second
+      try does not count toward a note's give-up. The world-save marker (WORLD_SAVED) is not queued again
+      for the second try: it reports the older file it found, so the engine hears of the second try's file
+      at the next world save, later than it could (the safe side).
+    - The counters, in `/rtsim perf`: held (and in a row, and the last reason), late, the longest wait, kept
+      at a flush save, outside a world save (RP-203), ring overflows (RP-204), and the applied ops the
+      journal's file is behind the journal, logged once past `BEHIND_WARN` (10,000, PLACEHOLDER). The
+      engine counts the kept commands its start resends, every module's (stat 16), shown beside them.
+  - *Why.* The audit found that a give-up opens direction A for every noted row, and that some of those
+    rows then hold goods twice (a negative reconcile delta, a deposit draw in the chunk, a reconciled block
+    destroy, Create's K5 to K7). JB4's valve wrote the journal ahead after three held saves for any reason.
+    A hold costs a journal file older by the hold, and while held every SavedData store is in B, which the
+    rings make exact; a note that no save can clear never resolves by waiting, so it is the only one let go.
+  - *Tests.* Core `aWriteHeldForItsChunksIsHeldAtEverySaveWithNoLimit` (`GIVE_UP_ROUNDS` + 2 holds in a
+    row, none written and none late; the next save after the writes land writes the file),
+    `aFlushSaveTriesOnceMoreThenKeepsTheOlderFile` (the second try writes the file once the unload is seen;
+    when it is never seen the file stays byte for byte, counted, and the give-up count does not move), and
+    `aChunkStillBeingUnloadedHoldsTheJournalsFileToTheNextSave` (an unseen unload given up after
+    `GIVE_UP_ROUNDS` - 1 holds). rtsim-jni `a_kept_command_is_resent_after_a_crash_with_its_sequence_and_op`
+    checks the resend count.
+  - *Left.* A given-up note: the outcomes in docs/replay-gate.md 9.6 ("After a give-up"). Taking a
+    given-up note's ops out of the applied set and having the engine resend them (turning A into B) needs a
+    per-op resend list in the engine; it is a follow-on. A disk that never recovers keeps the journal's
+    file old for as long as it lasts: logged once past 10,000 applied ops behind, and a crash then replays
+    from the older file. The fixed rings of 256 (T2's train ring, RP-192, and the port's, RP-206) were
+    sized for a hold of at most four autosaves; a hold that lasts hours can push a busy train's or port's
+    op out before the journal's file holds it, and a crash then applies its resend again. `DurableOpRing`
+    (4,096) has the same limit: its trim follows the journal's file, which the hold keeps back, so 4,096
+    ops into one store during the hold push its oldest out, counted as overflows (replay-gate 9.6,
+    residual 6). *Since RP-250 and RP-209* every ring prunes at the engine's acknowledgement, which the
+    hold does not keep back, and holds 4,096: only 4,096 ops into one ring that the engine has not
+    acknowledged push one out.
+- **RP-206, the station port's rings (PATCHES.md row 87).**
+  - *Chosen.* IND_WRITE_PACKAGE's offline buffer is in `create_tracks.dat`, in its port's entry of the
+    station's "Ports" list. Each `GlobalPackagePort` keeps two `AppliedOpRing`s of 256 (T2's class,
+    unchanged; 4,096 and pruned by T2's rule since RP-209) in that entry, through mixins at the RETURN of
+    `GlobalStation.write` and `read` in T2's `require 0` config (`PortRing`): `mic_rtsim:applied_ops` for the ops whose packages went into the
+    offline buffer, `mic_rtsim:applied_ops_postbox` for the ops whose packages went into the loaded postbox,
+    which Create mirrors into the buffer, unprimed. WritePackages looks the port up on both paths.
+    - An offline write is refused when either ring holds the op, and only then: the journal is not asked,
+      so a tracks write that failed while the journal's succeeded is written again, once.
+    - A loaded write is refused when the postbox's chunk carries the op, the journal knows it, or the
+      buffer's ring holds it (packages written offline, then taken into the postbox at its load). The
+      postbox's ring is not asked here: the tracks file can hold the ring and the mirror while the
+      postbox's chunk is from before the write, and the resend must then write the package again.
+    - *Which file is newer.* This record first said a world save writes the tracks file before the
+      chunks. That is not the rule (the U-a review's P1): the background saver writes dirty chunks between
+      world saves (`ChunkMap.processUnloads`, up to 20 a tick, 10 s apart per chunk), while
+      `create_tracks.dat` reaches disk only at a world save. Either file can be the newer, and the chunk
+      newer is the usual state for most of an autosave interval. Two hooks cover the chunk newer:
+      - *The restore.* When the postbox loads and Create puts a primed buffer back into it
+        (`StationBlockEntity.attachPackagePort` calling `GlobalPackagePort.restoreOfflineBuffer`;
+        `StationPortRestoreMixin`, PATCHES.md row 87), the postbox's chunk is made to carry each op of the
+        buffer's ring whose answer the engine has not acknowledged (`Industry.carryAppliedInChunk`: the
+        APPLIED journaled again and carried, not counted again). A chunk saved after the restore then
+        refuses the loaded resend of an op whose packages it holds, though the tracks file and the
+        journal are from before the write. Without it the resend wrote the packages a second time.
+      - *The first offline write into a port.* A port whose buffer this life has not seen Create fill
+        from its postbox (`PortMirrorMixin` marks it at the restore of a primed buffer and at Create's
+        save of a postbox into its buffer) holds the industry command stream while it reads the postbox's
+        chunk as saved (`ChunkMap.read`, off the server thread). The chunk's carried ops go into the
+        postbox's ring, so their resend is refused, and an unprimed buffer takes the chunk's postbox
+        inventory, so the write does not prime a copy older than the chunk. A primed buffer is left alone:
+        it is Create's newer state. Without it the resend primed the tracks file's older mirror, and the
+        restore put it back over the chunk: automation's takes since then undone (a dupe), its puts lost.
+        - An op either ring of the port already refuses is answered DUPLICATE before the hold. Ports are
+          read one at a time, as their writes come; there is no read ahead for a batch.
+        - A read that fails or takes over 10 s lets this write go on as before, logged, and the port's next
+          offline write reads again; after three such reads the port is taken as fresh for the life.
+        - A read begun before the postbox's chunk loaded is dropped at a write that finds the chunk loaded:
+          the chunk can change while loaded.
+        - A chunk of another data version (saved before a game upgrade) gives its carried ops, not its
+          inventory: vanilla reads it through its fixers, and the hook does not.
+        - Why the mirror is not primed when the chunk lacks an op of the postbox's ring (the U-a review's
+          P3 4): a chunk's carried results go at the engine's acknowledgement and the port's rings keep
+          theirs, so a missing op does not show the chunk is older than the write. Taking the chunk's
+          inventory when it is older is a loss; priming the mirror when the chunk is newer is a dupe.
+    - *An orphan port.* A port whose postbox's chunk is loaded without the postbox answers FAILED: Create
+      drops a port at the postbox's removal only through a loaded station
+      (`PackagePortBlockEntity.destroy` calling `deregister`), so a port can outlive its postbox, and its
+      buffer would reach no postbox. Before the U-a review's P3 6 the write went into it, APPLIED.
+    - A write records the op in its path's ring and marks the tracks dirty; the loaded path never primes.
+    - The rings are saved whatever the industry module's switch (replay-gate 9.6, "Rings and the module
+      switch"). Until 2026-10-25 they followed RP-194's gate, left out of a save with the module off; a
+      crash inside the first world save after a switch off then lost them, and the resend wrote the
+      package again.
+    - Without the mixins (probed once with a station written and read back), the old dedup: the journal's
+      applied set, and the chunk for a loaded postbox, with one WARN.
+  - *Why.* Under JL, K2's direction B (the buffer written twice) is the only one, a dupe either way. One
+    ring for both paths would refuse the loaded postbox's resend above, a loss where the journal's dedup
+    was exact; no ring on the loaded path would let the offline path write again what the postbox already
+    holds, which the restore at the postbox's load makes two copies.
+  - *Tests.* Create `PortRingGameTests`: the four crash cases on the buffer (`aCrashThatKept...` one
+    package each, `aCrashThatKeptTheBufferAndNotTheJournalWritesAPackageOnce` being K2), the fallback's
+    dupe pinned (`withoutTheRingsACrashThatKeptTheBufferAndNotTheJournalWritesAPackageTwice`: two
+    packages for one op), `aLoadedPostboxWhoseChunkWasOlderThanTheTracksTakesThePackageOnce` (written again
+    while loaded, refused offline with nothing put in the buffer, and a new op into the orphan port left
+    FAILED) and
+    `aSaveWithIndustryOffKeepsThePortRingsAndTheResendIsRefused` (the module switch, and Create's keys
+    kept for UR-1). The chunk newer than the tracks file:
+    `aRestoredBufferWhoseChunkOutlivedTheTracksTakesAPackageOnce` (the first test that runs Create's
+    `restoreOfflineBuffer`; the postbox's chunk far off, forced loaded for the restore) and
+    `anUnloadedPostboxWhoseChunkOutlivedTheTracksTakesEachPackageOnce` (a synthetic chunk written through
+    `ChunkMap.write`), each with its twin with the chunk checks off (`PortRing.chunkChecksForTest`)
+    pinning the old outcome: two packages for one op, and the stale mirror primed.
+    - Not tested: a chunk saved by vanilla in the unloaded case (the test builds the chunk's tag by hand,
+      with only what the read looks at); a save, load and REASSERT round trip after the restore; that
+      `StationPortRestoreMixin` applied, other than through the restore test's outcome; the retries of a
+      failed read; the stale read dropped.
+  - *Left.*
+    - The crash above with the postbox unloaded at the resend: refused by the postbox's ring while the
+      package is only in the unprimed mirror, a loss. Priming the mirror would revert the postbox to the
+      tracks file's copy, which can be older than its chunk: a dupe.
+    - A port Create removes and makes anew (the postbox or station broken and placed again) between the
+      write and the engine's acknowledgement starts with empty rings.
+    - K3's goods moved out of the postbox's chunk before it saved, and K5 (the PostboxAccess mirror),
+      which are not journal-ordered: the coordinator's Create slice.
+    - The rings' fixed bound under a long hold (RP-205's Left).
+    - The chunk newer than the tracks file, where the hooks do not reach (replay-gate 9.6, residual 8):
+      a primed buffer whose postbox's chunk is newer (Create's restore overwrites the postbox with the
+      buffer, its own behaviour); the restore with the industry module off or the rings unavailable (no
+      carry); three chunk reads of a port that fail or take over 10 s; a chunk of another data version
+      (its inventory is not taken); a postbox changed in this life while its station
+      did not attach it, after the port's mirror was marked fresh; a chunk saved in the window between
+      the postbox's unload and Create's next save of it into the buffer.
+- **RP-207, Destroy's pollution: one ring per file.**
+  - *Chosen.* Level pollution is Destroy's `LEVEL_POLLUTION` level attachment, which NeoForge saves in the
+    level's `neoforge_data_attachments`. Its ring is a mic_rtsim level attachment (`mic_rtsim:applied_ops`,
+    `RtsimAttachments.LEVEL_APPLIED_OPS`), saved in the same file. The overworld's district ledger
+    (`mic_rtsim_destroy_pollution`) keeps its own ring, keyed by op and good (`DurableOpRing.keyOf`), for both
+    IND_DEPOSIT_DELTA and a reconcile's chunk-pollution deposits: the plugin passes it to the op
+    (`IndustryPlugin.DepositOp.keepIn`) and books the delta only when the ring lacks the key.
+    - A resend the level's ring refuses stamps the ledger's entry with the refusal's answer too
+      (`IndustryPlugin.depositRefused`, when the ledger holds the key). Left with its first life's
+      sequence, the entry turned PENDING at the first trim and stayed until the cap pushed it out, counted
+      as an overflow (the U-a review). Under RP-209 the refusal's answer is what the engine acknowledges, so
+      the stamp is what lets the entry leave.
+  - *Why.* One op changes two files, so a crash can keep either; each file refuses what it already holds.
+    For a crash right before the journal's write, with the resend:
+
+    | Files kept | Level pollution | Ledger | Outcome |
+    |---|---|---|---|
+    | Both | refused by the level's ring | correct | exact |
+    | Attachments kept, ledger lost | refused by the level's ring | short by the delta | the under-count below |
+    | Ledger kept, attachments lost | applied again | the ledger's ring refuses booking it again | exact |
+
+  - *Tests.* destroy `PollutionCrashGameTests` (4): both files kept (the ledger's entry stamped with the
+    level ring's refusal), the ledger lost, the pollution file lost (one rebooking refused), and a crash
+    right after the journal's write. Each emulates the restart
+    from the files a crash at that instant leaves; all four end at the pollution emitted plus the delta, once.
+    Not failing-first: without the rings there is nothing for them to read.
+  - *Left.* With the ledger lost, the district's total is short by the delta. The ledger only attributes
+    pollution to districts (the sampler reports each total as a deposit the district produces), so the
+    engine learns a slightly lower rate; no pollution is created or removed.
+- **RP-208, what slice U leaves, and UR-1.**
+  - *Residual list.* Kept in docs/replay-gate.md 9.6: the Windows directory sync (RP-201), given-up notes
+    (RP-205), chunk and entity effects the barrier does not note, the ledger's under-count (RP-207), ring
+    entries whose answer is unknown, waiting for a resend that never comes (RP-204, RP-209), the rings'
+    valves, a re-decided op after its answer was consumed (closed by RP-209), and a postbox's chunk newer
+    than the tracks file where RP-206's hooks do not reach. Each item says what it costs and who owns it.
+  - *UR-1.* Uninstalling mic_rtsim_dieselgenerators: CDG loads `cdg_oil_chunks` with the extra key and drops
+    it at its next save. Uninstalling mic_rtsim: NeoForge skips the unknown `mic_rtsim:applied_ops` level
+    attachment in `neoforge_data_attachments` with an ERROR log line and loads the rest. The ledger's ring
+    is in mic_rtsim_destroy's own file.
+- **RP-209, every ring follows T2's rule (the coordinator, at the re-merge with T2; amends RP-204 to
+  RP-207).**
+  - *Chosen.* The store rings (`DurableOpRing`: Diesel's oil file, Destroy's level pollution and its
+    ledger) and the station port's two rings (`AppliedOpRing`s, `PortRing`) keep an op until the engine
+    can no longer send it, as T2's train ring does (docs/choices-mowzie-build.md RP-250, RP-251):
+    - Each answer the industry gives an op of a ring (APPLIED, or DUPLICATE_OP on a ring hit the journal
+      did not know) stamps the entry with that answer's sequence. The engine's acknowledgement of the
+      sequence (its durable save holds the answer) removes the entry at the end of the tick, if its answer
+      is still that one. The prunes run from session hooks, whatever the industry module's switch
+      (`DurableOpRings.SessionHook` for the stores; `TrainRing.SessionHook` for the trains and the ports,
+      all in create_tracks.dat).
+    - A ring another session answered is settled once per session against one view of the engine's
+      pages and the journal file the session loaded (`DurableOpRings.view`, T2's `RingView`, moved to
+      core and shared by every ring): at the session's start for the rings loaded with the world, at the
+      load for one loaded later. An entry leaves only when that view proves the pages hold its answer;
+      every other entry stays with its answer unknown until its op's resend is refused and the refusal
+      stamps it. A ring read again in the session that answered it keeps its answers and waits for their
+      acknowledgements again.
+    - The industry's announce (the module back on, or the engine lost observations) makes every answer
+      this session gave unknown (`DurableOpRings.announce`, `PortRing.announce`).
+    - Saved per ring: each entry's answer and the generation of the session that settled the ring last
+      (`ops`, `seqs` and `gen` in a store's `mic_rtsim:applied_ops` compound; `_at` and `_gen` beside a
+      port ring's long array, T2's format).
+    - The caps are valves: 4,096 a store ring, as before, and 4,096 a port ring (was 256). The oldest is
+      pushed out first, counted (`/rtsim perf`, `/rtsim district perf`) and, for the ports, logged for the
+      first eight.
+    - Gone: the trim by the journal's file mark, PENDING, `JournalSavedData`'s load mark,
+      `DurableOpRing.allPending` (now `allUnknown`). `Industry.commandResultInChunk` returns the answer's
+      sequence, so a loaded postbox's write stamps its ring.
+  - *Why.* The trim by the journal's file mark dropped an entry the engine could still re-decide under the
+    same op id after a replay consumed its answer (RP-204's hole (a), replay-gate 9.6 residual 7). The
+    acknowledgement is the moment the engine can no longer send the op. One rule for every ring also gives
+    the port's rings a prune (they had none) and frees every ring from the journal's file, which a hold
+    keeps back (RP-205).
+  - *Tests.* `DurableOpRingTest` (9: the acknowledgement, an unknown answer, the settle against a bound and
+    against none, the announce, the valve, an acknowledgement before the valve, a corrupt ring, a malformed
+    one). Diesel `aDrawsOpLeavesTheOilRingAtTheEnginesAcknowledgement`; create
+    `aPortOpLeavesItsRingAtTheEnginesAcknowledgement` (the ring saved with its answer and generation, read
+    back in the session, then pruned at the acknowledgement; the next save holds none of its keys). The
+    crash GameTests (Diesel's three, Destroy's four, the port's eleven) hold the prunes
+    (`holdPrunesForTest`): the scripted engine acknowledges an answer once its own save holds it, and the
+    emulated crash then sends the op again, which a real engine does not.
+  - *Left.* An entry whose answer is unknown (a settle that proves nothing, the announce, a corrupt ring,
+    or an op a postbox's chunk was found to carry, `PortRing.refreshed`) stays until its op's resend or
+    the valve; it can only refuse that op. 4,096 unacknowledged ops in one ring push the oldest out,
+    counted.
+- **RP-285, an industry answer heard with the module off (slice U, SEC-1's option A; amends U10's industry
+  rule, IR15 in docs/choices-indrework.md).**
+  - *Chosen.* With `Module.INDUSTRY` off, `industry::journaled` still takes a COMMAND_RESULT for an
+    industry op; every other industry record is still ignored (U10). The kept command leaves the outbox
+    (`Link::complete`), or the queue that the switch or a session start with the module off moved it back
+    to (`Link::unqueue`, new; `set_enabled`, `write_resends`). Its book effect lands at once, at the
+    engine's frozen time (`engine.now()`, as `dropped` does), so the answer never runs the engine's clock:
+    FAILED takes the exchange back (`command_failed`), DUPLICATE_OP drops it (`command_duplicate`,
+    RP-199), and APPLIED drops a station exchange too, since its IND_CARRIAGE_RESULT, journaled just
+    before it, was ignored if the switch came between, and none will come. `command_duplicate` only
+    removes an entry of the engine's exchanges, which hold carriage deltas alone (rtsim-industry
+    `engine.rs`, the station exchange and the loot), so APPLIED for a deposit delta, a package or a chain
+    write books nothing. A REASSERT copy of a carried answer takes the same path, and so does an answer
+    heard again (`answered_again`). While on, `command_result` also takes a kept command out of the queue.
+    `set_enabled` still sends the whole outbox again under new sequences once on: what is left there has
+    no answer from Java.
+  - *Why.* Java prunes its op rings and trims its journal at the engine's acknowledgement of a live
+    answer whatever the switch (RP-209, RP-257). An answer that reached the engine with the module off was
+    acknowledged and dropped, its command kept in the outbox, and `set_enabled` sent it again once on: a
+    second application of an op Java no longer knew. Answers do reach an engine that is off: the switch
+    comes in a hand-over's preamble (MODULES) ahead of the journal's drain, so every answer not drained
+    yet lands behind it, and the core journals a loaded chunk's carried answers again (REASSERT,
+    `RtsimSession.reassert`) whatever the industry module, then drops them at the acknowledgement.
+    Applying the effect at once holds across a crash while off: `take_save` calls `industry::save` with
+    the module off (the engine's changed pages, and the link page with its outbox and queue), and
+    `Link::load` reads them whatever the switch, so the pages that cover the answer hold its effect.
+  - *Cost.* An IND_CARRIAGE_RESULT heard while off is still ignored: an exchange whose result came in that
+    window keeps no shortfall correction (IR15's cost), and is now dropped at its APPLIED instead of
+    staying pending until a resend's DUPLICATE_OP. A chain write's CHAIN_IN heard while off is ignored the
+    same way, so its store's write stays unanswered (SC113), as it did before.
+  - *Tests.* rtsim-jni `tests/industry.rs`, module `ack_never_resends`:
+    `an_answer_that_reached_the_engine_with_industry_off_is_never_sent_again_after_its_ack` (the switch in
+    the tick of a station exchange's APPLIED; failing first at b5f3c55f, the exchange sent again after
+    the acknowledgement past its answer); `a_failed_answer_heard_with_industry_off_is_booked_once_across_a_crash_while_off`;
+    `a_duplicate_answer_heard_with_industry_off_is_booked_once_across_a_crash_while_off` (a J3
+    re-derivation refused live in the tick industry goes off);
+    `a_carried_answer_heard_with_industry_off_takes_its_queued_command` (a chunk's carried APPLIED for an
+    ordered package write, journaled again as a REASSERT in a session that starts off). The three crash
+    cases restart off on a minimum-size buffer, the replay over at least two hand-overs. Against the link
+    before the fix each fails: FAILED leaves the world's books short (the exchange never taken back, the
+    command trimmed from the outbox at the restart), DUPLICATE_OP leaves the exchange pending for ever,
+    and the carried package is sent again after the acknowledgement past its copy.
+  - *Left.* No test answers a deposit delta or a chain write while off on a running line (the iron line
+    decides only exchanges, loot and reconciles); the carried case covers an ordered package write.
 
 ## For Ben
 
@@ -88,7 +470,9 @@ no longer grows with the backlog.
    them (recommended: a hold costs only a journal file one autosave older, and three holds in a row need a
    disk that stalls for 10 s at three autosaves running); (b) no second limit: never write ahead, accept that
    a chunk that never resolves stops the journal's file from being written; (c) a longer wait (30 s or 60 s):
-   fewer holds on a very slow disk, a longer worst case at shutdown.
+   fewer holds on a very slow disk, a longer worst case at shutdown. *Superseded in part by RP-205 (slice U,
+   the coordinator's decision):* the 10 s wait stays; the second limit now applies only to a note no later
+   save can clear, given up alone; a hold for any other reason has no limit.
 2. **C2ME through reflection, never run against a real C2ME world (JB3).** The C2ME path is read from the
    0.4.0-alpha.0.122 jar and runs in the core suite with `-Pc2me`; nothing has run it on a server with players.
    Options: (a) keep it, and watch the log at OmegaSrv's first start for "C2ME's chunk storage is not the one
@@ -97,6 +481,8 @@ no longer grows with the backlog.
 3. **No early retry of a held journal write (JB6).** Options: (a) none, the next autosave writes it
    (recommended); (b) one retry a few seconds after a hold caused by C2ME's unload window, which shortens the
    window in which a crash starts with the pages ahead of the world save (P29) from up to 5 minutes to seconds.
+   *Superseded in part by RP-205 (slice U):* a flush save (the stop) retries once after every chunk is
+   flushed; an autosave's hold still waits for the next autosave.
 4. **The fsync of noted region files when DSYNC is off (JB3).** It only matters for a power cut or an OS
    crash, not a JVM crash. Options: (a) keep it (recommended: one to four files per autosave, on an IO
    thread); (b) skip it and accept that a power cut can leave the journal ahead of a chunk under C2ME.

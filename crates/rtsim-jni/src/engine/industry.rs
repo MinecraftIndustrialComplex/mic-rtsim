@@ -17,11 +17,12 @@
 //!   [`KEY_LINK`];
 //! - **orders** ([`threat`]): a threat from another system (or a test) for the engine.
 //!
-//! **What is kept for resend.** IND_CARRIAGE_DELTA, IND_CHANNEL_DELTA, IND_DEPOSIT_DELTA,
-//! IND_WRITE_PACKAGE and IND_WRITE_CHAIN stay in the link's outbox from the moment they are written until Java's
-//! answer is admitted through `Replay` (IND_CARRIAGE_RESULT, or COMMAND_RESULT applied, duplicate
-//! or failed), so a snapshot taken at observation N holds exactly the ones the world save at N
-//! lacks; after a restart they are resent first. IND_CHUNK_RECONCILE is not: the industry engine
+//! **What is kept for resend.** IND_CARRIAGE_DELTA, IND_DEPOSIT_DELTA, IND_WRITE_PACKAGE and
+//! IND_WRITE_CHAIN (0x8402, IND_CHANNEL_DELTA, is retired: rtsim-industry wire.rs) stay in the
+//! link's outbox from the moment they are written until Java's answer is admitted through
+//! `Replay` (IND_CARRIAGE_RESULT, or COMMAND_RESULT applied, duplicate or failed), so a snapshot
+//! taken at observation N holds exactly the ones the world save at N lacks; after a restart they
+//! are resent first. IND_CHUNK_RECONCILE is not: the industry engine
 //! keeps every pending delta until its result and resends it at the chunk's next IND_CHUNK_LOADED
 //! (F27).
 
@@ -347,6 +348,11 @@ impl Link {
                 self.queue.len()
             ));
         }
+    }
+
+    /// Kept commands still to resend this session (all of them right after [`Self::resume`]).
+    pub(super) fn resend_len(&self) -> usize {
+        self.resend.len()
     }
 
     fn gauges(&mut self) {
@@ -685,9 +691,12 @@ fn rail_line(e: &Industry, o: &Obs) -> Option<(u64, Option<(StationEnd, StationE
 
 /// A journaled record `Replay` refused by op id: an answer for an op it already heard. A kept
 /// command written under that op id again (a test's order, or the same decision resent) is
-/// answered all the same, so it leaves the outbox. With the module off, as a first answer
+/// answered all the same, so it leaves the outbox. A train's loot re-decided after a crash is
+/// such a command: the replay heard the live application's APPLIED, so Java's DUPLICATE comes
+/// here, not to `command_result`, and the exchange is dropped here (RP-182; it is gone already
+/// when the replayed IND_CARRIAGE_RESULT came first). With the module off, as a first answer
 /// ([`keep_answer`], RP-285): the command is taken at once, and a DUPLICATE kept for the switch,
-/// which books it then as [`command_result`] does with the module on.
+/// which books it then as [`command_result`] does with the module on, the exchange dropped there.
 pub(super) fn answered_again(st: &mut State, rec: &Rec<'_>) {
     if rec.kind == obs::COMMAND_RESULT {
         let op = OpId(wire::u64_at(rec.bytes, obs::command_result::OP_ID));
@@ -703,6 +712,9 @@ pub(super) fn answered_again(st: &mut State, rec: &Rec<'_>) {
             return;
         }
         l.complete(op);
+        if duplicate {
+            l.engine.command_duplicate(op);
+        }
     }
 }
 
@@ -796,8 +808,16 @@ pub(super) fn order_command(st: &mut State, names: &[(u32, u32, String)], record
 /// takes it back from its own exchange record (it holds one until the result, so this works
 /// whether or not the outbox still had the command: a restart trims the outbox by the world
 /// save's `lastAppliedCmdSeq`, which already counts a failed command). W10.
+/// A duplicate carriage delta was decided again after a crash under the op Java applied before
+/// (a train's loot, or a station exchange the replay derived again) and the journal that would
+/// have carried that application's answers was lost (J3): its goods moved once, so the engine
+/// drops the exchange, whatever its reason (RP-182, RP-199).
 fn command_result(l: &mut Link, op: OpId, status: u32, at: Tick) {
     let kept = l.complete(op).or_else(|| l.unqueue(op));
+    if status == obs::command_result::DUPLICATE_OP {
+        l.engine.command_duplicate(op);
+        return;
+    }
     if status != obs::command_result::FAILED {
         return;
     }
