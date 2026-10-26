@@ -10542,6 +10542,25 @@ DRAGON_DIED):
     The non-lethal HURT windows keep the old entity rule (a FakePlayer's hits still read PLAYER): they report no
     death, so S3 leaves them alone.
   - Nests and dragons: MZB-1010.
+- **MZB-1010** (Dragons' and nests' credit): both read core's KillCredit (MZB-1008). DRAGON_DIED's aux is the
+  credit code and gains 4, TAKEN, for a tame (`DragonRecords.ATTACKER_TAKEN`, `boundary::AttackerKind::Taken`),
+  its killer fields naming the tamer: the AnimalTameEvent's tamer when that is a real player, else the dragon's
+  owner when that is a player's (the tick path's tame, by another mod's tool, names no tamer), else OTHER with no
+  one. The ecology engine's Died arm presses when `LossCause::from_credit(code, true)` is Player (a dragon is a
+  boss kind), which is exactly the old rule (everything but MOB presses), and sets the killer and the killing
+  report only for PLAYER. What the books do differently:
+  - Dragons: a FakePlayer's kill was PLAYER with the fake UUID (a press, a killing report and a grudge against a
+    player who does not exist) and is OTHER (a press, no report). A pet's kill was MOB (no press) and is PLAYER
+    (a press and a report against the owner). A death after a player's hit with no damage entity was NONE (a
+    press, no report) and is PLAYER (a press and a report). A tame was NONE (a press, no report) and is TAKEN (a
+    press, no report): the same books, now naming the tamer. DRAGON_HURT keeps the old entity rule (it reports no
+    death).
+  - Nests: NEST_LOSS's cause is unchanged for every death (the boss rule, the guard rule kept in Nests, MZB-1021);
+    only the player UUID moves. A FakePlayer's kill named the fake UUID and names no one; a pet owned by a mob or
+    by an owner this server has never seen named that owner and names no one; a pet with an offline player owner
+    still names the owner. Nest pressure counts cause 0 alone, so nothing a nest decides changes.
+  - Test: `tests/dragons.rs::the_kill_credit_decides_the_lairs_loss` (PLAYER, TAKEN, OTHER and NONE press, MOB
+    does not; only PLAYER leaves a grudge).
 - **MZB-1020** (F1, the credit rides the death reports): taken. Each death report carries the credit code and
   the credited player; the engine maps to a LossCause with `from_credit`, since the boss rule needs each kind's
   tunables, which only the engine has. Not taken: a LossCause byte computed in Java per record.

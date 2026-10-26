@@ -170,7 +170,7 @@ public final class MicRtsimIceAndFire {
     private static void onTame(AnimalTameEvent event) {
         RtsimSession s = live();
         if (s != null && event.getAnimal() instanceof DragonBaseEntity)
-            DragonBridge.INSTANCE.onTame(event.getAnimal(), s.gameTime());
+            DragonBridge.INSTANCE.onTame(event.getAnimal(), event.getTamer(), s.gameTime());
     }
 
     private static void onMount(EntityMountEvent event) {

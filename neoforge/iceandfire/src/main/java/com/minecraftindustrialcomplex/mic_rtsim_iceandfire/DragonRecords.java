@@ -92,8 +92,11 @@ public final class DragonRecords {
                 ATTACKER_MOST = 48, ATTACKER_LEAST = 56, SIZE = 64;
     }
 
-    /** Who hurt or killed a dragon (aux of DRAGON_HURT and DRAGON_DIED). */
-    public static final int ATTACKER_NONE = 0, ATTACKER_PLAYER = 1, ATTACKER_MOB = 2, ATTACKER_OTHER = 3;
+    /**
+     * Who hurt or killed a dragon (aux of DRAGON_HURT and DRAGON_DIED): core's kill credit codes (KillCredit, MZB-1006).
+     * TAKEN is DRAGON_DIED's only: a tame, the killer fields naming the tamer (MZB-1010).
+     */
+    public static final int ATTACKER_NONE = 0, ATTACKER_PLAYER = 1, ATTACKER_MOB = 2, ATTACKER_OTHER = 3, ATTACKER_TAKEN = 4;
 
     /** DRAGON_DIED (aux = killer kind). */
     public static final class Died {

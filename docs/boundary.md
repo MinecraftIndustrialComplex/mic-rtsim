@@ -962,7 +962,7 @@ The bridge and the industry ranges (`docs/industry-boundary.md` §1) stay as the
 | 0x0501 | DRAGON_SPAWN_REJECTED | reason (§2.3's codes, plus 9 unknown species) | 24 u64 agent, 32 u32 epoch, 36 reserved, 40 u64 cmdSeq | 48 |
 | 0x0502 | DRAGON_DEMATERIALIZED | reason (§2.3's codes) | 24 u64 agent, 32 u32 epoch, 36 u32 dimension, 40 f32 health, 44 f32 maxHealth, 48 i32 hunger, 52 i32 ageTicks, 56 f64 x, 64 f64 y, 72 f64 z | 80 |
 | 0x0503 | DRAGON_HURT | attacker kind: 0 none, 1 player, 2 mob, 3 other | 24 u64 agent, 32 u32 epoch, 36 u32 hits, 40 f32 amount, 44 f32 healthAfter, 48 u64 attackerMost, 56 u64 attackerLeast | 64 |
-| 0x0504 | DRAGON_DIED | killer kind (as HURT) | 24 u64 agent, 32 u32 epoch, 36 u32 dimension, 40 u64 killerMost, 48 u64 killerLeast, 56 f64 x, 64 f64 y, 72 f64 z | 80 |
+| 0x0504 | DRAGON_DIED | killer kind: core's kill credit (0 none, 1 player, 2 mob, 3 other, 4 taken: tamed, the killer fields naming the tamer) | 24 u64 agent, 32 u32 epoch, 36 u32 dimension, 40 u64 killerMost, 48 u64 killerLeast, 56 f64 x, 64 f64 y, 72 f64 z | 80 |
 | 0x0505 | LAIR_FOUND | flags: 1 LATE (in a chunk generated before the plugin) | 24 u64 lair, 32 u32 dimension, 36 u32 structure (dictionary 4), 40 i32 minX, 44 minY, 48 minZ, 52 maxX, 56 maxY, 60 maxZ, 64 i32 homeX, 68 homeY, 72 homeZ, 76 reserved | 80 |
 | 0x0506 | HOARD_ROBBED | n | 24 u64 lair, 32 u64 opId, 40 u64 playerMost, 48 u64 playerLeast, 56 n × (u32 item, i32 count, u64 reserved) | 56 + 16n |
 | 0x0507 | DRAGON_UNTAGGED | spawn: 1 structure, 2 natural, 3 spawner, 4 spawn egg, 5 command, 6 hatched, 7 other | 24 u64 entityMost, 32 u64 entityLeast, 40 u32 species (dictionary 3), 44 u32 dimension, 48 u32 flags (1 tamed, 2 has home, 4 sleeping, 8 aging disabled), 52 i32 ageTicks, 56 i32 hunger, 60 u32 gender (0 female, 1 male), 64 u32 variant (0 to 3 within the species), 68 i32 homeX, 72 homeY, 76 homeZ, 80 u64 lair (0: none), 88 f64 x, 96 f64 y, 104 f64 z | 112 |
@@ -980,7 +980,12 @@ The bridge and the industry ranges (`docs/industry-boundary.md` §1) stay as the
   witness (a grudge), and brings the dragon's departure forward (C24).
 - **DRAGON_DIED** is journaled at the end of the tick, as DIED (§2.3). A player's kill is a killing
   report the dragon's kin and lair witness; the settlements it preyed on get a rescue report (C24:
-  rescues count); its strongest memories and feelings pass to its heir.
+  rescues count); its strongest memories and feelings pass to its heir. The killer kind is core's
+  kill credit (`KillCredit`, EQUILIBRIUM.md §2.2, MZB-1008, MZB-1010): a pet's kill and a death soon
+  after a player's hit are the player's, a FakePlayer's is a machine's (3). A dragon is a boss kind,
+  so every death but a mob's raises its lair's pressure. A tame is TAKEN (4) with the tamer, or the
+  owner when the tame event named none (3 with no one when neither is a player): it presses but is no
+  killing, so it leaves no grudge (choice Z7).
 - **DRAGON_ATE**: a sim dragon killed animals (Ice and Fire's own hunting picks them from its
   `dragon_targets` tag, verified). When the kill is inside a village's bounds, those animals were the
   village's herd and its market stock falls by the count (P28: watched consequences go through
@@ -1011,7 +1016,9 @@ The bridge and the industry ranges (`docs/industry-boundary.md` §1) stay as the
   reconciles without pressure: a count above K is K, a shortfall is a loss of cause other (OGC78).
   Flag 1 (the heart's block is not the spawner) is a heart broken with no player named.
 - **NEST_LOSS**: worms of one nest died. A worm drops boss loot, so a death no wild mob is credited
-  with is a player's (EQUILIBRIUM.md §2.2); only cause 0 bumps the nest's pressure.
+  with is a player's (EQUILIBRIUM.md §2.2); only cause 0 bumps the nest's pressure. The player is
+  core's kill credit (MZB-1010): a machine's kill, a pet owned by no player and a guard's kill are
+  still cause 0, with no player named.
 - **NEST_HEART**: a player (or something else, zero) broke the heart's spawner.
 - **LAIR_CHEST** (SINK.md §4.6, the money sink's tribute): every 100 ticks (PLACEHOLDER,
   `Lairs.CHEST_SCAN_TICKS`) the plugin looks over the loaded chunks of each lair it reported this

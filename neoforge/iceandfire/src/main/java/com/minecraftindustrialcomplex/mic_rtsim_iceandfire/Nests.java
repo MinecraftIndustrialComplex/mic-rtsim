@@ -2,6 +2,7 @@ package com.minecraftindustrialcomplex.mic_rtsim_iceandfire;
 
 import com.iafenvoy.iceandfire.entity.DeathWormEntity;
 import com.iafenvoy.iceandfire.event.GriefBreakBlockEvent;
+import com.minecraftindustrialcomplex.mic_rtsim.api.KillCredit;
 import com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.ThreatClasses;
 import net.minecraft.core.BlockPos;
@@ -1146,25 +1147,23 @@ public final class Nests {
 
     /**
      * The boss rule (EQUILIBRIUM.md §2.5, item 3): a player's loss unless a wild mob is credited with the
-     * death. The player is the killer, the one who hurt it in the last 100 ticks ({@code getKillCredit}),
-     * or the owner of the pet that killed it; a trap, lava or an unknown source counts with no player.
+     * death. The player is core's kill credit (MZB-1008): the killer, the one who hurt it in the last 100
+     * ticks ({@code getKillCredit}), or the owner of the pet that killed it. A machine (a FakePlayer,
+     * MZB-111), a pet whose owner is no player's, the guard rule's golems and guards (nests only,
+     * MZB-1021), a trap, lava or an unknown source count with no player (MZB-1010: each cause is as it was
+     * before the shared rule, which only drops a UUID that names no player).
      */
     static int cause(LivingEntity dead, DamageSource source, UUID[] player) {
+        KillCredit.Credit c = KillCredit.of(dead, source);
+        if (c.byPlayer()) {
+            player[0] = c.player();
+            return DragonRecords.NestLoss.CAUSE_PLAYER;
+        }
         Entity direct = source.getEntity();
         LivingEntity credit = dead.getKillCredit();
-        if (direct instanceof Player p) {
-            player[0] = p.getUUID();
-            return DragonRecords.NestLoss.CAUSE_PLAYER;
-        }
-        if (credit instanceof Player p) {
-            player[0] = p.getUUID();
-            return DragonRecords.NestLoss.CAUSE_PLAYER;
-        }
         for (Entity k : new Entity[] {direct, credit}) {
-            if (k instanceof OwnableEntity o && o.getOwnerUUID() != null) {
-                player[0] = o.getOwnerUUID();
+            if (k instanceof Player || k instanceof OwnableEntity o && o.getOwnerUUID() != null)
                 return DragonRecords.NestLoss.CAUSE_PLAYER;
-            }
             if (k != null && ThreatClasses.guard(k))
                 return DragonRecords.NestLoss.CAUSE_PLAYER;
         }

@@ -43,7 +43,7 @@ use rtsim_industry::threat::{Threat, ThreatClass, ThreatSource, ThreatTarget};
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 use rtsim_kernel::codec::Writer;
 use rtsim_kernel::meta_pages::{PagedMap, PagedWheel};
-use rtsim_kernel::renewal::Pressure;
+use rtsim_kernel::renewal::{LossCause, Pressure};
 use rtsim_kernel::rng::{StreamKey, SystemId, fnv1a64};
 use rtsim_kernel::rows::PagedArena;
 use rtsim_knowledge::{
@@ -3501,11 +3501,12 @@ impl Dragons {
             Obs::Hurt(h) => self.hurt(w, h, at),
             Obs::Died(dd) => {
                 if let Some(d) = self.embodied(dd.agent, dd.epoch) {
-                    // A death no wild mob is credited with is a player's loss (EQUILIBRIUM.md
-                    // §2.2's rule 3 for boss kinds): a player's kill, a taming (reported with no
-                    // attacker), a trap, lava. A pet's kill reads as a mob's until the bridge
-                    // reads vanilla's kill credit (slice S3).
-                    if dd.killer_kind != AttackerKind::Mob {
+                    // The kill credit by the shared rule (MZB-1010): a dragon is a boss kind, so a
+                    // death no wild mob is credited with is a player's loss (EQUILIBRIUM.md §2.2's
+                    // third case): a player's or a pet's kill, a tame, a machine, a trap, lava.
+                    // A tame names its tamer but is no killing (choice Z7: no grudge), so only a
+                    // kill is the player's report.
+                    if LossCause::from_credit(dd.killer_kind.credit(), true) == LossCause::Player {
                         self.press(d, at);
                     }
                     let killer =

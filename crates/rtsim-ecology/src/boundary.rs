@@ -110,13 +110,18 @@ pub const UNTAGGED_HAS_HOME: u32 = 2;
 pub const UNTAGGED_SLEEPING: u32 = 4;
 pub const UNTAGGED_AGING_DISABLED: u32 = 8;
 
-/// Who hurt or killed a dragon (as the bridge's HURT record).
+/// Who hurt or killed a dragon (as the bridge's HURT record): the kill credit codes every death
+/// report uses (`rtsim_kernel::renewal::credit`, MZB-1006). DRAGON_DIED's is core's `KillCredit`
+/// (a pet's kill is its owner's, a FakePlayer's is a machine's), and a tame is `Taken` with the
+/// tamer in the killer fields (MZB-1010).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AttackerKind {
     None = 0,
     Player = 1,
     Mob = 2,
     Other = 3,
+    /// Taken by a player (a tame, A10); DRAGON_DIED only.
+    Taken = 4,
 }
 
 impl AttackerKind {
@@ -126,8 +131,14 @@ impl AttackerKind {
             1 => Self::Player,
             2 => Self::Mob,
             3 => Self::Other,
+            4 => Self::Taken,
             _ => return None,
         })
+    }
+
+    /// The kill credit code (`rtsim_kernel::renewal::credit`).
+    pub fn credit(self) -> u32 {
+        self as u32
     }
 }
 
