@@ -80,12 +80,16 @@ footer { color: var(--muted); font-size: 14px; padding-top: 24px; padding-bottom
 
 <header data-ss-id="hub-header">
   <h1 data-ss-id="hub-title">mic-rtsim for Ben</h1>
-  <p class="dek" data-ss-id="hub-dek">Every page about mic-rtsim, now with Deep Time's too, newest first, and what you have answered. <a href="#waiting">Nothing waits on you.</a> The overnight work of 24 to 25 October asked you nothing, and Deep Time's D1 to D7 were answered on 22 October. Updated 25 October 2026.</p>
+  <p class="dek" data-ss-id="hub-dek">Every page about mic-rtsim, now with Deep Time's too, newest first, and what you have answered. <a href="#waiting">8 decisions wait on you</a>, all on the new Arms Industry Plan. The overnight work of 24 to 25 October asked you nothing, and Deep Time's D1 to D7 were answered on 22 October. Updated 26 October 2026.</p>
 </header>
 
 <section id="pages" data-ss-id="pages" data-ss-section>
   <h2 data-ss-id="pages-h">Pages</h2>
   <ul class="pages" data-ss-id="page-list">
+    <li data-ss-id="page-arms">
+      <a href="https://spacesheep.dev/@benmac/arms-industry">Arms Industry Plan</a><span class="date">26 Oct<span class="new">new</span></span>
+      <span class="what">The pack's armaments-manufacturing plan, for your approval before anything is built. Guns stop being piles of ingots (an AKM is 2,394 items today, 2,048 of them birch logs) and become 4 to 9 manufactured parts, made on four new tool heads in a new mod, <code>mic_machining</code>: the Spindle Head, Die Ram, Inspection Head and Induction Head. With them come an ammunition plant, an oil-quench fan, build quality that changes how a gun shoots, the tier ladder, all 54 guns and 17 calibers in tables, and three walkthroughs. <a href="https://spacesheep.dev/@benmac/arms-industry#decide">8 decisions wait on you</a>.</span>
+    </li>
     <li data-ss-id="page-overnight-1025">
       <a href="https://spacesheep.dev/@benmac/rtsim-overnight-2026-10-25">rtsim Overnight, 25 October</a><span class="date">25 Oct<span class="new">new</span></span>
       <span class="what">The mic-rtsim night of 24 to 25 October. 14 commits landed on main: the last SEC-1 slices (every one is now built), four replay-gate slices, Mowzie M6 and M7, and the GameTest flake fixes. 15 ways a crash or a module switch could make goods twice were found, all on main; none can reach a player while rtsim is out of the pack. 10 of their fixes are built and land in a set order, option A first. The decisions taken overnight are all reversible. Nothing waits on you.</span>
@@ -197,7 +201,23 @@ footer { color: var(--muted); font-size: 14px; padding-top: 24px; padding-bottom
 </section>
 
 <section id="waiting" data-ss-id="waiting" data-ss-section>
-  <h2 data-ss-id="waiting-h">Nothing waits on you</h2>
+  <h2 data-ss-id="waiting-h">8 decisions wait on you</h2>
+  <ul class="wait" data-ss-id="wait-list">
+    <li data-ss-id="wait-arms">
+      <div class="head"><a href="https://spacesheep.dev/@benmac/arms-industry#decide">Arms Industry Plan</a>: <span class="count">8</span> decisions, D1 to D8</div>
+      <p>Each has a recommended answer. Eight more choices were made without asking, and each can be undone; they are listed under the decisions.</p>
+      <ol>
+        <li>D1, a new Java mod for the machines: recommended yes, <code>mic_machining</code>, with four tool heads, the oil-quench fan, the quality components and the carry rule.</li>
+        <li>D2, where TaCZ-specific code lives: recommended inside <code>mic_machining</code>, as an optional compat package that loads only with TaCZ.</li>
+        <li>D3, build quality changes gun stats and unproofed flawed guns can burst: recommended yes, both.</li>
+        <li>D4, move <code>create:precision_mechanism</code> onto the Spindle (about 110 recipes): recommended yes, from G2, same material cost.</li>
+        <li>D5, CBC munitions, Neo Warfare and RHA in this plan's scope (phase 6): recommended yes.</li>
+        <li>D6, wear still <code>tacz-durability</code>: recommended yes, with rust and burst on top of it.</li>
+        <li>D7, mic_nuclear's planned <code>qc_bay</code> and <code>rod_loader</code> become the Inspection Head and Die Ram: recommended yes, one machine family for the pack.</li>
+        <li>D8, mod id and name: recommended <code>mic_machining</code>, "MIC Machining".</li>
+      </ol>
+    </li>
+  </ul>
   <p data-ss-id="waiting-p">mic-rtsim asks you nothing: the overnight work of 24 to 25 October took only reversible decisions, listed on <a href="https://spacesheep.dev/@benmac/rtsim-overnight-2026-10-25#decisions">its page</a>. One question may come: U-c's agent is weighing whether to record the module switch in the journal, and if that changes the save format or protocol it comes to you first. Deep Time's D1 to D7 were answered on 22 October; Deep Time's own decisions are on <a href="https://spacesheep.dev/@benmac/deeptime-hub">its hub</a>. The deploy items stay on hold until you restart the deploy, and choices made on my recommendation stand unless you object.</p>
 
   <h3 data-ss-id="answered23-h">Answered on 23 October</h3>
