@@ -264,6 +264,10 @@ public final class IndustryGameTests {
                     tag.put("TargetTrack", NbtUtils.writeBlockPos(new BlockPos(0, 0, -1)));
                     tag.putBoolean("TargetDirection", true);
                     sbe.loadWithComponents(tag, helper.getLevel().registryAccess());
+                    // The place event a player's station sends: it marks the station's chunk for detection. When the
+                    // grid puts the station at x = 15 of its chunk (one run in 16), the vault is in the next chunk,
+                    // and without the event no detection looks at the station's chunk, so J6 never attaches it.
+                    playerPlacedBare(helper, stationPos);
                     set(helper, vaultPos, block("create:item_vault").defaultBlockState());
                     playerPlaced(helper, vaultPos);
                 })
@@ -279,6 +283,7 @@ public final class IndustryGameTests {
                 .thenWaitUntil(() -> {
                     District d = districtAt(helper, vaultPos);
                     check("the vault's district", d != null);
+                    check("the station's chunk is in it: " + d, districtAt(helper, stationPos) == d);
                     check("named after its station: " + d.displayName(), d.displayName().equals("Iron Coast"));
                     StationBlockEntity sbe = (StationBlockEntity) helper.getLevel().getBlockEntity(stationPos);
                     long sid = CreateIds.of(sbe.getStation().id);
