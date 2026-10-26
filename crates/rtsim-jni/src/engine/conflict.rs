@@ -1470,22 +1470,23 @@ fn answer_tribute(st: &mut State, rec: &Rec<'_>) {
     let op = wire::u64_at(rec.bytes, obs::command_result::OP_ID);
     let at = tribute_tick(st, wire::i64_at(rec.bytes, obs::GAME_TIME));
     let (c, w) = (&mut st.conflict.engine, &mut st.phase1.world);
-    let known = match rec.aux {
-        obs::command_result::APPLIED | obs::command_result::DUPLICATE_OP => {
+    let known = match wire::CommandStatus::from_wire(rec.aux) {
+        wire::CommandStatus::Applied | wire::CommandStatus::DuplicateOp => {
             c.tribute_placed(w, op, at)
         }
-        obs::command_result::FAILED => c.tribute_failed(w, op, at),
-        obs::command_result::NOT_LOADED => {
+        wire::CommandStatus::Failed => c.tribute_failed(w, op, at),
+        wire::CommandStatus::NotLoaded => {
             // Nothing the pages hold changes: the stack stays in flight, and its chest is not
             // saved.
             c.tribute_not_loaded(op);
             false
         }
         // Answers to other commands (a house with no free plot, a gossip refused), and a status
-        // this link does not know: no tribute stack's. A status is a number, so the compiler
-        // cannot tell a new one from these: a new tribute status must be named above.
-        obs::command_result::NOT_FREE | obs::command_result::VANILLA_KNOWS => false,
-        _ => false,
+        // this link does not know: no tribute stack's. No `_` arm (MZB-765): a status added to
+        // `CommandStatus` stops the build here, to be named above if it answers a stack.
+        wire::CommandStatus::NotFree
+        | wire::CommandStatus::VanillaKnows
+        | wire::CommandStatus::Unknown(_) => false,
     };
     if known {
         st.phase1.taint();
