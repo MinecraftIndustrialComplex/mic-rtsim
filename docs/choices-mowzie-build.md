@@ -10220,6 +10220,24 @@ M11a's implementer appends its records under this heading only (the Rust side).
   control (the slot Gone, the ledger up to date) frees the chief's slot. With the index taken before the sync the
   test fails at "the ledger followed a gain" (the new slot freed at once) and A5's control at `Some(Left)`, want
   `Some(Dead)`.
+- **MZB-856** (step 5, A7; the replay-push rules' rule 5 for the aloft chief): `an_aloft_chiefs_ended_epoch_is_never_reused`
+  in `tests/mowzie_records.rs`, beside `every_record_naming_an_epoch_raises_its_floor` and reusing `Reached`. A
+  grove Invasion its Umvuthi leads, out on the road and never met (`aloft_band`), is saved (the engine's pages and
+  the world's), then met: MATERIALIZE and its away CHIEF_BODY at e, one above the epoch the pages hold. On an engine
+  and a world loaded from those pages, replayed on Pages, Fresh and Copy: (1) CHIEF_KILLED at e then
+  BAND_DEMATERIALIZED at e; (2) BAND_DEMATERIALIZED at e; the control nothing. After `replay_done` the band is met
+  again: its MATERIALIZE is at e + 1 in (1) and (2), and at e in the control, so the floor is what keeps e from
+  being used again; the CHIEF_BODY goes with it at the same epoch in (2) and the control.
+  - Deviation from the design's assert, recorded: in (1) no CHIEF_BODY goes after the replay. The replayed
+    CHIEF_KILLED killed the chief away (`chief_killed_by`), so the band is no longer led and sends no chief stack;
+    the test asserts the chief is gone in (1) and present otherwise.
+  - The world is loaded from its own save beside the engine's pages: on the world the first meeting moved, the
+    same observation at the same tick is not a new one, and nothing meets (every case, the control too, gave no
+    MATERIALIZE). A trap for any test that meets a band twice across a load.
+  - On the base: the CHIEF_BODY never goes (the first meeting's assert, `None`, want `Some(1)`, shown by the
+    `chief_body_away` push mutated away). The floor itself is RP-57's: with `fold_epoch` mutated to fold nothing,
+    (1) and (2) on all three reach MATERIALIZE at 1, want 2 (and in (2) the CHIEF_BODY at 1 too); the control
+    passes on both.
 
 ### M11b build records (MZB-870 to MZB-889)
 

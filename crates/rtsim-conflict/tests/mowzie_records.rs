@@ -12,7 +12,7 @@ use rtsim_conflict::culture::{CultureDef, GOBLIN_JSON, PartyKind, SignalKind};
 use rtsim_conflict::engine::{
     Conflict, Demand, Party, Phase, REPLAY_HOLD_SLACK_TICKS, Signal, Target, body_id, item_of,
 };
-use rtsim_conflict::synth::{self, Answer, FakeConflict};
+use rtsim_conflict::synth::{self, Answer, CampRun, FakeConflict};
 use rtsim_conflict::{ConflictTunables, Cultures, Step};
 use rtsim_ecology::infra::NoInfrastructure;
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
@@ -2308,6 +2308,128 @@ fn every_record_naming_an_epoch_raises_its_floor() {
         }
     }
     assert!(missed.is_empty(), "{missed:#?}");
+}
+
+/// A grove that never plunders, its Umvuthi seated, and an Invasion it leads ordered on the
+/// refinery and out on the road past its muster, never met: the party.
+fn aloft_band(seed: u64) -> (CampRun, Handle<Party>) {
+    let mut cultures = Cultures::builtin();
+    for k in &mut cultures.list {
+        k.def.plunder_mean_days = None;
+    }
+    let mut r = CampRun::with_cultures(seed, cultures, "umvuthana", 9);
+    r.camp_in();
+    let to = r.c.now() + 10;
+    r.run(to);
+    let due = r.c.camp(r.f).and_then(|c| c.heir).expect("an heir").due;
+    r.run(due + 100);
+    let at = r.c.now();
+    let target = Target::District(synth::REFINERY, synth::REFINERY_POS);
+    let p = r.c.order_party(&mut r.w, r.key, PartyKind::Invasion, target, None, at)
+        .expect("an invasion");
+    r.flush(at);
+    assert!(r.c.parties[p].chief, "its chief leads it");
+    let muster = r.c.parties[p].until;
+    r.run(muster + 200);
+    assert_eq!(r.c.parties[p].phase, Phase::Out, "on the road");
+    assert!(!r.c.parties[p].embodied, "never met");
+    (r, p)
+}
+
+/// The scripted player meets `band` where it is now on `c`: the commands taken after it, and the
+/// epoch of the band's MATERIALIZE and of its away CHIEF_BODY among them.
+fn met(c: &mut Conflict, w: &mut World, band: Handle<Party>) -> (Option<u32>, Option<u64>) {
+    let at = c.now();
+    let (x, z) = c.party_pos(band, at);
+    c.observe_player(w, synth::PLAYER, Pos::new(synth::CAMP_POS.frame, x, z), at);
+    c.run_until(w, &mut NoInfrastructure, at + 2);
+    let agent = Party::agent(band);
+    let cmds = c.take_commands();
+    let m = cmds.iter().find_map(|c| match c {
+        Cmd::Materialize(m) if m.agent == agent => Some(m.epoch),
+        _ => None,
+    });
+    let b = cmds.iter().find_map(|c| match c {
+        Cmd::ChiefBody(b) if b.agent == agent => Some(b.epoch),
+        _ => None,
+    });
+    (m, b)
+}
+
+/// A7 (MOWZIE.md slice M11, the replay-push rules' rule 5): an ending epoch is never reused for a
+/// band its Umvuthi leads aloft. The band is met at epoch e (its CHIEF_BODY and the chief's stack
+/// taken) after the last save, and the journal keeps (1) CHIEF_KILLED at e then
+/// BAND_DEMATERIALIZED at e, or (2) BAND_DEMATERIALIZED at e with the chief alive, replayed on an
+/// engine from its pages, on a fresh engine and as copies. After the replay end the next meeting's
+/// MATERIALIZE is at e + 1, and in (2) its CHIEF_BODY too. In (1) the replayed death killed the
+/// chief away, so the meeting sends no CHIEF_BODY: the chief is no longer the band's. The control,
+/// nothing replayed, takes the epoch the pages hold plus one, which is e: the floor is what keeps
+/// e from being used again. On the base the CHIEF_BODY is never sent.
+#[test]
+fn an_aloft_chiefs_ended_epoch_is_never_reused() {
+    let seed = 115;
+    let killed = |band: Handle<Party>, e: u32| {
+        Obs::ChiefKilled(boundary::ChiefKilled {
+            agent: Party::agent(band),
+            epoch: e,
+            by: boundary::BY_PLAYER,
+            killer: synth::PLAYER,
+            op: 0x8551,
+        })
+    };
+    let despawn = |band: Handle<Party>, e: u32| {
+        Obs::Dematerialized(boundary::BandDematerialized {
+            agent: Party::agent(band),
+            epoch: e,
+            reason: boundary::RECALL_PASSING,
+            survivors: Vec::new(),
+        })
+    };
+    let mut bad = Vec::new();
+    for (case, kill) in [("1", true), ("2", false), ("control", false)] {
+        for reached in [Reached::Pages, Reached::Fresh, Reached::Copy] {
+            let (mut r, band) = aloft_band(seed);
+            let (pages, world) = (r.c.save(), r.w.save());
+            let held = r.c.parties[band].epoch;
+            let (m, b) = met(&mut r.c, &mut r.w, band);
+            let e = m.expect("met: a MATERIALIZE");
+            assert_eq!(b, Some(u64::from(e)), "its CHIEF_BODY at e");
+            assert_eq!(e, held + 1, "the pages hold e - 1");
+            // The engine and its world as the pages hold them: the meeting is not in either.
+            let mut c = Conflict::load(r.c.tun.clone(), r.c.cultures.clone(), &pages).unwrap();
+            let mut w = world_from(seed, &world);
+            c.begin_replay(!matches!(reached, Reached::Fresh));
+            let mut records = Vec::new();
+            if kill {
+                records.push(killed(band, e));
+            }
+            if case != "control" {
+                records.push(despawn(band, e));
+            }
+            for o in &records {
+                let at = c.now() + 1;
+                match reached {
+                    Reached::Copy => c.ingest_copy(&mut w, &mut NoInfrastructure, o, at),
+                    Reached::Pages | Reached::Fresh => {
+                        c.ingest(&mut w, &mut NoInfrastructure, o, at)
+                    }
+                }
+            }
+            c.replay_done();
+            let chief = c.parties.get(band).is_some_and(|x| x.chief);
+            assert_eq!(chief, !kill, "case {case} {reached:?}: the chief still leads");
+            let (m, b) = met(&mut c, &mut w, band);
+            let want = if case == "control" { e } else { e + 1 };
+            let want_body = (!kill).then_some(u64::from(want));
+            if m != Some(want) || b != want_body {
+                bad.push(format!(
+                    "case {case} {reached:?}: MATERIALIZE {m:?} CHIEF_BODY {b:?}, want {want} \
+                     {want_body:?}"
+                ));
+            }
+        }
+    }
+    assert!(bad.is_empty(), "{bad:#?}");
 }
 
 /// A raid band of 26 members of its first unit's body, abstract at epoch 0.
