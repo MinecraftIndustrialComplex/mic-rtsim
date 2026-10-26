@@ -20,6 +20,11 @@
 //! - A change of route, phase, count or chief flag in the step has a record taken in it.
 //! - A party that left the engine has no record left in Java's map.
 //! - While a replay runs no record is built (MZB-484), so no party is compared then.
+//!
+//! And the chief's own stack (M11, MZB-838): an away CHIEF_BODY is followed at once by its
+//! MATERIALIZE with the chief's stack, and that stack never goes without it, twice in an epoch, for
+//! a party its chief does not lead, or while replaying; a band its chief leads in bodies had the
+//! stack in its epoch.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -28,8 +33,10 @@ use rtsim_ecology::infra::Infrastructure;
 use rtsim_kernel::clock::Tick;
 use rtsim_world::World;
 
-use crate::boundary::{self, BandMarch, Cmd};
-use crate::engine::{Conflict, Party, Phase};
+use std::collections::BTreeSet;
+
+use crate::boundary::{self, BandMarch, BandMaterialize, ChiefBody, Cmd};
+use crate::engine::{Conflict, Party, Phase, chief_own_stack};
 
 /// The audit's step in ticks: how far an engine is run between two looks.
 pub const STEP: u64 = 20;
@@ -62,6 +69,11 @@ pub struct Totals {
     /// Failures: the first few as text, and the count.
     pub failures: Vec<String>,
     pub failed: u64,
+    /// The away CHIEF_BODYs taken, and the chief's own stacks (MZB-838): one each per meeting.
+    pub chief_bodies_away: u64,
+    pub chief_stacks: u64,
+    /// The failures among `failed` that are the chief stack's.
+    pub chief_failed: u64,
 }
 
 impl Totals {
@@ -70,6 +82,11 @@ impl Totals {
         if self.failures.len() < KEPT {
             self.failures.push(format!("tick {}: {what}", tick.0));
         }
+    }
+
+    fn chief_fail(&mut self, tick: Tick, what: String) {
+        self.chief_failed += 1;
+        self.fail(tick, what);
     }
 
     /// Adds another run's totals.
@@ -85,6 +102,9 @@ impl Totals {
         self.changes += o.changes;
         self.unrecorded += o.unrecorded;
         self.failed += o.failed;
+        self.chief_bodies_away += o.chief_bodies_away;
+        self.chief_stacks += o.chief_stacks;
+        self.chief_failed += o.chief_failed;
         for f in &o.failures {
             if self.failures.len() < KEPT {
                 self.failures.push(f.clone());
@@ -133,6 +153,9 @@ struct State {
     before: BTreeMap<u64, Snap>,
     /// The records taken since the step began, by agent.
     taken: BTreeMap<u64, u32>,
+    /// Each (agent, epoch) the chief's own stack went for. Kept across a session: an epoch is the
+    /// party's for good (RP-57).
+    stacks: BTreeSet<(u64, u32)>,
     /// The tick the last step ended at: an engine that begins before it is a new one (a sim run
     /// builds many), and Java's map starts empty for it.
     last: Tick,
@@ -151,6 +174,7 @@ impl State {
             self.held.clear();
             self.before.clear();
             self.taken.clear();
+            self.stacks.clear();
         }
         self.last = c.now();
     }
@@ -200,12 +224,120 @@ pub fn begin(c: &Conflict) {
     });
 }
 
+/// Whether the faction `f`'s chief is a body of its own (the grove's), whose band carries it as a
+/// stack of its own.
+fn own_stack(c: &Conflict, f: u32) -> bool {
+    chief_own_stack(c.cultures.get(c.factions[f as usize].culture))
+}
+
+/// A stack that is a chief's: MEMBER_CHIEF.
+fn chief_stacks(m: &BandMaterialize) -> usize {
+    m.members
+        .iter()
+        .filter(|s| s.flags & boundary::MEMBER_CHIEF != 0)
+        .count()
+}
+
+impl State {
+    /// An away CHIEF_BODY (MZB-803): its MATERIALIZE, with BAND_CHIEF and the chief alone as one
+    /// MEMBER_CHIEF stack, comes next in the same take.
+    fn chief_body(&mut self, b: &ChiefBody, next: Option<&Cmd>, replaying: bool) {
+        if replaying {
+            let what = format!(
+                "faction {:x}: a CHIEF_BODY taken while replaying",
+                b.faction
+            );
+            self.totals.chief_fail(Tick::ZERO, what);
+        }
+        if b.agent == 0 {
+            return;
+        }
+        self.totals.chief_bodies_away += 1;
+        let led = matches!(next, Some(Cmd::Materialize(m))
+            if m.agent == b.agent
+                && u64::from(m.epoch) == b.epoch
+                && m.flags & boundary::BAND_CHIEF != 0
+                && chief_stacks(m) == 1
+                && m.members.iter().any(|s| s.flags & boundary::MEMBER_CHIEF != 0 && s.count == 0));
+        if !led {
+            let what = format!(
+                "party {:x}: an away CHIEF_BODY of epoch {} not followed at once by its MATERIALIZE \
+                 with the chief's stack",
+                b.agent, b.epoch
+            );
+            self.totals.chief_fail(Tick::ZERO, what);
+        }
+    }
+
+    /// A MATERIALIZE: none while replaying, and a chief's own stack (MZB-801) only just after its
+    /// CHIEF_BODY, once an epoch, for a party its chief leads.
+    fn materialize(
+        &mut self,
+        c: &Conflict,
+        m: &BandMaterialize,
+        prev: Option<&Cmd>,
+        replaying: bool,
+    ) {
+        if replaying {
+            let what = format!(
+                "party {:x}: a MATERIALIZE of epoch {} taken while replaying",
+                m.agent, m.epoch
+            );
+            self.totals.chief_fail(Tick::ZERO, what);
+        }
+        let n = chief_stacks(m);
+        if n == 0 || !c.faction_of_key(m.faction).is_some_and(|f| own_stack(c, f)) {
+            return;
+        }
+        self.totals.chief_stacks += n as u64;
+        let ahead = matches!(prev, Some(Cmd::ChiefBody(b))
+            if b.agent == m.agent && b.epoch == u64::from(m.epoch));
+        if !ahead {
+            let what = format!(
+                "party {:x}: the chief's stack at epoch {} with no away CHIEF_BODY just before it",
+                m.agent, m.epoch
+            );
+            self.totals.chief_fail(Tick::ZERO, what);
+        }
+        if n > 1 || !self.stacks.insert((m.agent, m.epoch)) {
+            let what = format!("party {:x}: two chief stacks at epoch {}", m.agent, m.epoch);
+            self.totals.chief_fail(Tick::ZERO, what);
+        }
+        // The party's chief as the step began or now: a chief killed later in the step is not the
+        // stack's fault.
+        let led = self.before.get(&m.agent).is_some_and(|b| b.chief)
+            || Party::of_agent(m.agent)
+                .and_then(|p| c.parties.get(p))
+                .is_some_and(|x| x.chief);
+        if !led {
+            let what = format!(
+                "party {:x}: a chief stack for a party its chief does not lead",
+                m.agent
+            );
+            self.totals.chief_fail(Tick::ZERO, what);
+        }
+    }
+}
+
 /// The engine's commands, taken: what Java would hold of them.
 pub fn took(c: &Conflict, cmds: &[Cmd]) {
     with(|s| {
         s.sync(c);
-        for cmd in cmds {
-            let Cmd::March(m) = cmd else { continue };
+        let replaying = c.replaying();
+        for (i, cmd) in cmds.iter().enumerate() {
+            let m = match cmd {
+                Cmd::ChiefBody(b) => {
+                    s.chief_body(b, cmds.get(i + 1), replaying);
+                    continue;
+                }
+                Cmd::Materialize(m) => {
+                    let prev = i.checked_sub(1).and_then(|j| cmds.get(j));
+                    s.materialize(c, m, prev, replaying);
+                    continue;
+                }
+                Cmd::March(m) => m,
+                _ => continue,
+            };
             s.totals.records += 1;
             *s.taken.entry(m.agent).or_default() += 1;
             if m.flags & boundary::MARCH_ENDED != 0 {
@@ -260,6 +392,23 @@ pub fn end(c: &Conflict, from: Tick, to: Tick) {
                 }
                 s.totals.shells += 1;
                 continue;
+            }
+            // A band its chief leads in bodies had the chief's stack in its epoch (MZB-801): a
+            // walk-in keeps the epoch of the meeting that sent it.
+            if !replaying
+                && x.chief
+                && !x.spawned.is_empty()
+                && own_stack(c, x.faction)
+                && !s.stacks.contains(&(agent, x.epoch))
+            {
+                s.totals.chief_fail(
+                    to,
+                    format!(
+                        "party {agent:x}: its chief leads its bodies at epoch {} and no chief stack \
+                         went",
+                        x.epoch
+                    ),
+                );
             }
             let still = before
                 .get(&agent)
