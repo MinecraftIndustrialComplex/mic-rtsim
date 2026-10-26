@@ -97,7 +97,11 @@ public final class DragonKit {
 
     /**
      * Forces the chunks within {@code radius} of the arena (a GameTest forces only its structure's own), so
-     * a flying dragon stays entity-ticking. Returns the undo.
+     * a flying dragon stays entity-ticking. Returns the undo: run it as the sequence's last step, never from a
+     * test listener ({@link #onEnd}). A listener runs after GameTest has placed the next batch's structure and
+     * forced its chunks, a few blocks along inside this ring, and unforcing them there leaves that test waiting
+     * for entity-ticking chunks for ever (its timeout never counts). A failed test needs no undo: GameTest
+     * unforces every forced chunk at a batch's end.
      */
     public static Runnable forceAround(GameTestHelper helper, int radius) {
         ServerLevel level = helper.getLevel();

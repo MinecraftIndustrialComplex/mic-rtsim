@@ -94,6 +94,9 @@ pub mod mirrored {
     pub use super::conflict::KEY_CONFLICT;
     pub use super::dragons::KEY_DRAGONS;
     pub use super::herds::KEY_HERDS;
+    /// The industry link's page tables (`stored_keys`, `deletions`): what a load reads and a fresh
+    /// start deletes. `tests/tables.rs` checks the engine's tables against it.
+    pub use super::industry::TABLES as INDUSTRY_TABLES;
     pub use super::paging::{HASH_MAGIC, hash_key};
     pub use super::ships::KEY_SHIPS;
     pub use super::worldmodel::KEY_META as WORLD_MODEL_META;
@@ -305,6 +308,10 @@ pub struct Stats {
     pub gaps: AtomicU64,
     pub commands_written: AtomicU64,
     pub save_failures: AtomicU64,
+    /// Kept commands this session's start resends, every module's (the core's, phase 1's and
+    /// industry's resend queues): the commands Java's journal on disk did not hold as applied
+    /// (docs/choices-journal-barrier.md RP-205).
+    pub resend_at_start: AtomicU64,
     pub steps_submitted: AtomicU64,
     /// Phase 1's counters (`nPhase1Stats`, phase1::stat).
     pub phase1: [AtomicU64; phase1::STATS],
@@ -345,7 +352,7 @@ pub struct Stats {
     pub window_grew: AtomicU64,
 }
 
-pub const STATS_LEN: usize = 16;
+pub const STATS_LEN: usize = 17;
 
 /// The length of [`Engine::clocks`]'s array (Java's `NativeEngine.CLOCKS`).
 pub const CLOCKS: usize = 8;
@@ -382,6 +389,16 @@ struct State {
     /// The generation nonce of the copy (REASSERT) being dispatched, `None` otherwise (RP-8).
     /// Set by `reasserted()` around its dispatch (on the copy's Apply, RP-50), cleared after.
     applying_copy: Option<u64>,
+    /// A SESSION_START came and Java's DICTs that follow it may not all have (RP-292): `world`'s
+    /// dictionary is empty from the session start until they do. A module holding records kept
+    /// while it was switched off (the dragons, the herds, the conflict) waits for it before its
+    /// reset applies them, since they name Java's ids. Cleared by the first record that is not a
+    /// DICT (`observe`). Not saved.
+    dict_wait: bool,
+    /// The records the dragons, the herds and the conflict kept while switched off are being
+    /// applied (RP-292): the shared clock runs to each one's own tick, below the world's present
+    /// (`shared::floor`). Not saved.
+    applying_kept: bool,
     /// How far the shared clock may run while replaying (§3.6, RP-24): the world's present at
     /// SESSION_START, raised by each replayed record's world tick (`shared::catch_up`). Not saved.
     replay_clock: Tick,
@@ -457,6 +474,8 @@ impl State {
             session_first: 1,
             replaying: false,
             applying_copy: None,
+            applying_kept: false,
+            dict_wait: false,
             replay_clock: Tick::ZERO,
             replay_handovers: 0,
             replay_records: 0,
@@ -878,6 +897,7 @@ impl Engine {
             l(&s.gaps),
             l(&s.commands_written),
             l(&s.save_failures),
+            l(&s.resend_at_start),
         ]
     }
 
@@ -1176,14 +1196,19 @@ impl Engine {
                 b.put_u64(off, 0);
             }
         }
+        let resends = st.resend.len() + st.phase1.resend_len() + st.industry.resend_len();
+        self.stats
+            .resend_at_start
+            .store(resends as u64, Ordering::Release);
         self.publish_stats(&st);
         if self.cfg.test {
             self.publish_inspect(&st);
         }
         log_info(&format!(
-            "engine started: pages include observation {pages_obs}, {} agents, {} outbox commands to resend, next command {next_cmd}",
+            "engine started: pages include observation {pages_obs}, {} agents, {} outbox commands to resend ({} of every module), next command {next_cmd}",
             st.world.agents.len(),
-            st.resend.len()
+            st.resend.len(),
+            resends
         ));
         Ok((pages_obs, next_cmd))
     }
@@ -1644,6 +1669,12 @@ impl Engine {
 
     fn observe(self: &Arc<Self>, st: &mut State, h: u64, rec: &Rec<'_>) {
         let b = rec.bytes;
+        if st.dict_wait && rec.kind != obs::SESSION_START && rec.kind != obs::DICT {
+            // The session's DICTs are in (the preamble writes them right after SESSION_START):
+            // the modules' resets that waited with kept records run before this record (RP-292).
+            st.dict_wait = false;
+            shared::resets(st);
+        }
         match rec.kind {
             obs::SESSION_START if rec.size() >= obs::session_start::SIZE => {
                 let last_applied = wire::u64_at(b, obs::session_start::LAST_APPLIED_CMD_SEQ);
@@ -1656,6 +1687,7 @@ impl Engine {
                 // is held at the world's present until the replayed records move it (§3.6).
                 st.replaying = true;
                 st.applying_copy = None;
+                st.dict_wait = true;
                 st.replay_clock = st.phase1.world.now();
                 st.replay_handovers = 0;
                 st.replay_records = 0;
@@ -1679,6 +1711,9 @@ impl Engine {
                 ships::session_start(st, mask);
                 herds::session_start(st, mask);
                 conflict::session_start(st, mask);
+                // Every flag first, then the resets in one order (U-c's review, P2); a module
+                // with kept records waits for the DICTs (`dict_wait`).
+                shared::resets(st);
                 worldmodel::session_start(st);
                 shared::session_start(st);
                 talk::session_start(st);
@@ -1734,6 +1769,11 @@ impl Engine {
                 topology::observe_state(st, rec);
                 industry::observe_state(st, rec);
                 phase1::observe_state(st, rec);
+                if rec.kind == obs::MODULES && rec.size() >= obs::modules::SIZE {
+                    // The four modules that share the world hear the switch in two passes: every
+                    // flag, then the resets (U-c's review, P2).
+                    shared::switch(st, wire::u32_at(b, obs::modules::MASK));
+                }
                 dragons::observe_state(st, rec);
                 ships::observe_state(st, rec);
                 herds::observe_state(st, rec);
@@ -1951,6 +1991,7 @@ impl Engine {
                 shared::catch_up(st, rec);
                 phase1::after_core(st, rec);
                 dragons::after_core(st, rec);
+                conflict::after_core(st, rec);
             }
             Verdict::AlreadyApplied => {
                 self.stats.stale_skipped.fetch_add(1, Ordering::AcqRel);
@@ -1976,6 +2017,7 @@ impl Engine {
             industry::answered_again(st, rec);
         }
         dragons::answered_again(st, rec);
+        conflict::answered_again(st, rec);
         st.world.refused_journaled(rec);
     }
 
