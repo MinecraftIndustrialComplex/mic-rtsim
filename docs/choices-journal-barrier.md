@@ -678,9 +678,15 @@ same op again). Measured before the fix:
 
 | Test | Before | After |
 |---|---|---|
-| `aReconcileThroughADoubleChestAcrossAChunkBorder` (+20 into a pair whose first half is full) | results [APPLIED, APPLIED], Q 40: a dupe | RESULTS_POSITIVE |
-| `aNegativeReconcileThroughADoubleChestAcrossAChunkBorder` (-20; Q held 40) | results [APPLIED, APPLIED], Q 0: taken twice, a loss | RESULTS_NEGATIVE |
-| `aTransferThroughADoubleChestAcrossAChunkBorder` (C1, 20 diamonds) | results [APPLIED, APPLIED], Q 40: a dupe | RESULTS_TRANSFER |
+| `aReconcileThroughADoubleChestAcrossAChunkBorder` (+20 into a pair whose first half is full) | results [APPLIED, APPLIED], Q 40: a dupe | results [APPLIED, DUPLICATE_OP], Q 20 (the delta), N carries the op: refused, not a dupe |
+| `aNegativeReconcileThroughADoubleChestAcrossAChunkBorder` (-20; Q held 40) | results [APPLIED, APPLIED], Q 0: taken twice, a loss | results [APPLIED, DUPLICATE_OP], Q 20 (40 less the delta once): refused, not taken twice |
+| `aTransferThroughADoubleChestAcrossAChunkBorder` (C1, 20 diamonds) | results [APPLIED, APPLIED], Q 40: a dupe | results [APPLIED, DUPLICATE_OP], Q 20 (the transfer), N carries the op: refused, not a dupe |
+
+Full suites after the fix (`./gametest.sh`, at 109caec5): core 137 of 137 required tests passed, create 246 of 246.
+Before the fix core had 4 failures: the three above and `aLevelSavedByItselfLeavesTheJournalOnDiskAsItWas`, which
+failed with "the file on disk is the file from before" (bytes 2280 -> 1027, the journal rewritten by the direct save).
+It passes after the fix (bytes 2300 -> 2300); the cause was the journal state the three aborted tests left dirty in the
+same server, not a change in that test's subject.
 
 Not covered: the other half's chunk not loaded at the apply (U-f6); a `CompoundContainer` that is not a chest
 (U-f5); fluid and energy deltas (a chest has none); a vault (U-f8); a crash with the carried result already
