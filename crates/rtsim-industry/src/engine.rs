@@ -289,6 +289,27 @@ struct PendingExchange {
 /// on its glass store pool).
 type PortBooking = (u32, Good, i64, bool);
 
+/// What names one train attack for its op (RP-180): the threat's own id, its source and class
+/// (two raiders' ids could meet; one conflict ambush sends a threat per class), and the train.
+/// Never its tick: [`Engine::threat_with`] raises that to industry's present.
+fn attack_key(t: &Threat, train: TrainId) -> [u8; 19] {
+    let source: u8 = match t.source {
+        ThreatSource::Natural => 0,
+        ThreatSource::Dragon => 1,
+        ThreatSource::Bandit => 2,
+        ThreatSource::Boss => 3,
+        ThreatSource::Synthetic => 4,
+        ThreatSource::Nest => 5,
+    };
+    let mut key = [0u8; 19];
+    key[0] = b'T';
+    key[1..9].copy_from_slice(&t.id.to_le_bytes());
+    key[9] = source;
+    key[10] = t.class.index() as u8;
+    key[11..19].copy_from_slice(&train.0.to_le_bytes());
+    key
+}
+
 /// A fraction as an archive magnitude: thousandths.
 fn per_mille(f: f64) -> i64 {
     (f * 1000.0).round() as i64
@@ -754,6 +775,22 @@ impl Engine {
             }
         }
         out
+    }
+
+    /// A chain write `op` of `store` that the host still holds goes to Java again at `at`, its
+    /// session start (docs/choices-journal-barrier.md RP-294): its answer is awaited from then.
+    /// The host calls this before [`Engine::session_start`], whose catch-up over a stretch with
+    /// the module switched off would otherwise take the answer as lost ten periods after the drain
+    /// that first handed the write on (`WRITE_ANSWER_PERIODS`, choice SC113) and write the
+    /// frogport again under a new op while the held write goes too. Returns whether the store
+    /// still awaited `op` (an answered or superseded write is left as it is).
+    pub fn hand_on_again(&mut self, store: StoreId, op: OpId, at: Tick) -> bool {
+        if !self.stores.get(&store).is_some_and(|s| s.awaits_write(op)) {
+            return false;
+        }
+        self.stores
+            .get_mut(&store)
+            .is_some_and(|s| s.write_handed_on_again(op, at))
     }
 
     /// A session start (the bridge's SESSION_START): open learning windows are lost with the
@@ -3953,6 +3990,21 @@ impl Engine {
         true
     }
 
+    /// Java answered an industry command DUPLICATE_OP: it had applied the op already. Java
+    /// journals an application's IND_CARRIAGE_RESULT in the call that applies it, before its
+    /// APPLIED and so before any DUPLICATE for the op, and the engine reads them in that order:
+    /// an exchange still pending here lost its result with the journal (a crash that kept the
+    /// train's goods and ring and not the journal, J3), and none will come. So the exchange is
+    /// dropped whatever its reason (RP-182, RP-199), with the books as the re-decision booked
+    /// them: a train's loot re-decided under the op Java applied (a raider replaying its window
+    /// after a crash, RP-180) took its goods once, at that first application; a station exchange
+    /// the replay derived again from its arrival moved its goods once, at the live application.
+    /// What that application fell short of the request, if anything, is never booked (RP-199's
+    /// residual). Returns whether an exchange was dropped.
+    pub fn command_duplicate(&mut self, op: rtsim_kernel::journal::OpId) -> bool {
+        self.exchanges.remove(&op).is_some()
+    }
+
     /// A command decided and not drained yet, taken out by its op: Java answered that op already
     /// (the bridge's link, RP-285; a command decided again under the op Java applied). None when no
     /// command waiting to be drained has it.
@@ -5174,6 +5226,12 @@ impl Engine {
     }
 
     fn attack_train(&mut self, t: &Threat, train: TrainId) {
+        // An attack whose key the op window remembers was decided already: a raider whose pages
+        // are older than industry's replays its window and re-decides it. Booked once (RP-183).
+        let key = attack_key(t, train);
+        if self.ops.knows_key(self.world_seed, &key) {
+            return;
+        }
         // Trains get the same per-class pacing as districts (I25).
         let cd = self
             .train_cooldown
@@ -5251,7 +5309,9 @@ impl Engine {
             reason: CarriageReason::Loot,
             entries: entries.clone(),
         });
-        let op = self.ops.derive(self.world_seed, self.now, &cmd);
+        // From the attack's identity, never from `now` or the entries: re-decided after a crash,
+        // it is the op Java applied already, which Java answers DUPLICATE (RP-180).
+        let op = self.ops.derive_keyed(self.world_seed, &key);
         cmd.set_op(op);
         self.exchanges.insert(
             op,

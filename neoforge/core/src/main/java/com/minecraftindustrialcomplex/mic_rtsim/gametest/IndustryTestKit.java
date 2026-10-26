@@ -101,6 +101,9 @@ public final class IndustryTestKit {
 
     /** Short sweeps and detection right after an edit. */
     public static void fastConfig() {
+        // Clears the store rings' test switches a failed test left on.
+        com.minecraftindustrialcomplex.mic_rtsim.journal.DurableOpRings.holdPrunesForTest(false);
+        com.minecraftindustrialcomplex.mic_rtsim.journal.DurableOpRings.viewForTest(null);
         IndustryConfig.Test.set(IndustryConfig.SWEEP_PERIOD, 20);
         IndustryConfig.Test.set(IndustryConfig.RESCAN_INTERVAL, 1);
         IndustryConfig.Test.set(IndustryConfig.RESCAN_BLOCK_ENTITIES_PER_TICK, null); // a budget test sets its own

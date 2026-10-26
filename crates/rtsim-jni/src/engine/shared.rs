@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! What the modules that live in the phase 1 world share: the dragons (`dragons.rs`), the ships
-//! (`ships.rs`), rtsim-ecology's herds (`herds.rs`) and the conflict (`conflict.rs`). Two
+//! (`ships.rs`), rtsim-ecology's herds (`herds.rs`) and the conflict (`conflict.rs`). Three
 //! services, each in one place:
 //!
 //! - **One interest area per player** (overnight choices U2 to U6). PLAYER records go in once per
@@ -16,6 +16,9 @@
 //!   interleaved in time order ([`run_to`]), so none ever meets a world that another already ran
 //!   past its time. A phase 1 input or a module's record runs them to its time first
 //!   ([`catch_up`]).
+//! - **One switch and one list of resets** (U-c's review, P2). MODULES sets every module's flag
+//!   first and then runs the resets due ([`switch`]); the resets, and the records the modules
+//!   kept while switched off, run in one place in one order ([`resets`]).
 //!
 //! **Herds** joined (Y1) by `rtsim_ecology::herds::Herds` implementing
 //! `rtsim_world::interest::Viewer` (legs under owner bit 60), `herds::running` and
@@ -36,6 +39,7 @@ use rtsim_knowledge::ActorId;
 use rtsim_settle::Pos;
 use rtsim_world::interest::Viewer;
 
+use super::paging::KeptRec;
 use super::{State, conflict, dragons, herds, log_info, phase1, ships};
 use crate::wire::{self, Rec, obs};
 
@@ -295,6 +299,192 @@ pub(super) fn simulate(st: &mut State) {
     }
 }
 
+// ---- the switch and the resets --------------------------------------------------------------------
+
+/// A module that shares the phase 1 world, as the resets name it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum Module {
+    Dragons,
+    Ships,
+    Herds,
+    Conflict,
+}
+
+/// The order of the resets ([`resets`]): the step's order, as the replay end's (`replay_end`).
+const RESETS: [Module; 4] = [
+    Module::Dragons,
+    Module::Ships,
+    Module::Herds,
+    Module::Conflict,
+];
+
+/// MODULES (U10), after the world, the industry engine and phase 1 heard it: the four modules'
+/// switches, in two passes. First every module's flag, with a switch-off's own work (its queue
+/// dropped, its pages due once more, the ships' closures lifted) and a switch-on's reset made
+/// due; then the resets due, in one place ([`resets`]); then the areas booked meanwhile go to the
+/// herds and the conflict if they came on ([`introduce_herds`], [`introduce_conflict`]).
+///
+/// One pass ran each module's reset as its switch came (U-c's review, P2): the dragons and the
+/// herds share ECOLOGY's bit and MODULES reached the dragons first, so the dragons' reset applied
+/// the records they kept while off with the herds still switched off. Each kept record's
+/// catch-up ran the dragons through the window with no prey (no hunt), and the herds' reset then
+/// ran it with no predator.
+pub(super) fn switch(st: &mut State, mask: u32) {
+    dragons::switched(st, mask & dragons::MODULE_ECOLOGY != 0);
+    ships::switched(st, mask & ships::MODULE_SHIPS != 0);
+    let herds_on = herds::switched(st, mask & herds::MODULE_HERDS != 0);
+    let conflict_on = conflict::switched(st, mask & conflict::MODULE_CONFLICT != 0);
+    resets(st);
+    if herds_on {
+        introduce_herds(st);
+    }
+    if conflict_on {
+        introduce_conflict(st);
+    }
+}
+
+/// Every reset that is due (a session start once every flag is set, a switch-on once every
+/// switch is heard, the first record after a session start's DICTs), in [`RESETS`]' order and
+/// in three steps:
+///
+/// 1. each module's engine begins its replay (`begin_replay`, the module's `begin_reset`);
+/// 2. the records the modules kept while switched off (RP-292) are applied as one list, in the
+///    order `Replay` admitted them (their observation numbers: a copy's is its REASSERT's), each
+///    after its own catch-up and at its own tick ([`floor`]), each module's own in the order it
+///    heard them ([`apply_kept`]);
+/// 3. with no replay running, each module's replay end, at the hand-over's time.
+///
+/// That is what a restart's replay does with the same records: every module's replay begins at
+/// the session start, the replayed records come in the journal's order, and the replay ends
+/// after the last. So a kept record's catch-up runs every module that came on with it, each in
+/// its replay: the dragons' kept records run the window with the herds as their prey, though
+/// the herds' own records come later in the list.
+///
+/// **Phase 1's drain goes here**: U-d slots it into this function after the viewers. A module
+/// that keeps records later joins [`RESETS`] and the merge.
+pub(super) fn resets(st: &mut State) {
+    reset_these(st, &RESETS);
+}
+
+/// [`resets`] for `these` alone (a module's own reset: a first herd or camp in the middle of a
+/// session, a record that reaches an engine nothing made active). They hold no kept record: kept
+/// records make a module's reset due at its switch-on and run in [`resets`] there, or at the
+/// first record after a session start's DICTs.
+pub(super) fn reset_these(st: &mut State, these: &[Module]) {
+    let begun: Vec<Module> = these
+        .iter()
+        .copied()
+        .filter(|&m| match m {
+            Module::Dragons => dragons::begin_reset(st),
+            Module::Ships => ships::begin_reset(st),
+            Module::Herds => herds::begin_reset(st),
+            Module::Conflict => conflict::begin_reset(st),
+        })
+        .collect();
+    end_resets(st, &begun);
+}
+
+/// Steps 2 and 3 of [`resets`] for modules whose engines began their replay.
+pub(super) fn end_resets(st: &mut State, begun: &[Module]) {
+    if begun.is_empty() {
+        return;
+    }
+    apply_kept(st, begun);
+    if st.replaying {
+        return;
+    }
+    for &m in begun {
+        match m {
+            Module::Dragons => dragons::end_reset(st),
+            Module::Ships => ships::replay_end(st),
+            Module::Herds => herds::end_reset(st),
+            Module::Conflict => conflict::replay_end(st),
+        }
+    }
+}
+
+/// Step 2 of [`resets`]: the records the `begun` modules kept while switched off, merged into one
+/// list by the observation number each came under (`Replay` admits in that order, and a
+/// restart's replay sends them in it), each module's own list in its order. No two share a
+/// number, so the merge meets no tie and module order never overrides `Replay`'s: `dispatch`
+/// gives each admitted record to one module, and a REASSERT holds one record, whose copy comes
+/// under the REASSERT's own number (`reasserted`). Each is the module's own `apply`: its
+/// catch-up on the shared clock, then its booking, both no earlier than the module's own present
+/// (`State::applying_kept`, [`floor`]), as a copy if it came as one (`State::applying_copy`).
+fn apply_kept(st: &mut State, begun: &[Module]) {
+    let mut lists: Vec<(Module, std::collections::VecDeque<KeptRec>)> = begun
+        .iter()
+        .filter_map(|&m| {
+            let kept = match m {
+                Module::Dragons => st.dragons.kept.take(),
+                Module::Herds => st.herds.kept.take(),
+                Module::Conflict => st.conflict.kept.take(),
+                Module::Ships => Vec::new(),
+            };
+            (!kept.is_empty()).then(|| (m, kept.into()))
+        })
+        .collect();
+    if lists.is_empty() {
+        return;
+    }
+    let counts: Vec<(Module, usize)> = lists.iter().map(|(m, l)| (*m, l.len())).collect();
+    let outer = st.applying_copy;
+    let outer_kept = st.applying_kept;
+    st.applying_kept = true;
+    let mut last = None;
+    loop {
+        let next = lists
+            .iter()
+            .enumerate()
+            .filter_map(|(i, (_, l))| l.front().map(|(_, b)| (seq_of(b), i)))
+            .min();
+        let Some((seq, i)) = next else { break };
+        debug_assert!(
+            last < Some(seq),
+            "kept observation {seq} after {last:?}: out of order, or two modules kept one record"
+        );
+        last = Some(seq);
+        let m = lists[i].0;
+        let Some((copy, bytes)) = lists[i].1.pop_front() else {
+            break;
+        };
+        let rec = Rec {
+            kind: wire::u16_at(&bytes, wire::R_KIND),
+            aux: wire::u32_at(&bytes, wire::R_AUX),
+            bytes: &bytes,
+        };
+        st.applying_copy = copy;
+        match m {
+            Module::Dragons => dragons::apply_kept(st, &rec),
+            Module::Herds => herds::apply_kept(st, &rec),
+            Module::Conflict => conflict::apply_kept(st, &rec),
+            Module::Ships => {}
+        }
+    }
+    st.applying_kept = outer_kept;
+    st.applying_copy = outer;
+    for (m, n) in counts {
+        let who = match m {
+            Module::Dragons => "the dragons",
+            Module::Herds => "the herds",
+            Module::Conflict => "the conflict",
+            Module::Ships => "the ships",
+        };
+        log_info(&format!(
+            "{who} applied {n} records heard while switched off"
+        ));
+    }
+}
+
+/// The observation number a kept record came under (0 for one too short to hold it: none is).
+fn seq_of(b: &[u8]) -> u64 {
+    if b.len() >= obs::BODY {
+        wire::u64_at(b, obs::OBS_SEQ)
+    } else {
+        0
+    }
+}
+
 // ---- the clock --------------------------------------------------------------------------------------
 
 /// Runs the dragons, the ships, the herds and the conflict to world tick `at`, their events
@@ -333,6 +523,31 @@ pub(super) fn run_to(st: &mut State, at: Tick) {
         if t >= at {
             return;
         }
+    }
+}
+
+/// The earliest world tick a module that shares the phase 1 world, whose own present is `own`,
+/// books a record at or runs its events to: `own`, and the world's present, except while the
+/// records the modules kept while switched off are applied (`State::applying_kept`, RP-292).
+///
+/// Those go in at their own ticks (docs/replay-gate.md 9.7: "a record applied while off goes in
+/// at its own tick, never at the frozen clock"). The world ran on while the modules were off,
+/// and a floor at its present would run the whole off window in the first one's catch-up: a
+/// band wiped out in the switch's tick would be booked after its demand's deadline passed and
+/// its envoy went home with its units, and a dragon killed in that tick would die at the
+/// switch-on, its lair empty from then. So the floor is each module's own present, for every
+/// module the catch-up runs (the dragons run inside a herds' record's catch-up, the herds as
+/// their prey inside the conflict's), not only for the one whose record it is.
+///
+/// The cost: from the switch-off to the last kept record, the modules decide at old ticks
+/// against the world as it is now (its markets, knowledge and legs at its present), so what they
+/// read may be newer than the tick they decide at. That is safe: `World::run_until` to a tick
+/// before its present does nothing, so the world never goes back and nothing in it runs twice.
+pub(super) fn floor(st: &State, own: Tick) -> Tick {
+    if st.applying_kept {
+        own
+    } else {
+        own.max(st.phase1.world.now())
     }
 }
 

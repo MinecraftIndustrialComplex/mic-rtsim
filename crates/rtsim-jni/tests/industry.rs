@@ -661,8 +661,18 @@ fn the_iron_line_runs_through_the_native_engine() {
 /// holds the scenario's goods as ids 1 to 4 and its block states as 11 to 13 and 21 to 23 (the
 /// harness numbers every kind in one sequence, so it is filled to match).
 fn iron_java(dir: &std::path::Path, cfg: IronLine) -> Java {
+    iron_java_with(dir, cfg, |_| {})
+}
+
+/// [`iron_java`] with the engine's configuration adjusted first.
+fn iron_java_with(
+    dir: &std::path::Path,
+    cfg: IronLine,
+    f: impl FnOnce(&mut rtsim_jni::engine::Config),
+) -> Java {
     let e = engine_with(&dir.to_path_buf(), 256 * 1024, |c| {
-        c.industry_seed = Some(cfg.seed)
+        c.industry_seed = Some(cfg.seed);
+        f(c)
     });
     let mut j = Java::open(e, WorldSave::fresh());
     // Java's dictionary: the scenario's goods are ids 1 to 4 and its block states 11 to 13 and
@@ -869,6 +879,11 @@ fn a_kept_command_is_resent_after_a_crash_with_its_sequence_and_op() {
     mc.restore(&msave);
     let e = engine_with(&dir, 256 * 1024, |c| c.industry_seed = Some(cfg.seed));
     let mut j = Java::open(e, jsave);
+    // The start counts every module's resends for Java's perf line (RP-205).
+    assert!(
+        j.e.stats_array()[16] >= 1,
+        "the start counts the kept delta among its resends"
+    );
     j.mc = Some(mc);
     j.module_mask = MODULE_INDUSTRY;
     j.mc_tick();
@@ -1544,6 +1559,985 @@ fn a_written_chain_package_journaled_again_is_taken_once() {
     j.e.close(true, Duration::from_secs(5)).unwrap();
 }
 
+/// A raider whose pages are older than its train raid decides it again after a crash, against an
+/// industry engine that is not held (docs/replay-gate.md §3.6; docs/choices-mowzie-build.md
+/// RP-180 to RP-186). The raid's op is its identity, so the world answers DUPLICATE, the link
+/// drops the loot exchange (through `answered_again`, RP-182), and the goods leave the train
+/// once. The world save holds the raid's
+/// application and its journaled results (both of Java's saves landed after it, J1); the pages
+/// stop before the raid. Against main's derivation the re-decided raid is a new op, the world
+/// gives the loot twice, and its books no longer close.
+#[test]
+fn a_train_raid_decided_again_after_a_crash_is_applied_once() {
+    use rtsim_industry::cmd::CarriageReason;
+    use rtsim_industry::ids::TrainId;
+    use rtsim_kernel::journal::OpId;
+    let cfg = IronLine {
+        seed: 11,
+        days: 10,
+        threats: false,
+        control: false,
+        tick_first: true,
+        approach: true,
+    };
+    let dir = tmpdir("ind-trainraid");
+    let mut j = iron_java(&dir, cfg);
+    j.mc_run_until(day(3.0));
+    let train = TrainId(1);
+    let laden = |j: &Java| {
+        industry(&j.e, |ie| {
+            ie.legs()
+                .leg_of(train, ie.now())
+                .and_then(|id| ie.legs().get(id))
+                .is_some_and(|l| l.cargo.iter().any(|c| !c.1.is_empty()))
+        })
+    };
+    let loot_ops = |j: &Java| -> Vec<u64> {
+        j.ind_commands
+            .iter()
+            .filter_map(|c| match &c.2 {
+                Cmd::CarriageDelta(d) if d.reason == CarriageReason::Loot => Some(d.op.0),
+                _ => None,
+            })
+            .collect()
+    };
+    // The pages stop while the train is under way with cargo, before the raid.
+    loop {
+        while !laden(&j) {
+            j.mc_tick();
+            assert!(j.mc().t < day(8.0), "train 1 under way with cargo");
+        }
+        let through = j.next_obs - 1;
+        j.e.request_save(through);
+        mc_tick_until_durable(&mut j, through);
+        if laden(&j) {
+            break;
+        }
+    }
+    let through = j.e.durable_obs_seq();
+    let raid = Threat {
+        id: 0xA11,
+        source: ThreatSource::Bandit,
+        class: ThreatClass::Siege,
+        count: 3,
+        strength: 3.0,
+        target: ThreatTarget::Train(train),
+        loads: None,
+        at: j.mc().t,
+    };
+    j.e.order(vec![Order::IndustryThreat(raid)]).unwrap();
+    while loot_ops(&j).is_empty() {
+        j.mc_tick();
+        assert!(j.mc().t < raid.at + 100, "the raid's loot is written");
+    }
+    let live = loot_ops(&j)[0];
+    for _ in 0..5 {
+        j.mc_tick();
+    }
+    assert!(
+        j.mc().applied_ops().contains(&OpId(live)),
+        "the world applied the raid"
+    );
+    let stolen = industry(&j.e, |ie| ie.books.stolen.total());
+    assert!(stolen > 0, "the raid took something");
+    // The world saves now, after the raid; the pages never save again before the crash.
+    let jsave = j.world_save();
+    let msave = j.mc().saved();
+    assert_eq!(j.e.durable_obs_seq(), through, "no later page save");
+    let mut mc = j.mc.take().unwrap();
+    j.e.close(false, Duration::from_secs(5)).unwrap();
+    mc.restore(&msave);
+    let e = engine_with(&dir, 256 * 1024, |c| c.industry_seed = Some(cfg.seed));
+    let mut j = Java::open(e, jsave);
+    j.mc = Some(mc);
+    j.module_mask = MODULE_INDUSTRY;
+    // The journal's results of the live raid come back first (order O2); then the raider, back
+    // from its own older pages, decides the raid again, at industry's later `now`.
+    j.mc_tick();
+    j.e.order(vec![Order::IndustryThreat(raid)]).unwrap();
+    while loot_ops(&j).is_empty() {
+        j.mc_tick();
+        assert!(j.mc().t < raid.at + 400, "the raid is decided again");
+    }
+    assert_eq!(
+        loot_ops(&j),
+        vec![live],
+        "the raid decided again carries the op the world applied"
+    );
+    iron_run_to_end(&mut j, &cfg);
+    // The world's DUPLICATE is a second answer for an op the replay heard APPLIED, so `Replay`
+    // refuses it as answered; the loot exchange is dropped all the same (RP-182). A copy
+    // of the engine is asked to drop it again: nothing is left to drop.
+    let pending = industry(&j.e, |ie| {
+        let mut copy = Industry::restore(ie.snapshot(), Tunables::default()).expect("restores");
+        copy.command_duplicate(OpId(live))
+    });
+    assert!(
+        !pending,
+        "the loot exchange of op {live:#x} is still pending after the world's DUPLICATE"
+    );
+    assert_eq!(industry(&j.e, |ie| ie.books.stolen.total()), stolen);
+    assert_eq!(j.e.with_industry(|_, l| l.outbox), 0);
+    conserves(&j);
+    j.e.close(true, Duration::from_secs(5)).unwrap();
+}
+
+/// The iron line the train raid tests run.
+fn raid_line() -> IronLine {
+    IronLine {
+        seed: 11,
+        days: 10,
+        threats: false,
+        control: false,
+        tick_first: true,
+        approach: true,
+    }
+}
+
+/// The ops of the loot CarriageDeltas this session's Java applied.
+fn loot_ops(j: &Java) -> Vec<u64> {
+    use rtsim_industry::cmd::CarriageReason;
+    j.ind_commands
+        .iter()
+        .filter_map(|c| match &c.2 {
+            Cmd::CarriageDelta(d) if d.reason == CarriageReason::Loot => Some(d.op.0),
+            _ => None,
+        })
+        .collect()
+}
+
+/// This session's answers for industry op `op` still in Java's journal: (sequence, the
+/// COMMAND_RESULT's status).
+fn answers(j: &Java, op: u64) -> Vec<(u64, u32)> {
+    use rtsim_jni::wire::obs;
+    j.journal
+        .iter()
+        .filter(|(s, r)| {
+            *s > j.replay_up_to
+                && wire::u16_at(r, wire::R_KIND) == obs::COMMAND_RESULT
+                && wire::u64_at(r, obs::command_result::OP_ID) == op
+        })
+        .map(|(s, r)| (*s, wire::u32_at(r, wire::R_AUX)))
+        .collect()
+}
+
+/// A train raid applied live, as the two-files tests take it.
+struct LiveRaid {
+    threat: Threat,
+    /// The loot's op.
+    live: u64,
+    /// The engine's pages, durable while train 1 is under way laden, before the raid.
+    through: u64,
+    /// The sequence of the world's APPLIED for the loot: the answer Java's ring waits on.
+    s: u64,
+    stolen: i128,
+    /// Java's two files at `through`.
+    jsave_before: WorldSave,
+    msave_before: rtsim_industry::fake::SavedWorld,
+}
+
+/// Runs the iron line until train 1 is under way with cargo and the pages are durable there, then
+/// orders a raid on it and ticks until the world has applied the loot and answered APPLIED.
+fn raid_a_laden_train(j: &mut Java) -> LiveRaid {
+    use rtsim_industry::fake::RESULT_APPLIED;
+    use rtsim_industry::ids::TrainId;
+    use rtsim_kernel::journal::OpId;
+    j.mc_run_until(day(3.0));
+    let train = TrainId(1);
+    let laden = |j: &Java| {
+        industry(&j.e, |ie| {
+            ie.legs()
+                .leg_of(train, ie.now())
+                .and_then(|id| ie.legs().get(id))
+                .is_some_and(|l| l.cargo.iter().any(|c| !c.1.is_empty()))
+        })
+    };
+    // The pages stop while the train is under way with cargo, before the raid.
+    loop {
+        while !laden(j) {
+            j.mc_tick();
+            assert!(j.mc().t < day(8.0), "train 1 under way with cargo");
+        }
+        let through = j.next_obs - 1;
+        j.e.request_save(through);
+        mc_tick_until_durable(j, through);
+        if laden(j) {
+            break;
+        }
+    }
+    let through = j.e.durable_obs_seq();
+    let jsave_before = j.world_save();
+    let msave_before = j.mc().saved();
+    let threat = Threat {
+        id: 0xA11,
+        source: ThreatSource::Bandit,
+        class: ThreatClass::Siege,
+        count: 3,
+        strength: 3.0,
+        target: ThreatTarget::Train(train),
+        loads: None,
+        at: j.mc().t,
+    };
+    j.e.order(vec![Order::IndustryThreat(threat)]).unwrap();
+    while loot_ops(j).is_empty() {
+        j.mc_tick();
+        assert!(j.mc().t < threat.at + 100, "the raid's loot is written");
+    }
+    let live = loot_ops(j)[0];
+    for _ in 0..5 {
+        j.mc_tick();
+    }
+    assert!(
+        j.mc().applied_ops().contains(&OpId(live)),
+        "the world applied the raid"
+    );
+    let stolen = industry(&j.e, |ie| ie.books.stolen.total());
+    assert!(stolen > 0, "the raid took something");
+    let s = match answers(j, live)[..] {
+        [(s, RESULT_APPLIED)] => s,
+        ref a => panic!("one APPLIED for the loot op {live:#x}: {a:?}"),
+    };
+    LiveRaid {
+        threat,
+        live,
+        through,
+        s,
+        stolen,
+        jsave_before,
+        msave_before,
+    }
+}
+
+/// A train raid against Java's two files saved apart (docs/choices-mowzie-build.md RP-196, RP-199),
+/// through the host: the raider's and industry's pages stop before the raid, the raid is applied,
+/// and the restart reads one of Java's files from after the raid and the other from before it.
+/// The fake world saves its applied op set with its trains, so `mc.saved()` is the tracks file
+/// with the ring (RP-190: the goods and the ring are one file) and `world_save()` the journal's.
+/// J3 keeps the trains and loses the journal: the raid decided again is answered DUPLICATE by the
+/// ring, and since the journal lost the live answers, `Replay` hears it as a new answer, so it
+/// reaches `command_result`, which must drop the loot exchange. J4 keeps the journal and loses the
+/// trains: the ring came back without the op, so the raid is applied again to the goods the
+/// restart restored, and its result takes the exchange.
+///
+/// `j3-late` is J3 with the raid decided again only after the engine's first durable save past the
+/// replay end (RP-252: the raider re-decides at its own pace, RP-188). The ring keeps the op, its
+/// answer unknown, through that save. `j3-late-pruned` drops the op from the fake world's applied
+/// set at that save, as a ring trimmed on the first durable save would (the reviewer's rule): the
+/// raid is then taken twice and the world no longer conserves. `j1-late` and `j1-late-pruned` are
+/// the same with both files from after the raid (hole a): the journal holds the raid's answer, so a
+/// ring trimmed on the journal's mark drops the op at its first save, and the journal's op index
+/// forgets it once the engine acknowledges that answer, which the first durable save does. The
+/// pruned arm is that state: the goods hold the raid and no dedup knows its op.
+fn a_train_raid_across_javas_two_files(case: &str) {
+    use rtsim_kernel::journal::OpId;
+    let cfg = raid_line();
+    let dir = tmpdir(&format!("ind-twofiles-{case}"));
+    let mut j = iron_java(&dir, cfg);
+    let LiveRaid {
+        threat: raid,
+        live,
+        through,
+        stolen,
+        jsave_before,
+        msave_before,
+        ..
+    } = raid_a_laden_train(&mut j);
+    let jsave_after = j.world_save();
+    let msave_after = j.mc().saved();
+    assert_eq!(j.e.durable_obs_seq(), through, "no later page save");
+    let (jsave, msave) = match case {
+        // J3: the trains (with their ring) from after the raid, the journal from before it.
+        "j3" | "j3-late" | "j3-late-pruned" => (jsave_before, msave_after),
+        // J1: both from after the raid; the pages from before it (hole a, RP-252).
+        "j1-late" | "j1-late-pruned" => (jsave_after, msave_after),
+        // J4: the journal from after the raid, the trains from before it (the chunks from after:
+        // the chunk barrier holds the journal, never the chunks).
+        "j4" => (jsave_after, msave_before.with_chunks_of(&msave_after)),
+        _ => unreachable!(),
+    };
+    let mut mc = j.mc.take().unwrap();
+    j.e.close(false, Duration::from_secs(5)).unwrap();
+    mc.restore(&msave);
+    let e = engine_with(&dir, 256 * 1024, |c| c.industry_seed = Some(cfg.seed));
+    let mut j = Java::open(e, jsave);
+    j.mc = Some(mc);
+    j.module_mask = MODULE_INDUSTRY;
+    j.mc_tick();
+    if case.ends_with("-late") || case.ends_with("-late-pruned") {
+        // The first durable save past the replay end: the pages hold this session's first record.
+        let through = j.next_obs - 1;
+        j.e.request_save(through);
+        mc_tick_until_durable(&mut j, through);
+        assert!(
+            loot_ops(&j).is_empty(),
+            "{case}: nothing decided the raid again yet"
+        );
+        if case.ends_with("-pruned") {
+            assert!(
+                j.mc_mut().forget_applied(OpId(live)),
+                "the ring held the op from the tracks file"
+            );
+        }
+    }
+    j.e.order(vec![Order::IndustryThreat(raid)]).unwrap();
+    while loot_ops(&j).is_empty() {
+        j.mc_tick();
+        assert!(j.mc().t < raid.at + 400, "the raid is decided again");
+    }
+    assert_eq!(
+        loot_ops(&j),
+        vec![live],
+        "the raid decided again carries the live op"
+    );
+    iron_run_to_end(&mut j, &cfg);
+    let pending = industry(&j.e, |ie| ie.exchange_pending(OpId(live)));
+    let stolen_after = industry(&j.e, |ie| ie.books.stolen.total());
+    eprintln!(
+        "{case}: stolen live {stolen}, after {stolen_after}, loot exchange pending {pending}, outbox {}",
+        j.e.with_industry(|_, l| l.outbox)
+    );
+    if case.ends_with("-pruned") {
+        let mc = j.mc();
+        let double = j.e.with_industry(|ie, _| mc.conservation_with(ie));
+        eprintln!("{case}: the world against the books: {double:?}");
+        assert!(
+            double.is_err(),
+            "{case}: the op left the ring at the first durable save, so the raid decided after it \
+             is applied a second time and the world loses the goods twice"
+        );
+        j.e.close(true, Duration::from_secs(5)).unwrap();
+        return;
+    }
+    assert!(
+        !pending,
+        "{case}: the loot exchange of op {live:#x} is still pending"
+    );
+    assert_eq!(j.e.with_industry(|_, l| l.outbox), 0);
+    assert!(j.e.protocol_error().is_none(), "{:?}", j.e.protocol_error());
+    conserves(&j);
+    j.e.close(true, Duration::from_secs(5)).unwrap();
+}
+
+/// J3 through the host: the ring's DUPLICATE reaches `command_result` (the journal lost the live
+/// APPLIED), which drops the loot exchange; without that drop the exchange stays pending.
+#[test]
+fn a_crash_that_kept_the_trains_and_not_the_journal_takes_a_train_raid_once() {
+    a_train_raid_across_javas_two_files("j3");
+}
+
+/// J4 through the host: the raid is applied again to the restored goods and the books close.
+#[test]
+fn a_crash_that_kept_the_journal_and_not_the_trains_takes_a_train_raid_once() {
+    a_train_raid_across_javas_two_files("j4");
+}
+
+/// J3 with the raid decided again after the engine's first durable save past the replay end
+/// (RP-252): the ring settled the op to an unknown answer and kept it through that save, so the
+/// raid is answered DUPLICATE and taken once.
+#[test]
+fn a_j3_raid_decided_again_after_the_first_durable_save_is_taken_once() {
+    a_train_raid_across_javas_two_files("j3-late");
+}
+
+/// The same J3 under a ring trimmed at the first durable save past the replay end (the reviewer's
+/// rule, RP-252; a trim on the journal's mark keeps this op, its answer past the journal on disk):
+/// the op has left the ring when the raid is decided again, so it is applied twice. Pins why the
+/// ring prunes only on the acknowledgement of its own answer.
+#[test]
+fn a_j3_raid_decided_again_after_a_ring_trimmed_at_the_first_durable_save_is_taken_twice() {
+    a_train_raid_across_javas_two_files("j3-late-pruned");
+}
+
+/// Hole (a) (RP-252): both files from after the raid, the pages from before it, and the raid decided
+/// again only after the engine's first durable save past the replay end, which acknowledges the
+/// raid's old answer. The ring keeps the op (its answer unknown), so the raid is taken once.
+#[test]
+fn a_j1_raid_decided_again_after_the_first_durable_save_is_taken_once() {
+    a_train_raid_across_javas_two_files("j1-late");
+}
+
+/// Hole (a) under a trim on the journal's mark (RP-252): the op left the ring at the first save,
+/// since the journal on disk held its answer, and left the journal's op index at the acknowledgement
+/// of that answer. The raid decided again after both is applied twice.
+#[test]
+fn a_j1_raid_decided_again_after_a_trim_on_the_journals_mark_is_taken_twice() {
+    a_train_raid_across_javas_two_files("j1-late-pruned");
+}
+
+/// A station exchange the engine derived from a simulated arrival, applied by Java, then lost with
+/// the journal (J3: the trains and their ring saved after the application, the journal before it,
+/// with the arrival and without the application's IND_CARRIAGE_RESULT; the pages older than the
+/// arrival). The replay derives the exchange again from the arrival under the same op, the ring
+/// answers DUPLICATE, and `command_result` drops the exchange whatever its reason (RP-199): no
+/// result will come for it. Before RP-199 only loot was dropped, so the exchange stayed pending
+/// for ever, into every page.
+#[test]
+fn a_station_exchange_derived_again_after_a_crash_that_lost_its_result_is_dropped() {
+    use rtsim_industry::cmd::CarriageReason;
+    use rtsim_kernel::journal::OpId;
+    let cfg = IronLine {
+        seed: 11,
+        days: 10,
+        threats: false,
+        control: false,
+        tick_first: true,
+        approach: true,
+    };
+    let dir = tmpdir("ind-exchange-dup");
+    let mut j = iron_java(&dir, cfg);
+    let exchange_ops = |j: &Java| -> Vec<u64> {
+        j.ind_commands
+            .iter()
+            .filter_map(|c| match &c.2 {
+                Cmd::CarriageDelta(d) if d.reason == CarriageReason::Exchange => Some(d.op.0),
+                _ => None,
+            })
+            .collect()
+    };
+    // Past the first simulated exchanges, the pages are taken; then the next exchange.
+    j.mc_run_until(day(2.0));
+    let through = j.next_obs - 1;
+    j.e.request_save(through);
+    mc_tick_until_durable(&mut j, through);
+    let through = j.e.durable_obs_seq();
+    let before = exchange_ops(&j).len();
+    while exchange_ops(&j).len() == before {
+        j.mc_tick();
+        assert!(j.mc().t < day(8.0), "a simulated station exchange");
+    }
+    let x = exchange_ops(&j)[before];
+    // The journal with the arrival, before the exchange is applied (one tick late, in the world's
+    // next tick).
+    let jsave = j.world_save();
+    assert!(!j.mc().applied_ops().contains(&OpId(x)));
+    for _ in 0..3 {
+        j.mc_tick();
+    }
+    assert!(
+        j.mc().applied_ops().contains(&OpId(x)),
+        "the exchange is applied"
+    );
+    assert!(
+        !industry(&j.e, |ie| ie.exchange_pending(OpId(x))),
+        "its result took the exchange live"
+    );
+    let msave = j.mc().saved();
+    assert_eq!(j.e.durable_obs_seq(), through, "no later page save");
+    let mut mc = j.mc.take().unwrap();
+    j.e.close(false, Duration::from_secs(5)).unwrap();
+    mc.restore(&msave);
+    let e = engine_with(&dir, 256 * 1024, |c| c.industry_seed = Some(cfg.seed));
+    let mut j = Java::open(e, jsave);
+    j.mc = Some(mc);
+    j.module_mask = MODULE_INDUSTRY;
+    let t0 = j.mc().t;
+    while !exchange_ops(&j).contains(&x) {
+        j.mc_tick();
+        assert!(j.mc().t < t0 + 400, "the replay derives the exchange again");
+    }
+    iron_run_to_end(&mut j, &cfg);
+    let pending = industry(&j.e, |ie| ie.exchange_pending(OpId(x)));
+    assert!(
+        !pending,
+        "the station exchange of op {x:#x} is still pending after the world's DUPLICATE"
+    );
+    assert_eq!(j.e.with_industry(|_, l| l.outbox), 0);
+    assert!(j.e.protocol_error().is_none(), "{:?}", j.e.protocol_error());
+    conserves(&j);
+    j.e.close(true, Duration::from_secs(5)).unwrap();
+}
+
+// ---- the train ring across rollbacks of the engine's pages (docs/choices-mowzie-build.md RP-258) --
+
+/// Ticks the world, one tick each 2 ms of wall clock, until `done`: a save on the IO lane lands
+/// without the world running on far past it (the raid decided again after the crash needs train 1
+/// still under way). Returns the ticks taken; panics after 20 s.
+fn mc_tick_slowly_until(j: &mut Java, what: &str, mut done: impl FnMut(&Java) -> bool) -> u64 {
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    let mut ticks = 0;
+    while !done(j) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for {what}"
+        );
+        j.mc_tick();
+        ticks += 1;
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    ticks
+}
+
+/// One op in Java's train ring as `TrainRing` keeps it (RP-250, RP-251): the sequence of the op's
+/// last answer in the session that settled the ring last (0, unknown, after a settle that could
+/// not prove the engine's pages hold it), and that session's generation (`session`, its nonce).
+/// `None` in its place: the op has left the ring.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct RingOp {
+    at: u64,
+    session: u64,
+}
+
+impl RingOp {
+    /// The op answered at `at` in session `j`, as its ring stands now: it left once the session
+    /// applied an acknowledgement at or past `at` (`TrainRing.answered`, `TrainRing.tick`).
+    fn after_session(j: &Java, at: u64) -> Option<RingOp> {
+        let acked = j.acks.iter().copied().max().unwrap_or(0);
+        (acked < at).then_some(RingOp {
+            at,
+            session: j.nonce,
+        })
+    }
+
+    /// The settle at the start of session `j`, which loaded Java's journal file `save`
+    /// (`TrainRing.settle`, `RingView`): the op leaves when its answer is at or below the engine's
+    /// pages and the view proves those pages are the ring's own session's; else it stays, its
+    /// answer unknown, in this session's generation, where no acknowledgement takes it.
+    fn settle(self, j: &Java, save: &WorldSave) -> Option<RingOp> {
+        use rtsim_jni::wire::obs;
+        let first = j.replay_up_to + 1;
+        let writer_gen = save
+            .pinned_gen
+            .iter()
+            .chain(save.journal.iter())
+            .filter(|(s, r)| *s < first && wire::u16_at(r, wire::R_KIND) == obs::JOURNAL_GEN)
+            .max_by_key(|(s, _)| *s)
+            .map_or(0, |(_, r)| wire::u64_at(r, obs::journal_gen::GEN));
+        let written = save.next_obs - 1;
+        let proven = writer_gen != 0 && written < first && j.pages_obs <= written;
+        let bound = if self.session == writer_gen && proven {
+            j.pages_obs
+        } else {
+            0
+        };
+        (self.at == 0 || self.at > bound).then_some(RingOp {
+            at: 0,
+            session: j.nonce,
+        })
+    }
+}
+
+/// How the engine's pages past a train raid's answer are lost in
+/// [`a_train_raid_and_a_rolled_back_save`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Rollback {
+    /// Java asks for a save past the answer; it writes its events and stops before its page
+    /// commit, as a process killed there would, and the engine saves nothing after it
+    /// (`crash_before_next_page_commit`). Java asks again; the crash comes later.
+    CrashAtPageCommit,
+    /// Java asks for a save past the answer; its commit fails (a torn log) and the store reopens
+    /// at its last durable generation (`recover_store`). The crash comes before another save.
+    FailedSave,
+    /// As `FailedSave`, then a save past the answer is made and acknowledged; the crash after.
+    FailedThenMade,
+    /// No save is asked for past the answer: herds founded after it outgrow the row budget, which
+    /// takes saves of its own (pending generations, PF15), and the restart rolls them back.
+    Pressure,
+}
+
+/// The train ring's rollback cases (docs/choices-mowzie-build.md RP-258). A train raid is applied
+/// and answered APPLIED at `s`, then the engine's pages past `s` are lost ([`Rollback`]) and the
+/// server crashes with Java's two files from that moment (J1). The property the ring's prune rests
+/// on: no acknowledgement reaches `s` before the pages holding `s` are durable, so an op whose
+/// answer the engine acknowledged is never sent again. Each case checks that no acknowledgement
+/// Java applied is past the pages the restart finds, models Java's ring ([`RingOp`]: the op stays
+/// until an acknowledgement of `s`, and the restart's settle keeps it, unknown, when the pages
+/// lack `s`), and plays on: pages without `s` decide the raid again and the ring answers
+/// DUPLICATE; pages with it never send the op again. The world conserves either way.
+fn a_train_raid_and_a_rolled_back_save(how: Rollback) {
+    use rtsim_industry::fake::RESULT_DUPLICATE;
+    use rtsim_jni::engine::MODULE_HERDS;
+    use rtsim_kernel::journal::OpId;
+    use rtsim_kernel::page::Fault;
+    use std::sync::atomic::Ordering::Acquire;
+    let cfg = raid_line();
+    let dir = tmpdir(&format!("ind-rollback-{how:?}"));
+    let pressure = how == Rollback::Pressure;
+    let config = move |c: &mut rtsim_jni::engine::Config| {
+        if pressure {
+            c.row_budget = 4 * 1024;
+        }
+    };
+    let mask = if pressure {
+        MODULE_INDUSTRY | MODULE_HERDS
+    } else {
+        MODULE_INDUSTRY
+    };
+    let mut j = iron_java_with(&dir, cfg, config);
+    j.module_mask = mask;
+    let r = raid_a_laden_train(&mut j);
+    let (s, live) = (r.s, r.live);
+    assert!(j.sent_obs >= s, "the answer reached the engine");
+    assert_eq!(j.e.durable_obs_seq(), r.through, "no save since the raid");
+    let saves = j.e.stats.saves_done.load(Acquire);
+    let mut budget_saves = 0;
+    let mut ticks = 0;
+    match how {
+        Rollback::CrashAtPageCommit => {
+            let serial = j.e.stats.archive_serial.load(Acquire);
+            j.e.crash_before_next_page_commit();
+            let asked = j.next_obs - 1;
+            j.e.request_save(asked);
+            // The save flushes its events (the archive's serial moves) and stops there.
+            ticks += mc_tick_slowly_until(&mut j, "the save to reach its page commit", |j| {
+                j.e.stats.archive_serial.load(Acquire) != serial
+            });
+            for _ in 0..200 {
+                j.mc_tick();
+            }
+            // Java asks again, as its autosave would; the engine saves nothing more.
+            let asked = j.next_obs - 1;
+            j.e.request_save(asked);
+            for _ in 0..200 {
+                j.mc_tick();
+            }
+        }
+        Rollback::FailedSave | Rollback::FailedThenMade => {
+            let failed = j.e.stats_array()[15];
+            j.e.inject_store_fault(Some(Fault::TornLog));
+            let asked = j.next_obs - 1;
+            j.e.request_save(asked);
+            ticks += mc_tick_slowly_until(&mut j, "the failed save", |j| {
+                j.e.stats_array()[15] != failed
+            });
+            for _ in 0..200 {
+                j.mc_tick();
+            }
+            if how == Rollback::FailedThenMade {
+                // A save built in the moment between the failure's count and the store's
+                // recovery is stale and refused too (PF14): ask again, at most twice more.
+                let asked = j.next_obs - 1;
+                let mut refused = 0;
+                loop {
+                    let failed = j.e.stats_array()[15];
+                    j.e.request_save(asked);
+                    ticks += mc_tick_slowly_until(&mut j, "the save after the failed one", |j| {
+                        j.e.durable_obs_seq() >= asked || j.e.stats_array()[15] != failed
+                    });
+                    if j.e.durable_obs_seq() >= asked {
+                        break;
+                    }
+                    refused += 1;
+                    assert!(refused < 3, "{refused} saves refused after the failed one");
+                }
+                ticks += mc_tick_slowly_until(&mut j, "the acknowledgement of the answer", |j| {
+                    j.acks.iter().any(|&a| a >= s)
+                });
+                for _ in 0..20 {
+                    j.mc_tick();
+                }
+            }
+        }
+        Rollback::Pressure => {
+            // Herds whose rows outgrow the budget (archive.rs's recipe), founded once the engine
+            // has read the answer: the budget takes a save of its own at once, at a step past the
+            // answer (the pending generation's observations are checked on disk below).
+            let before = j.e.stats.pressure_saves.load(Acquire);
+            let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+            let unit = (0..128u64)
+                .map(|i| Order::HerdFound {
+                    name: format!("Testdown flock {i}"),
+                    species: "minecraft:sheep".into(),
+                    dimension: dim,
+                    x: 1_000 + 64 * i as i32,
+                    z: 1_000,
+                    count: 20,
+                    seed: i + 1,
+                })
+                .collect();
+            j.e.order(unit).unwrap();
+            ticks += mc_tick_slowly_until(&mut j, "a save of the budget's own", |j| {
+                j.e.stats.pressure_saves.load(Acquire) > before
+            });
+            for _ in 0..200 {
+                j.mc_tick();
+            }
+            budget_saves = j.e.stats.pressure_saves.load(Acquire) - before;
+        }
+    }
+    let max_ack = j.acks.iter().copied().max().unwrap_or(0);
+    let durable = j.e.durable_obs_seq();
+    eprintln!(
+        "{how:?}: answer at {s}, pages before the raid {}, durable {durable}, highest acknowledgement \
+         applied {max_ack}, journal next {}, saves made since the raid {}, failed saves {}, budget \
+         saves past the answer {budget_saves}, ticks waited {ticks}",
+        r.through,
+        j.next_obs,
+        j.e.stats.saves_done.load(Acquire) - saves,
+        j.e.stats_array()[15]
+    );
+    assert!(
+        max_ack <= durable,
+        "{how:?}: an acknowledgement past the durable pages"
+    );
+    if how == Rollback::FailedThenMade {
+        assert!(
+            max_ack >= s,
+            "the save made past the answer is acknowledged"
+        );
+    } else {
+        assert_eq!(durable, r.through, "{how:?}: no save past the answer made");
+        assert_eq!(j.e.stats.saves_done.load(Acquire), saves);
+        assert!(
+            max_ack < s,
+            "{how:?}: an acknowledgement reached the answer {s} while the pages holding it were \
+             not durable"
+        );
+    }
+    let ring = RingOp::after_session(&j, s);
+    assert_eq!(ring.is_none(), how == Rollback::FailedThenMade);
+    if ring.is_none() {
+        assert!(
+            j.mc_mut().forget_applied(OpId(live)),
+            "the ring held the op until its acknowledgement"
+        );
+    }
+    // The crash, with Java's two files as they stand (J1).
+    let jsave = j.world_save();
+    let msave = j.mc().saved();
+    let mut mc = j.mc.take().unwrap();
+    j.e.close(false, Duration::from_secs(5)).unwrap();
+    if pressure {
+        use rtsim_kernel::page::{Durability, PageStore};
+        let store = PageStore::open(&dir, Durability::NoSync).unwrap();
+        eprintln!(
+            "Pressure: on disk, the confirmed generation at {}, the newest pending one at {}",
+            store.confirmed().obs_seq,
+            store.current().obs_seq
+        );
+        assert_eq!(store.confirmed().obs_seq, r.through);
+        assert!(
+            store.current().obs_seq >= s,
+            "a pending generation holds the answer"
+        );
+    }
+    mc.restore(&msave);
+    let e = engine_with(&dir, 256 * 1024, |c| {
+        c.industry_seed = Some(cfg.seed);
+        config(c)
+    });
+    let mut j = Java::open(e, jsave.clone());
+    j.mc = Some(mc);
+    j.module_mask = mask;
+    eprintln!(
+        "{how:?}: the restart's pages {}, journal next {}",
+        j.pages_obs, j.next_obs
+    );
+    assert!(
+        j.pages_obs >= max_ack,
+        "{how:?}: Java applied an acknowledgement of {max_ack}, past the pages the restart found ({})",
+        j.pages_obs
+    );
+    let ring = ring.and_then(|o| o.settle(&j, &jsave));
+    let sent_again = |j: &Java| {
+        j.ind_commands
+            .iter()
+            .filter(|c| matches!(&c.2, Cmd::CarriageDelta(d) if d.op.0 == live))
+            .count()
+    };
+    if how == Rollback::FailedThenMade {
+        assert!(j.pages_obs >= s, "the pages hold the answer");
+        assert_eq!(ring, None);
+        // The raider's pages hold the raid: nothing decides it again, and the engine never sends
+        // the acknowledged op again.
+        iron_run_to_end(&mut j, &cfg);
+        assert_eq!(
+            sent_again(&j),
+            0,
+            "the engine sent op {live:#x} again after acknowledging its answer"
+        );
+    } else {
+        assert_eq!(
+            j.pages_obs, r.through,
+            "{how:?}: the restart found the pages from before the raid"
+        );
+        assert_eq!(
+            ring,
+            Some(RingOp {
+                at: 0,
+                session: j.nonce
+            }),
+            "{how:?}: the settle keeps the op, its answer unknown"
+        );
+        j.mc_tick();
+        // The raider, back from pages before the raid, decides it again.
+        let t0 = j.mc().t;
+        j.e.order(vec![Order::IndustryThreat(r.threat)]).unwrap();
+        while loot_ops(&j).is_empty() {
+            j.mc_tick();
+            assert!(j.mc().t < t0 + 400, "{how:?}: the raid is decided again");
+        }
+        assert_eq!(loot_ops(&j), vec![live], "{how:?}: under the live op");
+        for _ in 0..5 {
+            j.mc_tick();
+        }
+        assert_eq!(
+            answers(&j, live)
+                .into_iter()
+                .map(|a| a.1)
+                .collect::<Vec<_>>(),
+            vec![RESULT_DUPLICATE],
+            "{how:?}: the ring answered the raid decided again"
+        );
+        iron_run_to_end(&mut j, &cfg);
+        assert_eq!(sent_again(&j), 1);
+    }
+    assert!(
+        !industry(&j.e, |ie| ie.exchange_pending(OpId(live))),
+        "{how:?}: the loot exchange is still pending"
+    );
+    assert_eq!(industry(&j.e, |ie| ie.books.stolen.total()), r.stolen);
+    assert_eq!(j.e.with_industry(|_, l| l.outbox), 0);
+    assert!(j.e.protocol_error().is_none(), "{:?}", j.e.protocol_error());
+    conserves(&j);
+    j.e.close(true, Duration::from_secs(5)).unwrap();
+}
+
+/// RP-258 case 1, `crash_at_page_commit`: the save past a train raid's answer dies before its page
+/// commit, and no acknowledgement reaches the answer; after the crash the raid is taken once.
+#[test]
+fn a_save_crashed_before_its_page_commit_never_acknowledges_a_train_raid_answer() {
+    a_train_raid_and_a_rolled_back_save(Rollback::CrashAtPageCommit);
+}
+
+/// RP-258 case 1, a failed save and `recover_store`: no acknowledgement reaches the answer; after
+/// the crash the raid is taken once.
+#[test]
+fn a_failed_save_never_acknowledges_a_train_raid_answer() {
+    a_train_raid_and_a_rolled_back_save(Rollback::FailedSave);
+}
+
+/// RP-258 case 1, a failed save, `recover_store`, then a save made and acknowledged: the restart's
+/// pages hold every acknowledgement Java applied, so the op the ring dropped is never sent again.
+#[test]
+fn a_save_made_after_a_failed_one_acknowledges_only_what_the_restart_finds() {
+    a_train_raid_and_a_rolled_back_save(Rollback::FailedThenMade);
+}
+
+/// RP-258 case 1, pending generations: the budget's own saves past the answer are never
+/// acknowledged, and the restart rolls them back; the raid is taken once.
+#[test]
+fn a_budget_save_never_acknowledges_a_train_raid_answer() {
+    a_train_raid_and_a_rolled_back_save(Rollback::Pressure);
+}
+
+/// RP-258 case 2, a sequence reused after a rollback (P29). J3: the trains (with their ring) from
+/// after the raid, the journal from before it, the pages from before both. The journal lost the
+/// answer's sequence `s` and the pages do not reach it, so the restart (`next_obs` is the larger
+/// of the save's and the pages' + 1) journals another record at `s`, and a save through it is
+/// acknowledged. The settle made the op's answer unknown in the new generation, so that
+/// acknowledgement of another record leaves the op in the ring: the raid decided again is answered
+/// DUPLICATE and taken once. `seq_only` is a ring keyed by sequence alone (no generation, no
+/// settle): it takes that acknowledgement for the answer's and drops the op, and the raid is taken
+/// twice.
+fn a_train_raid_answer_whose_sequence_is_reused(seq_only: bool) {
+    use rtsim_industry::fake::RESULT_DUPLICATE;
+    use rtsim_kernel::journal::OpId;
+    let cfg = raid_line();
+    let dir = tmpdir(&format!("ind-reuse-{seq_only}"));
+    let mut j = iron_java(&dir, cfg);
+    let r = raid_a_laden_train(&mut j);
+    let (s, live) = (r.s, r.live);
+    let answer = j.journaled(s).expect("the answer in the journal");
+    let ring = RingOp::after_session(&j, s).expect("nothing acknowledged the answer");
+    let msave = j.mc().saved();
+    assert_eq!(j.e.durable_obs_seq(), r.through, "no later page save");
+    let mut mc = j.mc.take().unwrap();
+    j.e.close(false, Duration::from_secs(5)).unwrap();
+    mc.restore(&msave);
+    let e = engine_with(&dir, 256 * 1024, |c| c.industry_seed = Some(cfg.seed));
+    let mut j = Java::open(e, r.jsave_before.clone());
+    j.mc = Some(mc);
+    j.module_mask = MODULE_INDUSTRY;
+    assert!(
+        j.next_obs <= s,
+        "the restart journals from {}, below the lost answer's {s}",
+        j.next_obs
+    );
+    let settled = ring.settle(&j, &r.jsave_before);
+    assert_eq!(
+        settled,
+        Some(RingOp {
+            at: 0,
+            session: j.nonce
+        }),
+        "the settle keeps the op, its answer unknown"
+    );
+    while j.next_obs <= s {
+        j.mc_tick();
+    }
+    let reused = j.journaled(s).expect("this session's record at s");
+    assert_ne!(reused, answer, "another record took the answer's sequence");
+    let through = j.next_obs - 1;
+    j.e.request_save(through);
+    mc_tick_until_durable(&mut j, through);
+    let mut n = 0;
+    while !j.acks.iter().any(|&a| a >= s) {
+        j.mc_tick();
+        n += 1;
+        assert!(n < 100, "the save through {through} is acknowledged");
+    }
+    let acked = j.acks.iter().copied().max().unwrap();
+    eprintln!(
+        "reuse (seq_only {seq_only}): answer at {s} (kind {:#x}), the restart's first sequence {}, \
+         the record that took {s} has kind {:#x}, acknowledged {acked}",
+        wire::u16_at(&answer, wire::R_KIND),
+        j.replay_up_to + 1,
+        wire::u16_at(&reused, wire::R_KIND)
+    );
+    if seq_only {
+        // A ring that waits on the sequence alone takes this acknowledgement for the answer's.
+        assert!(j.mc_mut().forget_applied(OpId(live)));
+    }
+    // The raider, back from pages before the raid, decides it again at its own pace.
+    let t0 = j.mc().t;
+    j.e.order(vec![Order::IndustryThreat(r.threat)]).unwrap();
+    while loot_ops(&j).is_empty() {
+        j.mc_tick();
+        assert!(j.mc().t < t0 + 400, "the raid is decided again");
+    }
+    assert_eq!(loot_ops(&j), vec![live], "under the live op");
+    for _ in 0..5 {
+        j.mc_tick();
+    }
+    let again = answers(&j, live);
+    iron_run_to_end(&mut j, &cfg);
+    if seq_only {
+        let mc = j.mc();
+        let double = j.e.with_industry(|ie, _| mc.conservation_with(ie));
+        eprintln!("reuse (seq_only): answers {again:?}; the world against the books: {double:?}");
+        assert!(
+            double.is_err(),
+            "a ring keyed by sequence alone dropped the op at the acknowledgement of the record \
+             that reused its answer's sequence, so the raid is applied twice"
+        );
+        j.e.close(true, Duration::from_secs(5)).unwrap();
+        return;
+    }
+    assert_eq!(
+        again.into_iter().map(|a| a.1).collect::<Vec<_>>(),
+        vec![RESULT_DUPLICATE],
+        "the ring answered the raid decided again"
+    );
+    assert!(!industry(&j.e, |ie| ie.exchange_pending(OpId(live))));
+    assert_eq!(j.e.with_industry(|_, l| l.outbox), 0);
+    assert!(j.e.protocol_error().is_none(), "{:?}", j.e.protocol_error());
+    conserves(&j);
+    j.e.close(true, Duration::from_secs(5)).unwrap();
+}
+
+/// RP-258 case 2 under the ring's generation and settle: taken once.
+#[test]
+fn a_ring_op_whose_answers_sequence_the_restart_reuses_is_taken_once() {
+    a_train_raid_answer_whose_sequence_is_reused(false);
+}
+
+/// RP-258 case 2 under a ring keyed by sequence alone: taken twice. Pins why the ring keeps a
+/// generation and settles at a session start.
+#[test]
+fn a_ring_keyed_by_sequence_alone_takes_a_raid_twice_when_its_answers_sequence_is_reused() {
+    a_train_raid_answer_whose_sequence_is_reused(true);
+}
+
 /// Slice U: the real engine never sends an op again after acknowledging Java's live answer for it
 /// (docs/choices-journal-barrier.md RP-209; docs/choices-mowzie-build.md RP-250, RP-251, RP-257).
 ///
@@ -1556,9 +2550,10 @@ fn a_written_chain_package_journaled_again_is_taken_once() {
 /// every other entry stays, its answer unknown, until a resend's refusal stamps it live. A command
 /// carrying X after either would be applied twice.
 ///
-/// Main has no op rings yet; the same promise holds there through Java's journal: the journal's op
-/// index refuses an op Java applied, and forgets it when Java trims the journal through the
-/// engine's acknowledgement. The checker models the rings, a stricter rule.
+/// Java keeps rings for a train's ops only (RP-190); every other op holds the same promise through
+/// Java's journal: the journal's op index refuses an op Java applied, and forgets it when Java
+/// trims the journal through the engine's acknowledgement. The checker models rings for every op,
+/// a stricter rule.
 ///
 /// Every case runs the iron line through the native engine with Java's autosave (a world save and
 /// a page save asked through the journal's end) and [`AckCheck`] watching every op-carrying
@@ -2458,7 +3453,6 @@ mod ack_never_resends {
     /// be applied twice. Java refuses the re-decided X with DUPLICATE live at S2 in session 2;
     /// after the ack past S2, and across a crash after it, X is never sent again.
     #[test]
-    #[ignore = "needs slice T's keyed loot op (RP-180): on main a raid decided again carries a new op, so X never goes again"]
     fn a_replayed_answer_acknowledged_is_sent_again_and_its_refusal_never_after() {
         replayed_answer(false);
     }
@@ -2468,7 +3462,6 @@ mod ack_never_resends {
     /// same engine run, because session 2's ack past S would have pruned X before the raid was
     /// decided again, and the re-decided X would have been applied twice.
     #[test]
-    #[ignore = "needs slice T's keyed loot op (RP-180): on main a raid decided again carries a new op, so X never goes again"]
     fn the_checker_flags_the_replayed_answer_under_a_java_that_registers_replayed_acks() {
         replayed_answer(true);
     }
@@ -2623,10 +3616,12 @@ mod ack_never_resends {
     /// its answer S, so MODULES goes ahead of S in that hand-over (BoundarySession.handOver writes
     /// the preamble, MODULES included, before it drains the journal, so every answer not drained
     /// yet when the switch comes lands behind it: this tick's, and any a full open buffer left
-    /// over). Java's autosave then takes the pages past S and Java reads that ack: Java trims its
-    /// journal through it, and the journal's op index, which refuses an op Java applied, forgets X
-    /// with it. The fake world's applied set never prunes, so the probe drops X from it there, as
-    /// that index does. On again, the engine sends its outbox under new sequences (`set_enabled`).
+    /// over). Java's autosave then takes the pages past S and Java reads that ack: S was live in
+    /// this session, so its rings prune X (they prune with the module off, RP-257), and Java trims
+    /// its journal through it, and the journal's op index, which refuses an op Java applied,
+    /// forgets X with it. The fake world's applied set never prunes, so the probe drops X from it
+    /// there, as those do. On again, the engine sends its outbox under new sequences
+    /// (`set_enabled`).
     ///
     /// Before RP-285 (at 37b2dcfb) the engine ignored S while off (U10), kept X in its outbox and
     /// sent it again after the ack past S, and the world, which no longer knew X, applied it a
@@ -2787,10 +3782,11 @@ mod ack_never_resends {
     }
 
     /// With industry off since the answer S of X: a page save past S lands and Java reads its ack
-    /// (its journal, and the op index that refuses X, is trimmed past S), the world saves after a long run of
-    /// records the engine ignores, and the engine crashes with the module still off. Restarts on a
-    /// minimum-size buffer with the module off, checks the replay spans hand-overs, and returns
-    /// the restart's settle and the engine's clock before the crash.
+    /// (its rings forget X, and its journal, with the op index that refuses X, is trimmed past S),
+    /// the world saves after a long run of records the engine ignores, and the engine crashes with
+    /// the module still off. Restarts on a minimum-size buffer with the module off, checks the
+    /// replay spans hand-overs, and returns the restart's settle and the engine's clock before the
+    /// crash.
     fn crash_while_off_after_the_ack(r: &mut Rig, x: u64, s: u64) -> (Start, Tick) {
         let through = r.j.next_obs - 1;
         assert!(through >= s);
@@ -2908,7 +3904,7 @@ mod ack_never_resends {
     }
 
     /// RP-285, DUPLICATE heard while off, across a crash while still off. First a J3 crash (the
-    /// shape of slice T's RP-199 case, which main lacks): the pages stop before a station exchange
+    /// shape of RP-199's case): the pages stop before a station exchange
     /// X, the journal is saved with X's arrival and a long run of records the engine ignores, and
     /// the trains, their ring and the world's applied set after Java applied X. The replay
     /// (several hand-overs) derives X again under the same op and the world refuses it DUPLICATE
@@ -2916,8 +3912,8 @@ mod ack_never_resends {
     /// leaves the outbox at once, and S is kept for the switch, which books it at S's tick as
     /// `command_result` does with the module on. Then
     /// [`crash_while_off_after_the_ack`] (S kept in the link page) and on again: X is never sent in
-    /// the third session. On main a DUPLICATE only takes its command, so the exchange derived again
-    /// still waits after the switch, as it would with the module on; slice T's RP-199 drops it.
+    /// the third session. The switch books S as `command_result` does with the module on, so the
+    /// exchange derived again is dropped there (RP-199), never booked a second time.
     #[test]
     fn a_duplicate_answer_heard_with_industry_off_is_booked_once_across_a_crash_while_off() {
         let mut r = Rig::new("ack-off-dup", false);
@@ -2974,8 +3970,8 @@ mod ack_never_resends {
         );
         switch_on(&mut r);
         assert!(
-            pending(&r),
-            "main's DUPLICATE only takes the command, with the module on or off"
+            !pending(&r),
+            "the switch books S: the exchange derived again is dropped (RP-199)"
         );
         to_the_end(r, x, 2, |_| false);
     }
@@ -2994,8 +3990,28 @@ mod ack_never_resends {
     /// the engine never sends P. Before RP-285 the copy was ignored and P went out at the switch.
     #[test]
     fn a_carried_answer_heard_with_industry_off_takes_its_queued_command() {
+        carried_answer("ack-off-carried", false);
+    }
+
+    /// RP-285 with a postbox's carried answer (`Industry.carryAppliedInChunk`, RP-206), as
+    /// [`a_carried_answer_heard_with_industry_off_takes_its_queued_command`] but with the second
+    /// record a postbox carries: Java applies P and answers it live (S1), then the postbox takes
+    /// its buffer back and its chunk carries P's APPLIED again, journaled with no command sequence
+    /// (S2, as `resultInChunk` writes it). The crash loses both (J3 for the chunk). The restart,
+    /// industry off, hears S2 again (REASSERT under the first session's generation) as a first
+    /// answer for P, which takes P out of the queue; Java reads an ack past it (its chunk then
+    /// drops the carry and its rings forget P, so nothing refuses P any more), and once on the
+    /// engine never sends P.
+    #[test]
+    fn a_postbox_carried_answer_heard_with_industry_off_takes_its_queued_command() {
+        carried_answer("ack-off-postbox", true);
+    }
+
+    /// The carried cases. `postbox`: the chunk carries the postbox's own record of P (S2, no
+    /// command sequence), journaled after the live answer S1; otherwise it carries S1 itself.
+    fn carried_answer(tag: &str, postbox: bool) {
         use rtsim_industry::cmd::{IndustryOps, WritePackage};
-        let mut r = Rig::new("ack-off-carried", false);
+        let mut r = Rig::new(tag, false);
         r.run_to(day(3.0));
         r.every = 0;
         let name = "mic:ack_test_postbox".to_string();
@@ -3010,7 +4026,7 @@ mod ack_never_resends {
             count: 1,
             goods: GoodVec::new(),
         });
-        // Main has no keyed op (slice T's `derive_keyed`): one derived at this tick, as the engine's.
+        // Derived at this tick, as the engine's (only a train raid's loot is keyed, RP-180).
         p.set_op(IndustryOps::default().derive(r.cfg.seed, r.j.mc().t, &p));
         let mut record = Vec::new();
         iw::encode_cmd(0, &p, &mut record).expect("a package command encodes");
@@ -3049,16 +4065,34 @@ mod ack_never_resends {
                     if let Some(a) = answers.iter().find(|a| a.0 == pk) {
                         assert_eq!(a.2, APPLIED);
                         s1 = Some(a.1);
-                        // Main's `commandResultInChunk` carries the live answer itself.
-                        carried = Some((a.1, j.journaled(a.1).expect("journaled")));
+                        let at = if postbox {
+                            // The postbox takes its buffer back: its chunk carries P's APPLIED
+                            // again, with no command sequence (`carryAppliedInChunk`).
+                            j.journal(
+                                obs::COMMAND_RESULT,
+                                obs::command_result::SIZE,
+                                APPLIED,
+                                |rec| {
+                                    wire::put_u64(rec, obs::command_result::CMD_SEQ, 0);
+                                    wire::put_u64(rec, obs::command_result::OP_ID, pk);
+                                },
+                            )
+                        } else {
+                            // `commandResultInChunk` carries the live answer itself.
+                            a.1
+                        };
+                        carried = Some((at, j.journaled(at).expect("journaled")));
                     }
                 },
             );
             r.after_tick();
             assert!(Instant::now() < deadline);
         }
-        let (_, bytes) = carried.unwrap();
+        let (carry, bytes) = carried.unwrap();
         let s1 = s1.unwrap();
+        if postbox {
+            r.c.answered(pk, carry, APPLIED);
+        }
         r.run("the pages", day(4.0), |r| {
             r.j.e.durable_obs_seq() >= through
         });
@@ -3090,7 +4124,7 @@ mod ack_never_resends {
         r.autosave();
         r.until_read(s);
         eprintln!(
-            "carried: P {pk:#x} live S1 {s1}, carried in its chunk, lost with the journal; \
+            "{tag}: P {pk:#x} live S1 {s1}, carried {carry} in its chunk, lost with the journal; \
              REASSERT at {s}, heard while off and acknowledged"
         );
         on_again_to_the_end(r, pk, 1, |_| false);
@@ -3306,7 +4340,7 @@ mod ack_never_resends {
             count: 2,
             goods: GoodVec::from_pairs([(INGOT, 64)]),
         });
-        // Main has no keyed op (slice T's `derive_keyed`): one derived at this tick, as the engine's.
+        // Derived at this tick, as the engine's (only a train raid's loot is keyed, RP-180).
         let op = IndustryOps::default().derive(r.cfg.seed, r.j.mc().t, &w);
         w.set_op(op);
         let mut record = Vec::new();
