@@ -259,8 +259,12 @@ public final class GroveKind implements CampKind {
      */
     @Override
     public void chiefBody(Mob body, ChiefBody memory) {
-        if (!(body instanceof EntityUmvuthi u))
-            return;
+        if (body instanceof EntityUmvuthi u)
+            remember(u, memory);
+    }
+
+    /** {@link #chiefBody}'s work, for the aloft puppet's making too (M11, MZB-806). */
+    static void remember(EntityUmvuthi u, ChiefBody memory) {
         Set<UUID> all = new LinkedHashSet<>(u.getTradedPlayers());
         all.addAll(memory.traded());
         ListTag list = new ListTag();

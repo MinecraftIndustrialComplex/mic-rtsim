@@ -6,6 +6,7 @@
   "mixins": [
     "ContainerUmvuthanaTradeSlotResultMixin",
     "EntityFrostmawMixin",
+    "EntityUmvuthiAccessor",
     "EntityUmvuthiMixin"
   ],
   "injectors": {

@@ -60,11 +60,13 @@ public final class AloftRules {
     // ---- facing ---------------------------------------------------------------------------------
 
     /**
-     * The jar's {@code direction} (0 to 3) for a yaw: inverts {@code EntityUmvuthi.tick}'s
-     * {@code setYRot((direction - 1) * 90)} (MZB-806). A yaw halfway between two quarters takes the later one.
+     * The jar's {@code direction} (1 to 4) for a yaw: inverts {@code EntityUmvuthi.tick}'s
+     * {@code setYRot((direction - 1) * 90)} (MZB-806). A yaw halfway between two quarters takes the later one. Never
+     * 0: that is the jar's "unset" (its constructor rolls {@code nextInt(4) + 1}) and {@code checkBlocksByFeet}
+     * matches no branch for it (MZB-870).
      */
     public static int quarter(float yaw) {
-        return Math.floorMod(Math.round(yaw / 90f) + 1, 4);
+        return Math.floorMod(Math.round(yaw / 90f), 4) + 1;
     }
 
     /** The yaw the jar turns a {@code direction} to. */

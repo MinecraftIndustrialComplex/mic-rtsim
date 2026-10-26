@@ -10062,13 +10062,14 @@ and the reviews' fixes.
     - `clear` leaves out the eye's cell and the body's cell, which are the ends; a line within one cell is clear.
       Crossing a cell edge it prefers the x axis, then y, then z, and stops when every axis has crossed its cells,
       so rounding at a corner cannot step past the target's cell.
-  - Tests: `AloftRulesTest`, 51 tests. First run against a stub that answered each rule's neutral value, 42 failed,
-    each for its own rule's assertion; the 9 that passed were the neutral cases (a body not stuck, a gate saying no,
-    nothing to rise). Then green against the rules.
+  - Tests: `AloftRulesTest`, 52 tests (51 at step 1's commit; MZB-872 added the quarter's range test). First run
+    against a stub that answered each rule's neutral value, 42 of the 51 failed, each for its own rule's assertion; the
+    9 that passed were the neutral cases (a body not stuck, a gate saying no, nothing to rise). Then green against the
+    rules.
 - **MZB-871** (step 1: `Traveller`, `Travellers`, `registerTraveller`, PAID_PUPPET):
   - `conflict/Traveller.java` copies `Lurker`'s shape, a `Memo` with `get(Class)` and `set`, kept by the bridge on
     the body's slot and emptied with it. Its calls: `made(level, body, memory, memo)` (the chief's CHIEF_BODY is the
-    memory, MZB-805), `step(level, body, way, memo)`, `home(level, body, spot, yaw, memo)` (true once settled),
+    memory, MZB-805), `step(level, body, way, memo)`, `home(level, body, spot, direction, memo)` (true once settled; MZB-872: direction is the jar's 1 to 4),
     `release(body, memo)` and `died(body, memo)`. `Way` is one reused object the bridge fills: the place's x and z,
     the walk's target x and z, the attack flag, recalled, and the game time. Fork, taken conservatively: the design
     lists `step(level, body, way, memo)` without the target player or `homing`; the target is the mob's own
@@ -10079,6 +10080,90 @@ and the reviews' fixes.
   - `RtsimApi.registerTraveller(String, Traveller)` beside `registerLurker`.
   - `ConflictRecords.ChiefPaid.PAID_PUPPET = 2` beside `PAID_STRAY`, documented with its slot (`CHIEF_SLOT`, -1) and
     generation 0. The Rust constant is M11a's (boundary.rs 149).
+
+- **MZB-872** (step 2: the jar's direction is 1 to 4; a design formula corrected, test first):
+  - The design's MZB-806 gave `quarter(yaw) = floorMod(round(yaw / 90) + 1, 4)`, which is 0 to 3. The jar's
+    `direction` is 1 to 4 (`setYRot((direction - 1) * 90)`, `EntityUmvuthi.java:452`) and 0 is its "unset": the
+    constructor rolls `nextInt(4) + 1` when the synced value is 0, and `checkBlocksByFeet` (647 to 662) matches no
+    branch for 0. A body made with a quarter of 0 would have faced north (yaw 0 is direction 1) but been unset in
+    the jar's own eyes, and a yaw of 270 (direction 4) would have come out 0.
+  - So `AloftRules.quarter` is `floorMod(round(yaw / 90), 4) + 1`, 1 to 4, and 0 is never returned. Written the
+    other way round: `AloftRulesTest` gained `quarterInvertsTheJarsDirectionToYaw`, `quarterIsNeverZero` and
+    `quarterRoundsToTheNearestQuarterAndWraps`; three failed against the design's formula (the range), then green.
+  - `Traveller.home` takes the throne's direction as the jar numbers it (`Camps.Site.throneDirection()` is already 1
+    to 4), so nothing converts at the hand-back.
+- **MZB-873** (step 2: where the re-pair lives; MZB-813):
+  - The brief lists the re-pair under step 3 (the bridge), but the plugin's `UmvuthiAloft` calls it and could not be
+    compiled without it, so it is in step 2's commit and step 3 has the rest.
+  - Core's `conflict/Repairs.java` (package-private): `send(level, body)` builds the throwaway `ServerEntity` (update
+    interval 1, `trackDelta` true), collects `sendPairingData` into a list through a `PacketAndPayloadAcceptor`, and
+    broadcasts one `ClientboundBundlePacket` with `ServerChunkCache.broadcast`, which reaches the players tracking the
+    body and nobody else. `ConflictBridge.rePair(Mob)` counts it (`repairs`, `repairsSkipped`, both reset at
+    `sessionStarted`), and `RtsimApi.rePair(Mob)` is what a plugin calls (D4).
+  - The skip rule is exact. The bundle must hold only the vanilla pairing set (add, entity data, attributes,
+    equipment, effects, passengers, link, motion) and NeoForge's `AdvancedAddEntityPayload`.
+    `sendPairingData` ends in `AttachmentSync.syncInitialEntityAttachments(entity, player, ...)`, which is per
+    player, and a payload of a mod is too; so one bundle for every tracker is right only when none is in it. A
+    skipped re-pair is counted and sends nothing: the body keeps its old facing on every client, never a wrong one.
+  - Correction of the design (found reading the jar, compile-checked): the design skipped any body that is an
+    `IEntityWithComplexSpawn`. `MowzieEntity` implements it (its `writeSpawnData` writes nothing, `readSpawnData`
+    only sets the previous yaws to the head's, which is what a re-paired body wants), so every Mowzie mob would be
+    skipped and the re-pair would never run for the Umvuthi. NeoForge's complex spawn is one payload,
+    `AdvancedAddEntityPayload` (`IEntityExtension.sendPairingData`), the same bytes for every player; the check is now
+    on the packet's payload class, so it is let through and an attachment payload still stops the bundle. 31s's
+    "`repairsSkipped` is 0" is then reachable; if a Mowzie attachment ever appears it is the one that stops it.
+  - The `NOBODY` case (no player in the level) is neither counted nor sent.
+- **MZB-874** (step 2: `UmvuthiMaker`; MZB-806):
+  - `ConflictBodies.registerMaker(UMVUTHI, new UmvuthiMaker())`. It makes the jar's Umvuthi, `moveTo` the quarter's
+    yaw, sets the synced direction, calls `finalizeSpawn(EVENT)` as `ConflictBodies.create` does (the follow-range
+    bonus and the restriction; an EVENT spawn never turns it toward a player's egg), then sets the quarter again in the
+    synced value, the private field (through `EntityUmvuthiAccessor`) and the three yaws, and `noGravity`. The jar
+    copies the synced value into the field only at `tickCount` 1 and turns it into yaw every tick, so the private
+    field is the one that must be right after the first tick, which is why the accessor sets it.
+  - `UmvuthiMaker.face(u, quarter)` is the one place the facing is set; the Traveller's re-pair and `home` use it.
+  - No Peaceful guard: the Umvuthi's `shouldDespawnInPeaceful` is not set for it (only its target selector refuses a
+    player on Peaceful), unlike the raptor's pack. The bridge's hostile-stand-in rule for Peaceful is unchanged.
+  - `EntityUmvuthiAccessor` is `@Mixin(EntityUmvuthi.class)` with `@Accessor(value = "direction", remap = false)`,
+    a getter and a setter, in the mixins json beside `EntityUmvuthiMixin`. The design's "accessor on `ServerEntity`"
+    named a field that class does not have (MZB-813's own note).
+  - `GroveKind.remember(u, memory)` is `chiefBody`'s body made static, so `made` applies the engine's memory with
+    exactly the throne body's rule (union of the traded players, health above 0 capped at the maximum).
+- **MZB-875** (step 2: `UmvuthiAloft`, the Traveller; MZB-807 to MZB-814; forks and readings):
+  - One singleton registered for `mowziesmobs:umvuthi`; one `Aloft` per puppet in the core's memo (its `Stuck`, its
+    `Repair`, a column buffer, its heights, its settle). The module has no JUnit, so the file is glue over
+    `AloftRules` and is covered by M11c's GameTests 23a to 23e and 31s (MZB-836); step 2 is compile-checked.
+  - `step`: a settled body is not stepped until `rises`; otherwise `settles` (attack flag unless recalled, or a
+    player target in `getSensing().hasLineOfSight`) picks the landing: SINK sinks 0.05 a tick with collision and no
+    step across, and settles at `onGround()` or `verticalCollisionBelow` (`setNoGravity(false)`, `restrictTo(block,
+    -1)`); HOVER stands over its fluid and counts as settled (it rises by the same 200-tick rule); AIR marches.
+  - `march`: the look every `LOOK` ticks, the stuck machine, the turn gate, then one `move(SELF)` of at most 0.1
+    across and 0.1 up, motion zeroed before and after it, `resetFallDistance`, `restrictTo(block, -1)`. A turn's HOLD
+    ticks take no step at all, and the GO tick sends before it moves, so the throwaway tracker's base is the body's
+    position, equal to the live tracker's after 2 still ticks.
+  - Forks, each conservative:
+    - The recalled band's attack flag is ignored for the settle test: a band walking off must not set its chief down
+      to fight what it is leaving (MZB-749's recall).
+    - The height reads every column under the box at each block ahead (up to 4 a block, 9 under it), not the
+      design's centre column ahead: a 1.5-wide box clips a wall's corner the centre misses. About 36 lookups every 10
+      ticks against the design's 17; still a `getChunkNow` and an array read each.
+    - A held puppet is moved to its place's own columns at their foot rule (no look ahead); a place whose columns are
+      not at hand waits for the next look (10 ticks), never loads. Counted `stuckMoves`.
+    - The line to a player uses the block's collision shape (`getCollisionShape(...).isEmpty()`), which a glass pane
+      and leaves have, as `hasLineOfSight`'s COLLIDER clip does, not `blocksMotion`.
+    - While settled or sinking the puppet is not stuck-ticked and not turned; `rise` starts a new `Stuck`.
+    - The turn gate treats a place within 1 block as having no way (it would turn on noise) and an active ability as
+      busy.
+    - `lift(memo)` is `CLEARANCE` (2) while aloft and 0 once grounded, so the bridge's displaced-body teleport (step
+      3) puts a floating puppet back in the air and a grounded one on the ground.
+    - `home`: floats with the same height rule (no turn gate), then at the spot turns to the throne's direction with
+      its own 2-tick hold (the gate's 200-tick cooldown would only slow it), sends one re-pair, and sinks onto the
+      spot's y; true once `onGround`, blocked below, or within 0.001. It arrives within 0.25 blocks horizontally.
+      An active ability waits the turn.
+  - The trail (MZB-814) is in `UmvuthiAloft` (the Traveller sends the particles; the brief lists it under step 3). 3
+    `small_flame` a body at its feet every `LOOK` ticks to each player within 160 blocks horizontally, through
+    `ServerLevel.sendParticles(player, ..., true, ...)`. Not while settled or dying. PLACEHOLDER: on.
+  - Test reads on the singleton: `raised(memo)`, `target(memo)`, `settled(memo)`; counters `heightColumnsSkipped` and
+    `stuckMoves` are instance fields (the session does not reset them: a GameTest reads their deltas).
 
 ## M12 S9
 
