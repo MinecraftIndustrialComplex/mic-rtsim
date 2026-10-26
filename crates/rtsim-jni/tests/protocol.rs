@@ -10911,14 +10911,16 @@ mod conflict {
         e.close(true, Duration::from_secs(5)).unwrap();
     }
 
-    /// The U-b merge (RP-210 meets MZB-423): a grove's chest whose chunk is not loaded is answered
-    /// NOT_LOADED since U-b, where main answered FAILED. The COMMAND_RESULT takes the stack out of
-    /// the core outbox either way, so the grove must take it back too: the stack goes back to the
-    /// grove's stock, the chest is forgotten, and a chest reported again gets a new stack. Ignored,
-    /// the stack would stay in flight with nothing left to answer it, and the grove would send no
-    /// more.
+    /// MZB-760 (RP-210 meets MZB-423): a grove's chest whose chunk is not loaded is answered
+    /// NOT_LOADED. The COMMAND_RESULT takes the stack out of the core outbox, so the engine keeps
+    /// it: in flight under its op id, parked, its goods not back in the grove's stock (the chunk
+    /// may hold it already), and the chest forgotten. It is not written again every step. The
+    /// grove's next HAVEN_CHEST sends it again under the same op, to the same chest, and the
+    /// stacks go on one after another until the tribute is paid, once, with no new op for the
+    /// first stack. (U-b took NOT_LOADED as FAILED, the stack back in the stock under a new op.)
     #[test]
-    fn a_groves_tribute_stack_answered_not_loaded_goes_back_to_its_stock() {
+    fn a_groves_tribute_stack_answered_not_loaded_is_parked_under_its_op_id_until_the_next_haven_chest()
+     {
         let (_dir, e, mut j) = grove("grove-tribute-unloaded", 3);
         camp_in(&mut j);
         let block = j.dict_id(wire::DICT_ITEM, "minecraft:gold_block");
@@ -10947,15 +10949,22 @@ mod conflict {
         assert_eq!(unloaded.len(), 1, "one stack at a time");
         assert_eq!(
             owed_tribute(&e),
-            (567, 0, 1),
-            "NOT_LOADED: back in the grove's stock, nothing in flight"
+            (567, 1, 1),
+            "NOT_LOADED: still in flight under its op id, its goods not back in the stock"
         );
         assert!(j.containers.is_empty());
+        let chest_known = e.with_conflict(|c, _| {
+            let f = c.faction_of_key(CAMP).unwrap();
+            c.camp(f).unwrap().chest.is_some()
+        });
+        assert!(!chest_known, "the chest is forgotten until reported again");
+        let commands = j.commands.len();
         j.idle();
         j.idle();
-        assert_eq!(tribute_ops(&j), unloaded, "the forgotten chest is sent nothing");
+        assert_eq!(j.commands.len(), commands, "parked: not sent again every step");
 
-        // Reported again with the chunk loaded: the stacks go one after another until all is paid.
+        // Reported again with the chunk loaded: the parked stack goes again under its op id, then
+        // the stacks go one after another until all is paid.
         j.unloaded_transfers = false;
         chest_report(&mut j, chest);
         for _ in 0..40 {
@@ -10964,13 +10973,75 @@ mod conflict {
                 break;
             }
         }
-        assert_eq!(owed_tribute(&e).0, 0, "all paid: {:?}", owed_tribute(&e));
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        assert_eq!(owed_tribute(&e), (0, 0, 9), "all paid, 9 stacks and no 10th");
+        assert!(
+            tribute_ops(&j).is_superset(&unloaded),
+            "the first stack went again under its op id"
+        );
+        assert_eq!(tribute_ops(&j).len(), 9, "9 ops for 9 stacks");
         assert_eq!(
             j.containers.get(&chest).copied(),
             Some(567),
             "every nugget in the chest, once"
         );
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// MZB-760: a parked stack goes only to the chest it went to first, whichever chest the
+    /// grove's next report names: only that chest's chunk could carry the record that it is
+    /// already there. The chest reported since is kept, and takes the stacks after it.
+    #[test]
+    fn a_groves_parked_stack_goes_to_its_own_chest_and_the_chest_named_since_gets_the_rest() {
+        let (_dir, e, mut j) = grove("grove-tribute-parked-own-chest", 3);
+        camp_in(&mut j);
+        let block = j.dict_id(wire::DICT_ITEM, "minecraft:gold_block");
+        j.conflict_obs(&O::ChiefPaid(cb::ChiefPaid {
+            faction: CAMP,
+            slot: 0,
+            generation: 0,
+            flags: cb::PAID_STRAY,
+            player: PLAYER,
+            op: (1 << 63) | 0x6005,
+            items: vec![cb::Item {
+                item: block,
+                count: 7,
+            }],
+        }));
+        j.idle();
+        j.idle();
+        let first = [CAMP_AT.0 + 3, 64, CAMP_AT.1 + 2];
+        let other = [CAMP_AT.0 - 5, 64, CAMP_AT.1 + 7];
+        j.unloaded_transfers = true;
+        chest_report(&mut j, first);
+        j.idle();
+        j.idle();
+        let unloaded = tribute_ops(&j);
+        assert_eq!(unloaded.len(), 1);
+        assert_eq!(owed_tribute(&e), (567, 1, 1), "parked");
+
+        // The plugin names another chest of the grove (the first one's chunk loaded meanwhile).
+        j.unloaded_transfers = false;
+        chest_report(&mut j, other);
+        for _ in 0..40 {
+            j.idle();
+            if owed_tribute(&e).0 == 0 && owed_tribute(&e).1 == 0 {
+                break;
+            }
+        }
         assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        assert!(tribute_ops(&j).is_superset(&unloaded), "the same op id, no new one");
+        assert_eq!(
+            j.containers.get(&first).copied(),
+            Some(64),
+            "the parked stack went to the chest it went to first"
+        );
+        assert_eq!(
+            j.containers.get(&other).copied(),
+            Some(567 - 64),
+            "the stacks after it, to the chest named since"
+        );
+        assert_eq!(owed_tribute(&e), (0, 0, 9));
         e.close(true, Duration::from_secs(5)).unwrap();
     }
 
