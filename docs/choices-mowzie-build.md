@@ -5383,6 +5383,15 @@ RP-150 to RP-153 the replay records.
   the masked player had stood (MZB-678 picked the nearest warrior, which was not enough). A player who strikes a
   warrior stands within a blow's reach of it, so the masked player now steps to 3 blocks east of the struck
   warrior (away from the bare one) before the blow. The reach check and the 20-tick answer stay.
+- **MZB-698** (the chase test measures from the hold point): `aHeldPuppetWalksBackToItsSpotAndDoesNotChaseItsTarget`
+  failed in both M8 runs the same way, "the closest it came to the spot 2.0, the closest it came to the player
+  6.441193965241448". The test was written before MZB-361's amendment moved the hold to the point Java chooses
+  beside the rail (`Slot.holdAt`), and still pushed the body off, and measured it from, the engine's spot: the
+  body walked back to its hold point, which is not the spot, so it never came nearer the spot than the push left
+  it. The dodge tests already read the hold point (`ConflictKit.lurkHold`). The chase test now does too: it checks
+  the body rests within `STAND` of the hold point, stands the player 8 blocks west of it, pushes the body 2 blocks
+  off it along z toward the floor's middle (so on the floor), and measures every distance and the floor of the
+  "never walked after the player" check from it.
 
 ## M9 Umvuthana
 
