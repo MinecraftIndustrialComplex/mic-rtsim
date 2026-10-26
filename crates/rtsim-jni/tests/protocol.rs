@@ -3096,12 +3096,20 @@ mod dragons {
         let mut j = Java::open(e.clone(), saved);
         j.module_mask = MODULES;
         j.containers.insert(chest, coins as i32);
-        assert_eq!(e.dragons_tribute(), [1, 0, 0, stacks], "the pages hold them placing");
+        assert_eq!(
+            e.dragons_tribute(),
+            [1, 0, 0, stacks],
+            "the pages hold them placing"
+        );
         // The outbox resends them at once, while the chest's chunk is not loaded.
         j.unloaded_transfers = true;
         j.idle();
         j.idle();
-        assert_eq!(transfer_ops(&j), sent, "the stacks resent under their op ids");
+        assert_eq!(
+            transfer_ops(&j),
+            sent,
+            "the stacks resent under their op ids"
+        );
         assert_eq!(
             j.containers.get(&chest).copied(),
             Some(coins as i32),
@@ -3124,7 +3132,11 @@ mod dragons {
             Some(coins as i32),
             "the coin is in the chest once"
         );
-        assert_eq!(e.dragons_tribute(), [1, coins, 0, 0], "every coin placed, once");
+        assert_eq!(
+            e.dragons_tribute(),
+            [1, coins, 0, 0],
+            "every coin placed, once"
+        );
         e.close(true, Duration::from_secs(5)).unwrap();
     }
 
@@ -3194,11 +3206,18 @@ mod dragons {
         let has_chest = |e: &Engine| {
             e.with_dragons(|d, _| d.lair_of_key(LAIR).and_then(|l| d.chest(l)).is_some())
         };
-        assert!(!has_chest(&e), "the chest is forgotten until reported again");
+        assert!(
+            !has_chest(&e),
+            "the chest is forgotten until reported again"
+        );
         let commands = j.commands.len();
         j.idle();
         j.idle();
-        assert_eq!(j.commands.len(), commands, "parked: not sent again every step");
+        assert_eq!(
+            j.commands.len(),
+            commands,
+            "parked: not sent again every step"
+        );
 
         // The plugin reports another chest of the lair (the first one's chunk loaded meanwhile,
         // carrying nothing): the parked stacks go again under their op ids, to the first chest.
@@ -12911,7 +12930,11 @@ mod conflict {
         assert!(j.containers.is_empty());
         j.idle();
         j.idle();
-        assert_eq!(tribute_ops(&j), unloaded, "the forgotten chest is sent nothing");
+        assert_eq!(
+            tribute_ops(&j),
+            unloaded,
+            "the forgotten chest is sent nothing"
+        );
 
         // Reported again with the chunk loaded: the stacks go one after another until all is paid.
         j.unloaded_transfers = false;
@@ -13206,6 +13229,180 @@ mod conflict {
         assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
         drop(j);
         e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// How Java answers the grove's first tribute stack in [`a_grove_stack_answered_with_the_conflict_off`].
+    #[derive(Clone, Copy, PartialEq)]
+    enum Answer {
+        Applied,
+        NotLoaded,
+    }
+
+    /// RP-292 (docs/replay-gate.md 9.7, the grove's twin of RP-291): a tribute stack answered while
+    /// the conflict is switched off is taken once, at the switch-on. A grove's chest is reported
+    /// and a player's seven gold blocks owed to it: the first of nine stacks goes out, Java puts it
+    /// in the chest (or answers `answer`) at the end of the step, and the conflict goes off in the
+    /// next hand-over, ahead of the answer (as BoundarySession's preamble puts it). The core takes
+    /// the answer out of its outbox whatever the switch. Java reads an ack past the answer, and
+    /// forgets the op with its journal (`Journal.commandOpApplied`, `forgetOp`): the test drops it
+    /// from the fake's applied set. Ignored while off, the stack stayed in flight with nothing
+    /// left to answer it, and the grove sent no more (the answer is not heard again, and a stack
+    /// sent again under its op would be put in the chest twice). `crash`: a save while off, a
+    /// crash, and a restart with the conflict still off carry the kept answer on its page.
+    fn a_grove_stack_answered_with_the_conflict_off(name: &str, crash: bool, answer: Answer) {
+        let (dir, e, mut j) = grove(name, 3);
+        camp_in(&mut j);
+        let block = j.dict_id(wire::DICT_ITEM, "minecraft:gold_block");
+        let chest = [CAMP_AT.0 + 3, 64, CAMP_AT.1 + 2];
+        chest_report(&mut j, chest);
+        j.idle();
+        j.unloaded_transfers = answer == Answer::NotLoaded;
+        j.conflict_obs(&O::ChiefPaid(cb::ChiefPaid {
+            faction: CAMP,
+            slot: 0,
+            generation: 0,
+            flags: cb::PAID_STRAY,
+            player: PLAYER,
+            op: (1 << 63) | 0x6004,
+            items: vec![cb::Item {
+                item: block,
+                count: 7,
+            }],
+        }));
+        for _ in 0..8 {
+            j.flush();
+            if !tribute_ops(&j).is_empty() {
+                break;
+            }
+        }
+        let first = tribute_ops(&j);
+        assert_eq!(first.len(), 1, "the first stack is out, and only it");
+        assert_eq!(owed_tribute(&e), (567, 1, 1), "in flight");
+        let placed = answer == Answer::Applied;
+        assert_eq!(
+            j.containers.get(&chest).copied(),
+            placed.then_some(64),
+            "Java's answer is journaled, not yet heard"
+        );
+        j.unloaded_transfers = false;
+        j.modules(MODULES & !MODULE_CONFLICT);
+        j.idle();
+        j.idle();
+
+        // Java reads an ack past the answer and forgets its op.
+        save_durable(&e, &mut j);
+        j.idle();
+        let answered = |r: &[u8]| {
+            wire::u16_at(r, wire::R_KIND) == obs::COMMAND_RESULT
+                && first.contains(&wire::u64_at(r, obs::command_result::OP_ID))
+        };
+        assert!(
+            !j.journal.iter().any(|(_, r)| answered(r)),
+            "the journal is trimmed past the answer"
+        );
+        for op in &first {
+            j.applied_cmd_ops.remove(op);
+        }
+        // Off, nothing is decided: no stack goes out, however long it waits.
+        for _ in 0..4 {
+            j.idle();
+        }
+        assert_eq!(tribute_ops(&j), first, "no stack goes out while off");
+        assert_eq!(
+            owed_tribute(&e).1,
+            1,
+            "a decision waits for the switch: the answer is kept, not taken"
+        );
+
+        let (e, mut j) = if crash {
+            save_durable(&e, &mut j);
+            let saved = j.world_save();
+            let gt = j.game_time;
+            let plugin =
+                std::mem::replace(&mut j.conflict_plugin, synth::FakeConflict::new(PLAYER));
+            let containers = j.containers.clone();
+            let _ = j.crash();
+            let (e, mut j) = reopen_mask(&dir, saved, gt, 256 * 1024, MODULES & !MODULE_CONFLICT);
+            j.conflict_plugin = plugin;
+            // The chest's chunk was saved with the world.
+            j.containers = containers;
+            j.idle();
+            assert!(tribute_ops(&j).is_empty(), "the new session sent nothing");
+            assert_eq!(owed_tribute(&e).1, 1, "still in flight, its answer kept");
+            (e, j)
+        } else {
+            (e, j)
+        };
+
+        j.modules(MODULES);
+        j.idle();
+        j.idle();
+        // The switch-on's reset made every party abstract, the camp's bodies too: the plugin's
+        // census brings it in again, and only a camp that is in sends its stacks.
+        camp_in(&mut j);
+        if answer == Answer::NotLoaded {
+            assert_eq!(
+                owed_tribute(&e),
+                (567, 0, 1),
+                "NOT_LOADED, heard while off: back in the grove's stock, nothing in flight"
+            );
+        }
+        // The plugin names the chest again (a chest the answer forgot, and the next stack waits
+        // for a camp that is in).
+        chest_report(&mut j, chest);
+        for _ in 0..200 {
+            j.idle();
+            if owed_tribute(&e).0 == 0 && owed_tribute(&e).1 == 0 {
+                break;
+            }
+            j.game_time += 10;
+        }
+        assert_eq!(
+            owed_tribute(&e).0,
+            0,
+            "the tribute settled: (owed, in flight, stacks) {:?}, {} stacks written, {:?} in the chest",
+            owed_tribute(&e),
+            tribute_ops(&j).len(),
+            j.containers.get(&chest)
+        );
+        assert_eq!(
+            j.containers.get(&chest).copied(),
+            Some(567),
+            "every nugget in the chest once: the first stack was {answer_name}",
+            answer_name = if placed { "placed" } else { "put back" }
+        );
+        let stacks =
+            e.with_conflict(|c, _| c.camp(c.faction_of_key(CAMP).unwrap()).unwrap().stacks);
+        assert_eq!(owed_tribute(&e), (0, 0, stacks));
+        assert_eq!(
+            tribute_ops(&j).len() as u32,
+            if crash { stacks - 1 } else { stacks },
+            "each stack written once"
+        );
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    #[test]
+    fn a_groves_tribute_stack_answered_with_the_conflict_off_is_placed_once() {
+        a_grove_stack_answered_with_the_conflict_off("grove-off", false, Answer::Applied);
+    }
+
+    /// The kept answer is on the conflict's kept page: a save while off, a crash, and a restart
+    /// with the conflict still off carry it to the switch-on.
+    #[test]
+    fn a_groves_tribute_stack_answered_with_the_conflict_off_survives_a_crash() {
+        a_grove_stack_answered_with_the_conflict_off("grove-off-crash", true, Answer::Applied);
+    }
+
+    /// A NOT_LOADED answer heard while off goes back to the grove's stock at the switch-on.
+    #[test]
+    fn a_groves_tribute_stack_answered_not_loaded_with_the_conflict_off_goes_back_to_its_stock() {
+        a_grove_stack_answered_with_the_conflict_off(
+            "grove-off-unloaded",
+            false,
+            Answer::NotLoaded,
+        );
     }
 
     /// M9 (MZB-424 to MZB-426): a hunt owed after a raid on an unwatched district is written as

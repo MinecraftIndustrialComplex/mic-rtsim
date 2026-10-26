@@ -792,6 +792,16 @@ shared phase 1 world. The ships keep U10 (see *Left*), phase 1 is slice U-d, and
     from the camp, the slot and the tick its member was recruited or adopted (`derive_gen`,
     crates/rtsim-conflict/src/engine/camp.rs). A late booking at the world's present derived them
     from another tick. The dragons derive no id from a tick.
+- *A grove's tribute answer* (RP-291's twin). A COMMAND_RESULT for one of the grove's stacks in flight,
+  heard while the conflict is off, is kept like the conflict's records (`conflict::after_core` and
+  `answered_again`; the same Kept push, so `shared::resets` merges it in observation order) and applied
+  at the switch-on at its own tick (`tribute_tick` takes `shared::floor`). It cannot be taken at once as
+  the dragons' are: `tribute_placed` picks the next stack and `tribute_failed` stocks the goods back,
+  both at a tick, so they are decisions. Nor can it wait to be heard again: the core's outbox completes
+  the op on any answer, and U10's comment that the stack stays in the outbox was wrong. Ignored, the
+  stack stayed `placing`, was written again at the switch-on under the same op, and Java, which had
+  forgotten it, put the coin in the chest twice. Tests: rtsim-jni `tests/protocol.rs`, module `conflict`,
+  `a_groves_tribute_stack_answered_with_the_conflict_off_*` and the `_not_loaded_` one.
 - *The replay gate during the reset.* The kept records, and the catch-ups between them, run inside the
   module's replay, so its outbox gate (docs/replay-gate.md §4) holds what those catch-ups decide.
   - The conflict drops Notice, Steer, Recall, Settled and AmbushSpot, sends Territory and March, and
