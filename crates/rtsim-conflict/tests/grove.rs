@@ -1549,17 +1549,23 @@ fn stock(r: &CampRun, g: GoodId) -> Amount {
     r.w.market(r.c.factions[r.f as usize].node).stock(g)
 }
 
-/// MZB-423: tribute booked is owed to the chest (567 nuggets); with no chest known nothing is
-/// sent; once the plugin names one the stacks go one at a time, each after the last one's answer,
-/// whole stacks of at most 64, until every nugget has left the grove's books; the chest has a slot
-/// less for each stack.
+/// What the world's books hold out of every market (MZB-930: the grove's earmark is there).
+fn held_of(r: &CampRun, g: GoodId) -> i128 {
+    r.w.outside.held.get(&g).copied().unwrap_or(0)
+}
+
+/// MZB-423: tribute booked is owed to the chest (567 nuggets), earmarked out of the market's line
+/// (MZB-930); with no chest known nothing is sent; once the plugin names one the stacks go one at
+/// a time, each after the last one's answer, whole stacks of at most 64, until every nugget has
+/// left the grove's books; the chest has a slot less for each stack.
 #[test]
 fn tribute_goes_to_the_chest_in_stacks_one_after_another() {
     let (mut r, nugget) = tribute_run(20);
-    let held = stock(&r, nugget);
-    assert!(
-        held >= 567 * MILLI,
-        "the nuggets are stocked at the haven: {held}"
+    let line = stock(&r, nugget);
+    assert_eq!(
+        held_of(&r, nugget),
+        i128::from(567 * MILLI),
+        "the nuggets are earmarked, held out of the market"
     );
     assert_eq!(owed(&r), 567);
     assert_eq!(r.c.placings().count(), 0, "no chest, nothing sent");
@@ -1586,28 +1592,26 @@ fn tribute_goes_to_the_chest_in_stacks_one_after_another() {
     assert_eq!(r.c.camp(r.f).unwrap().stacks, 9);
     assert_eq!(r.c.camp(r.f).unwrap().chest.map(|c| c.free), Some(27 - 9));
     assert_eq!(r.c.stats.tribute_stacks, 9);
-    assert_eq!(
-        stock(&r, nugget),
-        held - 567 * MILLI,
-        "they have left the books"
-    );
+    assert_eq!(held_of(&r, nugget), 0, "they have left the books");
+    assert_eq!(stock(&r, nugget), line, "the market's line was never read");
     ok(&mut r);
 }
 
-/// MZB-423 (failure and duplicates): a stack the plugin could not put down goes back to the
-/// grove's stock, the tribute is still owed and the chest is forgotten until it is named again,
+/// MZB-423 (failure and duplicates): a stack the plugin could not put down stays earmarked (it is
+/// booked out only at an APPLIED, MZB-930), the tribute is still owed and the chest is forgotten
+/// until it is named again,
 /// when the next stack goes under a new op. An answer for an op that is not in flight (a second
 /// answer to the same stack, an unknown op) changes nothing.
 #[test]
 fn a_failed_stack_goes_back_and_a_duplicate_answer_changes_nothing() {
     let (mut r, nugget) = tribute_run(21);
-    let held = stock(&r, nugget);
+    let all = i128::from(567 * MILLI);
     chest(&mut r, 27);
     let (op1, p1) = r.c.placings().next().expect("a stack");
-    assert_eq!(stock(&r, nugget), held - 64 * MILLI, "booked as leaving");
+    assert_eq!(held_of(&r, nugget), all, "held until Java answers");
     let at = r.c.now();
     assert!(r.c.tribute_failed(&mut r.w, op1, at));
-    assert_eq!(stock(&r, nugget), held, "back");
+    assert_eq!(held_of(&r, nugget), all, "nothing moved");
     assert_eq!(owed(&r), 567);
     assert!(
         r.c.camp(r.f).unwrap().chest.is_none(),
@@ -1630,6 +1634,7 @@ fn a_failed_stack_goes_back_and_a_duplicate_answer_changes_nothing() {
     assert!(r.c.tribute_placed(&mut r.w, op2, at));
     assert!(!r.c.tribute_placed(&mut r.w, op2, at), "a duplicate answer");
     assert_eq!(owed(&r), 567 - 64, "lowered once");
+    assert_eq!(held_of(&r, nugget), all - i128::from(64 * MILLI), "booked out once");
     ok(&mut r);
 }
 
@@ -2861,29 +2866,148 @@ fn a_groves_plunder_takes_livestock_only_and_eats_it() {
     assert!(raided >= 4, "{raided} raids of 8");
 }
 
-/// MZB-423, review P3-2: the grove's stock drains with the world's clock, and a chest named at a
-/// later tick than the world's is read at that tick. Six nuggets are left; two days on, at the
-/// stock's draw of about two a day, two and a few hundredths are. The stack placed is the two whole
-/// nuggets that are there, and the rest stays in the stock instead of leaving the books with no
-/// stack to show for it.
+/// MZB-423, review P3-2, amended by MZB-930: the grove's line drains with the world's clock, but
+/// the tribute is earmarked out of it. The line is drained to nothing and the chest is named two
+/// days on: the stack placed is a whole 64, the line is not touched, and the 567 stay held until
+/// Java answers. (Before the earmark this test pinned the old shape: the stack was cut to the two
+/// whole nuggets a drained line held, and the rest of the gift stayed owed against nothing.)
 #[test]
-fn a_stack_is_read_at_its_own_tick_and_loses_no_goods_to_a_stock_that_drained() {
+fn a_drained_line_cuts_no_stack_of_the_earmarked_tribute() {
     let (mut r, nugget) = tribute_run(21);
     let node = r.c.factions[r.f as usize].node;
     let t0 = r.c.now();
-    let held = stock(&r, nugget);
-    let drain = BTreeMap::from([(nugget, held - 6 * MILLI)]);
-    r.w.stock_to_players(node, &drain, t0);
-    assert_eq!(stock(&r, nugget), 6 * MILLI);
+    let line = stock(&r, nugget);
+    r.w.stock_to_players(node, &BTreeMap::from([(nugget, line)]), t0);
+    assert_eq!(stock(&r, nugget), 0);
     chest_at(&mut r, 27, t0 + days(2.0));
     let placed: Vec<_> = r.c.placings().collect();
     assert_eq!(placed.len(), 1, "one stack: {placed:?}");
-    assert_eq!(placed[0].1.amount, 2 * MILLI, "the two whole nuggets");
-    let left = stock(&r, nugget);
-    assert!(
-        (0..MILLI).contains(&left) && left > 0,
-        "the rest stays in the stock: {left}"
+    assert_eq!(placed[0].1.amount, 64 * MILLI, "a whole stack");
+    assert_eq!(held_of(&r, nugget), i128::from(567 * MILLI));
+    ok(&mut r);
+}
+
+/// Names the chest with 27 slots free and answers each stack APPLIED as it goes: the nuggets
+/// placed, in whole nuggets.
+fn place_all(r: &mut CampRun) -> i64 {
+    chest(r, 27);
+    let mut n = 0;
+    loop {
+        let Some((op, p)) = r.c.placings().next() else {
+            break;
+        };
+        n += p.amount / MILLI;
+        let at = r.c.now();
+        assert!(r.c.tribute_placed(&mut r.w, op, at));
+    }
+    n
+}
+
+/// The earmark (the GameTest's "566 of 567"): the grove's market draws its nugget line between
+/// the payment and the chest by a thousandth of a nugget more than the line held before the
+/// payment. The whole gift still lands in the chest and nothing stays owed. Before the earmark
+/// the tribute sat in that line: the last stack was cut to 54 whole nuggets, and the last nugget
+/// stayed owed against 999 thousandths, which no later chest or census placed.
+#[test]
+fn a_market_that_draws_its_nuggets_takes_none_of_the_tribute_owed_to_the_chest() {
+    let mut r = grove(41, 9);
+    let (nugget, id) = item(&mut r, "gold_nugget");
+    come_in(&mut r);
+    let node = r.c.factions[r.f as usize].node;
+    let before = stock(&r, nugget);
+    paid(&mut r, 0, 0, boundary::PAID_STRAY, 0x71, &[(id, 567)]);
+    let t0 = r.c.now();
+    r.w.stock_to_players(node, &BTreeMap::from([(nugget, before + 1)]), t0);
+    let placed = place_all(&mut r);
+    // The chest named again: whatever is still owed would go now if it could.
+    let more = place_all(&mut r);
+    assert_eq!(
+        (placed + more, owed(&r)),
+        (567, 0),
+        "the whole gift lands and nothing stays owed (placed {placed}, then {more})"
     );
+    ok(&mut r);
+}
+
+/// The earmark: a stack the plugin could not put down goes back to what is owed to the chest,
+/// not into the market's line, so a draw while the chest is forgotten takes none of it. Before
+/// the earmark the failed stack went back into the line, and the same draw left one nugget owed
+/// for good.
+#[test]
+fn a_failed_stack_goes_back_to_the_chest_not_to_a_line_the_market_draws() {
+    let mut r = grove(42, 9);
+    let (nugget, id) = item(&mut r, "gold_nugget");
+    come_in(&mut r);
+    let node = r.c.factions[r.f as usize].node;
+    let before = stock(&r, nugget);
+    paid(&mut r, 0, 0, boundary::PAID_STRAY, 0x72, &[(id, 567)]);
+    chest(&mut r, 27);
+    let (op, _) = r.c.placings().next().expect("a stack");
+    let at = r.c.now();
+    assert!(r.c.tribute_failed(&mut r.w, op, at));
+    assert!(
+        r.c.camp(r.f).unwrap().chest.is_none(),
+        "the chest is forgotten"
+    );
+    r.w.stock_to_players(node, &BTreeMap::from([(nugget, before + 1)]), at);
+    let placed = place_all(&mut r);
+    let more = place_all(&mut r);
+    assert_eq!(
+        (placed + more, owed(&r)),
+        (567, 0),
+        "the whole gift lands and nothing stays owed (placed {placed}, then {more})"
+    );
+    ok(&mut r);
+}
+
+/// The earmark: a stack Java put down after the last save, whose answer is replayed, leaves the
+/// books by exactly what Java put in the chest. The replay holds the stack's nuggets from the
+/// payment to the answer (its camp is out), and here the market draws every nugget its line holds
+/// meanwhile. Before the earmark the replayed answer took only what the line still held: Java's
+/// chest had 30 nuggets and none of them left the books, a dupe of 30.
+#[test]
+fn a_replayed_stack_leaves_the_books_by_what_java_put_in_the_chest() {
+    let (mut a, mut b, id) = twin_groves(43);
+    let nugget = a.w.goods.find("gold_nugget").expect("nuggets");
+    let key = a.key;
+    let out = |r: &CampRun| r.w.outside.player_out.get(&nugget).copied().unwrap_or(0);
+    let t1 = a.c.now() + 100;
+    let tail = play_tribute(
+        &mut a,
+        &[
+            (t1, Some(chest_record(key, 27)), None),
+            (t1 + 50, Some(pay_record(key, id, 0x6501, 30)), None),
+            (t1 + 60, None, Some(true)),
+        ],
+    );
+    assert_eq!(owed(&a), 0);
+    b.restart_to_replay();
+    let node = b.c.factions[b.f as usize].node;
+    let mut booked = None;
+    for (t, rec) in &tail {
+        b.run(*t);
+        match rec {
+            TributeRec::Obs(o) => b.c.ingest(&mut b.w, &mut *b.infra, o, *t),
+            TributeRec::Placed(op) => {
+                let s = stock(&b, nugget);
+                b.w.stock_to_players(node, &BTreeMap::from([(nugget, s)]), *t);
+                let o0 = out(&b);
+                b.c.tribute_placed(&mut b.w, *op, *t);
+                booked = Some(out(&b) - o0);
+            }
+            TributeRec::Failed(op) => {
+                b.c.tribute_failed(&mut b.w, *op, *t);
+            }
+        }
+    }
+    b.c.replay_done();
+    assert_eq!(
+        booked,
+        Some(i128::from(30 * MILLI)),
+        "the replayed answer books out the 30 Java put in its chest"
+    );
+    assert_eq!(owed(&b), 0);
+    ok(&mut b);
 }
 
 fn chest_at(r: &mut CampRun, free: u32, at: Tick) {
