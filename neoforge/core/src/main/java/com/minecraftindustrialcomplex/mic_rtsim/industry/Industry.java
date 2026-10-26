@@ -588,6 +588,16 @@ public final class Industry {
     }
 
     /**
+     * A record just committed for engine op {@code opId} (sequence {@code seq}), carried in one more chunk until the
+     * engine acknowledges it: a reconcile's IND_RECONCILE_RESULT in the chunk of the other half of a double chest,
+     * which the pair's handler changed too (RP-215). The chunk's note is {@link #journalDependsOn}'s, and
+     * {@link #chunkCarriesOp} finds the op in it.
+     */
+    public void carryRecordInChunk(net.minecraft.world.level.chunk.LevelChunk chunk, ByteBuffer record, long opId, long seq) {
+        session.carryRecordInChunk(chunk, record, opId, seq);
+    }
+
+    /**
      * A record just committed speaks for {@code chunk}'s contents: the journal's next file waits until the
      * chunk is written (docs/choices-repair.md R21).
      */

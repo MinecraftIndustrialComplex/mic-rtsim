@@ -65,10 +65,18 @@ public interface StockAccess {
 
     /** A double chest's other half (vanilla's {@code ChestBlock}, and a mod's that extends it), else null. */
     static BlockPos chestPair(BlockEntity be) {
-        BlockState s = be.getBlockState();
+        return chestPair(be.getBlockState(), be.getBlockPos());
+    }
+
+    /**
+     * {@link #chestPair(BlockEntity)} from the half's state and position: one {@code instanceof} for any block that is
+     * not a chest, no block entity read. What a reconcile or a transfer into a chest has to know to find the other
+     * chunk its pair's handler writes into (RP-215).
+     */
+    static BlockPos chestPair(BlockState s, BlockPos pos) {
         if (!(s.getBlock() instanceof ChestBlock) || !s.hasProperty(ChestBlock.TYPE) || s.getValue(ChestBlock.TYPE) == ChestType.SINGLE)
             return null;
-        return be.getBlockPos().relative(ChestBlock.getConnectedDirection(s));
+        return pos.relative(ChestBlock.getConnectedDirection(s));
     }
 
     /** The item handler at a position, the unsided one first, else the first side that has one. */

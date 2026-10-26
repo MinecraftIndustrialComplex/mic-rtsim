@@ -1070,8 +1070,9 @@ public final class RtsimSession {
     }
 
     /**
-     * The op id a record a chunk carries is pending for: a COMMAND_RESULT's, or the engine op of an
-     * IND_CHAIN_PACKAGE an IND_WRITE_CHAIN journaled (SECTIONS.md §2.5).
+     * The op id a record a chunk carries is pending for: a COMMAND_RESULT's, the engine op of an
+     * IND_CHAIN_PACKAGE an IND_WRITE_CHAIN journaled (SECTIONS.md §2.5), or an IND_RECONCILE_RESULT's, which the
+     * chunk of the other half of a double chest carries (RP-215).
      */
     public static long pendingOp(byte[] record) {
         ByteBuffer b = ByteBuffer.wrap(record).order(com.minecraftindustrialcomplex.mic_rtsim.boundary.Layout.ORDER);
@@ -1079,6 +1080,9 @@ public final class RtsimSession {
         if (kind == com.minecraftindustrialcomplex.mic_rtsim.industry.IndRecords.IND_CHAIN_PACKAGE
                 && record.length >= com.minecraftindustrialcomplex.mic_rtsim.industry.IndRecords.ChainPackage.OP_ID + 8)
             return b.getLong(com.minecraftindustrialcomplex.mic_rtsim.industry.IndRecords.ChainPackage.OP_ID);
+        if (kind == com.minecraftindustrialcomplex.mic_rtsim.industry.IndRecords.IND_RECONCILE_RESULT
+                && record.length >= com.minecraftindustrialcomplex.mic_rtsim.industry.IndRecords.ReconcileResult.OP_ID + 8)
+            return b.getLong(com.minecraftindustrialcomplex.mic_rtsim.industry.IndRecords.ReconcileResult.OP_ID);
         return record.length >= Obs.CommandResult.OP_ID + 8 ? b.getLong(Obs.CommandResult.OP_ID) : 0;
     }
 
@@ -1121,11 +1125,20 @@ public final class RtsimSession {
     }
 
     void carryInChunk(net.minecraft.world.level.chunk.LevelChunk chunk, ByteBuffer commandResult) {
+        carryRecordInChunk(chunk, commandResult, commandResult.getLong(Obs.CommandResult.OP_ID), commandResult.getLong(Obs.OBS_SEQ));
+    }
+
+    /**
+     * A record journaled for engine op {@code opId} (sequence {@code seq}) carried in {@code chunk} until the engine
+     * acknowledges it: a COMMAND_RESULT, or the IND_RECONCILE_RESULT a reconcile also carries in the chunk of the
+     * other half of a double chest (RP-215).
+     */
+    public void carryRecordInChunk(net.minecraft.world.level.chunk.LevelChunk chunk, ByteBuffer record, long opId, long seq) {
         com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords old = chunk.getData(RtsimAttachments.PENDING);
-        chunk.setData(RtsimAttachments.PENDING, carried(old, java.util.List.of(commandResult.array())));
+        chunk.setData(RtsimAttachments.PENDING, carried(old, java.util.List.of(record.array())));
         chunk.setUnsaved(true);
         journalData.chunks().dependsOn(chunk); // the journal's next file waits for this chunk's (R21)
-        dropFromChunkWhenAcked(chunk, commandResult.getLong(Obs.CommandResult.OP_ID), commandResult.getLong(Obs.OBS_SEQ));
+        dropFromChunkWhenAcked(chunk, opId, seq);
     }
 
     void dropFromChunkWhenAcked(net.minecraft.world.level.chunk.LevelChunk chunk, long opId, long seq) {

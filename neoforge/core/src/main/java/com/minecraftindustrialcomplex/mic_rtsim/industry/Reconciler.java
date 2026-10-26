@@ -310,10 +310,21 @@ public final class Reconciler {
         int ops = n + m;
         if (!atLoad && ops > opsLeft && opsLeft < quota)
             return false;
+        // A double chest across a chunk border (RP-215): the pair's handler changes the other half in its own chunk too,
+        // which this reconcile notes and carries as well. A resend whose reconciled chunk is from before the crash
+        // finds the op there: refused as applied, so the worst case is the other half's chunk's loss, never a second put.
+        ChunkPos cp = chunk.getPos();
+        List<LevelChunk> halves = otherHalves(level, cp, r, n);
+        for (LevelChunk half : halves) {
+            if (ind.chunkCarriesOp(half, opId)) {
+                duplicates++;
+                ind.commandResult(cmdSeq, opId, Obs.CommandResult.DUPLICATE_OP);
+                return true;
+            }
+        }
         opsLeft -= ops;
 
         District d = ind.district(districtId);
-        ChunkPos cp = chunk.getPos();
         int[] order = new int[n];
         int k = 0;
         for (int i = 0; i < n; i++)
@@ -434,6 +445,11 @@ public final class Reconciler {
         chunk.setData(IndustryAttachments.RECONCILE.get(), epochs.with(new IndustryAttachments.EpochEntry(districtId, epoch, Optional.of(res.array()), life, ind.boundary.gen())));
         chunk.setUnsaved(true);
         ind.journalDependsOn(chunk); // the journal's next file waits for this chunk's (R21)
+        // The other half's chunk carries the result and is noted too (RP-215), until the engine acknowledges it. Not the
+        // epoch: that is this chunk's own sequence, reported as ChunkLoaded.APPLIED_EPOCH. Its load journals the carried
+        // result again (REASSERT), which closes the engine's pending reconcile as the reconciled chunk's would.
+        for (LevelChunk half : halves)
+            ind.carryRecordInChunk(half, res, opId, seq);
         deposits.stamp(ind.commandResult(cmdSeq, opId, Obs.CommandResult.APPLIED));
         if (!captured.isEmpty())
             keepDrops(level, chunk, removed);
@@ -445,6 +461,35 @@ public final class Reconciler {
         if (d != null && !removed.isEmpty())
             ind.destroyed(level, d, removed, now);
         return true;
+    }
+
+    /**
+     * The chunks other than {@code cp} that this reconcile's container deltas also change (RP-215): a double chest's
+     * other half is read and written through the pair's handler, in its own chunk. Empty for anything else, which costs
+     * one block-state read and one {@code instanceof} per delta. A chunk that is not loaded is loaded here, as the
+     * handler's first read of the half ({@code ChestBlock.getContainer} through {@code Level.getBlockState}) would,
+     * so its carried records are the saved ones. Only chests are found (a mod's {@code ChestBlock}s too): a
+     * {@code CompoundContainer} another mod builds is a residual (docs/replay-gate.md, slice U's residual 9).
+     */
+    private static List<LevelChunk> otherHalves(ServerLevel level, ChunkPos cp, ByteBuffer r, int n) {
+        List<LevelChunk> out = null;
+        for (int i = 0; i < n; i++) {
+            int e = IndRecords.ChunkReconcile.DELTAS + i * IndRecords.ChunkReconcile.DELTA_SIZE;
+            if (r.getInt(e + IndRecords.ChunkReconcile.D_INVENTORY) == IndRecords.DEPOSIT_INVENTORY)
+                continue;
+            BlockPos pos = new BlockPos(r.getInt(e + IndRecords.ChunkReconcile.D_X), r.getInt(e + IndRecords.ChunkReconcile.D_Y), r.getInt(e + IndRecords.ChunkReconcile.D_Z));
+            if ((pos.getX() >> 4) != cp.x || (pos.getZ() >> 4) != cp.z)
+                continue; // the delta loop skips it
+            BlockPos other = StockAccess.chestPair(level.getBlockState(pos), pos);
+            if (other == null || (other.getX() >> 4) == cp.x && (other.getZ() >> 4) == cp.z)
+                continue;
+            LevelChunk half = level.getChunk(other.getX() >> 4, other.getZ() >> 4);
+            if (out == null)
+                out = new ArrayList<>(2);
+            if (!out.contains(half))
+                out.add(half);
+        }
+        return out == null ? List.of() : out;
     }
 
     /**
