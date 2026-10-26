@@ -3809,6 +3809,20 @@ public final class ConflictBridge implements SessionPlugin {
         summonsRefused++;
     }
 
+    /**
+     * Whether the party's chief puppet of {@code body} that has not left the party yet is a second body (MZB-891): the engine booked its
+     * chief dead at the throne body's CAMP_DEATH. It counts while the puppet floats and while it is in its death animation, which
+     * {@link #puppetOf} (a live puppet only) does not find.
+     */
+    boolean secondPuppet(Party p, String body) {
+        for (Stack st : p.stacks)
+            for (Slot sl : st.slots)
+                if (sl.chief && sl.traveller != null && sl.alive && sl.entity != null && !sl.entity.isRemoved() && sl.body.equals(body)
+                        && reconciler.secondBody(sl.entity))
+                    return true;
+        return false;
+    }
+
     /** A party's live puppet of {@code body}, for a hand-back; null with none. */
     Slot puppetOf(Party p, String body) {
         for (Stack st : p.stacks)

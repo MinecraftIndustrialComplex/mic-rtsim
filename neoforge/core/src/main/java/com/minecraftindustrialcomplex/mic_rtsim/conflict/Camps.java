@@ -38,6 +38,7 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.IdentityHashMap;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
@@ -304,6 +305,14 @@ public final class Camps {
      * come and go (a census, CAMP_OUT or a session start clears them), the marks do not.
      */
     private final Set<Entity> second = Collections.newSetFromMap(new WeakHashMap<>());
+    /**
+     * The chief generations whose CAMP_DEATH Java journaled this session (MZB-891): the engine has the chief of that faction and
+     * generation dead, so a HAND_BACK that names it (in flight when the death was booked) is answered stale, with or without a
+     * puppet to find. Memory only, as {@link #second}; one entry for each chief death of a session, emptied at a session's start.
+     */
+    private final Set<Retired> retired = new HashSet<>();
+
+    private record Retired(long faction, int generation) {}
     private final List<Held> held = new ArrayList<>();
     /** The held lines {@link #playHeld} has still to look at this tick (a seat in place answers the old body's lines stale). */
     private final ArrayDeque<Held> draining = new ArrayDeque<>();
@@ -363,6 +372,7 @@ public final class Camps {
         draining.clear();
         setOuts.clear();
         dying.clear();
+        retired.clear();
         chiefStatesPending.clear();
         off = false;
         censuses = outs = reconciles = lines = staleLines = spawned = adopted = taken = removed = handedOff = handedBack = 0;
@@ -399,6 +409,7 @@ public final class Camps {
         index.clear();
         attention.clear();
         second.clear();
+        retired.clear();
         held.clear();
         draining.clear();
         setOuts.clear();
@@ -1419,6 +1430,12 @@ public final class Camps {
      */
     private int handBack(ServerLevel level, Site c, long epoch, long op, Line ln, Map<Long, ConflictBridge.Party> homecoming, long now) {
         ConflictBridge.Party p = bridge.party(ln.a());
+        if (retiredChief(c, ln) || p != null && p.epoch == (int) ln.b() && bridge.secondPuppet(p, ln.body())) {
+            // The engine has this chief dead (a CAMP_DEATH of its generation went out), though its line was in flight: nothing is
+            // handed back, whatever the puppet is doing (floating, in its death animation or gone), or a throne body of a retired
+            // generation would stand until the next census took it (MZB-891).
+            return ConflictRecords.CampBodies.STALE;
+        }
         if (p != null && p.epoch == (int) ln.b()) {
             ConflictBridge.Slot sl = bridge.puppetOf(p, ln.body());
             if (sl != null) {
@@ -1691,7 +1708,15 @@ public final class Camps {
      */
     private void playHeldHandBack(ServerLevel level, Site c, Held h, long now) {
         ConflictBridge.Party p = bridge.party(h.line().a());
-        ConflictBridge.Slot sl = p != null && p.epoch == (int) h.line().b() ? bridge.puppetOf(p, h.line().body()) : null;
+        boolean current = p != null && p.epoch == (int) h.line().b();
+        if (retiredChief(c, h.line()) || current && bridge.secondPuppet(p, h.line().body())) {
+            // The throne body was killed while the puppet floated home (MZB-825): the engine has the chief dead, so nothing is handed
+            // back. The puppet is nobody's, and its band's recall takes it. The same when the puppet is dying or gone (MZB-891): its
+            // line is not a spawn of a retired generation.
+            answerStale(h, now);
+            return;
+        }
+        ConflictBridge.Slot sl = current ? bridge.puppetOf(p, h.line().body()) : null;
         if (sl == null) {
             if (p != null && bridge.dyingChief(p, h.line().body()) != null) {
                 held.add(h); // died, and not settled yet: the bridge's settle journals it and takes this line
@@ -1700,12 +1725,6 @@ public final class Camps {
             int outcome = spawnLine(level, c, h.epoch(), h.op(), h.line(), now, true);
             if (outcome != 0)
                 answer(c, h.epoch(), h.op(), h.line(), outcome, null, now);
-            return;
-        }
-        if (second.contains(sl.entity)) {
-            // The throne body was killed while the puppet floated home (MZB-825): the engine has the chief dead, so nothing is handed
-            // back. The puppet is nobody's, and its band's recall takes it.
-            answerStale(h, now);
             return;
         }
         if (sl.homeSpot == null)
@@ -1943,6 +1962,11 @@ public final class Camps {
             second.add(e);
     }
 
+    /** Whether Java journaled a CAMP_DEATH of this chief line's faction and generation this session (MZB-891). */
+    private boolean retiredChief(Site c, Line ln) {
+        return !retired.isEmpty() && ln.slot() == ConflictRecords.CampReconcile.CHIEF_SLOT && retired.contains(new Retired(c.faction, ln.generation()));
+    }
+
     /** A held hand-back's puppet no longer homes (its line went stale): the band's recall takes it as any member's. */
     private void releaseHome(Line ln) {
         ConflictBridge.Party p = bridge.party(ln.a());
@@ -2094,8 +2118,10 @@ public final class Camps {
         RtsimSession s = bridge.session();
         int body = kind == null ? 0 : s.dictId(Obs.DICT_BODY, kind.bodyName(e));
         boolean chief = kind != null && kind.isChief(e);
-        if (chief && m.slot() == ConflictRecords.CampReconcile.CHIEF_SLOT)
+        if (chief && m.slot() == ConflictRecords.CampReconcile.CHIEF_SLOT) {
             markPuppetsSecond(m.faction()); // the engine books the chief dead here: its puppet aloft is a second body (MZB-825)
+            retired.add(new Retired(m.faction(), m.generation())); // and a HAND_BACK of this generation in flight is stale (MZB-891)
+        }
         List<PendingRecords.Entry> records = new ArrayList<>(takeRecords(e)); // journaled first if they were not yet
         ByteBuffer r = s.boundary().beginJournaled(ConflictRecords.CAMP_DEATH, ConflictRecords.CampDeath.SIZE, by, now);
         r.putLong(ConflictRecords.CampDeath.FACTION, m.faction());
@@ -2219,6 +2245,7 @@ public final class Camps {
         s.carryOnCampHolder(mk, records, r.getLong(Obs.OBS_SEQ));
         deaths++;
         homeDeaths++;
+        retired.add(new Retired(c.faction, ln.generation())); // the CAMP_DEATH of the chief slot at this generation (MZB-891)
         // The throne body that may stand is the engine's dead chief now (case B, MZB-823): nobody's.
         chiefDiedAway(c.faction);
         // The line is answered after the death, as a stale one books nothing (the slot is Owed again, then dead).
