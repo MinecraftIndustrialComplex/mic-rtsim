@@ -37,6 +37,23 @@ fn ok(r: &mut CampRun) {
     // The books close, the groves' earmarks among them (MZB-930).
     let books = r.c.check(&r.w);
     assert!(books.is_ok(), "the books break: {books:?}");
+    // Both ways (MZB-934): in these worlds only the conflict holds goods, so the world's held is
+    // exactly what the parties carry plus what the groves owe. `Conflict::check` asks only that
+    // the held covers them, as other modules hold goods in the same pool.
+    let mut kept = r.c.held();
+    for f in 0..r.c.factions.len() {
+        for &(g, a) in r.c.camp(f as u32).map_or(&[][..], |c| &c.owed_tribute[..]) {
+            *kept.entry(GoodId(g as u16)).or_default() += i128::from(a);
+        }
+    }
+    kept.retain(|_, a| *a != 0);
+    let mut held = r.w.outside.held.clone();
+    held.retain(|_, a| *a != 0);
+    assert_eq!(
+        held.into_iter().collect::<Vec<_>>(),
+        kept.into_iter().collect::<Vec<_>>(),
+        "the world's held is the parties' and the groves' earmarks"
+    );
 }
 
 /// The camp comes in and its first lines are answered.

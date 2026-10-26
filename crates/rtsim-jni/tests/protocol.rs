@@ -11831,6 +11831,29 @@ mod conflict {
         })
     }
 
+    /// The grove's earmark (MZB-930): the world's held of its tribute good, in items, is what the
+    /// grove owes its chest, and the conflict's books close.
+    fn assert_earmarked(e: &Engine, items: i64) {
+        e.with_conflict(|c, w| {
+            let f = c.faction_of_key(CAMP).unwrap();
+            let owed = &c.camp(f).unwrap().owed_tribute;
+            let total: i64 = owed.iter().map(|e| e.1).sum();
+            assert_eq!(total / rtsim_trade::MILLI, items, "owed");
+            for &(g, a) in owed {
+                let good = rtsim_trade::GoodId(u16::try_from(g).unwrap());
+                let held = w.outside.held.get(&good).copied().unwrap_or(0);
+                assert_eq!(
+                    held,
+                    i128::from(a),
+                    "the earmark of good {g} is in the world's held"
+                );
+            }
+            if let Err(e) = c.check(w) {
+                panic!("the books break: {e}");
+            }
+        });
+    }
+
     fn chest_report(j: &mut Java, chest: [i32; 3]) {
         let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
         j.conflict_obs(&O::HavenChest(cb::HavenChest {
@@ -11844,7 +11867,7 @@ mod conflict {
     /// M9 (MZB-418, MZB-419, MZB-422, MZB-423): a player's seven gold blocks to a stray Umvuthi
     /// (CHIEF_PAID) are 567 nuggets of tribute, owed to the grove's chest. With no chest reported
     /// nothing is sent; a chest reported in a world whose chunk is gone fails its stack, which
-    /// goes back to the grove's stock and forgets the chest; reported again while Minecraft holds
+    /// stays owed and earmarked (MZB-930) and forgets the chest; reported again while Minecraft holds
     /// the commands (a world save that is lost), the stack is in the outbox at the save, so after
     /// a crash it is sent again under the same op id and lands once, and the rest wait for the
     /// camp to come in again. The CHIEF_PAID's op id is spent by the replay too.
@@ -11874,10 +11897,11 @@ mod conflict {
             (567, 0, 0),
             "seven blocks are 567 nuggets, owed once; no chest yet, nothing sent"
         );
+        assert_earmarked(&e, 567);
         assert!(tribute_ops(&j).is_empty());
         assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
 
-        // The chest is named, but its chunk is gone: the stack fails, goes back and waits.
+        // The chest is named, but its chunk is gone: the stack fails and waits, still earmarked.
         let chest = [CAMP_AT.0 + 3, 64, CAMP_AT.1 + 2];
         j.fail_transfers = true;
         chest_report(&mut j, chest);
@@ -11885,7 +11909,12 @@ mod conflict {
         j.idle();
         let failed = tribute_ops(&j);
         assert_eq!(failed.len(), 1, "one stack at a time");
-        assert_eq!(owed_tribute(&e), (567, 0, 1), "back in the grove's stock");
+        assert_eq!(
+            owed_tribute(&e),
+            (567, 0, 1),
+            "still owed, nothing in flight"
+        );
+        assert_earmarked(&e, 567);
         assert!(j.containers.is_empty());
         let (_, link) = e.conflict_stats();
         assert_eq!(link.haven_chests, 1, "{link:?}");
@@ -11923,6 +11952,7 @@ mod conflict {
             (567, 1, 2),
             "the stack in flight is saved"
         );
+        assert_earmarked(&e, 567);
         j.idle();
         j.idle();
         assert_eq!(tribute_ops(&j), held, "the held stack, by its op id");
@@ -11932,6 +11962,7 @@ mod conflict {
             (503, 0, 2),
             "placed: 64 nuggets less owed; the camp is out, so no more is sent"
         );
+        assert_earmarked(&e, 503);
         // The same answer again changes nothing.
         let (_, link) = e.conflict_stats();
         assert_eq!(link.deferred, 0, "{link:?}");
@@ -11941,8 +11972,8 @@ mod conflict {
 
     /// The U-b merge (RP-210 meets MZB-423): a grove's chest whose chunk is not loaded is answered
     /// NOT_LOADED since U-b, where main answered FAILED. The COMMAND_RESULT takes the stack out of
-    /// the core outbox either way, so the grove must take it back too: the stack goes back to the
-    /// grove's stock, the chest is forgotten, and a chest reported again gets a new stack. Ignored,
+    /// the core outbox either way, so the grove must take it back too: the stack stays owed and
+    /// earmarked (MZB-930), the chest is forgotten, and a chest reported again gets a new stack. Ignored,
     /// the stack would stay in flight with nothing left to answer it, and the grove would send no
     /// more.
     #[test]
@@ -11976,8 +12007,9 @@ mod conflict {
         assert_eq!(
             owed_tribute(&e),
             (567, 0, 1),
-            "NOT_LOADED: back in the grove's stock, nothing in flight"
+            "NOT_LOADED: still owed, nothing in flight"
         );
+        assert_earmarked(&e, 567);
         assert!(j.containers.is_empty());
         j.idle();
         j.idle();
@@ -12351,14 +12383,7 @@ mod conflict {
             "Java's answer is journaled, not yet heard"
         );
         j.unloaded_transfers = false;
-        let good = e.with_conflict(|c, _| c.placings().next().unwrap().1.good);
-        let stock = |e: &Engine| {
-            e.with_conflict(|c, w| {
-                let node = c.factions[c.faction_of_key(CAMP).unwrap() as usize].node;
-                w.market(node).lines[good as usize].stock
-            })
-        };
-        let stock_at_the_answer = stock(&e);
+        assert_earmarked(&e, 567);
         j.modules(MODULES & !MODULE_CONFLICT);
         if answer == Answer::AppliedTwice {
             let op = *first.iter().next().unwrap();
@@ -12439,12 +12464,9 @@ mod conflict {
                     "the chest holds what it held"
                 );
                 assert_eq!(owed_tribute(&e).1, 1, "its answer is kept, not yet taken");
-                assert!(
-                    stock(&e) <= stock_at_the_answer,
-                    "the goods did not go back to the stock: {} after the restart, {} at the answer",
-                    stock(&e),
-                    stock_at_the_answer
-                );
+                // Nothing booked out or back before the kept answer is: the earmark stands whole
+                // (MZB-930).
+                assert_earmarked(&e, 567);
                 (e, j)
             } else {
                 let (e, mut j) =
@@ -12471,8 +12493,9 @@ mod conflict {
             assert_eq!(
                 owed_tribute(&e),
                 (567, 0, 1),
-                "NOT_LOADED, heard while off: back in the grove's stock, nothing in flight"
+                "NOT_LOADED, heard while off: still owed and earmarked, nothing in flight"
             );
+            assert_earmarked(&e, 567);
         }
         // The plugin names the chest again (a chest the answer forgot, and the next stack waits
         // for a camp that is in).
@@ -12496,11 +12519,12 @@ mod conflict {
             j.containers.get(&chest).copied(),
             Some(567),
             "every nugget in the chest once: the first stack was {answer_name}",
-            answer_name = if placed { "placed" } else { "put back" }
+            answer_name = if placed { "placed" } else { "kept owed" }
         );
         let stacks =
             e.with_conflict(|c, _| c.camp(c.faction_of_key(CAMP).unwrap()).unwrap().stacks);
         assert_eq!(owed_tribute(&e), (0, 0, stacks));
+        assert_earmarked(&e, 0);
         assert_eq!(
             tribute_ops(&j).len() as u32,
             if crash { stacks - 1 } else { stacks },
@@ -12563,7 +12587,8 @@ mod conflict {
         );
     }
 
-    /// A NOT_LOADED answer heard while off goes back to the grove's stock at the switch-on.
+    /// A NOT_LOADED answer heard while off leaves the stack owed, and earmarked (MZB-930), at the
+    /// switch-on.
     #[test]
     fn a_groves_tribute_stack_answered_not_loaded_with_the_conflict_off_goes_back_to_its_stock() {
         a_grove_stack_answered_with_the_conflict_off(
