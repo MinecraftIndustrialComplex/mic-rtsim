@@ -182,11 +182,11 @@ struct KeptAnswer {
     /// Heard in the session's replay: the switch books it as replayed ([`book_kept_answers`],
     /// RP-313), whether or not the engine still replays then. In memory only: the link page saves
     /// the record alone (its format is unchanged), and an answer it held is loaded as replayed.
-    /// That is right for every answer the page held: one heard live took its command at once, out
-    /// of the outbox, the queue and the engine's commands not drained yet, the engine was frozen
-    /// from then until the switch (no decision, so no copy), and a later replay brings only
-    /// records past those pages; so no copy of its op is left to take, and booked as replayed it
-    /// takes what booked live would take, nothing.
+    /// That is right for every answer the page held: one heard live took its command's copy at
+    /// once ([`take_answered`]: the outbox's, or else one in the queue or the engine's commands not
+    /// drained yet), the engine was frozen from then until the switch (no decision, so no copy),
+    /// and a later replay brings only records past those pages; so no copy of its op is left to
+    /// take, and booked as replayed it takes what booked live would take, nothing.
     replayed: bool,
 }
 
@@ -798,18 +798,18 @@ pub(super) fn answered_again(st: &mut State, rec: &Rec<'_>) {
 /// With the module off, one of Java's answers to a command the engine sent (RP-285): a
 /// COMMAND_RESULT, an IND_CARRIAGE_RESULT or IND_RECONCILE_RESULT, or the `CHAIN_IN` a write made
 /// (it carries the write's op, SC113). It takes its command at once ([`take_answered`]). A live
-/// answer takes every copy, out of the outbox, the queue or the engine's commands not drained yet
-/// ([`Link::unqueue`]), so the switch never sends it again: Java prunes its op rings at the
-/// engine's acknowledgement of a live answer whatever the switch (RP-209, T2, RP-250), and trims
-/// its journal, and with it the op index that refuses an op it applied, at every acknowledgement,
-/// and would apply it twice. One the session's replay brings (`replaying`) that reports an
-/// application (every kind here but a COMMAND_RESULT [`reports_applied`] refuses) takes only the
-/// outbox's copy, as with the module on ([`command_result`], RP-310, RP-313): no replayed answer
-/// is live, so Java's rings keep its op, its answer unknown, until the copy is sent, and a train's
-/// ring that came back without the op (J4) applies the copy to the restored goods the kept answer
-/// books. Its book effect waits: the record is kept whole, with its own game time and whether the
-/// replay brought it ([`KeptAnswer`]), in the link page (saved with the pages while off:
-/// `take_save` calls [`save`] whatever the switch), and the switch books it at that time
+/// answer takes its copy, the outbox's, or else one in the queue or the engine's commands not
+/// drained yet ([`Link::unqueue`]), so the switch never sends it again: Java prunes its op rings at
+/// the engine's acknowledgement of a live answer whatever the switch (RP-209, T2, RP-250), and
+/// trims its journal, and with it the op index that refuses an op it applied, at every
+/// acknowledgement, and would apply it twice. One the session's replay brings (`replaying`) that
+/// reports an application (every kind here but a COMMAND_RESULT [`reports_applied`] refuses) takes
+/// only the outbox's copy, as with the module on ([`command_result`], RP-310, RP-313): no replayed
+/// answer is live, so Java's rings keep its op, its answer unknown, until the copy is sent, and a
+/// train's ring that came back without the op (J4) applies the copy to the restored goods the kept
+/// answer books. Its book effect waits: the record is kept whole, with its own game time and
+/// whether the replay brought it ([`KeptAnswer`]), in the link page (saved with the pages while
+/// off: `take_save` calls [`save`] whatever the switch), and the switch books it at that time
 /// ([`book_kept_answers`]), before the engine's own session start catches up. Booked at once, at
 /// the engine's frozen time, it would land ahead of the breakpoints and wakes due before it, and
 /// every decision after it would differ from those of a restart that replays the same answer with
