@@ -1040,7 +1040,7 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
   </ol>
 
   <h3 id="akm-line" data-ss-id="walk2-h">9.2 G3, automated: an AKM line</h3>
-  <p data-ss-id="walk2-p">The AKM today costs 2,394 items. Here it is five parts, each from a line. It is built at G3 and shoots once the G4 powder plant (<a href="#walk3">9.3</a>) runs. The barrel line runs on one belt:</p>
+  <p data-ss-id="walk2-p">The AKM today costs 2,394 items. Here it is five parts, each from a line. It is built at G3 and shoots once a G4 plant like <a href="#walk3">9.3</a> runs, with a <code>load/762x39</code> die and <code>bullet_30</code> instead of the 5.56 ones. The barrel line runs on one belt:</p>
 
   <figure data-ss-id="fig-barrel-line">
     <svg class="dg flow-wide" viewBox="0 0 872 214" role="img" aria-label="The AKM barrel line on one belt, left to right: Mechanical Saw, blasting fan, oil-quench fan, smoking fan, then three Spindle Heads (gun drill, ream, broach), then two Inspection Heads (gauge, proof).">
@@ -1175,7 +1175,7 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
     <li><div><strong>Cases:</strong>
       <ul>
         <li>Brass sheet → Die Ram <code>cup</code> → cups.</li>
-        <li>Induction Head (Anneal) → Die Ram <code>draw/intermediate</code> → <code>intermediate_case</code>, 48 per sheet.</li>
+        <li>Induction Head (Anneal) → Die Ram <code>draw/intermediate</code> → <code>intermediate_case</code>, 49 per sheet.</li>
       </ul></div></li>
     <li><div><strong>Bullets:</strong>
       <ul>
@@ -1334,17 +1334,17 @@ footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom
 <thead><tr><th>#</th><th>Phase</th><th>Delivers</th><th>Gate</th></tr></thead>
 <tbody>
 <tr><td>0</td><td data-label="Phase">Groundwork</td><td data-label="Delivers">open the three TaCZ tables in a client and confirm the stub recipes show; fix <code>BlockId</code>; strip boss items from the stub as a stopgap; install tacz-durability and boot it against the unofficial TaCZ port (nine <code>require=1</code> mixins)</td><td data-label="Gate">server and client boot clean</td></tr>
-<tr><td>1</td><td data-label="Phase">Machine shop core</td><td data-label="Delivers"><code>mic_machining</code> with the Spindle, the Die Ram, cutters, dies, the tooling chain, KubeJS schemas, JEI, Ponder, GameTests</td><td data-label="Gate">each head works on a depot, on a belt and in sequenced assembly</td></tr>
+<tr><td>1</td><td data-label="Phase">Machine shop core</td><td data-label="Delivers"><code>mic_machining</code> with the Spindle, the Die Ram, the Inspection Head with the proof chamber, cutters, dies, the tooling chain, KubeJS schemas, JEI, Ponder, GameTests</td><td data-label="Gate">each head works on a depot, on a belt and in sequenced assembly</td></tr>
 <tr><td>2</td><td data-label="Phase">Ammunition plant</td><td data-label="Delivers">cases, bullets, primers, loading for all 22 calibers (line and hand); delete the stub ammo</td><td data-label="Gate">every caliber made at its tier in a test world</td></tr>
-<tr><td>3</td><td data-label="Phase">Gun parts and assembly</td><td data-label="Delivers">barrels, receivers, actions, feed, furniture; hand assembly of all 54 guns; delete the stub guns</td><td data-label="Gate">all 54 guns craftable; the tier table holds</td></tr>
-<tr><td>4</td><td data-label="Phase">Heat treatment and quality</td><td data-label="Delivers">fan route, oil quench, Overgeared hand route, Induction Head, Inspection Head (gauge, proof, MPI), the six components, carry rule, TaCZ craft mixin, stats, burst, rust, line assembly</td><td data-label="Gate">a precision AKM shoots tighter than a rough one; an unproofed water-quenched barrel can burst</td></tr>
+<tr><td>3</td><td data-label="Phase">Gun parts and assembly</td><td data-label="Delivers">barrels, receivers, actions, feed, furniture; the Overgeared hand heat-treatment route and the water fan line; proof firing; hand assembly of all 54 guns; delete the stub guns</td><td data-label="Gate">all 54 guns craftable; the tier table holds</td></tr>
+<tr><td>4</td><td data-label="Phase">Quality and advanced heat treatment</td><td data-label="Delivers">oil-quench fan, Induction Head, gauge set and MPI kit, the six components, carry rule, TaCZ craft mixin, stats, burst, rust, line assembly</td><td data-label="Gate">a precision AKM shoots tighter than a rough one; an unproofed water-quenched barrel can burst</td></tr>
 <tr><td>5</td><td data-label="Phase">Attachments and finishing</td><td data-label="Delivers">polymer moulding, optics, suppressors, bluing, parkerizing, chrome</td><td data-label="Gate">about 95 attachments craftable</td></tr>
 <tr><td>6</td><td data-label="Phase">Pack refactors</td><td data-label="Delivers">section 12 per Ben's answers</td><td data-label="Gate">CBC shells, fuzes, cartridges, Neo Warfare, RHA, springs</td></tr>
 <tr><td>7</td><td data-label="Phase">Extras</td><td data-label="Delivers">worn guns in loot <span class="chip opt">OPT</span>; radiography with mic_nuclear; docs and changelog</td><td class="nil" data-label="Gate">–</td></tr>
 </tbody>
 </table>
 </div>
-  <p data-ss-id="phases-note">Phases 2 and 3 can ship with the hand heat-treatment route only, so guns and ammo stop being ingot piles before the quality layer lands.</p>
+  <p data-ss-id="phases-note">Phases 2 and 3 ship with the hand route, the water fan line and proof firing, so guns and ammo stop being ingot piles before the quality layer lands.</p>
 </section>
 
 <section id="risks" data-ss-id="risks" data-ss-section>
