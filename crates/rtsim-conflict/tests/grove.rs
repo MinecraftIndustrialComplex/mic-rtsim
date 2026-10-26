@@ -34,6 +34,9 @@ fn ok(r: &mut CampRun) {
     let bad = r.check();
     assert!(bad.is_empty(), "the invariants break: {bad:#?}");
     assert!(r.failures.is_empty(), "{:#?}", r.failures);
+    // The books close, the groves' earmarks among them (MZB-930).
+    let books = r.c.check(&r.w);
+    assert!(books.is_ok(), "the books break: {books:?}");
 }
 
 /// The camp comes in and its first lines are answered.
@@ -1634,7 +1637,11 @@ fn a_failed_stack_goes_back_and_a_duplicate_answer_changes_nothing() {
     assert!(r.c.tribute_placed(&mut r.w, op2, at));
     assert!(!r.c.tribute_placed(&mut r.w, op2, at), "a duplicate answer");
     assert_eq!(owed(&r), 567 - 64, "lowered once");
-    assert_eq!(held_of(&r, nugget), all - i128::from(64 * MILLI), "booked out once");
+    assert_eq!(
+        held_of(&r, nugget),
+        all - i128::from(64 * MILLI),
+        "booked out once"
+    );
     ok(&mut r);
 }
 
