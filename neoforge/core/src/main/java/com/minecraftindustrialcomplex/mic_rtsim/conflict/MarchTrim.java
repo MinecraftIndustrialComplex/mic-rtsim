@@ -23,6 +23,15 @@ final class MarchTrim {
      */
     record Candidate(int stack, int slot, double back, boolean pending, boolean unseen) {}
 
+    /**
+     * Whether a player {@code dx, dz} blocks away on the ground plane is within {@code range} of an entity. Vanilla's
+     * tracking (and so a client's sight) measures horizontally: a player high above a band sees it as one at its own
+     * height would (MZB-753), so the height is no part of the distance.
+     */
+    static boolean withinSight(double dx, double dz, double range) {
+        return dx * dx + dz * dz <= range * range;
+    }
+
     /** The index in {@code candidates} of the member to cut now, or -1 when none may be (the trim waits). */
     static int pick(List<Candidate> candidates) {
         int best = -1;
