@@ -30,9 +30,20 @@ import java.util.List;
  * {@code offlineBuffer} (marked {@code primed}, so the postbox takes the buffer back at its next load,
  * as {@code runMailTransfer} does).
  *
- * <p><b>Once:</b> an offline buffer is RailwaySavedData, saved with the journal, so the journal's applied
- * set is the dedup (as H17); a loaded postbox is saved with its chunk, so its chunk carries the
- * COMMAND_RESULT until the engine acknowledges it (the pending-record pattern, docs/boundary.md §3.1).
+ * <p><b>Once:</b> an offline buffer is in {@code create_tracks.dat} (the station's port), a file of its own:
+ * the journal's applied set is not a dedup for it, since a crash between the two files' writes leaves the
+ * buffer holding the packages and the journal not knowing the op, which is then sent again and written twice
+ * (docs/replay-gate.md 9.6, K2). The port keeps its own rings of the ops written through it, saved in its
+ * entry beside the buffer ({@link PortRing}, docs/choices-journal-barrier.md RP-206): an offline write is
+ * refused when either ring holds the op, the buffer's or the loaded postbox's (whose inventory Create mirrors
+ * into the buffer). A loaded postbox is saved with its chunk, so its chunk carries the COMMAND_RESULT until
+ * the engine acknowledges it (the pending-record pattern, docs/boundary.md §3.1); a loaded write is refused
+ * when the chunk carries the op, the journal knows it or the buffer's ring holds it (packages written offline
+ * and taken into the postbox at its load). The postbox's chunk is saved on its own clock, often before the
+ * tracks file: so the restore of a primed buffer makes the chunk carry the ops it brings in
+ * ({@link PortRing#beforeRestore}), and the first offline write of a server life into a port reads the chunk
+ * as saved, its carried ops and the postbox's inventory, before it primes the buffer ({@link PortRing#refreshed}).
+ * Without the rings' mixins the dedup is the journal's applied set, and the chunk for a loaded postbox.
  * <b>Room:</b> packages go into free slots; what does not fit is logged and counted, and the command is
  * APPLIED if any package was written (the engine keeps its books as written, W10), FAILED if none was.
  */
@@ -58,7 +69,8 @@ public final class WritePackages {
             return true;
         }
         long opId = b.getLong(at + IndRecords.WritePackage.OP_ID);
-        if (ind.opApplied(opId)) {
+        boolean rings = PortRing.available(ind.server());
+        if (!rings && ind.opApplied(opId)) {
             ind.commandResult(cmdSeq, opId, Obs.CommandResult.DUPLICATE_OP);
             return true;
         }
@@ -80,25 +92,41 @@ public final class WritePackages {
             for (long left = amount; left > 0; left -= max)
                 stacks.add(proto.copyWithCount((int) Math.min(max, left)));
         }
+        LevelChunk chunk = level == null ? null : level.getChunkSource().getChunkNow(pos.getX() >> 4, pos.getZ() >> 4);
+        PostboxBlockEntity postbox = level != null && level.isLoaded(pos) && level.getBlockEntity(pos) instanceof PostboxBlockEntity pb ? pb : null;
+        // The port is looked up for a loaded postbox too: its rings are the dedup of both paths.
+        GlobalPackagePort port = level == null ? null : port(level, pos);
+        // A port this life does not know to match its postbox, whose chunk is not loaded: the chunk as saved first,
+        // the write held meanwhile (PortRing.refreshed: a crash can leave the tracks file older than the chunk). An op
+        // the port's rings already refuse is answered without the hold. With the chunk loaded, a read begun before
+        // its load is stale and is dropped.
+        if (rings && port != null && chunk != null)
+            PortRing.dropRead(port);
+        if (postbox == null && rings && port != null && chunk == null && !PortRing.wroteToBuffer(port, opId)
+                && !PortRing.wroteToPostbox(port, opId) && !PortRing.refreshed(port, level, pos, ind))
+            return false;
+        // A ring another session answered is settled first (T2's rule: an op the engine's pages provably hold leaves).
+        if (rings && port != null)
+            PortRing.settle(port);
+        boolean duplicate;
+        if (postbox != null)
+            duplicate = (chunk != null && ind.chunkCarriesOp(chunk, opId)) || (rings && (ind.opApplied(opId) || PortRing.wroteToBuffer(port, opId)));
+        else
+            duplicate = rings && (PortRing.wroteToBuffer(port, opId) || PortRing.wroteToPostbox(port, opId));
+        if (duplicate) {
+            long seq = ind.commandResult(cmdSeq, opId, Obs.CommandResult.DUPLICATE_OP);
+            if (rings && port != null)
+                PortRing.refused(port, opId, seq);
+            return true;
+        }
         if (level == null || stacks.isEmpty() || count <= 0) {
             failed++;
             ind.commandResult(cmdSeq, opId, Obs.CommandResult.FAILED);
             return true;
         }
-        LevelChunk chunk = level.getChunkSource().getChunkNow(pos.getX() >> 4, pos.getZ() >> 4);
-        PostboxBlockEntity postbox = level.isLoaded(pos) && level.getBlockEntity(pos) instanceof PostboxBlockEntity pb ? pb : null;
-        if (postbox != null && chunk != null && ind.chunkCarriesOp(chunk, opId)) {
-            ind.commandResult(cmdSeq, opId, Obs.CommandResult.DUPLICATE_OP);
-            return true;
-        }
-        IItemHandlerModifiable target;
-        GlobalPackagePort port = null;
-        if (postbox != null) {
-            target = postbox.inventory;
-        } else {
-            port = port(level, pos);
-            target = port == null ? null : port.offlineBuffer;
-        }
+        // A port whose postbox's chunk is loaded without the postbox is an orphan: Create drops a port at the postbox's
+        // removal only through a loaded station (PackagePortBlockEntity.destroy), and no postbox would take its buffer.
+        IItemHandlerModifiable target = postbox != null ? postbox.inventory : port == null || chunk != null ? null : port.offlineBuffer;
         if (target == null) {
             failed++;
             ind.commandResult(cmdSeq, opId, Obs.CommandResult.FAILED);
@@ -131,13 +159,21 @@ public final class WritePackages {
             ind.commandResult(cmdSeq, opId, Obs.CommandResult.FAILED);
             return true;
         }
+        // In the tick the packages went in, so whichever save holds them holds the op; the op leaves its ring once the
+        // engine acknowledges the answer (T2's rule).
         if (postbox != null) {
-            postbox.setChanged();
-            ind.commandResultInChunk(chunk, cmdSeq, opId, Obs.CommandResult.APPLIED);
+            postbox.setChanged(); // Create mirrors the inventory into the port's buffer, unprimed
+            long seq = ind.commandResultInChunk(chunk, cmdSeq, opId, Obs.CommandResult.APPLIED);
+            if (rings && port != null) {
+                PortRing.record(port, opId, true, seq, pos);
+                Create.RAILWAYS.markTracksDirty();
+            }
         } else {
             port.primed = true; // the postbox takes the buffer back when it loads (restoreOfflineBuffer)
+            long seq = ind.commandResult(cmdSeq, opId, Obs.CommandResult.APPLIED);
+            if (rings)
+                PortRing.record(port, opId, false, seq, pos);
             Create.RAILWAYS.markTracksDirty();
-            ind.commandResult(cmdSeq, opId, Obs.CommandResult.APPLIED);
         }
         return true;
     }
