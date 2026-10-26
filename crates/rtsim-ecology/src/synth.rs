@@ -741,12 +741,14 @@ impl FakeIaf {
                         Obs::LairFound(boundary::LairFound {
                             lair: 0x504C_0000_0000 | self.placed,
                             late: true,
+                            placed: true,
                             dimension: p.dimension,
                             species: p.species,
                             kind: p.kind,
                             min: (x - 16, 90, z - 16),
                             max: (x + 16, 110, z + 16),
                             home: (x, 100, z),
+                            row: Default::default(),
                         }),
                     );
                 }

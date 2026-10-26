@@ -1721,12 +1721,14 @@ mod dragons {
         j.dragon_obs(&O::LairFound(db::LairFound {
             lair: LAIR,
             late: false,
+            placed: false,
             dimension: dim,
             species: Species::Fire,
             kind: LairKind::Roost,
             min: (HOME.0 - 30, 60, HOME.2 - 30),
             max: (HOME.0 + 30, 140, HOME.2 + 30),
             home: HOME,
+            row: Default::default(),
         }));
         j.dragon_obs(&untagged((0xD1, 0x1), SpawnKind::Structure, LAIR, dim));
         j.idle();
@@ -1923,12 +1925,14 @@ mod dragons {
         j.dragon_obs(&O::LairFound(db::LairFound {
             lair: LAIR,
             late: false,
+            placed: false,
             dimension: dim,
             species: Species::Fire,
             kind: LairKind::Roost,
             min: (HOME.0 - 30, 60, HOME.2 - 30),
             max: (HOME.0 + 30, 140, HOME.2 + 30),
             home: HOME,
+            row: Default::default(),
         }));
         j.idle();
         j.idle();
@@ -2200,12 +2204,14 @@ mod dragons {
         j.dragon_obs(&O::LairFound(db::LairFound {
             lair: LAIR,
             late: false,
+            placed: false,
             dimension: dim,
             species: Species::Fire,
             kind: LairKind::Roost,
             min: (HOME.0 - 30, 60, HOME.2 - 30),
             max: (HOME.0 + 30, 140, HOME.2 + 30),
             home: HOME,
+            row: Default::default(),
         }));
         j.dragon_obs(&untagged((0xD1, 0x1), SpawnKind::Structure, LAIR, dim));
         j.idle();
@@ -2277,12 +2283,14 @@ mod dragons {
         j.dragon_obs(&O::LairFound(db::LairFound {
             lair: LAIR,
             late: false,
+            placed: false,
             dimension: dim,
             species: Species::Fire,
             kind: LairKind::Roost,
             min: (HOME.0 - 30, 60, HOME.2 - 30),
             max: (HOME.0 + 30, 140, HOME.2 + 30),
             home: HOME,
+            row: Default::default(),
         }));
         // A well-fed dragon: it stays at rest in its lair for days (R7), so a player there sees
         // it whenever the dragons run.
@@ -2374,12 +2382,14 @@ mod dragons {
         j.dragon_obs(&O::LairFound(db::LairFound {
             lair: LAIR,
             late: false,
+            placed: false,
             dimension: dim,
             species: Species::Fire,
             kind: LairKind::Roost,
             min: (HOME.0 - 30, 60, HOME.2 - 30),
             max: (HOME.0 + 30, 140, HOME.2 + 30),
             home: HOME,
+            row: Default::default(),
         }));
         let mut fed = untagged((0xD2, 0x1), SpawnKind::Structure, LAIR, dim);
         if let O::Untagged(u) = &mut fed {
@@ -2404,6 +2414,115 @@ mod dragons {
         e.close(true, Duration::from_secs(5)).unwrap();
     }
 
+    /// The site ledger's hand-over across a reset (EQUILIBRIUM.md §2.3, slice S3, MZB-1012): a
+    /// lair found late with no row waits the cap until its own dragon is adopted; a player kills
+    /// that dragon and the engine sends the lair's row (SITE_STATE: empty, waiting, pressure 1);
+    /// core's ledger keeps it through the reinstall guard's reset, and the new engine, meeting the
+    /// lair again days later, takes the row's pressure and the wait left from the found tail
+    /// instead of starting the lair fresh.
+    #[test]
+    fn a_reset_hands_a_lairs_wait_to_the_new_engine() {
+        use rtsim_kernel::renewal::Pressure;
+        use rtsim_kernel::sites::{SiteKind, state_flags};
+        let dir = tmpdir("dragons-sites");
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        j.module_mask = MODULES;
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        let found = |dim| {
+            O::LairFound(db::LairFound {
+                lair: LAIR,
+                late: true,
+                placed: false,
+                dimension: dim,
+                species: Species::Fire,
+                kind: LairKind::Roost,
+                min: (HOME.0 - 30, 60, HOME.2 - 30),
+                max: (HOME.0 + 30, 140, HOME.2 + 30),
+                home: HOME,
+                row: Default::default(),
+            })
+        };
+        j.dragon_obs(&found(dim));
+        j.idle();
+        // Found late with no row: taken as farmed, the cap to wait (as of the found, a tick or
+        // two ago).
+        let (unknown, left, cap) = e.with_dragons(|d, _| {
+            let l = d.lair_of_key(LAIR).expect("found");
+            let lair = &d.lairs[l as usize];
+            (lair.found_unknown, lair.due.0 - d.now().0, d.tun.renewal().cap_ticks())
+        });
+        assert!(unknown && cap - left <= 4, "{left} against the cap {cap}");
+        j.dragon_obs(&untagged((0xD1, 0x1), SpawnKind::Structure, LAIR, dim));
+        j.idle();
+        j.idle();
+        let first = adoptions(&j);
+        assert_eq!(first.len(), 1, "the lair's own dragon is adopted");
+        let home = j.sites.row(SiteKind::Lair, LAIR).expect("the lair's row").clone();
+        assert_eq!((home.count, home.flags, home.p), (1, 0, 0.0), "home, no pressure");
+
+        j.dragon_obs(&O::Died(db::Died {
+            agent: first[0].agent,
+            epoch: first[0].epoch,
+            killer_kind: AttackerKind::Player,
+            killer: PLAYER,
+            dimension: dim,
+            pos: (f64::from(HOME.0), f64::from(HOME.1), f64::from(HOME.2)),
+        }));
+        j.idle();
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        let row = j.sites.row(SiteKind::Lair, LAIR).expect("the lair's row").clone();
+        let waiting = state_flags::SHORT | state_flags::EMPTY | state_flags::WAITING;
+        assert_eq!((row.count, row.flags), (0, waiting), "{row:?}");
+        assert!((row.p - 1.0).abs() < 1e-3, "a player's kill: {row:?}");
+        let (left, fresh) = e.with_dragons(|d, _| {
+            let l = d.lair_of_key(LAIR).expect("found");
+            let r = d.tun.renewal();
+            (d.lairs[l as usize].due.0 - d.now().0, r.delay_ticks(Pressure::default(), 0))
+        });
+        assert!(row.wait_left > fresh, "longer than a fresh lair's {fresh}: {row:?}");
+        assert!(row.wait_left.abs_diff(left) <= 200, "{} against {left}", row.wait_left);
+
+        // The reinstall guard's reset: a new engine that knows nothing, the world's ledger kept.
+        let left_at = j.game_time;
+        let saved = j.world_save();
+        e.close(true, Duration::from_secs(5)).unwrap();
+        let mut reset = WorldSave::fresh();
+        reset.dict = saved.dict;
+        reset.sites = saved.sites;
+        reset.sites.gap();
+        let dir = tmpdir("dragons-sites-reset");
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), reset);
+        j.module_mask = MODULES;
+        let gone: u64 = 3 * 24_000;
+        j.game_time = left_at + gone as i64;
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        j.dragon_obs(&found(dim));
+        j.idle();
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        let (unknown, now_left, p, h) = e.with_dragons(|d, _| {
+            let l = d.lair_of_key(LAIR).expect("found again");
+            let lair = &d.lairs[l as usize];
+            let h = d.tun.renewal().half_life_days;
+            let day = (d.now().0 / 24_000) as u32;
+            (lair.found_unknown, lair.due.0 - d.now().0, lair.pressure.now(day, h), h)
+        });
+        assert!(!unknown, "the row is its history");
+        let want = row.wait_left - gone;
+        assert!(now_left.abs_diff(want) <= 400, "the wait left: {now_left} against {want}");
+        let aged = (-3.0 / h).exp2();
+        assert!((p - aged).abs() < 0.01, "the pressure aged three days: {p} against {aged}");
+        let again = j.sites.row(SiteKind::Lair, LAIR).expect("the new engine's row");
+        assert_eq!(again.flags, waiting);
+        assert!(again.wait_left.abs_diff(want) <= 400, "{again:?}");
+        let (s, _, _) = e.dragon_stats();
+        assert_eq!((s.respawns, s.heirs_sent), (0, 0), "nobody minted: {s:?}");
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
     /// A lair's own dragon, adopted (embodied) and saved, then killed by a player. The session
     /// ends in a crash (the journal holds the death the pages lack, and the next session replays
     /// it) or, for the control, in a clean close (the pages hold it). The dragons after the
@@ -2417,12 +2536,14 @@ mod dragons {
         j.dragon_obs(&O::LairFound(db::LairFound {
             lair: LAIR,
             late: false,
+            placed: false,
             dimension: dim,
             species: Species::Fire,
             kind: LairKind::Roost,
             min: (HOME.0 - 30, 60, HOME.2 - 30),
             max: (HOME.0 + 30, 140, HOME.2 + 30),
             home: HOME,
+            row: Default::default(),
         }));
         j.dragon_obs(&untagged((0xD1, 0x1), SpawnKind::Structure, LAIR, dim));
         j.idle();
@@ -2530,12 +2651,14 @@ mod dragons {
         j.dragon_obs(&O::LairFound(db::LairFound {
             lair: LAIR,
             late: false,
+            placed: false,
             dimension: dim,
             species: Species::Fire,
             kind: LairKind::Roost,
             min: (HOME.0 - 30, 60, HOME.2 - 30),
             max: (HOME.0 + 30, 140, HOME.2 + 30),
             home: HOME,
+            row: Default::default(),
         }));
         j.idle();
         j.idle();
@@ -3382,12 +3505,14 @@ mod ships {
         j.dragon_obs(&DO::LairFound(db::LairFound {
             lair,
             late: false,
+            placed: false,
             dimension: dim,
             species: Species::Fire,
             kind: LairKind::Roost,
             min: (home.0 - 30, 60, home.2 - 30),
             max: (home.0 + 30, 140, home.2 + 30),
             home,
+            row: Default::default(),
         }));
         j.dragon_obs(&DO::Untagged(db::Untagged {
             entity: (0xD3, 0x1),
@@ -8251,12 +8376,14 @@ mod conflict {
             j.dragon_obs(&db::Obs::LairFound(db::LairFound {
                 lair: *lair,
                 late: false,
+                placed: false,
                 dimension,
                 species: rtsim_ecology::species::Species::Fire,
                 kind: rtsim_ecology::dragon::LairKind::Roost,
                 min: (home.0 - 30, 60, home.2 - 30),
                 max: (home.0 + 30, 140, home.2 + 30),
                 home,
+                row: Default::default(),
             }));
             j.idle();
         }

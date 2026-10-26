@@ -524,8 +524,8 @@ impl State {
         }
     }
 
-    /// Queues a SITE_STATE for core's site ledger, replacing one queued for the same site.
-    #[cfg_attr(not(test), allow(dead_code))] // the modules' drains queue theirs (lairs on, MZB-1012)
+    /// Queues a SITE_STATE for core's site ledger, replacing one queued for the same site. The
+    /// modules queue theirs when they take their commands outside the replay (lairs MZB-1012).
     fn queue_site_state(&mut self, s: SiteState) {
         self.site_states.insert((s.kind.code(), s.key), s);
     }

@@ -1016,7 +1016,7 @@ The bridge and the industry ranges (`docs/industry-boundary.md` §1) stay as the
 | 0x0502 | DRAGON_DEMATERIALIZED | reason (§2.3's codes) | 24 u64 agent, 32 u32 epoch, 36 u32 dimension, 40 f32 health, 44 f32 maxHealth, 48 i32 hunger, 52 i32 ageTicks, 56 f64 x, 64 f64 y, 72 f64 z | 80 |
 | 0x0503 | DRAGON_HURT | attacker kind: 0 none, 1 player, 2 mob, 3 other | 24 u64 agent, 32 u32 epoch, 36 u32 hits, 40 f32 amount, 44 f32 healthAfter, 48 u64 attackerMost, 56 u64 attackerLeast | 64 |
 | 0x0504 | DRAGON_DIED | killer kind: core's kill credit (0 none, 1 player, 2 mob, 3 other, 4 taken: tamed, the killer fields naming the tamer) | 24 u64 agent, 32 u32 epoch, 36 u32 dimension, 40 u64 killerMost, 48 u64 killerLeast, 56 f64 x, 64 f64 y, 72 f64 z | 80 |
-| 0x0505 | LAIR_FOUND | flags: 1 LATE (in a chunk generated before the plugin) | 24 u64 lair, 32 u32 dimension, 36 u32 structure (dictionary 4), 40 i32 minX, 44 minY, 48 minZ, 52 maxX, 56 maxY, 60 maxZ, 64 i32 homeX, 68 homeY, 72 homeZ, 76 reserved | 80 |
+| 0x0505 | LAIR_FOUND | flags: 1 LATE (in a chunk generated before the plugin), 2 PLACED (the plugin placed it now, PLACE_LAIR's answer; MZB-1012) | 24 u64 lair, 32 u32 dimension, 36 u32 structure (dictionary 4), 40 i32 minX, 44 minY, 48 minZ, 52 maxX, 56 maxY, 60 maxZ, 64 i32 homeX, 68 homeY, 72 homeZ, 76 reserved, 80 the found tail (§2.5) | 120 + 16 a UUID |
 | 0x0506 | HOARD_ROBBED | n | 24 u64 lair, 32 u64 opId, 40 u64 playerMost, 48 u64 playerLeast, 56 n × (u32 item, i32 count, u64 reserved) | 56 + 16n |
 | 0x0507 | DRAGON_UNTAGGED | spawn: 1 structure, 2 natural, 3 spawner, 4 spawn egg, 5 command, 6 hatched, 7 other | 24 u64 entityMost, 32 u64 entityLeast, 40 u32 species (dictionary 3), 44 u32 dimension, 48 u32 flags (1 tamed, 2 has home, 4 sleeping, 8 aging disabled), 52 i32 ageTicks, 56 i32 hunger, 60 u32 gender (0 female, 1 male), 64 u32 variant (0 to 3 within the species), 68 i32 homeX, 72 homeY, 76 homeZ, 80 u64 lair (0: none), 88 f64 x, 96 f64 y, 104 f64 z | 112 |
 | 0x0508 | DRAGON_ATE | count | 24 u64 agent, 32 u32 epoch, 36 u32 prey (dictionary 3), 40 u64 village (0: none), 48 f64 x, 56 f64 y, 64 f64 z | 72 |
@@ -1062,6 +1062,15 @@ The bridge and the industry ranges (`docs/industry-boundary.md` §1) stay as the
 - **OIL_CONFIG** (OG-3, OG-7, OG-9e): the plugin's three switches, sent once per session before the
   first PLAYER. Without it the engine keeps its defaults (field flights on, lair placement on, nests on;
   OGB-6, OGC70).
+- **LAIR_FOUND**'s hand-over (EQUILIBRIUM.md §2.3, MZB-1012): a lair new to this engine life takes
+  the found tail's row (§2.5): its pressure, and its wait left when the row was waiting. A row with
+  dragons home and no wait (they were the old engine's, lost with it) waits the cap with its pressure
+  (F12). With no row, a LATE lair that is not PLACED is taken as farmed: the cap's pressure and the
+  cap to wait, until its own dragon is adopted (that resets its pressure: its history was lost, not
+  its dragon). Any other lair starts fresh. The engine sends each lair's SITE_STATE (K 1, the
+  dragons home as count, flags SHORT and EMPTY when nobody is, WAITING with the wait left) when its
+  dragons, its vacancy or its pressure change and when it is found again; the marks are not saved,
+  and the found census heals any a restart lost.
 - **NEST_FOUND** (OG-9e, §6.8): answers PLACE_NEST, placed (with the heart's block) or failed (the
   chunk has no natural ground for the chamber). Sent again, with the same heart, for a PLACE_NEST of a
   nest already placed. Not ledgered: the engine keeps the nest, the plugin keeps the chamber.
@@ -1093,7 +1102,7 @@ The bridge and the industry ranges (`docs/industry-boundary.md` §1) stay as the
 | 0x8502 | DRAGON_DEPART | reason: 1 bored, 2 hungry, 3 wounded, 4 passing through, 5 recalled | 16 u64 agent, 24 u32 epoch, 28 u32 timeoutTicks, 32 f64 x, 40 f64 y, 48 f64 z | 56 | DRAGON_DEMATERIALIZED |
 | 0x8503 | DRAGON_ADOPT | 0 | 16 u64 entityMost, 24 u64 entityLeast, 32 u64 agent, 40 u32 epoch, 44 u32 flags (1 has a home), 48 i32 homeX, 52 homeY, 56 homeZ, 60 reserved | 64 | DRAGON_MATERIALIZED or DRAGON_SPAWN_REJECTED |
 | 0x8504 | DRAGON_DISCARD | reason: 1 the sim owns the population, 2 its lair has its dragon | 16 u64 entityMost, 24 u64 entityLeast | 32 | COMMAND_RESULT |
-| 0x8505 | PLACE_LAIR | 0 | 16 u64 field (the engine's id, for logs), 24 u32 dimension, 28 u32 structure (dictionary 4), 32 i32 x, 36 i32 z, 40 u32 radius, 44 reserved | 48 | LAIR_FOUND (flag 1 LATE) when placed; nothing when no site is found |
+| 0x8505 | PLACE_LAIR | 0 | 16 u64 field (the engine's id, for logs), 24 u32 dimension, 28 u32 structure (dictionary 4), 32 i32 x, 36 i32 z, 40 u32 radius, 44 reserved | 48 | LAIR_FOUND (flags 1 LATE and 2 PLACED) when placed; nothing when no site is found |
 | 0x8506 | OIL_SURVEY | 0 | 16 u32 dimension, 20 i32 x, 24 i32 z, 28 u32 radius | 32 | OIL_CHUNKS (source 2), as many as it takes; nothing when it finds none |
 | 0x8507 | PLACE_NEST | 0 | 16 u64 nest, 24 u32 dimension, 28 i32 chunkX, 32 i32 chunkZ, 36 u32 depth (the chamber's floor this many blocks below the surface) | 40 | NEST_FOUND, at once if the chunk is loaded, else on its next load |
 | 0x8508 | NEST_RENEW | count | 16 u64 nest, 24 u32 dimension, 28 u32 stage (1 to 3, the worms' size), 32 u32 serial (the engine's count of this nest's renewals, this one in it, from 1), 36 reserved | 40 | NEST_CENSUS once they spawn |
@@ -1240,7 +1249,7 @@ instead. The engine side is `crates/rtsim-ecology/src/oil.rs`; the synthetic plu
   79 ms on a real overworld; docs/choices-oilgate.md OGC43).
 - **Answers PLACE_LAIR** by placing the structure through `/place structure`'s code path (every biome
   allowed) on the first load of a free site within `radius` of (x, z), at most once per `field`, and
-  sending its LAIR_FOUND (flag 1). The roost's own dragon, if Ice and Fire spawns one, is reported
+  sending its LAIR_FOUND (flags 1 and 2: its chunk is old, the lair is new). The roost's own dragon, if Ice and Fire spawns one, is reported
   untagged as any lair's dragon is (§6.6), and the engine adopts it.
 - **Counts breaths:** a body materialized with flag 16 starts with `oil` points. Each
   `DragonFireEvent` it posts costs one point and is summed into DRAGON_BREATHS; at zero the event is

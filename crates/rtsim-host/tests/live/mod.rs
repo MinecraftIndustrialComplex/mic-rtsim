@@ -87,12 +87,14 @@ fn populate(j: &mut Java) {
     j.dragon_obs(&db::Obs::LairFound(db::LairFound {
         lair: LAIR,
         late: false,
+        placed: false,
         dimension: dim,
         species: Species::Fire,
         kind: LairKind::Roost,
         min: (LAIR_HOME.0 - 30, 60, LAIR_HOME.2 - 30),
         max: (LAIR_HOME.0 + 30, 140, LAIR_HOME.2 + 30),
         home: LAIR_HOME,
+        row: Default::default(),
     }));
     j.dragon_obs(&db::Obs::Untagged(db::Untagged {
         entity: (0xD1, 0x1),

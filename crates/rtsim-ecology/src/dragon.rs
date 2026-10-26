@@ -72,6 +72,10 @@ pub struct Lair {
     /// dragons' hunts catch, as of `fed_at`. A newcomer starts it at 1.
     pub fed: f32,
     pub fed_at: Tick,
+    /// Found late with no site ledger row (EQUILIBRIUM.md §2.3, S3): its history is lost, so it
+    /// waits the cap, and a dragon adopted into it while it waits resets its pressure (the
+    /// history was lost, not its dragon). Cleared when a dragon moves in (MZB-1012).
+    pub found_unknown: bool,
 }
 
 impl Lair {

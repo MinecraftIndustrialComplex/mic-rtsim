@@ -16,6 +16,7 @@
 
 use crate::dragon::LairKind;
 use crate::species::{Gender, Species};
+use rtsim_kernel::sites::{FoundRow, SiteError};
 
 pub const DRAGON_STATE: u16 = 0x0060;
 /// A known lair's box is loaded and holds a chest: where its tribute goes (SINK.md §4.6).
@@ -238,11 +239,19 @@ pub struct Died {
     pub pos: (f64, f64, f64),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// LAIR_FOUND aux: the lair's chunk was generated before the plugin met it (loaded from disk).
+pub const LAIR_LATE: u32 = 1;
+/// LAIR_FOUND aux: the plugin placed the lair now (PLACE_LAIR's answer, OG-7), so it is new to the
+/// world although its chunk is old (LATE too; MZB-1012).
+pub const LAIR_PLACED: u32 = 2;
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct LairFound {
     /// The structure start's id, packed as villages' are (docs/boundary.md §4).
     pub lair: u64,
     pub late: bool,
+    /// The plugin placed it now ([`LAIR_PLACED`]): a new lair, as one just generated.
+    pub placed: bool,
     pub dimension: u32,
     pub species: Species,
     pub kind: LairKind,
@@ -250,6 +259,9 @@ pub struct LairFound {
     pub max: (i32, i32, i32),
     /// Where a dragon of the lair roosts (the structure piece's home position).
     pub home: (i32, i32, i32),
+    /// The site ledger's row for the lair (the found tail at 80, docs/boundary.md §2.5;
+    /// EQUILIBRIUM.md §2.3): read only when the lair is new to the engine (MZB-1012).
+    pub row: FoundRow,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -928,7 +940,10 @@ pub fn encode_obs(seq: u64, game_time: i64, o: &Obs, dict: &SpeciesDict, buf: &m
             w.ipos(40, l.min);
             w.ipos(52, l.max);
             w.ipos(64, l.home);
-            w.finish(LAIR_FOUND, l.late as u32, 80);
+            let tail = l.row.to_bytes();
+            w.at(80, &tail);
+            let aux = if l.late { LAIR_LATE } else { 0 } | if l.placed { LAIR_PLACED } else { 0 };
+            w.finish(LAIR_FOUND, aux, 80 + tail.len());
         }
         Obs::HoardRobbed(h) => {
             w.u64(24, h.lair);
@@ -1014,6 +1029,15 @@ pub fn encode_obs(seq: u64, game_time: i64, o: &Obs, dict: &SpeciesDict, buf: &m
     }
 }
 
+/// The site found tail from `at` to the record's end (docs/boundary.md §2.5): `b` is the record.
+fn found_row(b: &[u8], at: usize) -> Result<FoundRow, CodecError> {
+    let tail = b.get(at..).ok_or(CodecError::Short)?;
+    FoundRow::decode(tail).map_err(|e| match e {
+        SiteError::BadSize => CodecError::BadSize,
+        SiteError::BadValue(_) => CodecError::BadValue("site found tail"),
+    })
+}
+
 /// Reads one observation at the start of `b`: (record size, obsSeq, gameTime, record). Seq and
 /// time are 0 for latest-wins kinds.
 pub fn decode_obs(b: &[u8], dict: &SpeciesDict) -> Result<(usize, u64, i64, Obs), CodecError> {
@@ -1088,13 +1112,15 @@ pub fn decode_obs(b: &[u8], dict: &SpeciesDict) -> Result<(usize, u64, i64, Obs)
                 .ok_or(CodecError::BadValue("structure"))?;
             Obs::LairFound(LairFound {
                 lair: r.u64(24)?,
-                late: aux & 1 != 0,
+                late: aux & LAIR_LATE != 0,
+                placed: aux & LAIR_PLACED != 0,
                 dimension: r.u32(32)?,
                 species,
                 kind,
                 min: r.ipos(40)?,
                 max: r.ipos(52)?,
                 home: r.ipos(64)?,
+                row: found_row(r.b, 80)?,
             })
         }
         HOARD_ROBBED => {
@@ -1457,12 +1483,25 @@ mod tests {
             Obs::LairFound(LairFound {
                 lair: 1 << 40 | 99,
                 late: true,
+                placed: false,
                 dimension: 1,
                 species: Species::Ice,
                 kind: LairKind::Cave,
                 min: (-10, 20, 30),
                 max: (40, 60, 80),
                 home: (15, 33, 55),
+                row: FoundRow {
+                    flags: rtsim_kernel::sites::tail_flags::ROW
+                        | rtsim_kernel::sites::tail_flags::GAP
+                        | rtsim_kernel::sites::tail_flags::WAITING,
+                    k: 1,
+                    count: 0,
+                    p: 1.5,
+                    away: 0,
+                    wait_left: 480_000,
+                    elapsed: 1_234,
+                    bodies: Default::default(),
+                },
             }),
             Obs::HoardRobbed(HoardRobbed {
                 lair: 5,
@@ -1543,6 +1582,18 @@ mod tests {
             Obs::NestHeart(NestHeart {
                 nest: 6,
                 player: (23, 24),
+            }),
+            Obs::LairFound(LairFound {
+                lair: 7,
+                late: true,
+                placed: true,
+                dimension: 0,
+                species: Species::Fire,
+                kind: LairKind::Roost,
+                min: (0, 60, 0),
+                max: (20, 90, 20),
+                home: (10, 70, 10),
+                row: FoundRow::none(),
             }),
         ]
     }
