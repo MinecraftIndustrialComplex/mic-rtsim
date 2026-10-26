@@ -6,7 +6,8 @@
   "mixins": [
     "ContainerUmvuthanaTradeSlotResultMixin",
     "EntityFrostmawMixin",
-    "EntityUmvuthiMixin"
+    "EntityUmvuthiMixin",
+    "MMEntityMoveHelperMixin"
   ],
   "injectors": {
     "defaultRequire": 1
