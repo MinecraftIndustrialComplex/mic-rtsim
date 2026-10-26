@@ -4,7 +4,11 @@
 //! copied without its `rtsim/archive` (the event timeline): `events.rs` needs a real save with no
 //! archive and writes its own archive onto a copy of this one. The create save keeps its archive.
 //!
-//! - `tests/data/core`: neoforge/core's GameTest world, a fresh one, run from commit c1bd6472
+//! - `tests/data/core`: neoforge/core's GameTest world, a fresh one, run from commit ccfec56d
+//!   (replay-gate slice R, the industry op window, merged with slice T 5e832028, which carries
+//!   main's slice A; R's formats: the industry globals are IGB2, `decided` after `now`, and an
+//!   industry district page starts with IDS5, its reconcile epochs per chunk, each pending
+//!   reconcile's round and the packages written per postbox, RP-259); before that, c1bd6472
 //!   (Mowzie's Mobs M9, the chiefs' heirs, trade memory, tribute and hunts, merged with main
 //!   4e694452, which carries slice N; M9's formats: the conflict's pages are RTC9 with meta
 //!   version 8, a camp's ledger going on with its heir, its chief's trade memory, the tribute it
