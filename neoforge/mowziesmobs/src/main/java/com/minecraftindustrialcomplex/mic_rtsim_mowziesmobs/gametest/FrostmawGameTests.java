@@ -858,8 +858,8 @@ public final class FrostmawGameTests {
     private static final int STEADY_PATHS = 2;
 
     /**
-     * The hold wins against the jar's chase (MZB-361, the re-check's P1). A held puppet is pushed 2 blocks off its spot,
-     * across the line to a player 8 blocks west who is its target (the jar's {@code tick} walks an awake Frostmaw to
+     * The hold wins against the jar's chase (MZB-361, the re-check's P1). A held puppet is pushed 2 blocks off its spot
+     * (the hold point Java chose beside the rail, MZB-698), with a player 8 blocks west who is its target (the jar's {@code tick} walks an awake Frostmaw to
      * its target every tick it is more than 5.5 blocks off, replacing the hold's path, and stops it when it is
      * not). The puppet has no crystal, so no ice breath or ice ball animation stops its walk. Asserted: it is back
      * within {@link FrostmawLurker#STAND} of the spot within {@value #BACK_TICKS} ticks; it never comes closer to
@@ -881,17 +881,25 @@ public final class FrostmawGameTests {
         long[] from = new long[2];
         int[] paths = {0, 0};
         Path[] last = new Path[1];
+        Vec3[] home = new Vec3[1];
         h.up(helper)
                 .thenExecute(() -> {
                     EntityFrostmaw f = h.f[0];
                     f.setHasCrystal(false);
-                    player[0] = FakePlayers.add(h.level, h.spot[0].add(-8, 0, 0), "mowzie-chase");
+                    // The hold point, not the engine's spot: Java holds the puppet at a point it chose beside the rail
+                    // (MZB-361's amendment), and the hold walks it back there (MZB-698)
+                    home[0] = ConflictKit.lurkHold(h.agent);
+                    check("the puppet is held at a point", home[0] != null);
+                    check("and rests within its stand of it", Math.hypot(f.getX() - home[0].x, f.getZ() - home[0].z) <= FrostmawLurker.STAND + 1e-6);
+                    player[0] = FakePlayers.add(h.level, home[0].add(-8, 0, 0), "mowzie-chase");
                     player[0].setNoGravity(true);
                     player[0].getAttribute(Attributes.MAX_HEALTH).setBaseValue(1000.0);
                     player[0].setHealth(1000f);
                     ConflictKit.onEnd(helper, () -> FakePlayers.remove(player[0]));
-                    // Two blocks north of the spot: the player (west) is then 8.2 blocks off, past the jar's 5.5 chase threshold and 6.5 swipe range
-                    f.setPos(h.spot[0].x, h.spot[0].y, h.spot[0].z - 2.0);
+                    // Two blocks off the hold point along z, toward the floor's middle (so on the floor): the player (west)
+                    // is then 8.2 blocks off, past the jar's 5.5 chase threshold and 6.5 swipe range
+                    double off = home[0].z < h.spot[0].z ? 2.0 : -2.0;
+                    f.setPos(home[0].x, home[0].y, home[0].z + off);
                     f.setDeltaMovement(Vec3.ZERO);
                     f.getNavigation().stop();
                     f.setTarget(player[0]);
@@ -901,7 +909,7 @@ public final class FrostmawGameTests {
                 .thenWaitUntil(waits.logic(() -> {
                     EntityFrostmaw f = h.f[0];
                     f.setTarget(player[0]); // the restriction gates its own targeting (MZB-362)
-                    double fromSpot = Math.hypot(f.getX() - h.spot[0].x, f.getZ() - h.spot[0].z);
+                    double fromSpot = Math.hypot(f.getX() - home[0].x, f.getZ() - home[0].z);
                     closest[0] = Math.min(closest[0], fromSpot);
                     nearest[0] = Math.min(nearest[0], Math.hypot(f.getX() - player[0].getX(), f.getZ() - player[0].getZ()));
                     long now = h.level.getGameTime();
@@ -912,7 +920,7 @@ public final class FrostmawGameTests {
                 .thenExecute(() -> {
                     from[1] = h.level.getGameTime();
                     last[0] = h.f[0].getNavigation().getPath();
-                    stray[0] = Math.hypot(h.f[0].getX() - h.spot[0].x, h.f[0].getZ() - h.spot[0].z);
+                    stray[0] = Math.hypot(h.f[0].getX() - home[0].x, h.f[0].getZ() - home[0].z);
                     // The wait above ends when the puppet is back, however late (the test's own timeout is longer than the budget)
                     check("it was back in " + (from[1] - from[0]) + " ticks, within the " + BACK_TICKS + " the hold is given", from[1] - from[0] <= BACK_TICKS);
                     record(test, "back", "pushed 2 blocks off its spot, the puppet was back within " + FrostmawLurker.STAND + " in " + (from[1] - from[0])
@@ -925,13 +933,13 @@ public final class FrostmawGameTests {
                     if (p != null && p != last[0])
                         paths[0]++;
                     last[0] = p;
-                    stray[0] = Math.max(stray[0], Math.hypot(f.getX() - h.spot[0].x, f.getZ() - h.spot[0].z));
+                    stray[0] = Math.max(stray[0], Math.hypot(f.getX() - home[0].x, f.getZ() - home[0].z));
                     nearest[0] = Math.min(nearest[0], Math.hypot(f.getX() - player[0].getX(), f.getZ() - player[0].getZ()));
                     check("the steady stretch ran " + (h.level.getGameTime() - from[1]) + " of " + STEADY_TICKS + " ticks",
                             h.level.getGameTime() - from[1] >= STEADY_TICKS);
                 }))
                 .thenExecute(() -> {
-                    double floor = h.spot[0].distanceTo(player[0].position().with(net.minecraft.core.Direction.Axis.Y, h.spot[0].y)) - FrostmawLurker.STAND;
+                    double floor = home[0].distanceTo(player[0].position().with(net.minecraft.core.Direction.Axis.Y, home[0].y)) - FrostmawLurker.STAND;
                     check("it never walked after the player: the closest it came was " + nearest[0] + ", its spot is " + (floor + FrostmawLurker.STAND)
                             + " off (" + floor + " allowed)", nearest[0] >= floor - 0.05);
                     check("it stayed within its stand for " + STEADY_TICKS + " ticks (strayed " + stray[0] + ")", stray[0] <= FrostmawLurker.STAND + 1e-6);
