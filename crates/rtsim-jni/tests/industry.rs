@@ -5158,18 +5158,25 @@ mod ack_never_resends {
     /// After the switch in [`a_duplicate_restarted_off`]: X sent once in session 2 and refused
     /// DUPLICATE live, its exchange dropped; the ack past that answer prunes it, and the line runs
     /// to its end with no ring keeping X.
-    fn the_copy_goes_once_after_the_switch(mut r: Rig, x: u64) {
+    fn the_copy_goes_once_after_the_switch(r: Rig, x: u64) {
+        let books = the_copy_goes_once_in_session(r, x, 2);
+        assert_eq!(books, Ok(()), "the world against the engine's books");
+    }
+
+    /// [`the_copy_goes_once_after_the_switch`] for session `session`, whichever restart it is.
+    /// Returns the world against the engine's books at the line's end.
+    fn the_copy_goes_once_in_session(mut r: Rig, x: u64, session: usize) -> Result<(), String> {
         let t = r.j.mc().t;
-        r.run("X sent in session 2", t + 400, |r| {
-            !r.c.arrivals_of(x, 2).is_empty()
+        r.run(&format!("X sent in session {session}"), t + 400, |r| {
+            !r.c.arrivals_of(x, session).is_empty()
         });
         r.run("the ring refuses X again", t + 800, |r| {
-            r.c.lives_in(2).any(|l| l.op == x)
+            r.c.lives_in(session).any(|l| l.op == x)
         });
-        let s3 = *r.c.lives_in(2).find(|l| l.op == x).unwrap();
+        let s3 = *r.c.lives_in(session).find(|l| l.op == x).unwrap();
         assert_eq!(
             s3.status, DUPLICATE,
-            "the ring refused X, live in session 2"
+            "the ring refused X, live in session {session}"
         );
         assert!(
             !industry(&r.j.e, |ie| ie.exchange_pending(OpId(x))),
@@ -5178,10 +5185,13 @@ mod ack_never_resends {
         r.every = 3_000;
         r.until_read(s3.seq);
         assert!(r.c.gone.contains_key(&x), "pruned on the ack past S3");
-        r.finish_with(|c, _| {
-            assert_eq!(c.arrivals_of(x, 2).len(), 1);
+        let mut books = Ok(());
+        r.finish_with(|c, j| {
+            assert_eq!(c.arrivals_of(x, session).len(), 1);
             assert!(!c.ring.contains_key(&x), "no ring keeps X");
+            books = books_delta(j);
         });
+        books
     }
 
     /// [`a_duplicate_restarted_off`], switched on after the replay. Off, the replay brings S2 (X's
@@ -5249,6 +5259,153 @@ mod ack_never_resends {
             s2.seq
         );
         the_copy_goes_once_after_the_switch(r, x);
+    }
+
+    /// RP-318, the kept answer a link page loads (the build lead's re-check of RP-313).
+    /// [`a_duplicate_restarted_off`] stays off past its replay: S2, X's first answer in it, is kept
+    /// for the switch (replayed, so its copy stays), the pages are taken while off and Java reads
+    /// their ack, and the engine crashes. The link page saves the record alone, so session 3, which
+    /// restarts with the module on, loads S2 as replayed (`KeptAnswer::get`) and books it at its
+    /// start: the copy of X in the page's queue stays, X is sent once in session 3 and refused
+    /// DUPLICATE live, and no ring keeps it at the end. Loaded as heard live (`replayed: false`)
+    /// the booking takes the copy out of the queue, X is never sent in session 3, and Java's rings
+    /// keep it with its answer unknown for good. The control is the same restart switched on in
+    /// session 2, with no second crash: X is sent once there too, and the world against the
+    /// engine's books is the same.
+    #[test]
+    fn a_kept_duplicate_the_link_page_held_is_booked_as_replayed_at_a_restart_with_industry_on() {
+        let control = {
+            let (mut r, x, _) = a_duplicate_restarted_off("ack-c5-page-ctl", false, 256 * 1024);
+            let t2 = r.j.mc().t;
+            r.run("the replay ends", t2 + 100, |r| {
+                r.j.e.stats.replays_ended.load(Ordering::Acquire) > 0
+            });
+            switch_on(&mut r);
+            the_copy_goes_once_in_session(r, x, 2)
+        };
+        assert_eq!(control, Ok(()), "the control's world against the engine's books");
+        let (mut r, x, s2) = a_duplicate_restarted_off("ack-c5-page", false, 256 * 1024);
+        let t2 = r.j.mc().t;
+        r.run("the replay ends", t2 + 100, |r| {
+            r.j.e.stats.replays_ended.load(Ordering::Acquire) > 0
+        });
+        assert!(
+            industry(&r.j.e, |ie| ie.exchange_pending(OpId(x))),
+            "off, S2 waits for the switch"
+        );
+        // The pages while off hold S2 kept and X's copy queued; Java reads their ack.
+        let through = r.j.next_obs - 1;
+        assert!(through >= s2.seq);
+        r.j.e.request_save(through);
+        r.until_read(through);
+        assert!(r.c.arrivals_of(x, 2).is_empty(), "nothing goes while off");
+        let w = r.c.save(&r.j);
+        r.modules = MODULE_INDUSTRY;
+        r.restart(&w);
+        assert!(r.j.pages_obs >= through, "session 3's pages are past S2");
+        let books = the_copy_goes_once_in_session(r, x, 3);
+        assert_eq!(
+            books, control,
+            "the world against the engine's books, as the control's"
+        );
+    }
+
+    /// RP-318, the replay's second answer for an op with industry off (`answered_again`'s off
+    /// branch). Session 0: the pages are taken at the end of the step that decides a station
+    /// exchange X, after the drain and before the write (a step saves ahead of its commands), so
+    /// they hold X in the link's queue, unsent. X is then written under cmdSeq c, and the world
+    /// applies it and answers APPLIED (S1), and saves, its journal holding S1 and its
+    /// lastAppliedCmdSeq c (a copy in the outbox would be trimmed by that at the start, so only
+    /// the queue's copy is left to resend). The crash comes before any page save covers S1.
+    /// Session 1 replays S1 and, the copy being a queued one, which a replayed APPLIED leaves
+    /// (RP-310), sends X again after its replay end: the world refuses it DUPLICATE live (S2). It
+    /// saves the world, S1 and S2 in its journal, and crashes with no page save. Session 2
+    /// restarts from the same pages with industry off: the replay brings S1 (X's first answer in
+    /// it) and S2, which `Replay` refuses by op id, so S2 reaches `answered_again` while
+    /// replaying. Replayed, it takes only the outbox's copy, as S1 did: X stays in the queue, and
+    /// after the switch it is sent once and answered DUPLICATE (S3), the kept S2 booked as
+    /// replayed. Passed as heard live, S2 takes the queue's copy and X is never sent in session 2.
+    #[test]
+    fn a_replayed_duplicate_refused_by_op_id_with_industry_off_leaves_the_queued_copy() {
+        let mut r = Rig::new("ack-twice-off", false);
+        r.run_to(day(2.0));
+        r.every = 0;
+        let exchanges = |r: &Rig| -> Vec<u64> {
+            r.c.arrivals
+                .iter()
+                .filter(|a| a.session == 0 && a.kind == "exchange")
+                .map(|a| a.op)
+                .collect()
+        };
+        let before = exchanges(&r).len();
+        // Pages through the last record of every hand-over, until the step that writes X: its
+        // pages are taken at that step's end, after its simulate drained X into the queue.
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let mut through = 0;
+        while exchanges(&r).len() == before {
+            assert!(Instant::now() < deadline, "60 s of wall clock");
+            assert!(r.j.mc().t < day(8.0), "a station exchange by day 8");
+            r.step(
+                |_, _, _| true,
+                |j, _| {
+                    through = j.next_obs - 1;
+                    j.e.request_save(through);
+                },
+            );
+            r.after_tick();
+        }
+        let x = exchanges(&r)[before];
+        assert!(!r.j.mc().applied_ops().contains(&OpId(x)), "X is written, not applied");
+        r.run("the pages", day(8.0), |r| {
+            r.j.e.durable_obs_seq() >= through
+        });
+        assert_eq!(r.j.e.durable_obs_seq(), through);
+        r.run("the world answers X", day(8.0), |r| {
+            r.c.lives_in(0).any(|l| l.op == x)
+        });
+        let s1 = *r.c.lives_in(0).find(|l| l.op == x).unwrap();
+        assert_eq!(s1.status, APPLIED);
+        assert!(through < s1.seq, "the pages are behind S1");
+        let w1 = r.c.save(&r.j);
+        assert_eq!(r.j.e.durable_obs_seq(), through, "no later page save");
+        r.restart(&w1);
+        assert_eq!(r.j.pages_obs, through, "session 1 restarts from the pages");
+        assert!(
+            r.j.e.with_industry(|_, l| l.queued) >= 1,
+            "the pages hold X queued"
+        );
+        let t1 = r.j.mc().t;
+        r.run("X sent again in session 1", t1 + 400, |r| {
+            !r.c.arrivals_of(x, 1).is_empty()
+        });
+        r.run("the ring refuses X", t1 + 400, |r| {
+            r.c.lives_in(1).any(|l| l.op == x)
+        });
+        let s2 = *r.c.lives_in(1).find(|l| l.op == x).unwrap();
+        assert_eq!(s2.status, DUPLICATE, "refused live in session 1");
+        let w2 = r.c.save(&r.j);
+        assert_eq!(r.j.e.durable_obs_seq(), through, "no page save past the first");
+        assert!(r.c.crash(&r.j) < s1.seq, "no ack at or past S1");
+        r.modules = 0;
+        r.restart(&w2);
+        assert_eq!(r.j.pages_obs, through, "session 2 restarts from the same pages");
+        let t2 = r.j.mc().t;
+        r.run("the replay ends", t2 + 100, |r| {
+            r.j.e.stats.replays_ended.load(Ordering::Acquire) > 0
+        });
+        assert!(
+            industry(&r.j.e, |ie| ie.exchange_pending(OpId(x))),
+            "off, the replayed carriage result waits for the switch"
+        );
+        assert!(r.c.arrivals_of(x, 2).is_empty(), "nothing goes while off");
+        eprintln!(
+            "twice: X {x:#x} answered APPLIED at S1 {} in session 0, refused at S2 {} in session 1; \
+             pages through {through}",
+            s1.seq, s2.seq
+        );
+        switch_on(&mut r);
+        let books = the_copy_goes_once_in_session(r, x, 2);
+        assert_eq!(books, Ok(()), "the world against the engine's books");
     }
 
     /// An answer that reaches the engine while the industry module is off (RP-285). The server's
