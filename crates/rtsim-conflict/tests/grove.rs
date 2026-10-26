@@ -1730,6 +1730,53 @@ fn an_unloaded_stack_forgets_only_its_own_chest() {
     ok(&mut r);
 }
 
+/// MZB-762 (review P2-1): a FAILED stack forgets the grove's chest only if it is still the stack's
+/// own, as NOT_LOADED does. A stack parked at chest X, the grove in again with X full or broken and
+/// a chest Y named: the stack goes again to X, finds no room there (FAILED), and Y is kept, and the
+/// next stack goes to it. The chest was forgotten whoever it was, and Java names Y again only on a
+/// change, so the grove stalled.
+#[test]
+fn a_failed_stack_forgets_only_its_own_chest() {
+    let (mut r, nugget) = tribute_run(46);
+    let held = stock(&r, nugget);
+    let first = (synth::CAMP_POS.x + 3, 64, synth::CAMP_POS.z + 2);
+    let other = (synth::CAMP_POS.x - 5, 64, synth::CAMP_POS.z + 7);
+    chest_named_at(&mut r, first, 27);
+    let (op, p) = r.c.placings().next().expect("a stack");
+    assert_eq!(p.pos, first);
+    // The chunk was not loaded: parked. Then the plugin names another chest, since the first is
+    // full or broken: the stack goes again, to its own chest.
+    assert!(r.c.tribute_not_loaded(op));
+    chest_named_at(&mut r, other, 27);
+    let sent: Vec<_> = r.c.placings_to_send().collect();
+    assert_eq!(sent, [(op, p)], "the parked stack goes again, to the first");
+    // Now the chunk is loaded and the chest has no room: FAILED.
+    let at = r.c.now();
+    assert!(r.c.tribute_failed(&mut r.w, op, at));
+    assert_eq!(
+        r.c.camp(r.f).unwrap().chest.map(|c| c.pos),
+        Some(other),
+        "only the stack's own chest is forgotten"
+    );
+    // The goods went back, and the next stack goes to the chest named since, under a new op.
+    let sent: Vec<_> = r.c.placings_to_send().collect();
+    assert_eq!(sent.len(), 1, "the next stack goes");
+    assert_ne!(sent[0].0, op, "under a new op");
+    assert_eq!(sent[0].1.pos, other, "to the chest named since");
+    assert_eq!(stock(&r, nugget), held - 64 * MILLI, "one stack out again");
+    assert_eq!(owed(&r), 567);
+    // A failed stack of the chest the grove still holds forgets it, as it did.
+    let (op2, _) = r.c.placings().next().expect("a stack");
+    assert!(r.c.tribute_failed(&mut r.w, op2, at));
+    assert!(
+        r.c.camp(r.f).unwrap().chest.is_none(),
+        "its own chest is forgotten"
+    );
+    assert_eq!(r.c.placings().count(), 0);
+    assert_eq!(stock(&r, nugget), held, "back");
+    ok(&mut r);
+}
+
 /// MZB-760: a parked stack is answered like any stack in flight. FAILED (the chunk loaded, and no
 /// chest there) takes it out and puts its goods back; APPLIED takes it out and lowers what is
 /// owed. CAMP_OUT, where the grove's chest is forgotten, and a session's start let it go again,

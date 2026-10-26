@@ -1950,18 +1950,27 @@ impl Conflict {
 
     /// The plugin could not put a stack in its chest (FAILED): the goods go back to the faction's
     /// stock, the tribute is still owed, and the chest is forgotten until the plugin names one
-    /// again. While replaying, an answer to a stack no placing holds is booked by its op
+    /// again, if it is still the stack's own (the same dimension and place, as
+    /// [`Conflict::tribute_not_loaded`], MZB-762): a chest named since, elsewhere, is kept, as the
+    /// plugin names it again only on a change, and the next stack goes to it now. While
+    /// replaying, an answer to a stack no placing holds is booked by its op
     /// ([`Conflict::replayed_failed`], RP-134).
     pub fn tribute_failed(&mut self, w: &mut World, op: u64, at: Tick) -> bool {
         let Some((f, p)) = self.unplace(op) else {
             return self.replayed_failed(op);
         };
         let node = self.factions[f as usize].node;
-        if let Some(camp) = self.camp_mut(f) {
+        if let Some(camp) = self.camp_mut(f)
+            && camp
+                .chest
+                .is_some_and(|c| c.dimension == p.dimension && c.pos == p.pos)
+        {
             camp.chest = None;
         }
         let good = GoodId(u16::try_from(p.good).unwrap_or(0));
         w.stock_from_players(node, &BTreeMap::from([(good, p.amount)]), at);
+        // A chest kept takes the next stack at once: nothing else sends it before the next payment.
+        self.place_tribute(w, f, at);
         true
     }
 

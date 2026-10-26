@@ -7061,6 +7061,36 @@ under its op id, as the dragons' (RP-210). Rust only; no GameTest, no Java.
     parked stacks again every step fails the parking test ("parked: not sent again every step", 11
     commands for 7).
 
+## MZB-762 Review fixes to MZB-760 (grove tribute parking)
+
+Review of fix/grove-tribute-park at 7e1183ef (the build lead's findings P2-1, P2-2, P3-1, P3-4, P3-5 and
+the docs). Rust and docs only; no GameTest, no Java. One record per fix, MZB-762 to MZB-766.
+
+- **MZB-762** (P2-1: a FAILED stack forgets the chest only if it is the stack's own):
+  - **The stall.** `tribute_failed` set `camp.chest = None` whatever chest the grove held. A stack s to
+    chest X answered NOT_LOADED is parked; the grove comes in with X full or broken and GroveChests
+    names Y; `haven_chest` unparks s and sends it to its own chest X, whose chunk is loaded and carries
+    no op, so the insert fails (FAILED); the engine forgot Y. Java names Y again only on a change
+    (`GroveChests.containerTransferred` re-checks only the chest it last named, and the 200-tick scan
+    sends only on a change), so the grove stalled. The same holds without a parking: a stack in flight
+    to X when Y is named, and then FAILED.
+  - **The fix.** The chest is forgotten only if it is the stack's own (the same dimension and place), as
+    `tribute_not_loaded` does. Engine test `a_failed_stack_forgets_only_its_own_chest`
+    (crates/rtsim-conflict/tests/grove.rs): parked at X, Y named, the stack goes again to X, FAILED; the
+    camp still holds Y, and the failed goods go as a new stack to Y. On 7e1183ef it failed at "only the
+    stack's own chest is forgotten" (None for Y).
+  - **Fork: the next stack goes at once.** With Y kept nothing sent the failed goods again before the
+    next payment or census (`place_tribute` runs at a payment, a census, a HAVEN_CHEST and an APPLIED),
+    a stall of its own. So `tribute_failed` ends with `place_tribute`, as `tribute_placed` does. It sends
+    nothing when the chest was forgotten (the usual FAILED, as before), and a chest that fails again is
+    its stack's own and is forgotten then, so it cannot loop.
+  - **The dragons have the same line** (`Dragons::tribute_failed` took `chests.remove` whatever the
+    chest). The sequence reaches it: a stack parked at X, `LairChest` Y reported (it unparks the lair's
+    stacks and sends them to their own chests), the stack answered FAILED forgot Y, and its coin sat
+    unplaced until the next season's payment. Same fix (forget only if `chests[lair] == p.chest`) and the
+    same `place_tribute(lair)` after it. Test `a_failed_stack_forgets_only_its_own_chest`
+    (crates/rtsim-ecology/tests/tribute.rs), failed first the same way on 7e1183ef (None for Y).
+
 ## M11 Aloft
 
 (none yet)
