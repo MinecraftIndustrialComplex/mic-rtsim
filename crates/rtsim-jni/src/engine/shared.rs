@@ -405,10 +405,12 @@ pub(super) fn end_resets(st: &mut State, begun: &[Module]) {
 
 /// Step 2 of [`resets`]: the records the `begun` modules kept while switched off, merged into one
 /// list by the observation number each came under (`Replay` admits in that order, and a
-/// restart's replay sends them in it), each module's own list in its order, a tie to the
-/// earlier module in [`RESETS`]. Each is the module's own `apply`: its catch-up on the shared
-/// clock, then its booking, both no earlier than the module's own present (`State::applying_kept`,
-/// [`floor`]), as a copy if it came as one (`State::applying_copy`).
+/// restart's replay sends them in it), each module's own list in its order. No two share a
+/// number, so the merge meets no tie and module order never overrides `Replay`'s: `dispatch`
+/// gives each admitted record to one module, and a REASSERT holds one record, whose copy comes
+/// under the REASSERT's own number (`reasserted`). Each is the module's own `apply`: its
+/// catch-up on the shared clock, then its booking, both no earlier than the module's own present
+/// (`State::applying_kept`, [`floor`]), as a copy if it came as one (`State::applying_copy`).
 fn apply_kept(st: &mut State, begun: &[Module]) {
     let mut lists: Vec<(Module, std::collections::VecDeque<KeptRec>)> = begun
         .iter()
@@ -427,14 +429,21 @@ fn apply_kept(st: &mut State, begun: &[Module]) {
     }
     let counts: Vec<(Module, usize)> = lists.iter().map(|(m, l)| (*m, l.len())).collect();
     let outer = st.applying_copy;
+    let outer_kept = st.applying_kept;
     st.applying_kept = true;
+    let mut last = None;
     loop {
         let next = lists
             .iter()
             .enumerate()
             .filter_map(|(i, (_, l))| l.front().map(|(_, b)| (seq_of(b), i)))
             .min();
-        let Some((_, i)) = next else { break };
+        let Some((seq, i)) = next else { break };
+        debug_assert!(
+            last < Some(seq),
+            "kept observation {seq} after {last:?}: out of order, or two modules kept one record"
+        );
+        last = Some(seq);
         let m = lists[i].0;
         let Some((copy, bytes)) = lists[i].1.pop_front() else {
             break;
@@ -452,7 +461,7 @@ fn apply_kept(st: &mut State, begun: &[Module]) {
             Module::Ships => {}
         }
     }
-    st.applying_kept = false;
+    st.applying_kept = outer_kept;
     st.applying_copy = outer;
     for (m, n) in counts {
         let who = match m {
