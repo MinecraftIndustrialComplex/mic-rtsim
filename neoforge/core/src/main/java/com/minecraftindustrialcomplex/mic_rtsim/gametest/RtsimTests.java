@@ -198,6 +198,18 @@ public final class RtsimTests {
     }
 
     /**
+     * A scripted village, as {@link #adoptArena}, with its own box and meeting point (absolute): for a test
+     * that builds somewhere other than its arena, such as far chunks it forces. Remove it with {@link #forget}.
+     */
+    public static com.minecraftindustrialcomplex.mic_rtsim.village.Village adoptScripted(GameTestHelper helper, String culture,
+                                                                                        net.minecraft.world.level.levelgen.structure.BoundingBox box,
+                                                                                        net.minecraft.core.BlockPos meeting) {
+        long id = newVillageId();
+        engine().scriptVillage(id);
+        return adopt(helper, id, "minecraft:village_plains", culture, box, meeting);
+    }
+
+    /**
      * Adopts a village the engine drives itself (no {@link ScriptedEngine#scriptVillage}): the same id
      * scheme as {@link #adoptArena}, the given structure id (for example {@code minecraft:village_taiga}),
      * a box of +-{@code halfWidth} blocks around {@code meeting} (y from {@code meeting.y - 2} to

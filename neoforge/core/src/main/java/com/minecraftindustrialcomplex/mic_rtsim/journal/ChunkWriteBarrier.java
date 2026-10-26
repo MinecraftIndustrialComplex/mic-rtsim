@@ -68,9 +68,11 @@ import java.util.concurrent.atomic.AtomicLong;
  * loaded whose unload is never seen, after {@link #GIVE_UP_ROUNDS} world saves in a row. Each is logged and counted
  * ({@link #late}): its chunk on disk may then be older than the journal's file, so a crash before its next write
  * keeps the chunk as it was before ops the journal no longer resends. Goods those ops put in are lost; goods they
- * took out (a negative reconcile delta, a deposit draw, a destroyed block) are back beside what the engine already
- * holds, a second copy (docs/replay-gate.md 9.6, "After a give-up"). A flush save (the stop, {@code /save-all flush}) whose round is held tries once more after every chunk is flushed,
- * then keeps the older file ({@link JournalSavedData}, {@link WorldSaveOrder}).
+ * took out (a negative reconcile delta, a deposit draw) are back beside what the engine already holds, a second
+ * copy (docs/replay-gate.md 9.6, "After a give-up"). A block a reconcile destroyed is back while booked destroyed,
+ * but its drops never joined the level ({@link #writeNow} held them until the chunk was on disk, RP-213): no
+ * second copy. A flush save (the stop, {@code /save-all flush}) whose round is held tries once more after every
+ * chunk is flushed, then keeps the older file ({@link JournalSavedData}, {@link WorldSaveOrder}).
  *
  * <p>Entity chunks are noted the same way ({@link #dependsOnEntities}; MOWZIE.md ledger 22): a camp record rides
  * on a body or a marker, which vanilla stores apart from its chunk, in the {@code entities/} region files through
@@ -93,6 +95,12 @@ public final class ChunkWriteBarrier {
      * milliseconds. Past it the round is held, not written late.
      */
     public static final long WAIT_MILLIS = 10_000;
+
+    /**
+     * How long a {@link #writeNow} waits for its chunks before it counts as failed (PLACEHOLDER, RP-213): what waits
+     * on it is then lost, never released early. Six journal waits.
+     */
+    public static final long WRITE_NOW_MILLIS = 6 * WAIT_MILLIS;
 
     /**
      * World saves in a row a note no later save can clear (its chunk cannot be serialized or stored, or its unload is
@@ -215,6 +223,7 @@ public final class ChunkWriteBarrier {
     // counters (the GameTests read them); the server thread's
     private long noted;
     private long forcedSaves;
+    private long writtenNow;
     private long entityNoted;
     private long entityStores;
     private long holdersResolved;
@@ -405,6 +414,81 @@ public final class ChunkWriteBarrier {
     public String strategy(ServerLevel level) {
         LevelWrites w = writesFor(level);
         return w == null ? "none" : w.kind();
+    }
+
+    /**
+     * Puts {@code chunks} of {@code level} on disk now, outside a journal round (docs/choices-journal-barrier.md
+     * RP-213: what waits for it must not reach disk before them). Each loaded unsaved chunk goes through
+     * vanilla's own {@code ChunkMap.save}, the level's chunk storage writes them ahead of its queue, as a round
+     * does, and their region files, then the region folder (RP-201), are forced to disk on the IO pool. Completes
+     * true once they are all on disk, false when one could not be saved or written, or not within
+     * {@link #WRITE_NOW_MILLIS} (logged; a failed write is saved again at the next round, as a round's own is). True
+     * at once for a level that is not saving or whose writes cannot be ordered, as a round treats them. A noted
+     * chunk stays noted. Server thread; it never waits.
+     */
+    public CompletableFuture<Boolean> writeNow(ServerLevel level, java.util.Collection<LevelChunk> chunks) {
+        if (level.noSave())
+            return CompletableFuture.completedFuture(true);
+        LevelWrites w = writesFor(level);
+        if (w == null)
+            return CompletableFuture.completedFuture(true); // warned once: this level's writes cannot be ordered
+        List<ChunkPos> positions = new ArrayList<>(chunks.size());
+        for (LevelChunk c : chunks) {
+            if (((LevelChunkAccessor) c).mic_rtsim$loaded() && c.isUnsaved()) {
+                boolean saved;
+                try {
+                    saved = ((ChunkMapInvoker) level.getChunkSource().chunkMap).mic_rtsim$save(c);
+                } catch (RuntimeException ex) {
+                    MicRtsim.LOGGER.error("[mic_rtsim] saving chunk {} now", c.getPos(), ex);
+                    saved = false;
+                }
+                if (!saved) {
+                    c.setUnsaved(true); // vanilla logged why and cleared the flag
+                    return CompletableFuture.completedFuture(false);
+                }
+                writtenNow++;
+            }
+            positions.add(c.getPos());
+        }
+        CompletableFuture<List<ChunkPos>> f;
+        try {
+            // the bound completes the strategy's own future, which stops a C2ME poll
+            f = w.landed(positions).orTimeout(WRITE_NOW_MILLIS, TimeUnit.MILLISECONDS);
+        } catch (RuntimeException ex) {
+            MicRtsim.LOGGER.error("[mic_rtsim] asking {} to write chunks now", level.dimension().location(), ex);
+            return CompletableFuture.completedFuture(false);
+        }
+        Set<Path> files = new LinkedHashSet<>();
+        Path folder = w.regionFolder();
+        if (folder != null)
+            for (ChunkPos p : positions)
+                files.add(folder.resolve("r." + p.getRegionX() + "." + p.getRegionZ() + ".mca"));
+        Path dir = w.folder();
+        return f.thenApplyAsync(bad -> {
+            if (!bad.isEmpty()) {
+                failedWrites.addAndGet(bad.size());
+                for (ChunkPos p : bad)
+                    failed.add(new Failed(level, p));
+                MicRtsim.LOGGER.warn("[mic_rtsim] {} chunk write(s) failed, {} first", bad.size(), bad.get(0));
+                return false;
+            }
+            String why = fsync(files);
+            if (why != null) {
+                MicRtsim.LOGGER.warn("[mic_rtsim] {}", why);
+                return false;
+            }
+            if (dir != null)
+                DirectorySync.sync(dir); // a region file made by this write (RP-201); a failure is logged once
+            return true;
+        }, net.minecraft.Util.ioPool()).exceptionally(ex -> {
+            MicRtsim.LOGGER.warn("[mic_rtsim] writing chunks now: {}", ex.toString());
+            return false;
+        });
+    }
+
+    /** Chunks {@link #writeNow} serialized. */
+    public long writtenNow() {
+        return writtenNow;
     }
 
     /**

@@ -1964,7 +1964,8 @@ mod dragons {
             "the village's books: its tribute paid"
         );
 
-        // The plugin finds the chest, but the chunk is gone again: every stack fails and waits.
+        // The plugin finds the chest, but it is full when the stacks arrive: every stack fails
+        // and waits.
         let chest = [HOME.0 + 2, HOME.1 - 4, HOME.2 + 1];
         let lair_chest = O::LairChest(db::LairChest {
             lair: LAIR,
@@ -2033,6 +2034,202 @@ mod dragons {
         );
         assert_eq!(world, ledger, "the world's tribute is the dragons'");
         assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// C1 of slice U (docs/choices-journal-barrier.md, RP-210): a crash in direction B, the
+    /// engine's pages newer than Java's journal, with the lair chest's chunk saved ahead of the
+    /// journal. The stacks were sent and put in the chest after the save; the chunk holds the coin
+    /// and carries their COMMAND_RESULT(APPLIED); the journal lost both. At the restart the outbox
+    /// resends the stacks while the chunk is not loaded. When the chunk loads it REASSERTs the
+    /// APPLIED records, and the plugin reports its chest again. The coin is in the chest once.
+    #[test]
+    fn a_tribute_stack_in_a_chunk_saved_ahead_of_the_journal_is_placed_once() {
+        let dir = tmpdir("tribute-chunk-ahead");
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        j.module_mask = MODULES;
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        let village = 0x0001_0000_0000_0001u64;
+        j.adopt(village, "minecraft:village_plains", "human", 90, 2900, 3000);
+        j.dragon_obs(&O::LairFound(db::LairFound {
+            lair: LAIR,
+            late: false,
+            dimension: dim,
+            species: Species::Fire,
+            kind: LairKind::Roost,
+            min: (HOME.0 - 30, 60, HOME.2 - 30),
+            max: (HOME.0 + 30, 140, HOME.2 + 30),
+            home: HOME,
+        }));
+        j.idle();
+        j.idle();
+        j.work_catalog(&test_works());
+        j.idle();
+        e.order(vec![
+            Order::WorksGrant {
+                village,
+                amount: 2_000_000,
+            },
+            Order::TributeStart {
+                village,
+                lair: LAIR,
+            },
+        ])
+        .unwrap();
+        j.idle();
+        j.idle();
+        let [paid, _, coins, _] = e.dragons_tribute();
+        assert_eq!(paid, 1);
+        let stacks = (coins + 63) / 64;
+        let chest = [HOME.0 + 2, HOME.1 - 4, HOME.2 + 1];
+        let lair_chest = O::LairChest(db::LairChest {
+            lair: LAIR,
+            dimension: dim,
+            pos: (chest[0], chest[1], chest[2]),
+        });
+
+        // The chest is reported and the stacks are written; Minecraft has not applied them yet
+        // when the engine's pages are saved, and the journal is saved at the same point.
+        j.hold_commands = true;
+        j.dragon_obs(&lair_chest);
+        j.idle();
+        j.idle();
+        let sent: BTreeSet<u64> = j.held_ops.iter().copied().collect();
+        assert_eq!(sent.len() as i64, stacks);
+        assert_eq!(e.dragons_tribute(), [1, 0, 0, stacks]);
+        save_durable(&e, &mut j);
+        let saved = j.world_save();
+        let gen1 = j.nonce;
+        // Then Minecraft applies them: the coin goes into the chest, and the chest's chunk
+        // carries their APPLIED records. That chunk is written on unload; the journal is not
+        // saved again before the crash.
+        j.hold_commands = false;
+        let carried = j.apply_held_transfers();
+        assert_eq!(j.containers.get(&chest).copied(), Some(coins as i32));
+        let _ = j.crash();
+
+        // The restart: the journal from the save, the chunk from after it.
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), saved);
+        j.module_mask = MODULES;
+        j.containers.insert(chest, coins as i32);
+        assert_eq!(e.dragons_tribute(), [1, 0, 0, stacks], "the pages hold them placing");
+        // The outbox resends them at once, while the chest's chunk is not loaded.
+        j.unloaded_transfers = true;
+        j.idle();
+        j.idle();
+        assert_eq!(transfer_ops(&j), sent, "the stacks resent under their op ids");
+        assert_eq!(
+            j.containers.get(&chest).copied(),
+            Some(coins as i32),
+            "nothing put while the chunk is not loaded"
+        );
+
+        // The chunk loads: its carried records come back as copies of the first session's, and
+        // the plugin's next chest scan reports the chest in it again.
+        j.unloaded_transfers = false;
+        for r in &carried {
+            j.reassert(gen1, r);
+        }
+        j.dragon_obs(&lair_chest);
+        j.idle();
+        j.idle();
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        assert_eq!(
+            j.containers.get(&chest).copied(),
+            Some(coins as i32),
+            "the coin is in the chest once"
+        );
+        assert_eq!(e.dragons_tribute(), [1, coins, 0, 0], "every coin placed, once");
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// A tribute stack that finds its chest's chunk not loaded (NOT_LOADED, RP-210) stays placing
+    /// under its op id and is not sent again until its lair reports a chest. Then it goes to the
+    /// chest it went to first, whichever chest the report names: only that chest's chunk could
+    /// carry the record that it is already there. New coin goes to the reported chest.
+    #[test]
+    fn a_tribute_stack_whose_chunk_is_not_loaded_waits_under_its_op_id_for_its_own_chest() {
+        let dir = tmpdir("tribute-unloaded");
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        j.module_mask = MODULES;
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        let village = 0x0001_0000_0000_0001u64;
+        j.adopt(village, "minecraft:village_plains", "human", 90, 2900, 3000);
+        j.dragon_obs(&O::LairFound(db::LairFound {
+            lair: LAIR,
+            late: false,
+            dimension: dim,
+            species: Species::Fire,
+            kind: LairKind::Roost,
+            min: (HOME.0 - 30, 60, HOME.2 - 30),
+            max: (HOME.0 + 30, 140, HOME.2 + 30),
+            home: HOME,
+        }));
+        j.idle();
+        j.idle();
+        j.work_catalog(&test_works());
+        j.idle();
+        e.order(vec![
+            Order::WorksGrant {
+                village,
+                amount: 2_000_000,
+            },
+            Order::TributeStart {
+                village,
+                lair: LAIR,
+            },
+        ])
+        .unwrap();
+        j.idle();
+        j.idle();
+        let [_, _, coins, _] = e.dragons_tribute();
+        let stacks = (coins + 63) / 64;
+        let report = |pos: [i32; 3]| {
+            O::LairChest(db::LairChest {
+                lair: LAIR,
+                dimension: dim,
+                pos: (pos[0], pos[1], pos[2]),
+            })
+        };
+        let first = [HOME.0 + 2, HOME.1 - 4, HOME.2 + 1];
+        let other = [HOME.0 + 20, HOME.1 - 4, HOME.2 + 20];
+
+        j.unloaded_transfers = true;
+        j.dragon_obs(&report(first));
+        j.idle();
+        j.idle();
+        let sent = transfer_ops(&j);
+        assert_eq!(sent.len() as i64, stacks);
+        assert_eq!(
+            e.dragons_tribute(),
+            [1, 0, 0, stacks],
+            "not loaded: still placing, no coin back to wait"
+        );
+        let has_chest = |e: &Engine| {
+            e.with_dragons(|d, _| d.lair_of_key(LAIR).and_then(|l| d.chest(l)).is_some())
+        };
+        assert!(!has_chest(&e), "the chest is forgotten until reported again");
+        let commands = j.commands.len();
+        j.idle();
+        j.idle();
+        assert_eq!(j.commands.len(), commands, "parked: not sent again every step");
+
+        // The plugin reports another chest of the lair (the first one's chunk loaded meanwhile,
+        // carrying nothing): the parked stacks go again under their op ids, to the first chest.
+        j.unloaded_transfers = false;
+        j.dragon_obs(&report(other));
+        j.idle();
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        assert_eq!(transfer_ops(&j), sent, "the same op ids, no new ones");
+        assert_eq!(j.containers.get(&first).copied(), Some(coins as i32));
+        assert_eq!(j.containers.get(&other), None, "none into the other chest");
+        assert_eq!(e.dragons_tribute(), [1, coins, 0, 0]);
+        assert!(has_chest(&e), "the reported chest is kept for new coin");
         e.close(true, Duration::from_secs(5)).unwrap();
     }
 
@@ -10710,6 +10907,69 @@ mod conflict {
         // The same answer again changes nothing.
         let (_, link) = e.conflict_stats();
         assert_eq!(link.deferred, 0, "{link:?}");
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// The U-b merge (RP-210 meets MZB-423): a grove's chest whose chunk is not loaded is answered
+    /// NOT_LOADED since U-b, where main answered FAILED. The COMMAND_RESULT takes the stack out of
+    /// the core outbox either way, so the grove must take it back too: the stack goes back to the
+    /// grove's stock, the chest is forgotten, and a chest reported again gets a new stack. Ignored,
+    /// the stack would stay in flight with nothing left to answer it, and the grove would send no
+    /// more.
+    #[test]
+    fn a_groves_tribute_stack_answered_not_loaded_goes_back_to_its_stock() {
+        let (_dir, e, mut j) = grove("grove-tribute-unloaded", 3);
+        camp_in(&mut j);
+        let block = j.dict_id(wire::DICT_ITEM, "minecraft:gold_block");
+        j.conflict_obs(&O::ChiefPaid(cb::ChiefPaid {
+            faction: CAMP,
+            slot: 0,
+            generation: 0,
+            flags: cb::PAID_STRAY,
+            player: PLAYER,
+            op: (1 << 63) | 0x6002,
+            items: vec![cb::Item {
+                item: block,
+                count: 7,
+            }],
+        }));
+        j.idle();
+        j.idle();
+        assert_eq!(owed_tribute(&e), (567, 0, 0), "owed, no chest yet");
+
+        let chest = [CAMP_AT.0 + 3, 64, CAMP_AT.1 + 2];
+        j.unloaded_transfers = true;
+        chest_report(&mut j, chest);
+        j.idle();
+        j.idle();
+        let unloaded = tribute_ops(&j);
+        assert_eq!(unloaded.len(), 1, "one stack at a time");
+        assert_eq!(
+            owed_tribute(&e),
+            (567, 0, 1),
+            "NOT_LOADED: back in the grove's stock, nothing in flight"
+        );
+        assert!(j.containers.is_empty());
+        j.idle();
+        j.idle();
+        assert_eq!(tribute_ops(&j), unloaded, "the forgotten chest is sent nothing");
+
+        // Reported again with the chunk loaded: the stacks go one after another until all is paid.
+        j.unloaded_transfers = false;
+        chest_report(&mut j, chest);
+        for _ in 0..40 {
+            j.idle();
+            if owed_tribute(&e).0 == 0 && owed_tribute(&e).1 == 0 {
+                break;
+            }
+        }
+        assert_eq!(owed_tribute(&e).0, 0, "all paid: {:?}", owed_tribute(&e));
+        assert_eq!(
+            j.containers.get(&chest).copied(),
+            Some(567),
+            "every nugget in the chest, once"
+        );
         assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
         e.close(true, Duration::from_secs(5)).unwrap();
     }
