@@ -161,11 +161,13 @@ pub(super) struct Link {
     /// Steps the front command has waited for a Java dictionary name (W21).
     name_waits: u32,
     /// The ops of industry commands Java answered FAILED, heard while the session's replay ran. A
-    /// command not written yet under one of them is never written ([`unsent_answered`], RP-259):
-    /// Java keeps only the ops it applied, so a copy of a command it answered FAILED would be
-    /// applied. An APPLIED answer is not kept: a copy under its op is written, and Java's guards
-    /// answer it DUPLICATE (the applied-op set; T2's ring for a train's). In memory only: emptied at
-    /// the first drain after the replay end.
+    /// command under one of them in the queue at the first drain after the replay end is not
+    /// written ([`unsent_answered`], RP-259): Java keeps only the ops it applied, so a copy of a
+    /// command it answered FAILED would be applied. One decided again later, or after a second
+    /// crash from pages saved before that drain, is written (RP-314). An APPLIED answer is not
+    /// kept: a copy under its op is written, and Java's guards answer it DUPLICATE (the applied-op
+    /// set; T2's ring for a train's). In memory only: emptied at the first drain after the replay
+    /// end.
     heard: BTreeSet<OpId>,
     /// The engine was made new at this start (no pages): its seed is committed at once (W20).
     pub(super) fresh: bool,
@@ -937,9 +939,15 @@ fn take_answered(l: &mut Link, op: OpId, replayed: bool, applied: bool) -> Optio
 /// engine sends it again: T2's rule, RP-250, `DurableOpRing.settle`; only the acknowledgement of a
 /// live answer prunes, and no replayed answer is live), and a train's ring that came back without
 /// the op applies it to the restored goods (J4, RP-196), which the replayed IND_CARRIAGE_RESULT
-/// booked already: taken out, the restored train never gets them. A FAILED answer takes its copy
-/// at once (A's `take_out`): Java keeps only the ops it applied, and pages saved before the first
-/// drain after the replay end must not hold the copy ([`unsent_answered`]).
+/// booked already: taken out, the restored train never gets them.
+///
+/// A FAILED answer takes a copy that is there at once (A's `take_out`): Java keeps only the ops it
+/// applied. A copy decided again after the answer (a chain write a store's wake decides past it,
+/// as a COMMAND_RESULT runs no `fire_until`; a raid's loot the held step decides) meets only
+/// [`Link::heard`], in memory, at the first drain after the replay end ([`unsent_answered`]).
+/// Pages saved before that drain (inside the replay end's hand-over) are past the answer, so a
+/// second crash from them writes the copy. Benign: its booking stands and Java's live answer
+/// settles it (RP-314).
 fn command_result(l: &mut Link, op: OpId, status: u32, at: Tick, replaying: bool) {
     let kept = take_answered(l, op, replaying, reports_applied(status));
     if status == obs::command_result::DUPLICATE_OP {
@@ -1114,7 +1122,10 @@ pub(super) fn simulate(st: &mut State) {
 /// session has a later tick, so another op. A package's op is its number's, not its tick's
 /// (RP-259): one numbered as a package Java answered FAILED may be decided later and is written.
 /// That is no double: the engine never takes a package back (`command_failed` has no correction
-/// for one), so its booking and the package the world writes agree.
+/// for one), so its booking and the package the world writes agree. A raid's loot is named by
+/// its attack, not its tick (RP-180): a raider that orders it again only after this drain (at its
+/// own pace, RP-252) has it written, as a second crash from pages saved before this drain does
+/// (RP-314). Benign the same way: its booking stands and Java's live answer settles it.
 fn unsent_answered(l: &mut Link) {
     if l.heard.is_empty() {
         return;
