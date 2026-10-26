@@ -14593,6 +14593,10 @@ DRAGON_DIED):
   its chunk outside the footprint (vanilla posts the leave at the hide, not at the unload), so a body lured off a
   den that never unloads is written off as at one that unloads.
 - The ledger file keeps a `gaps` counter beside its rows (MZB-1003).
+- The GameTests (MZB-1016): "to the tick" is within 40 ticks, as each row is stamped when its SITE_STATE is
+  applied. `uninstallLeavesHomeBodies` has no party out at the uninstall (only the engine's own decision sends one;
+  the Rust tests cover it) and asserts P unchanged for the dead warrior rather than a cap wait (a grove's warriors
+  regrow by recruits). `resetDoesNotMintADragon` reads the lair's handed-over row, not a dragon's absence.
 - LAIR_FOUND gains flag 2, PLACED (no size change), for PLACE_LAIR's answer: the lair's chunk is old (LATE) but
   the lair is new, so it starts fresh instead of being taken as farmed (MZB-1012).
 - A lair found late with no row, taken as farmed, has its pressure reset when its own dragon is adopted into it
@@ -14922,6 +14926,33 @@ DRAGON_DIED):
     frostmaw's `the_arrival_at_a_den_that_is_in_recounts_and_its_census_sends_the_spawn` (was
     `..._sends_its_spawn`), the codec's samples gain a RECOUNT with no lines, and `sim mowzie` run 8's "a spawn in
     flight" answers the arrival's recount at once and only the spawn it orders three days later.
+- **MZB-1016** (the GameTests and their hooks): S3's nine GameTests and the optional tenth (fork F8), on the real
+  engine (each skips, recorded, on the stub), plus one core test of the credit rule.
+  - **`bridge/SiteTestHooks`** (core, a new file, so RtsimSession is not edited): `row`; `journalEnd`,
+    `requestSave` and `savedThrough` (a reset's premise, RG13: the new engine replays only what the journal still
+    holds, so a test saves through what it did first); `plainReset` (stopping, the world saved, stopped,
+    `world/rtsim` moved aside, started: no gap, fork F9); `stop` (an uninstall: no session until the restart);
+    `gapRestart` (`ReinstallGameTests`' emulation: `level.dat` without rtsim through NeoForge's hook, the clock on
+    by the gap, a restart; the guard resets and the ledger counts the gap); `cleanUp` (the marker, the capture and
+    the moved pages deleted, a session started if none runs), which every resetting test runs when it ends.
+  - `Lairs.declareForTest` gains a LATE form, so a test can find a lair late as a chunk from disk does.
+  - **mowziesmobs `SiteLedgerGameTests`** (dens and the grove declared under the jar's own structure names, so
+    the native engine runs them; each test its own batch on its own far base): `resetKeepsAFarmedSiteFarmed`,
+    `reinstallKeepsPressure`, `uninstallLeavesHomeBodies`, `trapKillAtABossSiteIsAPlayerLoss`,
+    `aLuredBodyIsAPlayerLossAndAStraysDeathCounts`, `aForceLoadedSiteRefillsWhenUnwatched`. The engine's clock
+    runs on through P1_ADVANCE, which the camps and the dragons share.
+  - **iceandfire `SiteLedgerGameTests`**: `siteFoundEmptyWithoutLedgerWaitsTheCap`, `petKillRaisesPressure`,
+    `tameIsAPlayerLoss`, `resetDoesNotMintADragon`.
+  - **core `KillCreditGameTests`**: `eachRuleCreditsWhoItNames` (a player, a FakePlayer, a tame wolf, a wild mob,
+    lava, a fall after a player's hit, lava after a pet's hit), no engine.
+  - **Where they differ from the design:** "to the tick" is within 40 ticks (`TOL`): each row is stamped when its
+    SITE_STATE is applied, a step after the kill or the found. The uninstall test has no party out (only the
+    engine's own decision sends one; the Rust tests book away members Other at the cap) and does not assert a cap
+    wait for the grove (its warriors regrow by recruits, not by a renewal wait); it asserts P unchanged. The lured
+    body's three censuses are the hide's recount and two daily recounts (MZB-1015), not `forceRecount`. A reset's
+    lair shows no minted dragon by its handed-over row (the wait less the time since, past a fresh lair's 20
+    days) and by its row half that wait on; an arriving dragon flies in only near a player, so no body is looked
+    for.
 - **MZB-1020** (F1, the credit rides the death reports): taken. Each death report carries the credit code and
   the credited player; the engine maps to a LossCause with `from_credit`, since the boss rule needs each kind's
   tunables, which only the engine has. Not taken: a LossCause byte computed in Java per record.
