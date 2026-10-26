@@ -107,8 +107,11 @@ public final class DragonRecords {
     /** LAIR_FOUND (aux = flags, 1 LATE). */
     public static final class LairFound {
         public static final int LAIR = 24, DIM = 32, STRUCTURE = 36, MIN_X = 40, MIN_Y = 44, MIN_Z = 48,
-                MAX_X = 52, MAX_Y = 56, MAX_Z = 60, HOME_X = 64, HOME_Y = 68, HOME_Z = 72, SIZE = 80;
-        public static final int FLAG_LATE = 1;
+                MAX_X = 52, MAX_Y = 56, MAX_Z = 60, HOME_X = 64, HOME_Y = 68, HOME_Z = 72;
+        /** The site found tail (docs/boundary.md §2.5, {@code SiteLedger.writeTail}) runs from here to the end. */
+        public static final int TAIL = 80;
+        /** LATE: the lair's chunk came from disk. PLACED: the plugin placed it now (PLACE_LAIR's answer, MZB-1012). */
+        public static final int FLAG_LATE = 1, FLAG_PLACED = 2;
     }
 
     /** HOARD_ROBBED (aux = item count n). */

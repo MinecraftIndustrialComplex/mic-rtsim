@@ -210,12 +210,14 @@ fn every_module_world(world: &Path) {
     j.dragon_obs(&DO::LairFound(db::LairFound {
         lair: LAIR,
         late: false,
+        placed: false,
         dimension: dim,
         species: Species::Fire,
         kind: LairKind::Roost,
         min: (HOME.0 - 30, 60, HOME.2 - 30),
         max: (HOME.0 + 30, 140, HOME.2 + 30),
         home: HOME,
+        row: Default::default(),
     }));
     j.dragon_obs(&DO::Untagged(db::Untagged {
         entity: (0xD1, 0x1),

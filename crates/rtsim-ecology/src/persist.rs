@@ -59,12 +59,14 @@ use crate::tunables::{DragonTunables, PreyKind};
 /// (choices-oilgate.md OGC52: a world whose gate opened before it would never watch), "RTD5" before
 /// the oil nests (OG-9e), "RTD6" before the lairs' renewal rule (EQUILIBRIUM.md S4: each lair's
 /// pressure, wait and fed share), "RTD7" before each nest's renewal serial (docs/replay-gate.md §7.1,
-/// RP-14); no older save opens.
-const MAGIC: u32 = u32::from_le_bytes(*b"RTD8");
+/// RP-14), "RTD8" before the site ledger's hand-over (EQUILIBRIUM.md S3: each lair's
+/// `found_unknown`, MZB-1012); no older save opens.
+const MAGIC: u32 = u32::from_le_bytes(*b"RTD9");
 /// The meta page of a paged save ("RTDM" before PF9, "RTN2" before tribute, "RTN3" before the oil
 /// gate, "RTN4" before the fields' daily watch, "RTN5" before the oil nests, "RTN6" before the
-/// lairs' renewal rule, "RTN7" before the nests' renewal serial).
-const META_MAGIC: u32 = u32::from_le_bytes(*b"RTN8");
+/// lairs' renewal rule, "RTN7" before the nests' renewal serial, "RTN8" before the site ledger's
+/// hand-over).
+const META_MAGIC: u32 = u32::from_le_bytes(*b"RTN9");
 
 fn bad<T>(what: String) -> codec::Result<T> {
     Err(CodecError::Invalid(what))
@@ -510,6 +512,7 @@ fn put_lair(w: &mut Writer, l: &Lair) {
     w.var_u64(l.due.0);
     w.f32(l.fed);
     w.var_u64(l.fed_at.0);
+    w.u8(u8::from(l.found_unknown));
 }
 
 fn get_lair(r: &mut Reader<'_>) -> codec::Result<Lair> {
@@ -543,6 +546,11 @@ fn get_lair(r: &mut Reader<'_>) -> codec::Result<Lair> {
         due: Tick(r.var_u64()?),
         fed: r.f32()?,
         fed_at: Tick(r.var_u64()?),
+        found_unknown: match r.u8()? {
+            0 => false,
+            1 => true,
+            v => return bad(format!("a lair's found_unknown {v}")),
+        },
     })
 }
 

@@ -1415,7 +1415,20 @@ impl Java {
     /// (a new sequence) for kinds 0x0500 to 0x05FF, otherwise into the open buffer (latest-wins,
     /// 0x0060 to 0x006F). Returns the sequence (0 for latest-wins).
     pub fn dragon_obs(&mut self, o: &rtsim_ecology::boundary::Obs) -> u64 {
+        use rtsim_ecology::boundary::Obs;
         let dict = self.java_species();
+        // The found tail is the ledger's (docs/boundary.md §2.5): a row the test wrote stands,
+        // else the fake ledger's for the lair, as Lairs.report writes it.
+        let filled;
+        let o = match o {
+            Obs::LairFound(l) if l.row == FoundRow::none() => {
+                let mut l = l.clone();
+                l.row = self.sites.tail(SiteKind::Lair, l.lair, self.game_time, false);
+                filled = Obs::LairFound(l);
+                &filled
+            }
+            _ => o,
+        };
         let mut b = Vec::new();
         rtsim_ecology::boundary::encode_obs(0, self.game_time, o, &dict, &mut b);
         let kind = wire::u16_at(&b, wire::R_KIND);

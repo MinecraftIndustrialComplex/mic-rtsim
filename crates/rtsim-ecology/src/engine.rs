@@ -46,6 +46,7 @@ use rtsim_kernel::meta_pages::{PagedMap, PagedWheel};
 use rtsim_kernel::renewal::{LossCause, Pressure};
 use rtsim_kernel::rng::{StreamKey, SystemId, fnv1a64};
 use rtsim_kernel::rows::PagedArena;
+use rtsim_kernel::sites::{FoundRow, SiteKind, SiteState, state_flags};
 use rtsim_knowledge::{
     ActorId, ActorKind, HolderKind, Place, Report, ReportKind, SEVERITY_UNIT, Trait,
 };
@@ -473,6 +474,21 @@ pub struct Dragons {
     pub(crate) far: crate::far::FarFeed,
     /// The oil nests (OG-9e): rows in pages of their own (0x4419), the rest in the meta page.
     pub nests: Nests,
+    /// Lairs whose site ledger row (EQUILIBRIUM.md §2.3, S3) is behind: marked at every change
+    /// of their occupants, vacancy or pressure, and when a known lair is found again (the
+    /// refresh that heals a set lost with a crash); taken by [`Dragons::take_site_states`]
+    /// outside the replay. Not saved, and no decision reads it (MZB-1012).
+    pub(crate) site_dirty: BTreeSet<LairId>,
+}
+
+/// How a lair new to the engine starts its wait ([`Dragons::found_lair`], MZB-1012).
+enum LairStart<'a> {
+    /// Just generated, or met in a chunk the plugin saw generate: no pressure.
+    Fresh,
+    /// Found late with no site ledger row: as if farmed to the cap (EQUILIBRIUM.md §2.3).
+    Unknown,
+    /// The site ledger's row, handed over.
+    Row(&'a FoundRow),
 }
 
 fn day_of(t: Tick) -> f64 {
@@ -623,6 +639,7 @@ impl Dragons {
             chests: BTreeMap::new(),
             far: crate::far::FarFeed::default(),
             nests: Nests::default(),
+            site_dirty: BTreeSet::new(),
         }
         .with_oil_flags()
     }
@@ -680,6 +697,57 @@ impl Dragons {
     /// Commands for the plugin, oldest first.
     pub fn take_commands(&mut self) -> Vec<Cmd> {
         self.outbox.take()
+    }
+
+    /// The lairs' rows for the site ledger (EQUILIBRIUM.md §2.3, S3, MZB-1012): one
+    /// [`SiteState`] per lair marked since the last take, as it stands now. Nothing while the
+    /// session's replay runs: the marks are kept, and taken after its end, so a row is never
+    /// one the replay's state passes through.
+    pub fn take_site_states(&mut self) -> Vec<SiteState> {
+        if self.replaying() {
+            return Vec::new();
+        }
+        let dirty = std::mem::take(&mut self.site_dirty);
+        dirty
+            .into_iter()
+            .filter_map(|l| self.lair_site_state(l, self.now))
+            .collect()
+    }
+
+    /// Whether a lair's ledger row is behind (tests).
+    pub fn lair_site_dirty(&self, l: LairId) -> bool {
+        self.site_dirty.contains(&l)
+    }
+
+    /// Lair `l`'s row for the site ledger at `at`: K 1, its occupants at home, the pressure
+    /// now, and while it waits the wait left (ticks). A lair has no home bodies (its dragons are
+    /// puppets until EQ-2), so no UUIDs.
+    pub fn lair_site_state(&self, l: LairId, at: Tick) -> Option<SiteState> {
+        let lair = self.lairs.get(l)?;
+        let h = self.tun.respawn_half_life_days as f32;
+        let waiting = lair.occupants.is_empty() && lair.vacant_since.is_some();
+        let mut flags = 0;
+        if lair.occupants.is_empty() {
+            flags |= state_flags::SHORT | state_flags::EMPTY;
+        }
+        if waiting {
+            flags |= state_flags::WAITING;
+        }
+        Some(SiteState {
+            key: lair.key,
+            kind: SiteKind::Lair,
+            flags,
+            p: lair.pressure.now(day_num(at), h),
+            k: 1,
+            count: u16::try_from(lair.occupants.len()).unwrap_or(u16::MAX),
+            away: 0,
+            wait_left: if waiting {
+                lair.due.0.saturating_sub(at.0)
+            } else {
+                0
+            },
+            bodies: Default::default(),
+        })
     }
 
     /// Maps a plugin item dictionary id to a ledger item (for HOARD_ROBBED).
@@ -747,8 +815,7 @@ impl Dragons {
 
     /// A lair joins when its structure generates (LAIR_FOUND; C22's rule for villages applied to
     /// lairs). Idempotent by key. Its wait starts at no pressure (the base, 20 days): if no dragon
-    /// is adopted into it within the wait, one comes. A lair found late after a reset starts at
-    /// the base too until the site ledger (EQUILIBRIUM.md S3) hands its pressure over.
+    /// is adopted into it within the wait, one comes. A lair found late is [`Dragons::found_lair`]'s.
     #[allow(clippy::too_many_arguments)]
     pub fn add_lair(
         &mut self,
@@ -759,6 +826,57 @@ impl Dragons {
         kind: LairKind,
         pos: Pos,
         y: i32,
+        at: Tick,
+    ) -> LairId {
+        let fresh = LairStart::Fresh;
+        self.add_lair_as(w, key, name, species, kind, pos, y, fresh, at)
+    }
+
+    /// [`Dragons::add_lair`] for a lair LAIR_FOUND names, with how it starts (EQUILIBRIUM.md
+    /// §2.3, S3, MZB-1012): the site ledger's row, when the found tail carries one, hands over
+    /// its pressure (aged by the game time since) and its wait; with none, a lair found late (its
+    /// chunk older than the plugin's meeting it, and not one the plugin just placed) waits the
+    /// cap with `found_unknown` set; any other starts fresh. Idempotent by key: a known lair is
+    /// only marked for its ledger refresh.
+    #[allow(clippy::too_many_arguments)]
+    pub fn found_lair(
+        &mut self,
+        w: &mut World,
+        key: u64,
+        name: &str,
+        species: Species,
+        kind: LairKind,
+        pos: Pos,
+        y: i32,
+        late: bool,
+        row: &FoundRow,
+        at: Tick,
+    ) -> LairId {
+        if let Some(&l) = self.lair_by_key.get(&key) {
+            self.site_dirty.insert(l);
+            return l;
+        }
+        let start = if row.has_row() {
+            LairStart::Row(row)
+        } else if late {
+            LairStart::Unknown
+        } else {
+            LairStart::Fresh
+        };
+        self.add_lair_as(w, key, name, species, kind, pos, y, start, at)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn add_lair_as(
+        &mut self,
+        w: &mut World,
+        key: u64,
+        name: &str,
+        species: Species,
+        kind: LairKind,
+        pos: Pos,
+        y: i32,
+        start: LairStart<'_>,
         at: Tick,
     ) -> LairId {
         if let Some(&l) = self.lair_by_key.get(&key) {
@@ -788,12 +906,39 @@ impl Dragons {
             due: at,
             fed: 1.0,
             fed_at: at,
+            found_unknown: false,
         });
         debug_assert_eq!(self.lairs.get(id).map(|l| l.key), Some(key));
         self.lair_by_key.insert(key, id);
         let (rx, rz) = rtsim_travel::legs::LegIndex::region_of(i64::from(pos.x), i64::from(pos.z));
         self.lair_cells.get_or_default((pos.frame, rx, rz)).push(id);
-        self.start_wait(id, at);
+        let rule = self.tun.renewal();
+        let day = day_num(at);
+        match start {
+            LairStart::Fresh => self.start_wait(id, at),
+            LairStart::Unknown => {
+                // §2.3: a site found empty with no row is taken as farmed to the cap, and its
+                // wait is the cap to the tick.
+                let lair = &mut self.lairs[id as usize];
+                lair.pressure = Pressure::at_cap(&rule, day);
+                lair.found_unknown = true;
+                self.start_wait_for(id, rule.cap_ticks(), at);
+            }
+            LairStart::Row(row) => {
+                self.lairs[id as usize].pressure =
+                    Pressure::handed_over(row.p, row.elapsed, day, rule.half_life_days);
+                if row.waiting() {
+                    // The wait it had, less the game time since (due at once when it ran out).
+                    self.start_wait_for(id, row.wait_now_ticks(), at);
+                } else if row.count > 0 {
+                    // F12: its dragons were the old engine's puppets, lost with it, a loss no
+                    // player made whose history is gone: the cap, the pressure kept.
+                    self.start_wait_for(id, rule.cap_ticks(), at);
+                } else {
+                    self.start_wait(id, at);
+                }
+            }
+        }
         id
     }
 
@@ -802,8 +947,14 @@ impl Dragons {
     /// event is booked for its end.
     pub(crate) fn start_wait(&mut self, l: LairId, at: Tick) {
         let rule = self.tun.renewal();
+        let delay = rule.delay_ticks(self.lairs[l as usize].pressure, day_num(at));
+        self.start_wait_for(l, delay, at);
+    }
+
+    /// [`Dragons::start_wait`] with the wait given: `delay` ticks from `at` (a wait the site
+    /// ledger handed over, MZB-1012).
+    fn start_wait_for(&mut self, l: LairId, delay: u64, at: Tick) {
         let lair = &mut self.lairs[l as usize];
-        let delay = rule.delay_ticks(lair.pressure, day_num(at));
         lair.vacant_since = Some(at);
         lair.plan += 1;
         lair.due = at + delay;
@@ -836,6 +987,7 @@ impl Dragons {
         };
         let h = self.tun.respawn_half_life_days as f32;
         self.lairs[l as usize].pressure.bump(day_num(at), 1.0, h);
+        self.site_dirty.insert(l);
         self.stats.player_losses += 1;
     }
 
@@ -1485,8 +1637,9 @@ impl Dragons {
     }
 
     /// Keeps [`Dragons::vacant`] in step with lair `l`: called after every change of its
-    /// occupants or its vacancy.
+    /// occupants or its vacancy, so it marks the lair's ledger row behind too.
     pub(crate) fn track_lair(&mut self, l: LairId) {
+        self.site_dirty.insert(l);
         if self
             .lairs
             .get(l)
@@ -3450,7 +3603,10 @@ impl Dragons {
                     l.lair
                 );
                 let new = !self.lair_by_key.contains_key(&l.lair);
-                self.add_lair(w, l.lair, &name, l.species, l.kind, pos, l.home.1, at);
+                // A lair the plugin just placed is new to the world, its old chunk aside.
+                let late = l.late && !l.placed;
+                let (sp, kind, y) = (l.species, l.kind, l.home.1);
+                self.found_lair(w, l.lair, &name, sp, kind, pos, y, late, &l.row, at);
                 // A new fire lair asks for the oil around it before its chunks generate (OG-2).
                 if new && self.tun.species(l.species).uses_oil {
                     self.survey(l.dimension, pos.x, pos.z);
@@ -4183,6 +4339,7 @@ impl Dragons {
             lair.occupants.push(d);
         }
         lair.vacant_since = None;
+        lair.found_unknown = false;
         lair.plan += 1;
         if was_empty {
             // A newcomer starts its lair's fed share at 1 (§2.4.1).
@@ -4599,6 +4756,15 @@ impl Dragons {
             return;
         }
         let pos = self.canon(u.dimension, u.pos.0, u.pos.2);
+        // Its lair found late with no ledger row waits the cap (MZB-1012); its own dragon adopted
+        // during that wait shows its history was lost, not its dragon: no pressure.
+        if let Some(l) = lair
+            && self.lairs[l as usize].found_unknown
+            && self.lairs[l as usize].occupants.is_empty()
+        {
+            self.lairs[l as usize].pressure = Pressure::default();
+            self.site_dirty.insert(l);
+        }
         let d = self.add_dragon(
             w,
             NewDragon {
@@ -4899,6 +5065,7 @@ impl Dragons {
             wr.u64(l.due.0);
             wr.raw(&l.fed.to_bits().to_le_bytes());
             wr.u64(l.fed_at.0);
+            wr.u64(u64::from(l.found_unknown));
         }
         wr.u64(u64::from(self.tribute_stamp));
         for (n, r) in &self.tribute {

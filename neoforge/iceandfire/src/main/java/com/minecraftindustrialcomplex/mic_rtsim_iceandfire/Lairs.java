@@ -4,6 +4,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs;
 import com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession;
 import com.minecraftindustrialcomplex.mic_rtsim.config.Module;
 import com.minecraftindustrialcomplex.mic_rtsim.config.RtsimConfig;
+import com.minecraftindustrialcomplex.mic_rtsim.sites.SiteLedger;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Registry;
 import net.minecraft.core.registries.BuiltInRegistries;
@@ -160,19 +161,28 @@ public final class Lairs {
      */
     Lair placed(ServerLevel level, String structure, StructureStart start, long now) {
         Lair l = lair(level, structure, start);
-        report(l, true, now);
+        report(l, DragonRecords.LairFound.FLAG_LATE | DragonRecords.LairFound.FLAG_PLACED, now);
         return l;
     }
 
-    /** LAIR_FOUND, once per lair per session. */
+    /** {@link #report(Lair, int, long)} with LATE or no flag. */
     void report(Lair lair, boolean late, long now) {
+        report(lair, late ? DragonRecords.LairFound.FLAG_LATE : 0, now);
+    }
+
+    /**
+     * LAIR_FOUND, once per lair per session, with the site ledger's row for it as the found tail (EQUILIBRIUM.md §2.3,
+     * docs/boundary.md §2.5): the engine hands it over when the lair is new to it.
+     */
+    void report(Lair lair, int flags, long now) {
         if (!reported.add(lair.id()) || !RtsimConfig.on(Module.ECOLOGY))
             return;
         RtsimSession s = bridge.session();
         int dim = s.dimId(lair.level().dimension());
         int structure = s.dictId(Obs.DICT_STRUCTURE, lair.structure());
-        ByteBuffer r = s.boundary().beginJournaled(DragonRecords.LAIR_FOUND, DragonRecords.LairFound.SIZE,
-                late ? DragonRecords.LairFound.FLAG_LATE : 0, now);
+        SiteLedger ledger = SiteLedger.get(s.server());
+        int tail = ledger.tailSize(SiteLedger.LAIR, lair.id());
+        ByteBuffer r = s.boundary().beginJournaled(DragonRecords.LAIR_FOUND, DragonRecords.LairFound.TAIL + tail, flags, now);
         r.putLong(DragonRecords.LairFound.LAIR, lair.id());
         r.putInt(DragonRecords.LairFound.DIM, dim);
         r.putInt(DragonRecords.LairFound.STRUCTURE, structure);
@@ -186,6 +196,7 @@ public final class Lairs {
         r.putInt(DragonRecords.LairFound.HOME_X, lair.home().getX());
         r.putInt(DragonRecords.LairFound.HOME_Y, lair.home().getY());
         r.putInt(DragonRecords.LairFound.HOME_Z, lair.home().getZ());
+        ledger.writeTail(r, DragonRecords.LairFound.TAIL, SiteLedger.LAIR, lair.id(), now);
         s.boundary().commit(r);
         known.put(lair.id(), lair);
         lairsFound++;

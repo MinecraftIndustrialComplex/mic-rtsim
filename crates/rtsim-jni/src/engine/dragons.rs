@@ -636,6 +636,11 @@ fn take_commands(st: &mut State) {
     let now = st.dragons.engine.now();
     let legs = st.dragons.engine.take_far(now);
     st.dragons.far.extend(legs);
+    // The lairs' rows for core's site ledger (MZB-1012): none while the replay runs (the engine
+    // keeps the marks), so the replay end's take sends each lair it touched once.
+    for s in st.dragons.engine.take_site_states() {
+        st.queue_site_state(s);
+    }
 }
 
 // ---- commands -----------------------------------------------------------------------------------

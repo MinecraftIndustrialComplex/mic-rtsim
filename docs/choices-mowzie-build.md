@@ -10453,6 +10453,10 @@ DRAGON_DIED):
 - CAMP_RECONCILE gains flag 2, RECOUNT (no size change), for the census a camp that never unloads takes before an
   arrival.
 - The ledger file keeps a `gaps` counter beside its rows (MZB-1003).
+- LAIR_FOUND gains flag 2, PLACED (no size change), for PLACE_LAIR's answer: the lair's chunk is old (LATE) but
+  the lair is new, so it starts fresh instead of being taken as farmed (MZB-1012).
+- A lair found late with no row, taken as farmed, has its pressure reset when its own dragon is adopted into it
+  (MZB-1012): §2.3 says "taken as farmed", and the dragon standing there shows it was not.
 
 - **MZB-1000** (The ledger is core's): one world SavedData, `data/mic_rtsim_sites.dat` on the overworld's data
   storage, owned by core's new `mic_rtsim.sites.SiteLedger` (VillageRegistry's pattern), beside
@@ -10593,6 +10597,50 @@ DRAGON_DIED):
     whatever the policy, answering nothing; `tail(kind, key, now, existed)` is what a fake plugin's found record
     carries, and `gap()` is the reinstall reset. The host's real-world loader does not read
     `mic_rtsim_sites.dat`: a host run hands every site over as found with no row.
+- **MZB-1012** (Lairs hand over and send their rows): `Dragons::found_lair` replaces the LAIR_FOUND arm's
+  add_lair. A lair new to this engine life starts from the tail (docs/boundary.md §6.3's hand-over note):
+  - **A row:** `Pressure::handed_over(p, elapsed)`; when WAITING, the wait left less the elapsed ticks
+    (`FoundRow::wait_now_ticks`, due at once when it ran out while the engine was gone); with dragons home and no
+    wait, the cap with that pressure (F12, MZB-1031); with nobody home and no wait (a claimer was in flight), the
+    wait from the pressure, as a vacancy now.
+  - **No row, LATE and not PLACED:** taken as farmed (§2.3), `Pressure::at_cap` and exactly `cap_ticks()` to wait.
+    The lair is flagged `found_unknown` (saved); when its own dragon is adopted into it while it still stands
+    empty (DRAGON_UNTAGGED with the lair's key), the pressure is reset to 0 and the flag cleared: its history was
+    lost, not its dragon. Any dragon moving in clears the flag.
+  - **Otherwise** fresh, as `add_lair` was (a lair generated with the plugin there, and one the plugin placed).
+  - **PLACED, LAIR_FOUND flag 2 (no size change):** PLACE_LAIR's answer reported LATE, since the placed lair's
+    chunk is old; without a second flag the engine would take every lair it asked for as farmed and wait the cap.
+    `Lairs.placed` sends LATE and PLACED, and the engine reads `late && !placed`.
+  - **A known lair found again** changes nothing but its mark: whatever its tail says, the engine's own state
+    stands (MZB-1004's last point).
+  - **The rows sent:** `Dragons::site_dirty`, a set of lairs never saved and never read by a decision, is marked
+    by `track_lair` (every change of a lair's dragons or vacancy), by `press` and by a found again. rtsim-jni
+    drains it at the end of the dragons' `take_commands` into `State::queue_site_state` (MZB-1011);
+    `take_site_states` holds the marks while the replay runs and gives them at its end, so a replayed step sends
+    each lair once, as it stands. A row: K 1, count the dragons home, away 0 (F12: a lost dragon is booked, not
+    owed), P as of now, flags SHORT and EMPTY when nobody is home, WAITING with `due - now` while a vacancy waits,
+    no bodies (dragons are puppets until EQ-2).
+  - **The lead's note 2, checked:** a restart that loses the marks runs to the same commands, state hash, stats
+    and save as the engine that kept them, through both lairs' refills, and the found census (every session's
+    LAIR_FOUND) re-marks each lair and sends the very rows the other engine sends. Test:
+    `tests/lair_renewal.rs::a_restart_that_loses_the_marks_changes_no_decision`.
+  - **Save:** `found_unknown` is one byte after `fed_at` in each lair, and in the state hash. The whole-blob magic
+    goes RTD8 to RTD9 and the paged meta's RTN8 to RTN9; step 6's nest change rides the same versions, as nothing
+    is released between them. A save from before is refused as any other version is.
+  - **Known limit:** `Lairs.at` (an untagged dragon's lair, a robbery before the chunk-load pass) reports the lair
+    with LATE clear even from a disk chunk, so a lair met first that way with no row starts fresh. Its dragon is
+    then adopted into it, which the cap would have reset anyway; a robbery of an empty lair met that way first
+    waits from P 0 rather than the cap.
+  - **Delivery:** the row's wait left is the engine's as of its own now, and Java stamps it when applied, a tick
+    or two later; a hand-over from it is late by that much, which errs toward no mint.
+  - DragonStats is unchanged: a lair taken as farmed books nothing (no meta change).
+  - Tests: `tests/lair_renewal.rs` (a row's wait resumed and a run-out wait due at once; the cap and the
+    adoption's reset, against a row's pressure kept; placed and new lairs fresh; F12's held row; the marks taken
+    once, kept through a replay, and a found again that changes nothing else; note 2), the codec's `all_obs` (a
+    placed late lair with no row, and a waiting row), and rtsim-jni
+    `protocol.rs::dragons::a_reset_hands_a_lairs_wait_to_the_new_engine` (a player's kill sends the row, the fake
+    ledger keeps it through a reset with GAP, and the new engine, three days on, waits what was left with the
+    pressure aged three days and mints nothing).
 - **MZB-1020** (F1, the credit rides the death reports): taken. Each death report carries the credit code and
   the credited player; the engine maps to a LossCause with `from_credit`, since the boss rule needs each kind's
   tunables, which only the engine has. Not taken: a LossCause byte computed in Java per record.
