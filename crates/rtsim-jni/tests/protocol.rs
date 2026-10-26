@@ -12606,7 +12606,7 @@ mod conflict {
             home.0 as i64 - c.now().0 as i64
         });
         let end = j.game_time + left - 300;
-        advance_until(j, 100, DAY, "300 ticks short of home", |j| j.game_time >= end);
+        advance_until(j, 100, left, "300 ticks short of home", |j| j.game_time >= end);
         advance_until(j, 50, 1_000, "home, followed", |j| {
             if party(&j.e, p).is_none() {
                 return true;
@@ -12619,7 +12619,7 @@ mod conflict {
 
     /// A player's payment of `count` gold nuggets: to the chief's puppet (PAID_PUPPET, the chief's
     /// slot, generation 0, MZB-819), or to a stray Umvuthi at the grove (PAID_STRAY, as M9's).
-    fn paid(j: &mut Java, puppet: bool, player: (u64, u64), op: u64, count: u32) -> O {
+    fn paid(j: &mut Java, puppet: bool, player: (u64, u64), op: u64, count: i32) -> O {
         let item = j.dict_id(wire::DICT_ITEM, "minecraft:gold_nugget");
         let (slot, flags) = if puppet {
             (CHIEF_SLOT, cb::PAID_PUPPET)
