@@ -101,10 +101,20 @@ public interface Traveller {
     void step(ServerLevel level, Mob body, Way way, Memo memo);
 
     /**
-     * Each server tick while the body is called home (MZB-822): float to {@code spot}, turn to {@code yaw} (the
-     * throne's facing), and settle there; true once it has. A body that is homing is not {@link #step}ped.
+     * Each server tick while the body is called home (MZB-822): float to {@code spot}, turn to {@code direction} (the
+     * throne's facing, as the body kind numbers it: the jar's 1 to 4) and settle there; true once it has. A body that
+     * is homing is not {@link #step}ped.
      */
-    boolean home(ServerLevel level, Mob body, Vec3 spot, float yaw, Memo memo);
+    boolean home(ServerLevel level, Mob body, Vec3 spot, int direction, Memo memo);
+
+    /**
+     * Blocks above the ground at its place the body floats while it travels: added to the ground's height where the
+     * core places the body (its spawn, and a displaced body's teleport back, so that a body is not pulled to the
+     * ground every check). {@code memo} is null for a body not made yet.
+     */
+    default double lift(Memo memo) {
+        return 0.0;
+    }
 
     /** The body leaves its party alive (taken, picked up, handed back) or its slot ends: undo what makes it float, empty {@code memo}. */
     void release(Mob body, Memo memo);

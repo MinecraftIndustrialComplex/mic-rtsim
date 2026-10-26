@@ -22,13 +22,23 @@ class AloftRulesTest {
 
     @Test
     void quarterInvertsTheJarsDirectionToYaw() {
-        // EntityUmvuthi.tick sets yaw to (direction - 1) * 90 every tick (MZB-806).
-        for (int d = 0; d < 4; d++)
-            assertEquals(d, AloftRules.quarter((d - 1) * 90f), "direction " + d);
+        // EntityUmvuthi.tick sets yaw to (direction - 1) * 90 every tick, and its direction is 1 to 4 (the constructor
+        // rolls nextInt(4) + 1; 0 is "unset", and checkBlocksByFeet matches no branch for it): MZB-806, MZB-870.
+        for (int d = 1; d <= 4; d++)
+            assertEquals(d, AloftRules.quarter(AloftRules.quarterYaw(d)), "direction " + d);
         assertEquals(1, AloftRules.quarter(0f));
         assertEquals(2, AloftRules.quarter(90f));
         assertEquals(3, AloftRules.quarter(180f));
-        assertEquals(0, AloftRules.quarter(-90f));
+        assertEquals(4, AloftRules.quarter(-90f));
+        assertEquals(4, AloftRules.quarter(270f));
+    }
+
+    @Test
+    void quarterIsNeverZero() {
+        for (float yaw = -720f; yaw <= 720f; yaw += 7.5f) {
+            int q = AloftRules.quarter(yaw);
+            assertTrue(q >= 1 && q <= 4, "yaw " + yaw + " gave " + q);
+        }
     }
 
     @Test
@@ -38,9 +48,10 @@ class AloftRulesTest {
         assertEquals(2, AloftRules.quarter(134f));
         assertEquals(3, AloftRules.quarter(136f));
         assertEquals(1, AloftRules.quarter(360f));
-        assertEquals(0, AloftRules.quarter(270f));
         assertEquals(3, AloftRules.quarter(-180f));
         assertEquals(2, AloftRules.quarter(450f));
+        assertEquals(4, AloftRules.quarter(-46f));
+        assertEquals(1, AloftRules.quarter(-44f));
     }
 
     @Test

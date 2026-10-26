@@ -334,6 +334,16 @@ public final class RtsimApi {
     }
 
     /**
+     * Sends a body's facing again to the players tracking it, as if it had just come into view (MZB-813): a
+     * traveller calls it after it has held the body still for 2 ticks and set the field the clients' copy reads only
+     * at its first tick. True when a bundle went out; false when nobody tracks the body, or when its pairing data hold
+     * anything per player (nothing is sent then, and the bridge counts it).
+     */
+    public static boolean rePair(net.minecraft.world.entity.Mob body) {
+        return com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictBridge.INSTANCE.rePair(body);
+    }
+
+    /**
      * Registers what knows which way a rail runs at a point (the create plugin's), so a lurking body is placed on the
      * rail's normal at the spot distance and not on the engine's rounded spot (MZB-360, the re-check's P2). With none
      * registered the engine's spot stands. Call during mod construction.

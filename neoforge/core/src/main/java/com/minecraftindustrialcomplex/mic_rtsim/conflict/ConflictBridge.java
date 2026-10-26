@@ -596,11 +596,34 @@ public final class ConflictBridge implements SessionPlugin {
      * ended; stacks cut by the trim, walked into the square and clamped on it (MZB-472, MZB-473).
      */
     public long marchRecords, marchStale, marchEnds, trimmed, walkIns, clamps, unbookedHomeDeaths;
+    /** M11's (this session): re-pairs sent to a body's trackers and skipped for per-player data (MZB-813). */
+    public long repairs, repairsSkipped;
     /** The last DEMAND_SETTLED's outcome (GameTests). */
     public int lastSettled;
 
     public RtsimSession session() {
         return session;
+    }
+
+    /**
+     * Sends a body's facing again to the players tracking it, as if it had just come into view (MZB-813): a
+     * {@link Traveller} calls it after it has held the body still for 2 ticks and set the field its clients read
+     * only at their copy's first tick. True when a bundle went out; false when nobody tracks the body, or when the
+     * pairing data hold anything per player (counted in {@link #repairsSkipped}, nothing sent).
+     */
+    public boolean rePair(Mob body) {
+        if (!(body.level() instanceof ServerLevel level))
+            return false;
+        switch (Repairs.send(level, body)) {
+            case SENT -> {
+                repairs++;
+                return true;
+            }
+            case SKIPPED -> repairsSkipped++;
+            case NOBODY -> {
+            }
+        }
+        return false;
     }
 
     /** The camp reconciler (GameTests and the core's hooks). */
@@ -639,6 +662,7 @@ public final class ConflictBridge implements SessionPlugin {
         blockedHits = blockedTargets = strays = refills = demandsShown = paymentsRefused = noticeHearers = railPasses = 0;
         lurksKept = lurksRemoved = trainPasses = lurkStrikes = roarsTold = roarsPlayed = roarHearers = lurksRefused = 0;
         marchRecords = marchStale = marchEnds = trimmed = walkIns = clamps = unbookedHomeDeaths = 0;
+        repairs = repairsSkipped = 0;
         lastSettled = 0;
         owedHunts.clear();
         clearLurks();
