@@ -1545,6 +1545,22 @@ fn chest(r: &mut CampRun, free: u32) {
     );
 }
 
+/// The chest the plugin names at `pos`, with `free` empty slots.
+fn chest_named_at(r: &mut CampRun, pos: (i32, i32, i32), free: u32) {
+    let at = r.c.now();
+    r.c.ingest(
+        &mut r.w,
+        &mut *r.infra,
+        &Obs::HavenChest(boundary::HavenChest {
+            faction: r.key,
+            dimension: u32::from(synth::CAMP_POS.frame),
+            pos,
+            free,
+        }),
+        at,
+    );
+}
+
 fn stock(r: &CampRun, g: GoodId) -> Amount {
     r.w.market(r.c.factions[r.f as usize].node).stock(g)
 }
@@ -1631,6 +1647,136 @@ fn a_failed_stack_goes_back_and_a_duplicate_answer_changes_nothing() {
     assert!(!r.c.tribute_placed(&mut r.w, op2, at), "a duplicate answer");
     assert_eq!(owed(&r), 567 - 64, "lowered once");
     ok(&mut r);
+}
+
+/// MZB-760 (RP-210's Left): a stack whose chest's chunk was not loaded (NOT_LOADED) is not put
+/// back like a failed one: the chunk may hold it already, written ahead of the journal. It stays
+/// in flight under its op id, its goods out of the grove's stock and the tribute still owed, the
+/// chest is forgotten, and it is not written again every step (`placings_to_send`). It holds back
+/// the next stack. The grove's next HAVEN_CHEST sends it again, under its op, to the chest it
+/// went to first, not the one named now, which is kept for the next stack.
+#[test]
+fn an_unloaded_stack_is_parked_under_its_op_until_the_chest_is_named_again() {
+    let (mut r, nugget) = tribute_run(41);
+    let held = stock(&r, nugget);
+    let first = (synth::CAMP_POS.x + 3, 64, synth::CAMP_POS.z + 2);
+    let other = (synth::CAMP_POS.x - 5, 64, synth::CAMP_POS.z + 7);
+    chest(&mut r, 27);
+    let (op, p) = r.c.placings().next().expect("a stack");
+    assert_eq!(p.pos, first);
+    assert!(r.c.tribute_not_loaded(op));
+    assert_eq!(r.c.placings().count(), 1, "still in flight, under its op");
+    assert_eq!(r.c.placings_to_send().count(), 0, "parked: not sent again");
+    assert_eq!(stock(&r, nugget), held - 64 * MILLI, "its goods stay out");
+    assert_eq!(owed(&r), 567);
+    assert!(
+        r.c.camp(r.f).unwrap().chest.is_none(),
+        "its own chest is forgotten"
+    );
+    assert!(!r.c.tribute_not_loaded(0xDEAD), "an op of no stack");
+    // Time passes and a census comes: a parked stack holds the next back, and goes nowhere.
+    r.run(r.c.now() + 10);
+    assert_eq!(r.c.placings().count(), 1);
+    assert_eq!(r.c.placings_to_send().count(), 0);
+    // The plugin names another chest: the stack goes again to the first, the new one is kept.
+    chest_named_at(&mut r, other, 27);
+    let sent: Vec<_> = r.c.placings_to_send().collect();
+    assert_eq!(sent.len(), 1, "the parked stack goes again");
+    assert_eq!(
+        (sent[0].0, sent[0].1.pos),
+        (op, first),
+        "its own op and chest"
+    );
+    assert_eq!(r.c.camp(r.f).unwrap().chest.map(|c| c.pos), Some(other));
+    assert_eq!(r.c.camp(r.f).unwrap().stacks, 1, "no new stack was decided");
+    // Answered, it books once, and the next stack goes to the chest named since.
+    let at = r.c.now();
+    assert!(r.c.tribute_placed(&mut r.w, op, at));
+    assert_eq!(owed(&r), 567 - 64);
+    let (next, q) = r.c.placings().next().expect("the next stack");
+    assert_ne!(next, op);
+    assert_eq!(q.pos, other);
+    ok(&mut r);
+}
+
+/// MZB-760: a stack answered NOT_LOADED forgets the grove's chest only if it is still the stack's
+/// own (the same dimension and place): a chest named since, elsewhere, keeps taking new stacks.
+/// The dragons' `an_unloaded_stack_forgets_only_its_own_chest`.
+#[test]
+fn an_unloaded_stack_forgets_only_its_own_chest() {
+    let (mut r, _) = tribute_run(42);
+    let first = (synth::CAMP_POS.x + 3, 64, synth::CAMP_POS.z + 2);
+    let other = (synth::CAMP_POS.x - 5, 64, synth::CAMP_POS.z + 7);
+    chest(&mut r, 27);
+    let (op, _) = r.c.placings().next().expect("a stack");
+    // The chest is named elsewhere (the first one broken, another placed).
+    chest_named_at(&mut r, other, 27);
+    assert_eq!(r.c.camp(r.f).unwrap().chest.map(|c| c.pos), Some(other));
+    assert!(r.c.tribute_not_loaded(op));
+    assert_eq!(
+        r.c.camp(r.f).unwrap().chest.map(|c| c.pos),
+        Some(other),
+        "only the stack's own chest is forgotten"
+    );
+    // The first chest is named again: the stack goes again to it, and is not loaded again.
+    chest_named_at(&mut r, first, 27);
+    assert_eq!(r.c.camp(r.f).unwrap().chest.map(|c| c.pos), Some(first));
+    assert_eq!(r.c.placings_to_send().count(), 1);
+    assert!(r.c.tribute_not_loaded(op));
+    assert!(
+        r.c.camp(r.f).unwrap().chest.is_none(),
+        "its own chest is forgotten"
+    );
+    ok(&mut r);
+}
+
+/// MZB-760: a parked stack is answered like any stack in flight. FAILED (the chunk loaded, and no
+/// chest there) takes it out and puts its goods back; APPLIED takes it out and lowers what is
+/// owed. CAMP_OUT, where the grove's chest is forgotten, and a session's start let it go again,
+/// each to the chest it went to first.
+#[test]
+fn a_parked_stack_is_answered_like_any_stack_and_goes_again_at_camp_out_and_a_session_start() {
+    // FAILED: the goods go back, the tribute is owed, a new op comes with the next chest.
+    let (mut r, nugget) = tribute_run(43);
+    let held = stock(&r, nugget);
+    chest(&mut r, 27);
+    let (op, _) = r.c.placings().next().expect("a stack");
+    assert!(r.c.tribute_not_loaded(op));
+    let at = r.c.now();
+    assert!(r.c.tribute_failed(&mut r.w, op, at));
+    assert_eq!(r.c.placings().count(), 0);
+    assert_eq!(stock(&r, nugget), held, "back");
+    assert_eq!(owed(&r), 567);
+    chest(&mut r, 27);
+    let (again, _) = r.c.placings().next().expect("a stack");
+    assert_ne!(again, op, "a failed stack goes under a new op");
+    assert_eq!(r.c.placings_to_send().count(), 1, "the parking is not kept");
+    ok(&mut r);
+
+    // CAMP_OUT: the chest is forgotten there, so the parked stack goes again.
+    let (mut r, _) = tribute_run(44);
+    chest(&mut r, 27);
+    let (op, p) = r.c.placings().next().expect("a stack");
+    assert!(r.c.tribute_not_loaded(op));
+    assert_eq!(r.c.placings_to_send().count(), 0);
+    r.camp_out();
+    r.run(r.c.now() + 5);
+    let sent: Vec<_> = r.c.placings_to_send().collect();
+    assert_eq!(sent, [(op, p)], "the same stack, to the same chest");
+    ok(&mut r);
+
+    // A session's start: the restart's replay begins, and the stack is sent again.
+    let (mut r, _) = tribute_run(45);
+    chest(&mut r, 27);
+    let (op, p) = r.c.placings().next().expect("a stack");
+    assert!(r.c.tribute_not_loaded(op));
+    assert_eq!(r.c.placings_to_send().count(), 0);
+    r.restart_to_replay();
+    let sent: Vec<_> = r.c.placings_to_send().collect();
+    assert_eq!(sent, [(op, p)], "a new session sends it again");
+    let at = r.c.now();
+    assert!(r.c.tribute_placed(&mut r.w, op, at));
+    assert_eq!(owed(&r), 567 - 64);
 }
 
 /// MZB-423 (saves): a stack in flight is saved with its op, dimension and place, the chest is not
@@ -1881,6 +2027,7 @@ enum TributeRec {
     Obs(Obs),
     Placed(u64),
     Failed(u64),
+    NotLoaded(u64),
 }
 
 /// The session that goes on: each record at its game time, the world run to it first, and each
@@ -1924,6 +2071,9 @@ fn replay_tribute(r: &mut CampRun, tail: &[(Tick, TributeRec)]) {
             }
             TributeRec::Failed(op) => {
                 r.c.tribute_failed(&mut r.w, *op, *t);
+            }
+            TributeRec::NotLoaded(op) => {
+                r.c.tribute_not_loaded(*op);
             }
         }
     }
@@ -2017,6 +2167,49 @@ fn a_replayed_failure_of_a_stack_after_the_save_passes_its_index() {
     let to = b.c.now() + 10;
     b.run(to);
     assert_eq!(b.c.placings().count(), 0, "nothing goes again");
+    ok(&mut b);
+}
+
+/// MZB-760 (RP-134 meets RP-210): a replayed NOT_LOADED for a stack decided after the save books
+/// nothing: no placing holds the stack, and the stack may be in its chest, so the camp's count
+/// does not pass it (as a replayed FAILED's does). The census after the replay decides the stack
+/// again as the same op, which Java answers DUPLICATE_OP if the chunk holds it, and books.
+#[test]
+fn a_replayed_not_loaded_for_a_stack_after_the_save_books_nothing() {
+    let (mut a, mut b, id) = twin_groves(32);
+    let key = a.key;
+    let t1 = a.c.now() + 100;
+    let mut tail = play_tribute(
+        &mut a,
+        &[
+            (t1, Some(chest_record(key, 27)), None),
+            (t1 + 50, Some(pay_record(key, id, 0x6501, 30)), None),
+        ],
+    );
+    let (op, p) = a.c.placings().next().expect("a stack in flight");
+    assert!(a.c.tribute_not_loaded(op), "the session parks it");
+    tail.push((t1 + 60, TributeRec::NotLoaded(op)));
+    let stats = b.c.stats.tribute_stacks;
+    replay_tribute(&mut b, &tail);
+    assert_eq!(b.c.placings().count(), 0, "the camp is out in the replay");
+    assert_eq!(owed(&b), 30, "nothing is booked");
+    assert_eq!(b.c.camp(b.f).unwrap().stacks, 0, "the count passes nothing");
+    assert_eq!(b.c.stats.tribute_stacks, stats);
+    b.camp_in();
+    let to = b.c.now() + 10;
+    b.run(to);
+    let (again, q) = b.c.placings().next().expect("the stack again");
+    assert_eq!(
+        (again, q.amount, q.good),
+        (op, p.amount, p.good),
+        "the same op"
+    );
+    let at = b.c.now();
+    assert!(
+        b.c.tribute_placed(&mut b.w, again, at),
+        "DUPLICATE_OP is an answer"
+    );
+    assert_eq!(owed(&b), 0);
     ok(&mut b);
 }
 

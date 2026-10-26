@@ -1262,18 +1262,19 @@ pub(super) fn write_queue(st: &mut State, w: &mut RecordWriter<'_>) -> (u64, boo
 }
 
 /// Writes the tribute stacks the groves send to their chests (MZB-423) that are not in the core
-/// outbox yet, as the dragons' lairs' are. Each joins it under its own op id, derived from the
+/// outbox yet and not parked (their chunk was not loaded, MZB-760), as the dragons' lairs' are.
+/// Each joins it under its own op id, derived from the
 /// grove and a saved counter, so a restart sends it again and Java answers a stack it already put
 /// DUPLICATE_OP. Returns the highest sequence written and whether some wait for the next buffer.
 fn write_tribute(st: &mut State, w: &mut RecordWriter<'_>) -> (u64, bool) {
-    if st.conflict.engine.placings().next().is_none() {
+    if st.conflict.engine.placings_to_send().next().is_none() {
         return (0, false);
     }
     let sent: BTreeSet<u64> = st.outbox.after(0).map(|(_, op, _)| op.0).collect();
     let todo: Vec<(u64, rtsim_conflict::engine::Placing)> = st
         .conflict
         .engine
-        .placings()
+        .placings_to_send()
         .filter(|(op, _)| !sent.contains(op))
         .collect();
     let mut highest = 0;
@@ -1339,9 +1340,10 @@ fn fail_tribute(st: &mut State, op: u64) {
 /// of tribute sent to a grove's chest (MZB-423). Applied or a duplicate, the stack is in the
 /// chest and the next goes; failed, the goods go back to the grove's stock and the chest is
 /// forgotten until the plugin reports one again. NOT_LOADED (the chest's chunk was not loaded,
-/// RP-210) is taken as FAILED, as Java answered it before RP-210: the answer takes the op out of
-/// the core outbox, so a stack left in flight would have nothing to answer it. Unlike the
-/// dragons, the grove does not park it under its op id (RP-210's Left).
+/// RP-210) parks the stack under its op id, as the dragons' (MZB-760): the chunk may already hold
+/// it, written ahead of the journal, so the goods stay out of the stock and the stack goes again,
+/// to the same chest, when the plugin next reports the grove's chest. The answer takes the op out
+/// of the core outbox, so the park is the engine's: `write_tribute` leaves a parked stack out.
 pub(super) fn after_core(st: &mut State, rec: &Rec<'_>) {
     if rec.kind != obs::COMMAND_RESULT || rec.size() < obs::command_result::SIZE {
         return;
@@ -1358,9 +1360,17 @@ pub(super) fn after_core(st: &mut State, rec: &Rec<'_>) {
         obs::command_result::APPLIED | obs::command_result::DUPLICATE_OP => {
             c.tribute_placed(w, op, at)
         }
-        obs::command_result::FAILED | obs::command_result::NOT_LOADED => {
-            c.tribute_failed(w, op, at)
+        obs::command_result::FAILED => c.tribute_failed(w, op, at),
+        obs::command_result::NOT_LOADED => {
+            // Nothing the pages hold changes: the stack stays in flight, and its chest is not
+            // saved.
+            c.tribute_not_loaded(op);
+            false
         }
+        // Answers to other commands (a house with no free plot, a gossip refused), and a status
+        // this link does not know: no tribute stack's. A status is a number, so the compiler
+        // cannot tell a new one from these: a new tribute status must be named above.
+        obs::command_result::NOT_FREE | obs::command_result::VANILLA_KNOWS => false,
         _ => false,
     };
     if known {
