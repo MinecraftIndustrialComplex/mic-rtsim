@@ -551,6 +551,25 @@ impl Conflict {
         self.culture(f).bare[usize::from(u)] != u
     }
 
+    /// The chief's memory for its puppet away (MZB-803): the party's agent and epoch, those of the
+    /// BAND_MATERIALIZE it goes just ahead of; health 0 (the body keeps its own, full for a fresh
+    /// puppet: the engine keeps no chief health); no flags; the camp's memory, whether the camp is
+    /// in or out, and none for a faction with no camp ledger.
+    pub(crate) fn chief_body_away(&self, p: Handle<Party>) -> Cmd {
+        let x = &self.parties[p];
+        Cmd::ChiefBody(ChiefBody {
+            faction: self.factions[x.faction as usize].key,
+            agent: Party::agent(p),
+            epoch: u64::from(x.epoch),
+            health: 0.0,
+            flags: 0,
+            traded: self
+                .camp(x.faction)
+                .map(|c| c.traded.clone())
+                .unwrap_or_default(),
+        })
+    }
+
     /// The chief's memory as a record, for a camp that is in.
     fn chief_body_cmd(&self, f: u32) -> Option<Cmd> {
         let camp = self.camp(f).filter(|c| c.is_in())?;
