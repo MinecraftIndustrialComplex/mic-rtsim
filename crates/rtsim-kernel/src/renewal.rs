@@ -64,6 +64,19 @@ impl Pressure {
         };
         Self { p, at_day: day }
     }
+
+    /// A pressure handed over from the site ledger (§2.3, MZB-1007): `p` as of the row's stamp, aged by
+    /// the `elapsed_ticks` of game time since, read as of the engine's own `day`. The ledger's clock is
+    /// game time and the engine's may have restarted, so only the elapsed ticks cross. A value that is not
+    /// a finite positive number reads as none.
+    pub fn handed_over(p: f32, elapsed_ticks: u64, day: u32, half_life_days: f32) -> Self {
+        if !p.is_finite() || p <= 0.0 || half_life_days <= 0.0 {
+            return Self { p: 0.0, at_day: day };
+        }
+        let days = elapsed_ticks as f64 / TICKS_PER_DAY as f64;
+        let aged = f64::from(p) * (-days / f64::from(half_life_days)).exp2();
+        Self { p: aged as f32, at_day: day }
+    }
 }
 
 /// One kind's renewal timing. Every field TUNABLE, read from the module's tunables.
@@ -83,6 +96,12 @@ impl RenewalRule {
     /// `min(cap, base x 2^P)`, in ticks of 24,000 a day.
     pub fn delay_ticks(&self, p: Pressure, day: u32) -> u64 {
         (f64::from(self.delay_days(p, day)) * TICKS_PER_DAY as f64).round() as u64
+    }
+
+    /// The cap, in ticks: the wait of a site whose loss was not a player's but whose history is lost (a
+    /// reset that lost a member it cannot place, §2.3).
+    pub fn cap_ticks(&self) -> u64 {
+        (f64::from(self.cap_days.max(0.0)) * TICKS_PER_DAY as f64).round() as u64
     }
 
     fn delay_for(&self, p: f32) -> f32 {
@@ -138,6 +157,22 @@ pub enum Arrival {
     Abstract,
 }
 
+/// Who a death report credits (§2.2, MZB-1006): one table for every record that reports a sim member's
+/// death (CAMP_DEATH, DRAGON_DIED, HURT's RESIDENT_KILLED, HERD_KILLED, BAND_CASUALTIES, CHIEF_KILLED). Core's
+/// `KillCredit` picks the code; the engine maps it to a [`LossCause`] with [`LossCause::from_credit`].
+pub mod credit {
+    /// No entity caused the death (lava, a fall, drowning with no recent hit).
+    pub const NONE: u32 = 0;
+    /// A player, a player's pet, or a player's recent hit; the record names the player.
+    pub const PLAYER: u32 = 1;
+    /// A mob with no player behind it.
+    pub const MOB: u32 = 2;
+    /// An entity that is no one's (a machine's FakePlayer, TNT with no igniter, a dispenser's arrow).
+    pub const OTHER: u32 = 3;
+    /// Taken by a player (A10): a tame, a lead, carried off; the record names the taker.
+    pub const TAKEN: u32 = 4;
+}
+
 /// Why a member was lost. Player: §2.2's four cases (vanilla's kill credit, A10 removals, an unclaimed
 /// death of a boss kind, a home body gone missing while rtsim ran). Only Player bumps pressure.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -168,6 +203,18 @@ impl LossCause {
     /// The cause for a wire code; unknown codes are Other.
     pub fn from_code(code: u32) -> Self {
         Self::ALL.get(code as usize).copied().unwrap_or(LossCause::Other)
+    }
+
+    /// The cause for a death report's [`credit`] code (§2.2): a player's kill or take is Player, a mob's
+    /// kill is Predator, and a death that credits no one (NONE, OTHER, a code this build does not know) is
+    /// Player at a boss kind (§2.2's third case: an unclaimed death of a boss kind) and Other elsewhere.
+    pub fn from_credit(code: u32, boss: bool) -> Self {
+        match code {
+            credit::PLAYER | credit::TAKEN => LossCause::Player,
+            credit::MOB => LossCause::Predator,
+            _ if boss => LossCause::Player,
+            _ => LossCause::Other,
+        }
     }
 }
 
@@ -263,5 +310,44 @@ mod tests {
             assert_eq!(LossCause::from_code(c.code()), c);
         }
         assert_eq!(LossCause::from_code(99), LossCause::Other);
+    }
+
+    #[test]
+    fn credit_maps_to_a_cause() {
+        use credit::*;
+        for boss in [false, true] {
+            assert_eq!(LossCause::from_credit(PLAYER, boss), LossCause::Player);
+            assert_eq!(LossCause::from_credit(TAKEN, boss), LossCause::Player);
+            assert_eq!(LossCause::from_credit(MOB, boss), LossCause::Predator);
+        }
+        for unclaimed in [NONE, OTHER, 99] {
+            assert_eq!(LossCause::from_credit(unclaimed, true), LossCause::Player);
+            assert_eq!(LossCause::from_credit(unclaimed, false), LossCause::Other);
+        }
+    }
+
+    #[test]
+    fn handed_over_ages_by_elapsed_ticks() {
+        let h = LAIR.half_life_days;
+        // No time passed: the stored value, as of the engine's own day (which may be below the stamp's).
+        let p = Pressure::handed_over(1.0, 0, 3, h);
+        assert_eq!(p.parts(), (1.0, 3));
+        // One half life of game time halves it, whatever day the engine reads it on.
+        let half = Pressure::handed_over(1.0, 96 * TICKS_PER_DAY, 0, h);
+        assert!((half.now(0, h) - 0.5).abs() < 1e-6);
+        let quarter = Pressure::handed_over(1.0, 192 * TICKS_PER_DAY, 500, h);
+        assert!((quarter.now(500, h) - 0.25).abs() < 1e-6);
+        // Part of a day counts.
+        let bit = Pressure::handed_over(1.0, TICKS_PER_DAY / 2, 0, h);
+        assert!((bit.now(0, h) - (-0.5f32 / 96.0).exp2()).abs() < 1e-6);
+        // Saturates: an age beyond any wait reads as nothing left, never a negative or a NaN.
+        assert_eq!(Pressure::handed_over(1.0, u64::MAX, 0, h).now(0, h), 0.0);
+        for bad in [f32::NAN, f32::INFINITY, -1.0, 0.0] {
+            assert_eq!(Pressure::handed_over(bad, 0, 0, h), Pressure::from_parts(0.0, 0));
+        }
+        assert_eq!(Pressure::handed_over(1.0, 0, 0, 0.0).now(0, 1.0), 0.0);
+        // The cap in ticks is the delay of a pressure at the cap.
+        assert_eq!(LAIR.cap_ticks(), 192 * TICKS_PER_DAY);
+        assert!(LAIR.delay_ticks(Pressure::at_cap(&LAIR, 0), 0).abs_diff(LAIR.cap_ticks()) < TICKS_PER_DAY / 1000);
     }
 }
