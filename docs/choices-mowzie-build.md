@@ -10234,6 +10234,56 @@ and the reviews' fixes.
   - No JUnit: both methods need a live `Slot` and a server entity, which core's JUnit has none of. MZB-810 and MZB-815
     are covered by M11c's GameTest 23c, as the design says.
 
+- **MZB-880** (step 5: the death hook and the Dying list; MZB-817):
+  - `onDeath` calls `Traveller.died` at the first death only (`sl.traveller != null && sl.pendingDeath == null`: the
+    jar posts two `LivingDeathEvent`s for one death, as 23e says), inside a try that counts a throwing plugin in
+    `travellerErrors`. `UmvuthiAloft.died` already clears `noGravity`; the aloft pass already skips a dying body, so it falls
+    through its 115 ticks.
+  - `settleDeaths` adds `Dying(body, record bytes, seq)` to `dying` (a new list, named apart from `Camps`' private
+    `Dying`) for a chief slot settled with `drops == null` (the `LivingDropsEvent` has not come: the jar's
+    `dropAllDeathLoot` skips the first death while `dropAfterDeathAnim` and `deathTime == 0`) and a body that is not
+    removed. A chief whose drops came at once (any plain mob) takes the old path. Only the chief is listed: the design
+    names the chief, and a warrior of another mod with a death animation keeps today's behaviour (a fork not taken).
+  - `onDrops` looks at the list first, and only when it is not empty (D1): the entry whose body is the dead entity goes
+    off the list and `session.carryOnEntity(drop, List.of(record), seq)` is called for each drop still in the world. The
+    drops are carried before they join the level; `carry` keeps the attachment and `dropPendingWhenAcked` finds the item
+    by id later, as for any drop.
+  - `deathLootLost` (public, reset at `sessionStarted`) counts a dying body removed for any reason but the jar's own
+    end (`RemovalReason.KILLED`) with its entry still listed, and a finish at a stop that could not remove it. A KILLED
+    removal with the entry still listed (the drop event never reached the bridge: the module off, a session failed, no
+    kill cause) is not a loss of ours and is not counted. `dyingBodies()` reads the list for the GameTests.
+- **MZB-881** (step 5: `tickDying`, the ends of a session, `despawn`):
+  - `endOfTick` calls `tickDying` first, right after the `s != session || failed` check and before the module-off
+    return, with the list non-empty only: a dying body must finish with the module off or no party left (a held-free
+    tick returns early further down, which is why the call cannot live below it). For each entry (from the end, so a
+    drop that takes entries off the list is safe): removed -> off the list (counted unless KILLED); no longer
+    dying -> off the list; the position still entity ticking (`RtsimSession.entitiesTickAt`, the check the aloft pass
+    uses: false with no player and no forced chunk) -> its own tick ends it; else `deathTime = 1_000_000` and `baseTick()`,
+    the jar's own end (`tickDeath` of `MowzieEntity`, 462 to 477). A throwing `baseTick` is logged and the entry kept
+    for the next tick (or counted at a stop).
+  - `sessionStopping` finishes every dying body (the same code, with the position check off) after `settleDeaths` and
+    before `reconciler.sessionStopping` and the captures, so the loot is on the ground with its record before the save.
+    `sessionFailed` does so before `discardAll`, in a try (a failed session's `carry` may throw: the list is cleared and the
+    discard goes on). `sessionStarted` and `serverStopped` clear the list; a non-empty list at `sessionStarted` is
+    logged (it would be loot with no record).
+  - `despawn` keeps its other work for a dying body but does not discard it (`!m.isRemoved() && !isDying(m)`). The
+    design names `discardAll`; `despawn` is the one call that discards, so the guard sits there and covers `discardAll`
+    and every other caller. A forgotten slot is `alive == false`, so `capture`, `requeue`, `recallStep` and `refill`
+    never reach its body; `discardAll` and the aborted `spawn` are the two that do.
+- **MZB-882** (step 5: the lead's invariant, BAND_DEMATERIALIZED only once the chief puppet is gone or its death is
+  journaled), kept on every path this step touches:
+  - A dying chief is journaled (CHIEF_KILLED, with `commitWithOpId`) in `settleDeaths` before it is on the list, and
+    `capture` always runs `settleDeaths(p, now)` before it despawns anything and before `finish` writes the
+    BAND_DEMATERIALIZED, so the order is the journal's. `sessionStopping` settles, finishes the dying and only then
+    captures. A listed body is never counted a survivor (`finish` counts alive non-chief slots only, and the chief is
+    never a survivor).
+  - A body that dies in a stop or a failed session that has not been settled yet is settled first by
+    `sessionStopping`'s `settleDeaths`; a failed session journals nothing (it discards).
+  - No JUnit: the Dying list, the plugin's `died` and the session ends need a live `ServerLevel` and a Mowzie body, which core's
+    JUnit has none of. 23e, 29c-failed, 36a and 36b (M11c) are the tests; the invariant's own test (a scripted
+    BAND_DEMATERIALIZE of a party whose chief puppet died 20 ticks before, then the journal's order) is M11c's too: a
+    record of this step for the M11c writer.
+
 ## M12 S9
 
 (none yet)
