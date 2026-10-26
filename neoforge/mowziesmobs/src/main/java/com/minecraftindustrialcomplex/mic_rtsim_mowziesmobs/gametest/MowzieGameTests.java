@@ -324,7 +324,18 @@ public final class MowzieGameTests {
                             want.add(m.getUUID());
                     check("the warrior added inside is counted among them", want.contains(extra[0].getUUID()));
                     ScriptedEngine.Received c = MowzieKit.census(g.faction, 1);
-                    List<CensusBody> bodies = ConflictKit.censusBodies(c);
+                    List<CensusBody> listed = ConflictKit.censusBodies(c);
+                    List<CensusBody> bodies = new ArrayList<>();
+                    CensusBody chiefListed = null;
+                    for (CensusBody b : listed) {
+                        if (b.uuid().equals(extra[3].getUUID()))
+                            chiefListed = b;
+                        else
+                            bodies.add(b);
+                    }
+                    check("the Umvuthi is listed once, as a stray chief body of its own kind (MZB-402)", chiefListed != null
+                            && listed.size() == bodies.size() + 1 && chiefListed.body() == ConflictKit.bodyId(MowzieKit.UMVUTHI)
+                            && chiefListed.flags() == (ConflictRecords.CampCensus.BODY_STRAY | ConflictRecords.CampCensus.BODY_CHIEF));
                     Set<UUID> got = new HashSet<>();
                     for (CensusBody b : bodies) {
                         got.add(b.uuid());
@@ -335,7 +346,7 @@ public final class MowzieGameTests {
                     check("exactly the warriors inside: " + got.size() + " listed, " + want.size() + " inside", got.equals(want) && bodies.size() == want.size());
                     check("no raptor", !got.contains(extra[1].getUUID()));
                     check("no warrior 27 blocks out", !got.contains(extra[2].getUUID()));
-                    check("no Umvuthi body", !got.contains(extra[3].getUUID()));
+                    check("the Umvuthi is no warrior", !got.contains(extra[3].getUUID()));
                     check("chief flags CHIEF and THRONE (" + MowzieKit.chiefFlags(c) + ")",
                             MowzieKit.chiefFlags(c) == (ConflictRecords.CampCensus.CHIEF | ConflictRecords.CampCensus.THRONE));
                     ByteBuffer cb = c.view();
@@ -388,7 +399,10 @@ public final class MowzieGameTests {
                 .thenExecute(() -> {
                     ScriptedEngine.Received c = MowzieKit.census(g.faction, 2);
                     check("a new epoch", MowzieKit.epoch(c) != e1[0]);
-                    List<CensusBody> bodies = ConflictKit.censusBodies(c);
+                    List<CensusBody> bodies = new ArrayList<>();
+                    for (CensusBody b : ConflictKit.censusBodies(c))
+                        if (b.body() != ConflictKit.bodyId(MowzieKit.UMVUTHI)) // a standing Umvuthi is listed apart (MZB-402)
+                            bodies.add(b);
                     check("every adopted warrior is listed and no other (" + bodies.size() + " of " + order.size() + ")", bodies.size() == order.size());
                     for (int i = 0; i < order.size(); i++) {
                         CensusBody b = MowzieKit.bodyOf(c, order.get(i));
@@ -1097,6 +1111,21 @@ public final class MowzieGameTests {
     @SafeVarargs
     private static Runnable gone(ServerLevel level, Supplier<? extends Entity>... objects) {
         return MowzieKit.removed(level, objects);
+    }
+
+    /**
+     * The same for every object of the arrays, read at each poll: the arrays are made when the sequence is built
+     * and filled by its steps (MZB-673).
+     */
+    @SuppressWarnings("unchecked")
+    private static Runnable gone(ServerLevel level, Entity[]... arrays) {
+        List<Supplier<Entity>> objects = new ArrayList<>();
+        for (Entity[] a : arrays)
+            for (int i = 0; i < a.length; i++) {
+                int k = i;
+                objects.add(() -> a[k]);
+            }
+        return MowzieKit.removed(level, objects.toArray(new Supplier[0]));
     }
 
     // ---- 3: a member comes home -------------------------------------------------------------------
@@ -2417,15 +2446,17 @@ public final class MowzieGameTests {
                 .thenSucceed();
     }
 
-    // ---- MZB-594: the raptor stand-in -------------------------------------------------------------
+    // ---- MZB-594, MZB-428: the raptor maker ---------------------------------------------------------
 
     /**
-     * An umvuthana party with a raptor unit brings no untagged followers (MZB-594): the jar's raptor adds 4 or
-     * 5 followers through {@code addFreshEntity} in its {@code finalizeSpawn}, which {@code ConflictBodies.create}
-     * calls, so until M9 builds the raptor maker the raptor stand-in is the grove warrior. A band of two raptor
-     * units materialized at a grove: both puppets stand and are the grove's warrior ({@code EntityUmvuthanaMinion}),
-     * and after 40 ticks no {@code EntityUmvuthanaRaptor} and no {@code EntityUmvuthanaFollowerToRaptor} stands in
-     * the area.
+     * An umvuthana party with a raptor unit brings no untagged followers (MZB-594, MZB-428): the jar's raptor
+     * adds 4 or 5 followers through {@code addFreshEntity} in its {@code finalizeSpawn}, so the raptor maker
+     * makes the raptor without it and brings exactly 4 followers of its own, which the bridge tags and removes.
+     * A band of two raptor units materialized at a grove: both puppets stand and are the jar's raptors
+     * ({@code EntityUmvuthanaRaptor}); after 40 ticks the area holds 8 followers and every one carries the
+     * band's tag, none stands untagged, and each raptor's pack is 4 (the followers found their leader). A
+     * recall that times out takes the raptors and every follower out of the world: the wait reads each object's
+     * own {@code isRemoved()}, as the recall walks them out of the grove's area before it removes them (MZB-673).
      */
     @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "mowzie_raptor_standin", skyAccess = true)
     public static void anUmvuthanaPartyWithARaptorUnitBringsNoUntaggedFollowers(GameTestHelper helper) {
@@ -2436,6 +2467,8 @@ public final class MowzieGameTests {
         Grove grove = new Grove(far, far.k, far.z0);
         long[] agent = new long[1];
         Mob[][] puppet = new Mob[1][];
+        // The two raptors and their 8 followers, taken before the recall (MZB-673).
+        Entity[] taken = new Entity[10];
 
         MowzieKit.seq(helper)
                 .thenExecute(() -> grove.force())
@@ -2448,12 +2481,33 @@ public final class MowzieGameTests {
                 .thenIdle(40)
                 .thenExecute(() -> {
                     puppet[0] = bandStands(agent[0], 2);
-                    for (Mob p : puppet[0])
-                        check("the raptor unit's puppet is the grove warrior", p instanceof EntityUmvuthanaMinion && RtsimApi.isPuppet(p));
-                    check("no raptor stands in the area", level.getEntitiesOfClass(EntityUmvuthanaRaptor.class, grove.area()).isEmpty());
+                    for (Mob p : puppet[0]) {
+                        check("the raptor unit's puppet is the jar's raptor", p instanceof EntityUmvuthanaRaptor && RtsimApi.isPuppet(p));
+                        check("its pack is 4 (" + ((EntityUmvuthanaRaptor) p).getPackSize() + ")", ((EntityUmvuthanaRaptor) p).getPackSize() == 4);
+                    }
                     List<EntityUmvuthanaFollowerToRaptor> followers = level.getEntitiesOfClass(EntityUmvuthanaFollowerToRaptor.class, grove.area());
-                    check("no raptor follower stands in the area (" + followers.size() + ")", followers.isEmpty());
-                    record(test, "raptor", "two raptor units embodied as grove warriors, no raptor and no follower");
+                    check("8 followers stand, 4 to a raptor (" + followers.size() + ")", followers.size() == 8);
+                    for (EntityUmvuthanaFollowerToRaptor f : followers) {
+                        check("a follower carries the band's tag", RtsimAttachments.isTagged(f) && RtsimAttachments.tag(f).agent() == agent[0]);
+                        check("a follower has its leader", f.getLeaderUUID().isPresent());
+                    }
+                    for (ConflictBridge.Slot s : ConflictKit.party(agent[0]).stacks().get(0).slots())
+                        check("each slot holds its 4 extras (" + s.extras().size() + ")", s.extras().size() == 4);
+                    // The recall walks them toward spot.x - 200, out of the area before they go: the wait is on
+                    // the objects, not on the area (MZB-673).
+                    taken[0] = puppet[0][0];
+                    taken[1] = puppet[0][1];
+                    for (int i = 0; i < 8; i++)
+                        taken[2 + i] = followers.get(i);
+                    ConflictKit.recall(agent[0], 1, ConflictRecords.RECALL_DONE, 1, grove.spot.x - 200, grove.spot.z);
+                })
+                .thenWaitUntil(waits.chunks(gone(level, taken)))
+                .thenExecute(() -> {
+                    // The recall discards them: none was saved with a chunk instead (MZB-673).
+                    for (Entity e : taken)
+                        check("each is discarded by the recall (" + e.getRemovalReason() + ")",
+                                e.getRemovalReason() == Entity.RemovalReason.DISCARDED);
+                    record(test, "raptor", "two raptors, 8 tagged followers, none untagged, all discarded by the recall");
                 })
                 .thenSucceed();
     }

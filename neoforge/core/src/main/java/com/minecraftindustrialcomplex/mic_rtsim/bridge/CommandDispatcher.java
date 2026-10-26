@@ -286,41 +286,41 @@ final class CommandDispatcher implements Handover.CommandSink {
     private void transferToContainer(ByteBuffer b, int at, long now) {
         long cmdSeq = b.getLong(at + Cmd.CMD_SEQ);
         long opId = b.getLong(at + Cmd.TransferToContainer.OP_ID);
+        ServerLevel level = level(b.getInt(at + Cmd.TransferToContainer.DIM));
+        BlockPos pos = new BlockPos(b.getInt(at + Cmd.TransferToContainer.X), b.getInt(at + Cmd.TransferToContainer.Y), b.getInt(at + Cmd.TransferToContainer.Z));
         if (session.boundary.journal().commandOpApplied(opId)) {
-            session.journalCommandResult(cmdSeq, opId, Obs.CommandResult.DUPLICATE_OP, now);
+            transferResult(cmdSeq, opId, Obs.CommandResult.DUPLICATE_OP, now, level, pos);
             return;
         }
-        ServerLevel level = level(b.getInt(at + Cmd.TransferToContainer.DIM));
         Item item = item(b.getInt(at + Cmd.TransferToContainer.ITEM));
         int count = b.getInt(at + Cmd.TransferToContainer.COUNT);
-        BlockPos pos = new BlockPos(b.getInt(at + Cmd.TransferToContainer.X), b.getInt(at + Cmd.TransferToContainer.Y), b.getInt(at + Cmd.TransferToContainer.Z));
         // getChunkNow, not isLoaded: isLoaded reads the ticket level only, and the capability lookup
         // below would then wait on the server thread for the chunk to finish loading.
         net.minecraft.world.level.chunk.LevelChunk chunk = level == null ? null : level.getChunkSource().getChunkNow(pos.getX() >> 4, pos.getZ() >> 4);
         if (level == null || item == null || count <= 0 || chunk == null) {
-            session.journalCommandResult(cmdSeq, opId, Obs.CommandResult.FAILED, now);
+            transferResult(cmdSeq, opId, Obs.CommandResult.FAILED, now, level, pos);
             return;
         }
         // The chunk itself remembers what was applied into it (PendingRecords): it may have been saved
         // on unload after the transfer and before the journal, so after a crash only it knows.
         if (RtsimSession.chunkCarriesOp(chunk, opId)) {
-            ByteBuffer dup = session.journalCommandResult(cmdSeq, opId, Obs.CommandResult.DUPLICATE_OP, now);
+            ByteBuffer dup = transferResult(cmdSeq, opId, Obs.CommandResult.DUPLICATE_OP, now, level, pos);
             session.dropFromChunkWhenAcked(chunk, opId, dup.getLong(Obs.OBS_SEQ));
             return;
         }
         IItemHandler handler = level.getCapability(Capabilities.ItemHandler.BLOCK, pos, null);
         if (handler == null) {
-            session.journalCommandResult(cmdSeq, opId, Obs.CommandResult.FAILED, now);
+            transferResult(cmdSeq, opId, Obs.CommandResult.FAILED, now, level, pos);
             return;
         }
         if (count > item.getDefaultMaxStackSize()) {
             // One stack per command, so the simulated insert below is exact; the engine splits larger ones.
-            session.journalCommandResult(cmdSeq, opId, Obs.CommandResult.FAILED, now);
+            transferResult(cmdSeq, opId, Obs.CommandResult.FAILED, now, level, pos);
             return;
         }
         ItemStack stack = new ItemStack(item, count);
         if (!ItemHandlerHelper.insertItemStacked(handler, stack.copy(), true).isEmpty()) {
-            session.journalCommandResult(cmdSeq, opId, Obs.CommandResult.FAILED, now);
+            transferResult(cmdSeq, opId, Obs.CommandResult.FAILED, now, level, pos);
             return;
         }
         ItemStack rest = ItemHandlerHelper.insertItemStacked(handler, stack, false);
@@ -330,7 +330,20 @@ final class CommandDispatcher implements Handover.CommandSink {
             MicRtsim.LOGGER.warn("[mic_rtsim] transfer {} left {} x {} over at {}; dropped there", opId, rest.getCount(), item, pos);
             net.minecraft.world.Containers.dropItemStack(level, pos.getX() + 0.5, pos.getY() + 1, pos.getZ() + 0.5, rest);
         }
-        session.carryInChunk(chunk, session.journalCommandResult(cmdSeq, opId, Obs.CommandResult.APPLIED, now));
+        session.carryInChunk(chunk, transferResult(cmdSeq, opId, Obs.CommandResult.APPLIED, now, level, pos));
+    }
+
+    /**
+     * Journals a TRANSFER_TO_CONTAINER's COMMAND_RESULT and tells the plugins which container it was for (whatever
+     * the status), so a plugin that told the engine about the container can tell it how the container stands now.
+     * Nothing is told for a dimension the server has not got.
+     */
+    private ByteBuffer transferResult(long cmdSeq, long opId, int status, long now, ServerLevel level, BlockPos pos) {
+        ByteBuffer r = session.journalCommandResult(cmdSeq, opId, status, now);
+        if (level != null)
+            com.minecraftindustrialcomplex.mic_rtsim.api.SessionPlugins.each("containerTransferred",
+                    p -> p.containerTransferred(session, level, pos, status));
+        return r;
     }
 
     // ---- phase 1 --------------------------------------------------------------------------------
