@@ -25,6 +25,7 @@ import net.neoforged.neoforge.event.entity.EntityLeaveLevelEvent;
 import net.neoforged.neoforge.event.entity.living.LivingChangeTargetEvent;
 import net.neoforged.neoforge.event.entity.living.LivingDeathEvent;
 import net.neoforged.neoforge.event.entity.living.LivingDropsEvent;
+import net.neoforged.neoforge.event.entity.living.LivingExperienceDropEvent;
 import net.neoforged.neoforge.event.entity.living.LivingIncomingDamageEvent;
 import net.neoforged.neoforge.event.entity.player.PlayerInteractEvent;
 import net.neoforged.neoforge.event.level.BlockEvent;
@@ -48,6 +49,7 @@ public final class ConflictEvents {
         IEventBus bus = NeoForge.EVENT_BUS;
         bus.addListener(EventPriority.LOWEST, false, LivingDeathEvent.class, ConflictEvents::onDeath);
         bus.addListener(EventPriority.LOWEST, false, LivingDropsEvent.class, ConflictEvents::onDrops);
+        bus.addListener(EventPriority.LOWEST, false, LivingExperienceDropEvent.class, ConflictEvents::onExperience);
         bus.addListener(EventPriority.LOW, false, LivingChangeTargetEvent.class, ConflictEvents::onTarget);
         bus.addListener(EventPriority.LOW, false, LivingIncomingDamageEvent.class, ConflictEvents::onHit);
         bus.addListener(EventPriority.HIGHEST, false, PlayerInteractEvent.EntityInteract.class, ConflictEvents::onInteract);
@@ -92,7 +94,22 @@ public final class ConflictEvents {
     private static void onDrops(LivingDropsEvent event) {
         if (event.getEntity().level().isClientSide() || live() == null)
             return;
+        if (ConflictBridge.INSTANCE.reconciler().secondBody(event.getEntity())) {
+            event.setCanceled(true); // a chief's second body drops nothing (MZB-431)
+            return;
+        }
+        if (ConflictBridge.INSTANCE.isExtra(event.getEntity())) {
+            event.setCanceled(true); // nor does a body's extra, which the stack makes again (MZB-643)
+            return;
+        }
         ConflictBridge.INSTANCE.onDrops(event.getEntity(), event.getDrops());
+    }
+
+    private static void onExperience(LivingExperienceDropEvent event) {
+        if (event.getEntity().level().isClientSide() || live() == null)
+            return;
+        if (ConflictBridge.INSTANCE.reconciler().secondBody(event.getEntity()) || ConflictBridge.INSTANCE.isExtra(event.getEntity()))
+            event.setCanceled(true);
     }
 
     private static void onTarget(LivingChangeTargetEvent event) {

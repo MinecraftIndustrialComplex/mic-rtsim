@@ -250,9 +250,13 @@ public final class DragonRecords {
         public static final int NEST = 16, DIM = 24, CX = 28, CZ = 32, DEPTH = 36, SIZE = 40;
     }
 
-    /** NEST_RENEW (aux = count): the nest owes {@code count} more worms of size {@code stage} (1 to 3). */
+    /**
+     * NEST_RENEW (aux = count): the nest owes {@code count} more worms of size {@code stage} (1 to 3), when
+     * {@code serial} (the engine's count of the nest's renewals with this one in it, an unsigned 32 bits, first 1)
+     * is above the last applied under the same engine life (docs/replay-gate.md §7.1, RP-14). Offset 36 is reserved.
+     */
     public static final class NestRenew {
-        public static final int NEST = 16, DIM = 24, STAGE = 28, RESERVED = 32, SIZE = 40;
+        public static final int NEST = 16, DIM = 24, STAGE = 28, SERIAL = 32, RESERVED = 36, SIZE = 40;
     }
 
     /**

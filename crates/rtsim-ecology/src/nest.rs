@@ -197,6 +197,10 @@ pub struct Nest {
     pub renewed: u32,
     pub lost_player: u32,
     pub raids: u32,
+    /// NEST_RENEWs the nest has decided, its first brood included: the last one's serial
+    /// (docs/replay-gate.md §7.1, RP-14). It is a field of the saved row, so a restored engine
+    /// numbers the renewals it decides again exactly as the engine that decided them first did.
+    pub renewals: u32,
 }
 
 impl Nest {
@@ -217,6 +221,7 @@ impl Nest {
             renewed: 0,
             lost_player: 0,
             raids: 0,
+            renewals: 0,
         }
     }
 
@@ -585,12 +590,18 @@ impl Dragons {
         ((days * 1_000.0).ceil() as u32).max(1)
     }
 
-    fn renew(&mut self, k: NestKey, count: u32, stage: u32) {
+    /// Sends NEST_RENEW for `n`, numbered by the nest's own renewal count (RP-14). The count is
+    /// a field of the row the caller saves, so the serial belongs to the nest's history, not to a
+    /// session: the renewal a restored engine decides again carries the number it had. Saturating:
+    /// at the top every serial repeats and Java drops them (a loss, never a double).
+    fn renew(&mut self, k: NestKey, n: &mut Nest, count: u32, stage: u32) {
+        n.renewals = n.renewals.saturating_add(1);
         self.outbox.push(Cmd::NestRenew(boundary::NestRenew {
             nest: nest_id(k),
             dimension: u32::from(k.0),
             count,
             stage,
+            serial: n.renewals,
         }));
     }
 
@@ -634,7 +645,7 @@ impl Dragons {
                 n.wait_milli = None;
                 self.nests.stats.broods += 1;
                 if owed > 0 {
-                    self.renew(k, owed, stage);
+                    self.renew(k, &mut n, owed, stage);
                 }
                 self.note(
                     at,
@@ -652,7 +663,7 @@ impl Dragons {
                     n.worms += 1;
                     n.renewed += 1;
                     self.nests.stats.renewed += 1;
-                    self.renew(k, 1, stage);
+                    self.renew(k, &mut n, 1, stage);
                     n.wait_milli = (n.worms < kk).then(|| self.worm_wait(&n));
                     self.note(
                         at,

@@ -52,6 +52,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
@@ -97,6 +98,17 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 public final class Nests {
     /** Persistent data: the nest id of one of its worms (long). */
     public static final String TAG = "mic_rtsim_nest";
+    /**
+     * Persistent data: the ordinal of one of the nest's worms (int), the count of worms the nest had spawned before it
+     * (RP-242): the nest's {@link Nest#spawned} when the worm was placed. Beside {@link #TAG}, in the entity's own file.
+     */
+    public static final String ORDINAL_TAG = "mic_rtsim_nest_ordinal";
+    /**
+     * Persistent data of a nest's heart (a spawner block entity, saved under NeoForge's "NeoForgeData" in the chunk's
+     * own file beside the carved blocks): the nest id (long). A PLACE_NEST again for a nest the Nests lost finds its
+     * chamber by it instead of carving a second one (RP-240).
+     */
+    public static final String HEART_TAG = "mic_rtsim_nest_heart";
     /** Persistent data: the worm is out on a sortie (cleared when it is home). */
     public static final String SORTIE_TAG = "mic_rtsim_nest_sortie";
     public static final ResourceLocation DEATHWORM = ResourceLocation.fromNamespaceAndPath("iceandfire", "deathworm");
@@ -128,13 +140,42 @@ public final class Nests {
     /** One PLACE_NEST waiting for its chunk. */
     public record Pending(long nest, String dim, int cx, int cz, int depth) {}
 
+    /** The last NEST_RENEW serial applied under one earlier engine life (RP-14, RP-232). */
+    public record LifeSerial(long life, long serial) {}
+
     /** One placed nest. */
     public static final class Nest {
+        /**
+         * How many engine lives a nest remembers the last renewal serial of: the current one and the seven before it.
+         * A life past that is forgotten oldest first, and a return to a forgotten life counts from 0 again, which is
+         * the one way left to owe a renewal twice (RP-232: more than eight lives, and a hand-mixed restore).
+         */
+        public static final int LIVES = 8;
+        /** The most holes a nest keeps (RP-242): far above any brood in use; the lowest is dropped past it. */
+        public static final int HOLES_MAX = 32;
+
         public final long id;
         public final String dim;
         public final BlockPos heart;
         /** Worms owed (NEST_RENEW) and not yet placed, and the size stage they will have. */
         public int owed, stage = 1;
+        /**
+         * How many worms the nest has ever spawned (RP-242): each worm carries the count it was spawned at as its
+         * ordinal ({@link Nests#ORDINAL_TAG}), so a copy of a worm a restore spawned again, or one that died, is told
+         * from the worm the nest holds. Saved in the same file as {@link #owed}; a file from before it loads 0.
+         */
+        public int spawned;
+        /**
+         * Ordinals below {@link #spawned} that were skipped (RP-242, RP-242): a worm adopted at ordinal k above the count
+         * leaves {@code spawned..k-1} here, because the worms of those ordinals may be in entity files that load after it.
+         * A hole is a worm the file's brood still owes, so the join rule adopts its copy (once) where it would discard
+         * one of an ordinal below the count, and the nest's own spawn takes the lowest hole before it raises the count (the
+         * old copy of the ordinal it spawns again is then stale, as before). Held to {@link #HOLES_MAX}: a brood is
+         * {@code K} worms (2 by default, a u16 setting), and a hole is one of them or one that died in the lost window;
+         * past the cap the lowest is dropped, so that worm's copy is discarded when it loads (a loss, never a double).
+         * Saved in the same file as {@link #spawned}.
+         */
+        public final TreeSet<Integer> holes = new TreeSet<>();
         /**
          * The heart is gone: no worm is placed until a PLACE_NEST (or a NEST_RENEW) re-forms it; {@code reform}:
          * one asked for it, to be done when the heart's chunk is loaded.
@@ -142,6 +183,19 @@ public final class Nests {
         public boolean broken, reform;
         /** The game time the owed worms are tried again. */
         public long dueAt;
+        /**
+         * NEST_RENEW's dedup (docs/replay-gate.md §7.1, RP-14): the serial of the last renewal applied (the engine's
+         * count of this nest's renewals, an unsigned 32 bits), and the engine life it came under
+         * ({@code RtsimSession.engineLife}, RP-19): the nest's current life. Both 0 for a nest with none, and for one
+         * loaded from a file from before them. Saved with {@link #owed}, in the same file: the two reach disk together.
+         */
+        public long serial, life;
+        /**
+         * The last serial of each earlier life, oldest first: never the current life, never a serial 0 (that is the same
+         * as no entry), at most {@link #LIVES} - 1 of them. A life the engine comes back to (world/rtsim restored from a
+         * backup while the Nests stayed) takes its serial from here, so what it applied is still a repeat (RP-232).
+         */
+        public final ArrayList<LifeSerial> earlier = new ArrayList<>();
         /** Its worms alive, loaded or not. */
         public final LinkedHashSet<UUID> worms = new LinkedHashSet<>();
 
@@ -154,6 +208,195 @@ public final class Nests {
         public ChunkPos chunk() {
             return new ChunkPos(heart);
         }
+
+        /**
+         * Whether a NEST_RENEW of {@code renewal} under engine life {@code engineLife} is new, and if so counted:
+         * only a serial above the last one applied under the same life is (RP-14). Under a life the nest has not
+         * seen its serial starts afresh, since the new engine counts its renewals from 1; what is owed stays (RP-19).
+         * Under a life it has seen, within the last {@link #LIVES}, the serial is the one that life reached (RP-232).
+         * A repeat changes nothing but the life it is judged under.
+         */
+        public boolean acceptRenewal(long engineLife, long renewal) {
+            if (engineLife != life)
+                switchTo(engineLife);
+            if (renewal <= serial)
+                return false;
+            serial = renewal;
+            return true;
+        }
+
+        /** Makes {@code engineLife} the current life: the current one goes to {@link #earlier}, the asked one comes back from it. */
+        private void switchTo(long engineLife) {
+            if (serial != 0)
+                earlier.add(new LifeSerial(life, serial));
+            long back = 0;
+            for (Iterator<LifeSerial> it = earlier.iterator(); it.hasNext();) {
+                LifeSerial e = it.next();
+                if (e.life() == engineLife) {
+                    back = e.serial();
+                    it.remove();
+                    break;
+                }
+            }
+            while (earlier.size() > LIVES - 1)
+                earlier.remove(0);
+            life = engineLife;
+            serial = back;
+        }
+
+        /** The last serial applied under {@code engineLife}: 0 for a life the nest does not remember. */
+        public long lastUnder(long engineLife) {
+            if (engineLife == life)
+                return serial;
+            for (LifeSerial e : earlier)
+                if (e.life() == engineLife)
+                    return e.serial();
+            return 0;
+        }
+
+        /** Loading: an earlier life's serial from a file, leaving out what could not be one (the current life, a 0, a repeat) and the surplus. */
+        void remember(long earlierLife, long earlierSerial) {
+            if (earlierLife == life || earlierSerial == 0)
+                return;
+            earlier.removeIf(e -> e.life() == earlierLife);
+            earlier.add(new LifeSerial(earlierLife, earlierSerial));
+            while (earlier.size() > LIVES - 1)
+                earlier.remove(0);
+        }
+
+        /**
+         * NEST_RENEW applied to the nest: when the serial is new (see {@link #acceptRenewal}), {@code count} more worms
+         * are owed at size {@code stage}, tried from {@code now}, and a broken heart is asked to re-form. False for a
+         * repeat, which changes none of that.
+         */
+        public boolean renewed(long engineLife, long renewal, int count, int stage, long now) {
+            if (!acceptRenewal(engineLife, renewal))
+                return false;
+            if (broken)
+                reform = true;
+            owed += count;
+            this.stage = Mth.clamp(stage, 1, 3);
+            dueAt = now;
+            return true;
+        }
+
+        /** The serial a renewal sent next under engine life {@code engineLife} must carry to be applied (GameTests). */
+        public long nextSerial(long engineLife) {
+            return lastUnder(engineLife) + 1;
+        }
+
+        /** What a worm joining a level means to its nest (RP-242). */
+        public enum Join {
+            /** The nest holds it, or the worm carries no ordinal (a worm from before it): left alone, as it always was. */
+            NORMAL,
+            /** A copy of a worm the nest spawned again after a rollback, or that has died: cancelled and discarded. */
+            STALE,
+            /** A worm a later session spawned whose count the nest's file lost: taken into the list. */
+            ADOPT
+        }
+
+        /**
+         * The join rule of a nest worm (RP-242). {@code ordinal} is the worm's {@link Nests#ORDINAL_TAG}, or
+         * {@code -1} for a worm that has none. A worm the list holds is normal whatever its ordinal. An unlisted one
+         * of a hole's ordinal (RP-242) is adopted: a worm a later session spawned, whose entity file loaded after a
+         * higher one's. An unlisted one below {@link #spawned} otherwise is a stale copy: lose, never double (the count
+         * it was spawned at was spawned again, or it died, and either way the nest's books no longer owe it). One at or
+         * above the count was spawned by a session whose count did not reach this file, and is adopted.
+         */
+        public Join judge(UUID worm, int ordinal) {
+            if (ordinal < 0 || worms.contains(worm))
+                return Join.NORMAL;
+            if (holes.contains(ordinal))
+                return Join.ADOPT;
+            return ordinal < spawned ? Join.STALE : Join.ADOPT;
+        }
+
+        /**
+         * Takes an adopted worm into the nest (RP-242): listed, its ordinal counted as spawned, and one worm
+         * less owed (never below 0: {@link #owed} still covers the worms of the ordinals skipped). The ordinals it skips,
+         * the count up to it, become {@link #holes} (RP-242), so their worms are adopted when they load, whatever the
+         * order; a hole it fills is taken off. Only the {@link #HOLES_MAX} highest are kept.
+         */
+        public void adopt(UUID worm, int ordinal) {
+            worms.add(worm);
+            if (!holes.remove(ordinal) && ordinal >= spawned) {
+                for (int k = (int) Math.max(spawned, (long) ordinal - HOLES_MAX); k < ordinal; k++)
+                    holes.add(k);
+                while (holes.size() > HOLES_MAX)
+                    holes.pollFirst();
+                spawned = ordinal == Integer.MAX_VALUE ? ordinal : ordinal + 1;
+            }
+            if (owed > 0)
+                owed--;
+        }
+
+        /** One loaded worm of this nest, for {@link #settle}. */
+        public record Loaded(UUID worm, int ordinal) {}
+
+        /** What {@link #settle} decided: the copies to discard, and how many worms it adopted. */
+        public record Settled(List<UUID> stale, int adopted) {}
+
+        /**
+         * The join rule over worms already loaded when the nest was registered (RP-241): each goes through {@link #judge}
+         * in turn, a stale one is returned to be discarded, an adopted one is {@link #adopt adopted}. Order does not
+         * matter (the holes see to that), and two worms of one ordinal end as one adopted and one stale.
+         */
+        public Settled settle(List<Loaded> loaded) {
+            List<UUID> stale = new ArrayList<>();
+            int adopted = 0;
+            for (Loaded l : loaded)
+                switch (judge(l.worm(), l.ordinal())) {
+                    case STALE -> stale.add(l.worm());
+                    case ADOPT -> {
+                        adopt(l.worm(), l.ordinal());
+                        adopted++;
+                    }
+                    default -> {
+                    }
+                }
+            return new Settled(stale, adopted);
+        }
+
+        /**
+         * The ordinal the nest's next worm carries (RP-242): the lowest hole, taken, else the count, raised. The old copy
+         * of an ordinal spawned again finds no hole and is stale. {@link #returnOrdinal} undoes it if the worm cannot join.
+         */
+        public int takeOrdinal() {
+            if (!holes.isEmpty())
+                return holes.pollFirst();
+            return spawned++;
+        }
+
+        /** Undoes {@link #takeOrdinal} for a worm that did not join: {@code hole} says whether it was a hole's. */
+        public void returnOrdinal(int ordinal, boolean hole) {
+            if (hole)
+                holes.add(ordinal);
+            else
+                spawned = ordinal;
+        }
+
+        /**
+         * Whether the death of {@code worm} is the nest's loss (RP-242): not for an unlisted worm of an ordinal, which
+         * the nest never counted (the census would not have held it, and the engine does not either).
+         */
+        public boolean countsLoss(UUID worm, int ordinal) {
+            return ordinal < 0 || worms.contains(worm);
+        }
+    }
+
+    /** Stamps nest {@code nest}'s id on a heart's persistent data (RP-240). */
+    static void markHeart(CompoundTag persistent, long nest) {
+        persistent.putLong(HEART_TAG, nest);
+    }
+
+    /**
+     * Whether a spawner block entity's saved custom data ({@code saveCustomOnly}, which carries the NeoForge persistent
+     * data under "NeoForgeData") is nest {@code nest}'s heart (RP-240). A spawner of the world's own, or of another
+     * nest, is not.
+     */
+    static boolean marksNest(CompoundTag spawnerSave, long nest) {
+        CompoundTag persistent = spawnerSave.getCompound("NeoForgeData");
+        return persistent.contains(HEART_TAG, Tag.TAG_LONG) && persistent.getLong(HEART_TAG) == nest;
     }
 
     /** How a worm's last sortie went (GameTests and the log). */
@@ -216,9 +459,9 @@ public final class Nests {
     private long nextSpawnCheck = Long.MIN_VALUE;
 
     // Counters for logs and the GameTests (this session).
-    public long requests, repeats, refused, badRequests, placedCount, failedCount, renews, renewsUnknown, reformed, wormsPlaced,
+    public long requests, repeats, refused, badRequests, placedCount, failedCount, renews, renewsUnknown, renewsRepeated, reformed, wormsPlaced,
             censuses, losses, heartsBroken, sorties, wormsSent, stoppedUnderArmour, surfaced, homeComings, spawnerCancelled,
-            griefCancelled, mended;
+            griefCancelled, mended, heartsRecognised, staleWorms, adoptedWorms, lossesSkipped;
 
     Nests(DragonBridge bridge) {
         this.bridge = bridge;
@@ -235,9 +478,10 @@ public final class Nests {
         outcomes.clear();
         asked.clear();
         nextSpawnCheck = Long.MIN_VALUE;
-        requests = repeats = refused = badRequests = placedCount = failedCount = renews = renewsUnknown = reformed = wormsPlaced = 0;
+        requests = repeats = refused = badRequests = placedCount = failedCount = renews = renewsUnknown = renewsRepeated = reformed = wormsPlaced = 0;
         censuses = losses = heartsBroken = sorties = wormsSent = stoppedUnderArmour = surfaced = homeComings = spawnerCancelled = 0;
         griefCancelled = mended = 0;
+        heartsRecognised = staleWorms = adoptedWorms = lossesSkipped = 0;
     }
 
     // ---- the saved state and its indexes -----------------------------------------------------------
@@ -412,8 +656,15 @@ public final class Nests {
     /**
      * NEST_RENEW: {@code count} more worms of size {@code stage} for the nest. A broken heart re-forms
      * here too, as a fallback: the engine's own reform is a PLACE_NEST ({@link #place}).
+     *
+     * <p>Applied once per serial (docs/replay-gate.md §7.1, RP-14): {@code serial} is the engine's count of this
+     * nest's renewals with this one in it, and the nest remembers the last it applied and the engine life it came
+     * under. A renewal the engine decides again (after a restore from older pages) carries the serial it had
+     * and adds nothing. A renewal below the nest's last serial is dropped too:
+     * the rule is to lose, never to double. A life the nest has not seen starts its serial afresh (RP-19); one it has seen
+     * takes up the serial it had reached (RP-232).
      */
-    public void renew(long nest, int stage, int count, long now) {
+    public void renew(long nest, int stage, int count, long serial, long now) {
         renews++;
         Data d = index(bridge.session().server());
         Nest n = d.placed.get(nest);
@@ -423,12 +674,13 @@ public final class Nests {
                     n == null ? "no such nest placed" : "nothing to renew");
             return;
         }
-        if (n.broken)
-            n.reform = true;
-        n.owed += count;
-        n.stage = Mth.clamp(stage, 1, 3);
-        n.dueAt = now;
+        boolean fresh = n.renewed(bridge.session().engineLife(), serial, count, stage, now);
         d.setDirty();
+        if (!fresh) {
+            renewsRepeated++;
+            MicRtsimIceAndFire.LOGGER.info("[mic_rtsim_iceandfire] NEST_RENEW {} for nest {}: serial {} is not above {} (engine life {}),"
+                    + " owed once already", count, nest, serial, n.serial, Long.toHexString(n.life));
+        }
     }
 
     /** NEST_SORTIE: up to {@code count} of the nest's loaded worms raid column (x, z) for {@code timeout} ticks. */
@@ -540,7 +792,14 @@ public final class Nests {
             it.remove();
             d.pending.remove(id);
             unindex(p.dim(), ChunkPos.asLong(p.cx(), p.cz()), id);
-            BlockPos heart = carve(level, chunk, id, p.depth());
+            // A nest the saved state lost but whose chamber is in the chunk (this file older than the chunk's, RP-240): its
+            // heart is found by the nest id it carries, and nothing is carved. A second chamber would be a second heart
+            // and a second brood.
+            BlockPos heart = findHeart(level, chunk, id);
+            boolean standing = heart != null;
+            int settled = 0;
+            if (!standing)
+                heart = carve(level, chunk, id, p.depth());
             if (heart == null) {
                 failedCount++;
                 MicRtsimIceAndFire.LOGGER.info("[mic_rtsim_iceandfire] PLACE_NEST {}: no natural ground for a chamber in chunk {} of {}",
@@ -549,13 +808,63 @@ public final class Nests {
                 Nest n = new Nest(id, p.dim(), heart);
                 d.placed.put(id, n);
                 indexNest(n);
-                placedCount++;
-                MicRtsimIceAndFire.LOGGER.info("[mic_rtsim_iceandfire] PLACE_NEST {}: chamber carved, heart at {} in {}", id,
-                        heart.toShortString(), p.dim());
+                if (standing) {
+                    settled = settleLoaded(level, n);
+                    heartsRecognised++;
+                    MicRtsimIceAndFire.LOGGER.info("[mic_rtsim_iceandfire] PLACE_NEST {}: its chamber stands, heart at {} in {}: nothing carved",
+                            id, heart.toShortString(), p.dim());
+                } else {
+                    placedCount++;
+                    MicRtsimIceAndFire.LOGGER.info("[mic_rtsim_iceandfire] PLACE_NEST {}: chamber carved, heart at {} in {}", id,
+                            heart.toShortString(), p.dim());
+                }
             }
             d.setDirty();
             found(id, p.dim(), heart, now);
+            // Worms the nest holds now that were loaded before it was known: the engine is told after NEST_FOUND.
+            if (settled > 0 && heart != null)
+                census(d.placed.get(id), level, now);
         }
+    }
+
+    /**
+     * The worms of nest {@code n} already loaded when its chamber was found standing (RP-241): their joins ran while the
+     * file did not know the nest, so {@link #staleCopy} let them through. They go through the join rule now, once, so a
+     * chunk that stays loaded until the next renewal cannot hold both an old worm and the one the nest spawns. The scan is
+     * the heart's chunk and the ring of chunks round it (48 by 48 blocks, the world's full height), through the level's
+     * entity index: one query per registration, never per tick, and it reads the sections of nine columns that hold
+     * entities. A stale copy is cancelled and discarded as a join does; the number adopted is returned.
+     */
+    private int settleLoaded(ServerLevel level, Nest n) {
+        ChunkPos c = n.chunk();
+        AABB area = new AABB(c.getMinBlockX() - 16, level.getMinBuildHeight(), c.getMinBlockZ() - 16,
+                c.getMaxBlockX() + 17, level.getMaxBuildHeight(), c.getMaxBlockZ() + 17);
+        Map<UUID, DeathWormEntity> found = new LinkedHashMap<>();
+        List<Nest.Loaded> loaded = new ArrayList<>();
+        for (DeathWormEntity w : level.getEntitiesOfClass(DeathWormEntity.class, area)) {
+            CompoundTag t = w.getPersistentData();
+            int ordinal = ordinal(w);
+            if (ordinal < 0 || !t.contains(TAG, Tag.TAG_LONG) || t.getLong(TAG) != n.id || w.isRemoved())
+                continue;
+            found.put(w.getUUID(), w);
+            loaded.add(new Nest.Loaded(w.getUUID(), ordinal));
+        }
+        if (loaded.isEmpty())
+            return 0;
+        Nest.Settled s = n.settle(loaded);
+        for (UUID u : s.stale()) {
+            DeathWormEntity w = found.get(u);
+            staleWorms++;
+            MicRtsimIceAndFire.LOGGER.info("[mic_rtsim_iceandfire] nest {}: worm {} was loaded before the nest was found and is a stale copy: discarded", n.id, u);
+            w.ejectPassengers();
+            w.stopRiding();
+            w.discard();
+        }
+        adoptedWorms += s.adopted();
+        if (s.adopted() > 0)
+            MicRtsimIceAndFire.LOGGER.info("[mic_rtsim_iceandfire] nest {}: {} worm(s) loaded before the nest was found adopted (spawned now {})",
+                    n.id, s.adopted(), n.spawned);
+        return s.adopted();
     }
 
     // ---- placement --------------------------------------------------------------------------------
@@ -617,15 +926,35 @@ public final class Nests {
                     for (int dy = 1; dy <= AIR; dy++)
                         level.setBlock(p.set(centre.getX() + dx, centre.getY() + dy, centre.getZ() + dz), Blocks.AIR.defaultBlockState(), Block.UPDATE_CLIENTS);
                 }
-            if (!setHeart(level, centre))
+            if (!setHeart(level, centre, nest))
                 return null;
             return centre.immutable();
         }
         return null;
     }
 
-    /** A spawner at {@code heart}, set to the Death Worm, that never spawns (RequiredPlayerRange 0). */
-    private static boolean setHeart(ServerLevel level, BlockPos heart) {
+    /**
+     * The heart of nest {@code nest} in {@code chunk}, or null: a spawner whose NeoForge persistent data carries the nest's
+     * id ({@link #HEART_TAG}, RP-240). One pass over the chunk's block entity positions, once per placement, never per tick;
+     * only a spawner is read, through {@code saveCustomOnly}, so no foreign block entity gets a persistent-data compound
+     * allocated (and saved) by a {@code getPersistentData()} call. The lowest position wins, should two chambers carry it.
+     */
+    static BlockPos findHeart(ServerLevel level, LevelChunk chunk, long nest) {
+        BlockPos found = null;
+        for (BlockPos pos : chunk.getBlockEntitiesPos()) {
+            if (!chunk.getBlockState(pos).is(Blocks.SPAWNER) || (found != null && found.asLong() <= pos.asLong()))
+                continue;
+            if (chunk.getBlockEntity(pos) instanceof SpawnerBlockEntity sp && marksNest(sp.saveCustomOnly(level.registryAccess()), nest))
+                found = pos.immutable();
+        }
+        return found;
+    }
+
+    /**
+     * A spawner at {@code heart}, set to the Death Worm, that never spawns (RequiredPlayerRange 0), and marked with the
+     * nest's id in its persistent data (RP-240): saved in the chunk's own file, beside the blocks this carved.
+     */
+    private static boolean setHeart(ServerLevel level, BlockPos heart, long nest) {
         level.setBlock(heart, Blocks.SPAWNER.defaultBlockState(), Block.UPDATE_CLIENTS);
         EntityType<?> type = BuiltInRegistries.ENTITY_TYPE.getOptional(DEATHWORM).orElse(null);
         if (!(level.getBlockEntity(heart) instanceof SpawnerBlockEntity sp) || type == null)
@@ -635,6 +964,7 @@ public final class Nests {
         CompoundTag t = b.save(new CompoundTag());
         t.putShort("RequiredPlayerRange", (short) 0);
         b.load(level, heart, t);
+        markHeart(sp.getPersistentData(), nest);
         sp.setChanged();
         return true;
     }
@@ -692,7 +1022,6 @@ public final class Nests {
                 DeathWormEntity w = spawnWorm(level, n);
                 if (w == null)
                     break;
-                n.worms.add(w.getUUID());
                 n.owed--;
                 placed++;
             }
@@ -712,7 +1041,7 @@ public final class Nests {
         BlockState s = level.getBlockState(n.heart);
         if (!(s.isAir() || s.is(BlockTags.SAND) || natural(s) || s.is(Blocks.SPAWNER)))
             return;
-        if (setHeart(level, n.heart)) {
+        if (setHeart(level, n.heart, n.id)) {
             n.broken = false;
             reformed++;
             MicRtsimIceAndFire.LOGGER.info("[mic_rtsim_iceandfire] nest {}: its heart re-formed at {}", n.id, n.heart.toShortString());
@@ -732,7 +1061,17 @@ public final class Nests {
         w.setWormHome(n.heart);
         w.setPersistenceRequired();
         w.getPersistentData().putLong(TAG, n.id);
-        return level.addFreshEntity(w) ? w : null;
+        // The worm's ordinal (RP-242), and the worm in the list before it joins: its own join runs the join rule, which
+        // must find it listed (it is the normal case). A refused join takes both back.
+        boolean hole = !n.holes.isEmpty();
+        int ordinal = n.takeOrdinal();
+        w.getPersistentData().putInt(ORDINAL_TAG, ordinal);
+        n.worms.add(w.getUUID());
+        if (level.addFreshEntity(w))
+            return w;
+        n.worms.remove(w.getUUID());
+        n.returnOrdinal(ordinal, hole);
+        return null;
     }
 
     // ---- reports ----------------------------------------------------------------------------------
@@ -780,6 +1119,13 @@ public final class Nests {
         long nest = dead.getPersistentData().getLong(TAG);
         glides.remove(dead.getUUID());
         Nest n = data(dead.getServer()).placed.get(nest);
+        int ordinal = ordinal(dead);
+        if (n != null && !n.countsLoss(dead.getUUID(), ordinal)) {
+            // A worm of an ordinal the nest does not hold (RP-242): its books never counted it, so its death is no loss of
+            // theirs. The join rule keeps such a worm out of a level; this is for one that got in some other way.
+            lossesSkipped++;
+            return;
+        }
         if (n != null && n.worms.remove(dead.getUUID()))
             data(dead.getServer()).setDirty();
         RtsimSession s = live();
@@ -909,6 +1255,53 @@ public final class Nests {
             return;
         event.setCanceled(true);
         griefCancelled++;
+    }
+
+    /** The worm's {@link #ORDINAL_TAG}, or -1 for a worm without one. */
+    private static int ordinal(DeathWormEntity w) {
+        CompoundTag t = w.getPersistentData();
+        return t.contains(ORDINAL_TAG, Tag.TAG_INT) ? Math.max(0, t.getInt(ORDINAL_TAG)) : -1;
+    }
+
+    /**
+     * A nest worm is about to join a level (EntityJoinLevelEvent, RP-242): true when it is a stale copy, to be cancelled
+     * and discarded by the caller the way core discards a stale puppet. A copy is a worm whose ordinal the nest spawned
+     * again after a rollback of its file, or which has died: the entity file holding it is older than the nest's.
+     * Journals nothing (it is not a death). A worm no later session spawned the ordinal of is adopted into its nest
+     * (one less owed), a worm in the list, a worm with no ordinal and a worm of a nest the file does not know are left to
+     * today's rules. Once per worm join, a set lookup: never per tick.
+     */
+    boolean staleCopy(DeathWormEntity w) {
+        CompoundTag t = w.getPersistentData();
+        int ordinal = ordinal(w);
+        if (ordinal < 0 || !t.contains(TAG, Tag.TAG_LONG) || w.getServer() == null)
+            return false;
+        Data d = data(w.getServer());
+        Nest n = d.placed.get(t.getLong(TAG));
+        if (n == null)
+            return false;
+        switch (n.judge(w.getUUID(), ordinal)) {
+            case STALE -> {
+                staleWorms++;
+                MicRtsimIceAndFire.LOGGER.info("[mic_rtsim_iceandfire] nest {}: worm {} of ordinal {} is a stale copy (the nest has spawned {}): discarded",
+                        n.id, w.getUUID(), ordinal, n.spawned);
+                return true;
+            }
+            case ADOPT -> {
+                boolean wasOwed = n.owed > 0;
+                n.adopt(w.getUUID(), ordinal);
+                d.setDirty();
+                adoptedWorms++;
+                MicRtsimIceAndFire.LOGGER.info("[mic_rtsim_iceandfire] nest {}: worm {} of ordinal {} adopted (spawned now {}, {} owed)",
+                        n.id, w.getUUID(), ordinal, n.spawned, n.owed);
+                // With nothing owed to cover it the nest holds one more worm than the engine was told.
+                if (!wasOwed && live() != null && w.level() instanceof ServerLevel level && level.isLoaded(n.heart))
+                    census(n, level, live().gameTime());
+            }
+            default -> {
+            }
+        }
+        return false;
     }
 
     /** A Death Worm joined a level: a nest worm saved mid-glide gets its AI back and glides home. */
@@ -1145,10 +1538,23 @@ public final class Nests {
                 t.putString("dimension", n.dim);
                 t.putLong("heart", n.heart.asLong());
                 t.putInt("owed", n.owed);
+                t.putInt("spawned", n.spawned);
+                if (!n.holes.isEmpty())
+                    t.putIntArray("holes", n.holes.stream().mapToInt(Integer::intValue).toArray());
                 t.putInt("stage", n.stage);
                 t.putBoolean("broken", n.broken);
                 t.putBoolean("reform", n.reform);
                 t.putLong("dueAt", n.dueAt);
+                t.putLong("serial", n.serial);
+                t.putLong("life", n.life);
+                ListTag lives = new ListTag();
+                for (LifeSerial e : n.earlier) {
+                    CompoundTag c = new CompoundTag();
+                    c.putLong("life", e.life());
+                    c.putLong("serial", e.serial());
+                    lives.add(c);
+                }
+                t.put("lives", lives);
                 ListTag worms = new ListTag();
                 for (UUID u : n.worms)
                     worms.add(NbtUtils.createUUID(u));
@@ -1169,7 +1575,27 @@ public final class Nests {
             for (Tag e : tag.getList("placed", Tag.TAG_COMPOUND)) {
                 CompoundTag t = (CompoundTag) e;
                 Nest n = new Nest(t.getLong("nest"), t.getString("dimension"), BlockPos.of(t.getLong("heart")));
-                n.owed = t.getInt("owed");
+                // A file from before the renewal serial (RP-14) has neither serial nor life: its nests load owed 0 and
+                // serial 0. Whatever was owed is dropped, never doubled: the engine may decide it again, and with no
+                // serial to compare there is no telling whether it was applied.
+                boolean serialled = t.contains("serial", Tag.TAG_ANY_NUMERIC) && t.contains("life", Tag.TAG_ANY_NUMERIC);
+                n.owed = serialled ? t.getInt("owed") : 0;
+                n.serial = serialled ? t.getLong("serial") : 0;
+                n.life = serialled ? t.getLong("life") : 0;
+                // The earlier lives' serials (RP-232): a file without the list, an old file or one written before it,
+                // loads none.
+                if (serialled)
+                    for (Tag x : t.getList("lives", Tag.TAG_COMPOUND))
+                        n.remember(((CompoundTag) x).getLong("life"), ((CompoundTag) x).getLong("serial"));
+                // The worms ever spawned (RP-242): a file from before it loads 0, and no worm it holds carries an ordinal.
+                n.spawned = Math.max(0, t.getInt("spawned"));
+                // The skipped ordinals (RP-242): a file from before them has none. Only ordinals below the count, at most
+                // HOLES_MAX of the highest, so a hand-edited file cannot grow the set.
+                for (int h : t.getIntArray("holes"))
+                    if (h >= 0 && h < n.spawned)
+                        n.holes.add(h);
+                while (n.holes.size() > Nest.HOLES_MAX)
+                    n.holes.pollFirst();
                 n.stage = Math.max(1, t.getInt("stage"));
                 n.broken = t.getBoolean("broken");
                 n.reform = t.getBoolean("reform");

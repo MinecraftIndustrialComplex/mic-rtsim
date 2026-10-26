@@ -571,8 +571,14 @@ pub struct FakeIaf {
     pub placed: u64,
     /// Oil nests (OG-9e) by id: worms alive or owed, as the plugin's nest data would hold them.
     /// PLACE_NEST answers NEST_FOUND with a heart under the chunk's centre, `depth` blocks below
-    /// y 64, unless `nest_no_room`; NEST_RENEW adds its count.
+    /// y 64, unless `nest_no_room`; NEST_RENEW adds its count when its serial is above the last
+    /// applied for the nest ([`FakeIaf::nest_serials`]), as Nests.java's `renew` does (RP-14).
     pub nests: BTreeMap<u64, u32>,
+    /// Per nest, the serial of the last NEST_RENEW applied (the plugin's saved serial, RP-14).
+    /// `FakeIaf` has one engine life, so the life that goes with it is not modelled here.
+    pub nest_serials: BTreeMap<u64, u32>,
+    /// NEST_RENEWs dropped because their serial was not above the last applied.
+    pub renewals_repeated: u32,
     pub nest_no_room: bool,
     /// NEST_SORTIE commands received.
     pub sorties: u32,
@@ -598,6 +604,8 @@ impl FakeIaf {
             ground_oil: BTreeMap::new(),
             placed: 0,
             nests: BTreeMap::new(),
+            nest_serials: BTreeMap::new(),
+            renewals_repeated: 0,
             nest_no_room: false,
             sorties: 0,
         }
@@ -792,7 +800,15 @@ impl FakeIaf {
                         }),
                     );
                 }
-                Cmd::NestRenew(n) => *self.nests.entry(n.nest).or_insert(0) += n.count,
+                Cmd::NestRenew(n) => {
+                    let last = self.nest_serials.entry(n.nest).or_insert(0);
+                    if n.serial > *last {
+                        *last = n.serial;
+                        *self.nests.entry(n.nest).or_insert(0) += n.count;
+                    } else {
+                        self.renewals_repeated += 1;
+                    }
+                }
                 Cmd::NestSortie(_) => self.sorties += 1,
                 Cmd::Discard(_) => {}
             }

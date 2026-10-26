@@ -12,6 +12,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.mixin.EntitySectionManagerAccess
 import com.minecraftindustrialcomplex.mic_rtsim.mixin.ServerLevelAccessor;
 import com.minecraftindustrialcomplex.mic_rtsim_iceandfire.DragonBridge;
 import com.minecraftindustrialcomplex.mic_rtsim_iceandfire.DragonRecords;
+import com.minecraftindustrialcomplex.mic_rtsim_iceandfire.Nests;
 import net.minecraft.core.BlockPos;
 import net.minecraft.gametest.framework.GameTestAssertException;
 import net.minecraft.gametest.framework.GameTestHelper;
@@ -96,7 +97,11 @@ public final class DragonKit {
 
     /**
      * Forces the chunks within {@code radius} of the arena (a GameTest forces only its structure's own), so
-     * a flying dragon stays entity-ticking. Returns the undo.
+     * a flying dragon stays entity-ticking. Returns the undo: run it as the sequence's last step, never from a
+     * test listener ({@link #onEnd}). A listener runs after GameTest has placed the next batch's structure and
+     * forced its chunks, a few blocks along inside this ring, and unforcing them there leaves that test waiting
+     * for entity-ticking chunks for ever (its timeout never counts). A failed test needs no undo: GameTest
+     * unforces every forced chunk at a batch's end.
      */
     public static Runnable forceAround(GameTestHelper helper, int radius) {
         ServerLevel level = helper.getLevel();
@@ -334,8 +339,17 @@ public final class DragonKit {
         });
     }
 
-    /** A scripted NEST_RENEW: {@code count} worms of size {@code stage} (1 to 3) for nest {@code nest}. */
+    /**
+     * A scripted NEST_RENEW: {@code count} worms of size {@code stage} (1 to 3) for nest {@code nest}, numbered as
+     * the engine would number the nest's next renewal (one above the last this session applied, RP-14).
+     */
     public static void nestRenew(long nest, String dimension, int stage, int count) {
+        Nests.Nest n = bridge().nests.nest(nest);
+        nestRenew(nest, dimension, stage, count, n == null ? 1 : n.nextSerial(session().engineLife()));
+    }
+
+    /** A scripted NEST_RENEW with its own renewal serial (RP-14): one at or below the last applied is a repeat. */
+    public static void nestRenew(long nest, String dimension, int stage, int count, long serial) {
         script(out -> {
             out.dict(Obs.DICT_BODY, FIRE);
             int dim = out.dict(Obs.DICT_DIMENSION, dimension);
@@ -346,6 +360,7 @@ public final class DragonKit {
             b.putLong(at + DragonRecords.NestRenew.NEST, nest);
             b.putInt(at + DragonRecords.NestRenew.DIM, dim);
             b.putInt(at + DragonRecords.NestRenew.STAGE, stage);
+            b.putInt(at + DragonRecords.NestRenew.SERIAL, (int) serial);
             b.putInt(at + DragonRecords.NestRenew.RESERVED, 0);
         });
     }

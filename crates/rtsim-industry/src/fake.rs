@@ -442,6 +442,12 @@ impl FakeWorld {
         &self.applied
     }
 
+    /// Forgets that this world applied `op`: a test emulating a dedup that dropped the op too early
+    /// (docs/choices-mowzie-build.md RP-252). True when the world had applied it.
+    pub fn forget_applied(&mut self, op: OpId) -> bool {
+        self.applied.remove(&op)
+    }
+
     /// What a world save holds (a remote world's crash test rolls back to it).
     pub fn saved(&self) -> SavedWorld {
         SavedWorld {
