@@ -13,6 +13,9 @@
 //! - **Saves**: a run with nests restores exactly from its resident save and from its pages.
 //! - **The industry link**: a pumpjack's deposit sample of the latest sweep is a well; once a sweep
 //!   comes without it, it is gone.
+//! - **The site ledger's hand-over** (EQUILIBRIUM.md §2.3, S3, MZB-1013): a nest's first NEST_FOUND
+//!   in an engine life takes its row, unaged; one that stood with no row is counted first; the rows
+//!   the engine sends are marks never saved and never read by a decision.
 
 use std::sync::{Arc, RwLock};
 
@@ -26,7 +29,8 @@ use rtsim_industry::ids::{DistrictId, Good, GoodVec};
 use rtsim_industry::threat::{Threat, ThreatClass, ThreatSource, ThreatTarget};
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 use rtsim_kernel::page::{Durability, PageKey, PageStore, SaveBatch};
-use rtsim_kernel::renewal::LossCause;
+use rtsim_kernel::renewal::{LossCause, Pressure};
+use rtsim_kernel::sites::{FoundRow, SiteKind, SiteState, state_flags, tail_flags};
 use rtsim_settle::Pos;
 use rtsim_world::World;
 
@@ -956,4 +960,204 @@ fn a_pumpjacks_sample_of_the_latest_sweep_is_a_well() {
     }
     .wells();
     assert!(wells.is_empty(), "{wells:?}");
+}
+
+// ---- the site ledger's hand-over (EQUILIBRIUM.md §2.3, S3, MZB-1013) --------------------------
+
+/// A run whose nest under chunk (100, 100) is founded and asked for, and whose first NEST_FOUND
+/// carries `row` (the plugin's own answer, with no row, comes later and only refreshes it). A
+/// well drills in reach.
+fn found_with(seed: u64, row: FoundRow) -> (Run, u64) {
+    let mut r = start(seed, tun(), &[]);
+    let at = r.t;
+    r.d.ingest(&mut r.w, &mut r.pumps, &oil(&[(100, 100)]), at);
+    let cmds = r.d.take_commands();
+    assert_eq!(placed(&cmds).len(), 1, "its chamber is asked for");
+    r.iaf.apply(cmds.clone(), r.t);
+    r.cmds.extend(cmds);
+    let id = nest_id((0, 12, 12));
+    let found = Obs::NestFound(boundary::NestFound {
+        nest: id,
+        placed: true,
+        dimension: 0,
+        heart: (1_608, 30, 1_608),
+        row,
+    });
+    r.d.ingest(&mut r.w, &mut r.pumps, &found, at);
+    r.pumps.well(9, 102, 100, 90_000);
+    (r, id)
+}
+
+fn nest_row(p: f32, count: u16, wait_milli: Option<u64>) -> FoundRow {
+    let mut flags = tail_flags::ROW;
+    if wait_milli.is_some() {
+        flags |= tail_flags::WAITING;
+    }
+    FoundRow {
+        flags,
+        k: 2,
+        count,
+        p,
+        away: 0,
+        wait_left: wait_milli.unwrap_or(0),
+        elapsed: 30 * DAY,
+        bodies: Default::default(),
+    }
+}
+
+/// A nest found with a row takes its pressure and its worm wait as they were, not aged (the
+/// nests' clock is drilling days, and nothing drilled while the engine was gone), and its worms:
+/// no first brood, one worm when the wait ends.
+#[test]
+fn a_nest_found_with_a_row_takes_its_pressure_and_wait_unaged() {
+    let (mut r, id) = found_with(31, nest_row(0.5, 1, Some(5_000)));
+    let n = *r.d.nests.get(id).unwrap();
+    assert!(n.seeded && n.hatched && !n.found_unknown);
+    assert_eq!((n.worms, n.wait_milli), (1, Some(5_000)));
+    let h = r.d.tun.oil.nest.half_life_days;
+    assert_eq!(n.pressure.now(r.d.nests.day(), h), 0.5, "not aged by the 30 days");
+    let took = r
+        .until(20, |r| !r.renews().is_empty())
+        .expect("it renews when the wait ends");
+    assert!((5..=7).contains(&took), "{took} days for a 5-day wait");
+    let renews = r.renews();
+    assert_eq!((renews.len(), renews[0].count), (1, 1), "one worm, no brood");
+    assert_eq!(r.worms(id), 2);
+    // A row with nobody home and no wait is a nest that never hatched: its brood comes as usual.
+    let (mut r, id) = found_with(32, nest_row(0.0, 0, None));
+    assert!(!r.d.nests.get(id).unwrap().hatched);
+    r.until(5, |r| !r.renews().is_empty()).expect("its first brood");
+    assert_eq!(r.renews()[0].count, u32::from(r.d.tun.oil.nest.k));
+}
+
+/// A nest found with no row although the plugin knew it (EXISTED) hatches no brood until its first
+/// census: a short count is taken as farmed (the cap's pressure, the cap to wait), a full one as it
+/// is. A nest found fresh hatches as before.
+#[test]
+fn a_nest_that_stood_with_no_row_is_counted_first_and_a_short_one_taken_as_farmed() {
+    let existed = FoundRow {
+        flags: tail_flags::EXISTED,
+        ..FoundRow::none()
+    };
+    let (mut r, id) = found_with(33, existed.clone());
+    assert!(r.d.nests.get(id).unwrap().found_unknown);
+    r.days(4);
+    assert!(r.renews().is_empty(), "no brood before its census");
+    r.ingest(Obs::NestCensus(boundary::NestCensus {
+        nest: id,
+        worms: 1,
+        heart_missing: false,
+    }));
+    let tn = r.d.tun.oil.nest.clone();
+    let n = *r.d.nests.get(id).unwrap();
+    assert!(!n.found_unknown && n.hatched);
+    assert_eq!(n.worms, 1);
+    assert_eq!(n.wait_milli, Some(96_000), "the cap");
+    let p = n.pressure.now(r.d.nests.day(), tn.half_life_days);
+    assert!((p - (tn.cap_days / tn.base_days).log2()).abs() < 1e-6, "{p}");
+    assert_eq!(r.d.nests.stats.lost_other, 0, "taken as it is: no loss booked");
+
+    let (mut r, id) = found_with(34, existed);
+    r.ingest(Obs::NestCensus(boundary::NestCensus {
+        nest: id,
+        worms: 2,
+        heart_missing: false,
+    }));
+    let n = *r.d.nests.get(id).unwrap();
+    assert!(!n.found_unknown && n.hatched);
+    assert_eq!((n.worms, n.wait_milli), (2, None));
+    assert_eq!(n.pressure, Pressure::default());
+    r.days(4);
+    assert!(r.renews().is_empty(), "a full nest owes nothing");
+
+    let (mut r, id) = found_with(35, FoundRow::none());
+    let n = *r.d.nests.get(id).unwrap();
+    assert!(n.seeded && !n.found_unknown && !n.hatched);
+    r.until(5, |r| !r.renews().is_empty()).expect("its first brood");
+}
+
+/// The nests' rows (SITE_STATE): marked at a found, a loss, a census and a drilling day that
+/// changes the nest; taken once, as it stands; kept while the replay runs. A nest found again
+/// changes nothing else, whatever its row says.
+#[test]
+fn the_nests_rows_are_marked_and_taken_outside_the_replay() {
+    let (mut r, id) = one_nest(36, tun());
+    r.days(2);
+    let k = r.d.tun.oil.nest.k;
+    let st: Vec<SiteState> = r.d.take_site_states();
+    assert!(st.iter().all(|s| s.kind == SiteKind::Nest && s.key == id), "{st:?}");
+    assert!(r.d.take_site_states().is_empty(), "taken once");
+    r.kill(id, 1);
+    let st = r.d.take_site_states();
+    assert_eq!(st.len(), 1);
+    let s = &st[0];
+    assert_eq!((s.k, s.count, s.away), (k, k - 1, 0));
+    assert_eq!(s.flags, state_flags::SHORT | state_flags::WAITING);
+    assert_eq!(s.wait_left, u64::from(r.d.nests.get(id).unwrap().wait_milli.unwrap()));
+    assert!((s.p - 1.0 / f32::from(k)).abs() < 1e-6);
+    // A drilling day counts the wait down: the row follows.
+    r.days(1);
+    let st = r.d.take_site_states();
+    assert_eq!(st.len(), 1);
+    assert_eq!(st[0].wait_left, s.wait_left - 1_000);
+    // Found again with another row: only marked.
+    let before = *r.d.nests.get(id).unwrap();
+    r.ingest(Obs::NestFound(boundary::NestFound {
+        nest: id,
+        placed: true,
+        dimension: 0,
+        heart: before.heart.unwrap(),
+        row: nest_row(3.0, 0, Some(1)),
+    }));
+    assert_eq!(*r.d.nests.get(id).unwrap(), before);
+    assert!(r.d.nest_site_dirty(id));
+    r.d.begin_replay(true);
+    assert!(r.d.take_site_states().is_empty());
+    assert!(r.d.nest_site_dirty(id));
+    let at = r.t;
+    r.d.replay_done(&mut r.w, at);
+    assert_eq!(r.d.take_site_states().len(), 1);
+}
+
+/// The lead's note 2 for nests (MZB-1013): an engine restarted from its save, the marks lost,
+/// decides as the one that kept them, and the found refresh heals the marks with the same rows.
+#[test]
+fn a_restart_that_loses_the_nests_marks_changes_no_decision() {
+    let t = tun();
+    let (mut a, id) = one_nest(37, t.clone());
+    a.days(3);
+    a.kill(id, 2);
+    assert!(a.d.nest_site_dirty(id));
+    let d = Dragons::load(t, &a.d.save()).expect("the save loads");
+    assert!(!d.nest_site_dirty(id), "never saved");
+    let mut b = Run {
+        w: synth::world(37).0,
+        d,
+        iaf: a.iaf.clone(),
+        pumps: a.pumps.clone(),
+        t: a.t,
+        cmds: Vec::new(),
+    };
+    let from = a.cmds.len();
+    for _ in 0..40 {
+        a.days(5);
+        b.days(5);
+        assert_eq!(b.d.state_hash(), a.d.state_hash());
+    }
+    assert_eq!(b.cmds, a.cmds[from..]);
+    assert!(a.renews().len() >= 2, "it renewed after the restart");
+    let heart = a.d.nests.get(id).unwrap().heart.unwrap();
+    let again = Obs::NestFound(boundary::NestFound {
+        nest: id,
+        placed: true,
+        dimension: 0,
+        heart,
+        row: FoundRow::none(),
+    });
+    a.d.take_site_states();
+    b.d.take_site_states();
+    a.ingest(again.clone());
+    b.ingest(again);
+    assert_eq!(b.d.take_site_states(), a.d.take_site_states());
+    assert_eq!(b.d.state_hash(), a.d.state_hash());
 }

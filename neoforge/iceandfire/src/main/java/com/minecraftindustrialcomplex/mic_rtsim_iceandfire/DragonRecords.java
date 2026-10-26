@@ -176,7 +176,12 @@ public final class DragonRecords {
      * the heart and the engine gives up the cell. An already placed nest answers again with its heart.
      */
     public static final class NestFound {
-        public static final int NEST = 24, DIM = 32, HEART_X = 36, HEART_Y = 40, HEART_Z = 44, SIZE = 48;
+        public static final int NEST = 24, DIM = 32, HEART_X = 36, HEART_Y = 40, HEART_Z = 44;
+        /**
+         * The site found tail (docs/boundary.md §2.5, {@code SiteLedger.writeTail}) runs from here to the end, EXISTED when
+         * the nest was placed before this PLACE_NEST (MZB-1013).
+         */
+        public static final int TAIL = 48;
         public static final int PLACED = 1, FAILED = 2;
     }
 

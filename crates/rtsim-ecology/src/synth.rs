@@ -785,8 +785,15 @@ impl FakeIaf {
                 }
                 Cmd::PlaceNest(p) => {
                     let placed = !self.nest_no_room;
+                    // A nest this plugin placed before stood already: EXISTED, as Nests.found
+                    // says (MZB-1013). It keeps no site ledger, so no row.
+                    let existed = placed && self.nests.contains_key(&p.nest);
                     if placed {
                         self.nests.entry(p.nest).or_insert(0);
+                    }
+                    let mut row = rtsim_kernel::sites::FoundRow::none();
+                    if existed {
+                        row.flags = rtsim_kernel::sites::tail_flags::EXISTED;
                     }
                     self.push(
                         at + 20,
@@ -799,6 +806,7 @@ impl FakeIaf {
                             } else {
                                 (0, 0, 0)
                             },
+                            row,
                         }),
                     );
                 }

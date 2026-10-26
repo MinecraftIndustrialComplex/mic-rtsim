@@ -5,6 +5,7 @@ import com.iafenvoy.iceandfire.event.GriefBreakBlockEvent;
 import com.minecraftindustrialcomplex.mic_rtsim.api.KillCredit;
 import com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.ThreatClasses;
+import com.minecraftindustrialcomplex.mic_rtsim.sites.SiteLedger;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.HolderLookup;
 import net.minecraft.core.registries.BuiltInRegistries;
@@ -627,7 +628,7 @@ public final class Nests {
                     reform(level, n);
                 d.setDirty();
             }
-            found(nest, n.dim, n.heart, now);
+            found(nest, n.dim, n.heart, true, now);
             return;
         }
         if (d.pending.containsKey(nest)) {
@@ -643,7 +644,7 @@ public final class Nests {
         if (level == null || depth < 1) {
             badRequests++;
             MicRtsimIceAndFire.LOGGER.warn("[mic_rtsim_iceandfire] PLACE_NEST {} in {} at depth {}: failed", nest, dim, depth);
-            found(nest, dim, null, now);
+            found(nest, dim, null, false, now);
             return;
         }
         Pending p = new Pending(nest, dim, cx, cz, depth);
@@ -821,7 +822,7 @@ public final class Nests {
                 }
             }
             d.setDirty();
-            found(id, p.dim(), heart, now);
+            found(id, p.dim(), heart, standing, now);
             // Worms the nest holds now that were loaded before it was known: the engine is told after NEST_FOUND.
             if (settled > 0 && heart != null)
                 census(d.placed.get(id), level, now);
@@ -1077,18 +1078,26 @@ public final class Nests {
 
     // ---- reports ----------------------------------------------------------------------------------
 
-    private void found(long nest, String dim, BlockPos heart, long now) {
+    /**
+     * NEST_FOUND, with the site ledger's row for the nest as its tail (EQUILIBRIUM.md §2.3, MZB-1013): EXISTED when the
+     * nest stood before this PLACE_NEST ({@code existed}: the saved state knew it, or its chamber was found standing),
+     * so a new engine meeting a nest with no row takes it as farmed at its first census.
+     */
+    private void found(long nest, String dim, BlockPos heart, boolean existed, long now) {
         RtsimSession s = live();
         if (s == null)
             return;
         int d = dimId(s, dim);
-        ByteBuffer r = s.boundary().beginJournaled(DragonRecords.NEST_FOUND, DragonRecords.NestFound.SIZE,
+        SiteLedger ledger = SiteLedger.get(s.server());
+        ByteBuffer r = s.boundary().beginJournaled(DragonRecords.NEST_FOUND,
+                DragonRecords.NestFound.TAIL + ledger.tailSize(SiteLedger.NEST, nest),
                 heart != null ? DragonRecords.NestFound.PLACED : DragonRecords.NestFound.FAILED, now);
         r.putLong(DragonRecords.NestFound.NEST, nest);
         r.putInt(DragonRecords.NestFound.DIM, d);
         r.putInt(DragonRecords.NestFound.HEART_X, heart == null ? 0 : heart.getX());
         r.putInt(DragonRecords.NestFound.HEART_Y, heart == null ? 0 : heart.getY());
         r.putInt(DragonRecords.NestFound.HEART_Z, heart == null ? 0 : heart.getZ());
+        ledger.writeTail(r, DragonRecords.NestFound.TAIL, SiteLedger.NEST, nest, now, existed && heart != null);
         s.boundary().commit(r);
     }
 

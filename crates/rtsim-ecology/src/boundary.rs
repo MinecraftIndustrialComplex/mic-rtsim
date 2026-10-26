@@ -341,12 +341,16 @@ pub struct OilConfig {
 
 /// An oil nest's chamber placed (`placed`, with its heart) or not (OG-9e). Answers PLACE_NEST, and is
 /// sent again for a PLACE_NEST of a nest already placed.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct NestFound {
     pub nest: u64,
     pub placed: bool,
     pub dimension: u32,
     pub heart: (i32, i32, i32),
+    /// The site ledger's row for the nest (the found tail at 48, docs/boundary.md §2.5;
+    /// EQUILIBRIUM.md §2.3), EXISTED when the plugin knew the nest before: read only at the nest's
+    /// first NEST_FOUND in this engine life (MZB-1013).
+    pub row: FoundRow,
 }
 
 /// An oil nest counted when its heart's chunk loads, and after its worms spawn: worms alive (an
@@ -1006,8 +1010,10 @@ pub fn encode_obs(seq: u64, game_time: i64, o: &Obs, dict: &SpeciesDict, buf: &m
             w.u64(24, n.nest);
             w.u32(32, n.dimension);
             w.ipos(36, n.heart);
+            let tail = n.row.to_bytes();
+            w.at(48, &tail);
             let aux = if n.placed { NEST_PLACED } else { NEST_FAILED };
-            w.finish(NEST_FOUND, aux, 48);
+            w.finish(NEST_FOUND, aux, 48 + tail.len());
         }
         Obs::NestCensus(n) => {
             w.u64(24, n.nest);
@@ -1208,6 +1214,7 @@ pub fn decode_obs(b: &[u8], dict: &SpeciesDict) -> Result<(usize, u64, i64, Obs)
             },
             dimension: r.u32(32)?,
             heart: r.ipos(36)?,
+            row: found_row(r.b, 48)?,
         }),
         NEST_CENSUS => Obs::NestCensus(NestCensus {
             nest: r.u64(24)?,
@@ -1561,12 +1568,27 @@ mod tests {
                 placed: true,
                 dimension: 1,
                 heart: (-1_000, 12, 40_000),
+                row: FoundRow {
+                    flags: rtsim_kernel::sites::tail_flags::ROW
+                        | rtsim_kernel::sites::tail_flags::WAITING,
+                    k: 2,
+                    count: 1,
+                    p: 0.25,
+                    away: 0,
+                    wait_left: 12_000,
+                    elapsed: 0,
+                    bodies: Default::default(),
+                },
             }),
             Obs::NestFound(NestFound {
                 nest: 6,
                 placed: false,
                 dimension: 1,
                 heart: (0, 0, 0),
+                row: FoundRow {
+                    flags: rtsim_kernel::sites::tail_flags::EXISTED,
+                    ..FoundRow::none()
+                },
             }),
             Obs::NestCensus(NestCensus {
                 nest: 6,

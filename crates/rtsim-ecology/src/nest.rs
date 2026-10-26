@@ -40,6 +40,7 @@ use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 use rtsim_kernel::meta_pages::PagedMap;
 use rtsim_kernel::renewal::{LossCause, Pressure, RenewalRule};
 use rtsim_kernel::rng::{StreamKey, SystemId, fnv1a64};
+use rtsim_kernel::sites::{SiteKind, SiteState, state_flags};
 use rtsim_world::World;
 use serde::Serialize;
 
@@ -201,6 +202,13 @@ pub struct Nest {
     /// (docs/replay-gate.md §7.1, RP-14). It is a field of the saved row, so a restored engine
     /// numbers the renewals it decides again exactly as the engine that decided them first did.
     pub renewals: u32,
+    /// Its first NEST_FOUND in this engine life came: the site ledger's row it carried was taken
+    /// (EQUILIBRIUM.md §2.3, MZB-1013). A later one only refreshes the ledger's row.
+    pub seeded: bool,
+    /// Found with no ledger row although the plugin knew it (EXISTED): its first census decides.
+    /// Short then, it is taken as farmed (the cap's pressure and the cap to wait); until then it
+    /// hatches no brood (MZB-1013).
+    pub found_unknown: bool,
 }
 
 impl Nest {
@@ -222,6 +230,8 @@ impl Nest {
             lost_player: 0,
             raids: 0,
             renewals: 0,
+            seeded: false,
+            found_unknown: false,
         }
     }
 
@@ -327,6 +337,9 @@ pub struct Nests {
     /// Ticks between watches when not the tunable's (NEST_DAY, FLAG_TEST); 0, the tunable's.
     pub(crate) day_ticks: u64,
     pub stats: NestStats,
+    /// Nests whose site ledger row may have changed since it was last sent (SITE_STATE, taken by
+    /// [`Dragons::take_site_states`]). Not saved, and no decision reads it (MZB-1013).
+    pub(crate) site_dirty: BTreeSet<NestKey>,
 }
 
 impl Nests {
@@ -618,6 +631,7 @@ impl Dragons {
         let Some(mut n) = self.nests.rows.get(&k).copied() else {
             return;
         };
+        let was = (n.state, n.worms, n.hatched, n.wait_milli);
         n.left_mb = d.left;
         n.peak_mb = n.peak_mb.max(d.left);
         n.bottomless = d.bottomless;
@@ -638,6 +652,8 @@ impl Dragons {
                     n.reform_milli = Some(left);
                 }
             }
+            // Found with no row although it stood before: its first census decides (MZB-1013).
+            NestState::Placed if !n.hatched && n.found_unknown => {}
             NestState::Placed if !n.hatched => {
                 let owed = kk.saturating_sub(n.worms);
                 n.hatched = true;
@@ -678,6 +694,9 @@ impl Dragons {
             NestState::Placed => {}
         }
         self.nests.rows.insert(k, n);
+        if was != (n.state, n.worms, n.hatched, n.wait_milli) {
+            self.nests.site_dirty.insert(k);
+        }
         if ask {
             self.ask_nest(k);
         }
@@ -773,16 +792,37 @@ impl Dragons {
         }
     }
 
-    /// NEST_FOUND: the chamber stands with its heart, or the cell is given up.
+    /// NEST_FOUND: the chamber stands with its heart, or the cell is given up. The nest's first in
+    /// this engine life takes the site ledger's row (EQUILIBRIUM.md §2.3, MZB-1013): its pressure
+    /// and its wait as they were (not aged: the nests' clock is drilling days, and nothing drills
+    /// while the engine is gone), and its worms unless a census counted them already. With no row
+    /// but EXISTED, the first census decides ([`Dragons::nest_census`]).
     pub(crate) fn nest_found(&mut self, f: &boundary::NestFound, at: Tick) {
         let k = nest_key(f.nest);
         let kk = u32::from(self.nest_tun().k.max(1));
+        let h = self.nest_tun().half_life_days;
+        let day = self.nests.day;
         let (hx, hz) = self.topo(k.0).canonical(i64::from(f.heart.0), i64::from(f.heart.2));
-        let wait = self.nests.rows.get(&k).map(|n| self.worm_wait(n));
-        let Some(n) = self.nests.rows.get_mut(&k) else {
+        let Some(mut n) = self.nests.rows.get(&k).copied() else {
             self.stats.stale += 1;
             return;
         };
+        if !n.seeded {
+            n.seeded = true;
+            let row = &f.row;
+            if row.has_row() {
+                n.pressure = Pressure::handed_over(row.p, 0, day, h);
+                if !n.hatched {
+                    n.worms = u32::from(row.count).min(kk);
+                    n.hatched = row.count > 0 || row.waiting();
+                }
+                if row.waiting() {
+                    n.wait_milli = Some(u32::try_from(row.wait_left).unwrap_or(u32::MAX).max(1));
+                }
+            } else if row.existed() && f.placed {
+                n.found_unknown = true;
+            }
+        }
         if f.placed {
             n.heart = Some((hx as i32, f.heart.1, hz as i32));
             if n.state != NestState::Placed {
@@ -790,7 +830,7 @@ impl Dragons {
             }
             n.state = NestState::Placed;
             if n.hatched && n.worms < kk && n.wait_milli.is_none() {
-                n.wait_milli = wait;
+                n.wait_milli = Some(self.worm_wait(&n));
             }
             self.note(
                 at,
@@ -814,6 +854,8 @@ impl Dragons {
                 format!("nest {:#x} has no room: its cell is given up", f.nest),
             );
         }
+        self.nests.rows.insert(k, n);
+        self.nests.site_dirty.insert(k);
     }
 
     /// `count` worms of nest `k` lost (`cause`); a player's loss presses the nest.
@@ -839,6 +881,7 @@ impl Dragons {
             n.wait_milli = Some(self.worm_wait(&n));
         }
         self.nests.rows.insert(k, n);
+        self.nests.site_dirty.insert(k);
         self.note(
             at,
             "nest",
@@ -858,16 +901,43 @@ impl Dragons {
     }
 
     /// NEST_CENSUS: the plugin's count (alive or owed) is the nest's; a shortfall is a loss of
-    /// cause Other. A heart found gone is broken.
+    /// cause Other. A heart found gone is broken. The first census of a nest found with no row
+    /// although it stood before (MZB-1013) takes its count as it is, and a short one as farmed:
+    /// the cap's pressure and the cap to wait (EQUILIBRIUM.md §2.3).
     pub(crate) fn nest_census(&mut self, c: &boundary::NestCensus, at: Tick) {
         let k = nest_key(c.nest);
-        let kk = u32::from(self.nest_tun().k.max(1));
+        let tun = self.nest_tun().clone();
+        let kk = u32::from(tun.k.max(1));
         let Some(n) = self.nests.rows.get(&k).copied() else {
             self.stats.stale += 1;
             return;
         };
         let seen = c.worms.min(kk);
-        if seen < n.worms {
+        self.nests.site_dirty.insert(k);
+        if n.found_unknown {
+            let day = self.nests.day;
+            if let Some(r) = self.nests.rows.get_mut(&k) {
+                r.found_unknown = false;
+                r.worms = seen;
+                r.hatched = true;
+                if seen < kk {
+                    r.pressure = Pressure::at_cap(&tun.renewal(), day);
+                    r.wait_milli = Some(((tun.cap_days * 1_000.0).round() as u32).max(1));
+                } else {
+                    r.wait_milli = None;
+                }
+            }
+            self.note(
+                at,
+                "nest",
+                None,
+                format!(
+                    "nest {:#x} counted {seen} of {kk} at its first census with no row{}",
+                    c.nest,
+                    if seen < kk { ": taken as farmed" } else { "" }
+                ),
+            );
+        } else if seen < n.worms {
             self.nest_lost(k, n.worms - seen, LossCause::Other, at);
         } else if seen > n.worms
             && let Some(r) = self.nests.rows.get_mut(&k)
@@ -907,6 +977,7 @@ impl Dragons {
         n.state = NestState::Broken;
         n.wait_milli = None;
         n.reform_milli = Some(((days * 1_000.0).ceil() as u32).max(1));
+        self.nests.site_dirty.insert(k);
         self.nests.stats.hearts_broken += 1;
         self.note(
             at,
@@ -943,6 +1014,60 @@ impl Dragons {
             i64::from(n.hatched),
             self.nests.rows.len() as i64,
         ])
+    }
+}
+
+impl Dragons {
+    /// Whether nest `id`'s ledger row is marked to be sent (tests).
+    pub fn nest_site_dirty(&self, id: u64) -> bool {
+        self.nests.site_dirty.contains(&nest_key(id))
+    }
+
+    /// The nests' marked rows, taken ([`Dragons::take_site_states`]).
+    pub(crate) fn take_nest_site_states(&mut self) -> Vec<SiteState> {
+        let dirty = std::mem::take(&mut self.nests.site_dirty);
+        dirty
+            .into_iter()
+            .filter_map(|k| self.nest_site_state(nest_id(k)))
+            .collect()
+    }
+
+    /// Nest `id`'s row for the site ledger (SITE_STATE, MZB-1013): K, its worms alive or owed as
+    /// the count, its pressure on the nests' clock, the worm wait running in thousandths of a
+    /// drilling day, and BROKEN while its heart is. None for a nest with no chamber (asked and
+    /// never placed, or given up): it has no history to keep.
+    pub fn nest_site_state(&self, id: u64) -> Option<SiteState> {
+        let n = self.nests.rows.get(&nest_key(id))?;
+        if n.heart.is_none() || n.state == NestState::Failed {
+            return None;
+        }
+        let tun = self.nest_tun();
+        let k = tun.k.max(1);
+        let count = n.worms.min(u32::from(k)) as u16;
+        let mut flags = 0;
+        if count < k {
+            flags |= state_flags::SHORT;
+        }
+        if count == 0 {
+            flags |= state_flags::EMPTY;
+        }
+        if n.state == NestState::Broken {
+            flags |= state_flags::BROKEN;
+        }
+        if n.wait_milli.is_some() {
+            flags |= state_flags::WAITING;
+        }
+        Some(SiteState {
+            key: id,
+            kind: SiteKind::Nest,
+            flags,
+            p: n.pressure.now(self.nests.day, tun.half_life_days),
+            k,
+            count,
+            away: 0,
+            wait_left: n.wait_milli.map_or(0, u64::from),
+            bodies: Default::default(),
+        })
     }
 }
 

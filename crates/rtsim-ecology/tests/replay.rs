@@ -884,6 +884,7 @@ fn every_kind(agent: u64, epoch: u32) -> Vec<(&'static str, Obs, bool)> {
                 placed: true,
                 dimension: 0,
                 heart: (0, 0, 0),
+                row: Default::default(),
             }),
             false,
         ),

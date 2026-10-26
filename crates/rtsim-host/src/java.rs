@@ -1418,13 +1418,20 @@ impl Java {
         use rtsim_ecology::boundary::Obs;
         let dict = self.java_species();
         // The found tail is the ledger's (docs/boundary.md §2.5): a row the test wrote stands,
-        // else the fake ledger's for the lair, as Lairs.report writes it.
+        // else the fake ledger's for the site, as Lairs.report and Nests.found write it (a test
+        // that means EXISTED writes that flag itself).
         let filled;
         let o = match o {
             Obs::LairFound(l) if l.row == FoundRow::none() => {
                 let mut l = l.clone();
                 l.row = self.sites.tail(SiteKind::Lair, l.lair, self.game_time, false);
                 filled = Obs::LairFound(l);
+                &filled
+            }
+            Obs::NestFound(n) if n.row == FoundRow::none() => {
+                let mut n = n.clone();
+                n.row = self.sites.tail(SiteKind::Nest, n.nest, self.game_time, false);
+                filled = Obs::NestFound(n);
                 &filled
             }
             _ => o,
