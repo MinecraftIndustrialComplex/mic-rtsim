@@ -25,6 +25,10 @@ pub const RETIRE_PER_DAY: f64 = 0.01;
 /// How far from the track point a band bound for a track stands, toward its den (PLACEHOLDER,
 /// MOWZIE.md §4.4, MZB-316).
 pub const SPOT_BLOCKS: f64 = 5.0;
+/// How far from the track point a train passes it for a lurking band to count the pass, in blocks
+/// (PLACEHOLDER, MOWZIE.md §4.4: the swipe's 6.5 plus half a carriage). It rides in AMBUSH_SPOT,
+/// so Java's sampler and the engine agree on it (MZB-351).
+pub const AMBUSH_REACH: f32 = 8.0;
 /// Lines kept per meter; a new one beyond this evicts the one with the smallest count
 /// (PLACEHOLDER, MZB-307).
 pub const MAX_LINES: usize = 16;
@@ -751,6 +755,144 @@ impl Conflict {
             };
             self.stats.rail_let_go += 1;
             self.let_go(w, h, at);
+        }
+    }
+}
+
+// ---- lying in wait (M8, MZB-350 to MZB-358) ----------------------------------------------------
+
+impl Conflict {
+    /// Whether war party `p` is lurking: it waits at a track (a Track target, Waiting), or fights
+    /// there (a player came on the lurk, which goes on through the watched fight: a train may
+    /// pass mid-fight). Derived from the phase, kind and target, so it is never saved
+    /// (MZB-351, MZB-357).
+    pub fn lurking(&self, p: Handle<Party>) -> bool {
+        self.parties.get(p).is_some_and(|x| {
+            x.kind.is_war()
+                && matches!(x.target, Target::Track { .. })
+                && matches!(x.phase, Phase::Waiting | Phase::Fighting)
+        })
+    }
+
+    /// The AMBUSH_SPOT of `p`'s Track target: the track point and the spot at the track's y, whole
+    /// blocks' centres (Java finds the floor, MZB-360).
+    fn ambush_spot(&self, p: Handle<Party>, flags: u32) -> Option<boundary::AmbushSpot> {
+        let x = &self.parties[p];
+        let Target::Track { track, spot, y } = x.target else {
+            return None;
+        };
+        let at = |q: Pos| (f64::from(q.x) + 0.5, f64::from(y), f64::from(q.z) + 0.5);
+        Some(boundary::AmbushSpot {
+            agent: Party::agent(p),
+            epoch: x.epoch,
+            flags,
+            dimension: u32::from(x.frame),
+            faction: self.factions[x.faction as usize].key,
+            track: at(track),
+            spot: at(spot),
+            reach: AMBUSH_REACH,
+        })
+    }
+
+    /// A band arrives at its track and begins to lie in wait (MZB-351): the plugin is told where.
+    /// Called from `arrive` before the wait, so the party is still on its way (not `lurking` yet).
+    pub(super) fn lurk_start(&mut self, p: Handle<Party>, at: Tick) {
+        let Some(cmd) = self.ambush_spot(p, 0) else {
+            return;
+        };
+        self.outbox.push(Cmd::AmbushSpot(cmd));
+        self.stats.lurks += 1;
+        let (f, kind) = (self.parties[p].faction, self.parties[p].kind);
+        self.note(
+            at,
+            Some(f),
+            "track",
+            format!(
+                "the {} lies in wait by the track at ({}, {})",
+                kind.name(),
+                cmd.track.0.floor() as i32,
+                cmd.track.2.floor() as i32
+            ),
+        );
+    }
+
+    /// The lurk of `p` ends (MZB-352): the same record, removed. Only `go_home` calls it, while the
+    /// party still reads as lurking, so a lurk ends once.
+    pub(super) fn lurk_end(&mut self, p: Handle<Party>) {
+        let Some(cmd) = self.ambush_spot(p, boundary::AMBUSH_REMOVED) else {
+            return;
+        };
+        self.outbox.push(Cmd::AmbushSpot(cmd));
+        self.stats.lurks_ended += 1;
+    }
+
+    /// Every lurk goes to the plugin again, once a session (MZB-353): `begin_replay` drops the
+    /// agent commands still queued (the gate's queued "drop"), and Java's lurk table lives for one
+    /// session. A queued AMBUSH_SPOT is dropped first, as a queued notice is: what is kept is what
+    /// goes (the gate drops one a replayed record made, so none is left by the replay end). In
+    /// handle order, after the replay end, through the gate (docs/replay-gate.md §4.4).
+    pub fn resend_lurks(&mut self) {
+        self.outbox.retain(|c| !matches!(c, Cmd::AmbushSpot(_)));
+        let lurks: Vec<Cmd> = self
+            .parties
+            .iter()
+            .filter(|(h, _)| self.lurking(*h))
+            .filter_map(|(h, _)| self.ambush_spot(h, 0).map(Cmd::AmbushSpot))
+            .collect();
+        for c in lurks {
+            self.outbox.push(c);
+        }
+    }
+
+    /// A TRAIN_PASSED (MZB-355): a train passed a lurking band's track point. The party is the
+    /// record's agent; it must exist, lurk, and not be of an older epoch than the table's
+    /// (`start_fight` and `seen` bump the party's epoch, so the record's is older than the party's
+    /// after a watch: stale only when it is later), else the record is counted stale. The roll
+    /// does not care whether a player watched: a watched line loses what an unwatched one would
+    /// (P28). A hit is I24's attack on the train; when it took anything, of any good, the plugin
+    /// is told the train was robbed (MOWZIE.md's cue is the cargo gone, and a good the world has
+    /// no name for is gone from the train all the same, MZB-356). A pass replayed is counted and
+    /// rolls nothing (RP-154).
+    pub fn train_passed(
+        &mut self,
+        w: &mut World,
+        infra: &mut dyn Infrastructure,
+        tp: &boundary::TrainPassed,
+        at: Tick,
+    ) {
+        let Some(p) = Party::of_agent(tp.agent).filter(|p| self.parties.contains(*p)) else {
+            self.stats.stale += 1;
+            return;
+        };
+        if !self.lurking(p) || tp.epoch > self.parties[p].epoch {
+            self.stats.stale += 1;
+            return;
+        }
+        self.stats.passes += 1;
+        if tp.flags & boundary::PASSED_WATCHED != 0 {
+            self.stats.passes_watched += 1;
+        }
+        // A pass the replay brings back is counted and never rolls (RP-154): the live session
+        // may have robbed it already, industry is not held while replaying (docs/replay-gate.md
+        // §3.6) and `attack_train` derives its op from industry's present, so a second robbery
+        // would be a different op that Java applies again. Lose, never double.
+        if self.outbox.replaying() {
+            return;
+        }
+        let roll = StreamKey::new(self.seed, SYS_AMBUSH, p.to_bits())
+            .slot(tp.train ^ at.0.rotate_left(32))
+            .below(1000);
+        if (roll as u32) >= self.tun.ambush_milli {
+            return;
+        }
+        let taken = self.ambush(infra, p, tp.train, at, w, "by the track");
+        if taken > 0 {
+            self.stats.lurk_robberies += 1;
+            let faction = self.factions[self.parties[p].faction as usize].key;
+            self.outbox.push(Cmd::TrainRobbed(boundary::TrainRobbed {
+                faction,
+                train: tp.train,
+            }));
         }
     }
 }

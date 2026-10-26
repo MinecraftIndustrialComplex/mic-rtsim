@@ -6,7 +6,7 @@
   "runs": [
     {
       "variant": "ignore",
-      "wall_ms": 186.453936,
+      "wall_ms": 276.265112,
       "checks": [
         {
           "name": "conservation",
@@ -36,7 +36,7 @@
         {
           "name": "the director's waves and the war chief",
           "ok": true,
-          "detail": "2 watched raid(s), 7 wave(s), 2 chief(s) killed, 2 heir(s) took over"
+          "detail": "2 watched raid(s), 5 wave(s), 2 chief(s) killed, 2 heir(s) took over"
         }
       ],
       "rungs": [
@@ -266,7 +266,7 @@
         }
       ],
       "stats": {
-        "events": 209,
+        "events": 213,
         "feud_wakes": 6,
         "stale": 12,
         "signals": 8,
@@ -305,8 +305,8 @@
         "chiefs_killed": 2,
         "successions": 2,
         "seen": 6,
-        "materialized": 8,
-        "waves": 7,
+        "materialized": 6,
+        "waves": 5,
         "recalls": 6,
         "items_from_districts": 18,
         "items_from_villages": 2,
@@ -317,8 +317,9 @@
         "peace_held": 0,
         "notices_shown": 1,
         "repeats": 0,
-        "fight_record_gap_max": 1,
+        "fight_record_gap_max": 0,
         "fights_unheld": 0,
+        "unbooked_home_deaths": 0,
         "camp_censuses": 0,
         "camp_orders": 0,
         "camp_lines": 0,
@@ -336,7 +337,12 @@
         "rail_let_go": 0,
         "rail_unknown": 0,
         "rail_calls": 0,
-        "rail_stale": 0
+        "rail_stale": 0,
+        "lurks": 0,
+        "lurks_ended": 0,
+        "passes": 0,
+        "passes_watched": 0,
+        "lurk_robberies": 0
       },
       "log": [
         {
@@ -637,12 +643,28 @@
           "FACTION_NOTICE: notice, signal 0, grievance 7.3"
         ],
         [
+          1.3854583333333332,
+          "BAND_MARCH: march 4300000100000000 kind 1 phase 2: 2 waypoints"
+        ],
+        [
           1.6392916666666666,
           "ENVOY_MATERIALIZE: envoy 4300000100000000: demand 17 of item 8 or stop signal 0"
         ],
         [
           1.6392916666666666,
           "BAND_STEER: steer 4300000100000000 to (700, 780)"
+        ],
+        [
+          2.0049166666666665,
+          "BAND_MARCH: march 4300000100000000 kind 1 phase 3: 1 waypoints"
+        ],
+        [
+          4.385458333333333,
+          "BAND_MARCH: march 4300000100000000 kind 1 phase 5: 2 waypoints"
+        ],
+        [
+          4.385458333333333,
+          "BAND_MARCH: march 4300000100000001 kind 2 phase 2: 2 waypoints"
         ],
         [
           4.385458333333333,
@@ -654,19 +676,47 @@
         ],
         [
           4.639291666666667,
-          "BAND_MATERIALIZE: band 4300000100000001 wave 0 purpose 2: 2 members, arc 0 blocks at 0 degrees"
+          "BAND_MATERIALIZE: band 4300000100000001 wave 0 purpose 2: 2 members, arc 0 blocks at -132 degrees"
         ],
         [
           4.639291666666667,
           "BAND_STEER: steer 4300000100000001 to (700, 780)"
         ],
         [
+          5.0049166666666665,
+          "BAND_MARCH: march 4300000100000001 kind 2 phase 3: 1 waypoints"
+        ],
+        [
+          5.0049166666666665,
+          "BAND_MARCH: march 4300000100000000 kind 1 phase 5: 1 waypoints"
+        ],
+        [
           5.5049166666666665,
-          "BAND_RECALL: recall 4300000100000001, reason 3"
+          "BAND_MARCH: march 4300000100000001 kind 2 phase 5: 2 waypoints"
+        ],
+        [
+          5.5049166666666665,
+          "BAND_STEER: steer 4300000100000001 to (900, 1000)"
+        ],
+        [
+          5.907583333333333,
+          "BAND_RECALL: recall 4300000100000001, reason 4"
+        ],
+        [
+          6.124375,
+          "BAND_MARCH: march 4300000100000001 kind 2 phase 5: 1 waypoints"
+        ],
+        [
+          6.5049166666666665,
+          "BAND_MARCH: march 4300000200000001 kind 3 phase 1: 2 waypoints"
+        ],
+        [
+          7.5049166666666665,
+          "BAND_MARCH: march 4300000200000001 kind 3 phase 2: 2 waypoints"
         ],
         [
           7.758041666666666,
-          "BAND_MATERIALIZE: band 4300000200000001 wave 0 purpose 3: 12 members, arc 0 blocks at 0 degrees"
+          "BAND_MATERIALIZE: band 4300000200000001 wave 0 purpose 3: 12 members, arc 0 blocks at -132 degrees"
         ],
         [
           7.758041666666666,
@@ -677,8 +727,24 @@
           "BAND_RECALL: recall 4300000200000001, reason 5"
         ],
         [
+          8.124375,
+          "BAND_MARCH: march 4300000200000001 kind 3 phase 5: 2 waypoints"
+        ],
+        [
+          8.743833333333333,
+          "BAND_MARCH: march 4300000200000001 kind 3 phase 5: 1 waypoints"
+        ],
+        [
+          12.124375,
+          "BAND_MARCH: march 4300000300000001 kind 4 phase 1: 2 waypoints"
+        ],
+        [
+          13.124375,
+          "BAND_MARCH: march 4300000300000001 kind 4 phase 2: 2 waypoints"
+        ],
+        [
           13.378833333333333,
-          "BAND_MATERIALIZE: band 4300000300000001 wave 0 purpose 4: 16 members, arc 0 blocks at 0 degrees"
+          "BAND_MATERIALIZE: band 4300000300000001 wave 0 purpose 4: 16 members, arc 0 blocks at -132 degrees"
         ],
         [
           13.378833333333333,
@@ -686,15 +752,55 @@
         ],
         [
           13.743833333333333,
-          "BAND_MATERIALIZE: band 4300000300000001 wave 0 purpose 4: 16 members, arc 112 blocks at 48 degrees"
+          "BAND_MARCH: march 4300000300000001 kind 4 phase 4: 1 waypoints"
+        ],
+        [
+          13.743833333333333,
+          "BAND_STEER: steer 4300000300000001 to (700, 780), attack"
+        ],
+        [
+          13.743833333333333,
+          "BAND_MATERIALIZE: band 4300000300000001 wave 1 purpose 4: 0 members, arc 112 blocks at 48 degrees"
+        ],
+        [
+          13.752166666666668,
+          "BAND_MARCH: march 4300000300000001 kind 4 phase 4: 1 waypoints"
         ],
         [
           13.753,
-          "BAND_RECALL: recall 4300000300000001, reason 2"
+          "BAND_MARCH: march 4300000300000001 kind 4 phase 5: 2 waypoints"
+        ],
+        [
+          13.753,
+          "BAND_STEER: steer 4300000300000001 to (900, 1000)"
+        ],
+        [
+          14.155666666666667,
+          "BAND_RECALL: recall 4300000300000001, reason 4"
+        ],
+        [
+          14.372458333333332,
+          "BAND_MARCH: march 4300000300000001 kind 4 phase 5: 1 waypoints"
+        ],
+        [
+          19.124166666666667,
+          "BAND_MARCH: march 4300000400000001 kind 6 phase 1: 2 waypoints"
+        ],
+        [
+          19.339583333333334,
+          "BAND_MARCH: march 4300000200000000 kind 3 phase 1: 2 waypoints"
+        ],
+        [
+          20.124166666666667,
+          "BAND_MARCH: march 4300000400000001 kind 6 phase 2: 2 waypoints"
+        ],
+        [
+          20.339583333333334,
+          "BAND_MARCH: march 4300000200000000 kind 3 phase 2: 2 waypoints"
         ],
         [
           20.378583333333335,
-          "BAND_MATERIALIZE: band 4300000400000001 wave 0 purpose 6: 8 members, arc 0 blocks at 0 degrees"
+          "BAND_MATERIALIZE: band 4300000400000001 wave 0 purpose 6: 8 members, arc 0 blocks at -131 degrees"
         ],
         [
           20.378583333333335,
@@ -702,7 +808,7 @@
         ],
         [
           20.594416666666667,
-          "BAND_MATERIALIZE: band 4300000200000000 wave 0 purpose 3: 12 members, arc 0 blocks at 0 degrees"
+          "BAND_MATERIALIZE: band 4300000200000000 wave 0 purpose 3: 12 members, arc 0 blocks at -132 degrees"
         ],
         [
           20.594416666666667,
@@ -710,20 +816,56 @@
         ],
         [
           20.959041666666668,
-          "BAND_MATERIALIZE: band 4300000200000000 wave 0 purpose 3: 12 members, arc 112 blocks at 48 degrees"
+          "BAND_MARCH: march 4300000200000000 kind 3 phase 4: 1 waypoints"
+        ],
+        [
+          20.959041666666668,
+          "BAND_STEER: steer 4300000200000000 to (700, 780), attack"
+        ],
+        [
+          20.959041666666668,
+          "BAND_MATERIALIZE: band 4300000200000000 wave 1 purpose 3: 0 members, arc 112 blocks at 48 degrees"
+        ],
+        [
+          20.967375,
+          "BAND_MARCH: march 4300000200000000 kind 3 phase 4: 1 waypoints"
         ],
         [
           20.968208333333333,
-          "BAND_RECALL: recall 4300000200000000, reason 2"
+          "BAND_MARCH: march 4300000200000000 kind 3 phase 5: 2 waypoints"
+        ],
+        [
+          20.968208333333333,
+          "BAND_STEER: steer 4300000200000000 to (900, 1000)"
         ],
         [
           21.084541666666667,
+          "BAND_MARCH: march 4300000400000001 kind 6 phase 5: 2 waypoints"
+        ],
+        [
+          21.084541666666667,
+          "BAND_STEER: steer 4300000400000001 to (900, 1000)"
+        ],
+        [
+          21.370875,
+          "BAND_RECALL: recall 4300000200000000, reason 4"
+        ],
+        [
+          21.587666666666667,
+          "BAND_MARCH: march 4300000200000000 kind 3 phase 5: 1 waypoints"
+        ],
+        [
+          21.82725,
           "BAND_RECALL: recall 4300000400000001, reason 4"
+        ],
+        [
+          22.044916666666666,
+          "BAND_MARCH: march 4300000400000001 kind 6 phase 5: 1 waypoints"
         ]
       ],
-      "wire_bytes": 3104,
+      "wire_bytes": 6624,
       "state_hashes": [
-        "9c5cdd705037c2d4",
+        "a3ca695d530b6e2e",
         "d450929438383fb2"
       ],
       "archive": {
@@ -771,7 +913,7 @@
     },
     {
       "variant": "tribute",
-      "wall_ms": 179.991706,
+      "wall_ms": 268.223428,
       "checks": [
         {
           "name": "conservation",
@@ -929,7 +1071,7 @@
         }
       ],
       "stats": {
-        "events": 73,
+        "events": 74,
         "feud_wakes": 5,
         "stale": 17,
         "signals": 5,
@@ -982,6 +1124,7 @@
         "repeats": 0,
         "fight_record_gap_max": 0,
         "fights_unheld": 0,
+        "unbooked_home_deaths": 0,
         "camp_censuses": 0,
         "camp_orders": 0,
         "camp_lines": 0,
@@ -999,7 +1142,12 @@
         "rail_let_go": 0,
         "rail_unknown": 0,
         "rail_calls": 0,
-        "rail_stale": 0
+        "rail_stale": 0,
+        "lurks": 0,
+        "lurks_ended": 0,
+        "passes": 0,
+        "passes_watched": 0,
+        "lurk_robberies": 0
       },
       "log": [
         {
@@ -1223,6 +1371,10 @@
           "FACTION_NOTICE: notice, signal 0, grievance 7.3"
         ],
         [
+          1.3854583333333332,
+          "BAND_MARCH: march 4300000100000000 kind 1 phase 2: 2 waypoints"
+        ],
+        [
           1.6392916666666666,
           "ENVOY_MATERIALIZE: envoy 4300000100000000: demand 17 of item 8 or stop signal 0"
         ],
@@ -1232,11 +1384,23 @@
         ],
         [
           1.647625,
+          "BAND_MARCH: march 4300000100000000 kind 1 phase 5: 2 waypoints"
+        ],
+        [
+          1.647625,
           "DEMAND_SETTLED: demand of c0b10001 settled, outcome 1"
         ],
         [
           1.647625,
           "BAND_RECALL: recall 4300000100000000, reason 6"
+        ],
+        [
+          1.9116666666666666,
+          "BAND_MARCH: march 4300000100000000 kind 1 phase 5: 1 waypoints"
+        ],
+        [
+          7.647625,
+          "BAND_MARCH: march 4300000200000000 kind 1 phase 2: 2 waypoints"
         ],
         [
           7.902041666666666,
@@ -1248,11 +1412,23 @@
         ],
         [
           7.910375,
+          "BAND_MARCH: march 4300000200000000 kind 1 phase 5: 2 waypoints"
+        ],
+        [
+          7.910375,
           "DEMAND_SETTLED: demand of c0b10001 settled, outcome 1"
         ],
         [
           7.910375,
           "BAND_RECALL: recall 4300000200000000, reason 6"
+        ],
+        [
+          8.174416666666668,
+          "BAND_MARCH: march 4300000200000000 kind 1 phase 5: 1 waypoints"
+        ],
+        [
+          13.910375,
+          "BAND_MARCH: march 4300000300000000 kind 1 phase 2: 2 waypoints"
         ],
         [
           14.163958333333333,
@@ -1264,6 +1440,10 @@
         ],
         [
           14.172291666666666,
+          "BAND_MARCH: march 4300000300000000 kind 1 phase 5: 2 waypoints"
+        ],
+        [
+          14.172291666666666,
           "DEMAND_SETTLED: demand of c0b10001 settled, outcome 1"
         ],
         [
@@ -1271,8 +1451,24 @@
           "BAND_RECALL: recall 4300000300000000, reason 6"
         ],
         [
+          14.436333333333334,
+          "BAND_MARCH: march 4300000300000000 kind 1 phase 5: 1 waypoints"
+        ],
+        [
+          19.124166666666667,
+          "BAND_MARCH: march 4300000400000000 kind 6 phase 1: 2 waypoints"
+        ],
+        [
+          20.124166666666667,
+          "BAND_MARCH: march 4300000400000000 kind 6 phase 2: 2 waypoints"
+        ],
+        [
+          20.172291666666666,
+          "BAND_MARCH: march 4300000100000001 kind 1 phase 2: 2 waypoints"
+        ],
+        [
           20.378583333333335,
-          "BAND_MATERIALIZE: band 4300000400000000 wave 0 purpose 6: 8 members, arc 0 blocks at 0 degrees"
+          "BAND_MATERIALIZE: band 4300000400000000 wave 0 purpose 6: 8 members, arc 0 blocks at -131 degrees"
         ],
         [
           20.378583333333335,
@@ -1288,6 +1484,10 @@
         ],
         [
           20.43525,
+          "BAND_MARCH: march 4300000100000001 kind 1 phase 5: 2 waypoints"
+        ],
+        [
+          20.43525,
           "DEMAND_SETTLED: demand of c0b10001 settled, outcome 1"
         ],
         [
@@ -1295,13 +1495,29 @@
           "BAND_RECALL: recall 4300000100000001, reason 6"
         ],
         [
+          20.699291666666667,
+          "BAND_MARCH: march 4300000100000001 kind 1 phase 5: 1 waypoints"
+        ],
+        [
           21.084541666666667,
+          "BAND_MARCH: march 4300000400000000 kind 6 phase 5: 2 waypoints"
+        ],
+        [
+          21.084541666666667,
+          "BAND_STEER: steer 4300000400000000 to (900, 1000)"
+        ],
+        [
+          21.82725,
           "BAND_RECALL: recall 4300000400000000, reason 4"
+        ],
+        [
+          22.044916666666666,
+          "BAND_MARCH: march 4300000400000000 kind 6 phase 5: 1 waypoints"
         ]
       ],
-      "wire_bytes": 2480,
+      "wire_bytes": 4384,
       "state_hashes": [
-        "fbc3172af94da5e1",
+        "440876fbdd2713aa",
         "a7cefff0accd3c46"
       ],
       "archive": {
@@ -1342,7 +1558,7 @@
     },
     {
       "variant": "converter",
-      "wall_ms": 174.01361500000002,
+      "wall_ms": 270.250665,
       "checks": [
         {
           "name": "conservation",
@@ -1478,7 +1694,7 @@
         }
       ],
       "stats": {
-        "events": 182,
+        "events": 183,
         "feud_wakes": 6,
         "stale": 9,
         "signals": 5,
@@ -1531,6 +1747,7 @@
         "repeats": 0,
         "fight_record_gap_max": 0,
         "fights_unheld": 0,
+        "unbooked_home_deaths": 0,
         "camp_censuses": 0,
         "camp_orders": 0,
         "camp_lines": 0,
@@ -1548,7 +1765,12 @@
         "rail_let_go": 0,
         "rail_unknown": 0,
         "rail_calls": 0,
-        "rail_stale": 0
+        "rail_stale": 0,
+        "lurks": 0,
+        "lurks_ended": 0,
+        "passes": 0,
+        "passes_watched": 0,
+        "lurk_robberies": 0
       },
       "log": [
         {
@@ -1709,12 +1931,24 @@
           "FACTION_NOTICE: notice, signal 0, grievance 7.3"
         ],
         [
+          1.3854583333333332,
+          "BAND_MARCH: march 4300000100000000 kind 1 phase 2: 2 waypoints"
+        ],
+        [
           1.6392916666666666,
           "ENVOY_MATERIALIZE: envoy 4300000100000000: demand 17 of item 8 or stop signal 0"
         ],
         [
           1.6392916666666666,
           "BAND_STEER: steer 4300000100000000 to (700, 780)"
+        ],
+        [
+          2.0049166666666665,
+          "BAND_MARCH: march 4300000100000000 kind 1 phase 3: 1 waypoints"
+        ],
+        [
+          4.385458333333333,
+          "BAND_MARCH: march 4300000100000000 kind 1 phase 5: 2 waypoints"
         ],
         [
           4.385458333333333,
@@ -1725,12 +1959,28 @@
           "DEMAND_SETTLED: demand of c0b10001 settled, outcome 2"
         ],
         [
+          4.885458333333333,
+          "BAND_MARCH: march 4300000100000001 kind 1 phase 2: 2 waypoints"
+        ],
+        [
+          5.0049166666666665,
+          "BAND_MARCH: march 4300000100000000 kind 1 phase 5: 1 waypoints"
+        ],
+        [
           5.139291666666667,
           "ENVOY_MATERIALIZE: envoy 4300000100000001: demand 24 of item 8 or stop signal 2"
         ],
         [
           5.139291666666667,
           "BAND_STEER: steer 4300000100000001 to (700, 780)"
+        ],
+        [
+          5.5049166666666665,
+          "BAND_MARCH: march 4300000100000001 kind 1 phase 3: 1 waypoints"
+        ],
+        [
+          7.885458333333333,
+          "BAND_MARCH: march 4300000100000001 kind 1 phase 5: 2 waypoints"
         ],
         [
           7.885458333333333,
@@ -1741,8 +1991,20 @@
           "BAND_RECALL: recall 4300000100000001, reason 6"
         ],
         [
+          8.504916666666666,
+          "BAND_MARCH: march 4300000100000001 kind 1 phase 5: 1 waypoints"
+        ],
+        [
+          19.124166666666667,
+          "BAND_MARCH: march 4300000200000001 kind 6 phase 1: 2 waypoints"
+        ],
+        [
+          20.124166666666667,
+          "BAND_MARCH: march 4300000200000001 kind 6 phase 2: 2 waypoints"
+        ],
+        [
           20.378583333333335,
-          "BAND_MATERIALIZE: band 4300000200000001 wave 0 purpose 6: 8 members, arc 0 blocks at 0 degrees"
+          "BAND_MATERIALIZE: band 4300000200000001 wave 0 purpose 6: 8 members, arc 0 blocks at -131 degrees"
         ],
         [
           20.378583333333335,
@@ -1750,12 +2012,24 @@
         ],
         [
           21.084541666666667,
+          "BAND_MARCH: march 4300000200000001 kind 6 phase 5: 2 waypoints"
+        ],
+        [
+          21.084541666666667,
+          "BAND_STEER: steer 4300000200000001 to (900, 1000)"
+        ],
+        [
+          21.82725,
           "BAND_RECALL: recall 4300000200000001, reason 4"
+        ],
+        [
+          22.044916666666666,
+          "BAND_MARCH: march 4300000200000001 kind 6 phase 5: 1 waypoints"
         ]
       ],
-      "wire_bytes": 1344,
+      "wire_bytes": 2768,
       "state_hashes": [
-        "03ffce4aa6ad5aba",
+        "f8c87821aa7d962f",
         "2c2221234256e7c3"
       ],
       "archive": {
@@ -1800,7 +2074,7 @@
   "restore": {
     "name": "a restore continues with the same state",
     "ok": true,
-    "detail": "saved and loaded on day 9.3: conflict 9c5cdd705037c2d4, world d450929438383fb2 (uninterrupted 9c5cdd705037c2d4, d450929438383fb2)"
+    "detail": "saved and loaded on day 9.3: conflict a3ca695d530b6e2e, world d450929438383fb2 (uninterrupted a3ca695d530b6e2e, d450929438383fb2)"
   },
   "archive": {
     "rows_per_day": 8.75,

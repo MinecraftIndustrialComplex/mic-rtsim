@@ -53,6 +53,10 @@ public final class MicRtsimMowziesMobs {
         BodyKinds.registerStandIn(ENVOY, "mowziesmobs:umvuthana");
         BodyKinds.registerStandIn(UMVUTHI, "mowziesmobs:umvuthi");
         ConflictBodies.registerMaker(RAPTOR, new RaptorMaker());
+        // The grove's chief floats with its Invasion (M11, MZB-806, MZB-807): a made Umvuthi turned to the route's quarter,
+        // and the Traveller that holds it a few blocks over the ground and sets it down to fight
+        ConflictBodies.registerMaker(UMVUTHI, new UmvuthiMaker());
+        RtsimApi.registerTraveller("mowziesmobs:umvuthi", UmvuthiAloft.INSTANCE);
         // A Frostmaw robbed of its crystal raids without it (review C): the jar's finalizeSpawn gives every new
         // Frostmaw one, so the core's bare flag has the crystal taken off after the body is made.
         BodyKinds.registerBare(FROSTMAW, m -> {
@@ -61,6 +65,8 @@ public final class MicRtsimMowziesMobs {
         });
         RtsimApi.registerCampKind(DenKind.INSTANCE);
         RtsimApi.registerCampKind(GroveKind.INSTANCE);
+        // A Frostmaw party lies in wait by a rail awake, swipes a carriage's riders and roars at a robbed train's call (M8, MZB-361)
+        RtsimApi.registerLurker("mowziesmobs:frostmaw", new FrostmawLurker());
         RtsimApi.registerPlugin(GroveChests.INSTANCE); // HAVEN_CHEST (MZB-422): the chest a grove's tribute goes into
         IndustryApi.register(MowzieStrength.INSTANCE); // IND_FIGHT's attacker strength (MZB-435)
         IEventBus bus = NeoForge.EVENT_BUS;

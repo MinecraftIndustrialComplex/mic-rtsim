@@ -4982,7 +4982,7 @@ mod conflict {
     use super::*;
     use rtsim_conflict::boundary::{self as cb, Cmd as C, Obs as O};
     use rtsim_conflict::culture::PartyKind;
-    use rtsim_conflict::engine::{Party, Phase, Target};
+    use rtsim_conflict::engine::{CHIEF_SLOT, Party, Phase, SlotState, Target};
     use rtsim_conflict::{Step, synth};
     use rtsim_jni::engine::{CONFLICT_TABLE, MODULE_CONFLICT, MODULE_INDUSTRY};
     use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
@@ -5265,13 +5265,18 @@ mod conflict {
         advance_until(&mut j, 1_000, 3 * DAY, "the demand refused", |j| {
             cmds(j).any(|c| matches!(c, C::Settled(s) if s.player == PLAYER2))
         });
-        // Nobody fights the raid: it waits at the base, gets bored and goes home.
+        // Nobody fights the raid: it is met on its road (a column, the whole band under the
+        // quota), walks into the base where the player stands, waits there, gets bored and goes
+        // home. With every member placed the director has no body to send, only the walk-in's empty
+        // fight record (MZB-461, MZB-700).
         advance_until(&mut j, 1_000, 6 * DAY, "a war band at the base", |j| {
-            cmds(j).any(|c| matches!(c, C::Materialize(m) if m.purpose == 3 && m.arc_radius > 0))
+            cmds(j).any(|c| {
+                matches!(c, C::Steer(s) if s.flags & cb::STEER_ATTACK != 0 && s.arrive == 0)
+            })
         });
         let raid = cmds(&j)
             .find_map(|c| match c {
-                C::Materialize(m) if m.purpose == 3 && m.arc_radius > 0 => Some(m.clone()),
+                C::Materialize(m) if m.purpose == 3 => Some(m.clone()),
                 _ => None,
             })
             .unwrap();
@@ -5279,54 +5284,71 @@ mod conflict {
             "the raid at day {:.2}: {raid:?}",
             j.game_time as f64 / DAY as f64
         );
-        assert_eq!(raid.arc_radius, 112, "the director's arc, 112 blocks out");
-        assert!(
-            (raid.arc_centre.0 - base[0]).abs() < 2.0 && (raid.arc_centre.1 - base[2]).abs() < 2.0,
-            "around the watching player: {:?}",
-            raid.arc_centre
-        );
+        assert_eq!(raid.arc_radius, 0, "met on its road: a column, not an arc");
         assert!(raid.flags & cb::BAND_HOSTILE != 0);
 
-        // The invasion: more than the spawn quota, so it comes in waves; the players kill four in
-        // ten of each wave, then its war chief.
+        // The invasion: more than the spawn quota, so the sighting places the quota and the rest
+        // comes in waves on an arc as the players kill four in ten of what stands (then its war
+        // chief), each wave only as many as the quota has room for. The walk-in itself sends the
+        // fight's flagged record with no member (MZB-700: the quota is full, nothing is left to
+        // place), which is no wave of bodies.
         j.conflict_plugin.fight = Some(synth::Fight {
             kill_share: 0.4,
             after: 200,
             kill_chief: false,
             only_at_base: true,
         });
-        let waves_of = |j: &Java, agent: u64| -> Vec<cb::BandMaterialize> {
+        let arcs_of = |j: &Java, agent: u64| -> Vec<cb::BandMaterialize> {
             cmds(j)
                 .filter_map(|c| match c {
-                    C::Materialize(m) if m.agent == agent && m.arc_radius > 0 => Some(m.clone()),
+                    C::Materialize(m)
+                        if m.agent == agent && m.arc_radius > 0 && !m.members.is_empty() =>
+                    {
+                        Some(m.clone())
+                    }
                     _ => None,
                 })
                 .collect()
         };
         advance_until(&mut j, 1_000, 12 * DAY, "an invasion at the base", |j| {
-            cmds(j).any(|c| matches!(c, C::Materialize(m) if m.purpose == 4 && m.arc_radius > 0))
+            cmds(j).any(|c| matches!(c, C::Materialize(m) if m.purpose == 4))
         });
         let inv = cmds(&j)
             .find_map(|c| match c {
-                C::Materialize(m) if m.purpose == 4 && m.arc_radius > 0 => Some(m.clone()),
+                C::Materialize(m) if m.purpose == 4 => Some(m.clone()),
                 _ => None,
             })
             .unwrap();
-        advance_until(&mut j, 100, DAY / 4, "a second wave", |j| {
-            waves_of(j, inv.agent).len() >= 2
+        advance_until(&mut j, 100, DAY, "a wave on the arc", |j| {
+            !arcs_of(j, inv.agent).is_empty()
         });
-        let waves = waves_of(&j, inv.agent);
-        let first: u32 = waves[0].members.iter().map(|s| s.count).sum();
+        let waves = arcs_of(&j, inv.agent);
+        let first: u32 = inv.members.iter().map(|s| s.count).sum();
         eprintln!(
-            "the invasion at day {:.2}: {} waves, the first of {first}",
+            "the invasion at day {:.2}: {} arc waves after the sighting's {first}",
             j.game_time as f64 / DAY as f64,
             waves.len()
         );
-        assert!(first <= 16, "a wave within the spawn quota: {first}");
-        assert_eq!(waves[0].wave, 0);
+        assert!(first <= 16, "the sighting within the spawn quota: {first}");
+        assert_eq!(inv.wave, 0);
+        assert_eq!(inv.arc_radius, 0, "met on its road");
+        let walk_ins: Vec<cb::BandMaterialize> = cmds(&j)
+            .filter_map(|c| match c {
+                C::Materialize(m)
+                    if m.agent == inv.agent
+                        && m.flags & cb::BAND_FIGHT != 0
+                        && m.members.is_empty() =>
+                {
+                    Some(m.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(walk_ins.len(), 1, "the walk-in's empty fight record: {walk_ins:?}");
+        assert!(walk_ins[0].epoch == inv.epoch && walk_ins[0].arc_radius > 0);
         assert!(
-            waves[1].wave >= 1 && waves[1].epoch == waves[0].epoch,
-            "{waves:?}"
+            waves[0].wave >= 1 && waves[0].epoch == inv.epoch,
+            "the walk-in keeps the epoch: {waves:?}"
         );
         assert!(
             waves
@@ -5335,7 +5357,7 @@ mod conflict {
             "on the arc"
         );
         assert!(
-            waves[0].flags & cb::BAND_CHIEF != 0,
+            inv.flags & cb::BAND_CHIEF != 0,
             "the war chief leads the invasion"
         );
         let (casualties, chiefs) =
@@ -5363,9 +5385,23 @@ mod conflict {
             successions >= 1 && chief_now != chief_before,
             "the heir takes over"
         );
+        // The band routs and walks home in its bodies (MZB-456): the order is a steer toward the
+        // home segment's end, not a recall, which only the door's fallback sends.
+        let home = e.with_conflict(|c, _| {
+            Party::of_agent(inv.agent)
+                .and_then(|p| c.parties.get(p))
+                .map(|x| x.phase)
+        });
+        assert_eq!(home, Some(Phase::Home), "the band routs");
         assert!(
-            cmds(&j).any(|c| matches!(c, C::Recall(r) if r.agent == inv.agent && r.reason == cb::RECALL_ROUTED)),
-            "the band routs"
+            cmds(&j).any(|c| matches!(c, C::Steer(s)
+                if s.agent == inv.agent && s.flags & cb::STEER_ATTACK == 0 && s.arrive > 0)),
+            "a steer home"
+        );
+        assert!(
+            !cmds(&j).any(|c| matches!(c, C::Recall(r)
+                if r.agent == inv.agent && r.reason == cb::RECALL_ROUTED)),
+            "no recall at the order"
         );
         // The same death again under its op id: nothing more.
         j.conflict_obs(&ck);
@@ -6231,16 +6267,17 @@ mod conflict {
         e.close(true, Duration::from_secs(5)).unwrap();
     }
 
-    /// MOWZIE.md §9: a record whose engine half comes with a later slice (the lurking party's
-    /// TRAIN_PASSED; the camp's came with M4, the chief's state with M6, the rail's RAIL_PASS with
-    /// M7, the grove's with M9) is decoded, counted as deferred and dropped. CHIEF_STATE is counted
-    /// as its own and given to the engine (a camp with no bodies to count ignores it), and a
-    /// CHIEF_PAID is the grove's: it reaches the engine and spends its op id, so the same record
-    /// again changes nothing.
+    /// MOWZIE.md §9: no record waits for a later slice now (the camp's came with M4, the chief's
+    /// state with M6, the rail's RAIL_PASS with M7, the lurk's TRAIN_PASSED with M8, the grove's
+    /// with M9), so none is counted as deferred. CHIEF_STATE is counted as its own and given to the
+    /// engine (a camp with no bodies to count ignores it); a CHIEF_PAID is the grove's: it reaches
+    /// the engine and spends its op id, so the same record again changes nothing; and a
+    /// TRAIN_PASSED reaches the engine, which finds no party by its agent: stale.
     #[test]
-    fn later_slices_records_are_counted_and_dropped() {
+    fn no_record_is_deferred_and_each_reaches_the_engine() {
         let (_dir, e, mut j) = camp("conflict-deferred");
         let casualties = e.with_conflict(|c, _| c.stats.casualties);
+        let stale = e.with_conflict(|c, _| c.stats.stale);
         let paid = O::ChiefPaid(cb::ChiefPaid {
             faction: CAMP,
             slot: 3,
@@ -6267,11 +6304,16 @@ mod conflict {
         j.idle();
         assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
         let (_, link) = e.conflict_stats();
-        assert_eq!((link.deferred, link.ignored), (1, 0), "{link:?}");
+        assert_eq!((link.deferred, link.ignored), (0, 0), "{link:?}");
         assert_eq!(link.chief_states, 1, "{link:?}");
         assert!(
             e.with_conflict(|c, _| c.op_applied((1 << 63) | 0xDEAD)),
             "the engine spent the op id, as Conflict::ingest does (MZB-23)"
+        );
+        assert_eq!(
+            e.with_conflict(|c, _| c.stats.stale),
+            stale + 1,
+            "the TRAIN_PASSED reached the engine"
         );
         assert_eq!(
             e.with_conflict(|c, _| c.stats.casualties),
@@ -6743,6 +6785,320 @@ mod conflict {
             );
             e.close(true, Duration::from_secs(5)).unwrap();
         }
+    }
+
+    // ---- M8: the lurk through the journal ----------------------------------------------------------
+
+    /// A Raid for the track point 100 blocks east of the camp, ordered now with no feud.
+    fn order_lurk(e: &Engine, j: &mut Java) -> Handle<Party> {
+        let at = rtsim_kernel::clock::Tick(j.game_time.max(0) as u64);
+        let p = e.with_conflict_mut(|c, w| {
+            let f = c.faction_of_key(CAMP).expect("the camp");
+            let camp = c.factions[f as usize].pos;
+            let track = Pos::new(camp.frame, camp.x + 100, camp.z);
+            let target = Target::Track {
+                track,
+                spot: Pos::new(camp.frame, track.x - 5, track.z),
+                y: 66,
+            };
+            c.order_party(w, CAMP, PartyKind::Raid, target, None, at.max(c.now()))
+                .expect("ordered")
+        });
+        j.idle();
+        p
+    }
+
+    /// Every AMBUSH_SPOT the plugin was sent this session, in order.
+    fn spots(j: &Java) -> Vec<cb::AmbushSpot> {
+        cmds(j)
+            .filter_map(|c| match c {
+                C::AmbushSpot(a) => Some(*a),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn pass(j: &mut Java, p: Handle<Party>, epoch: u32, train: u64) {
+        j.conflict_obs(&O::TrainPassed(cb::TrainPassed {
+            agent: Party::agent(p),
+            epoch,
+            flags: cb::PASSED_WATCHED,
+            carriage: 0,
+            train,
+        }));
+    }
+
+    /// MOWZIE.md 4.4 (MZB-355): TRAIN_PASSED is live, not deferred. It reaches the engine after the
+    /// conflict has run to its own time (not to the hand-over's), so a pass stamped inside a
+    /// band's wait meets a live lurk although the hand-over is past the band's patience, and one
+    /// stamped after its end is counted stale. The lurk's start and end reach the plugin once
+    /// each, in the engine's dictionary.
+    #[test]
+    fn a_train_passed_is_live_and_meets_the_lurk_of_its_own_time() {
+        let (_dir, e, mut j) = camp("conflict-train-passed");
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        let p = order_lurk(&e, &mut j);
+        advance_until(&mut j, 100, 3 * DAY, "the band lurks", |j| {
+            j.e.with_conflict(|c, _| c.lurking(p))
+        });
+        let (epoch, bored_at) = e.with_conflict(|c, _| (c.parties[p].epoch, c.parties[p].bored_at));
+        let start = spots(&j);
+        assert_eq!(start.len(), 1, "one AMBUSH_SPOT at the arrival: {start:?}");
+        assert_eq!(
+            (start[0].flags, start[0].faction, start[0].dimension),
+            (0, CAMP, dim)
+        );
+        assert_eq!(start[0].agent, Party::agent(p));
+        let deferred = e.conflict_stats().1.deferred;
+
+        // A pass inside the wait, at the hand-over's time.
+        pass(&mut j, p, epoch, 5);
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        let (stats, link) = e.conflict_stats();
+        assert_eq!(link.deferred, deferred, "TRAIN_PASSED is live: {link:?}");
+        assert_eq!(
+            (stats.passes, stats.passes_watched, stats.stale),
+            (1, 1, 0),
+            "{stats:?}"
+        );
+
+        // Two passes in one hand-over: one stamped inside the wait, one after the band's patience
+        // ran out. The engine runs to each record's own time first (not to the hand-over's, and
+        // not to none), so the first meets the lurk and the second finds it over.
+        assert!(j.game_time < bored_at.0 as i64, "still inside the wait");
+        pass(&mut j, p, epoch, 6);
+        j.game_time = bored_at.0 as i64 + 3_000;
+        pass(&mut j, p, epoch, 7);
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        let (stats, link) = e.conflict_stats();
+        assert_eq!(link.deferred, deferred);
+        assert_eq!(
+            (stats.passes, stats.stale),
+            (2, 1),
+            "the pass of its own time counts, the one after the end is stale: {stats:?}"
+        );
+        assert_eq!(stats.lurks_ended, 1, "the hand-over ran on to the end");
+
+        let spots = spots(&j);
+        assert_eq!(spots.len(), 2, "a start and one removal: {spots:?}");
+        assert_eq!(spots[1].flags, cb::AMBUSH_REMOVED);
+        assert_eq!((spots[1].agent, spots[1].dimension), (start[0].agent, dim));
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    const TRAINS: u64 = 24;
+
+    /// What a session counted after `lurk_and_trains`.
+    struct Lurked {
+        passes: u64,
+        /// Robberies by a lurk, TRAIN_ROBBED sent, items the industry books as stolen, trains its
+        /// cooldown stands on, items the engine took from districts.
+        robberies: u64,
+        told: usize,
+        stolen: i64,
+        cooled: usize,
+        items: u64,
+        /// What the lurking party carries off in all, from its culture's unit rows.
+        carry: i64,
+    }
+
+    /// A lurk, then `TRAINS` trains, each passed by it at once; with `industry` each is first booked
+    /// on a leg across the lurk's track point carrying 1,280 of a good.
+    fn lurk_and_trains(name: &str, industry: bool) -> Lurked {
+        use rtsim_industry::ids::{BlockPos, DistrictId, Good, GoodVec, StationId, TrainId};
+        use rtsim_industry::obs::{Carriage, Obs as IO, StationDecl, Timed, TrainDeparture};
+        use rtsim_kernel::clock::Tick;
+
+        const WEST: StationId = StationId(10);
+        const EAST: StationId = StationId(11);
+        let (_dir, e, mut j) = camp(name);
+        if industry {
+            j.modules(MODULES | MODULE_INDUSTRY);
+            j.idle();
+        }
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        // The cargo's good, declared as Java does, so the industry has nothing to wait for.
+        let good = Good(j.dict_id(DICT_GOOD, "i/64/minecraft:iron_ingot"));
+        if industry {
+            // The line runs west to east through the lurk's track point (the camp's x + 100).
+            for (station, district, x) in [(WEST, 1, 600), (EAST, 2, 1300)] {
+                j.industry_obs(&Timed {
+                    at: Tick(j.game_time as u64),
+                    obs: IO::Station(StationDecl {
+                        station,
+                        district: Some(DistrictId(district)),
+                        dim,
+                        pos: BlockPos::new(x, 64, CAMP_AT.1),
+                        name: 0,
+                    }),
+                });
+            }
+        }
+        let p = order_lurk(&e, &mut j);
+        advance_until(&mut j, 100, 3 * DAY, "the band lurks", |j| {
+            j.e.with_conflict(|c, _| c.lurking(p))
+        });
+        let epoch = e.with_conflict(|c, _| c.parties[p].epoch);
+        for k in 0..TRAINS {
+            let train = 1_000 + k;
+            if industry {
+                j.industry_obs(&Timed {
+                    at: Tick(j.game_time as u64),
+                    obs: IO::TrainDeparted(TrainDeparture {
+                        train: TrainId(train),
+                        station: WEST,
+                        district: DistrictId(1),
+                        destination: Some(EAST),
+                        eta_ticks: 2_000,
+                        carriages: vec![Carriage {
+                            index: 0,
+                            item_slots: 36,
+                            fluid_capacity: 0,
+                            goods: GoodVec::from_pairs([(good, 1_280)]),
+                        }],
+                    }),
+                });
+            }
+            pass(&mut j, p, epoch, train);
+            j.game_time += 7;
+            j.idle();
+        }
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        let (stats, _) = e.conflict_stats();
+        let told = cmds(&j).filter(|c| matches!(c, C::TrainRobbed(_))).count();
+        let (stolen, cooled) = e.with_industry(|ind, _| {
+            (
+                ind.books.stolen.iter().map(|(_, n)| n).sum::<i64>(),
+                (0..TRAINS)
+                    .filter(|k| ind.train_cooldown_until(TrainId(1_000 + k)) > Tick::ZERO)
+                    .count(),
+            )
+        });
+        let carry = e.with_conflict(|c, _| {
+            let party = &c.parties[p];
+            let culture = c.cultures.get(c.factions[party.faction as usize].culture);
+            party
+                .units
+                .iter()
+                .map(|&(u, n)| i64::from(n) * i64::from(culture.def.units[u as usize].carry))
+                .sum()
+        });
+        e.close(true, Duration::from_secs(5)).unwrap();
+        Lurked {
+            passes: stats.passes,
+            robberies: stats.lurk_robberies,
+            told,
+            stolen,
+            cooled,
+            items: stats.items_from_districts,
+            carry,
+        }
+    }
+
+    /// MOWZIE.md 4.4 (MZB-355, MZB-356): a TRAIN_PASSED that hits is I24's attack on the train
+    /// through the host's infrastructure (`with_infra`: the industry engine behind `IndustryLink`
+    /// when the industry module is on, `NoInfrastructure` when it is off). With the industry on,
+    /// the lurk robs the leg's cargo (the party's carry, under a tenth of 1,280, so the carry
+    /// binds), the industry's books and its cooldown on the train show it, and the plugin is told
+    /// once per robbery; with it off, the same passes are counted and rob nothing and tell
+    /// nothing.
+    #[test]
+    fn a_pass_that_hits_robs_the_train_with_an_infrastructure_and_nothing_without_one() {
+        let with = lurk_and_trains("conflict-train-robbed", true);
+        assert_eq!(with.passes, TRAINS, "every pass met the live lurk");
+        assert!(
+            with.robberies >= 1 && with.robberies < TRAINS,
+            "the roll hit on some of {TRAINS} passes, not all: {}",
+            with.robberies
+        );
+        assert!(
+            0 < with.carry && with.carry < 128,
+            "the carry binds under a tenth of 1,280: {}",
+            with.carry
+        );
+        assert_eq!(with.told as u64, with.robberies, "one TRAIN_ROBBED per robbery");
+        assert_eq!(
+            with.stolen,
+            with.carry * with.robberies as i64,
+            "the carry is taken from the leg, as the industry books it"
+        );
+        assert_eq!(
+            with.items as i64, with.stolen,
+            "and the engine counted the same items"
+        );
+        assert_eq!(
+            with.cooled as u64, with.robberies,
+            "a robbed train is on cooldown"
+        );
+
+        let bare = lurk_and_trains("conflict-train-robbed-bare", false);
+        assert_eq!(bare.passes, TRAINS, "the passes are counted all the same");
+        assert_eq!(
+            (bare.robberies, bare.told, bare.stolen, bare.cooled, bare.items),
+            (0, 0, 0, 0, 0),
+            "with no industry module a hit finds no train to rob"
+        );
+    }
+
+    /// MOWZIE.md 4.4 (MZB-353): Java's lurk table lives for one session, so each lurk goes once
+    /// more at a session start, after the replay, and only once: a lurk the replay itself made (a
+    /// journaled record ran the engine past the band's arrival) is dropped from the queue before
+    /// the resend, as a queued notice is, not sent twice. Crash restart and clean restart alike.
+    #[test]
+    fn a_lurk_goes_to_the_plugin_once_after_each_session_start() {
+        let (dir, e, mut j) = camp("conflict-lurk-resend");
+        let p = order_lurk(&e, &mut j);
+        let agent = Party::agent(p);
+        // The pages hold a band that has not arrived.
+        save(&e, &mut j);
+        assert!(!e.with_conflict(|c, _| c.lurking(p)));
+        advance_until(&mut j, 100, 3 * DAY, "the band lurks", |j| {
+            j.e.with_conflict(|c, _| c.lurking(p))
+        });
+        assert_eq!(spots(&j).len(), 1);
+        let epoch = e.with_conflict(|c, _| c.parties[p].epoch);
+        // A journaled record after the arrival (a pass of a train for no band: stale): the replay
+        // runs the engine to its time, so the arrival happens inside the replay.
+        pass(&mut j, p, epoch + 9, 5);
+        j.idle();
+        let gt = j.game_time;
+        let saved = j.crash();
+
+        let restart = |saved: WorldSave, gt: i64| {
+            let e = engine(&dir, 256 * 1024);
+            let mut j = Java::open(e.clone(), saved);
+            j.module_mask = MODULES;
+            j.game_time = gt;
+            assert_eq!(e.conflict_restore_check(), (None, false));
+            j.idle();
+            assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+            (e, j)
+        };
+        let (e, mut j) = restart(saved, gt);
+        assert!(e.with_conflict(|c, _| c.lurking(p)), "the replay made it");
+        let sent = spots(&j);
+        assert_eq!(
+            sent.iter().map(|a| (a.agent, a.flags)).collect::<Vec<_>>(),
+            vec![(agent, 0)],
+            "the lurk the replay made goes once: {sent:?}"
+        );
+        save(&e, &mut j);
+        let gt = j.game_time;
+        let saved = j.world_save();
+        e.close(true, Duration::from_secs(5)).unwrap();
+
+        // A clean restart: the pages hold the lurk, the session start resends it, once.
+        let (e, j) = restart(saved, gt);
+        let sent = spots(&j);
+        assert_eq!(
+            sent.iter().map(|a| (a.agent, a.flags)).collect::<Vec<_>>(),
+            vec![(agent, 0)],
+            "{sent:?}"
+        );
+        e.close(true, Duration::from_secs(5)).unwrap();
     }
 
     // ---- M4: the camp reconciler through the journal ----------------------------------------------
@@ -8266,6 +8622,266 @@ mod conflict {
         assert!(!embodied && spawned == 0, "no body survived the crash");
         assert!(!recalled, "nothing kept once the replay has caught up");
         drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// [`reopen_mask`], watching the replay (MZB-484): after every hand-over that leaves part of
+    /// the journal still to send, no BAND_MARCH has been sent. Returns the engine, Java and the
+    /// number of hand-overs the replay was behind.
+    fn reopen_watching(
+        dir: &std::path::PathBuf,
+        saved: WorldSave,
+        gt: i64,
+        capacity: usize,
+    ) -> (std::sync::Arc<Engine>, Java, usize) {
+        let e = engine(dir, capacity);
+        let mut j = Java::open(e.clone(), saved);
+        j.module_mask = MODULES;
+        j.game_time = gt;
+        assert_eq!(e.conflict_restore_check(), (None, false));
+        let last = j.world_save().journal.back().map_or(0, |(s, _)| *s);
+        let mut behind = 0;
+        for _ in 0..64 {
+            j.flush();
+            if j.sent_obs >= last {
+                break;
+            }
+            behind += 1;
+            assert!(
+                !cmds(&j).any(|c| matches!(c, C::March(_))),
+                "a march record while the replay is behind (hand-over {behind}, {} of {last})",
+                j.sent_obs
+            );
+        }
+        assert!(j.sent_obs >= last, "the whole journal handed over");
+        // What the replay's end queues goes with the next steps.
+        for _ in 0..4 {
+            j.idle();
+        }
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        (e, j, behind)
+    }
+
+    /// The BAND_MARCH records Java has been sent for `p`, in order.
+    fn marches(j: &Java, p: Handle<Party>) -> Vec<cb::BandMarch> {
+        cmds(j)
+            .filter_map(|c| match c {
+                C::March(m) if m.agent == Party::agent(p) => Some(m.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// MZB-451, MZB-484 (M10): a session start sends BAND_MARCH for every party once the replay
+    /// has caught up, and not before: Java's map of marches is per session, and a record sent
+    /// while the replay ran would describe a state the replay was about to change. With 4,000
+    /// fillers in the journal the replay takes several hand-overs on a minimum-size buffer, the
+    /// casualties journaled after the save come in the last, and the record carries what they
+    /// left: the units alive, each death counted once. The revision is the page's, one on.
+    #[test]
+    fn a_session_start_sends_each_party_its_march_after_the_replay_has_caught_up() {
+        let (dir, e, mut j) = camp("conflict-march-session-start");
+        j.conflict_plugin.fight = Some(synth::Fight {
+            kill_share: 0.5,
+            after: 1_500,
+            kill_chief: false,
+            only_at_base: false,
+        });
+        let far = (CAMP_AT.0 + 3_000, CAMP_AT.1);
+        let p = order_to(&e, &mut j, PartyKind::Raid, Step::Raid, far);
+        on_step(&e, p, Step::Raid);
+        let n = books(&e, p).0;
+        assert!(n >= 4, "a band with members to lose: {n}");
+        advance_until(&mut j, 100, 3 * DAY, "the raid out and in view", |j| {
+            party(&j.e, p) == Some((Phase::Out, true))
+        });
+        assert!(!marches(&j, p).is_empty(), "the live session sent its march");
+        save(&e, &mut j);
+        let rev = e.with_conflict(|c, _| c.parties[p].march_rev);
+        fillers(&mut j, 4_000);
+        let at = j.game_time;
+        advance_until(&mut j, 100, 3_000, "the casualties journaled", |j| {
+            j.game_time >= at + 1_500 + 200
+        });
+        let lost = n - books(&e, p).0;
+        assert!(lost >= 2, "the fight cost members: {lost}");
+        let gt = j.game_time;
+        let saved = j.crash();
+
+        let (e, j, behind) = reopen_watching(&dir, saved, gt, wire::MIN_CAPACITY);
+        assert!(behind >= 3, "the replay took several hand-overs: {behind}");
+        assert_eq!(books(&e, p).0, n - lost, "the replay counts each death once");
+        let got = marches(&j, p);
+        assert_eq!(got.len(), 1, "one record for the party: {got:?}");
+        let m = &got[0];
+        assert_eq!(m.revision, rev + 1, "the page's revision, one on");
+        assert_eq!(m.flags & cb::MARCH_ENDED, 0, "the party goes on");
+        assert_eq!(m.phase, cb::MARCH_OUT);
+        assert_eq!(
+            m.units.iter().map(|u| u.1).sum::<u32>(),
+            n - lost,
+            "the units the replay left"
+        );
+        assert!(!m.waypoints.is_empty(), "the road it is on");
+        let parties = e.with_conflict(|c, _| c.parties.iter().count());
+        let sent = cmds(&j).filter(|c| matches!(c, C::March(_))).count();
+        assert_eq!(sent, parties, "one record for every party");
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// MZB-451, MZB-484 (M10): a raid that routed and walks home in its bodies loses a member on
+    /// the way (BAND_CASUALTIES, journaled after the save), and the engine stops before the march
+    /// record that says so: the replay counts the casualty once, and the session's first record
+    /// carries it (the units alive, the phase Home, no end).
+    #[test]
+    fn a_casualty_on_the_walk_home_across_a_restart_counts_once_and_the_next_march_carries_it() {
+        let (dir, e, mut j) = camp("conflict-march-walk-home-crash");
+        j.conflict_plugin.fight = Some(synth::Fight {
+            kill_share: 0.6,
+            after: 1_500,
+            kill_chief: false,
+            only_at_base: true,
+        });
+        let p = order(&e, &mut j, PartyKind::Raid, Step::Raid);
+        on_step(&e, p, Step::Raid);
+        advance_until(&mut j, 20, 2 * DAY, "the routed band walking home", |j| {
+            party(&j.e, p) == Some((Phase::Home, true))
+        });
+        let (home, epoch, ..) = books(&e, p);
+        assert!(home >= 3, "a band with members to lose on the way: {home}");
+        let body = cmds(&j)
+            .find_map(|c| match c {
+                C::Materialize(m) if m.agent == Party::agent(p) => {
+                    m.members.iter().find(|s| s.count > 0).map(|s| s.body)
+                }
+                _ => None,
+            })
+            .expect("the raid's materialize");
+        save(&e, &mut j);
+        let rev = e.with_conflict(|c, _| c.parties[p].march_rev);
+        j.conflict_obs(&O::Casualties(cb::BandCasualties {
+            agent: Party::agent(p),
+            epoch,
+            by: cb::BY_MOB,
+            body,
+            count: 1,
+            killer: (0, 0),
+            op: next_casualty_op(),
+        }));
+        // No step between the record and the crash: its march record was never built.
+        let gt = j.game_time;
+        let saved = j.crash();
+
+        let (e, j, _) = reopen_watching(&dir, saved, gt, 256 * 1024);
+        let (alive, _, embodied, ..) = books(&e, p);
+        assert_eq!(alive, home - 1, "the replay counts the casualty once");
+        assert!(!embodied, "abstract at the replay's end");
+        assert_eq!(party(&e, p).map(|x| x.0), Some(Phase::Home), "still walking home");
+        let got = marches(&j, p);
+        assert_eq!(got.len(), 1, "one record at the session start: {got:?}");
+        let m = &got[0];
+        assert_eq!((m.phase, m.revision), (cb::MARCH_HOME, rev + 1));
+        assert_eq!(m.flags & cb::MARCH_ENDED, 0);
+        assert_eq!(
+            m.units.iter().map(|u| u.1).sum::<u32>(),
+            home - 1,
+            "the record carries the casualty"
+        );
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// The camp's pool as it stands now, its members away and its cap.
+    fn pool_away_cap(e: &Engine) -> (f64, f64, f64) {
+        e.with_conflict(|c, _| {
+            let f = c.faction_of_key(CAMP).expect("the camp");
+            let x = &c.factions[f as usize];
+            (c.pool_at(f, c.now()), f64::from(x.away), f64::from(x.cap))
+        })
+    }
+
+    /// Test 28's engine half (MOWZIE.md §4.16, MZB-452): an Invasion ordered from a grove that is
+    /// out; at its muster's end the grove comes in, and the takes that follow send the band no
+    /// BAND_MARCH (what its record says has not changed: the revision stays); the Invasion reaches
+    /// its target, which is a record. A raid is refused while the invasion holds 8 of the grove's
+    /// 9, and goes once the survivors are home and the pool has refilled; the pool plus the
+    /// members away stay at or under the cap at every step.
+    #[test]
+    fn an_invasion_from_a_grove_that_comes_in_sends_no_march_and_keeps_the_cap() {
+        let (_dir, e, mut j) = grove("conflict-march-grove-in", 30);
+        let far = (CAMP_AT.0 + 1_000, CAMP_AT.1);
+        let p = order_to(&e, &mut j, PartyKind::Invasion, Step::Invasion, far);
+        on_step(&e, p, Step::Invasion);
+        let within_cap = |e: &Engine, what: &str| {
+            let (pool, away, cap) = pool_away_cap(e);
+            assert!(pool + away <= cap + 1e-9, "{what}: pool {pool}, {away} away, cap {cap}");
+        };
+        within_cap(&e, "ordered");
+        advance_until(&mut j, 20, 3 * DAY, "the muster's end", |j| {
+            party(&j.e, p).is_some_and(|x| x.0 == Phase::Out)
+        });
+        assert!(!marches(&j, p).is_empty(), "the muster's end sent its record");
+        let (sent, rev) = (
+            marches(&j, p).len(),
+            e.with_conflict(|c, _| c.parties[p].march_rev),
+        );
+        // The grove comes in with the band on the road.
+        camp_in(&mut j);
+        // A raid ordered whenever the pool allows one: the invasion holds 8 of the grove's 9.
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD) as u16;
+        let order_raid = |e: &Engine| {
+            e.with_conflict_mut(|c, w| {
+                let at = c.now();
+                c.order_party(
+                    w,
+                    CAMP,
+                    PartyKind::Raid,
+                    Target::Pos(Pos::new(dim, CAMP_AT.0 - 3_000, CAMP_AT.1)),
+                    None,
+                    at,
+                )
+            })
+        };
+        assert!(
+            order_raid(&e).is_none(),
+            "no raid while the invasion holds the members"
+        );
+        within_cap(&e, "the raid refused");
+        advance_until(&mut j, 100, 6 * DAY, "the invasion at its target", |j| {
+            within_cap(&j.e, "on the road");
+            if party(&j.e, p).is_some_and(|x| x.0 == Phase::Out) {
+                assert_eq!(marches(j, p).len(), sent, "no record while the road goes on");
+                assert_eq!(j.e.with_conflict(|c, _| c.parties[p].march_rev), rev);
+                false
+            } else {
+                true
+            }
+        });
+        j.idle();
+        let reached = marches(&j, p);
+        assert!(
+            reached.len() > sent && reached.last().is_some_and(|m| m.revision > rev),
+            "the arrival is a record: {reached:?}"
+        );
+        assert!(
+            reached.windows(2).all(|w| w[0].flags == w[1].flags),
+            "the camp's coming in changed no flag of the band: {reached:?}"
+        );
+        // The survivors come home, the pool refills, and a raid goes: still within the cap.
+        let mut raid = None;
+        advance_until(&mut j, 100, 8 * DAY, "a raid ordered from the refilled pool", |j| {
+            within_cap(&j.e, "after the arrival");
+            raid = raid.or_else(|| order_raid(&j.e));
+            raid.is_some()
+        });
+        within_cap(&e, "the raid ordered");
+        let end = j.game_time + DAY;
+        advance_until(&mut j, 100, 2 * DAY, "a day of the raid out", |j| {
+            within_cap(&j.e, "the raid out");
+            j.game_time >= end
+        });
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
         e.close(true, Duration::from_secs(5)).unwrap();
     }
 
@@ -10245,8 +10861,9 @@ mod conflict {
     /// a crash. The restart from those pages holds the arrival again while it replays (the
     /// pages kept its poll) and runs it after its replay end: the band is never read as
     /// fighting at its target, and its books end as in the session that went on. A band going
-    /// home is never seen (`seen`), so no record of a sighting can follow a held raid's
-    /// arrival to be read as its fight.
+    /// home is met like one going out (MZB-457), but `seen` waits for the replay end, and a
+    /// sighting's BAND_MATERIALIZE carries no BAND_FIGHT flag: only the flag makes a record the
+    /// fight, so a sighting that follows a held raid's arrival is not read as its fight.
     #[test]
     fn a_save_at_the_first_live_record_reads_no_held_raid_as_a_fight() {
         let (dir, e, mut j) = camp("conflict-rp42-held");
@@ -10384,15 +11001,19 @@ mod conflict {
         e.close(true, Duration::from_secs(5)).unwrap();
     }
 
-    /// SEC-1's meeting-point review, item 7: a raid's arrival in the replayed window, held
-    /// (§6.1, RP-23), and its replayed fight. S0: the player at the target sees the band leave
-    /// the camp; a save while it is on its way; its arrival is a watched fight (a
-    /// BAND_MATERIALIZED at the next epoch), a quarter of the wave falls (BAND_CASUALTIES); a
-    /// crash. S1 replays both records from the pages taken before the arrival: the arrival is
-    /// held, the BAND_MATERIALIZED (inside the hold's slack, RP-48) is honoured as its fight, the
-    /// casualties count against that epoch's stack, and nothing is resolved abstractly. The
-    /// band's books, its epoch and the watched fights are S0's, and the fight is Waiting,
-    /// abstract, at the replay end.
+    /// SEC-1's meeting-point review, item 7, after M10 (MZB-461, MZB-492): a raid's arrival in
+    /// the replayed window, held (§6.1, RP-23), and its replayed fight. S0: the player at the
+    /// target sees the band leave the camp (a sighting: the whole band, under the quota, is
+    /// placed in a column); a save while it is on its way; its arrival is a walk-in (BAND_STEER
+    /// with the attack flag, the same epoch, and no wave, since nobody is left to send), a
+    /// quarter of the band falls (BAND_CASUALTIES); a crash. The walk-in also sends the fight's
+    /// one record, a BAND_MATERIALIZE flagged as the fight's with no members (MZB-700: the gap
+    /// MZB-492 named, where no record existed for the replay to honour), which Java echoes and
+    /// spawns nothing for. S1 replays the sighting's record, the walk-in's echo and the
+    /// casualties from the pages taken before the arrival: the arrival is held, the echo ends
+    /// the hold and the fight is honoured as watched, once (MZB-491). The casualties count once,
+    /// at the sighting's epoch, so the band's books and epoch are S0's, and the band is waiting
+    /// and abstract at the replay end, as any fighting band is after a restart.
     #[test]
     fn a_held_arrivals_replayed_fight_counts_its_casualties_once() {
         let resolved = |e: &Engine| {
@@ -10415,6 +11036,7 @@ mod conflict {
         });
         save(&e, &mut j);
         let durable = e.durable_obs_seq();
+        let sighted = e.with_conflict(|c, _| c.parties[p].epoch);
         let (n, at_save) = (books(&e, p).0, books(&e, p).1);
         let watched = e.conflict_stats().0.raids_watched;
         let from = j.conflict.len();
@@ -10427,7 +11049,23 @@ mod conflict {
         fillers(&mut j, 20);
         j.game_time += 300;
         j.idle();
-        assert_eq!(materialized_epochs(&j, from, p), vec![at_save + 1]);
+        assert_eq!(
+            materialized_epochs(&j, from, p),
+            [sighted],
+            "the band met on the road walks into its fight: no new epoch"
+        );
+        let fights: Vec<usize> = j.conflict[from..]
+            .iter()
+            .filter_map(|(_, c)| match c {
+                C::Materialize(m)
+                    if m.agent == Party::agent(p) && m.flags & cb::BAND_FIGHT != 0 =>
+                {
+                    Some(m.members.len())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(fights, [0], "the fight's one record has no member to place");
         let replayed = |kind: u16| {
             j.journal
                 .iter()
@@ -10439,11 +11077,12 @@ mod conflict {
             replayed(cb::BAND_CASUALTIES),
         );
         assert!(
-            m >= 1 && c > 20,
-            "the fight's records after the pages: {m}, {c}"
+            m == 2 && c > 20,
+            "the sighting's record, the walk-in's echo and the fight's casualties after the \
+             pages: {m}, {c}"
         );
         let live = books(&e, p);
-        assert!(live.0 < n && live.1 == at_save + 1, "{live:?}");
+        assert!(live.0 < n && live.1 == at_save, "{live:?}");
         assert_eq!(party(&e, p), Some((Phase::Fighting, true)));
         assert_eq!(e.conflict_stats().0.raids_watched, watched + 1);
         assert_eq!(resolved(&e), 0, "S0 resolved nothing");
@@ -10457,22 +11096,357 @@ mod conflict {
             "the pages from before the arrival"
         );
         assert_eq!(resolved(&e), 0, "the held arrival resolved nothing");
+        // The walk-in's echo is the fight's record to honour (MZB-700, MZB-491): it ended the
+        // held arrival, which is fought watched as the session that went on had it, and the
+        // casualties count against the sighting's stack.
         assert_eq!(
             e.conflict_stats().0.raids_watched,
             watched + 1,
-            "the replayed BAND_MATERIALIZED honoured as the arrival's fight"
+            "the walk-in's echo honoured as the arrival's fight"
         );
         let b = books(&e, p);
         assert_eq!(
             (b.0, b.1),
             (live.0, live.1),
-            "the casualties counted once, at the fight's epoch"
+            "the casualties counted once, at the sighting's epoch"
         );
         assert_eq!(
             party(&e, p),
             Some((Phase::Waiting, false)),
-            "the fight Waiting, abstract, at the replay end"
+            "the arrival fought watched, abstract after the replay as a fighting band is"
         );
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// The held-arrival test's first session, up to its crash (MZB-705): a raid in view at a
+    /// save, its arrival a walk-in (the whole band is placed), a quarter of the band fallen in
+    /// the fight. `kept` is what holders keep of the casualties.
+    struct WalkedIn {
+        dir: std::path::PathBuf,
+        p: Handle<Party>,
+        n: u32,
+        durable: u64,
+        watched: u64,
+        live: u32,
+        kept: Kept,
+        saved: WorldSave,
+        gt: i64,
+    }
+
+    fn a_walk_in_then_a_crash(name: &str) -> WalkedIn {
+        let (dir, e, mut j) = camp(name);
+        j.conflict_plugin.fight = Some(synth::Fight {
+            kill_share: 0.25,
+            after: 1_500,
+            kill_chief: false,
+            only_at_base: true,
+        });
+        let p = order(&e, &mut j, PartyKind::Raid, Step::Raid);
+        on_step(&e, p, Step::Raid);
+        advance_until(&mut j, 20, DAY, "the raid on its way, in view", |j| {
+            party(&j.e, p) == Some((Phase::Out, true))
+        });
+        save(&e, &mut j);
+        let durable = e.durable_obs_seq();
+        let n = books(&e, p).0;
+        let watched = e.conflict_stats().0.raids_watched;
+        advance_until(&mut j, 20, DAY, "the raid fighting", |j| {
+            party(&j.e, p).is_some_and(|x| x.0 == Phase::Fighting)
+        });
+        advance_until(&mut j, 100, DAY, "its casualties journaled", |j| {
+            books(&j.e, p).0 < n
+        });
+        fillers(&mut j, 20);
+        j.game_time += 300;
+        j.idle();
+        let live = books(&e, p).0;
+        let kept = casualties_kept(&j, durable + 1, p);
+        assert!(!kept.records.is_empty(), "casualties to keep");
+        let gt = j.game_time;
+        let saved = j.crash();
+        WalkedIn {
+            dir,
+            p,
+            n,
+            durable,
+            watched,
+            live,
+            kept,
+            saved,
+            gt,
+        }
+    }
+
+    /// `dir`'s files in a new directory, so that a session can run on the pages of a crash more
+    /// than once.
+    fn copy_pages(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
+        fn copy(from: &std::path::Path, to: &std::path::Path) {
+            std::fs::create_dir_all(to).unwrap();
+            for f in std::fs::read_dir(from).unwrap() {
+                let f = f.unwrap();
+                let at = to.join(f.file_name());
+                if f.file_type().unwrap().is_dir() {
+                    copy(&f.path(), &at);
+                } else {
+                    std::fs::copy(f.path(), at).unwrap();
+                }
+            }
+        }
+        let to = tmpdir(name);
+        copy(dir, &to);
+        to
+    }
+
+    /// `w`'s world save cut after journal sequence `upto`: the crash lost the journal's tail
+    /// from there, as one that came between two records does.
+    fn journal_cut_at(w: &WalkedIn, upto: u64) -> WorldSave {
+        let mut s = w.saved.clone();
+        s.journal.retain(|(q, _)| *q <= upto);
+        s.next_obs = upto + 1;
+        s
+    }
+
+    /// [`reopen`] with the log on from the start, so that the replay's own unwatched
+    /// resolutions are logged.
+    fn reopen_logging(
+        dir: &std::path::PathBuf,
+        saved: WorldSave,
+        gt: i64,
+    ) -> (std::sync::Arc<Engine>, Java) {
+        let e = engine(dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), saved);
+        j.module_mask = MODULES;
+        j.game_time = gt;
+        let _ = e.conflict_log(true);
+        assert_eq!(e.conflict_restore_check(), (None, false));
+        hand_over_all(&mut j);
+        (e, j)
+    }
+
+    /// The raids the log says were resolved unwatched since it was last taken (the camp's base
+    /// has nothing to raid).
+    fn unwatched_resolutions(e: &Engine) -> usize {
+        e.conflict_log(true)
+            .iter()
+            .filter(|l| l.what == "finds nothing to raid")
+            .count()
+    }
+
+    /// The P1 fix across a crash, whatever record the journal ends at (MZB-705; the build lead's
+    /// request after the M10a review). S0 is the held-arrival test's: the pages are older than
+    /// the arrival, the arrival is a walk-in (an empty BAND_FIGHT record, which Java echoes) and
+    /// the fight's casualties follow. The crash can come between any two journal records: after
+    /// Java applied the walk-in but before the journal holds its echo (the echo comes a tick
+    /// after the command), after the echo, among the casualties, or after all of them. In every
+    /// order the fight is settled once: honoured as watched when the echo is in the journal
+    /// (MZB-491), resolved unwatched, once, at the replay end when it is not (RP-48), never both.
+    /// A body counts once: the casualties the journal holds are counted from it, and with the
+    /// echo missing the fight's deaths are lost with the tail (a loss, not a double). No
+    /// BAND_MATERIALIZE with members goes to Java in the replay's session, so the placed members
+    /// are not spawned again.
+    #[test]
+    fn a_walked_in_fight_is_settled_once_whichever_record_the_journal_ends_at() {
+        let w = a_walk_in_then_a_crash("conflict-walk-in-cut");
+        let tail: Vec<(u64, u16, Option<u32>)> = w
+            .saved
+            .journal
+            .iter()
+            .filter(|(s, _)| *s > w.durable)
+            .map(|(s, r)| {
+                let count = match cb::decode_obs(r) {
+                    Ok((_, O::Casualties(c), _)) if c.agent == Party::agent(w.p) => Some(c.count),
+                    _ => None,
+                };
+                (*s, wire::u16_at(r, wire::R_KIND), count)
+            })
+            .collect();
+        let seqs =
+            |kind: u16| -> Vec<u64> { tail.iter().filter(|t| t.1 == kind).map(|t| t.0).collect() };
+        let (echoes, casualties) = (seqs(cb::BAND_MATERIALIZED), seqs(cb::BAND_CASUALTIES));
+        assert_eq!(
+            echoes.len(),
+            2,
+            "the sighting's echo and the walk-in's: {echoes:?}"
+        );
+        assert!(
+            echoes[1] < casualties[0],
+            "the echo comes before the deaths"
+        );
+        let last = w.saved.journal.back().unwrap().0;
+        // (what the journal ends at, its last sequence, whether the walk-in's echo is in it)
+        let cuts = [
+            ("before the walk-in's echo", echoes[1] - 1, false),
+            ("at the walk-in's echo", echoes[1], true),
+            ("after the first casualty", casualties[0], true),
+            (
+                "among the casualties",
+                casualties[casualties.len() / 2],
+                true,
+            ),
+            ("after every record", last, true),
+        ];
+        for (what, upto, echoed) in cuts {
+            let counted: u32 = tail
+                .iter()
+                .filter(|t| t.0 <= upto)
+                .filter_map(|t| t.2)
+                .sum();
+            let pages = copy_pages(&w.dir, "conflict-walk-in-cut-run");
+            let (e, mut j) = reopen_logging(&pages, journal_cut_at(&w, upto), w.gt);
+            assert_eq!(
+                e.durable_obs_seq(),
+                w.durable,
+                "{what}: the pages from before the arrival"
+            );
+            let mut unwatched = unwatched_resolutions(&e);
+            let watched = |e: &Engine| e.conflict_stats().0.raids_watched - w.watched;
+            let alive = books(&e, w.p).0;
+            assert_eq!(
+                alive,
+                w.n - counted,
+                "{what}: the journal's casualties count once"
+            );
+            assert!(
+                alive >= w.live,
+                "{what}: never below the session that went on"
+            );
+            let members = |j: &Java| {
+                j.conflict
+                    .iter()
+                    .filter(|(_, c)| {
+                        matches!(c, C::Materialize(m)
+                        if m.agent == Party::agent(w.p) && !m.members.is_empty())
+                    })
+                    .count()
+            };
+            assert_eq!(
+                members(&j),
+                0,
+                "{what}: no member is spawned again by the replay"
+            );
+            // The band goes home, and no later step settles the fight again.
+            advance_until(&mut j, 20, DAY, "the band home", |j| {
+                party(&j.e, w.p).is_some_and(|x| x.0 == Phase::Home)
+            });
+            unwatched += unwatched_resolutions(&e);
+            assert_eq!(
+                (watched(&e), unwatched),
+                (u64::from(echoed), usize::from(!echoed)),
+                "{what}: the fight settled once, as the journal says"
+            );
+            assert_eq!(
+                books(&e, w.p).0,
+                alive,
+                "{what}: no loss or gain on the way home"
+            );
+            assert_eq!(members(&j), 0, "{what}: no member spawned on the way home");
+            assert!(
+                e.protocol_error().is_none(),
+                "{what}: {:?}",
+                e.protocol_error()
+            );
+            drop(j);
+            e.close(true, Duration::from_secs(5)).unwrap();
+        }
+    }
+
+    /// The order the journal alone cannot make exact (MZB-705, closed by MZB-706): the crash cut
+    /// the journal before the walk-in's echo, so the replay's end resolved the arrival unwatched
+    /// (RP-48), and the fight's deaths are in the journal's lost tail. A holder that carried them
+    /// (the entity's pending records, saved with the chunk and so apart from the journal)
+    /// reasserts them in the next session. The abstract resolve took that fight's losses already
+    /// (here the camp's base has nothing to raid and costs the band nothing; a district that
+    /// routs the raid does, which mowzie_records.rs counts at engine level), so the party books
+    /// that its arrival was resolved unwatched and the copies count nothing: the band ends with
+    /// the abstract resolve's losses alone, the deaths Minecraft saw are lost (a loss of realism,
+    /// not a double), and the fight is settled once, as an unwatched raid. The arrival here
+    /// falls between the replay clock and the session's present, which the host tells the engine
+    /// at the replay end. The copies are still found new by the host (S4p), once: the second set
+    /// is dropped there.
+    #[test]
+    fn a_holders_copy_of_the_deaths_of_an_unanswered_walk_in_counts_nothing_more() {
+        let w = a_walk_in_then_a_crash("conflict-walk-in-copy");
+        let echoes = w
+            .saved
+            .journal
+            .iter()
+            .filter(|(s, r)| {
+                *s > w.durable && wire::u16_at(r, wire::R_KIND) == cb::BAND_MATERIALIZED
+            })
+            .map(|(s, _)| *s)
+            .collect::<Vec<u64>>();
+        assert_eq!(echoes.len(), 2, "the sighting's echo and the walk-in's");
+        let (e, mut j) = reopen_logging(&w.dir, journal_cut_at(&w, echoes[1] - 1), w.gt);
+        assert_eq!(
+            unwatched_resolutions(&e),
+            1,
+            "the arrival resolved unwatched"
+        );
+        assert_eq!(e.conflict_stats().0.raids_watched, w.watched, "not watched");
+        assert_eq!(
+            books(&e, w.p).0,
+            w.n,
+            "the fight's deaths were lost with the tail"
+        );
+        let k = w.kept.records.len() as u64;
+        reassert_all(&mut j, &w.kept, w.kept.nonce);
+        assert_eq!(
+            books(&e, w.p).0,
+            w.n,
+            "the copies count nothing: the abstract resolve took the fight's losses"
+        );
+        assert_eq!(copies(&e), (k, 0));
+        reassert_all(&mut j, &w.kept, w.kept.nonce);
+        assert_eq!(books(&e, w.p).0, w.n, "a second copy counts nothing");
+        assert_eq!(copies(&e), (k, k));
+        assert_eq!(unwatched_resolutions(&e), 0, "the fight was settled once");
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// The control (MZB-706): the same crash, the journal ending at the walk-in's echo. The
+    /// arrival is answered, the replay honours the fight as the watched fight it was (nothing is
+    /// resolved abstractly), and a holder's copies of its deaths count: the band ends with the
+    /// fight's deaths, once, and a second set counts nothing.
+    #[test]
+    fn a_holders_copy_of_the_deaths_of_an_answered_walk_in_still_counts_once() {
+        let w = a_walk_in_then_a_crash("conflict-walk-in-copy-answered");
+        let echoes = w
+            .saved
+            .journal
+            .iter()
+            .filter(|(s, r)| {
+                *s > w.durable && wire::u16_at(r, wire::R_KIND) == cb::BAND_MATERIALIZED
+            })
+            .map(|(s, _)| *s)
+            .collect::<Vec<u64>>();
+        assert_eq!(echoes.len(), 2, "the sighting's echo and the walk-in's");
+        let (e, mut j) = reopen_logging(&w.dir, journal_cut_at(&w, echoes[1]), w.gt);
+        assert_eq!(unwatched_resolutions(&e), 0, "the arrival was answered");
+        assert_eq!(
+            e.conflict_stats().0.raids_watched,
+            w.watched + 1,
+            "honoured as the watched fight"
+        );
+        assert_eq!(
+            books(&e, w.p).0,
+            w.n,
+            "the fight's deaths were lost with the tail"
+        );
+        let k = w.kept.records.len() as u64;
+        reassert_all(&mut j, &w.kept, w.kept.nonce);
+        assert_eq!(
+            books(&e, w.p).0,
+            w.live,
+            "the copies count the fight's deaths"
+        );
+        assert_eq!(copies(&e), (k, 0));
+        reassert_all(&mut j, &w.kept, w.kept.nonce);
+        assert_eq!(books(&e, w.p).0, w.live, "a second copy counts nothing");
+        assert_eq!(copies(&e), (k, k));
         assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
         drop(j);
         e.close(true, Duration::from_secs(5)).unwrap();
@@ -11503,6 +12477,609 @@ mod conflict {
     #[test]
     fn a_capped_race_applied_after_the_late_answer_owes_the_second_raid_its_own_animals() {
         hunt_race("hunt-race-capped-after", 6, 6, false);
+    }
+
+    // ---- M11a: the grove's chief aloft, through the link (MOWZIE.md §4.5, ledger 24) ----------
+
+    /// The Umvuthi, the grove's chief, as Java names it.
+    const UMVUTHI: &str = "mic_rtsim:conflict/umvuthana/umvuthi";
+    /// Where the player waits while no band of the grove is to be in view.
+    const AWAY: (i32, i32) = (CAMP_AT.0 - 6_000, CAMP_AT.1 - 6_000);
+    /// The place the grove's Invasions go to: 600 blocks out, a day and a quarter of road.
+    const TARGET: (i32, i32) = (CAMP_AT.0 + 600, CAMP_AT.1);
+
+    /// The grove's chief slot: its state and generation.
+    fn chief_of(e: &Engine) -> Option<(SlotState, u32)> {
+        e.with_conflict(|c, _| {
+            let f = c.faction_of_key(CAMP)?;
+            c.camp(f)?.chief().map(|s| (s.state, s.generation))
+        })
+    }
+
+    /// The camp's memory: the players who paid it.
+    fn traded(e: &Engine) -> Vec<(u64, u64)> {
+        e.with_conflict(|c, _| {
+            c.faction_of_key(CAMP)
+                .and_then(|f| c.camp(f))
+                .map(|camp| camp.traded.clone())
+                .unwrap_or_default()
+        })
+    }
+
+    /// A grove that is in, its chief on its throne: [`grove`] with 12 strays, the first an
+    /// untagged Umvuthi, which the first census adopts as the chief (MZB-405). The chief's
+    /// generation.
+    fn seated_grove(name: &str) -> (std::path::PathBuf, std::sync::Arc<Engine>, Java, u32) {
+        let (dir, e, mut j) = grove(name, 12);
+        let umvuthi = j.dict_id(wire::DICT_BODY, UMVUTHI);
+        let b = &mut j.conflict_plugin.camp_world(CAMP).bodies[0];
+        b.body = umvuthi;
+        b.chief = true;
+        camp_in(&mut j);
+        camp_until(&mut j, "the Umvuthi adopted as the chief", |j| {
+            chief_of(&j.e).is_some_and(|c| c.0 == SlotState::Body)
+        });
+        let generation = chief_of(&e).expect("seated").1;
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        (dir, e, j, generation)
+    }
+
+    /// The player stands at `at`.
+    fn stand(j: &mut Java, at: (i32, i32)) {
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        j.players = vec![(
+            PLAYER,
+            dim,
+            [f64::from(at.0) + 0.5, 64.0, f64::from(at.1) + 0.5],
+        )];
+    }
+
+    /// Where the band is now.
+    fn band_at(e: &Engine, p: Handle<Party>) -> (i32, i32) {
+        e.with_conflict(|c, _| c.party_pos(p, c.now()))
+    }
+
+    /// An Invasion the seated chief leads toward [`TARGET`], ordered with the player away, and on
+    /// its road `road` ticks past its muster's end, unmet.
+    fn led_invasion(e: &Engine, j: &mut Java, road: i64) -> Handle<Party> {
+        stand(j, AWAY);
+        let p = order_to(e, j, PartyKind::Invasion, Step::Invasion, TARGET);
+        on_step(e, p, Step::Invasion);
+        assert!(
+            e.with_conflict(|c, _| c.parties[p].chief),
+            "the chief leads"
+        );
+        advance_until(j, 20, 3 * DAY, "the muster's end", |j| {
+            party(&j.e, p).is_some_and(|x| x.0 == Phase::Out)
+        });
+        let end = j.game_time + road;
+        advance_until(j, 100, road + 200, "on the road", |j| j.game_time >= end);
+        assert_eq!(party(e, p), Some((Phase::Out, false)), "on its road, unmet");
+        p
+    }
+
+    /// Every command Java applied, in order: the command buffer it came in, its kind, and what it
+    /// decoded to when it is the conflict's.
+    fn on_wire(j: &Java) -> Vec<(u64, u16, Option<&C>)> {
+        let mut conflict = cmds(j);
+        let out = j
+            .commands
+            .iter()
+            .map(|&(k, kind, _)| {
+                let c = (0x8800..=0x88FF)
+                    .contains(&kind)
+                    .then(|| conflict.next().expect("each conflict command decoded"));
+                (k, kind, c)
+            })
+            .collect();
+        assert!(conflict.next().is_none(), "each decoded command on the wire");
+        out
+    }
+
+    /// A filler: a TRAIN_ROBBED of a faction nobody has, which the fake plugin applies as nothing.
+    fn filler(n: u64) -> C {
+        C::TrainRobbed(cb::TrainRobbed {
+            faction: 0xF111,
+            train: n,
+        })
+    }
+
+    /// The bytes a command takes in a command buffer.
+    fn encoded(c: &C) -> usize {
+        let mut r = Vec::new();
+        cb::encode_cmd(0, c, &mut r);
+        r.len()
+    }
+
+    /// `count` fillers ordered as the conflict's own commands: the writer takes them ahead of
+    /// whatever the conflict decides in the next step, since a test's orders join its queue at
+    /// the step's start.
+    fn order_fillers(e: &Engine, count: usize) {
+        let unit = (0..count as u64)
+            .map(|n| {
+                let mut record = Vec::new();
+                cb::encode_cmd(0, &filler(n), &mut record);
+                Order::ConflictCommand {
+                    names: Vec::new(),
+                    record,
+                }
+            })
+            .collect();
+        e.order(unit).expect("a test engine takes the order");
+    }
+
+    /// The player stands where the band is and the hand-overs go one at a time, `fill` fillers
+    /// ordered ahead of each, until the band's away CHIEF_BODY reaches Java; one more goes if it
+    /// was the last command so far. Its index among Java's commands, and whether its command
+    /// buffer was marked CMD_FLAG_MORE (read before the buffer is used again).
+    fn meet_chief(j: &mut Java, p: Handle<Party>, fill: usize) -> (usize, bool) {
+        let agent = Party::agent(p);
+        let from = j.commands.len();
+        for _ in 0..100 {
+            let at = band_at(&j.e, p);
+            stand(j, at);
+            if fill > 0 {
+                order_fillers(&j.e, fill);
+            }
+            j.flush();
+            let found = on_wire(j)[from..].iter().position(
+                |(_, _, c)| matches!(c, Some(C::ChiefBody(b)) if b.agent == agent),
+            );
+            if let Some(n) = found {
+                let i = from + n;
+                let k = j.commands[i].0;
+                let more = j.cmd_buf(k).get_u32(wire::H_FLAGS) & wire::CMD_FLAG_MORE != 0;
+                if i + 1 == j.commands.len() {
+                    j.flush();
+                }
+                return (i, more);
+            }
+        }
+        panic!("the band's CHIEF_BODY never reached Java");
+    }
+
+    /// Asserts Java's command `i` is the band's away CHIEF_BODY (the camp's key, `agent`, health
+    /// 0, no flags, the memory `traded`) and the next on the wire its BAND_MATERIALIZE: one
+    /// epoch, BAND_CHIEF, and the chief's own stack last. The command buffers they came in.
+    fn assert_pair(j: &Java, i: usize, agent: u64, traded: &[(u64, u64)]) -> (u64, u64) {
+        let w = on_wire(j);
+        let umvuthi = j.java_id(wire::DICT_BODY, UMVUTHI).expect("Java names the Umvuthi");
+        let (k, kind, Some(C::ChiefBody(b))) = w[i] else {
+            panic!("not a CHIEF_BODY: {:?}", w[i]);
+        };
+        assert_eq!(kind, cb::CHIEF_BODY);
+        assert_eq!((b.faction, b.agent, b.health, b.flags), (CAMP, agent, 0.0, 0));
+        assert_eq!(b.traded, traded, "the camp's memory");
+        let Some(&(next, kind, Some(C::Materialize(m)))) = w.get(i + 1) else {
+            panic!(
+                "the CHIEF_BODY is not directly before a MATERIALIZE: {:?}",
+                w.get(i + 1)
+            );
+        };
+        assert_eq!(kind, cb::BAND_MATERIALIZE);
+        assert_eq!(
+            (m.agent, u64::from(m.epoch)),
+            (agent, b.epoch),
+            "one band, one epoch"
+        );
+        assert_ne!(m.flags & cb::BAND_CHIEF, 0, "BAND_CHIEF");
+        assert_eq!(
+            m.members.last(),
+            Some(&cb::Stack {
+                body: umvuthi,
+                count: 0,
+                flags: cb::MEMBER_CHIEF,
+            }),
+            "the chief's stack, last"
+        );
+        (k, next)
+    }
+
+    /// The first CAMP_RECONCILE Java applied from its command `from` on with a line for the
+    /// chief's slot: its index among Java's commands, the reconcile, and the line's index there.
+    fn chief_line_on_wire(j: &Java, from: usize) -> Option<(usize, cb::CampReconcile, usize)> {
+        on_wire(j)
+            .iter()
+            .enumerate()
+            .skip(from)
+            .find_map(|(i, (_, _, c))| match c {
+                Some(C::Reconcile(r)) => r
+                    .lines
+                    .iter()
+                    .position(|l| l.slot == CHIEF_SLOT)
+                    .map(|n| (i, r.clone(), n)),
+                _ => None,
+            })
+    }
+
+    /// Asserts the command just before Java's command `at` (a CAMP_RECONCILE of the camp's epoch
+    /// `epoch`) is a home CHIEF_BODY in the same command buffer: agent 0, that epoch, the memory
+    /// `traded`.
+    fn assert_home_body(j: &Java, at: usize, epoch: u64, traded: &[(u64, u64)]) {
+        let w = on_wire(j);
+        match w[at - 1] {
+            (k, kind, Some(C::ChiefBody(b))) => {
+                assert_eq!(kind, cb::CHIEF_BODY);
+                assert_eq!(
+                    (b.faction, b.agent, b.epoch),
+                    (CAMP, 0, epoch),
+                    "home: agent 0, the camp's epoch"
+                );
+                assert_eq!(b.traded, traded, "the camp's memory");
+                assert_eq!(k, w[at].0, "one command buffer");
+            }
+            other => panic!("no CHIEF_BODY directly before the chief's line: {other:?}"),
+        }
+    }
+
+    /// The player leaves the band: it is recalled, walks off, and its BAND_DEMATERIALIZED is
+    /// counted.
+    fn leave(j: &mut Java, p: Handle<Party>) {
+        stand(j, AWAY);
+        advance_until(j, 50, DAY, "the walk-off counted", |j| {
+            let b = books(&j.e, p);
+            !b.2 && !b.3
+        });
+    }
+
+    /// The band on its way home, unseen to 300 ticks short of its camp, then followed (the player
+    /// standing at it every 50 ticks) until it is home: embodied as it comes in.
+    fn follow_home(j: &mut Java, p: Handle<Party>) {
+        advance_until(j, 600, 4 * DAY, "on its way home", |j| {
+            party(&j.e, p).is_some_and(|x| x.0 == Phase::Home)
+        });
+        let left = j.e.with_conflict(|c, _| {
+            let home = *c.parties[p].times.last().expect("a route home");
+            home.0 as i64 - c.now().0 as i64
+        });
+        let end = j.game_time + left - 300;
+        advance_until(j, 100, left, "300 ticks short of home", |j| j.game_time >= end);
+        advance_until(j, 50, 1_000, "home, followed", |j| {
+            if party(&j.e, p).is_none() {
+                return true;
+            }
+            let at = band_at(&j.e, p);
+            stand(j, at);
+            false
+        });
+    }
+
+    /// A player's payment of `count` gold nuggets: to the chief's puppet (PAID_PUPPET, the chief's
+    /// slot, generation 0, MZB-819), or to a stray Umvuthi at the grove (PAID_STRAY, as M9's).
+    fn paid(j: &mut Java, puppet: bool, player: (u64, u64), op: u64, count: i32) -> O {
+        let item = j.dict_id(wire::DICT_ITEM, "minecraft:gold_nugget");
+        let (slot, flags) = if puppet {
+            (CHIEF_SLOT, cb::PAID_PUPPET)
+        } else {
+            (0, cb::PAID_STRAY)
+        };
+        O::ChiefPaid(cb::ChiefPaid {
+            faction: CAMP,
+            slot,
+            generation: 0,
+            flags,
+            player,
+            op: wire::JAVA_OP_BIT | op,
+            items: vec![cb::Item { item, count }],
+        })
+    }
+
+    /// P1 (MZB-801, MZB-804; ledger 24): an Invasion its Umvuthi leads is met on its road. On the
+    /// wire the band's away CHIEF_BODY (0x880A, its agent, its epoch) goes directly before its
+    /// BAND_MATERIALIZE (0x8803), in one command buffer. Met again after a recall, with fillers
+    /// ordered ahead so that the command buffer ends just after the CHIEF_BODY, the buffer is
+    /// marked CMD_FLAG_MORE and the MATERIALIZE leads the next one, nothing between: the writer
+    /// keeps the conflict's queue in order, and the plugin, which keeps a chief's memory for the
+    /// agent's next MATERIALIZE, matches both. The control: the band comes home unseen, and the
+    /// chief's SPAWN at its throne goes directly behind a home CHIEF_BODY (agent 0, the camp's
+    /// epoch), as before. With the CHIEF_BODY pushed after its MATERIALIZE (the design's planted
+    /// bug) the first meeting fails; with no chief stack (step 7's M1) no CHIEF_BODY comes.
+    #[test]
+    fn an_away_chief_body_leads_its_materialize_on_the_wire() {
+        let (_dir, e, mut j, generation) = seated_grove("aloft-wire");
+        let p = led_invasion(&e, &mut j, 4_000);
+        let agent = Party::agent(p);
+
+        // Met on its road: the pair in one command buffer, the CHIEF_BODY first.
+        let (i, _) = meet_chief(&mut j, p, 0);
+        let (k, next) = assert_pair(&j, i, agent, &[]);
+        assert_eq!(next, k, "one command buffer");
+        let epoch1 = books(&e, p).1;
+        let Some(first) = on_wire(&j)[i].2.cloned() else {
+            unreachable!()
+        };
+        leave(&mut j, p);
+
+        // Met again, the command buffer filled to end just after the CHIEF_BODY: the fillers
+        // fit with room for it, and no MATERIALIZE fits what is left.
+        let cap = j.cmd_buf(k).capacity();
+        let fill = (cap - encoded(&first)) / encoded(&filler(0));
+        let (i, more) = meet_chief(&mut j, p, fill);
+        let (k, next) = assert_pair(&j, i, agent, &[]);
+        let w = on_wire(&j);
+        let ahead = w[..i]
+            .iter()
+            .rev()
+            .take_while(|c| c.0 == k)
+            .filter(|c| c.1 == cb::TRAIN_ROBBED)
+            .count();
+        assert_eq!(ahead, fill, "the fillers fill buffer {k} ahead of the CHIEF_BODY");
+        assert!(
+            w[..i].iter().rev().take_while(|c| c.0 == k).all(|c| c.1 == cb::TRAIN_ROBBED),
+            "nothing else in buffer {k}"
+        );
+        assert!(more, "buffer {k} goes with CMD_FLAG_MORE");
+        assert_eq!(next, k + 1, "the MATERIALIZE leads the next buffer");
+        assert!(books(&e, p).1 > epoch1, "a new epoch");
+        assert_eq!(
+            (
+                j.conflict_plugin.chief_bodies_matched,
+                j.conflict_plugin.chief_bodies_missing
+            ),
+            (2, 0),
+            "the plugin matched each chief stack with its CHIEF_BODY"
+        );
+        assert_eq!(j.conflict_plugin.band_chiefs(CAMP), 1, "one puppet");
+
+        // The control: the band comes home unseen; the chief's SPAWN goes behind its memory.
+        leave(&mut j, p);
+        let mark = j.commands.len();
+        advance_until(&mut j, 600, 6 * DAY, "home", |j| party(&j.e, p).is_none());
+        j.conflict_flush();
+        j.idle();
+        let (at, r, n) = chief_line_on_wire(&j, mark).expect("the chief's line at home");
+        assert_eq!(r.lines[n].action, cb::ACTION_SPAWN, "an unseen chief spawns");
+        assert_eq!(r.lines[n].generation, generation);
+        assert_home_body(&j, at, r.epoch, &[]);
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// P2 (MZB-819; ledger 24): a player pays the chief's puppet on its band's road (CHIEF_PAID,
+    /// PAID_PUPPET, the chief's slot, generation 0) after the last save, the record written twice
+    /// under one op, and the server dies. The replay books the tribute once and the camp
+    /// remembers the payer, so the band's next CHIEF_BODY carries it. The control: a second
+    /// player's payment to a stray Umvuthi (PAID_STRAY, as M9's), journaled beside it, is tribute
+    /// booked once and no memory. With the payment's branch finding the chief's slot by
+    /// `index(slot, generation)` (generation 0 holds nothing, step 7's M3) the payer is forgotten.
+    #[test]
+    fn a_payment_to_the_puppet_survives_a_restart() {
+        let (dir, e, mut j, _) = seated_grove("aloft-paid-restart");
+        let p = led_invasion(&e, &mut j, 4_000);
+        let agent = Party::agent(p);
+        save(&e, &mut j);
+        let (i, _) = meet_chief(&mut j, p, 0);
+        assert_pair(&j, i, agent, &[]);
+        let puppet = paid(&mut j, true, PLAYER, 0x7201, 9);
+        j.conflict_obs(&puppet);
+        j.conflict_obs(&puppet);
+        let stray = paid(&mut j, false, PLAYER2, 0x7202, 5);
+        j.conflict_obs(&stray);
+        j.idle();
+        assert_eq!(owed_tribute(&e).0, 14, "9 and 5 nuggets, each once");
+        assert_eq!(traded(&e), vec![PLAYER], "the puppet's payer, not the stray's");
+        leave(&mut j, p);
+
+        // The server dies with no save since the band was unmet.
+        let gt = j.game_time;
+        let saved = j.crash();
+        let (e, mut j) = reopen(&dir, saved, gt);
+        j.conflict_plugin = synth::FakeConflict::new(PLAYER);
+        stand(&mut j, AWAY);
+        j.idle();
+        assert_eq!(owed_tribute(&e).0, 14, "the replay books each payment once");
+        assert_eq!(traded(&e), vec![PLAYER], "and remembers the puppet's payer");
+        assert_eq!(party(&e, p), Some((Phase::Out, false)), "still on its road");
+
+        // Met again: the CHIEF_BODY carries the payer.
+        let (i, _) = meet_chief(&mut j, p, 0);
+        assert_pair(&j, i, agent, &[PLAYER]);
+        assert_eq!(owed_tribute(&e).0, 14);
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// P3 (MZB-819, MZB-821; ledger 24): the band of a chief whose puppet was paid on the road
+    /// (`pay`) comes home embodied to its grove, which is in: the chief comes home by its
+    /// HAND_BACK (LINE_CHIEF, the band's agent, the chief's generation), and the home CHIEF_BODY
+    /// directly ahead of that reconcile carries the payer, so the throne body made from the
+    /// puppet knows them. Without the payment (the control) the memory is the camp's, empty. With
+    /// `camp_home`'s HAND_BACK off (step 7's M2) no chief line goes with the homecoming; with the
+    /// payer forgotten (M3) the memory is empty.
+    fn payer_home(name: &str, pay: bool) {
+        let (_dir, e, mut j, generation) = seated_grove(name);
+        let p = led_invasion(&e, &mut j, 4_000);
+        let agent = Party::agent(p);
+        let (i, _) = meet_chief(&mut j, p, 0);
+        assert_pair(&j, i, agent, &[]);
+        if pay {
+            let puppet = paid(&mut j, true, PLAYER, 0x7301, 9);
+            j.conflict_obs(&puppet);
+            j.idle();
+        }
+        let payers = if pay { vec![PLAYER] } else { Vec::new() };
+        assert_eq!(traded(&e), payers);
+        leave(&mut j, p);
+        let mark = j.commands.len();
+        follow_home(&mut j, p);
+        let (at, r, n) = chief_line_on_wire(&j, mark).expect("the chief's line at home");
+        let l = r.lines[n];
+        assert_eq!(l.action, cb::ACTION_HAND_BACK, "the chief comes home by its puppet");
+        assert_eq!((l.a, l.generation), (agent, generation), "its band, its generation");
+        assert_ne!(l.flags & cb::LINE_CHIEF, 0, "LINE_CHIEF");
+        assert_home_body(&j, at, r.epoch, &payers);
+        camp_until(&mut j, "the chief on its throne", |j| {
+            chief_of(&j.e) == Some((SlotState::Body, generation))
+        });
+        assert_eq!(traded(&e), payers, "the memory kept");
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    #[test]
+    fn the_payer_reaches_the_throne_body_at_home() {
+        payer_home("aloft-payer-home", true);
+    }
+
+    #[test]
+    fn with_no_payment_the_throne_body_carries_the_camps_memory() {
+        payer_home("aloft-payer-home-control", false);
+    }
+
+    /// The books of the chief's end: (falls, player losses, an heir due, the chief's slot still
+    /// holds `generation`).
+    fn death_books(e: &Engine, generation: u32) -> (u64, u64, bool, bool) {
+        e.with_conflict(|c, _| {
+            let camp = c.camp(c.faction_of_key(CAMP).expect("the camp")).expect("a ledger");
+            (
+                c.stats.chiefs_killed,
+                c.stats.renewal_losses,
+                camp.heir.is_some(),
+                camp.index(CHIEF_SLOT, generation).is_some(),
+            )
+        })
+    }
+
+    /// P4 (MZB-824, MZB-853; ledger 24): the band comes home embodied to its grove, which is in,
+    /// and the chief's HAND_BACK is in flight (the puppet floats for days); the pages are saved.
+    /// Then A6's two records, the puppet's CAMP_DEATH (BY_PLAYER, the chief's slot and
+    /// generation) and the line's STALE, in the order `death_first` says, with a crash and a
+    /// restart between them and another after both, the pages never saved again. The chief's
+    /// end is booked once and one heir is due at every stage:
+    /// - death first: (falls, losses) (1, 1) throughout;
+    /// - STALE first: the STALE releases nothing; the first restart's replay end loses the chief
+    ///   to no one (MZB-853 release 5: no fall, no loss, the heir due), the CAMP_DEATH after it
+    ///   books nothing, and the replay of both after the second crash books the death (1, 1).
+    ///   The replay runs the two sessions' records as one: no replay end falls between them
+    ///   (MZB-859).
+    ///
+    /// The control: a CHIEF_KILLED of the ended band after the death books nothing and is counted
+    /// (MZB-466). The design's control, a CHIEF_KILLED with no death before it, is now the chief's
+    /// death (MZB-853 release 3). With `camp_home`'s HAND_BACK off (step 7's M2) no line is in
+    /// flight; with no loss at the replay's end (release 5 off) the STALE-first case still holds
+    /// the end after the first restart.
+    fn death_after_end(name: &str, death_first: bool) {
+        let (dir, e, mut j, generation) = seated_grove(name);
+        let p = led_invasion(&e, &mut j, 4_000);
+        let agent = Party::agent(p);
+        j.conflict_plugin.chief_float = 10 * DAY as u64;
+        let mark = j.commands.len();
+        follow_home(&mut j, p);
+        j.conflict_flush();
+        j.idle();
+        let (_, r, n) = chief_line_on_wire(&j, mark).expect("the chief's line at home");
+        let l = r.lines[n];
+        assert_eq!(l.action, cb::ACTION_HAND_BACK, "a HAND_BACK");
+        let epoch = l.b as u32;
+        let held = |e: &Engine| {
+            e.with_conflict(|c, _| {
+                c.camp(c.faction_of_key(CAMP).unwrap())
+                    .and_then(|camp| camp.ended)
+                    .map(|x| (x.agent, x.epoch, x.generation))
+            })
+        };
+        assert_eq!(held(&e), Some((agent, epoch, generation)), "the end holds the chief");
+        assert_eq!(
+            e.with_conflict(|c, _| {
+                c.camp(c.faction_of_key(CAMP).unwrap())
+                    .and_then(|camp| camp.chief())
+                    .map(|s| s.line.is_some())
+            }),
+            Some(true),
+            "the HAND_BACK in flight"
+        );
+        save(&e, &mut j);
+        let (falls, losses, _, _) = death_books(&e, generation);
+        assert_eq!(death_books(&e, generation), (falls, losses, false, true));
+        let umvuthi = j.dict_id(wire::DICT_BODY, UMVUTHI);
+        let death = O::CampDeath(cb::CampDeath {
+            faction: CAMP,
+            by: cb::BY_PLAYER,
+            body: umvuthi,
+            flags: cb::DEATH_CHIEF,
+            slot: CHIEF_SLOT,
+            generation,
+            killer: PLAYER,
+            op: wire::JAVA_OP_BIT | 0x7401,
+        });
+        let stale = O::CampBodies(cb::CampBodies {
+            faction: CAMP,
+            epoch: r.epoch,
+            op: r.op,
+            lines: vec![cb::LineAnswer {
+                line: n as u32,
+                slot: CHIEF_SLOT,
+                generation,
+                action: cb::ACTION_HAND_BACK,
+                outcome: cb::LINE_STALE,
+            }],
+        });
+        let dead = (falls + 1, losses + 1, true, false);
+        let lost = (falls, losses, true, false);
+        let (first, second, stages) = if death_first {
+            (death, stale, [dead, dead, dead, dead])
+        } else {
+            (stale, death, [(falls, losses, false, true), lost, lost, dead])
+        };
+        let restart = |j: Java| {
+            let gt = j.game_time;
+            let saved = j.crash();
+            let (e, mut j) = reopen(&dir, saved, gt);
+            j.conflict_plugin = synth::FakeConflict::new(PLAYER);
+            stand(&mut j, AWAY);
+            j.idle();
+            (e, j)
+        };
+        let check = |e: &Engine, stage: usize, what: &str| {
+            assert_eq!(
+                death_books(e, generation),
+                stages[stage],
+                "death first {death_first}, {what}"
+            );
+            assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        };
+
+        j.conflict_obs(&first);
+        j.idle();
+        check(&e, 0, "the first record");
+        if death_first {
+            // The control: the ended band's CHIEF_KILLED after the death is counted, not booked.
+            let unbooked = e.with_conflict(|c, _| c.stats.unbooked_home_deaths);
+            j.conflict_obs(&O::ChiefKilled(cb::ChiefKilled {
+                agent,
+                epoch,
+                by: cb::BY_PLAYER,
+                killer: PLAYER,
+                op: wire::JAVA_OP_BIT | 0x7402,
+            }));
+            j.idle();
+            check(&e, 0, "a CHIEF_KILLED after the death");
+            assert_eq!(
+                e.with_conflict(|c, _| c.stats.unbooked_home_deaths),
+                unbooked + 1,
+                "MZB-466's counter"
+            );
+        }
+        let (e, mut j) = restart(j);
+        check(&e, 1, "the first restart");
+        j.conflict_obs(&second);
+        j.idle();
+        check(&e, 2, "the second record");
+        let (e, j) = restart(j);
+        check(&e, 3, "the restart after both");
+        assert_eq!(held(&e), None, "no end left");
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    #[test]
+    fn a_camp_death_after_the_end_books_once_across_a_replay() {
+        death_after_end("aloft-death-replay", true);
+    }
+
+    #[test]
+    fn a_stale_hand_back_then_a_camp_death_across_a_replay_books_one_end() {
+        death_after_end("aloft-stale-replay", false);
     }
 }
 

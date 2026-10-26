@@ -282,6 +282,20 @@ public final class RtsimApi {
         return com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictBridge.INSTANCE.reconciler().secondBody(entity);
     }
 
+    /**
+     * A chief puppet's summons are about to join the level (M11, MZB-816): when {@code summoner} is a live chief puppet of a band,
+     * they are adopted as its slot's extras, as a raptor's followers are, and this is true; the caller then calls
+     * {@link #dropSummons} if the join fails. False for any other summoner. A plugin's summons mixin asks.
+     */
+    public static boolean adoptSummons(Entity summoner, net.minecraft.world.entity.Mob summons) {
+        return com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictBridge.INSTANCE.adoptSummons(summoner, summons);
+    }
+
+    /** The join of a summons {@link #adoptSummons} adopted failed: it is no extra and untagged again. */
+    public static void dropSummons(net.minecraft.world.entity.Mob summons) {
+        com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictBridge.INSTANCE.dropSummons(summons);
+    }
+
     /** The conflict factions' territories, by dimension and position (read only; M7's train sampler). */
     public static com.minecraftindustrialcomplex.mic_rtsim.conflict.Territories territories() {
         return com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictBridge.INSTANCE.territories();
@@ -308,6 +322,89 @@ public final class RtsimApi {
                                    double y, double z, long entry, long exit) {
         return com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictBridge.INSTANCE.railPass(faction, train, owner, dimension,
                 x, y, z, entry, exit);
+    }
+
+    // ---- lying in wait (M8; MZB-359 to 366) ------------------------------------------------------
+
+    /**
+     * Registers what a mod's body does while its party lies in wait by a rail, by entity type id
+     * ({@code mowziesmobs:frostmaw}; a string, so it can be called in a plugin's constructor before the registries
+     * freeze). A type with none gets the core's default: the restriction, no strike, no roar. Call during mod
+     * construction.
+     */
+    public static void registerLurker(String entityType, com.minecraftindustrialcomplex.mic_rtsim.conflict.Lurker lurker) {
+        com.minecraftindustrialcomplex.mic_rtsim.conflict.Lurkers.register(entityType, lurker);
+    }
+
+    // ---- travelling aloft (M11; MZB-807) ---------------------------------------------------------
+
+    /**
+     * Registers how a mod's body travels with its party in place of walking, by entity type id
+     * ({@code mowziesmobs:umvuthi}; a string, so it can be called in a plugin's constructor before the registries
+     * freeze). A type with none walks. Call during mod construction.
+     */
+    public static void registerTraveller(String entityType, com.minecraftindustrialcomplex.mic_rtsim.conflict.Traveller traveller) {
+        com.minecraftindustrialcomplex.mic_rtsim.conflict.Travellers.register(entityType, traveller);
+    }
+
+    /**
+     * Sends a body's facing again to the players tracking it, as if it had just come into view (MZB-813): a
+     * traveller calls it after it has held the body still for 2 ticks and set the field the clients' copy reads only
+     * at its first tick. True when a bundle went out; false when nobody tracks the body, or when its pairing data hold
+     * anything per player (nothing is sent then, and the bridge counts it).
+     */
+    public static boolean rePair(net.minecraft.world.entity.Mob body) {
+        return com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictBridge.INSTANCE.rePair(body);
+    }
+
+    /**
+     * Registers what knows which way a rail runs at a point (the create plugin's), so a lurking body is placed on the
+     * rail's normal at the spot distance and not on the engine's rounded spot (MZB-360, the re-check's P2). With none
+     * registered the engine's spot stands. Call during mod construction.
+     */
+    public static void registerRailAxes(com.minecraftindustrialcomplex.mic_rtsim.conflict.RailAxes axes) {
+        com.minecraftindustrialcomplex.mic_rtsim.conflict.LurkSpots.register(axes);
+    }
+
+    /**
+     * The war parties lying in wait by a rail, by agent: the engine's AMBUSH_SPOTs of this session, an unmodifiable
+     * view (read only; M8's train sampler reads it every sample, so it allocates nothing).
+     */
+    public static java.util.Map<Long, com.minecraftindustrialcomplex.mic_rtsim.conflict.Lurk> lurks() {
+        return com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictBridge.INSTANCE.lurks();
+    }
+
+    /** The live puppet of a lurking agent standing in the world (a watched lurk), or null. */
+    public static net.minecraft.world.entity.Mob lurkBody(long agent) {
+        return com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictBridge.INSTANCE.lurkBody(agent);
+    }
+
+    /**
+     * A train's carriage point came within a lurk puppet's reach: its {@code Lurker} starts a strike at it.
+     * {@code motion} is the point's displacement in one tick, so a strike that lands later aims ahead of it.
+     * True when one started (a puppet busy with a strike answers false).
+     */
+    public static boolean strike(long agent, net.minecraft.world.phys.Vec3 at, net.minecraft.world.phys.Vec3 motion) {
+        return com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictBridge.INSTANCE.strike(agent, at, motion);
+    }
+
+    /**
+     * A train passed within a lurk's reach (TRAIN_PASSED, journaled at once): {@code epoch} is the lurk table's,
+     * {@code watched} whether a puppet of the lurk stands in the world, {@code carriage} the index of the carriage
+     * nearest the track point, {@code train} the plugin's stable id for it. False with no live session or the
+     * conflict module off. The engine rolls the robbery.
+     */
+    public static boolean trainPassed(long agent, int epoch, boolean watched, int carriage, long train) {
+        return com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictBridge.INSTANCE.trainPassed(agent, epoch, watched,
+                carriage, train);
+    }
+
+    /**
+     * A train called at a station (the create plugin's arrival, M8): when a lurk robbed it (TRAIN_ROBBED), every
+     * player within 64 blocks hears the camp's roar. Returns at once for a train not pending.
+     */
+    public static void trainCalled(long train, net.minecraft.server.level.ServerLevel level, net.minecraft.core.BlockPos station) {
+        com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictBridge.INSTANCE.trainCalled(train, level, station);
     }
 
     // ---- TALK (TALK.md §2, §4) -----------------------------------------------------------------

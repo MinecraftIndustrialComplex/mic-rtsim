@@ -54,6 +54,11 @@ public final class ConflictKit {
         return ConflictBridge.INSTANCE;
     }
 
+    /** Where the lurk puppet of an agent is held (the hold point, not the engine's spot), or null while it is not held (M8; GameTests only). */
+    public static net.minecraft.world.phys.Vec3 lurkHold(long agent) {
+        return bridge().lurkHold(agent);
+    }
+
     /** The party of an agent, waiting for it (inside thenWaitUntil). */
     public static ConflictBridge.Party party(long agent) {
         ConflictBridge.Party p = bridge().party(agent);
@@ -278,6 +283,170 @@ public final class ConflictKit {
     }
 
     /**
+     * BAND_MARCH (docs/boundary.md §9.3, MZB-468): the march of {@code agent} as the engine says it, latest by
+     * {@code revision}. {@code units} are body names with their counts, {@code waypoints} are {@code {x, z, tick}}
+     * in the route's chart, {@code flags} are {@link ConflictRecords.March#FLAG_CHIEF} and the like.
+     */
+    public record MarchSpec(long agent, int revision, String dimension, long faction, int kind, int phase, int flags, long musterEnd,
+                            Map<String, Integer> units, List<long[]> waypoints) {}
+
+    public static void march(MarchSpec m) {
+        script(out -> {
+            int dim = out.dict(Obs.DICT_DIMENSION, m.dimension());
+            int k = m.units().size();
+            int[] bodies = new int[k];
+            int j = 0;
+            for (String body : m.units().keySet())
+                bodies[j++] = out.dict(Obs.DICT_BODY, body);
+            int w = m.waypoints().size();
+            int at = out.reserve(ConflictRecords.BAND_MARCH, ConflictRecords.March.size(k, w), w);
+            if (at < 0)
+                return;
+            ByteBuffer b = out.buffer();
+            b.putLong(at + ConflictRecords.March.AGENT, m.agent());
+            b.putInt(at + ConflictRecords.March.REVISION, m.revision());
+            b.putInt(at + ConflictRecords.March.DIM, dim);
+            b.putLong(at + ConflictRecords.March.FACTION, m.faction());
+            b.put(at + ConflictRecords.March.KIND, (byte) m.kind());
+            b.put(at + ConflictRecords.March.PHASE, (byte) m.phase());
+            b.put(at + ConflictRecords.March.FLAGS, (byte) m.flags());
+            b.putLong(at + ConflictRecords.March.MUSTER_END, m.musterEnd());
+            b.putInt(at + ConflictRecords.March.UNITS, k);
+            int u = at + ConflictRecords.March.UNIT_LIST;
+            j = 0;
+            for (int count : m.units().values()) {
+                b.putInt(u + ConflictRecords.March.U_BODY, bodies[j++]);
+                b.putInt(u + ConflictRecords.March.U_COUNT, count);
+                u += ConflictRecords.March.UNIT;
+            }
+            for (long[] p : m.waypoints()) {
+                b.putInt(u + ConflictRecords.March.W_X, (int) p[0]);
+                b.putInt(u + ConflictRecords.March.W_Z, (int) p[1]);
+                b.putLong(u + ConflictRecords.March.W_TICK, p[2]);
+                u += ConflictRecords.March.WAYPOINT;
+            }
+        });
+    }
+
+    /** Members the trim has cut this session (MZB-473); the walk-ins and the clamps of a stopped band (MZB-472). */
+    public static long trimmed() {
+        return bridge().trimmed;
+    }
+
+    public static long walkIns() {
+        return bridge().walkIns;
+    }
+
+    public static long clamps() {
+        return bridge().clamps;
+    }
+
+    /** Losses of members of a party the engine had already ended (MZB-466's Java half). */
+    public static long unbookedHomeDeaths() {
+        return bridge().unbookedHomeDeaths;
+    }
+
+    // ---- M11's counters (this session; MZB-870 to MZB-889) -------------------------------------------
+
+    /** HAND_BACK lines of a chief held: while its puppet is walked home, or while a puppet that died this tick is journaled (MZB-822, MZB-824). */
+    public static long heldHandBacks() {
+        return bridge().reconciler().heldHandBacks;
+    }
+
+    /** Held hand-backs that played on their timeout with the puppet not settled (MZB-822). */
+    public static long chiefHandBacksLate() {
+        return bridge().reconciler().chiefHandBacksLate;
+    }
+
+    /** HAND_BACKs that found the throne body standing and merged into it, answering NOTHING (case B, MZB-823). */
+    public static long chiefMerges() {
+        return bridge().reconciler().chiefMerges;
+    }
+
+    /** Held takes of a chief body answered STALE because its puppet stood within 32 blocks of the throne (MZB-823). */
+    public static long staleTakes() {
+        return bridge().reconciler().staleTakes;
+    }
+
+    /** CAMP_DEATHs journaled for a chief puppet that died while its party's HAND_BACK was held or yet to play (MZB-824). */
+    public static long homeDeaths() {
+        return bridge().reconciler().homeDeaths;
+    }
+
+    /** CHIEF_PAIDs journaled as PAID_PUPPET, a payment made to a chief puppet (MZB-819). */
+    public static long puppetPaid() {
+        return bridge().reconciler().puppetPaid;
+    }
+
+    /** Chief puppets marked second when the engine booked the chief's slot dead (a CAMP_DEATH of the throne body) while they floated (MZB-825). */
+    public static long puppetsSecond() {
+        return bridge().reconciler().puppetsSecond;
+    }
+
+    /** Away CHIEF_BODYs held for their MATERIALIZE (MZB-805). */
+    public static long chiefBodiesAway() {
+        return bridge().reconciler().chiefBodiesAway;
+    }
+
+    /** CHIEF_BODYs sent ahead of a materialize that never claimed them (MZB-805). */
+    public static long chiefBodiesUnmatched() {
+        return bridge().chiefBodiesUnmatched;
+    }
+
+    /** Traveller calls that threw and were caught (MZB-807). */
+    public static long travellerErrors() {
+        return bridge().travellerErrors;
+    }
+
+    /** Pushes of a floating puppet that were zeroed (MZB-810). */
+    public static long knockbacksZeroed() {
+        return bridge().knockbacksZeroed;
+    }
+
+    /** Portal trips of a puppet that were cancelled (MZB-815). */
+    public static long portalsCancelled() {
+        return bridge().portalsCancelled;
+    }
+
+    /** A dying chief's loot lost to a removal before its drops (MZB-817). */
+    public static long deathLootLost() {
+        return bridge().deathLootLost;
+    }
+
+    /** Re-pairs sent to a floating body's trackers, and the ones skipped for per-player data (MZB-813). */
+    public static long repairs() {
+        return bridge().repairs;
+    }
+
+    public static long repairsSkipped() {
+        return bridge().repairsSkipped;
+    }
+
+    /** Chief puppets a recall despawned while their throne body stood, so their health was lost (MZB-823). */
+    public static long chiefMergesMissed() {
+        return bridge().chiefMergesMissed;
+    }
+
+    /** CHIEF_KILLEDs journaled for a party whose march had ended (MZB-824). */
+    public static long chiefDeathsAfterEnd() {
+        return bridge().chiefDeathsAfterEnd;
+    }
+
+    /** Chief puppets called home (MZB-822). */
+    public static long chiefsCalledHome() {
+        return bridge().chiefsCalledHome;
+    }
+
+    /** A chief puppet's summons adopted as its slot's extras, and the ones whose join failed (MZB-816). */
+    public static long summonsAdopted() {
+        return bridge().summonsAdopted;
+    }
+
+    public static long summonsRefused() {
+        return bridge().summonsRefused;
+    }
+
+    /**
      * OWED_HUNT, as the engine sends a debt of animals a raid on an unwatched district left (docs/boundary.md §9.4):
      * {@code count} animals within {@code radius} of the centre, or {@code rest} when {@code replaced} is the op last applied.
      */
@@ -381,6 +550,72 @@ public final class ConflictKit {
         });
     }
 
+    // ---- lying in wait (M8; MZB-370) -------------------------------------------------------------
+
+    /** AMBUSH_SPOT: the agent's lurk (the track point a train must pass within {@code reach} of, and the spot beside it). */
+    public static void ambushSpot(long agent, int epoch, long faction, String dimension, double[] track, double[] spot, float reach) {
+        writeAmbush(agent, epoch, faction, dimension, track, spot, reach, 0);
+    }
+
+    /** AMBUSH_SPOT with the removed flag: the lurk of {@code agent} ended. */
+    public static void ambushRemoved(long agent, int epoch, long faction, String dimension) {
+        double[] none = {0, 0, 0};
+        writeAmbush(agent, epoch, faction, dimension, none, none, 1f, ConflictRecords.AmbushSpot.REMOVED);
+    }
+
+    private static void writeAmbush(long agent, int epoch, long faction, String dimension, double[] track, double[] spot, float reach,
+                                    int flags) {
+        script(out -> {
+            int dim = out.dict(Obs.DICT_DIMENSION, dimension);
+            int at = out.reserve(ConflictRecords.AMBUSH_SPOT, ConflictRecords.AmbushSpot.SIZE, flags);
+            if (at < 0)
+                return;
+            ByteBuffer b = out.buffer();
+            b.putLong(at + ConflictRecords.AmbushSpot.AGENT, agent);
+            b.putInt(at + ConflictRecords.AmbushSpot.EPOCH, epoch);
+            b.putInt(at + ConflictRecords.AmbushSpot.DIM, dim);
+            b.putLong(at + ConflictRecords.AmbushSpot.FACTION, faction);
+            b.putDouble(at + ConflictRecords.AmbushSpot.TRACK_X, track[0]);
+            b.putDouble(at + ConflictRecords.AmbushSpot.TRACK_Y, track[1]);
+            b.putDouble(at + ConflictRecords.AmbushSpot.TRACK_Z, track[2]);
+            b.putDouble(at + ConflictRecords.AmbushSpot.SPOT_X, spot[0]);
+            b.putDouble(at + ConflictRecords.AmbushSpot.SPOT_Y, spot[1]);
+            b.putDouble(at + ConflictRecords.AmbushSpot.SPOT_Z, spot[2]);
+            b.putFloat(at + ConflictRecords.AmbushSpot.REACH, reach);
+        });
+    }
+
+    /** TRAIN_ROBBED: a lurk of {@code faction} robbed {@code train} (the plugin's id for it). */
+    public static void trainRobbed(long faction, long train) {
+        script(out -> {
+            int at = out.reserve(ConflictRecords.TRAIN_ROBBED, ConflictRecords.TrainRobbed.SIZE, 0);
+            if (at < 0)
+                return;
+            ByteBuffer b = out.buffer();
+            b.putLong(at + ConflictRecords.TrainRobbed.FACTION, faction);
+            b.putLong(at + ConflictRecords.TrainRobbed.TRAIN, train);
+        });
+    }
+
+    /** TRAIN_PASSED records of one agent (the agent at offset 24), in the order received. */
+    public static List<ScriptedEngine.Received> trainsPassed(long agent) {
+        return RtsimTests.recordsWith(RtsimTests.engine(), ConflictRecords.TRAIN_PASSED, ConflictRecords.TrainPassed.AGENT, agent);
+    }
+
+    /** A TRAIN_PASSED decoded: whether a puppet stood in the world (watched), the table's epoch, the carriage and the train. */
+    public record TrainPassedRecord(boolean watched, int epoch, int carriage, long train) {}
+
+    public static TrainPassedRecord trainPassed(ScriptedEngine.Received r) {
+        ByteBuffer b = r.view();
+        return new TrainPassedRecord((r.aux() & ConflictRecords.TrainPassed.WATCHED) != 0, b.getInt(ConflictRecords.TrainPassed.EPOCH),
+                b.getInt(ConflictRecords.TrainPassed.CARRIAGE), b.getLong(ConflictRecords.TrainPassed.TRAIN));
+    }
+
+    /** Strikes the lurk puppets started this session (a carriage point in reach and the puppet free to swing). */
+    public static long lurkStrikes() {
+        return bridge().lurkStrikes;
+    }
+
     // ---- the camp reconciler (MOWZIE.md §4.9, M5) ------------------------------------------------
 
     /**
@@ -451,6 +686,15 @@ public final class ConflictKit {
      * camp at {@code epoch}; {@code health} 0 leaves the body its own.
      */
     public static void chiefBody(long faction, long epoch, float health, List<UUID> players) {
+        chiefBody(faction, 0L, epoch, health, players);
+    }
+
+    /**
+     * CHIEF_BODY for a chief that is away (M11, MZB-805): {@code agent} is the party the chief marched with, so the bridge holds
+     * the record until that party's BAND_MATERIALIZE arrives, in the same buffer, a later one or a later tick. Agent 0 is the
+     * chief at home, the four-argument form's.
+     */
+    public static void chiefBody(long faction, long agent, long epoch, float health, List<UUID> players) {
         script(out -> {
             int n = players.size();
             int at = out.reserve(ConflictRecords.CHIEF_BODY, ConflictRecords.ChiefBody.size(n), n);
@@ -458,6 +702,7 @@ public final class ConflictKit {
                 return;
             ByteBuffer b = out.buffer();
             b.putLong(at + ConflictRecords.ChiefBody.FACTION, faction);
+            b.putLong(at + ConflictRecords.ChiefBody.AGENT, agent);
             b.putLong(at + ConflictRecords.ChiefBody.EPOCH, epoch);
             b.putFloat(at + ConflictRecords.ChiefBody.HEALTH, health);
             for (int i = 0; i < n; i++) {

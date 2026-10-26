@@ -32,6 +32,11 @@ public final class ConflictRecords {
      */
     public static final int RAIL_PASS = 0x080C;
     /**
+     * M8: a train passed within a lurk's reach (MOWZIE.md §4.4; journaled, aux = flags, {@link TrainPassed#WATCHED}
+     * when a puppet of the lurk was in the world). The engine rolls the robbery.
+     */
+    public static final int TRAIN_PASSED = 0x080D;
+    /**
      * M1: the world's difficulty, journaled at session start and on each change (MZB-17). 0x0093 is retired:
      * it was latest-wins, and journaling a latest-wins id throws.
      */
@@ -45,6 +50,8 @@ public final class ConflictRecords {
     public static final int CAMP_BODIES = 0x0812;
     public static final int CAMP_OUT = 0x0813;
     public static final int CAMP_RECONCILE = 0x8808;
+    /** M8: a lurk robbed a train (the roar at the train's next station, MZB-366). */
+    public static final int TRAIN_ROBBED = 0x8809;
 
     /**
      * M9: the Umvuthana's records. TRADED and CHIEF_PAID carry Java op ids and are journaled; HAVEN_CHEST is
@@ -59,6 +66,8 @@ public final class ConflictRecords {
     public static final int OWED_HUNT = 0x880C;
     /** M9: the chief's trade memory at home (a command, aux = traded players t). */
     public static final int CHIEF_BODY = 0x880A;
+    /** M10: a party's march (latest wins by revision per agent; aux = waypoint count). */
+    public static final int BAND_MARCH = 0x880B;
 
     public static final int TERRITORY = 0x8800;
     public static final int FACTION_NOTICE = 0x8801;
@@ -67,6 +76,8 @@ public final class ConflictRecords {
     public static final int BAND_STEER = 0x8804;
     public static final int BAND_RECALL = 0x8805;
     public static final int DEMAND_SETTLED = 0x8806;
+    /** M8: a war party lies in wait beside a track (aux = flags; {@link AmbushSpot#REMOVED}: it no longer does). */
+    public static final int AMBUSH_SPOT = 0x8807;
 
     public static boolean isConflictCommand(int kind) {
         return kind >= 0x8800 && kind <= 0x88FF;
@@ -138,6 +149,15 @@ public final class ConflictRecords {
     public static final class RailPass {
         public static final int FACTION = 24, TRAIN = 32, OWNER_MOST = 40, OWNER_LEAST = 48, DIM = 56, X = 64, Y = 72, Z = 80,
                 ENTRY = 88, EXIT = 96, SIZE = 104;
+    }
+
+    /**
+     * TRAIN_PASSED (M8, journaled, aux = flags): the lurk's agent and the epoch of the lurk table's entry, the
+     * carriage nearest the track point, and the train (CreateIds.of its UUID, as RAIL_PASS names it).
+     */
+    public static final class TrainPassed {
+        public static final int AGENT = 24, EPOCH = 32, CARRIAGE = 36, TRAIN = 40, SIZE = 48;
+        public static final int WATCHED = 1;
     }
 
     /** DIFFICULTY (M1, journaled, aux 0): Minecraft's difficulty id, u32. */
@@ -282,6 +302,38 @@ public final class ConflictRecords {
         public static int size(int m) {
             return STACKS + STACK * m;
         }
+
+        /**
+         * The one record with no stacks that is valid (MZB-728): a walked-in band's fight sends BAND_FIGHT with
+         * {@code m} = 0 when every member is placed already, and it is echoed, not refused (docs/boundary.md §9.3).
+         */
+        public static boolean emptyFight(int m, int flags) {
+            return m == 0 && (flags & FLAG_FIGHT) != 0;
+        }
+    }
+
+    /**
+     * BAND_MARCH (M10, aux = w waypoints), then k x (u32 body, u32 count), then w x (i32 x, i32 z, i64 tick).
+     * Its size is {@code 72 + 8 k + 16 w} (docs/boundary.md §9.3); the waypoints are in the route's chart and
+     * the ticks are game time.
+     */
+    public static final class March {
+        public static final int AGENT = 16, REVISION = 24, DIM = 28, FACTION = 32, CULTURE = 40, KIND = 44, PHASE = 45,
+                FLAGS = 46, PARTNER = 48, MUSTER_END = 56, UNITS = 64, UNIT_LIST = 72;
+        /** One unit entry: u32 body (dictionary 3), u32 count. */
+        public static final int UNIT = 8, U_BODY = 0, U_COUNT = 4;
+        /** One waypoint: i32 x, i32 z, i64 tick. */
+        public static final int WAYPOINT = 16, W_X = 0, W_Z = 4, W_TICK = 8;
+        /** FLAGS: the war chief marches with the band; the march is over (drop the agent); a joint attack. */
+        public static final int FLAG_CHIEF = 1, FLAG_ENDED = 2, FLAG_JOINT = 4;
+        /** PHASE. */
+        public static final int MUSTERING = 1, OUT = 2, WAITING = 3, FIGHTING = 4, HOME = 5;
+
+        /** The size of a march of {@code k} unit entries and {@code w} waypoints, or -1 when it overflows. */
+        public static int size(int k, int w) {
+            long n = UNIT_LIST + (long) UNIT * k + (long) WAYPOINT * w;
+            return n > Integer.MAX_VALUE ? -1 : (int) n;
+        }
     }
 
     /** BAND_STEER (aux = flags). */
@@ -298,6 +350,22 @@ public final class ConflictRecords {
     /** DEMAND_SETTLED (aux = outcome). */
     public static final class Settled {
         public static final int FACTION = 16, AGENT = 24, PLAYER_MOST = 32, PLAYER_LEAST = 40, SIGNAL = 48, SIZE = 56;
+    }
+
+    /**
+     * AMBUSH_SPOT (M8, aux = flags): the lurk of {@code AGENT} (a table entry by agent, latest wins; REMOVED drops
+     * it), its dimension (dictionary 1), faction, the track point a train must pass within {@code REACH} of, and
+     * the spot where the body stands (at the track's y).
+     */
+    public static final class AmbushSpot {
+        public static final int AGENT = 16, EPOCH = 24, DIM = 28, FACTION = 32, TRACK_X = 40, TRACK_Y = 48, TRACK_Z = 56,
+                SPOT_X = 64, SPOT_Y = 72, SPOT_Z = 80, REACH = 88, SIZE = 96;
+        public static final int REMOVED = 1;
+    }
+
+    /** TRAIN_ROBBED (M8): the faction whose lurk robbed {@code TRAIN} (the plugin's id for it). */
+    public static final class TrainRobbed {
+        public static final int FACTION = 16, TRAIN = 24, SIZE = 32;
     }
 
     // ---- the camp reconciler (M5; docs/boundary.md §9) -------------------------------------------
@@ -391,13 +459,17 @@ public final class ConflictRecords {
 
     /**
      * CHIEF_PAID (aux = n items, journaled, a Java op id): a payment to a grove's Umvuthi (MZB-418). The slot and
-     * generation are the body's CampMember tag, both 0 with PAID_STRAY.
+     * generation are the body's CampMember tag, both 0 with PAID_STRAY; with PAID_PUPPET (M11, MZB-819) the slot is
+     * {@link CampReconcile#CHIEF_SLOT} and the generation 0: the payment was to a party's chief puppet, which has no
+     * CampMember tag.
      */
     public static final class ChiefPaid {
         public static final int FACTION = 24, SLOT = 32, GENERATION = 36, FLAGS = 40, PLAYER_MOST = 48, PLAYER_LEAST = 56,
                 OP_ID = 64, ITEMS = 72;
         /** A payment to an untagged Umvuthi standing in a grove's footprint. */
         public static final int PAID_STRAY = 1;
+        /** A payment to a party's chief puppet (the faction's chief slot, generation 0). */
+        public static final int PAID_PUPPET = 2;
 
         public static int size(int n) {
             return ITEMS + ITEM * n;
@@ -447,9 +519,12 @@ public final class ConflictRecords {
             case FACTION_NOTICE -> Notice.SIZE;
             case ENVOY_MATERIALIZE -> Envoy.MEMBERS;
             case BAND_MATERIALIZE -> Materialize.STACKS;
+            case BAND_MARCH -> March.UNIT_LIST;
             case BAND_STEER -> Steer.SIZE;
             case BAND_RECALL -> Recall.SIZE;
             case DEMAND_SETTLED -> Settled.SIZE;
+            case AMBUSH_SPOT -> AmbushSpot.SIZE;
+            case TRAIN_ROBBED -> TrainRobbed.SIZE;
             case OWED_HUNT -> OwedHunt.SIZE;
             default -> 16;
         };

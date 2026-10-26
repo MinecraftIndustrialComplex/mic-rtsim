@@ -17,6 +17,8 @@ import com.minecraftindustrialcomplex.mic_rtsim.conflict.CampMember;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.Camps;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictBridge;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictRecords;
+import com.minecraftindustrialcomplex.mic_rtsim.conflict.LurkSpots;
+import com.minecraftindustrialcomplex.mic_rtsim.conflict.RailAxes;
 import com.minecraftindustrialcomplex.mic_rtsim.engine.ScriptedEngine;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Layout;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.ChunkWait;
@@ -879,8 +881,8 @@ public final class MowzieGameTests {
     }
 
     /**
-     * A player 50 blocks east of the grove's centre, removed when the test ends (MZB-591): within the recall's
-     * {@value ConflictBridge#OUT_OF_VIEW} blocks of the band, so a HAND_BACK's recall does not despawn the band's
+     * A player 50 blocks east of the grove's centre, removed when the test ends (MZB-591): within the recall's sight
+     * ({@link ConflictBridge#sightRange}, 128 blocks) of the band, so a HAND_BACK's recall does not despawn the band's
      * other puppets as unseen, and beyond a warrior's sight. It holds no ticket and loads nothing.
      */
     private static ServerPlayer watcher(GameTestHelper helper, Grove g, String name) {
@@ -889,31 +891,41 @@ public final class MowzieGameTests {
         return p;
     }
 
-    /** Inside {@code thenWaitUntil}: the band's one stack is placed and every member is embodied; the puppets. */
+    /**
+     * Inside {@code thenWaitUntil}: the band's stacks (the column's rows: two warriors a row, a raptor a stack of its
+     * own, MZB-722) are all placed and every member is embodied; the puppets, in stack order.
+     */
     private static Mob[] bandStands(long agent, int n) {
         ConflictBridge.Party p = ConflictKit.party(agent);
-        check("one stack", p.stacks().size() == 1);
-        ConflictBridge.Stack st = p.stacks().get(0);
-        check("placed (" + st.state() + ")", st.state() == ConflictBridge.StackState.PLACED);
+        check("a stack", !p.stacks().isEmpty());
         Mob[] out = new Mob[n];
-        int stand = 0;
-        for (ConflictBridge.Slot s : st.slots())
-            if (s.entity() != null && !s.entity().isRemoved() && stand < n)
-                out[stand++] = s.entity();
+        int stand = 0, members = 0;
+        for (ConflictBridge.Stack st : p.stacks()) {
+            check("stack " + st.index + " placed (" + st.state() + ")", st.state() == ConflictBridge.StackState.PLACED);
+            for (ConflictBridge.Slot s : st.slots()) {
+                members++;
+                if (s.entity() != null && !s.entity().isRemoved() && stand < n)
+                    out[stand++] = s.entity();
+            }
+        }
+        check(n + " members (" + members + ")", members == n);
         check(n + " puppets stand (" + stand + ")", stand == n);
         return out;
     }
 
     /**
      * A HAND_BACK whose body another mod's join handler cancels (In Control and the like) loses nothing
-     * (MZB-236): the body is added before the puppet goes, so the line is STALE and the puppet stands, still
-     * the band's, with nothing taken off the party and no recall. With the handler gone, the same line
-     * again is DONE: the body is the camp's, the puppet is gone, the other puppet still stands.
+     * (MZB-236): the body is added before the puppet goes, so the line is STALE and the camp holds no body.
+     * A STALE books nothing, so the engine's slot stays Owed with no party, and its next order is a SPAWN
+     * (never the same HAND_BACK again). The band is still walked home with the rest of its homecoming (MZB-751):
+     * keeping it would hold a party the engine has ended, and its puppet would stand beside the spawned body.
+     * So after the STALE the party is sent home; the SPAWN of slot 0 is DONE; the party is gone, both puppets
+     * are gone, and exactly one body stands for slot 0.
      */
     @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "mowzie_handback_cancelled", skyAccess = true)
-    public static void aHandBackWhoseJoinAnotherModCancelsKeepsThePuppetAndIsStale(GameTestHelper helper) {
+    public static void aHandBackWhoseJoinAnotherModCancelsIsStaleAndTheBandStillWalksHomeToOneBody(GameTestHelper helper) {
         ChunkWait waits = ChunkWait.of(helper, 2000);
-        String test = "aHandBackWhoseJoinAnotherModCancelsKeepsThePuppetAndIsStale";
+        String test = "aHandBackWhoseJoinAnotherModCancelsIsStaleAndTheBandStillWalksHomeToOneBody";
         Far far = new Far(helper, test);
         Grove grove = new Grove(far, far.k, far.z0);
         long[] agent = new long[1], op = new long[2], handed = new long[1];
@@ -942,25 +954,30 @@ public final class MowzieGameTests {
                 .thenWaitUntil(waits.logic(() -> MowzieKit.answered(grove.faction, op[0], 1)))
                 .thenExecute(() -> {
                     MowzieKit.allOutcomes("HAND_BACK with the join cancelled", ConflictKit.outcomes(grove.faction, op[0]), STALE);
-                    check("the puppet still stands", puppet[0][0].isAlive() && !puppet[0][0].isRemoved() && RtsimApi.isPuppet(puppet[0][0]));
-                    check("and is still the band's slot (" + ConflictKit.party(agent[0]).stacks().get(0).slots().get(0).entity() + ")",
-                            ConflictKit.party(agent[0]).stacks().get(0).slots().get(0).entity() == puppet[0][0]);
                     check("nothing handed back", MowzieKit.camps().handedBack == handed[0]);
                     check("the camp holds no body", MowzieKit.held(grove.faction).isEmpty());
-                    check("the party is not sent home", !ConflictKit.party(agent[0]).recalling());
+                    ConflictBridge.Party party = ConflictKit.party(agent[0]);
+                    check("the band is walked home all the same", party == null || party.recalling());
+                    // The engine's slot is Owed with no party: its next order is a SPAWN, the join no longer cancelled.
                     MowzieKit.cancelCampJoins = false;
                     op[1] = MowzieKit.reconcile(grove.faction, grove.site().epoch(), List.of(
-                            CampLine.party(0, 1, MowzieKit.WARRIOR, HAND_BACK, 0, agent[0], ConflictKit.party(agent[0]).epoch)));
+                            CampLine.of(0, 1, MowzieKit.WARRIOR, SPAWN, 0)));
                 })
                 .thenWaitUntil(waits.logic(() -> MowzieKit.answered(grove.faction, op[1], 1)))
                 .thenExecute(() -> {
-                    MowzieKit.allOutcomes("HAND_BACK again", ConflictKit.outcomes(grove.faction, op[1]), DONE);
-                    List<Entity> held = MowzieKit.held(grove.faction, 0, 1);
-                    check("one body is the camp's (" + held.size() + ")", held.size() == 1 && MowzieKit.held(grove.faction).size() == 1);
+                    MowzieKit.allOutcomes("the SPAWN of slot 0", ConflictKit.outcomes(grove.faction, op[1]), DONE);
+                    check("one body stands for slot 0 (" + MowzieKit.held(grove.faction, 0, 1).size() + ")",
+                            MowzieKit.held(grove.faction, 0, 1).size() == 1);
+                })
+                .thenWaitUntil(waits.logic(() -> {
+                    check("the party is gone", ConflictKit.party(agent[0]) == null);
                     check("the first puppet is gone", puppet[0][0].isRemoved());
-                    check("the second still stands", puppet[0][1].isAlive() && !puppet[0][1].isRemoved());
-                    check("one handed back (" + (MowzieKit.camps().handedBack - handed[0]) + ")", MowzieKit.camps().handedBack == handed[0] + 1);
-                    record(test, "cancelled join", "STALE and the puppet stayed; the same line without the handler was DONE");
+                    check("the second puppet is gone", puppet[0][1].isRemoved());
+                }))
+                .thenExecute(() -> {
+                    List<Entity> held = MowzieKit.held(grove.faction, 0, 1);
+                    check("exactly one body for slot 0 (" + held.size() + ")", held.size() == 1 && MowzieKit.held(grove.faction).size() == 1);
+                    record(test, "cancelled join", "STALE, the band walked home and went, the SPAWN made the one body of slot 0");
                 })
                 .thenSucceed();
     }
@@ -2491,8 +2508,9 @@ public final class MowzieGameTests {
                         check("a follower carries the band's tag", RtsimAttachments.isTagged(f) && RtsimAttachments.tag(f).agent() == agent[0]);
                         check("a follower has its leader", f.getLeaderUUID().isPresent());
                     }
-                    for (ConflictBridge.Slot s : ConflictKit.party(agent[0]).stacks().get(0).slots())
-                        check("each slot holds its 4 extras (" + s.extras().size() + ")", s.extras().size() == 4);
+                    for (ConflictBridge.Stack rows : ConflictKit.party(agent[0]).stacks())
+                        for (ConflictBridge.Slot s : rows.slots())
+                            check("each slot holds its 4 extras (" + s.extras().size() + ")", s.extras().size() == 4);
                     // The recall walks them toward spot.x - 200, out of the area before they go: the wait is on
                     // the objects, not on the area (MZB-673).
                     taken[0] = puppet[0][0];
@@ -2583,6 +2601,101 @@ public final class MowzieGameTests {
                     check("no new epoch", den.site().in() && den.site().epoch() == was[3]);
                     record(test, "puppet", "the SET_OUT puppet joined at " + p.position() + " and the den neither watched nor recounted");
                 })
+                .thenSucceed();
+    }
+
+    // ---- M8: a refused lurk claims no camp body ----------------------------------------------------
+
+    /**
+     * A lurk refused at its placing claims no camp body (M8, the second re-check's P3): an adopted Frostmaw, an
+     * AMBUSH_SPOT for an agent, then in one hand-over a SET_OUT of its slot and a one-unit Frostmaw band for that
+     * agent, while the rail provider knows no direction and says a rail is near the spot, so {@code holdPoint}
+     * refuses. The refusal comes before the hand-off is claimed: the SET_OUT is not handed off (the counter does not
+     * move, no puppet stands), the tick's end resolves it as a take (DONE, one taken, the camp holds nothing and its
+     * body is gone with its records on a marker), and the bridge counted the refusal. The body a player can see is
+     * taken, not discarded unseen (its health and crystal state are lost against a hand-off; only an engine check of
+     * the hold point before the set-out would leave it in its camp, a backlog item). On the code before, the body
+     * was claimed and handed to a puppet (handedOff 1), which {@code holdLurks} then found no hold point for and
+     * discarded: "no hand-off was made (1)". Not run.
+     */
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "mowzie_lurk_refused", skyAccess = true)
+    public static void aLurkRefusedAtItsPlacingClaimsNoCampBodyAndTheSetOutIsATake(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 2000);
+        String test = "aLurkRefusedAtItsPlacingClaimsNoCampBodyAndTheSetOutIsATake";
+        Far far = new Far(helper, test);
+        ServerLevel level = far.level;
+        Den den = new Den(far, far.k, far.z0);
+        EntityFrostmaw[] f = new EntityFrostmaw[1];
+        long[] op = new long[2], agent = new long[1], was = new long[4];
+        RailAxes before = LurkSpots.axes();
+        LurkSpots.register(new RailAxes() {
+            @Override
+            public Vec3 at(ServerLevel lv, Vec3 point) {
+                return null;
+            }
+
+            @Override
+            public boolean trackNear(ServerLevel lv, Vec3 point, double radius, double height) {
+                return true;
+            }
+        });
+        ConflictKit.onEnd(helper, () -> LurkSpots.register(before));
+
+        helper.startSequence()
+                .thenExecute(() -> den.force())
+                .thenWaitUntil(waits.chunks(far.ready()))
+                .thenExecute(() -> {
+                    den.lay().declare();
+                    f[0] = MowzieKit.frostmaw(level, den.at(3, 0.5), true);
+                })
+                .thenWaitUntil(waits.logic(() -> check("census 1", MowzieKit.censusCount(den.faction) >= 1)))
+                .thenExecute(() -> op[0] = MowzieKit.reconcile(den.faction, MowzieKit.epoch(MowzieKit.census(den.faction, 1)),
+                        List.of(CampLine.of(0, 1, MowzieKit.FROSTMAW, ADOPT, CHIEF, f[0].getUUID()))))
+                .thenWaitUntil(waits.logic(() -> MowzieKit.answered(den.faction, op[0], 1)))
+                .thenExecute(() -> {
+                    MowzieKit.allOutcomes("ADOPT", ConflictKit.outcomes(den.faction, op[0]), DONE);
+                    agent[0] = ConflictKit.newAgent();
+                    ConflictKit.ambushSpot(agent[0], 1, den.faction, RtsimTests.dimension(helper),
+                            new double[] {den.spot.x, den.spot.y, den.spot.z - 4.0}, new double[] {den.spot.x, den.spot.y, den.spot.z}, 8.0f);
+                })
+                .thenWaitUntil(waits.chunks(io(() -> check("the lurk is in the table", RtsimApi.lurks().containsKey(agent[0])))))
+                .thenExecute(() -> {
+                    Camps c = MowzieKit.camps();
+                    was[0] = c.handedOff;
+                    was[1] = c.taken;
+                    was[2] = ConflictKit.bridge().lurksRefused;
+                    ConflictKit.Band b = ConflictKit.band(agent[0], den.faction, RtsimTests.dimension(helper));
+                    b.arcX = den.spot.x;
+                    b.arcZ = den.spot.z;
+                    b.targetX = den.spot.x;
+                    b.targetY = den.spot.y;
+                    b.targetZ = den.spot.z - 4.0;
+                    b.speed = 0f;
+                    ConflictKit.together(() -> {
+                        op[1] = MowzieKit.reconcile(den.faction, den.site().epoch(), List.of(
+                                CampLine.party(0, 1, MowzieKit.FROSTMAW, SET_OUT, CHIEF, agent[0], b.epoch)));
+                        ConflictKit.materialize(b, List.of(new ConflictKit.StackSpec(MowzieKit.FROSTMAW, 1, false)));
+                    });
+                })
+                .thenWaitUntil(waits.logic(() -> {
+                    MowzieKit.answered(den.faction, op[1], 1);
+                    check("the bridge refused the lurk (" + (ConflictKit.bridge().lurksRefused - was[2]) + " times)", ConflictKit.bridge().lurksRefused > was[2]);
+                }))
+                .thenExecute(() -> {
+                    MowzieKit.allOutcomes("SET_OUT", ConflictKit.outcomes(den.faction, op[1]), DONE);
+                    Camps c = MowzieKit.camps();
+                    check("no hand-off was made (" + (c.handedOff - was[0]) + ")", c.handedOff == was[0]);
+                    check("the unclaimed SET_OUT was a take (" + (c.taken - was[1]) + ")", c.taken - was[1] == 1);
+                    check("the camp holds nothing now", MowzieKit.held(den.faction).isEmpty());
+                    check("and its body is gone", f[0].isRemoved());
+                    check("no puppet of the agent stands", RtsimApi.lurkBody(agent[0]) == null);
+                    check("and no Frostmaw puppet is in the den's area", level.getEntitiesOfClass(EntityFrostmaw.class,
+                            new AABB(den.spot.x - 40, den.spot.y - 12, den.spot.z - 40, den.spot.x + 40, den.spot.y + 12, den.spot.z + 40),
+                            e -> RtsimApi.isPuppet(e) && !e.isRemoved()).isEmpty());
+                    record(test, "refused", "the lurk was refused " + (ConflictKit.bridge().lurksRefused - was[2]) + " times before the SET_OUT was claimed: taken, not handed off, no puppet made from the body and then discarded");
+                    ConflictKit.ambushRemoved(agent[0], 1, den.faction, RtsimTests.dimension(helper));
+                })
+                .thenWaitUntil(waits.chunks(io(() -> check("the lurk is gone from the table", !RtsimApi.lurks().containsKey(agent[0])))))
                 .thenSucceed();
     }
 
