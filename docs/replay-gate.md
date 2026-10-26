@@ -152,6 +152,20 @@ checked against what landed and amended where main differs from what they assume
   `UNNAMED_GEN | session_first`, then is admitted. Every record dispatched while replaying therefore
   belongs to a generation of an earlier session (the pages' open one or one a replayed JOURNAL_GEN
   opened), and every record dispatched after the end to this session's.
+- **Residual: no conflict hook at a replayed generation switch** (M11a, MZB-853 and MZB-859's P4,
+  accepted by the coordinator). A replay that crosses an earlier session's generation switch runs
+  both sessions' records over the same pages with no replay end between them, so a module's
+  `replay_done` work for that earlier session never runs. The case found: a chief's band has ended
+  (`Camp.ended` holds), its HAND_BACK is answered STALE, a restart follows, then the chief's
+  CAMP_DEATH, then a crash. Live, the first restart's replay end loses the chief (MZB-853 release 5,
+  `chief_ends_lost`) and the later CAMP_DEATH finds no end and books nothing: (0, 0, true, false).
+  The crash replay of both sessions reaches the CAMP_DEATH with the end still holding and books the
+  death: (1, 1, true, false). One end and one heir on both paths, never two, so nothing is
+  duplicated; only the fall and the player loss differ. The test
+  `a_stale_hand_back_then_a_camp_death_across_a_replay_books_one_end` (rtsim-jni `protocol.rs`)
+  asserts both as they are. Making them agree needs a hook at the replay's generation switches that
+  runs each module's session-end work there; the slice that adds such hooks picks this case up and
+  changes that test's last stage to (0, 0, true, false).
 - **On main: the replay clock agrees.** While replaying the clock runs no further than the replay
   clock (§3.6), which each replayed record raises to its GAME_TIME. A copy is dispatched as its inner
   record, whose GAME_TIME is the original's (Java journals a REASSERT with the inner record's time),
