@@ -1338,7 +1338,10 @@ fn fail_tribute(st: &mut State, op: u64) {
 /// A COMMAND_RESULT `Replay` admitted (the core's records, after phase 1's): the answer to a stack
 /// of tribute sent to a grove's chest (MZB-423). Applied or a duplicate, the stack is in the
 /// chest and the next goes; failed, the goods go back to the grove's stock and the chest is
-/// forgotten until the plugin reports one again.
+/// forgotten until the plugin reports one again. NOT_LOADED (the chest's chunk was not loaded,
+/// RP-210) is taken as FAILED, as Java answered it before RP-210: the answer takes the op out of
+/// the core outbox, so a stack left in flight would have nothing to answer it. Unlike the
+/// dragons, the grove does not park it under its op id (RP-210's Left).
 pub(super) fn after_core(st: &mut State, rec: &Rec<'_>) {
     if rec.kind != obs::COMMAND_RESULT || rec.size() < obs::command_result::SIZE {
         return;
@@ -1355,7 +1358,9 @@ pub(super) fn after_core(st: &mut State, rec: &Rec<'_>) {
         obs::command_result::APPLIED | obs::command_result::DUPLICATE_OP => {
             c.tribute_placed(w, op, at)
         }
-        obs::command_result::FAILED => c.tribute_failed(w, op, at),
+        obs::command_result::FAILED | obs::command_result::NOT_LOADED => {
+            c.tribute_failed(w, op, at)
+        }
         _ => false,
     };
     if known {
