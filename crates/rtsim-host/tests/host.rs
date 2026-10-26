@@ -150,6 +150,11 @@ fn play(j: &mut Java, ticks: i64, quantum: i64) {
 fn save_world(world: &Path, j: &mut Java) {
     let through = j.next_obs - 1;
     j.e.request_save(through);
+    // The save's pages are confirmed by WORLD_SAVED (P29): sent here before the journal's file is
+    // written (the bridge's order is the reverse), so that the file is the journal as the
+    // acknowledgement trims it.
+    j.written_through = Some(through);
+    j.world_saved(through);
     j.run_until("the world's save", |j| j.e.durable_obs_seq() >= through);
     Journal {
         save: j.world_save(),
@@ -172,6 +177,9 @@ fn save_as_the_bridge(world: &Path, j: &mut Java) -> u64 {
     .write(world)
     .unwrap();
     write_level(world, j.game_time);
+    // The journal's file is written: WORLD_SAVED confirms the engine's pages.
+    j.written_through = Some(through);
+    j.world_saved(through);
     through
 }
 
@@ -707,8 +715,14 @@ fn the_viewer_and_the_fork_read_the_save_before_an_unconfirmed_one() {
     let second = j.next_obs - 1;
     assert!(second > first, "the second save holds more: {second} after {first}");
     let committed = e.stats.saves_committed.load(Ordering::Acquire);
-    let through = save_as_the_bridge(&world, &mut j);
-    assert_eq!(through, second);
+    j.e.request_save(second);
+    Journal {
+        save: j.world_save(),
+        data_version: Some(3955),
+    }
+    .write(&world)
+    .unwrap();
+    write_level(&world, j.game_time);
     j.run_until("the second save's pages", |j| {
         j.e.stats.saves_committed.load(Ordering::Acquire) > committed
     });
