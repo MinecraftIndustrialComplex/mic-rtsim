@@ -5,6 +5,7 @@ import com.bobmowzie.mowziesmobs.server.entity.umvuthana.EntityUmvuthana;
 import com.bobmowzie.mowziesmobs.server.entity.umvuthana.EntityUmvuthanaMinion;
 import com.bobmowzie.mowziesmobs.server.entity.umvuthana.EntityUmvuthi;
 import com.minecraftindustrialcomplex.mic_rtsim.api.RtsimApi;
+import com.minecraftindustrialcomplex.mic_rtsim.conflict.AloftRules;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.CampKind;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.Camps;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictRecords;
@@ -225,11 +226,14 @@ public final class GroveKind implements CampKind {
         return playerWithin(level, site.throne(), HOLD_RANGE);
     }
 
-    /** Whether a non-spectator player of the level stands within {@code range} of {@code at}. */
+    /**
+     * Whether a non-spectator player of the level stands within {@code range} blocks of {@code at}, horizontally: a player
+     * high above or deep below the point is as near as one beside it, as the sight of a body is (MZB-753, MZB-828). It only
+     * widens the hold, as a ground-plane distance is never more than the 3D one.
+     */
     public static boolean playerWithin(ServerLevel level, Vec3 at, double range) {
-        double r2 = range * range;
         for (Player p : level.players())
-            if (!p.isSpectator() && p.distanceToSqr(at) <= r2)
+            if (!p.isSpectator() && AloftRules.near(at.x, at.y, at.z, p.getX(), p.getY(), p.getZ(), range))
                 return true;
         return false;
     }
@@ -293,6 +297,8 @@ public final class GroveKind implements CampKind {
     @Override
     public void copy(Mob from, Mob to) {
         to.setHealth(Math.min(from.getHealth(), to.getMaxHealth()));
+        if (from instanceof EntityUmvuthi a && to instanceof EntityUmvuthi b) // the memory goes with the body, both ways (MZB-820)
+            remember(b, new ChiefBody(0f, 0, List.copyOf(a.getTradedPlayers()))); // health 0: the body keeps the health set above
         if (from instanceof EntityUmvuthana a && to instanceof EntityUmvuthana b) {
             b.setMask(a.getMaskType());
             b.setWeapon(a.getWeapon());
