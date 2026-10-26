@@ -158,9 +158,6 @@ pub(super) struct Link {
     /// The records heard while switched off, applied at the switch-on (RP-292, docs/replay-gate.md
     /// 9.7): saved beside the meta page (`paging::kept_key`).
     pub(super) kept: Kept,
-    /// The reset is applying [`Link::kept`]: a first camp among them introduces no area inside
-    /// the replay (the switch-on introduces them after its replay end). Not saved.
-    applying_kept: bool,
     pub(super) commands_written: u64,
     /// Latest-wins BAND_STATE records seen (read for nothing yet).
     pub(super) band_states: u64,
@@ -289,7 +286,6 @@ impl Link {
             records: 0,
             ignored: 0,
             kept: Kept::default(),
-            applying_kept: false,
             commands_written: 0,
             band_states: 0,
             chief_states: 0,
@@ -482,7 +478,7 @@ fn apply_kept(st: &mut State) {
         return;
     }
     let outer = st.applying_copy;
-    st.conflict.applying_kept = true;
+    st.applying_kept = true;
     for (copy, bytes) in &kept {
         let rec = Rec {
             kind: wire::u16_at(bytes, wire::R_KIND),
@@ -492,7 +488,7 @@ fn apply_kept(st: &mut State) {
         st.applying_copy = *copy;
         apply(st, &rec);
     }
-    st.conflict.applying_kept = false;
+    st.applying_kept = false;
     st.applying_copy = outer;
     log_info(&format!(
         "the conflict applied {} records heard while it was switched off",
@@ -764,9 +760,7 @@ pub(super) fn rail_call(
     // escalate (MZB-375, since the M7 merge).
     shared::catch_up(st, rec);
     let gt = wire::i64_at(rec.bytes, obs::GAME_TIME);
-    let at = Tick(phase1::world_tick(st, gt))
-        .max(st.conflict.engine.now())
-        .max(st.phase1.world.now());
+    let at = Tick(phase1::world_tick(st, gt)).max(shared::floor(st, st.conflict.engine.now()));
     let call = RailCall { train, line };
     with_infra(st, |c, w, _| c.rail_call(w, &call, at));
     st.phase1.taint();
@@ -779,7 +773,7 @@ pub(super) fn rail_call(
 fn ingest(st: &mut State, o: &Obs, at: Tick) {
     st.conflict.records += 1;
     let was_running = running(st);
-    let at = at.max(st.conflict.engine.now()).max(st.phase1.world.now());
+    let at = at.max(shared::floor(st, st.conflict.engine.now()));
     // A copy (REASSERT) of an ended session's record is applied by identity, never against a
     // body (docs/replay-gate.md §2.3, §5.7, RP-8, RP-9).
     let copy = st.applying_copy.is_some();
@@ -795,7 +789,9 @@ fn ingest(st: &mut State, o: &Obs, at: Tick) {
     log_fights_unheld(st);
     reset_if_due(st);
     take_commands(st);
-    if !was_running && running(st) && !st.conflict.applying_kept {
+    // A first camp among the records kept while off introduces no area inside the reset: the
+    // switch-on introduces them after its replay end.
+    if !was_running && running(st) && !st.applying_kept {
         shared::introduce_conflict(st);
     }
 }
@@ -871,7 +867,7 @@ pub(super) fn run_engine(st: &mut State, t: Tick) {
     }
     // Never behind its own present: an event due before it (none should be) runs now rather than
     // holding the shared clock's rounds at its time.
-    let t = t.max(st.conflict.engine.now()).max(st.phase1.world.now());
+    let t = t.max(shared::floor(st, st.conflict.engine.now()));
     let before = st.conflict.engine.stats.events;
     with_infra(st, |c, w, infra| c.run_until(w, infra, t));
     if st.conflict.engine.stats.events != before {
