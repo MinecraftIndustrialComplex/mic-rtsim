@@ -126,6 +126,20 @@ public final class SavedDataWriteKit {
             }
         }
 
+        /**
+         * Whether the last failure was seen off the server thread, on the IO chain where the write runs (the hook is on
+         * the worker's write, not on the server thread's call to {@code SavedData.save}). Called on the server thread.
+         */
+        public boolean failureSeenOffTheServerThread() {
+            long id = SavedDataWrites.INSTANCE.lastFailureThreadId();
+            return level.getServer().isSameThread() && id != -1 && id != Thread.currentThread().threadId();
+        }
+
+        /** Whether the data was last marked dirty again on the server thread (a world save's start). Called on it. */
+        public boolean remarkedOnTheServerThread() {
+            return level.getServer().isSameThread() && SavedDataWrites.INSTANCE.lastRemarkThreadId() == Thread.currentThread().threadId();
+        }
+
         /** Whether the journal's write is held by a failed file of this test's directory. */
         public boolean heldByFailedWrite() {
             return SavedDataWrites.INSTANCE.firstFailing(List.of(dir)) != null;

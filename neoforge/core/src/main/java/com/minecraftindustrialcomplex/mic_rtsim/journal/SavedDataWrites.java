@@ -63,6 +63,10 @@ public final class SavedDataWrites {
     private final AtomicLong recovered = new AtomicLong();
     private final AtomicLong remarked = new AtomicLong();
     private final AtomicLong abandoned = new AtomicLong();
+    /** The thread that saw the last failure: NeoForge's IO worker, where the write runs, never the server thread (-1: none yet). */
+    private volatile long failedOnThread = -1;
+    /** The thread that last marked a failed data dirty again: the server thread, at a world save's start (-1: none yet). */
+    private volatile long remarkedOnThread = -1;
 
     /** {@code error} and {@code info} are where the log lines go (the unit test puts its own; the mod's logger needs the game). */
     public SavedDataWrites(Consumer<String> error, Consumer<String> info) {
@@ -89,6 +93,7 @@ public final class SavedDataWrites {
      */
     public void failed(JournalDependent owner, Path file, Throwable why) {
         try {
+            failedOnThread = Thread.currentThread().threadId();
             Path k = key(file);
             boolean first;
             long n;
@@ -159,6 +164,7 @@ public final class SavedDataWrites {
         for (JournalDependent o : owners) {
             o.mic_rtsim$remark();
             remarked.incrementAndGet();
+            remarkedOnThread = Thread.currentThread().threadId();
         }
         for (Entry e : gone) {
             abandoned.incrementAndGet();
@@ -210,6 +216,16 @@ public final class SavedDataWrites {
     /** Entries dropped because their data was gone. */
     public long abandoned() {
         return abandoned.get();
+    }
+
+    /** The id of the thread that saw the last failure (the IO worker's), or -1. GameTests assert it is not the server thread's. */
+    public long lastFailureThreadId() {
+        return failedOnThread;
+    }
+
+    /** The id of the thread that last marked a failed data dirty again (the server thread's), or -1. */
+    public long lastRemarkThreadId() {
+        return remarkedOnThread;
     }
 
     /** One line for {@code /rtsim perf}. */

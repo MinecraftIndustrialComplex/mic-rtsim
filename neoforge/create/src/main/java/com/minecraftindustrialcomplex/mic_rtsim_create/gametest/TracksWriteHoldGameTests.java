@@ -70,6 +70,8 @@ public final class TracksWriteHoldGameTests {
                     record("aFailedWriteOfCreateTracksHoldsTheJournalsFileUntilItIsWritten", "W1",
                             l.writes() + " journal writes, held by a failed write " + kit.journal.savedDataHeld() + ", " + SavedDataWrites.INSTANCE.describe());
                     check("the tracks write failed and is recorded", kit.heldByFailedWrite());
+                    check("the failure was seen on the IO chain, not on the server thread (thread " + SavedDataWrites.INSTANCE.lastFailureThreadId() + ")",
+                            kit.failureSeenOffTheServerThread());
                     check("vanilla cleared the tracks data's dirty flag, so the next save would not write it by itself (the premise)", !tracks.isDirty());
                     check("the journal's file is byte for byte W0's (" + l.writes() + " writes)", Arrays.equals(w0[0], l.journal()) && l.writes() == 1);
                     check("the journal stays dirty for the next save", l.dirty());
@@ -83,6 +85,7 @@ public final class TracksWriteHoldGameTests {
                     check("held at the second save, the file still W0's: " + l.writes(), Arrays.equals(w0[0], l.journal()) && l.writes() == 1 && l.dirty());
                     check("the tracks data was marked dirty again and tried again: " + SavedDataWrites.INSTANCE.failures() + " failures since this test began",
                             SavedDataWrites.INSTANCE.failures() == kit.failuresBefore + 2);
+                    check("the mark was made on the server thread, by the save's start, not by the IO chain", kit.remarkedOnTheServerThread());
                     check("two holds counted", kit.journal.savedDataHeld() == 2);
                     kit.diskFree();
                     kit.journalMoves(); // nothing of the tracks data changes: only the mark brings it to this save

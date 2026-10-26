@@ -109,6 +109,8 @@ public final class SavedDataWriteHoldGameTests {
                     record("aFailedSavedDataWriteHoldsTheJournalsFileUntilTheDataIsWritten", "W1", l.writes() + " journal writes, held by a failed write "
                             + kit.journal.savedDataHeld() + ", " + SavedDataWrites.INSTANCE.describe());
                     check("the data's write failed and is recorded", kit.heldByFailedWrite());
+                    check("the failure was seen on the IO chain, not on the server thread (thread " + SavedDataWrites.INSTANCE.lastFailureThreadId() + ")",
+                            kit.failureSeenOffTheServerThread());
                     check("vanilla cleared the data's dirty flag, so the next save would not write it by itself (the premise)", !pad.isDirty());
                     check("the data was never written: no file, value " + l.value(), l.value() == -1);
                     check("the journal's file is byte for byte W0's, not written once more (" + l.writes() + " writes)",
@@ -126,6 +128,8 @@ public final class SavedDataWriteHoldGameTests {
                     check("held at the second save as well, the file still W0's: " + l.writes(), Arrays.equals(w0[0], l.journal()) && l.writes() == 1 && l.dirty());
                     check("the data was marked dirty again at that save's start and tried again: " + SavedDataWrites.INSTANCE.failures() + " failures since this test began",
                             SavedDataWrites.INSTANCE.failures() == kit.failuresBefore + 2);
+                    check("the mark was made on the server thread, by the save's start, not by the IO chain", kit.remarkedOnTheServerThread());
+                    check("the failure was seen on the IO chain again", kit.failureSeenOffTheServerThread());
                     check("one record for the file however often it fails", SavedDataWrites.INSTANCE.failing() == failing[0] + 1);
                     check("two holds counted", kit.journal.savedDataHeld() == 2);
                     kit.journalMoves();
