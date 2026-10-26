@@ -10950,6 +10950,23 @@ rounds of phase 2 are the check, and what they found is recorded after them.
   option: do not write a test the others have made, and say so.
 - **MZB-901** (step 7, for the lead): the re-run of the earlier module GameTests (27, 28, 30, 32, 33 and 34) is a run, not code. Phase 2's final
   clean round of both projects does it, and its logs (`target/m11c-gt<N>-<project>.log`) are the record.
+- **MZB-902** (GameTest round 1, commit a69bff6d; MZB-889): the first round found that `FakePlayers.Hearing.send` recorded each packet and then
+  sent it as any listener does, and NeoForge's `NetworkRegistry.checkPacket` throws "Payload mowziesmobs:message_update_boss_bar may not be sent
+  to the client!" for a mod payload on a mock connection that negotiated nothing. A hearer that tracks the chief got one (31s, then a server crash
+  from the leaked hearers). A custom payload is now recorded and not sent, and a bundle goes on without its payloads. No test reads a payload.
+- **MZB-903** (round 1; commit a69bff6d): every hearer of 31s and of the stuck test (23d) is taken out through `ConflictKit.onEnd` as well as in
+  the sequence (a new `hearersOut`), as `MowzieKit.player` and `Watch` already are. A test that failed in the middle left its hearers standing in the
+  level, tracking and pumping the next tests' bodies, and that was the crash.
+- **MZB-904** (round 1; commit a69bff6d): two facts of the jar the first checks did not allow for. An Umvuthi out of battle heals 0.3 a tick
+  (`healsOutOfBattle`), so a read some ticks after the set was 77.3 for 77: every health check now goes through `healthIs`, which allows the
+  heal (9 over, to the maximum) and never less. The jar's `die` takes the devoted Umvuthana within 30 blocks with their Umvuthi (MZB-432), so a
+  band's warrior is a casualty when its chief is killed near it: the invariant test allows at most that one casualty (never the chief's) and the
+  failed-session test does not ask the dying chief's warrior to stand. This is the engine's rule for a first body and unchanged by M11.
+- **MZB-905** (round 1; commit a69bff6d): 23a waited for the puppet at the end of the lane, and the chief's stack walks at the column's rear, 1.5
+  blocks behind the steer's end, so it stopped at x0 + 148.5 and the wait ran out. The end is steered 4 blocks on, and the marks and the wait are
+  unchanged.
+- **MZB-906** (round 1; commit a69bff6d): the retired hand-back test read its band's epoch from the party after the puppet's death, when the party
+  may be gone ("holds no party yet"). It reads the epoch while the band lives. The line's answer does not depend on the party.
 
 ## M12 S9
 
