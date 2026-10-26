@@ -10797,6 +10797,160 @@ and the reviews' fixes.
     one). No JUnit: all of it needs a live level; M11c's first test that watches a puppet is the check, and the javadoc of
     `watching` says "compiled only" as `addSeen`'s does.
 
+### M11c build records (MZB-890 to MZB-919)
+
+M11c's implementer appends its records under this heading only. At the commits below every GameTest is compiled only; the GameTest
+rounds of phase 2 are the check, and what they found is recorded after them.
+
+- **MZB-890** (step 0, P2 of the M11b review: a second puppet's animation end journaled a death after all; breaks MZB-825, MZB-885 and
+  MZB-886):
+  - The path: the throne body is killed while the puppet floats (`Camps.death` marks the puppet second and the engine books the chief dead),
+    a player kills the puppet (`onDeath` sees a second body, calls `died` and returns, so the slot lives with no `pendingDeath`), a watched
+    stack is not discarded (RECALL_TIMEOUT 1200 ticks, the animation 115), and at the animation's end the jar removes the body as KILLED,
+    which `left` read as a death (`pendingDeath = BY_NONE`). `settleDeaths` then journaled a CHIEF_KILLED the engine drops (the chief flag
+    went at the throne's CAMP_DEATH) and counted `chiefsKilled`, `chiefDeathsAfterEnd` and a news post.
+  - The fix, commit c57bdd7d (`ConflictBridge.left`, nine lines): a KILLED removal of a chief slot with no `pendingDeath` whose body is
+    second (`reconciler.secondBody`) calls `forget(sl)` and returns, with no Death, as for a member nobody books. A first death (a
+    `pendingDeath` is set), any other removal reason, and every non-chief slot are unchanged.
+  - The audit of the paths that end a second puppet, read from the code (no test but MZB-892's): only a slot with a `pendingDeath` is
+    journaled by `settleDeaths` and put on the Dying list, and this KILLED branch was the only place a second body got one, so the list
+    never holds a second body (`finishDying` at a stop or a failure has nothing of it to finish). The bridge's own removals (a recall,
+    `discardAll`, `requeue` and `despawn`) set `removing` or take the slot out before the jar reads the reason, so `left` returns at once
+    for them; `despawn` discards a second body whole (it is not in `isDying`), which is right, as the engine has the chief dead and no loot
+    is owed. The band's BAND_DEMATERIALIZED still waits for the slot to be gone, as for any member: `forget` is the same removal a
+    forgotten member gets.
+  - Two paths are NOT fixed (outside the brief, left for the lead, no test): a Carry On pickup of a second puppet (`take`, which calls
+    `gone` with the player) journals a CHIEF_KILLED naming the player, which the engine drops as it dropped P2's (an extra journal line, no
+    count the engine keeps); and `requeue` and `recallStep` discard a second puppet that is dead while its slot is still alive (in its
+    animation), as they discard any member.
+  - The test is `aSecondPuppetsAnimationEndJournalsNothing` (MZB-892). **Revert c57bdd7d for one round and it must fail** (the
+    CHIEF_KILLED, `chiefsKilled` and `chiefDeathsAfterEnd` rise past the animation).
+- **MZB-891** (step 0, P3 of the M11b review: a HAND_BACK that reaches a second puppet in its animation played as a spawn):
+  - The path: `handBack` and `playHeldHandBack` found no puppet (`puppetOf` needs `isAlive()`) and no dying chief (a second body has no
+    `pendingDeath`), so they skipped the `second.contains` stale answer, and `spawnLine` stood a throne body of the retired generation
+    until the next census took it.
+  - The fix, commit 08c261b9 (Camps and ConflictBridge): both paths answer STALE when `retiredChief(c, line)` or the new
+    `ConflictBridge.secondPuppet(party, body)` holds. `secondPuppet` finds the party's chief slot of that body that is `alive`, has an
+    entity not removed and a second body, so it counts while the puppet floats and while it is in its animation, which `puppetOf` does not.
+    The `second.contains(sl.entity)` branch of `playHeldHandBack` is the same test, now before the lookup, so it is gone from below it.
+  - The fork the brief names (a late HAND_BACK of the retired generation after P2's fix forgot the slot, with no puppet to find): it also
+    answers STALE. Conservative option: keyed on what Java journaled, not on the puppet. `Camps.retired` is a `Set<Retired(faction,
+    generation)>` (memory only, as `second`; emptied at a session's start and where `second` is cleared), added to at the two places Java
+    journals the chief slot's CAMP_DEATH (`death`, for the throne body, and the home death of a puppet that died at home). `retiredChief`
+    is true for a line of the chief slot (`CampReconcile.CHIEF_SLOT`) of a retired faction and generation. Why this and not "no puppet found
+    means stale": a HAND_BACK of a live generation whose puppet is simply not found yet (the band not materialized, the line held) must
+    still be held or spawned, and the retired set is the one fact that says the engine has that chief dead. Why the generation is in the
+    key: the next generation of the same faction's chief is not retired and must hand back. It holds one entry for each chief death of a
+    session. It is not saved: a restart empties it, and the engine then has its own record of the chief.
+  - The test is `aHandBackOfARetiredChiefIsAnsweredStale` (MZB-892). **Revert 08c261b9 for one round and it must fail** (the first delivery,
+    with the puppet in its animation, stands a throne body; the second, after the puppet is gone, does too).
+- **MZB-892** (step 0's GameTests, commit 15c6171a): `aSecondPuppetsAnimationEndJournalsNothing` (batch `aloft_second_puppet_death`) and
+  `aHandBackOfARetiredChiefIsAnsweredStale` (batch `aloft_retired_hand_back`), each with its control in a second grove (a puppet that is not
+  second, killed the same way, journals one CHIEF_KILLED; a HAND_BACK to a live puppet still hands back). `ConflictBridge.Slot` gained three
+  read-only accessors for them: `travelMemo`, `homeSpot` and `dying`.
+- **MZB-893** (steps 1 and 2, commits 108c1fe0, a138306c, 0767b6b6 and 35d0a916): the Aloft tests 23a to 23e, 35, 24, 25p and 26, in
+  `AloftMowzieGameTests` (batches named `aloft_*`, one grove or lane for each case, a control each).
+  - 23a `anAloftUmvuthiKeepsItsHeight` (MZB-806, 808, 809): a wall, an oak and a roof across a flat lane; the foot is at each structure's top
+    + 3, and every tick across at most 0.1, up at most 0.1, down at most 0.05, the box clear of blocks. The control band has no chief's stack.
+    An unread column (MZB-808's `getChunkNow` null) cannot be made to happen here, since the ticket's neighbour ring makes every chunk the
+    look reaches readable: that skip stays JUnit's (`AloftRulesTest`).
+  - 23b `anAloftUmvuthiSettlesAndRises` (MZB-809, 812): it stays aloft until within 32 blocks of the steer's end, sinks at most 0.05 a tick,
+    settles on a target in plain view, stays down with the flag dropped and the player back, rises no sooner than 200 ticks after its last
+    player target, and is at its place inside 400 ticks of rising; an iron golem as target does not settle it; its summons' restriction
+    centre is its own block, radius 25 (the control: a throne body's summons keep the throne's).
+  - 23c `pushesAndPortalsLeaveItAloft` (MZB-810, 815): a power-3 blast two blocks under it, a wind charge's blast, a push of 0.4 up and 0.4 out
+    after the entities tick, an `EntityTravelToDimensionEvent` and a column of lit portal blocks leave it where it floats (the listeners are
+    removed inside the sequence; an untagged Umvuthi with no gravity is the control, which the same blast moves).
+  - 23d `aStuckUmvuthiRisesThenIsMoved` (MZB-811): a stone ceiling 3 over the foot; the raise reads 8, 16, 24 a hundred ticks apart; B (no
+    player within 160) is moved to its place a hundred ticks later; A (a player with a line) is held and moved at the first look past 1,200
+    ticks; B then sinks onto a farmland field and every block stays farmland (no fall counted), the watcher sent no block particle.
+  - 23e `anUmvuthiKilledAloftFallsAndDropsOnce` (MZB-817): it falls through its animation, one CHIEF_KILLED, one Sol Visage at the animation's
+    end, the same ticks after death as the control's; no Umvuthi is left with its gravity off, and its chunks let go and forced again hold none.
+  - 35 `anAloftUmvuthiCrossesARiver` (MZB-812): a 20-wide river, a 56-wide lake with a raft, and a dry control; the puppet never sinks into or
+    touches water, hovers over the lake within 8 blocks of its steer's end, and when killed there falls and drops one Visage.
+  - 24 `theChiefsSummonsArePuppets` (MZB-816): a settled puppet's SPAWN and sunblockers carry the party's AgentTag at their join, are admitted
+    and never saved by vanilla (`summonsAdopted` up, `summonsRefused` not); a warrior of theirs killed books nothing; the control (a throne
+    Umvuthi's) are strays, saved and read back. Fork (conservative): the jar's AI is off, so the test starts the abilities itself and checks
+    the adoption rule, not the jar's choice to cast.
+  - 25p `aPaymentToThePuppetIsRemembered` (MZB-819, 820): the payment to a puppet journals a CHIEF_PAID with PAID_PUPPET and is remembered
+    through the hand-back though CHIEF_BODY named no player; the control (a throne Umvuthi) journals flags 0 as M9's. 26
+    `anUmvuthiKilledAwayRoutsItsInvasion` (MZB-817, 826, 827): the near warriors die by the jar's `die` with their credit naming the player, the
+    far ones live; the throne body's REMOVE is held while a second player is within 160 and played when gone; Rule U keeps the trim from
+    cutting an out-of-sight puppet for 1,300 ticks and the next stop beat cuts it once its target is cleared.
+- **MZB-894** (step 3, commits 8c7720f4 and 44ad41dd): 29a `aSecondUmvuthiBodyBooksNothing` (MZB-825: two groves 320 apart, the puppet killed
+  first in one and the throne body in the other; each order's first death books and drops once, the second journals nothing, drops nothing,
+  changes no counter, and its `die` takes no warrior), 29b `aHeldTakeIsAnsweredStaleAsThePuppetComesHome` (MZB-820 to 823: the held TAKE is
+  answered STALE within two ticks of the puppet being within `TAKE_STALE` of the throne, the hand-back merges the puppet's health and memory
+  into the throne body, the control grove plays at once) and the 29c group (MZB-817, 824, 827, 882):
+  `anAloftUmvuthiAtTheTickingEdgeIsTakenBack` (a real player steps 20 blocks and the edge goes from 143.5 to 111.5; the puppet and its
+  warrior are removed together within 2 ticks, `requeued` up by two, nothing left standing or saved), `anEdgeStopRecallReachesThePuppetAtItsTimeout`
+  (the seam: a puppet Rule U holds goes at the record's own timeout, the unheld control at once), `aFailedSessionCapturesEveryPuppet`
+  (`failForTest`: every puppet out, the dying chief's loot dropped by `sessionFailed`, a new session starts clean),
+  `aHomecomingWithItsGroveOutIsRecalled` (RECALL_DONE, the puppet held until `RECALL_TIMEOUT`, a kill in the window is journaled and counted
+  in `chiefDeathsAfterEnd`) and the lead's invariant's own test `aRecallAfterTheChiefsDeathJournalsTheDeathFirst` (a chief killed 20 ticks
+  before its recall and one in the recall's tick: each CHIEF_KILLED has the lower observation sequence than its BAND_DEMATERIALIZED).
+  - `Watch` is a nested helper of the test class: a real player of the level (`FakePlayers.addSeen`) on the west column of a chunk, with
+    simulation distance s and view s + 2, `start`, `check`, `ground`, `step(dx)` (`moveTo` plus `chunkSource.move`), `edge` and `end`. Fork
+    (conservative): a real player, not the mock the other kits use, since the edge of an entity-ticking area exists only for one; the original
+    distances are taken before any Watch sets its own and each is put back inside the sequence. `Lane` takes a first chunk so that a grove's
+    declared footprint stays unloaded (Rule U needs only the site). The name carries the distance, so two Watches never clash.
+- **MZB-895** (step 4, commit 57a17d73): 32t `theUmvuthiIsHandedBackOnItsThrone` (MZB-820 to 822: grove N's chief line is held until its puppet
+  floats to the spot and turns, then the Umvuthi stands on the throne with the puppet's health and exactly the two players' memory; the
+  warriors' lines play at once as the control; grove L's puppet is 200 blocks off and its line plays at `RECALL_TIMEOUT`, `chiefHandBacksLate`
+  up by one; grove O is out, so a recall and no hand-back, and the census's SPAWN stands the throne Umvuthi later) and 22-aloft
+  `anUmvuthiSetsOutAndComesHomeInPlainView` (MZB-822, 830: one Umvuthi within 160 blocks of the player at the end of every tick from before
+  the set-out to after the hand-back, the one in 128 moving under 0.5 blocks a tick and each swap within 0.1 blocks).
+- **MZB-896** (step 5, commit df36da95; the first test to run `FakePlayers.watching` and `pump` on a server, MZB-889): 31s
+  `anAloftUmvuthiReadsAndTurns` (MZB-813, 814): four watching hearers, pumped every tick by `MowzieKit.everyTick` (a near one, a far one at 126
+  blocks with view distance 7, an away one 147 blocks west with view distance 2, and the control's), the pairing read from the tracker's
+  `seenBy` by reflection. The checks: the trail's small_flame packets (the far hearer too, the away one none); no add packet during an ability;
+  each re-pair read in its own tick (one add with the body's id and UUID, the previous tick's position and the live tracker's base, a yaw
+  within 45 degrees of the way, a bundle carrying the new direction, the glowing bit and every effect); the server's body the same across
+  the tick, no join, leave, start or stop tracking, or death; the cooldown and the dying check of the gate; and a control (40 degrees at
+  0.2) that gets no add beyond its pairing. The legs are the control's 100 blocks at 0.2, south 60 blocks at 0.2, west at 0.3 and north at 0.3.
+  - Forks (conservative), each a way to ask the server a question it can answer: the glowing bit is made by `setGlowingTag` (no fire, so
+    nothing burns the test's chief), the health loss by `setHealth` and `setHealthLost`, the effects by `addEffect`; the atomicity of the
+    bundle a pairing sends is not asserted (`Hearer.packets` keeps a bundle as its parts, so a split bundle cannot be told from one), only
+    what its parts carry. The ROAR duration and the windows are guesses that the first round fixes. If `pump` does not pair a body here,
+    MZB-889's "compiled only" stands and this test is where it is fixed.
+- **MZB-897** (step 6, 33u `theUmvuthiAppearsBeyond128AndCarryOnTakesIt`, commits bab9a68b and cee9be5c; MZB-829): a copy of core's
+  `MarchGameTests.column` for a band that carries its chief. A `Watch` at simulation distance 8, then 10; a band of six warriors and the
+  chief (three rows of two and the chief's stack at the rear, four stacks, 1.5 blocks apart) comes in from 170 blocks (200 at 10) east on the
+  player's row at 0.1 a tick, toward a target 60 blocks east of the player. Checks: one BAND_MATERIALIZED with none placed and no BAND_SPAWN_REJECTED,
+  four pending stacks and no Umvuthi in a 400-block box; each stack is placed the tick its anchor is within 1 block inside the ticking
+  edge (143.5 at distance 8, 175.5 at 10), once, front first, every body in an entity-ticking chunk; the warriors appear 128 to 144 blocks
+  from the player (160 to 176), the Umvuthi never under 128 and in the same range (128 to 144, 160 to 176 at 10), floating from its first sight. A creative mock player takes it
+  with `RtsimApi.takeFromSim(body, TakeReason.PICKUP, player)` (the call Carry On's handler makes): no puppet, gravity on, no member, NoGravity
+  absent from its saved NBT, one CHIEF_KILLED by that player. A body made from that NBT with a new UUID is put down: 40 ticks on, it and the taken
+  body are alive, no puppet, no member, gravity on and no higher than where it was taken. Fails without the pending test (a chief nearer than
+  128) and without `gone`'s release (put down, it floats).
+  - Forks (conservative): the start is 170 and 200 blocks, the first past each ticking edge, not M10's 300 (the checks are of the edge and the
+    walk is 0.1 a tick); the put-down is emulated by a copy from the saved NBT with a new UUID (the item's own placement is Carry On's, and a
+    copy in the world is the case the rule must handle); the taker is `makeMockPlayer(CREATIVE)`, not in the level, so the area under test
+    does not change; the grove of the faction is declared and never forced (out), so nothing but the band's rules is under test; the pickup
+    and the put-down are checked at both distances.
+- **MZB-898** (step 6, 36a `aDyingChiefDropsItsLootAtAStop`, commit cee9be5c; MZB-817): two bands on two lanes, each a puppet and a warrior,
+  each puppet settled before a masked player 20 blocks off (the jar's AI off and the target held by hand each tick, as 29c's failed session
+  does). The control is killed by its player and its loot lands 100 to 130 ticks later; the subject is killed and 40 ticks into its animation
+  `RtsimSession.restartGlobalForTest` stops the session and starts it again. It checks: the body finished there and then, removed as KILLED, one
+  Sol Visage within 2 blocks of its x and z, nothing dying, the one CHIEF_KILLED the first session booked naming the player (read from the old
+  engine with `RtsimTests.recordsFor`), at most one more in the new engine's, and 150 ticks on still one Visage.
+  - Fork (conservative): `deathLootLost` is the bridge's, and the bridge is a singleton that resets its counters at `sessionStarted`, so a
+    loss inside the stop would hide in the restart. The proof is therefore the loot itself and the removal reason KILLED (a body removed any
+    other way is a lost one), not the counter. The control runs first, as the restart is global.
+- **MZB-899** (step 6, 36b `aDyingChiefTakenBackAtTheEdgeDropsItsLoot`, commit cee9be5c; MZB-817, MZB-818): a `Watch` (simulation distance 8, view
+  10) and two bands 20 blocks east of it, 15 apart on z, each puppet settled before the player. The control is killed first and drops at its
+  animation's end. The subject is killed and 40 ticks into its animation the player steps 128 blocks west: its chunk stays loaded (within the view
+  distance) but stops ticking entities, and the body must be finished within 3 ticks of it stopping: removed as KILLED, one Visage within 2
+  blocks, nothing dying, `deathLootLost` unchanged, the one CHIEF_KILLED naming the player. The player comes back 128 blocks east: 100 ticks on,
+  still one Visage and one CHIEF_KILLED. Here the counter can be read (the session is not restarted). The "3 ticks" and the 100 to 130 tick
+  window are guesses the first round fixes. The recall of the bands and `Watch.end()` are inside the sequence.
+- **MZB-900** (step 6's optional 31h, not written): its clause is covered in parts by 22-aloft (a player's plain view), 32t (the throne), 23d
+  (stuck), 23a and 23b (height and settle) and 31s (the re-pair as the server sees it), and a test of its own would add no fact. Conservative
+  option: do not write a test the others have made, and say so.
+- **MZB-901** (step 7, for the lead): the re-run of the earlier module GameTests (27, 28, 30, 32, 33 and 34) is a run, not code. Phase 2's final
+  clean round of both projects does it, and its logs (`target/m11c-gt<N>-<project>.log`) are the record.
+
 ## M12 S9
 
 (none yet)
