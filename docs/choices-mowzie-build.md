@@ -5369,6 +5369,14 @@ RP-150 to RP-153 the replay records.
   /save-off does, and restores it however it ends (`ConflictKit.onEnd`). Its check now names the records it saw
   and their generations. The other two failures of the round (a masked player targeted, a hidden stray counted
   as a chief) are judged on a rerun on a quiet machine.
+- **MZB-696** (M9's grove world tests wait on the right clock): `tools/chunk_waits.py`'s default chunk patterns
+  are anchored (`^far\.ready\(`), so a wait on `st.far.ready()` was never seen as a chunk wait. In
+  UmvuthanaWorldGameTests, `aMaskedPlayerIsNotTargetedByTheBand` (2,400 ticks) and `raptorsHuntTheBasesAnimals`
+  (5,000) kept a tick timeout over their site load, and the masked player test failed in M8's round under load at
+  its last check. The script now converts both with `--chunk '^st\.far\.ready\('`. Two converted tests had
+  `waits.logic(st.far.ready())`, a chunk wait on the logic clock, and the chest test's HAVEN_CHEST wait loaded a 5
+  by 5 rect inside its logic wait; those are now `waits.chunks(...)`, the chest's split into a chunk wait and then
+  the logic wait for the record.
 
 ## M9 Umvuthana
 
