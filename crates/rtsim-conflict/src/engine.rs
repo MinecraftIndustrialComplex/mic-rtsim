@@ -94,8 +94,8 @@ pub mod camp;
 pub mod rail;
 
 pub use camp::{
-    Answered, CHIEF_SLOT, Camp, Chest, Heir, Line, Placing, Retired, STACK_ITEMS, Slot, SlotState,
-    TRADED_CAP, Throne,
+    Answered, CHIEF_SLOT, Camp, Chest, Ended, Heir, Line, Placing, Retired, STACK_ITEMS, Slot,
+    SlotState, TRADED_CAP, Throne,
 };
 pub use rail::{HeldPass, LineCount, Pin, RailCall, RailMeter, StationEnd, TrackFocus};
 
@@ -985,6 +985,12 @@ pub struct Conflict {
     /// one for each camp. Saved in the meta page, so the link never walks the factions' rows for
     /// them.
     pub placing: Vec<(u32, Placing)>,
+    /// The camps whose [`Camp::ended`] stands, by the ended band's agent (MZB-853): a
+    /// BAND_DEMATERIALIZED or CHIEF_KILLED of a party `home` removed names no faction. Saved in
+    /// the meta page, as `placing` is, so neither a save and load in a session nor a lookup walks
+    /// the factions' rows. An entry whose camp's record was pruned (its slot's generation freed)
+    /// goes at the next lookup of its agent, and every entry at the replay end.
+    pub chief_ended: BTreeMap<u64, u32>,
     /// The factions whose camps owe tribute in the session's replay (RP-134): those that owed at
     /// its start and those a replayed payment made owe, which a replayed answer to a stack no
     /// placing holds is looked up in. In memory only, emptied at the replay end.
@@ -1175,6 +1181,7 @@ impl Conflict {
             peaceful_since: Tick::ZERO,
             notice_serial: 0,
             placing: Vec::new(),
+            chief_ended: BTreeMap::new(),
             tribute_owing: Vec::new(),
             replay_from_pages: false,
             floors: BTreeMap::new(),
@@ -6356,6 +6363,8 @@ impl Conflict {
         for c in std::mem::take(&mut self.chief_states_held).into_values() {
             self.chief_state(&c, now);
         }
+        // The chiefs whose puppets the last session left unaccounted for are lost (MZB-853).
+        self.chief_ends_lost(now);
         self.presence.every_player_left();
     }
 
@@ -6832,6 +6841,8 @@ impl Conflict {
                 {
                     self.home_open.remove(&d.agent);
                 }
+                // The end of a grove chief's band (MZB-853): its puppet is gone from the world.
+                self.chief_band_gone(d.agent, d.epoch, at);
                 // By the party, not through `party_of`: a band recalled at one epoch and seen
                 // again at the next has its old epoch's despawn still to come (MZB-131).
                 let Some(p) = Party::of_agent(d.agent).filter(|p| self.parties.contains(*p)) else {
@@ -6909,7 +6920,11 @@ impl Conflict {
             Obs::ChiefKilled(ck) => {
                 let Some(p) = Party::of_agent(ck.agent).filter(|p| self.parties.contains(*p))
                 else {
-                    self.unbooked_home_death(ck.agent, ck.epoch, ck.op, None, at);
+                    // A grove chief's puppet killed after its band's end is the chief's death at
+                    // its camp (MZB-853); any other death of an ended band books nothing.
+                    if !self.chief_killed_home(w, ck, at) {
+                        self.unbooked_home_death(ck.agent, ck.epoch, ck.op, None, at);
+                    }
                     return;
                 };
                 let killer = (ck.by == boundary::BY_PLAYER).then(|| self.player(w, ck.killer));
@@ -7774,6 +7789,8 @@ impl Conflict {
                 "tribute stacks",
                 self.placing.capacity() * std::mem::size_of::<(u32, Placing)>(),
             ),
+            // The same key and value as the index by key (MZB-853).
+            ("chief band ends", self.chief_ended.len() * BTREE_KEY_BYTES),
             ("players", self.players.len() * BTREE_PLAYER_BYTES),
         ])
     }
