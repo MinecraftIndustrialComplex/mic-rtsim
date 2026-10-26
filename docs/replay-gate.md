@@ -2003,7 +2003,7 @@ its files on disk, the rest from the save before. Two directions:
    ring in its own file (RP-204, RP-206, RP-207, T2's train ring): exact. A write that fails does not
    break it for the files the journal depends on: vanilla logs the failure and clears the data's dirty
    flag, but the journal's file is held until that data has written (U-g1; the Diesel oil file and
-   NeoForge's level attachments are not marked yet: residual 10). Before, the direction followed
+   NeoForge's level attachments are not marked yet: residual 11). Before, the direction followed
    the overworld's SavedData map capacity, unknown on the pack (the audit's U1; moot now).
 2. A process crash between chunk or entity writes and the journal's. A chunk the barrier notes is on
    disk before the journal's file (JB1 to JB5), so its effect is B, and its carried record or epoch
@@ -2015,7 +2015,7 @@ its files on disk, the rest from the save before. Two directions:
    are synced by DSYNC or the barrier's force. Not on Windows (residual 1).
 5. A held journal write (RP-205, or a failed SavedData write, U-g1). Every SavedData store is in B until
    the next written save: exact, by the rings. A hold has no round limit. The engine's pages are not held
-   with it (P29, residual 10).
+   with it (P29, residual 11).
 6. A given-up note (RP-205): A for that chunk (residual 2).
 
 **The rows, after slice U** (the audit's row ids; "exact" means the dedup is saved with the effect):
@@ -2029,8 +2029,8 @@ its files on disk, the rest from the save before. Two directions:
 | I1 | reconcile container and energy deltas | exact (epoch, noted); a double chest across a chunk border: the other half's chunk is not noted | exact; a double chest across a chunk border: a positive delta a dupe (measured, RP-215: 40 for 20), a negative one a dupe (inferred) | negative delta: dupe; positive: loss | the coordinator (RP-215, residual 9) |
 | I2 | reconcile block destroys, drops | exact (RP-213: the drops join only once the broken blocks' chunks are on disk) | exact; the drops a loss on a write failure or a stop before they join, logged and counted (was a dupe) | the block back while booked destroyed, the drops never joined: no dupe (was a dupe) | none (RP-213) |
 | I3 | reconcile deposit draws (Ore Excavation, Destroy crude and chunk pollution) | chunk exact; the pollution ledger cannot be A now | chunk exact; the ledger's ring refuses a second booking (RP-207) | not drawn but delivered, dupe | given-up notes |
-| I4 | IND_DEPOSIT_DELTA, Diesel `cdg_oil_chunks` | cannot happen (RP-200), except after a failed write of the oil file, which is not marked yet (residual 10) | exact: the oil file's ring (RP-204) | n/a (not noted) | none |
-| I5 | IND_DEPOSIT_DELTA, Destroy level pollution and the ledger | cannot happen (RP-200; the ledger's failed write is held, U-g1), except level pollution after a failed write of `neoforge_data_attachments` (residual 10) | exact: one ring per file (RP-207); the ledger lost alone: short by the delta | n/a | none (residual 4) |
+| I4 | IND_DEPOSIT_DELTA, Diesel `cdg_oil_chunks` | cannot happen (RP-200), except after a failed write of the oil file, which is not marked yet (residual 11) | exact: the oil file's ring (RP-204) | n/a (not noted) | none |
+| I5 | IND_DEPOSIT_DELTA, Destroy level pollution and the ledger | cannot happen (RP-200; the ledger's failed write is held, U-g1), except level pollution after a failed write of `neoforge_data_attachments` (residual 11) | exact: one ring per file (RP-207); the ledger lost alone: short by the delta | n/a | none (residual 4) |
 | K1 | IND_CARRIAGE_DELTA, `create_tracks` | cannot happen (RP-200; a failed tracks write holds the journal's file, U-g1) | exact: T2's train ring (RP-190 on, pruned at the engine's acknowledgement, RP-250), with its mixin applied | n/a | slice T2's limits (residual 6) |
 | K2 | IND_WRITE_PACKAGE, offline buffer | cannot happen (RP-200; U-g1 as K1) | the tracks newer than the chunk: exact, the port's buffer ring (RP-206, pruned at the engine's acknowledgement, RP-209), with its mixins applied. The postbox's chunk newer (its background save, the usual state between world saves): exact through RP-206's hooks, the chunk carrying the ops a restore brought in and the first offline write reading the chunk as saved; residual 8 where they do not reach | n/a | residual 8 |
 | K3 | IND_WRITE_PACKAGE, loaded postbox | exact (noted) | exact: the chunk's carried result when loaded at the resend, the port's postbox ring when not (RP-206). The tracks newer than the chunk (either file can be the newer: chunks save between world saves, the tracks only at one): written again when loaded, exact; refused when unloaded, the package only in Create's unprimed mirror, a loss. Goods moved out of the chunk before it saved, then the write reapplied: dupe | loss | the coordinator (Create slice) |
@@ -2111,7 +2111,7 @@ its files on disk, the rest from the save before. Two directions:
    dupe, measured. A negative delta is a dupe by the same mechanism (inferred, not run). The fixes the
    audit gives: carry and note the reconcile in both halves' chunks, or reconcile each half by its own
    position. Owner: the coordinator decides.
-10. **A failed SavedData write: what the hold leaves** (RP-317, slice U-g, docs/choices-journal-barrier.md
+11. **A failed SavedData write: what the hold leaves** (RP-317, slice U-g, docs/choices-journal-barrier.md
     U-g1 to U-g10). Vanilla's `SavedData.save` clears the dirty flag and only logs a failed write, so a
     tracks write that failed while the journal's succeeded, then a crash, was direction A for every train op
     the restored pages had decided (RP-200's "always B" assumed every write succeeds). A failed write of a
@@ -2121,7 +2121,7 @@ its files on disk, the rest from the save before. Two directions:
       happens to the data. A station exchange in the pages' outbox when they were saved (written, not
       answered): exact, resent once and applied once (rtsim-jni `held_journal`, the written test). One
       answered inside the pages: lost with or without the hold, X's load (the answered test, named for
-      P29). Wiring P29's confirm on WORLD_SAVED (docs/choices-leg-purge.md LP12) mends it; Ben's.
+      P29). Wiring P29's confirm on WORLD_SAVED (docs/choices-leg-purge.md LP12) mends it; Ben's, and slice U-h's to close.
     - **Files not marked:** Diesel's `cdg_oil_chunks` (I4) and NeoForge's `neoforge_data_attachments`
       (Destroy's level pollution, I5, and every plugin's rings): a failed write of one is still A.
     - A stop with a write outstanding keeps the older journal file (U-g7); the data whose level was
