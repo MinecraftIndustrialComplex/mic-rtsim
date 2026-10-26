@@ -1364,8 +1364,9 @@ fn write_tribute(st: &mut State, w: &mut RecordWriter<'_>) -> (u64, bool) {
             .cloned();
         let item = phase1::catalog_item(st, GoodId(u16::try_from(p.good).unwrap_or(u16::MAX)));
         let (Some(dimension), Some(item)) = (dimension, item) else {
-            // Never written: the goods go back to the grove's stock, and the chest waits to be
-            // reported again.
+            // Never written: the goods go back to the grove's stock. The chest is forgotten if it
+            // is this stack's own, and waits to be reported again; one the camp holds since,
+            // elsewhere, takes the next stack at once (MZB-762).
             log_error(&format!(
                 "a tribute stack (op {op:#x}) to a chest in dimension {} Java never named, or of a good no item stands for; back to its grove",
                 p.dimension

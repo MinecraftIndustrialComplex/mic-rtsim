@@ -1909,6 +1909,15 @@ mod dragons {
             .collect()
     }
 
+    /// How many transfers Java was given, a stack sent again under its op id included, which the
+    /// set of ops ([`transfer_ops`]) does not show.
+    fn transfer_sends(j: &Java) -> usize {
+        j.commands
+            .iter()
+            .filter(|(_, kind, _)| *kind == cmd::TRANSFER_TO_CONTAINER)
+            .count()
+    }
+
     /// Dragon tribute over the real boundary (SINK.md §4.5, §4.6): TRIBUTE_START makes a granted
     /// village the lair's tributary and it pays at once, but the coin waits for the lair's chest;
     /// LAIR_CHEST sends it as TRANSFER_TO_CONTAINER stacks; a FAILED stack comes back and waits
@@ -2373,6 +2382,136 @@ mod dragons {
         assert_eq!(j.containers.get(&other), None, "none into the other chest");
         assert_eq!(e.dragons_tribute(), [1, coins, 0, 0]);
         assert!(has_chest(&e), "the reported chest is kept for new coin");
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// MZB-767 (re-check P2): a FAILED answer for a dragon's stack, taken with the dragons off,
+    /// decides nothing (RP-291). A stack parked at chest X (NOT_LOADED), the lair's chest Y
+    /// reported, the stack sent to X again, ECOLOGY off in the tick Java answers FAILED: the coin
+    /// is booked back and Y is kept, but no stack is made and no op id is drawn, for the switch
+    /// on forgets Y and the stack would go to a chest the engine no longer holds. Before the fix
+    /// `tribute_failed` placed the coin again at once, so the engine held new stacks while off,
+    /// saved them, and wrote them to Y at the switch on. Back on, nothing is sent; the lair's
+    /// next chest report places the coin once, and the books hold every coin.
+    #[test]
+    fn a_failed_tribute_stack_answered_with_the_dragons_off_makes_no_stack() {
+        use rtsim_jni::engine::MODULE_ECOLOGY;
+        let dir = tmpdir("tribute-failed-off");
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        j.module_mask = MODULES;
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        let village = 0x0001_0000_0000_0001u64;
+        j.adopt(village, "minecraft:village_plains", "human", 90, 2900, 3000);
+        j.dragon_obs(&O::LairFound(db::LairFound {
+            lair: LAIR,
+            late: false,
+            dimension: dim,
+            species: Species::Fire,
+            kind: LairKind::Roost,
+            min: (HOME.0 - 30, 60, HOME.2 - 30),
+            max: (HOME.0 + 30, 140, HOME.2 + 30),
+            home: HOME,
+        }));
+        j.idle();
+        j.idle();
+        j.work_catalog(&test_works());
+        j.idle();
+        e.order(vec![
+            Order::WorksGrant {
+                village,
+                amount: 2_000_000,
+            },
+            Order::TributeStart {
+                village,
+                lair: LAIR,
+            },
+        ])
+        .unwrap();
+        j.idle();
+        j.idle();
+        let [_, _, coins, _] = e.dragons_tribute();
+        assert!(coins > 64, "more than one stack: {coins}");
+        let stacks = (coins + 63) / 64;
+        let report = |pos: [i32; 3]| {
+            O::LairChest(db::LairChest {
+                lair: LAIR,
+                dimension: dim,
+                pos: (pos[0], pos[1], pos[2]),
+            })
+        };
+        let first = [HOME.0 + 2, HOME.1 - 4, HOME.2 + 1];
+        let other = [HOME.0 + 20, HOME.1 - 4, HOME.2 + 20];
+
+        // Every stack goes to the first chest and is parked: its chunk is not loaded.
+        j.unloaded_transfers = true;
+        j.dragon_obs(&report(first));
+        j.idle();
+        j.idle();
+        let sent = transfer_ops(&j);
+        assert_eq!(sent.len() as i64, stacks);
+        assert_eq!(e.dragons_tribute(), [1, 0, 0, stacks], "parked, not failed");
+
+        // The lair's chest is reported elsewhere: the parked stacks go again, to the first chest,
+        // and Java answers FAILED (loaded now, no room). ECOLOGY goes off before the answers are
+        // handed over.
+        j.unloaded_transfers = false;
+        j.fail_transfers = true;
+        j.dragon_obs(&report(other));
+        for _ in 0..8 {
+            j.flush();
+            if transfer_sends(&j) as i64 >= 2 * stacks {
+                break;
+            }
+        }
+        assert_eq!(
+            transfer_sends(&j) as i64,
+            2 * stacks,
+            "each stack sent again"
+        );
+        j.modules(MODULES & !MODULE_ECOLOGY);
+        j.idle();
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        assert_eq!(
+            e.dragons_tribute(),
+            [1, 0, coins, 0],
+            "off: the coin is booked back and no stack is made"
+        );
+        assert_eq!(transfer_ops(&j), sent, "no new op id");
+
+        // Back on: the switch forgot the chest, so nothing is sent, and the coin waits.
+        j.modules(MODULES);
+        for _ in 0..4 {
+            j.idle();
+        }
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        assert_eq!(e.dragons_tribute(), [1, 0, coins, 0], "the coin waits");
+        assert_eq!(transfer_ops(&j), sent, "no stack goes to a forgotten chest");
+        assert_eq!(transfer_sends(&j) as i64, 2 * stacks);
+        assert!(j.containers.is_empty());
+
+        // The lair's chest is reported again: the coin goes once, and the books hold it.
+        j.fail_transfers = false;
+        j.dragon_obs(&report(other));
+        j.idle();
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        assert_eq!(j.containers.get(&other).copied(), Some(coins as i32));
+        assert_eq!(j.containers.get(&first), None, "none into the first chest");
+        assert_eq!(e.dragons_tribute(), [1, coins, 0, 0], "every coin placed");
+        let (ledger, world) = e.with_dragons(|d, w| {
+            (
+                d.ledger.tribute.values().sum::<i128>(),
+                w.works_totals().1.iter().map(|(_, a)| *a).sum::<i128>(),
+            )
+        });
+        assert_eq!(
+            ledger,
+            i128::from(coins) * 1000,
+            "the books hold every coin"
+        );
+        assert_eq!(world, ledger, "the world's tribute is the dragons'");
         e.close(true, Duration::from_secs(5)).unwrap();
     }
 
