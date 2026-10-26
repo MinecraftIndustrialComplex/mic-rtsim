@@ -9,6 +9,7 @@ import net.neoforged.neoforge.common.IOUtilities;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
  * The journal's file is the last SavedData a world save writes (slice U; docs/choices-journal-barrier.md RP-200).
@@ -31,6 +32,10 @@ import java.util.List;
  * chunk flushed, and the chain is waited for again. A second hold keeps the older file: a flush save never waits
  * longer than two of the journal's waits.
  *
+ * <p>A write of a {@link JournalDependent} file that failed holds the journal's write ({@link SavedDataWrites}, U-g1):
+ * vanilla clears the data's dirty flag before the write and only logs a failure, so {@link #begin} marks every failed
+ * file's data dirty again, and the save writes it once more. Its directories are the scope of that hold ({@link #dataDirs}).
+ *
  * <p>Server thread only. The journal's file is written only inside saveAllChunks (RP-203: a level saved by itself
  * leaves it dirty); the marker of such a save is queued at once, and reports the file it finds on disk. If
  * saveAllChunks throws, the held tasks go on the chain at the next one's return: later, the safe side.
@@ -46,6 +51,11 @@ public final class WorldSaveOrder {
     private static List<Path> dataDirs = List.of();
     /** GameTests: run once on the server thread, between a flush save's first wait and its second try. */
     public static Runnable beforeFlushRetryForTest;
+    /**
+     * GameTests: directories a test's own SavedData files live in. A world save's {@link #dataDirs} include them, so a
+     * failed write there holds a test journal's write ({@link SavedDataWrites#firstFailing}) and no other journal's.
+     */
+    public static final List<Path> EXTRA_DATA_DIRS_FOR_TEST = new CopyOnWriteArrayList<>();
 
     /** saveAllChunks starts (its HEAD, MinecraftServerSaveMixin). */
     public static void begin(MinecraftServer server) {
@@ -54,6 +64,7 @@ public final class WorldSaveOrder {
 
     /** saveAllChunks starts; {@code flush}: its flush argument (the stop, {@code /save-all flush}). */
     public static void begin(MinecraftServer server, boolean flush) {
+        SavedDataWrites.INSTANCE.remarkAll(); // before any level's save: a file whose write failed is written again in this one
         saving = true;
         flushing = flush;
         retrying = false;
@@ -62,6 +73,7 @@ public final class WorldSaveOrder {
         List<Path> dirs = new ArrayList<>();
         for (ServerLevel level : server.getAllLevels())
             dirs.add(DimensionType.getStorageFolder(level.dimension(), root).resolve("data"));
+        dirs.addAll(EXTRA_DATA_DIRS_FOR_TEST);
         dataDirs = List.copyOf(dirs);
     }
 
@@ -74,8 +86,8 @@ public final class WorldSaveOrder {
     }
 
     /**
-     * The {@code data/} directories the journal's write syncs first: every level's during a world save, else the
-     * journal's own.
+     * The {@code data/} directories the journal's write syncs first, and whose files' failed writes hold it
+     * ({@link SavedDataWrites#firstFailing}): every level's during a world save, else the journal's own.
      */
     public static List<Path> dataDirs(Path journalDir) {
         return saving ? dataDirs : List.of(journalDir);
