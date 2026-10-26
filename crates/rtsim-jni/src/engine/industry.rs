@@ -273,11 +273,26 @@ impl Link {
     /// calls this ahead of its switch, and a restart with the module off ran the session start
     /// there, at the restart's game time, so the engine caught up the time it had been off while
     /// frozen, and its decisions waited for the switch (RP-285). The switch on sets its own time.
+    ///
+    /// The chain writes the link holds go to Java from here on: resent from the outbox at a
+    /// restart, or written from the queue, where the switch-on moved the outbox. The engine awaits
+    /// their answers from this session start (RP-294, docs/replay-gate.md 9.7: the switch gates
+    /// only new decisions). Else, after a stretch with the module off (a switch-off in a session,
+    /// or a stop with it off and a start with it on), the catch-up would take each as lost ten
+    /// periods after the drain that first handed it on (SC113) and write its frogport again under
+    /// a new op, and Java would write the same goods twice. One Java answered while off left the
+    /// link then ([`keep_answer`]), so only unanswered ones are handed on.
     fn begin_session(&mut self) {
         if !self.enabled {
             return;
         }
         if let Some(t) = self.session_start_at.take() {
+            let held = self.queue.iter().chain(self.outbox.iter().map(|(_, c)| c));
+            for c in held {
+                if let Cmd::WriteChain(w) = c {
+                    self.engine.hand_on_again(w.store, w.op, t);
+                }
+            }
             self.engine.session_start(t);
         }
     }
@@ -566,6 +581,10 @@ pub(super) fn session_start(st: &mut State, game_time: i64, module_mask: u32) {
 /// Java announces its districts and load states again when the module turns on, as at a session
 /// start. A session start still waiting (a restart with the module off) takes this game time
 /// instead of the restart's.
+///
+/// The chain writes the link held while off (queued, or kept in the outbox) go to Java now: the
+/// engine's session start awaits their answers from its game time (`Link::begin_session`,
+/// RP-294).
 fn set_enabled(st: &mut State, on: bool) {
     let gt = tick(st.game_time);
     let l = &mut st.industry;
@@ -1853,5 +1872,313 @@ mod tests {
             (st.industry.session_start_at, st.industry.deferred.len()),
             (None, 0)
         );
+    }
+
+    const IRON: Good = Good(1);
+    const MINE: rtsim_industry::ids::DistrictId = rtsim_industry::ids::DistrictId(1);
+    const MILL: rtsim_industry::ids::DistrictId = rtsim_industry::ids::DistrictId(2);
+    /// Each district's frogport is its inventory 1; its vault is inventory 0.
+    const PORT: u32 = 1;
+
+    fn frog(d: rtsim_industry::ids::DistrictId) -> rtsim_industry::ids::BlockPos {
+        rtsim_industry::ids::BlockPos::new(if d == MINE { 10 } else { 20 }, 64, 0)
+    }
+
+    fn send(e: &mut Industry, at: u64, obs: Obs) {
+        e.ingest(&Timed { at: Tick(at), obs });
+    }
+
+    fn live(e: &mut Industry, d: rtsim_industry::ids::DistrictId, at: u64) {
+        use rtsim_industry::obs::LoadState;
+        let vault = rtsim_industry::ids::BlockPos::new(if d == MINE { -100 } else { 200 }, 64, 0);
+        for p in [vault, frog(d)] {
+            let chunk = ChunkPos {
+                dim: 0,
+                x: p.x >> 4,
+                z: p.z >> 4,
+            };
+            let applied_epoch = 0;
+            send(
+                e,
+                at,
+                Obs::ChunkLoaded {
+                    district: d,
+                    chunk,
+                    applied_epoch,
+                },
+            );
+        }
+        send(
+            e,
+            at,
+            Obs::LoadState {
+                district: d,
+                state: LoadState::Live,
+                ticking_chunks: 2,
+                total_chunks: 2,
+            },
+        );
+    }
+
+    /// The two ends of a package store, as rtsim-industry's tests/chain_replay.rs `pair` builds
+    /// them: a mine (district 1) and a mill (district 2), live, learned with a chain link of iron
+    /// from the mine's frogport to the mill's. The mine is away from tick 100 and replays, so the
+    /// iron it sends piles up toward the mill's frogport and the engine writes it there
+    /// (IND_WRITE_CHAIN, choice SC113).
+    fn chain_pair() -> Industry {
+        use rtsim_industry::ids::{BlockPos, GoodVec, StoreId};
+        use rtsim_industry::learn::{Learned, LinkKey};
+        use rtsim_industry::obs::{
+            ChainDirection, ChainPackage, DistrictDecl, InvKind, InventoryDecl, LoadState,
+            StoreDecl, StoreFrogport, SweepEnd,
+        };
+        let store = StoreId(5);
+        let mut e = Industry::new(1, Tunables::default(), Tick(0));
+        e.define_good(IRON, GoodInfo::item("iron", 64));
+        let port = |d| StoreFrogport {
+            district: Some(d),
+            inventory: Some(PORT),
+            star: false,
+            pos: frog(d),
+            conveyor: BlockPos::new(frog(d).x + 1, 64, 0),
+            from: None,
+        };
+        send(
+            &mut e,
+            0,
+            Obs::PackageStore(StoreDecl {
+                store,
+                dim: 0,
+                epoch: 0,
+                into: None,
+                frogports: vec![port(MINE), port(MILL)],
+                hops: vec![1],
+            }),
+        );
+        for (d, stock, rate, link) in [(MINE, 1_000, 0.05, -0.05), (MILL, 0, -0.04, 0.05)] {
+            send(
+                &mut e,
+                0,
+                Obs::District(DistrictDecl {
+                    district: d,
+                    revision: 1,
+                    dim: 0,
+                    name: 0,
+                    not_learnable: None,
+                    inventory_count: 2,
+                }),
+            );
+            let vault = BlockPos::new(if d == MINE { -100 } else { 200 }, 64, 0);
+            for (index, pos, kind, slots) in [
+                (0u32, vault, InvKind::ITEMS, 100u32),
+                (PORT, frog(d), InvKind::ITEMS | InvKind::POSTBOX, 18),
+            ] {
+                send(
+                    &mut e,
+                    0,
+                    Obs::Inventory(InventoryDecl {
+                        district: d,
+                        revision: 1,
+                        index,
+                        pos,
+                        kind: InvKind(kind),
+                        item_slots: slots,
+                        fluid_capacity: 0,
+                        energy_capacity: 0,
+                    }),
+                );
+            }
+            live(&mut e, d, 0);
+            for (inventory, n) in [(0, stock), (PORT, 0)] {
+                send(
+                    &mut e,
+                    10,
+                    Obs::StockSample {
+                        district: d,
+                        inventory,
+                        sweep: 1,
+                        goods: GoodVec::from_pairs([(IRON, n)]),
+                    },
+                );
+            }
+            send(
+                &mut e,
+                10,
+                Obs::SweepEnd(SweepEnd {
+                    district: d,
+                    sweep: 1,
+                    records: 2,
+                    inventories: 2,
+                    live: true,
+                    creative: false,
+                    overstressed: false,
+                }),
+            );
+            e.adopt_model(
+                d,
+                Learned {
+                    at: Tick(20),
+                    window_ticks: 12_000,
+                    rates: vec![(IRON, rate)],
+                    links: vec![(
+                        LinkKey::Chain {
+                            inventory: PORT,
+                            to: frog(MILL),
+                            good: IRON,
+                        },
+                        link,
+                    )],
+                    confidence: 1.0,
+                    points: 0,
+                    longest_gap: 0,
+                    latency_ticks: 0,
+                },
+                vec![],
+            );
+        }
+        send(
+            &mut e,
+            15,
+            Obs::ChainPackage(ChainPackage {
+                store,
+                district: Some(MINE),
+                inventory: Some(PORT),
+                direction: ChainDirection::Out,
+                frogport: 0,
+                pos: frog(MINE),
+                destination: Some(1),
+                packages: 1,
+                address: 0,
+                op: None,
+                key: None,
+                goods: GoodVec::from_pairs([(IRON, 64)]),
+            }),
+        );
+        send(
+            &mut e,
+            100,
+            Obs::LoadState {
+                district: MINE,
+                state: LoadState::Unloaded,
+                ticking_chunks: 0,
+                total_chunks: 2,
+            },
+        );
+        e.advance_to(Tick(101));
+        e
+    }
+
+    /// The chain writes in the link's queue, in order.
+    fn queued_writes(st: &State) -> Vec<OpId> {
+        st.industry
+            .queue
+            .iter()
+            .filter_map(|c| match c {
+                Cmd::WriteChain(w) => Some(w.op),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The chain writes the link sends next, in order: its resends, then its queue.
+    fn writes_to_send(st: &State) -> Vec<OpId> {
+        let resent = st.industry.resend.iter().filter_map(|(_, c)| match c {
+            Cmd::WriteChain(w) => Some(w.op),
+            _ => None,
+        });
+        resent.chain(queued_writes(st)).collect()
+    }
+
+    /// How the module comes back on in [`writes_after_a_held_write`].
+    #[derive(Clone, Copy, PartialEq)]
+    enum Back {
+        /// MODULES in the session, W still in the link's queue (the buffer was full).
+        SwitchQueued,
+        /// MODULES in the session, W written before the switch-off and not answered.
+        SwitchWritten,
+        /// A stop with the module off and a restart whose config has it on, W written and not
+        /// answered: the restart resends it from the outbox.
+        Restart,
+    }
+
+    /// U-c part 3 (RP-294): a chain write the switch held. The engine hands a write W of the
+    /// mine's iron on at 20,100 (the link's queue takes it); W is still the link's when industry
+    /// goes off (`back` says where). The module comes back on thirty periods later. Returns (W,
+    /// the chain writes the link sends after the switch-on's step), then checks that an answer
+    /// still unheard ten periods past the switch-on frees the frogport for the next write (SC113).
+    fn writes_after_a_held_write(back: Back) -> (Vec<OpId>, Vec<OpId>) {
+        let (_tx, rx) = std::sync::mpsc::channel();
+        let mut st = State::new(rx, None);
+        st.industry.engine = chain_pair();
+        st.industry.enabled = true;
+        st.game_time = 20_100;
+        simulate(&mut st);
+        let held = queued_writes(&st);
+        assert_eq!(held.len(), 1, "one write a step");
+        if back != Back::SwitchQueued {
+            let i = st
+                .industry
+                .queue
+                .iter()
+                .position(|c| matches!(c, Cmd::WriteChain(_)))
+                .expect("the write");
+            let c = st.industry.queue.remove(i).expect("the write");
+            st.industry.outbox.push_back((41, c));
+            st.industry.queue.clear();
+        }
+        set_enabled(&mut st, false);
+        let period = Tunables::default().replay.chain_write_ticks;
+        let on = 20_100 + 30 * period;
+        st.game_time = on as i64;
+        if back == Back::Restart {
+            // The engine and the link as the pages saved at the stop hold them: frozen at the
+            // switch-off, W in the outbox. Java applied nothing past sequence 40.
+            st.industry.resume(40);
+            session_start(&mut st, on as i64, MODULE_INDUSTRY);
+        } else {
+            set_enabled(&mut st, true);
+        }
+        simulate(&mut st);
+        let after = writes_to_send(&st);
+        // W goes to Java now; unanswered ten periods after that, the frogport is written again.
+        st.industry.queue.clear();
+        live(&mut st.industry.engine, MILL, on);
+        st.game_time = (on + 9 * period) as i64;
+        simulate(&mut st);
+        assert_eq!(queued_writes(&st), vec![], "W holds the frogport");
+        st.game_time = (on + 11 * period) as i64;
+        simulate(&mut st);
+        let next = queued_writes(&st);
+        assert_eq!(next.len(), 1, "W's answer taken as lost: {next:?}");
+        assert!(!held.contains(&next[0]), "a new write under a new op");
+        (held, after)
+    }
+
+    /// The switch held W in the link's queue: at the switch-on W goes, and the catch-up of the
+    /// thirty periods it was off writes the frogport no second time. Before RP-294 W counted as
+    /// handed on at 20,100, the catch-up took its answer as lost after ten periods and wrote the
+    /// mine's iron again under a new op, with W still queued: Java wrote the iron twice.
+    #[test]
+    fn a_chain_write_queued_at_the_switch_off_is_not_written_again_at_the_switch_on() {
+        let (held, after) = writes_after_a_held_write(Back::SwitchQueued);
+        assert_eq!(after, held, "W alone goes");
+    }
+
+    /// The same with W written before the switch-off and not answered: the switch-on writes it
+    /// again under a new sequence (Java skips it by op if it applied it), and nothing else.
+    #[test]
+    fn a_chain_write_unanswered_at_the_switch_off_is_not_written_again_at_the_switch_on() {
+        let (held, after) = writes_after_a_held_write(Back::SwitchWritten);
+        assert_eq!(after, held, "W alone goes");
+    }
+
+    /// The switch-on is a restart: the server stopped with industry off, and starts with it on.
+    /// The restart resends W from the outbox under its sequence, and the session start's catch-up
+    /// of the thirty periods writes the frogport no second time.
+    #[test]
+    fn a_chain_write_unanswered_at_a_stop_with_industry_off_is_not_written_again_at_a_restart_with_it_on()
+     {
+        let (held, after) = writes_after_a_held_write(Back::Restart);
+        assert_eq!(after, held, "W alone goes");
     }
 }
