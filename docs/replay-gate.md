@@ -679,8 +679,9 @@ party, reaches `train_passed` and counts stale).
   lurk_robberies). Save and load read the same fields in the same order. No migration.
 - **The eight points:** the gate covers every M8 push (§4.4's M8 paragraph); M8 adds no `Cmd` kind,
   so the verdict test's sample already has both of its kinds. RP-57's table has TRAIN_PASSED read
-  now, and `ingest_copy` drops a TRAIN_PASSED copy after its fold (RP-150). A replayed pass is counted
-  and rolls nothing (RP-151, RP-154); after two crashes every pass of the second session up to
+  now, and `ingest_copy` drops a TRAIN_PASSED copy after its fold (RP-150). A replayed pass that is
+  not stale is counted and rolls as live, at its journaled tick (RP-151; the M8 fixes pass's guard
+  RP-154, which rolled nothing, is gone since slice T, RP-187); after two crashes every pass of the second session up to
   its world save can be stale while replaying (RP-152, a residual). The lurk's camp claim meets no camp hold (RP-153). RP-66, MZB-589's fillers,
   the arrive order, M7's `rail_held` and the FactionRow pin need no change (RP-153).
 - **GameTests:** M8's (FrostmawGameTests from `aLurkPuppetTakenByAPlayerIsLetGoLikeAnyOrdinaryFrostmaw` on,
@@ -711,8 +712,11 @@ party, reaches `train_passed` and counts stale).
 **The M8 fixes and the second-pass merges** (feat/mowzie-m8 from 14c896ee; RP-154 to RP-156).
 The merge check's P2: a replayed TRAIN_PASSED is counted and rolls nothing (RP-154, §4.4), so the
 replay never robs a train the live session may have robbed; RP-151, RP-152 (every pass of the
-second session up to its world save, not one train's roll) and RP-57's 0x080D row say so, and
-`lurk_robberies` counts only robberies told to Java. Then M9's merge-check fixes at 42e8fcc3 (RP-133,
+second session up to its world save, not one train's roll) and RP-57's 0x080D row said so, and
+`lurk_robberies` counted only robberies told to Java. That held until the M8 merge with slice T:
+slice T's keyed attack op (RP-180) made the guard unnecessary and RP-187 dropped it, so a replayed
+pass that is not stale rolls again as live and Java answers DUPLICATE for the robbery the live
+session made (§4.4). Then M9's merge-check fixes at 42e8fcc3 (RP-133,
 RP-134, MZB-672 amended, MZB-673; two doc conflicts; the FactionRow pin is M9's 216 again with
 hunts boxed, RP-155) and main at a11311aa (M6 landed with its P3s, its fixtures at RTC7 / META 6,
 slice S's ships; no conflict, RP-156). No format change: RTC10 / META 9. The sims regenerated on the
@@ -1079,12 +1083,16 @@ through `push` and the gate:
   AMBUSH_SPOT still in the outbox first, as `resend_notices` drops a NOTICE; with the gate's drops
   there is none (rtsim-jni's `replay_end` asserts the same of its queue).
 - **TRAIN_ROBBED** goes from `train_passed` when the robbery took anything, which a live session
-  alone makes (a replayed pass rolls nothing, RP-154). Queued "keep" and "drop" while replaying: it
-  is the station's roar (RP-12), and none is decided then.
+  makes and a replayed pass makes again (RP-187; RP-154's guard, under which a replayed pass rolled
+  nothing, is gone). Queued "keep" and "drop" while replaying: it is the station's roar (RP-12), so
+  a replayed pass's TRAIN_ROBBED is dropped (counted at the gate), and `lurk_robberies` can exceed
+  the TRAIN_ROBBED told to Java.
 - **A robbery's goods** are no `Cmd`: `train_passed` calls `ambush`, whose `infra.raid_train` takes
   them from industry at industry's present, as M7's `Ev::Ambush` does (industry is not held). A
-  replayed pass is counted and never calls it (RP-154): the live session may have robbed the
-  train, and the replay's attack would be another op that Java applies again.
+  replayed pass that is not stale calls it again, at its journaled tick (RP-187): the live session
+  may have robbed the train already, but the attack's op is the threat's identity (RP-180), so the
+  replay's attack is the live one, Java answers DUPLICATE and the goods leave the train once. Until
+  RP-187 a guard (RP-154) kept a replayed pass from calling it, for want of that op.
 - **The swipe and the roar** are Java's: the swipe is a held lurk puppet's strike when a carriage
   comes in its reach (`ConflictBridge`'s strike through the `Lurker`), and the roar plays at the
   station of a train TRAIN_ROBBED names. Neither sends a record the engine acts on.
@@ -1093,8 +1101,9 @@ through `push` and the gate:
   AMBUSH_SPOT. A camp body is handed to a puppet only from this hand-over's SET_OUT lines, which no
   lurk meets (RP-153).
 - **TRAIN_PASSED** is an observation with no op id and no holder (ConflictBridge journals it at
-  once). `ingest` folds its epoch while replaying (RP-57), then `train_passed` counts it and, while
-  replaying, rolls nothing (RP-154); a copy is folded and dropped (RP-150).
+  once). `ingest` folds its epoch while replaying (RP-57), then `train_passed` counts it and, if it
+  is not stale, rolls it as live, at the journaled tick (RP-187; RP-154's guard, which rolled
+  nothing while replaying, is gone); a copy is folded and dropped (RP-150).
 
 ### 4.5 Dragons and nests (rtsim-ecology boundary.rs `Cmd`)
 

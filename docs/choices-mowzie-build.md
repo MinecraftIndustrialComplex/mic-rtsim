@@ -5392,6 +5392,18 @@ RP-150 to RP-153 the replay records.
   the body rests within `STAND` of the hold point, stands the player 8 blocks west of it, pushes the body 2 blocks
   off it along z toward the floor's middle (so on the floor), and measures every distance and the floor of the
   "never walked after the player" check from it.
+- **MZB-699** (train_passed_replay.rs takes the ring as well as the journal; the M8 merge with slice T, RP-187):
+  /tmp/mzbuild/rp-t-m8-test.rs, the draft of tests/train_passed_replay.rs, built unchanged against this head
+  (its `Conflict` API calls and the shared harness all matched). Two of its three tests passed; its third,
+  the J1 to J4 table, failed at J3 (64, not 128): the draft was written when the harness modelled only slice
+  T's journal index, where goods on disk without the journal doubled (J3) and the journal without the goods
+  duped (J4). The harness now models T2's ring too (`Dedup`, RP-190, RP-191), under which J3 and J4 give once,
+  as the dragons' and the ambush's tests have it. The code is right and the draft was stale: the third test is
+  now `which_of_javas_saves_landed_by_the_ring_and_by_the_journal`, the same table as rtsim-ecology's
+  train_raid_replay.rs (ring: once in all four cases; journal: J3 twice, J4 never), run through
+  `across_a_crash_on` for both, with the draft's assertions kept for the journal's rows and one added
+  assertion that the replayed pass robs again (`lurk_robberies` 1) in every row. The module doc no
+  longer says it is for a later merge. Nothing else of the draft changed but rustfmt's wrapping.
 
 ## M9 Umvuthana
 
@@ -8529,7 +8541,7 @@ conservative option at its fork.
 | 0x0808 ENVOY_ANSWER | the envoy's | `ingest`'s fold; a copy, `ingest_copy`'s |
 | 0x0809 TRIBUTE_PAID | the envoy's (agent 0: at the camp, no party) | `ingest`'s fold, before the op-id dedupe; agent 0 names no party, so nothing to fold |
 | 0x080B BAND_LOOTED | the party's | `ingest`'s fold, before the op-id dedupe and the unheld fight's skip; a copy, `ingest_copy`'s |
-| 0x080D TRAIN_PASSED | the party's (the lurk table's) | Read since the M8 merge (`train_passed`, no longer a later kind, MZB-691): `ingest`'s fold while replaying, before `train_passed`'s stale check, which compares the party's epoch (RP-151, RP-152); a pass that is not stale is counted and, while replaying, rolls nothing (RP-154); a copy, `ingest_copy`'s fold, then the record is dropped (RP-150). Java journals it at once with no holder, so none is copied. Before the merge: a later kind, `ingest`'s fold before the `later` return; a copy went to `ingest_copy` from rtsim-jni's later-kind branch (changed here: it called `ingest`) |
+| 0x080D TRAIN_PASSED | the party's (the lurk table's) | Read since the M8 merge (`train_passed`, no longer a later kind, MZB-691): `ingest`'s fold while replaying, before `train_passed`'s stale check, which compares the party's epoch (RP-151, RP-152); a pass that is not stale is counted and rolls as live, at its journaled tick (since RP-187; RP-154's guard, which rolled nothing while replaying, is gone); a copy, `ingest_copy`'s fold, then the record is dropped (RP-150). Java journals it at once with no holder, so none is copied. Before the merge: a later kind, `ingest`'s fold before the `later` return; a copy went to `ingest_copy` from rtsim-jni's later-kind branch (changed here: it called `ingest`) |
 | 0x080F CAMP_CENSUS, 0x0812 CAMP_BODIES, 0x0813 CAMP_OUT | a camp's (u64) | Java's op id for the census, never an epoch the engine allocates, so it cannot name one the engine would issue again; `party_epoch` is None. M6's census body bit BODY_CRYSTAL names none either |
 | Every other conflict kind (FACTION_FOUND, TERRITORY_SIGNAL, POLLUTION, GIFT_GIVEN, CHIEF_STATE, HAVEN_CHEST, DIFFICULTY, RAIL_PASS, CAMP_DEATH, TRADED, NOTICE_SHOWN, CHIEF_PAID, HUNT_APPLIED) | none | Nothing to fold. `party_epoch` matches every `Obs` variant by name, so a new kind does not compile until it says. After the M6 merge: CHIEF_STATE is read and names a faction, held while replaying (RP-100); CAMP_DEATH's DEATH_CHIEF names a slot and generation, no epoch. After the M7 merge: RAIL_PASS is read (`rail_pass`, no longer a later kind) and names a faction, a train and an owner, no epoch; the industry's TRAIN_ARRIVED and TRAIN_UNWATCHED reach the conflict through `rail_call` with a train and a line only, so M7 adds nothing to fold (RP-102). After the M9 merge: HUNT_APPLIED (new, 0x0816) names a faction, a district and the hunt's op; HAVEN_CHEST (0x0817 now, journaled) a faction, a chest and its free slots; TRADED and CHIEF_PAID a faction and, for CHIEF_PAID, a camp slot and generation; none an epoch, and `party_epoch` names HUNT_APPLIED with the others. M9 changes no kind that names an epoch. A copy of any of them folds nothing; `ingest_copy` drops a HAVEN_CHEST copy (RP-130), and the others are skipped by op id (TRADED, CHIEF_PAID) or find no hunt (HUNT_APPLIED) |
 | A conflict record that does not decode | unknown | Skipped with a warning before any module code (rtsim-jni `journaled`), as before: its epoch cannot be read |
@@ -8898,7 +8910,9 @@ MZB-690 to MZB-692 the build records.
   the floors (§4.4). No ambush spot is chosen from a pass: the spot is the target's
   (`Target::Track`), fixed when the raid set out. Nothing is decided while replaying that §5 or §6
   would hold: a seen lurk embodies through BAND_MATERIALIZE's early returns, and sightings wait (§6).
-  No change beyond RP-154's.
+  No change beyond RP-154's. (Since the M8 merge with slice T, RP-187: RP-154's guard is gone, so a
+  replayed pass that is not stale rolls as live and its robbery is the live op, answered DUPLICATE;
+  the text above stands as it was written.)
 - **RP-152** (a pass stale while replaying after two crashes; the M8 merge, point 2; a residual, not
   built): `train_passed` compares the record's epoch with the party's, not with the floor, since
   `ingest`'s fold has put the record's epoch in the floor already (a check on the floor would pass
@@ -8912,7 +8926,10 @@ MZB-690 to MZB-692 the build records.
   Losing is the right direction (lose, never double), bounded by one world-save interval of passes.
   The option not taken: read the party's floor as it was before the record's fold (a per-record
   snapshot in `ingest`), for a case that needs two crashes inside one page interval and, since
-  RP-154, buys only the count.
+  RP-154, buys only the count. (RP-187 dropped RP-154's guard: a pass that is not stale rolls again
+  in the replay, keyed as live, so Java answers DUPLICATE for the goods the live robbery took.
+  A stale pass still rolls nothing, so its goods stay taken once and the count is still all it
+  costs.)
 - **RP-153** (the rest of the eight points; the M8 merge, points 3 to 7; no change):
   - Point 3, the camp claim. A lurk's puppet takes a camp body only through `Camps.claim`, which
     matches this hand-over's SET_OUT lines by agent, epoch and body, for a camp that is in at the
@@ -8957,6 +8974,20 @@ MZB-690 to MZB-692 the build records.
   `replay_done` the same pass live robs train 7; without the guard the test fails at "no attack on
   the train was asked", checked and undone). RP-151, RP-152, RP-57's 0x080D row, replay-gate.md
   §4.4 and boundary.md §9.3 say a replayed pass rolls nothing.
+  **Amendment (the M8 merge with slice T, RP-187).** The guard is gone. What it protected against
+  was the replayed robbery being a different op from the live one (industry's attack op came from
+  its present). Slice T's keyed op (RP-180, `attack_key`: the threat's id, source and class, and
+  the train) is the same op, so the replayed pass is ingested at its journaled tick, rolls the slot
+  it rolled live (`train ^ at`) and its threats carry the live ids: Java answers DUPLICATE and the
+  goods leave the train once. The option RP-154 did not take is the one that landed (A's keyed op,
+  RP-180). The loss RP-154 accepted, a robbery the live session never made, is gone with the
+  guard: the replayed pass makes it. `lurk_robberies` counts a replayed pass that robs again, as
+  the live session counted it; its TRAIN_ROBBED drops at the gate while replaying (a roar,
+  RP-12), so the counter can exceed the TRAIN_ROBBED told to Java (`Stats`'s doc says so). The
+  test `a_replayed_train_passed_is_counted_and_never_rolls`, whose first half asserted the guard,
+  is deleted; tests/train_passed_replay.rs replaces it (three tests, RP-187, MZB-699). The text
+  above is as the M8 fixes pass wrote it; RP-151, RP-152 and RP-57's 0x080D row carry the
+  correction, and so do replay-gate.md §4.4 and boundary.md §9.3.
 
 ### The M9 check (RP-133 to RP-134)
 
@@ -10122,6 +10153,12 @@ TRAIN_PASSED test is written for the M8 merge (RP-187).
   keys, DUPLICATE, the goods once. Its three tests mirror the dragons': both orders, industry
   holding the robbery, and the J1 to J4 table. Main's `Ev::Ambush` was given no guard: A is its
   fix, as the coordinator ruled.
+  **Done** (feat/mowzie-m8, the M8 merge with slice T): the guard, its comment and the lurk.rs
+  test are gone and the fn and `Stats` docs say what is true (258b9a14); tests/train_passed_replay.rs
+  is added (dae325da; MZB-699 says what was changed from the draft); the docs follow in the commit
+  after that (RP-154's amendment, RP-151, RP-152, the RP-57 row, replay-gate.md, boundary.md).
+  Without the guard the new tests pass; with it put back, two of the three fail on
+  `lurk_robberies` (0, not 1: the pass is counted and does not roll).
 - **RP-188** (the pirates' `defer`; the brief's question 4): `Outbox::defer()` is true while the
   outbox replays, and `coast_raid` returns at its top, counted deferred and never retried (RP-95).
   So a coast raid the live session made is either inside the replayed window, where the replay
