@@ -658,12 +658,38 @@ public final class SavedAheadGameTests {
     // ---- I1: a double chest across a chunk border --------------------------------------------------
 
     /**
-     * I1, verifying only (RP-215; the audit's uncertainty 6.3): a double chest across a chunk border, its first
-     * half P in chunk A full of stone, the other half Q in chunk N empty. A reconcile of A puts diamonds into P's
-     * position; NeoForge's chest item handler is the pair's, so they go into Q, in N, which no command names and
-     * no note covers. The crash keeps N (direction B: Q's chunk on disk ahead), while A and the journal are from
-     * before, so the engine resends the reconcile under the same op id. What Q holds then is recorded: twice the
-     * delta is a duplicate. The test checks the facts the outcome rests on, not the outcome.
+     * A double chest facing north across a chunk border: P (a LEFT half, its other half to its east) at A's east
+     * edge, Q (the RIGHT half) at N's west edge. The air around is cleared first, and what a failed run's chest
+     * spilled; both halves start empty.
+     */
+    private static void doublePair(ServerLevel level, BlockPos p, BlockPos q, int y) {
+        fill(level, p.getX() - 2, y, p.getZ() - 2, q.getX() + 2, y + 2, q.getZ() + 2, Blocks.AIR.defaultBlockState());
+        level.getEntitiesOfClass(ItemEntity.class, new AABB(p).inflate(6)).forEach(Entity::discard);
+        BlockState left = Blocks.CHEST.defaultBlockState().setValue(ChestBlock.FACING, Direction.NORTH).setValue(ChestBlock.TYPE, ChestType.LEFT);
+        level.setBlock(p, left, 2 | 16);
+        level.setBlock(q, left.setValue(ChestBlock.TYPE, ChestType.RIGHT), 2 | 16);
+    }
+
+    private static void emptyPair(ServerLevel level, BlockPos p, BlockPos q, int y) {
+        if (level.getBlockEntity(p) instanceof Container c)
+            c.clearContent();
+        if (level.getBlockEntity(q) instanceof Container c)
+            c.clearContent();
+        fill(level, p.getX() - 2, y, p.getZ() - 2, q.getX() + 2, y + 2, q.getZ() + 2, Blocks.AIR.defaultBlockState());
+    }
+
+    private static String outcome(int now, int exact) {
+        return now > exact ? "DUPE" : now == exact ? "EXACT" : "LOSS";
+    }
+
+    /**
+     * I1 (RP-215; the audit's uncertainty 6.3, slice U-f): a double chest across a chunk border, its first half P
+     * in chunk A full of stone, the other half Q in chunk N empty. A reconcile of A puts diamonds into P's position;
+     * NeoForge's chest item handler is the pair's, so they go into Q, in N, which no command names. The reconcile's
+     * note and carried result must be in N as well as in A. The crash keeps N (direction B: Q's chunk on disk
+     * ahead), while A and the journal are from before, so the engine resends the reconcile under the same op id:
+     * the resend is refused as applied (DUPLICATE_OP) on N's note, and Q holds the delta once, not twice. The
+     * crash's worst case is a loss, never a duplicate.
      */
     @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 1200, batch = "mic_rtsim_saved_ahead")
     public static void aReconcileThroughADoubleChestAcrossAChunkBorder(GameTestHelper helper) {
@@ -678,8 +704,7 @@ public final class SavedAheadGameTests {
         long district = engineOp();
         int epoch = 1, delta = 20;
         IndustryAttachments.Epochs[] before = new IndustryAttachments.Epochs[1];
-        Runnable reconcile = () -> IndustryTestKit.reconcile(op, district, epoch, level, a.x, a.z,
-                List.of(new IndustryTestKit.Delta(0, GOOD_DIAMOND, p, delta)));
+        boolean[] nCarries = new boolean[1];
         helper.startSequence()
                 .thenExecute(() -> {
                     level.setChunkForced(a.x, a.z, true);
@@ -688,22 +713,19 @@ public final class SavedAheadGameTests {
                 .thenWaitUntil(paced(() -> check("A and N load", level.getChunkSource().getChunkNow(a.x, a.z) != null
                         && level.getChunkSource().getChunkNow(n.x, n.z) != null)))
                 .thenExecute(() -> {
-                    fill(level, p.getX() - 2, y, p.getZ() - 2, q.getX() + 2, y + 2, q.getZ() + 2, Blocks.AIR.defaultBlockState());
-                    level.getEntitiesOfClass(ItemEntity.class, new AABB(p).inflate(6)).forEach(Entity::discard); // what a failed run's chest spilled
-                    BlockState left = Blocks.CHEST.defaultBlockState().setValue(ChestBlock.FACING, Direction.NORTH).setValue(ChestBlock.TYPE, ChestType.LEFT);
-                    level.setBlock(p, left, 2 | 16);
-                    level.setBlock(q, left.setValue(ChestBlock.TYPE, ChestType.RIGHT), 2 | 16);
+                    doublePair(level, p, q, y);
                     Container pc = (Container) level.getBlockEntity(p);
                     for (int i = 0; i < pc.getContainerSize(); i++)
                         pc.setItem(i, new ItemStack(Items.STONE, 64));
                     before[0] = level.getChunk(a.x, a.z).getData(IndustryAttachments.RECONCILE.get());
-                    reconcile.run();
+                    IndustryTestKit.reconcile(op, district, epoch, level, a.x, a.z, List.of(new IndustryTestKit.Delta(0, GOOD_DIAMOND, p, delta)));
                 })
                 .thenWaitUntil(paced(() -> check("the reconcile answered", !IndustryTestKit.commandResults(op).isEmpty())))
                 .thenExecute(() -> {
                     Container pc = (Container) level.getBlockEntity(p), qc = (Container) level.getBlockEntity(q);
                     int inP = count(pc, Items.DIAMOND), inQ = count(qc, Items.DIAMOND);
-                    record(t, "after the reconcile: result, diamonds in P, in Q", IndustryTestKit.commandResults(op) + ", " + inP + ", " + inQ);
+                    nCarries[0] = RtsimSession.chunkCarriesOp(level.getChunk(n.x, n.z), op);
+                    record(t, "after the reconcile: result, diamonds in P, in Q, N carries the op", IndustryTestKit.commandResults(op) + ", " + inP + ", " + inQ + ", " + nCarries[0]);
                     check("applied", IndustryTestKit.commandResults(op).get(0) == Obs.CommandResult.APPLIED);
                     check("the pair's handler put the diamonds into Q, in N: P " + inP + ", Q " + inQ, inP == 0 && inQ == delta);
                     IndustryAttachments.Epochs inN = level.getChunk(n.x, n.z).getExistingDataOrNull(IndustryAttachments.RECONCILE.get());
@@ -711,19 +733,152 @@ public final class SavedAheadGameTests {
                     // The crash keeps N; A (no epoch, P as it was: full of stone) and the journal are from before.
                     level.getChunk(a.x, a.z).setData(IndustryAttachments.RECONCILE.get(), before[0]);
                     RtsimTests.session().boundary().journal().forgetAppliedForTest(op);
-                    reconcile.run();
+                    IndustryTestKit.reconcile(op, district, epoch, level, a.x, a.z, List.of(new IndustryTestKit.Delta(0, GOOD_DIAMOND, p, delta)));
                 })
                 .thenWaitUntil(paced(() -> check("the resend answered", IndustryTestKit.commandResults(op).size() >= 2)))
                 .thenExecute(() -> {
-                    Container qc = (Container) level.getBlockEntity(q);
-                    int inQ = count(qc, Items.DIAMOND);
-                    record(t, "after the resend: results, diamonds in Q (the delta was " + delta + ")", IndustryTestKit.commandResults(op) + ", " + inQ);
-                    record(t, "direction B, a positive delta through the other half", inQ > delta ? "DUPE" : inQ == delta ? "EXACT" : "LOSS");
+                    int inQ = count((Container) level.getBlockEntity(q), Items.DIAMOND);
+                    List<Integer> rs = IndustryTestKit.commandResults(op);
+                    record(t, "after the resend: results, diamonds in Q (the delta was " + delta + ")", rs + ", " + inQ);
+                    record(t, "direction B, a positive delta through the other half", outcome(inQ, delta));
+                    check("N carried the reconcile's note", nCarries[0]);
+                    check("the resend was refused as applied, and Q holds the delta once: " + rs + ", Q " + inQ,
+                            rs.get(rs.size() - 1) == Obs.CommandResult.DUPLICATE_OP && inQ == delta);
                 })
                 .thenExecute(() -> {
-                    ((Container) level.getBlockEntity(p)).clearContent();
-                    ((Container) level.getBlockEntity(q)).clearContent();
-                    fill(level, p.getX() - 2, y, p.getZ() - 2, q.getX() + 2, y + 2, q.getZ() + 2, Blocks.AIR.defaultBlockState());
+                    dropCarried(level.getChunk(n.x, n.z), op);
+                    emptyPair(level, p, q, y);
+                    level.setChunkForced(a.x, a.z, false);
+                    level.setChunkForced(n.x, n.z, false);
+                })
+                .thenSucceed();
+    }
+
+    /**
+     * I1 (RP-215, slice U-f), a negative delta: P in A full of stone, Q in N holding 40 diamonds. A reconcile of -20
+     * diamonds at P's position takes them from Q through the pair's handler. After the same crash (N kept, A and the
+     * journal from before) the resend is refused on N's note: Q holds 20, not 0.
+     */
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 1200, batch = "mic_rtsim_saved_ahead")
+    public static void aNegativeReconcileThroughADoubleChestAcrossAChunkBorder(GameTestHelper helper) {
+        String t = "aNegativeReconcileThroughADoubleChestAcrossAChunkBorder";
+        ServerLevel level = helper.getLevel();
+        BlockPos o = helper.absolutePos(BlockPos.ZERO);
+        ChunkPos a = new ChunkPos((o.getX() >> 4) + 6950, (o.getZ() >> 4) + 6810), n = new ChunkPos(a.x + 1, a.z);
+        int y = 180;
+        BlockPos p = new BlockPos(a.getMaxBlockX(), y, a.getMinBlockZ() + 8), q = p.east();
+        long op = engineOp();
+        long district = engineOp();
+        int epoch = 1, stocked = 40, delta = -20;
+        IndustryAttachments.Epochs[] before = new IndustryAttachments.Epochs[1];
+        boolean[] nCarries = new boolean[1];
+        helper.startSequence()
+                .thenExecute(() -> {
+                    level.setChunkForced(a.x, a.z, true);
+                    level.setChunkForced(n.x, n.z, true);
+                })
+                .thenWaitUntil(paced(() -> check("A and N load", level.getChunkSource().getChunkNow(a.x, a.z) != null
+                        && level.getChunkSource().getChunkNow(n.x, n.z) != null)))
+                .thenExecute(() -> {
+                    doublePair(level, p, q, y);
+                    Container pc = (Container) level.getBlockEntity(p), qc = (Container) level.getBlockEntity(q);
+                    for (int i = 0; i < pc.getContainerSize(); i++)
+                        pc.setItem(i, new ItemStack(Items.STONE, 64));
+                    qc.setItem(0, new ItemStack(Items.DIAMOND, stocked));
+                    before[0] = level.getChunk(a.x, a.z).getData(IndustryAttachments.RECONCILE.get());
+                    IndustryTestKit.reconcile(op, district, epoch, level, a.x, a.z, List.of(new IndustryTestKit.Delta(0, GOOD_DIAMOND, p, delta)));
+                })
+                .thenWaitUntil(paced(() -> check("the reconcile answered", !IndustryTestKit.commandResults(op).isEmpty())))
+                .thenExecute(() -> {
+                    Container pc = (Container) level.getBlockEntity(p), qc = (Container) level.getBlockEntity(q);
+                    int inP = count(pc, Items.DIAMOND), inQ = count(qc, Items.DIAMOND);
+                    nCarries[0] = RtsimSession.chunkCarriesOp(level.getChunk(n.x, n.z), op);
+                    record(t, "after the reconcile: result, diamonds in P, in Q, N carries the op", IndustryTestKit.commandResults(op) + ", " + inP + ", " + inQ + ", " + nCarries[0]);
+                    check("applied", IndustryTestKit.commandResults(op).get(0) == Obs.CommandResult.APPLIED);
+                    check("the pair's handler took the diamonds from Q, in N: P " + inP + ", Q " + inQ, inP == 0 && inQ == stocked + delta);
+                    level.getChunk(a.x, a.z).setData(IndustryAttachments.RECONCILE.get(), before[0]);
+                    RtsimTests.session().boundary().journal().forgetAppliedForTest(op);
+                    IndustryTestKit.reconcile(op, district, epoch, level, a.x, a.z, List.of(new IndustryTestKit.Delta(0, GOOD_DIAMOND, p, delta)));
+                })
+                .thenWaitUntil(paced(() -> check("the resend answered", IndustryTestKit.commandResults(op).size() >= 2)))
+                .thenExecute(() -> {
+                    int inQ = count((Container) level.getBlockEntity(q), Items.DIAMOND);
+                    List<Integer> rs = IndustryTestKit.commandResults(op);
+                    record(t, "after the resend: results, diamonds in Q (it held " + stocked + ", the delta was " + delta + ")", rs + ", " + inQ);
+                    record(t, "direction B, a negative delta through the other half", inQ < stocked + delta ? "TAKEN TWICE" : inQ == stocked + delta ? "EXACT" : "NOT TAKEN");
+                    check("N carried the reconcile's note", nCarries[0]);
+                    check("the resend was refused as applied, and the diamonds were taken once: " + rs + ", Q " + inQ,
+                            rs.get(rs.size() - 1) == Obs.CommandResult.DUPLICATE_OP && inQ == stocked + delta);
+                })
+                .thenExecute(() -> {
+                    dropCarried(level.getChunk(n.x, n.z), op);
+                    emptyPair(level, p, q, y);
+                    level.setChunkForced(a.x, a.z, false);
+                    level.setChunkForced(n.x, n.z, false);
+                })
+                .thenSucceed();
+    }
+
+    /**
+     * I1 (RP-215, slice U-f), C1: a cross-store TRANSFER_TO_CONTAINER at P's position, a double chest across a chunk
+     * border (P in A full of stone, Q in N empty): the items go into Q, and the carried APPLIED must be in N as well
+     * as in A. After the crash (N kept, A and the journal from before) the resend finds the op in N and answers
+     * DUPLICATE_OP: Q holds the stack once.
+     */
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 1200, batch = "mic_rtsim_saved_ahead")
+    public static void aTransferThroughADoubleChestAcrossAChunkBorder(GameTestHelper helper) {
+        String t = "aTransferThroughADoubleChestAcrossAChunkBorder";
+        ServerLevel level = helper.getLevel();
+        ScriptedEngine stub = RtsimTests.engine();
+        String dim = RtsimTests.dimension(helper);
+        BlockPos o = helper.absolutePos(BlockPos.ZERO);
+        ChunkPos a = new ChunkPos((o.getX() >> 4) + 6970, (o.getZ() >> 4) + 6810), n = new ChunkPos(a.x + 1, a.z);
+        int y = 180;
+        BlockPos p = new BlockPos(a.getMaxBlockX(), y, a.getMinBlockZ() + 8), q = p.east();
+        long op = engineOp();
+        int delta = 20;
+        boolean[] nCarries = new boolean[1];
+        helper.startSequence()
+                .thenExecute(() -> {
+                    level.setChunkForced(a.x, a.z, true);
+                    level.setChunkForced(n.x, n.z, true);
+                })
+                .thenWaitUntil(paced(() -> check("A and N load", level.getChunkSource().getChunkNow(a.x, a.z) != null
+                        && level.getChunkSource().getChunkNow(n.x, n.z) != null)))
+                .thenExecute(() -> {
+                    doublePair(level, p, q, y);
+                    Container pc = (Container) level.getBlockEntity(p);
+                    for (int i = 0; i < pc.getContainerSize(); i++)
+                        pc.setItem(i, new ItemStack(Items.STONE, 64));
+                    stub.transferToContainer(op, dim, p.getX(), p.getY(), p.getZ(), "minecraft:diamond", delta);
+                })
+                .thenWaitUntil(paced(() -> check("the transfer answered", !results(stub, op).isEmpty())))
+                .thenExecute(() -> {
+                    Container pc = (Container) level.getBlockEntity(p), qc = (Container) level.getBlockEntity(q);
+                    int inP = count(pc, Items.DIAMOND), inQ = count(qc, Items.DIAMOND);
+                    nCarries[0] = RtsimSession.chunkCarriesOp(level.getChunk(n.x, n.z), op);
+                    record(t, "after the transfer: result, diamonds in P, in Q, N carries the op", results(stub, op).stream().map(r -> r.aux()).toList() + ", " + inP + ", " + inQ + ", " + nCarries[0]);
+                    check("applied", results(stub, op).get(0).aux() == Obs.CommandResult.APPLIED);
+                    check("the pair's handler put the diamonds into Q, in N: P " + inP + ", Q " + inQ, inP == 0 && inQ == delta);
+                    // The crash keeps N; A (P as it was) and the journal are from before.
+                    dropCarried(level.getChunk(a.x, a.z), op);
+                    RtsimTests.session().boundary().journal().forgetAppliedForTest(op);
+                    stub.transferToContainer(op, dim, p.getX(), p.getY(), p.getZ(), "minecraft:diamond", delta);
+                })
+                .thenWaitUntil(paced(() -> check("the resend answered", results(stub, op).size() >= 2)))
+                .thenExecute(() -> {
+                    int inQ = count((Container) level.getBlockEntity(q), Items.DIAMOND);
+                    List<Integer> rs = results(stub, op).stream().map(r -> r.aux()).toList();
+                    record(t, "after the resend: results, diamonds in Q (the transfer was " + delta + ")", rs + ", " + inQ);
+                    record(t, "direction B, a transfer through the other half", outcome(inQ, delta));
+                    check("N carried the transfer's note", nCarries[0]);
+                    check("the resend was refused as applied, and Q holds the stack once: " + rs + ", Q " + inQ,
+                            rs.get(rs.size() - 1) == Obs.CommandResult.DUPLICATE_OP && inQ == delta);
+                })
+                .thenExecute(() -> {
+                    dropCarried(level.getChunk(n.x, n.z), op);
+                    dropCarried(level.getChunk(a.x, a.z), op);
+                    emptyPair(level, p, q, y);
                     level.setChunkForced(a.x, a.z, false);
                     level.setChunkForced(n.x, n.z, false);
                 })
