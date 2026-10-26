@@ -116,6 +116,14 @@ public interface Traveller {
         return 0.0;
     }
 
+    /**
+     * Whether the body floats now (its gravity is off and it holds its place in the air): the core cancels an
+     * explosion's push of a body that does (MZB-810). A body that has settled, or is dying, is pushed as any is.
+     */
+    default boolean aloft(Mob body, Memo memo) {
+        return false;
+    }
+
     /** The body leaves its party alive (taken, picked up, handed back) or its slot ends: undo what makes it float, empty {@code memo}. */
     void release(Mob body, Memo memo);
 
