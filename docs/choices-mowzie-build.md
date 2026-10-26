@@ -5355,6 +5355,21 @@ RP-150 to RP-153 the replay records.
   waits of M8's own GameTests on ChunkWait's two clocks: six tests in FrostmawGameTests and
   `aLurkRefusedAtItsPlacingClaimsNoCampBodyAndTheSetOutIsATake` in MowzieGameTests. M8's rail
   GameTests (RailDirectionsGameTests, RailFrostmawGameTests) needed no change.
+- **MZB-694** (the held puppets' waits on ChunkWait's clocks; M8's round fixes): M8's merged round failed 10
+  mowziesmobs GameTests under load (concurrent workspace cargo tests). Seven came from one test bug:
+  FrostmawGameTests' `Held` helper made its own waits, which `tools/chunk_waits.py` could not see, so their tick
+  budget counted from the test's start and a slow chunk load spent it ("not within 1500 ticks of the last chunk
+  wait", chunks not ready). `Held` now takes the test's `ChunkWait`, and its lurk and stand waits are chunk waits.
+  The nine tick-bound batches (the lurk taken, the dodges and the placings) carry `ChunkWait.NO_TICK_TIMEOUT`, as
+  the kit's other chunk-waiting tests do, and `taken`, `dodged` and `placedAt` make their own `ChunkWait` of 1,500
+  ticks. `chunk_waits.py --dry-run` reports the file unchanged.
+- **MZB-695** (the camp-body marker test runs with saving off): `aCampBodysDeathIsBookedOnAMarkerAndAStraysIsNot`
+  failed at "the Frostmaw carries its adopt answer" because vanilla's autosave (every 6,000 ticks, a few seconds
+  on an unthrottled GameTest server) came in the middle: the save asks the engine for one, its ack drops the
+  pending record, and the marker the test reads is gone. The test turns `ServerLevel.noSave` on for its span, as
+  /save-off does, and restores it however it ends (`ConflictKit.onEnd`). Its check now names the records it saw
+  and their generations. The other two failures of the round (a masked player targeted, a hidden stray counted
+  as a chief) are judged on a rerun on a quiet machine.
 
 ## M9 Umvuthana
 
