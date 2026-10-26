@@ -10034,6 +10034,16 @@ MATERIALIZE) to see the audit fail, and removes it.
 
 M11a's implementer appends its records under this heading only (the Rust side).
 
+- **MZB-850** (step 1, the gate's split; MZB-804 built): `PAID_PUPPET = 2` sits beside `PAID_STRAY` in
+  boundary.rs, and `Cmd::agent` returns the agent of a CHIEF_BODY whose agent is not 0 (a home one still names
+  none). The gate's ChiefBody arm is two guarded arms, away (drop, never) and home (keep, never), with no `_` arm.
+  The outbox's TABLE stays keyed by kind with the home row, since the fixture's CHIEF_BODY is a home one; the new
+  unit test `an_away_chief_body_is_dropped_with_its_materialize` is the away case. On the base it failed first at
+  `away.agent()` (None, want the agent) and then, with only `Cmd::agent` changed, at the gate (Keep, want Drop);
+  it now holds the old filter's rule for both (kept exactly when no agent is named), and a queue of home, away and
+  MATERIALIZE keeps only the home one at `begin_replay`. The old-filter loop of the table test needs no change:
+  `Cmd::agent` is read only there and in this test.
+
 ### M11b build records (MZB-870 to MZB-889)
 
 M11b's implementer appends its records under this heading only (the Java side). MZB-890 to MZB-899 are left for M11c

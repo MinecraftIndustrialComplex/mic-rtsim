@@ -147,6 +147,9 @@ pub const LINE_NOTHING: u8 = 2;
 pub const LINE_STALE: u8 = 3;
 /// CHIEF_PAID flags.
 pub const PAID_STRAY: u32 = 1;
+/// Paid to the chief's puppet with its band away: the slot is the chief slot, generation 0
+/// (MZB-819).
+pub const PAID_PUPPET: u32 = 2;
 /// CHIEF_STATE and CHIEF_BODY flags.
 pub const CHIEF_CRYSTAL: u32 = 1;
 /// DIFFICULTY values (Minecraft's `Difficulty` ids).
@@ -495,7 +498,7 @@ pub struct ChiefPaid {
     pub faction: u64,
     pub slot: u32,
     pub generation: u32,
-    /// `PAID_STRAY`.
+    /// `PAID_STRAY`, or `PAID_PUPPET` (the chief slot, generation 0).
     pub flags: u32,
     pub player: Uuid,
     pub op: u64,
@@ -943,7 +946,7 @@ impl Cmd {
     }
 
     /// The agent a party's command addresses (dropped from the outbox at a session start, which
-    /// derives them again).
+    /// derives them again). An away CHIEF_BODY names its party's; a home one names none.
     pub fn agent(&self) -> Option<u64> {
         match self {
             Cmd::Envoy(c) => Some(c.agent),
@@ -952,6 +955,7 @@ impl Cmd {
             Cmd::Recall(c) => Some(c.agent),
             Cmd::AmbushSpot(c) => Some(c.agent),
             Cmd::March(c) => Some(c.agent),
+            Cmd::ChiefBody(c) if c.agent != 0 => Some(c.agent),
             _ => None,
         }
     }
