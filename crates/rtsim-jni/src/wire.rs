@@ -483,6 +483,9 @@ pub mod cmd {
     pub const DESPAWN_GROUP: u16 = 0x8003;
     pub const STEER_GROUP: u16 = 0x8004;
     pub const TRANSFER_TO_CONTAINER: u16 = 0x8005;
+    /// Where a site stands, for core's site ledger (docs/boundary.md §2.4, MZB-1005): every module's,
+    /// in the core command stream. Its layout's one home is `rtsim_kernel::sites`.
+    pub const SITE_STATE: u16 = 0x8006;
 
     pub const CMD_SEQ: usize = 8;
     pub const BODY: usize = 16;
@@ -540,6 +543,13 @@ pub mod cmd {
         pub const Y: usize = 40;
         pub const Z: usize = 48;
         pub const SIZE: usize = 56;
+    }
+
+    /// SITE_STATE's offsets and flags (`rtsim_kernel::sites::state`, `state_flags`).
+    pub mod site_state {
+        pub use rtsim_kernel::sites::state::*;
+        pub use rtsim_kernel::sites::state_flags as flags;
+        pub use rtsim_kernel::sites::STATE_FIXED as FIXED;
     }
 
     pub mod transfer_to_container {

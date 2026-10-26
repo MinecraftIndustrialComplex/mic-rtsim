@@ -71,6 +71,8 @@ public final class ReinstallGuard {
         volatile boolean deletionQueued;
         /** The industry module of the session this reset opened has planned its re-adoption (RG7). */
         final java.util.concurrent.atomic.AtomicBoolean readoptTaken = new java.util.concurrent.atomic.AtomicBoolean();
+        /** The site ledger has counted this reset as a gap (MZB-1003). */
+        final java.util.concurrent.atomic.AtomicBoolean siteGapTaken = new java.util.concurrent.atomic.AtomicBoolean();
 
         Status(Capture capture, Reset reset) {
             this.capture = capture;
@@ -170,6 +172,17 @@ public final class ReinstallGuard {
     public static boolean takeReadopt(MinecraftServer server) {
         Status s = STATUS.get(worldDir(server));
         return s != null && s.reset != null && s.readoptTaken.compareAndSet(false, true);
+    }
+
+    /**
+     * The site ledger's question at its first use in a start (EQUILIBRIUM.md §2.3, slice S3, MZB-1003): did rtsim miss
+     * time, so that a row written before now no longer says where its site stands? True once per reset, as {@link
+     * #takeReadopt}. Only this guard's reset counts: a plain reset, a module switched off or a plugin jar removed is not a
+     * gap, since rtsim ran (fork F9, MZB-1028).
+     */
+    public static boolean takeSiteGap(MinecraftServer server) {
+        Status s = STATUS.get(worldDir(server));
+        return s != null && s.reset != null && s.siteGapTaken.compareAndSet(false, true);
     }
 
     /**

@@ -17,7 +17,7 @@
 //! state lock is taken by the step and, outside any step, by `start` and `close`: no game thread
 //! ever waits on a lock a running step holds.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -31,6 +31,7 @@ use rtsim_kernel::clock::Tick;
 use rtsim_kernel::codec::{self, CodecError, Decode, Encode, Reader, Writer};
 use rtsim_kernel::journal::{GEN_BLOCK, ObsSeq, OpId, Outbox, Reconcile, Replay, Verdict};
 use rtsim_kernel::page::{Durability, PageKey, PageStore, SaveBatch};
+use rtsim_kernel::sites::SiteState;
 
 use crate::buffers::Buf;
 use crate::orders::Order;
@@ -372,6 +373,14 @@ struct State {
     held_units: VecDeque<Vec<Order>>,
     /// Outbox commands to resend at the start of the session, before anything new.
     resend: VecDeque<(u64, OpId, TransferCmd)>,
+    /// SITE_STATEs to send (docs/boundary.md §2.4, MZB-1005), latest wins per (kind, key): a module
+    /// queues one for each site its engine marked changed, outside the replay. Each takes a fresh
+    /// command sequence as it is written ([`write_site_states`]); none is kept in the outbox, resent or
+    /// saved: a lost one is healed by the site's next change and by the refresh its next found record
+    /// gives.
+    site_states: BTreeMap<(u32, u64), SiteState>,
+    /// SITE_STATEs written (for tests and `inspect`). Not saved.
+    site_states_written: u64,
     /// The engine's dictionary for this session: (kind, name) to id, ids per kind from 1.
     cmd_dict: HashMap<(u32, String), u32>,
     cmd_dict_next: HashMap<u32, u32>,
@@ -458,6 +467,8 @@ impl State {
             units: VecDeque::new(),
             held_units: VecDeque::new(),
             resend: VecDeque::new(),
+            site_states: BTreeMap::new(),
+            site_states_written: 0,
             cmd_dict: HashMap::new(),
             cmd_dict_next: HashMap::new(),
             dict_sent: HashSet::new(),
@@ -511,6 +522,12 @@ impl State {
             Some(r) => r,
             None => self.outbox.take_seq(),
         }
+    }
+
+    /// Queues a SITE_STATE for core's site ledger, replacing one queued for the same site.
+    #[cfg_attr(not(test), allow(dead_code))] // the modules' drains queue theirs (lairs on, MZB-1012)
+    fn queue_site_state(&mut self, s: SiteState) {
+        self.site_states.insert((s.kind.code(), s.key), s);
     }
 
     /// An op id for a transfer an order asks for without one: 55 random bits, never 0. Never a
@@ -2300,8 +2317,35 @@ impl Engine {
             return (highest, true);
         }
         let (h, more) = talk::write_queue(st, w);
+        highest = highest.max(h);
+        if more {
+            return (highest, true);
+        }
+        let (h, more) = write_site_states(st, w);
         (highest.max(h), more)
     }
+}
+
+/// Writes the queued SITE_STATEs while they fit, last so they never hold a decision's command back.
+/// Each takes the next command sequence: above anything Java applied (`Outbox::resume_after`), so Java
+/// applies it once and skips nothing it needs (docs/boundary.md §2.4). Returns the highest sequence
+/// written and whether some wait for the next buffer.
+fn write_site_states(st: &mut State, w: &mut RecordWriter<'_>) -> (u64, bool) {
+    let mut highest = 0;
+    while let Some((&site, s)) = st.site_states.first_key_value() {
+        let size = s.size();
+        if size > w.remaining() {
+            return (highest, true);
+        }
+        let s = st.site_states.remove(&site).expect("the first key exists");
+        let seq = st.session_seq();
+        let r = w.reserve(cmd::SITE_STATE, size, 0).expect("checked to fit");
+        wire::put_u64(r, cmd::CMD_SEQ, seq);
+        s.encode(r);
+        highest = highest.max(seq);
+        st.site_states_written += 1;
+    }
+    (highest, false)
 }
 
 /// The lower of two next sequences, `None` standing for none at all.
@@ -2596,6 +2640,59 @@ fn write_order(st: &mut State, w: &mut RecordWriter<'_>, order: Order) -> Option
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// SITE_STATEs (MZB-1005): latest wins per site, each written with a fresh sequence above the
+    /// last Java applied, none kept in the outbox, and a full buffer leaves the rest queued.
+    #[test]
+    fn site_states_coalesce_and_take_fresh_sequences() {
+        use rtsim_kernel::sites::{Bodies, SiteKind};
+        let (_tx, rx) = std::sync::mpsc::channel();
+        let mut st = State::new(rx, None);
+        st.outbox.resume_after(41);
+        let site = |kind, key, p: f32, home: Vec<(u64, u64)>| SiteState {
+            key,
+            kind,
+            flags: rtsim_kernel::sites::state_flags::WAITING,
+            p,
+            k: 2,
+            count: home.len() as u16,
+            away: 0,
+            wait_left: 500,
+            bodies: Bodies {
+                home,
+                ..Bodies::default()
+            },
+        };
+        st.queue_site_state(site(SiteKind::Lair, 7, 1.0, vec![]));
+        st.queue_site_state(site(SiteKind::Camp, 9, 0.5, vec![(1, 2)]));
+        st.queue_site_state(site(SiteKind::Lair, 7, 2.0, vec![]));
+        let mut area = vec![0u8; 4096];
+        let mut w = RecordWriter::new(&mut area);
+        assert_eq!(write_site_states(&mut st, &mut w), (43, false));
+        let used = w.used();
+        let recs: Vec<_> = Records::new(&area[..used]).collect();
+        assert_eq!(recs.len(), 2, "one a site");
+        let got: Vec<(u64, SiteState)> = recs
+            .iter()
+            .map(|r| {
+                assert_eq!(r.kind, cmd::SITE_STATE);
+                (
+                    wire::u64_at(r.bytes, cmd::CMD_SEQ),
+                    SiteState::decode(r.bytes).unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(got[0], (42, site(SiteKind::Camp, 9, 0.5, vec![(1, 2)])));
+        assert_eq!(got[1], (43, site(SiteKind::Lair, 7, 2.0, vec![])));
+        assert!(st.outbox.is_empty(), "never kept for a resend");
+        assert_eq!(st.site_states_written, 2);
+        // A buffer with room for none keeps the queue for the next.
+        st.queue_site_state(site(SiteKind::Nest, 3, 1.0, vec![]));
+        let mut small = vec![0u8; 32];
+        let mut w = RecordWriter::new(&mut small);
+        assert_eq!(write_site_states(&mut st, &mut w), (0, true));
+        assert_eq!(st.site_states.len(), 1);
+    }
 
     #[test]
     fn meta_round_trips() {

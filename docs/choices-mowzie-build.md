@@ -10561,6 +10561,38 @@ DRAGON_DIED):
     still names the owner. Nest pressure counts cause 0 alone, so nothing a nest decides changes.
   - Test: `tests/dragons.rs::the_kill_credit_decides_the_lairs_loss` (PLAYER, TAKEN, OTHER and NONE press, MOB
     does not; only PLAYER leaves a grudge).
+- **MZB-1011** (The core ledger and the SITE_STATE stream): `sites.SiteLedger` (MZB-1000, MZB-1001) with
+  `get(server)`, `row(kind, key)`, `apply(buffer, at, size, now)`, `tailSize(kind, key)`, `writeTail(buffer, at,
+  kind, key, now[, existed])` and the test-only `forget`. CommandDispatcher gains SITE_STATE's minimum size and its
+  case; a record the ledger refuses (a size that does not match its counts, an unknown kind) counts as malformed.
+  `ReinstallGuard.takeSiteGap` is a compareAndSet on the start's Status, as `takeReadopt`.
+  - The gap is taken in `get`, the one way in, rather than in `apply` and `writeTail` apart: the same effect (the
+    first use after the reset counts it, before any row is written or read), in one place. A crash before the
+    reset's marker is deleted resets again at the next start, which counts a second gap; rows written between the
+    two then read GAP too, which errs toward booking a lost member Other at the cap.
+  - `apply` cuts lists above K to K (missing keeps its newest), as the design says, while the engine-side decoders
+    refuse them: Java keeps whatever pressure and wait a faulty engine sent, the engine never trusts a bad tail.
+  - The row's broken flag is kept (for `rtsim perf` and the viewer later) but not handed over: a nest's heart is
+    reported by its own NEST_CENSUS flag after a reset.
+  - **The command stream (the lead's note 3), checked:** BoundarySession.applyCommands skips any command but DICT
+    whose cmdSeq is at or below the journal's `lastAppliedCmdSeq`, and records each one it applies
+    (`markCommandApplied`). A SITE_STATE takes `State::session_seq` as it is written, that is `Outbox::take_seq`,
+    the sequence for a command the outbox does not keep; at `start` the counter is moved past the journal's
+    `lastAppliedCmdSeq` (`Outbox::resume_after`), so every SITE_STATE is above it and is applied once. The queue
+    (`State::site_states`, latest wins per (kind, key)) is written after every other command, so no resend with an
+    older sequence follows one in a buffer. It is not in `encode_meta`, the outbox or `resend`, so never paged and
+    never resent; a crash loses the queue, and the heal is the next change or the found refresh. Java's ledger
+    file is saved before the journal's, as every overworld SavedData: a crash between leaves rows the journal does
+    not count as applied, which is harmless, since the engine never resends a SITE_STATE and replays to the same
+    state. Test: rtsim-jni `engine::tests::site_states_coalesce_and_take_fresh_sequences`.
+  - **Not journal dependent (the lead's note 5):** U-g's `JournalDependent` (fix/slice-u-g 402f6c68) is an opt-in
+    marker (IndustryData, VillageRegistry, RepairFiles, PollutionLedger, Create's tracks); nothing asks every
+    rtsim SavedData to declare itself, so SiteLedger does not implement it and its class comment says why. No
+    U-h branch exists yet.
+  - rtsim-host: `FakeLedger` lives in `WorldSave` (world data, so an engine reset keeps it) and applies SITE_STATE
+    whatever the policy, answering nothing; `tail(kind, key, now, existed)` is what a fake plugin's found record
+    carries, and `gap()` is the reinstall reset. The host's real-world loader does not read
+    `mic_rtsim_sites.dat`: a host run hands every site over as found with no row.
 - **MZB-1020** (F1, the credit rides the death reports): taken. Each death report carries the credit code and
   the credited player; the engine maps to a LossCause with `from_credit`, since the boss rule needs each kind's
   tunables, which only the engine has. Not taken: a LossCause byte computed in Java per record.

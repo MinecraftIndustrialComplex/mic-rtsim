@@ -144,6 +144,9 @@ impl Journal {
                 next_obs,
                 last_applied_cmd,
                 dict: kinds.into_iter().map(|k| k as u32).zip(names).collect(),
+                // The world's mic_rtsim_sites.dat is not read: a host run hands every site over as
+                // found with no row.
+                sites: Default::default(),
             },
             data_version,
         })
