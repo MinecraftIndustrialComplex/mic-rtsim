@@ -10283,6 +10283,94 @@ and the reviews' fixes.
     JUnit has none of. 23e, 29c-failed, 36a and 36b (M11c) are the tests; the invariant's own test (a scripted
     BAND_DEMATERIALIZE of a party whose chief puppet died 20 ticks before, then the journal's order) is M11c's too: a
     record of this step for the M11c writer.
+- **MZB-883** (step 6: a chief HAND_BACK is held while the puppet floats home; MZB-822, MZB-823, MZB-830; forks):
+  - `Camps.handBack` holds the chief's line (a puppet with a Traveller) as `HELD_HANDBACK = 3` and calls `bridge.homeChief(slot,
+    throne, direction)`: the slot's `homeSpot` and `homeDirection` are set, the aloft pass skips it (it already did, step 3) and
+    `Camps.playHeldHandBack` asks `bridge.homeStep` each tick, which is `Traveller.home` behind the entity-ticking check and a
+    try (a throwing plugin plays the line where the puppet stands, counted in `travellerErrors`: a puppet that cannot float home
+    must not hold its line for good). The band goes into `homecoming` as the reconcile always did for a HAND_BACK (MZB-751), so
+    its recall starts the same tick; the recall keeps the puppet (MZB-884).
+  - Played when settled, or at `RECALL_TIMEOUT` from the line's arrival (`AloftRules.handBackDue`, counted late by
+    `chiefHandBacksLate` through `handBackLate`). `playHandBack` is the plain hand-back's body with the puppet's own place:
+    one Umvuthi on the throne with `copy` (health) and the CHIEF_BODY memory of the epoch (traded players only: health 0 at home,
+    so the puppet's health is kept), `chiefGeneration` set to the line's (a body made by a hand-back must not be taken for a
+    retired generation by `secondBody`), added before the puppet goes (MZB-236), DONE. A failed `make` or a refused join is
+    STALE with the home released, as a plain hand-back that fails (MZB-751).
+  - Case B (MZB-823): a standing tagged body of the slot and generation at play time gets `copy` from the puppet, the puppet goes,
+    the answer is NOTHING, `chiefMerges` counts it. No second body is ever made. Fork (conservative): the puppet still floats to the
+    spot first, as the design says, rather than merging where it hangs.
+  - A held chief TAKE (and a chief take held in `playHeld`) is answered STALE once a live chief puppet of the faction is within
+    32 blocks horizontally of the throne in the camp's dimension (`AloftRules.takeStale`, `bridge.chiefPuppetNear`, counted
+    `staleTakes`). A REMOVE and a SET_OUT are not asked.
+  - A puppet gone when the line arrives plays as a spawn (MZB-213); one that dies in the same tick (pending death, not yet
+    journaled) holds the line so that the death is the CAMP_DEATH of MZB-885; one marked a second body (the throne body was
+    killed first) is answered STALE with the home released (fork: nothing is handed back for a chief the engine has booked dead).
+  - A held HAND_BACK answered stale for any reason (the camp out, an epoch's end, an unplayable site) releases the puppet's home
+    through `answerStale`, so the band's recall takes it as any member's; a module off or a session's end drops the lines
+    with the parties captured (MZB-886).
+  - `Camps.chiefBody` forwards an agent-carrying CHIEF_BODY to `bridge.chiefBodyAway` (the dispatch of MZB-876 had no caller;
+    `chiefBodiesAway` counts it), with the party's epoch, whatever the camp's state.
+  - The comment at `resolveSetOuts` (MZB-830) now says that a chief set-out no materialize claims is a take that waits for
+    Rule U, and one a materialize claims is handed to the puppet in `claim`. No logic change, as the design says.
+- **MZB-884** (step 6: Rule U for the trim and the recall; MZB-827, MZB-828's reader; fork):
+  - `Camps.holdsChief(Mob)` asks the kind of the puppet's faction (`bridge.chiefPuppetFaction`, then `holdRemoval`); false with no
+    declared camp of that faction (nothing to ask; fork, conservative to the old behaviour), and false for a throwing kind.
+  - `cutFrom` marks a chief puppet with a Traveller as not cuttable while it holds (the stack stays due, tried on the stop's
+    beat). `trimmable` also excludes a slot called home: its line is the reconciler's.
+  - `recallStep` decides per slot with `keepsChief` (`AloftRules.recallKeeps`): a homing puppet is kept until its recall's
+    deadline plus one more `RECALL_TIMEOUT`, one Rule U holds until the deadline. Fork: the grace past the deadline exists for a
+    lost line only (the line plays itself at `RECALL_TIMEOUT`, which is the deadline's own length, so in the normal case the
+    grace is never spent); without it a line that played one tick after the deadline would find no puppet and spawn a body. A
+    dead or dying puppet is never kept. The stack of a kept puppet stays PLACED and the party stays open (`any`), so
+    `finish` waits for it; the other slots of that stack go as before.
+  - The four exceptions of the design do not ask: the ticking edge (`requeue`), a failed session, the module off and a session's
+    end go through `despawn` or `capture`, never `recallStep`; `edge_stop`'s timeout and a home with the grove out go through the
+    deadline, after which Rule U no longer holds.
+  - `chiefMergesMissed` counts a chief puppet a recall despawns while its camp's throne body stands (`throneBodyStands`): the
+    puppet's health is lost, one body (MZB-823's last bullet).
+- **MZB-885** (step 6: the deaths, the credits, the pickup and the payment; MZB-819, MZB-824, MZB-825, MZB-826, MZB-829):
+  - `journalLoss` for a chief slot with a Traveller first asks `Camps.chiefDiedHome`: when the party's chief HAND_BACK is held
+    (or in the queue of a pass in flight), the death is a CAMP_DEATH of the line's slot and generation on a marker where the puppet
+    died, with the credit the bridge took (`credit`, the kill credit), the news posted, `homeDeaths` counted, the throne body that
+    may stand marked second, and the line answered STALE after it (the order: death first, then the answer). It returns that
+    record, which `settleDeaths` carries on the drops and the Dying list as for CHIEF_KILLED. Otherwise it journals CHIEF_KILLED
+    as before and counts `chiefDeathsAfterEnd` when the party's march had ended, recalled or not (the recalled case is the one
+    the engine counts for nothing, MZB-824's second bullet; accepted, counted, logged at debug).
+  - The marks (MZB-825): `Camps.chiefDiedAway(faction)`, from the bridge's CHIEF_KILLED, marks the camp's standing chief body
+    second; `Camps.death` for the chief slot marks the faction's puppets with a Traveller second through `bridge.chiefPuppets`.
+    Only a kind whose puppet floats comes here (a Traveller on the slot), so the Frostmaw is unchanged. A second puppet's death
+    in the bridge's `onDeath` journals nothing, still calls `Traveller.died` (it would hang aloft with no gravity otherwise) and
+    its slot is not forgotten (fork: the cancel case, where another mod undoes the death, leaves a member that is alive; the
+    recall or the trim discards a dead one).
+  - `onDeath` for a member that is not the chief takes `Camps.killer` (MZB-826), for every culture (the design's fork, kept).
+  - `gone` releases the Traveller before it untags and carries the record, and drops the slot from the aloft list (MZB-829);
+    `despawn` also empties the home spot.
+  - `chiefPaid` falls back to the party's chief puppet: faction from `chiefPuppetFaction`, slot `CHIEF_SLOT`, generation 0,
+    PAID_PUPPET (MZB-819), counted `puppetPaid`. It does not need the camp reported (the faction may have no site), and a
+    camp's own body is never a puppet, so the old path is unchanged.
+  - New counters (all reset at `sessionStarted`): in the bridge `chiefMergesMissed`, `chiefDeathsAfterEnd`, `chiefsCalledHome`;
+    in `Camps` `heldHandBacks`, `chiefHandBacksLate`, `chiefMerges`, `staleTakes`, `homeDeaths`, `puppetPaid`, `puppetsSecond`,
+    `chiefBodiesAway`.
+- **MZB-886** (step 6: the lead's invariant on the paths added; BAND_DEMATERIALIZED only once the chief puppet is gone or its death
+  is journaled):
+  - The aloft move: the puppet is stepped, never removed, by the pass. Death aloft: the death is journaled in `settleDeaths`
+    (CHIEF_KILLED, or the CAMP_DEATH of MZB-885 when its HAND_BACK is held) before the Dying list takes the body, and `capture` and
+    the recall both settle before they write. A second puppet's death journals nothing by design (the engine booked the chief's
+    death at the throne body's CAMP_DEATH, which is the journaled death for this path); the dead body is not a standing puppet.
+  - The throne hand-off (SET_OUT claimed by a materialize) is step 3's, unchanged. The hand-back (MZB-883): the line is held and the
+    band's recall keeps the puppet (`keepsChief`, `any`), so the party stays open until the line has played (the puppet is
+    then despawned by `handBack`) or the deadline plus the grace has passed. STALE hand-back walked home: `answerStale` releases
+    the home, and the recall despawns the puppet when Rule U allows, the party's end waits for that.
+  - The portal cancel keeps the puppet in the world, in its party. The module off and a session's end go through `capture`
+    (settle, despawn, finish), the one path that despawns a puppet Rule U holds, by design.
+  - A path that cannot keep it: none that this step adds. The one place it yields is the grace (MZB-884): after the deadline plus
+    `RECALL_TIMEOUT` a homing puppet is despawned and the party ends, which is a puppet gone, so the invariant holds there too.
+    A chief that dies before its HAND_BACK arrives is journaled as CHIEF_KILLED for a party the engine already ended
+    (`chiefDeathsAfterEnd` counts it when no line is held); the BAND_DEMATERIALIZED still follows the journal.
+  - No JUnit for the order (a live level and a Mowzie body are needed; see MZB-882). The rules that decide it are tested:
+    `AloftRulesTest`'s `recallKeeps`, `handBackDue`, `handBackLate` and `takeStale` tests, which failed against stubs first
+    (6 failures on their own rules) and passed after (59 in the class). The order is M11c's GameTest, with the chief puppet dying
+    aloft at a party's end and CHIEF_KILLED before BAND_DEMATERIALIZED asserted from the journal.
 
 ## M12 S9
 

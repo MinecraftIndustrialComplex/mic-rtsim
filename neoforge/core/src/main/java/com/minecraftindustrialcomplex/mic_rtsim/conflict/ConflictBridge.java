@@ -2345,7 +2345,8 @@ public final class ConflictBridge implements SessionPlugin {
      * deadline. A slot with no Traveller, or no live body, is never kept: its band's walk is the recall's as for any member.
      */
     private boolean keepsChief(Slot sl, Party p, long now) {
-        if (!sl.chief || sl.traveller == null || !sl.alive || sl.pendingDeath != null || sl.entity == null || sl.entity.isRemoved())
+        if (!sl.chief || sl.traveller == null || !sl.alive || sl.pendingDeath != null || sl.entity == null || sl.entity.isRemoved()
+                || sl.entity.isDeadOrDying())
             return false;
         boolean homing = sl.homeSpot != null;
         return AloftRules.recallKeeps(homing, !homing && reconciler.holdsChief(sl.entity), now, p.recallDeadline, RECALL_TIMEOUT);
