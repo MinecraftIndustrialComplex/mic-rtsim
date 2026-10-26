@@ -1061,6 +1061,7 @@ impl Java {
                     | cb::Cmd::Reconcile(_)
                     | cb::Cmd::TrainRobbed(_)
                     | cb::Cmd::ChiefBody(_)
+                    | cb::Cmd::OwedHunt(_)
                     | cb::Cmd::March(_) => {}
                 },
                 Err(_) => self.undecoded += 1,
@@ -1682,6 +1683,7 @@ impl Java {
         assert_eq!(s, seq);
         match &mut c {
             C::Territory(t) => t.dimension = self.java_dim(t.dimension),
+            C::OwedHunt(h) => h.dimension = self.java_dim(h.dimension),
             C::Notice(n) => n.dimension = self.java_dim(n.dimension),
             C::Envoy(e) => {
                 e.dimension = self.java_dim(e.dimension);
