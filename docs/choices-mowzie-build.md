@@ -7945,3 +7945,8 @@ and `run_to`, one step over the whole time off), a restart whose world is far pa
   (cmd.rs:651, which now also asserts the trim at the step's end: 268, the 100s). The other window
   tests read the page pairs; `the_window_keeps_its_page_bytes` (723) now pins the order with a stale
   record and a key tag.
+
+  **Checks** (at 3fbd09f4): the workspace tests, 1,855 passed, 7 failed, 27 ignored: the 7 IGB2
+  fixtures above (rtsim-cli's glass and stores, rtsim-view's fixtures and unreadable). Clippy on
+  rtsim-industry and rtsim-jni (all targets, `-D warnings`): clean. Rustfmt (stdin) on cmd.rs, clean
+  at 2bd1d828: clean.
