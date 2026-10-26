@@ -235,9 +235,14 @@ public final class Lairs {
      * stood there, under {@code id}, and reports it (LAIR_FOUND).
      */
     public Lair declareForTest(ServerLevel level, long id, String structure, BoundingBox box, BlockPos home, long now) {
+        return declareForTest(level, id, structure, box, home, now, false);
+    }
+
+    /** As above, reported LATE when {@code late}: as a lair whose chunk came from disk (the site ledger's GameTests, MZB-1016). */
+    public Lair declareForTest(ServerLevel level, long id, String structure, BoundingBox box, BlockPos home, long now, boolean late) {
         Lair l = new Lair(id, level, structure, box, home);
         declared.add(l);
-        report(l, false, now);
+        report(l, late, now);
         return l;
     }
 
