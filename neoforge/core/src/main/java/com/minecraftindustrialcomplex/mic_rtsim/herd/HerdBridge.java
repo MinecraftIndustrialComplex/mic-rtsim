@@ -1,6 +1,7 @@
 package com.minecraftindustrialcomplex.mic_rtsim.herd;
 
 import com.minecraftindustrialcomplex.mic_rtsim.MicRtsim;
+import com.minecraftindustrialcomplex.mic_rtsim.api.KillCredit;
 import com.minecraftindustrialcomplex.mic_rtsim.api.SessionPlugin;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Cmd;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs;
@@ -827,23 +828,19 @@ public final class HerdBridge implements SessionPlugin {
 
     // ---- deaths, takings, shearing --------------------------------------------------------------
 
-    static int byKind(Entity killer) {
-        if (killer == null)
-            return HerdRecords.BY_NONE;
-        if (killer instanceof Player)
-            return HerdRecords.BY_PLAYER;
-        if (killer instanceof Mob)
-            return HerdRecords.BY_MOB;
-        return HerdRecords.BY_OTHER;
-    }
-
-    /** LivingDeathEvent (lowest priority, not cancelled so far): journaled at the end of the tick, once certain. */
+    /**
+     * LivingDeathEvent (lowest priority, not cancelled so far): journaled at the end of the tick, once certain. The killer
+     * kind is core's kill credit (MZB-1008; the BY_* codes are its NONE to OTHER), so a pet's kill and a death soon after a
+     * player's hit are that player's, and a FakePlayer's is a machine's (MZB-111). The UUID is the credited player's, else
+     * the damage's entity's, as before.
+     */
     void onDeath(LivingEntity dead, DamageSource source) {
         Member m = live(dead);
         if (m == null)
             return;
+        KillCredit.Credit c = KillCredit.of(dead, source);
         Entity killer = source.getEntity();
-        m.pendingDeath = new Death(byKind(killer), killer == null ? null : killer.getUUID());
+        m.pendingDeath = new Death(c.by(), c.player() != null ? c.player() : killer == null ? null : killer.getUUID());
     }
 
     /** LivingDropsEvent: a dying member's drops carry its HERD_KILLED until the engine has it (§3.1). */

@@ -1,6 +1,7 @@
 package com.minecraftindustrialcomplex.mic_rtsim.conflict;
 
 import com.minecraftindustrialcomplex.mic_rtsim.MicRtsim;
+import com.minecraftindustrialcomplex.mic_rtsim.api.KillCredit;
 import com.minecraftindustrialcomplex.mic_rtsim.api.SessionPlugin;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs;
 import com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession;
@@ -1841,31 +1842,23 @@ public final class Camps {
     }
 
     /**
-     * Who is credited with a camp body's death (MZB-432, M9): the first of a real player the damage names, the
-     * player owner of an {@link OwnableEntity} it names (a tamed wolf), vanilla's kill credit when that is a real
-     * player (a hit of theirs within 100 ticks, even when the death came by a fall), any other source entity as a
-     * mob, else none. A NeoForge {@code FakePlayer} is a machine and never a player's kill (MZB-111); a test's
-     * server player is a real one. Camps only: BAND_CASUALTIES keep {@link ConflictBridge#byKind} (M11 adopts this).
+     * Who is credited with a camp body's death (MZB-432, M9): core's {@link KillCredit#of} (MZB-1008), the first of a
+     * real player the damage names, a pet's player owner, vanilla's kill credit when that is a real player or a pet (a
+     * hit of theirs within 100 ticks, even when the death came by a fall), any other source entity by its kind, else
+     * none. A NeoForge {@code FakePlayer} is a machine and never a player's kill (MZB-111); a test's server player is a
+     * real one. Camps only: BAND_CASUALTIES keep {@link ConflictBridge#byKind} (M11 adopts this).
      */
     static ConflictBridge.Credit killer(LivingEntity dead, DamageSource source) {
-        Player pl = playerOf(source);
-        if (pl != null)
-            return new ConflictBridge.Credit(ConflictRecords.BY_PLAYER, pl.getUUID());
-        return ConflictBridge.credit(dead, source); // the kill credit, then the source entity's kind, else none
+        return ConflictBridge.credit(dead, source);
     }
 
     /**
-     * The real player a damage source names (MZB-432): the player itself, else the player owner of an
+     * The real player a damage source names (MZB-432): the player itself, else the online player owner of an
      * {@link OwnableEntity} (a tamed wolf); null for a machine ({@code FakePlayer}, MZB-111) and any other source.
-     * A plugin's fight watch reads it with the same rule as the kill credit.
+     * A plugin's fight watch reads it with the same rule as the kill credit ({@link KillCredit#playerOf}).
      */
     public static Player playerOf(DamageSource source) {
-        Entity src = source.getEntity();
-        if (src instanceof Player pl && !(pl instanceof FakePlayer))
-            return pl;
-        if (src instanceof OwnableEntity o && o.getOwner() instanceof Player owner && !(owner instanceof FakePlayer))
-            return owner;
-        return null;
+        return KillCredit.playerOf(source);
     }
 
     void settleDeaths(long now) {

@@ -1,6 +1,7 @@
 package com.minecraftindustrialcomplex.mic_rtsim.conflict;
 
 import com.minecraftindustrialcomplex.mic_rtsim.MicRtsim;
+import com.minecraftindustrialcomplex.mic_rtsim.api.KillCredit;
 import com.minecraftindustrialcomplex.mic_rtsim.api.SessionPlugin;
 import com.minecraftindustrialcomplex.mic_rtsim.body.BodyKinds;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Cmd;
@@ -1725,37 +1726,26 @@ public final class ConflictBridge implements SessionPlugin {
 
     // ---- deaths and takes -----------------------------------------------------------------------
 
-    /** Who did it: a player (a NeoForge FakePlayer is a machine, MZB-111: other), a mob, something else. */
+    /**
+     * Who did it: a player (a NeoForge FakePlayer is a machine, MZB-111: other), a mob, something else. Core's one rule,
+     * {@link KillCredit#kindOf} (MZB-1008); the BY_* codes are its codes.
+     */
     static int byKind(Entity killer) {
-        if (killer == null)
-            return ConflictRecords.BY_NONE;
-        if (killer instanceof FakePlayer)
-            return ConflictRecords.BY_OTHER;
-        if (killer instanceof Player)
-            return ConflictRecords.BY_PLAYER;
-        if (killer instanceof Mob)
-            return ConflictRecords.BY_MOB;
-        return ConflictRecords.BY_OTHER;
+        return KillCredit.kindOf(killer);
     }
 
     /** Who is credited with a death, for the records that name a killer (MZB-261). */
     record Credit(int by, UUID killer) {}
 
     /**
-     * The kill credit of a death (MZB-261): {@link #byKind} of the damage's entity, and when that is not a
-     * player, vanilla's {@code getKillCredit} (a player's hit within 100 ticks, or a tame animal's owner's)
-     * when it is a real player (a FakePlayer is a machine, MZB-111). So a pet's kill, and a death within five
-     * seconds of a player's hit, are the player's (EQUILIBRIUM item 9). Used for a camp body's CAMP_DEATH and
-     * a chief puppet's CHIEF_KILLED; BAND_CASUALTIES keep {@link #byKind}, since nothing reads them.
+     * The kill credit of a death (MZB-261): core's {@link KillCredit#of} (MZB-1008), so a pet's kill, and a death within
+     * five seconds of a player's hit, are the player's (EQUILIBRIUM item 9), and a FakePlayer's is a machine's (MZB-111).
+     * Used for a camp body's CAMP_DEATH and a chief puppet's CHIEF_KILLED; BAND_CASUALTIES keep {@link #byKind}, since
+     * nothing reads them.
      */
     static Credit credit(LivingEntity dead, DamageSource source) {
-        Entity killer = source.getEntity();
-        int by = byKind(killer);
-        if (by == ConflictRecords.BY_PLAYER)
-            return new Credit(by, killer.getUUID());
-        if (dead.getKillCredit() instanceof Player pl && !(pl instanceof FakePlayer))
-            return new Credit(ConflictRecords.BY_PLAYER, pl.getUUID());
-        return new Credit(by, null);
+        KillCredit.Credit c = KillCredit.of(dead, source);
+        return new Credit(c.by(), c.player());
     }
 
     /**

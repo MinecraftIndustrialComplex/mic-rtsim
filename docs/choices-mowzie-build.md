@@ -10429,6 +10429,31 @@ EQUILIBRIUM.md's slice S3 (§2.2, §2.3, §4's S3 row, EQ-3 (a)), built on `feat
 MZB-1099. The design the lead approved is summarised by these records; the fork records (MZB-1020 to MZB-1034)
 name each fork F1 to F15 of that design and what was taken.
 
+For Ben: where this slice differs from the numbers and shapes in EQUILIBRIUM.md (§2.2's event contract, §2.3, §2.6,
+§2.7), all within the formats the plan approved (the ledger file, SITE_STATE, the found rows, the tamer on
+DRAGON_DIED):
+
+- A ledger row is 48 bytes plus 16 a body, against "about 32 B per site plus 16 B per tracked boss body": the stamp
+  and the wait left are the extra 16, and they keep the hand-over relative (MZB-1001).
+- SITE_STATE is core command 0x8006, one kind for every module (MZB-1005). It carries the wait left in the kind's
+  units rather than a due day, and the flags short, empty, broken and waiting (full is not short and not empty).
+- SITE_FOUND is not a record of its own: a 40-byte tail (plus 16 a UUID) rides the existing FACTION_FOUND,
+  LAIR_FOUND and NEST_FOUND (MZB-1004). It hands over the pressure and the wait left as of the row's stamp and the
+  game ticks elapsed since, and the engine ages them by its own clock, rather than "pressure now, ticks until due".
+  VILLAGE_ADOPTED gets no tail (villages get no row, MZB-1026), and there is no HAVEN_FOUND yet.
+- The death reports carry a kill credit code (none, player, mob, other, taken) and the credited player, and the
+  engine maps the code to a LossCause with each kind's boss rule (MZB-1006, MZB-1007, MZB-1020), rather than every
+  report carrying the LossCause itself (§2.6 item 9). NEST_LOSS keeps its LossCause, as before.
+- CAMP_DEATH grows by the dead body's UUID, 72 to 88 bytes, so a stray's death can be matched against the missing
+  list (MZB-1030); §2.6 does not name it.
+- A tame's DRAGON_DIED names the tamer with killer kind 4 (taken) in its aux, in the existing killer fields.
+- SITE_CENSUS's "whether rtsim ran through the time since the last census" rides the found tail's GAP flag (every
+  gap resets the engine, so the first census after one is the found census); the census records are unchanged,
+  and lairs get no census of their own until EQ-2 gives them home bodies.
+- CAMP_RECONCILE gains flag 2, RECOUNT (no size change), for the census a camp that never unloads takes before an
+  arrival.
+- The ledger file keeps a `gaps` counter beside its rows (MZB-1003).
+
 - **MZB-1000** (The ledger is core's): one world SavedData, `data/mic_rtsim_sites.dat` on the overworld's data
   storage, owned by core's new `mic_rtsim.sites.SiteLedger` (VillageRegistry's pattern), beside
   `mic_rtsim_villages.dat` (EQ-3 (a)). It is outside `world/rtsim/`, so a reset keeps it and an uninstall leaves
@@ -10486,6 +10511,37 @@ name each fork F1 to F15 of that design and what was taken.
   own day; a value that is not finite and positive reads as none. `RenewalRule::cap_ticks` is the cap in
   ticks, the wait of a loss booked Other at the cap. Tests: `credit_maps_to_a_cause`,
   `handed_over_ages_by_elapsed_ticks` and the `sites` round trips and rejections.
+- **MZB-1008** (Core's KillCredit): `mic_rtsim.api.KillCredit.of(dead, source)` returns the code and the
+  credited player, first match winning: the damage names a real player (not a NeoForge FakePlayer, a machine,
+  MZB-111); it names a player's pet; vanilla's `getKillCredit` is a real player (a hit within 100 ticks, then a
+  fall or lava; vanilla already credits a tame animal's hit to its online owner there); `getKillCredit` is a
+  player's pet; otherwise the kind of the damage's entity alone (`kindOf`: a FakePlayer or any other non-mob
+  entity OTHER, a mob MOB, none NONE). A pet is an OwnableEntity with an owner UUID whose owner, when it resolves
+  in the world, is a real player, and when it does not (the owner offline), is a player in the server's profile
+  cache, so a modded minion owned by a mob is not a player's pet. `kindOf` keeps the bridges' old entity rule
+  exactly (a non-mob living entity is OTHER, not MOB as the design's rule 6 had it), so BAND_CASUALTIES, which
+  keep the entity's kind, read as before. `of(dead, entity)` serves a caller that kept only the damage's entity
+  until the end of the tick (the body's `getKillCredit` is still set then). ConflictBridge.credit and byKind,
+  Camps.killer and playerOf (still the public name for the fight watches), HerdBridge's death and HurtObserver's
+  lethal path delegate to it; their call sites are unchanged, so M11's are kept.
+- **MZB-1009** (What the books do differently, per bridge): no change beyond §2.2's kill credit and MZB-111's
+  machine rule, checked at each bridge.
+  - Camps (CAMP_DEATH, CHIEF_KILLED): a pet's kill was already its online owner's through vanilla's credit. Now
+    a pet whose owner is offline (or any OwnableEntity that is not a TamableAnimal) credits the owner: it was MOB,
+    so Predator, and is PLAYER, so Player, which presses. A chief's death now also checks the source's owner
+    first, as a camp body's did. Nothing else moves.
+  - Herds (HERD_KILLED): a FakePlayer's kill was PLAYER with the fake UUID, so the herd's `killed` count, and is
+    OTHER, so `lost`; a pet's kill was MOB and is PLAYER; a death after a player's hit with no damage entity (a
+    fall) was NONE and is PLAYER. The killer UUID is the credited player's, else the damage's entity's as before.
+    Herds keep no pressure, so only those two counters move. §2.2 wants it: a machine is not a player, and a pet's
+    or a recent hit's death is the player's.
+  - Village residents (HURT RESIDENT_KILLED): a FakePlayer's kill was PLAYER with the fake UUID, so a village
+    report against a player who does not exist, and is OTHER, so none. A pet's kill and a death after a player's
+    hit were MOB or NONE, so no report, and are PLAYER with the owner or the hitter, so a report against them. The
+    VANILLA_GOSSIP flag is still set from the entity that dealt the blow, since vanilla's gossip names that entity.
+    The non-lethal HURT windows keep the old entity rule (a FakePlayer's hits still read PLAYER): they report no
+    death, so S3 leaves them alone.
+  - Nests and dragons: MZB-1010.
 - **MZB-1020** (F1, the credit rides the death reports): taken. Each death report carries the credit code and
   the credited player; the engine maps to a LossCause with `from_credit`, since the boss rule needs each kind's
   tunables, which only the engine has. Not taken: a LossCause byte computed in Java per record.

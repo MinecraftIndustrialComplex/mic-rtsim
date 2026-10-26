@@ -1,5 +1,6 @@
 package com.minecraftindustrialcomplex.mic_rtsim.knowledge;
 
+import com.minecraftindustrialcomplex.mic_rtsim.api.KillCredit;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs;
 import com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession;
 import com.minecraftindustrialcomplex.mic_rtsim.puppet.AgentTag;
@@ -48,6 +49,8 @@ public final class HurtObserver {
         int member;
         long node;
         int attackerKind;
+        /** The credited player written in place of the attacker, for a lethal report whose credit is a player's. */
+        UUID credited;
         String body;
         String profession;
         int flags;
@@ -110,6 +113,11 @@ public final class HurtObserver {
         p.flags |= Obs.Hurt.FLAG_LETHAL;
         p.amount = old == null ? 0 : old.amount;
         p.hits = old == null ? 0 : old.hits;
+        // The kill credit (MZB-1008): a pet's kill, or a death soon after a player's hit, is that player's; a FakePlayer's
+        // is a machine's (OTHER, MZB-111). A window's hits stay keyed on the entity that dealt them.
+        KillCredit.Credit c = KillCredit.of(victim, killer);
+        p.attackerKind = c.by();
+        p.credited = c.player();
         journal(key, p, now);
     }
 
@@ -164,9 +172,10 @@ public final class HurtObserver {
         r.putInt(Obs.Hurt.MEMBER, p.member);
         r.putLong(Obs.Hurt.VICTIM_MOST, key.victim().getMostSignificantBits());
         r.putLong(Obs.Hurt.VICTIM_LEAST, key.victim().getLeastSignificantBits());
-        if (key.attacker() != null) {
-            r.putLong(Obs.Hurt.ATTACKER_MOST, key.attacker().getMostSignificantBits());
-            r.putLong(Obs.Hurt.ATTACKER_LEAST, key.attacker().getLeastSignificantBits());
+        UUID attacker = p.credited != null ? p.credited : key.attacker();
+        if (attacker != null) {
+            r.putLong(Obs.Hurt.ATTACKER_MOST, attacker.getMostSignificantBits());
+            r.putLong(Obs.Hurt.ATTACKER_LEAST, attacker.getLeastSignificantBits());
         }
         r.putInt(Obs.Hurt.ATTACKER_KIND, p.attackerKind);
         r.putFloat(Obs.Hurt.AMOUNT, p.amount);
