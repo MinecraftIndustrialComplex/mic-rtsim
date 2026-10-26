@@ -2640,17 +2640,28 @@ mod dragons {
         assert_eq!(dragons_after_a_death("dragon-died-clean", false), 0);
     }
 
+    /// How the dragons come back on in [`a_dragon_after_a_death_while_off`].
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum BackOn {
+        /// Switched on in the session.
+        SwitchOn,
+        /// After a save that trimmed the death from Java's journal and a clean restart with them
+        /// on.
+        Restart,
+        /// The same, after a save that wrote the kept page failed first.
+        RestartAfterAFailedSave,
+    }
+
     /// A lair's own dragon, well fed (it rests in its lair, so a player there sees it whenever
     /// the dragons run), adopted and embodied. The dragons are switched off, and Java keeps the
     /// body: it sends no capture at the switch-off. In that window the body dies (`killer_kind`:
-    /// a player's kill, or a taming, which Java reports with no attacker). Then the dragons are
-    /// switched on again with a player at the lair: in this session (`restart` false), or after
-    /// a save that trimmed the death from Java's journal and a clean restart with them on.
-    /// Returns (dragons alive, materializations of that dragon after the switch-on).
+    /// a player's kill, or a taming, which Java reports with no attacker). Then the dragons come
+    /// back on ([`BackOn`]) with a player at the lair. Returns (dragons alive, materializations
+    /// of that dragon after the switch-on).
     fn a_dragon_after_a_death_while_off(
         tag: &str,
         killer_kind: AttackerKind,
-        restart: bool,
+        back_on: BackOn,
     ) -> (usize, usize) {
         let dir = tmpdir(tag);
         let e = engine(&dir, 256 * 1024);
@@ -2701,7 +2712,16 @@ mod dragons {
         );
         assert_eq!(summary(&e).0, 1, "nothing changes while off");
 
-        let (e, mut j) = if restart {
+        let (e, mut j) = if back_on != BackOn::SwitchOn {
+            if back_on == BackOn::RestartAfterAFailedSave {
+                // The first save since the death writes the kept page, and fails (a torn log):
+                // the page is not on disk, though the list has not changed since.
+                let failed = e.stats_array()[15];
+                e.inject_store_fault(Some(rtsim_kernel::page::Fault::TornLog));
+                e.order(vec![Order::SaveAtNextStep]).unwrap();
+                j.run_until("the failed save", |j| j.e.stats_array()[15] > failed);
+                e.inject_store_fault(None);
+            }
             save_durable(&e, &mut j);
             j.idle();
             let saved = j.world_save();
@@ -2745,7 +2765,11 @@ mod dragons {
     #[test]
     fn a_dragon_killed_while_switched_off_stays_dead() {
         assert_eq!(
-            a_dragon_after_a_death_while_off("dragon-died-off", AttackerKind::Player, false),
+            a_dragon_after_a_death_while_off(
+                "dragon-died-off",
+                AttackerKind::Player,
+                BackOn::SwitchOn
+            ),
             (0, 0),
             "(alive, materialized again)"
         );
@@ -2756,7 +2780,30 @@ mod dragons {
     #[test]
     fn a_dragon_killed_while_switched_off_stays_dead_after_a_restart() {
         assert_eq!(
-            a_dragon_after_a_death_while_off("dragon-died-off-restart", AttackerKind::Player, true),
+            a_dragon_after_a_death_while_off(
+                "dragon-died-off-restart",
+                AttackerKind::Player,
+                BackOn::Restart
+            ),
+            (0, 0),
+            "(alive, materialized again)"
+        );
+    }
+
+    /// U-c's review, probe C (RP-292, `paging::Kept`'s dirty flag): the first save after a
+    /// death while off writes the kept page and fails; the next save, with the list unchanged,
+    /// writes it again, and trims the death from Java's journal. After a clean restart with the
+    /// dragons on, the death the page kept is applied: the dragon stays dead. Without the flag
+    /// set again on the failed save, the page never reached the disk, the death was lost, and the
+    /// dragon came back alive and materialized beside its corpse (alive 1, materialized again 1).
+    #[test]
+    fn a_dragon_killed_while_off_stays_dead_after_a_failed_save_and_a_restart() {
+        assert_eq!(
+            a_dragon_after_a_death_while_off(
+                "dragon-died-off-failed-save",
+                AttackerKind::Player,
+                BackOn::RestartAfterAFailedSave
+            ),
             (0, 0),
             "(alive, materialized again)"
         );
@@ -2767,7 +2814,11 @@ mod dragons {
     #[test]
     fn a_dragon_tamed_while_switched_off_does_not_come_back() {
         assert_eq!(
-            a_dragon_after_a_death_while_off("dragon-tamed-off", AttackerKind::None, false),
+            a_dragon_after_a_death_while_off(
+                "dragon-tamed-off",
+                AttackerKind::None,
+                BackOn::SwitchOn
+            ),
             (0, 0),
             "(alive, materialized again)"
         );
@@ -2777,7 +2828,11 @@ mod dragons {
     #[test]
     fn a_dragon_tamed_while_switched_off_does_not_come_back_after_a_restart() {
         assert_eq!(
-            a_dragon_after_a_death_while_off("dragon-tamed-off-restart", AttackerKind::None, true),
+            a_dragon_after_a_death_while_off(
+                "dragon-tamed-off-restart",
+                AttackerKind::None,
+                BackOn::Restart
+            ),
             (0, 0),
             "(alive, materialized again)"
         );
@@ -6275,6 +6330,75 @@ mod conflict {
             (expired, withdrawn, booked > 0, units),
             (0, 1, true, 0),
             "(expired, withdrawn, casualties booked, units left)"
+        );
+    }
+
+    /// U-c's review, probe A (RP-292, `shared::resets`): the kept records of two modules go in
+    /// as one list, in the order `Replay` admitted them, not module by module. The conflict and
+    /// ECOLOGY go off together; a mob wipes the envoy's band out in the switch's tick (kept by
+    /// the conflict), and a day past the demand's deadline d0 a dragon is hurt (kept by the
+    /// dragons, a later observation). Both come on two days past d0. The wipe goes in first, at
+    /// its own tick before d0: the demand is withdrawn, never expired, and the casualties are
+    /// booked. In module order (the dragons before the conflict) the hurt's catch-up would run
+    /// the conflict past d0 first: the demand expires and the wipe finds the band gone home
+    /// (expired 1, withdrawn 0, nothing booked).
+    ///
+    /// ECOLOGY must be on in the camp: the conflict tests' MODULES leaves it off, and the hurt
+    /// would be kept and never applied, so the test would pass in both orders.
+    #[test]
+    fn a_kept_wipe_goes_in_before_a_later_kept_dragon_record_of_another_module() {
+        use rtsim_ecology::boundary::{self as db, AttackerKind, Obs as DO};
+        let on = MODULES | rtsim_jni::engine::MODULE_ECOLOGY;
+        let (_dir, e, mut j) = camp_with("conflict-kept-merge", on);
+        let envoy = envoy_in_view(&mut j);
+        let d0 = envoy.deadline;
+        signal(&mut j, 2, 5, PLAYER);
+        j.idle();
+        let before = e.with_conflict(|c, _| c.stats.casualties);
+        let _ = e.conflict_log(true);
+
+        j.modules(0b1111);
+        wipe(&mut j, &envoy, cb::BY_MOB, (0, 0));
+        j.idle();
+        assert!(j.game_time < d0, "the wipe before the deadline");
+        let hurt_at = d0 + DAY;
+        let limit = hurt_at - j.game_time + DAY;
+        advance_until(&mut j, 1_000, limit, "past d0", |j| j.game_time >= hurt_at);
+        j.dragon_obs(&DO::Hurt(db::Hurt {
+            agent: 0xD00D,
+            epoch: 1,
+            attacker_kind: AttackerKind::Player,
+            attacker: PLAYER,
+            hits: 1,
+            amount: 1.0,
+            health_after: 99.0,
+        }));
+        j.idle();
+        assert!(e.dragons_ignored() >= 1, "the dragons kept the hurt");
+        assert_eq!(
+            e.with_conflict(|c, _| c.stats.casualties),
+            before,
+            "kept, not applied while off"
+        );
+
+        let until = d0 + 2 * DAY;
+        let limit = until - j.game_time + DAY;
+        advance_until(&mut j, 1_000, limit, "the switch-on", |j| {
+            j.game_time >= until
+        });
+        j.modules(on);
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        let end = j.game_time + DAY;
+        advance_until(&mut j, 600, 2 * DAY, "a day on", |j| j.game_time >= end);
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        let (st, _) = e.conflict_stats();
+        let booked = e.with_conflict(|c, _| c.stats.casualties) - before;
+        e.close(true, Duration::from_secs(5)).unwrap();
+        assert_eq!(
+            (st.expired, st.withdrawn, booked > 0),
+            (0, 1, true),
+            "(expired, withdrawn, casualties booked)"
         );
     }
 
