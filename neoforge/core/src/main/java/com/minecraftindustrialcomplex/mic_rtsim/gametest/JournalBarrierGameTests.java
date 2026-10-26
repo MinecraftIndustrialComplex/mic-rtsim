@@ -534,11 +534,31 @@ public final class JournalBarrierGameTests {
         AtomicReference<byte[]> before = new AtomicReference<>();
         AtomicReference<Look> after = new AtomicReference<>();
         long[] at = new long[3];
+        // A save the barrier held (the notes of chunks an earlier test left) is saved again until the file is written and
+        // nothing is queued behind it: a late write of an earlier round lands after the "before" read, and the file then
+        // differs from it for a reason that is not the direct save's.
+        long[] settle = new long[4]; // writes at the start, writes last seen, the nanos it last moved, the last save
         helper.startSequence()
                 .thenExecute(() -> {
+                    data.setDirty();
+                    settle[0] = settle[1] = data.writes();
+                    settle[2] = settle[3] = System.nanoTime();
                     overworld.getServer().saveEverything(true, false, false); // so the file is there
-                    IOUtilities.withIOWorker(() -> before.set(bytesOrEmpty(file)));
                 })
+                .thenWaitUntil(io(() -> {
+                    long now = System.nanoTime(), w = data.writes();
+                    boolean dirty = data.isDirty();
+                    if (dirty || w != settle[1]) {
+                        settle[1] = w;
+                        settle[2] = now;
+                    }
+                    if (dirty && now - settle[3] > 1_000_000_000L) {
+                        settle[3] = now;
+                        overworld.getServer().saveEverything(true, false, false);
+                    }
+                    check("the journal's file is written and nothing is queued behind it", !dirty && w > settle[0] && now - settle[2] > 1_000_000_000L);
+                }))
+                .thenExecute(() -> IOUtilities.withIOWorker(() -> before.set(bytesOrEmpty(file))))
                 .thenWaitUntil(io(() -> check("the chain looked", before.get() != null)))
                 .thenExecute(() -> {
                     at[0] = data.writes();
