@@ -1,0 +1,353 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>rtsim Overnight, 25 October</title>
+<style>
+:root {
+  --bg: #ffffff;
+  --ink: #1a1a1f;
+  --muted: #52514a;
+  --line: #e5e5ea;
+  --card: #f7f7f8;
+  --accent: #8f620f;
+  --built: #2f855a;
+  --built-bg: #d5ebdf;
+  --built-ink: #1d5a3b;
+  --fixing: #b7791f;
+  --fixing-bg: #f6e5c4;
+  --fixing-ink: #6b4400;
+  --brief: #3b6ea8;
+  --brief-bg: #dbe6f3;
+  --brief-ink: #23476f;
+  --notyet: #8a8a93;
+  --notyet-bg: #ececef;
+  --notyet-ink: #3f3f46;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 18px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  overflow-wrap: anywhere;
+}
+main, .top, footer {
+  max-width: 920px;
+  margin: 0 auto;
+  padding-left: clamp(16px, 4vw, 32px);
+  padding-right: clamp(16px, 4vw, 32px);
+}
+.top {
+  padding-top: 14px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 18px;
+  font-size: 15px;
+}
+.top a { color: var(--muted); text-decoration: none; min-height: 44px; display: inline-flex; align-items: center; }
+.top a:hover, .top a:focus { color: var(--accent); text-decoration: underline; }
+.top .home { color: var(--ink); font-weight: 600; margin-right: auto; }
+h1, h2, h3 { text-wrap: balance; line-height: 1.25; }
+h1 { font-size: clamp(28px, 4.6vw, 40px); margin: 36px 0 10px; letter-spacing: -0.01em; max-width: 22em; }
+h2 { font-size: clamp(22px, 3vw, 27px); margin: 0 0 8px; max-width: 30em; }
+h3 { font-size: 18px; margin: 0 0 6px; }
+section > h3 { margin: 28px 0 8px; }
+p, li { max-width: 38em; }
+p { margin: 0 0 14px; }
+ul, ol { padding-left: 1.2em; margin: 0 0 14px; }
+li { margin-bottom: 6px; }
+a { color: var(--accent); }
+strong { font-weight: 600; }
+.dek { color: var(--muted); font-size: 16px; margin-bottom: 18px; }
+.lead { font-size: 19px; line-height: 1.55; }
+section { padding: 34px 0 10px; border-top: 1px solid var(--line); margin-top: 26px; }
+.cap { font-size: 15px; color: var(--muted); margin: 8px 0 16px; max-width: 46em; }
+code { font-family: var(--mono); font-size: 0.86em; background: var(--card); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; white-space: nowrap; }
+
+/* KPI tiles */
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; margin: 22px 0 6px; }
+.tile { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 14px 14px 12px; }
+.tile .n { font-size: 32px; font-weight: 650; font-variant-numeric: tabular-nums; line-height: 1.1; }
+.tile .t { font-size: 15px; color: var(--muted); line-height: 1.4; margin-top: 6px; }
+
+/* theme cards and grouped lists */
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 10px 18px; margin: 14px 0 16px; }
+.grid > div { border-top: 1px solid var(--line); padding-top: 8px; font-size: 16.5px; }
+.grid > div b { display: block; font-size: 17px; }
+.grid > div p { margin: 0; max-width: none; }
+
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 16px 18px 8px; }
+.card p, .card li { max-width: none; }
+.card ul { font-size: 16.5px; }
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(270px, 1fr)); gap: 12px; margin: 14px 0 18px; }
+.card .label { font-size: 14px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); margin: 0 0 4px; }
+
+/* file order diagram */
+.files { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 6px 0 12px; font-size: 15px; }
+.files .f { font-family: var(--mono); font-size: 14px; background: #ffffff; border: 1px solid #c9c9d1; border-radius: 4px; padding: 3px 7px; }
+.files .f.last { border-color: var(--built); color: var(--built-ink); background: var(--built-bg); font-weight: 600; }
+.files .arrow { color: var(--muted); }
+.files .tag { font-size: 14px; font-weight: 600; color: var(--muted); min-width: 4.2em; }
+
+/* stacked state bar */
+.bar { display: flex; gap: 2px; height: 34px; margin: 14px 0 8px; border-radius: 4px; overflow: hidden; }
+.bar span { display: flex; align-items: center; justify-content: center; font-weight: 650; font-size: 16px; font-variant-numeric: tabular-nums; }
+.bar .built { background: var(--built-bg); color: var(--built-ink); }
+.bar .fixing { background: var(--fixing-bg); color: var(--fixing-ink); }
+.bar .brief { background: var(--brief-bg); color: var(--brief-ink); }
+.bar .notyet { background: var(--notyet-bg); color: var(--notyet-ink); }
+.legend { list-style: none; padding: 0; margin: 0 0 18px; display: flex; flex-wrap: wrap; gap: 4px 20px; font-size: 15.5px; }
+.legend li { margin: 0; max-width: none; }
+.dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 7px; vertical-align: 1px; }
+.dot.built { background: var(--built); }
+.dot.fixing { background: var(--fixing); }
+.dot.brief { background: var(--brief); }
+.dot.notyet { background: var(--notyet); }
+
+/* tables */
+table { overflow-wrap: break-word; border-collapse: collapse; width: 100%; font-size: 15.5px; line-height: 1.45; font-variant-numeric: tabular-nums; margin: 10px 0 6px; }
+th, td { text-align: left; vertical-align: top; padding: 9px 12px 9px 0; border-bottom: 1px solid var(--line); }
+th { font-weight: 600; color: var(--muted); font-size: 14.5px; border-bottom-color: #c9c9d1; }
+td.when { white-space: nowrap; }
+table code { font-size: 14px; }
+td.hash { min-width: 7em; }
+tr.key td { background: var(--card); }
+@media (max-width: 640px) {
+  table.stack thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  table.stack, table.stack tbody, table.stack tr, table.stack td { display: block; width: 100%; }
+  table.stack tr { border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px 2px; margin: 0 0 10px; }
+  table.stack tr.key td { background: transparent; }
+  table.stack tr.key { background: var(--card); }
+  table.stack td { border: 0; padding: 0 0 8px; white-space: normal; }
+  table.stack td:first-child { font-weight: 600; font-size: 16.5px; padding-bottom: 6px; }
+  table.stack td[data-label]::before { content: attr(data-label); display: block; font-size: 14px; font-weight: 600; letter-spacing: 0.03em; text-transform: uppercase; color: var(--muted); }
+}
+
+/* steps */
+.steps { list-style: none; padding: 0; margin: 14px 0 10px; counter-reset: step; }
+.steps li { counter-increment: step; position: relative; padding: 10px 0 10px 48px; border-top: 1px solid var(--line); margin: 0; max-width: 44em; }
+.steps li:first-child { border-top: 0; }
+.steps li::before { content: counter(step); position: absolute; left: 0; top: 9px; width: 32px; height: 32px; border-radius: 50%; background: var(--card); border: 1px solid #c9c9d1; display: flex; align-items: center; justify-content: center; font-weight: 650; font-size: 16px; font-variant-numeric: tabular-nums; }
+
+.chips { list-style: none; padding: 0; margin: 6px 0 14px; display: flex; flex-wrap: wrap; gap: 8px; }
+.chips li { margin: 0; max-width: none; font-size: 15.5px; background: #ffffff; border: 1px solid var(--line); border-radius: 4px; padding: 3px 9px; }
+
+.none { font-size: 19px; font-weight: 600; margin: 18px 0 6px; }
+footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom: 40px; }
+</style>
+</head>
+<body>
+<nav class="top" data-ss-react="off">
+  <a class="home" href="https://spacesheep.dev/@benmac/rtsim-hub">mic-rtsim for Ben</a>
+  <a href="#landed">Landed</a>
+  <a href="#dups">Duplications</a>
+  <a href="#decisions">Decisions taken</a>
+  <a href="#order">Landing order</a>
+  <a href="#open">Open</a>
+</nav>
+<main>
+<header data-ss-id="header">
+  <h1 data-ss-id="headline">Overnight: 14 commits landed, 15 ways to make goods twice found, and nothing waits on you</h1>
+  <p class="dek" data-ss-id="dek">The mic-rtsim night, from the evening of 24 October to the afternoon of 25 October. Times show in your time zone.</p>
+  <p class="lead" data-ss-id="lead"><strong>None of the duplications can reach a player today.</strong> rtsim is not in the MIC pack (no rtsim mods in <code>pack/mods</code>). They matter before rtsim ships.</p>
+  <div class="tiles" data-ss-id="tiles">
+    <div class="tile" data-ss-id="kpi-landed"><div class="n">14</div><div class="t">commits landed on mic-rtsim main; every SEC-1 slice is now built</div></div>
+    <div class="tile" data-ss-id="kpi-dups"><div class="n">15</div><div class="t">ways to make goods twice after a crash or a module switch, all on main today</div></div>
+    <div class="tile" data-ss-id="kpi-built"><div class="n">10</div><div class="t">of their fixes built and waiting to land, option A first</div></div>
+    <div class="tile" data-ss-id="kpi-wait"><div class="n">0</div><div class="t">decisions wait on you; the ones taken overnight are all reversible</div></div>
+  </div>
+</header>
+
+<section id="landed" data-ss-id="landed" data-ss-section>
+  <h2 data-ss-id="landed-h">Landed on main: SEC-1 finished, four replay-gate slices, two Mowzie slices and the flake fixes</h2>
+  <div class="grid" data-ss-id="landed-themes">
+    <div data-ss-id="theme-sec1"><b>Factory sections, all built</b><p>SEC-1 slices S5-2, S6 and S7, a create GameTest guard and the SECTIONS.md gaps.</p></div>
+    <div data-ss-id="theme-replay"><b>Replay gate, four slices</b><p>Herds (H), ships (S), dragons (D), and the dragon nest renewal serial (N).</p></div>
+    <div data-ss-id="theme-mowzie"><b>Mowzie's Mobs, M6 and M7</b><p>With fixtures RTC7 / META 6 and RTC8 / META 7; its GameTests now wait for chunks in real time.</p></div>
+    <div data-ss-id="theme-flakes"><b>GameTest flakes fixed</b><p>Every module's suite passed fresh, and core, create and iceandfire passed under load.</p></div>
+  </div>
+  <table class="stack" data-ss-id="landed-table">
+    <thead><tr><th scope="col">When, 25 Oct</th><th scope="col">Commit</th><th scope="col">What</th></tr></thead>
+    <tbody>
+      <tr data-ss-id="land-s5-2"><td class="when"><time datetime="2026-10-25T08:11:00Z">01:11 PDT</time></td><td class="hash" data-label="Commit"><code>f49ed8e8</code></td><td data-label="What">Factory sections, SEC-1 slice S5-2</td></tr>
+      <tr data-ss-id="land-h"><td class="when"><time datetime="2026-10-25T08:13:00Z">01:13 PDT</time></td><td class="hash" data-label="Commit"><code>8bfd5742</code></td><td data-label="What">Replay gate for herds, slice H</td></tr>
+      <tr data-ss-id="land-s"><td class="when"><time datetime="2026-10-25T09:22:00Z">02:22 PDT</time></td><td class="hash" data-label="Commit"><code>e75265e7</code></td><td data-label="What">Replay gate for ships, slice S</td></tr>
+      <tr data-ss-id="land-s6"><td class="when"><time datetime="2026-10-25T10:15:00Z">03:15 PDT</time></td><td class="hash" data-label="Commit"><code>5a45b9e6</code></td><td data-label="What">Factory sections, SEC-1 slice S6</td></tr>
+      <tr data-ss-id="land-m6"><td class="when"><time datetime="2026-10-25T11:35:00Z">04:35 PDT</time></td><td class="hash" data-label="Commit"><code>a11311aa</code></td><td data-label="What">Mowzie's Mobs, slice M6 (fixtures RTC7 / META 6)</td></tr>
+      <tr class="key" data-ss-id="land-s7"><td class="when"><time datetime="2026-10-25T13:16:00Z">06:16 PDT</time> to <time datetime="2026-10-25T13:18:00Z">06:18 PDT</time></td><td class="hash" data-label="Commit"><code>75969731</code> <code>63413265</code> <code>080ac296</code></td><td data-label="What">SEC-1 slice S7, a create GameTest guard and the SECTIONS.md gaps. <strong>Every SEC-1 slice is now built.</strong></td></tr>
+      <tr data-ss-id="land-rescan"><td class="when"><time datetime="2026-10-25T14:56:00Z">07:56 PDT</time></td><td class="hash" data-label="Commit"><code>16f1b444</code></td><td data-label="What">Rescan budget tests clear their yards' floors first (a test-isolation flake)</td></tr>
+      <tr class="key" data-ss-id="land-flakes"><td class="when"><time datetime="2026-10-25T15:00:00Z">08:00 PDT</time></td><td class="hash" data-label="Commit"><code>446d8db3</code></td><td data-label="What">The GameTest flake fixes: three Create chunk-tick flakes, the logout-notice race, RP-42 and about 20 smaller fixes. Every module's suite passed fresh, and core, create and iceandfire passed under load.</td></tr>
+      <tr data-ss-id="land-waits"><td class="when"><time datetime="2026-10-25T15:24:00Z">08:24 PDT</time></td><td class="hash" data-label="Commit"><code>588b229c</code></td><td data-label="What">Mowzie GameTests wait for chunks in real time; <code>chunk_waits.py</code> refuses early state reads</td></tr>
+      <tr data-ss-id="land-m7"><td class="when"><time datetime="2026-10-25T16:02:00Z">09:02 PDT</time></td><td class="hash" data-label="Commit"><code>d64f4eb8</code></td><td data-label="What">Mowzie's Mobs, slice M7 (fixtures RTC8 / META 7)</td></tr>
+      <tr data-ss-id="land-d"><td class="when"><time datetime="2026-10-25T16:19:00Z">09:19 PDT</time></td><td class="hash" data-label="Commit"><code>bc669502</code></td><td data-label="What">Replay gate for dragons, slice D</td></tr>
+      <tr data-ss-id="land-n"><td class="when"><time datetime="2026-10-25T19:28:00Z">12:28 PDT</time></td><td class="hash" data-label="Commit"><code>4e694452</code></td><td data-label="What">Replay gate slice N: the dragon nest renewal serial (RTD8 / RTN8)</td></tr>
+    </tbody>
+  </table>
+  <p class="cap" data-ss-id="landed-cap">Every landing passed core (123 or 126 required GameTests) plus its module rounds on the merged head. Newest last.</p>
+  <p data-ss-id="landed-pack"><strong>Also in the pack repo last night,</strong> already reported: <code>80042f6</code>, Flywheel's instancing backend, which fixes the black slabs.</p>
+</section>
+
+<section id="dups" data-ss-id="dups" data-ss-section>
+  <h2 data-ss-id="dups-h">15 ways to make goods twice, all on main today; 10 fixes are built</h2>
+  <p data-ss-id="dups-p">Each could make goods twice after a crash or a module switch. They come from two causes.</p>
+  <div class="cards" data-ss-id="causes">
+    <div class="card" data-ss-id="cause-order">
+      <p class="label">Cause 1</p>
+      <h3>A save wrote its files in an order nobody controlled</h3>
+      <div class="files" aria-label="Before: four files in any order">
+        <span class="tag">Before</span>
+        <span class="f">create_tracks.dat</span><span class="f">CDG oil file</span><span class="f">rtsim journal</span><span class="f">region files</span>
+        <span class="arrow">in any order</span>
+      </div>
+      <div class="files" aria-label="After U-a: the others, then the journal last">
+        <span class="tag">After U-a</span>
+        <span class="f">the others</span><span class="arrow">then</span><span class="f last">rtsim journal, last</span>
+      </div>
+      <p>A crash between those writes could make goods twice. U-a writes the journal last, and only during a full world save; it is built and lands third.</p>
+    </div>
+    <div class="card" data-ss-id="cause-switch">
+      <p class="label">Cause 2</p>
+      <h3>A switched-off module ignored answers</h3>
+      <p><strong>Before:</strong> while a module was off, the engine ignored answers, then resent them later, after Java had forgotten them.</p>
+      <p><strong>After option A:</strong> the engine hears answers whatever the switch, and their effects apply at their own tick at switch-on. One rule for the whole engine: a switch only stops new decisions.</p>
+    </div>
+  </div>
+
+  <h3 data-ss-id="state-h">Where the 15 fixes stand</h3>
+  <div class="bar" role="img" aria-label="10 built, 1 being fixed, 2 briefs ready, 2 not started" data-ss-id="state-bar">
+    <span class="built" style="width:66.67%">10</span><span class="fixing" style="width:6.67%">1</span><span class="brief" style="width:13.33%">2</span><span class="notyet" style="width:13.33%">2</span>
+  </div>
+  <ul class="legend" data-ss-id="state-legend">
+    <li><span class="dot built"></span>Built, not landed yet: 10</li>
+    <li><span class="dot fixing"></span>Being fixed: 1</li>
+    <li><span class="dot brief"></span>Brief ready: 2</li>
+    <li><span class="dot notyet"></span>Not started: 2</li>
+  </ul>
+
+  <table class="stack" data-ss-id="dups-table">
+    <thead><tr><th scope="col">Duplication</th><th scope="col">Exists on main?</th><th scope="col">Fix</th><th scope="col">State</th></tr></thead>
+    <tbody>
+      <tr data-ss-id="dup-ambush"><td>Train ambush loot twice after a crash</td><td data-label="Exists on main?">yes</td><td data-label="Fix">A per-train record of applied ops in Create's train NBT (slice T + T2)</td><td data-label="State"><span class="dot built"></span>Built, re-checked; lands right after option A</td></tr>
+      <tr data-ss-id="dup-port"><td>Package-port offline buffer twice</td><td data-label="Exists on main?">yes</td><td data-label="Fix">A port record, plus a hook for postbox chunks saved newer than Create's file (slice U-a)</td><td data-label="State"><span class="dot built"></span>Built, reviewed; lands after T</td></tr>
+      <tr data-ss-id="dup-oil"><td>Diesel oil drawn twice (or lost)</td><td data-label="Exists on main?">yes</td><td data-label="Fix">Journal written last, oil record in CDG's file (U-a)</td><td data-label="State"><span class="dot built"></span>Built, reviewed</td></tr>
+      <tr data-ss-id="dup-pollution"><td>Destroy pollution booked twice</td><td data-label="Exists on main?">yes (some map sizes)</td><td data-label="Fix">Pollution record as a level attachment (U-a)</td><td data-label="State"><span class="dot built"></span>Built, reviewed</td></tr>
+      <tr data-ss-id="dup-failed"><td>Industry: a refused (FAILED) order re-decided by a replay, 224 iron made</td><td data-label="Exists on main?">yes</td><td data-label="Fix">Slice R fixes</td><td data-label="State"><span class="dot fixing"></span>Being fixed</td></tr>
+      <tr data-ss-id="dup-opids"><td>Industry: op ids differ live vs replay, so exchanges double (ore 224 to 448), a frogport emptied twice</td><td data-label="Exists on main?">yes</td><td data-label="Fix">Every decision takes its own tick; industry paused while replaying (slice R)</td><td data-label="State"><span class="dot built"></span>Built; review fixes in progress</td></tr>
+      <tr data-ss-id="dup-switch"><td>Module switched off: engine ignores answers, resends later after Java forgot them</td><td data-label="Exists on main?">yes</td><td data-label="Fix">Engine hears answers whatever the switch; effects applied at their own tick at switch-on (option A)</td><td data-label="State"><span class="dot built"></span>Built; lands first, alone</td></tr>
+      <tr data-ss-id="dup-chain"><td>Chain write twice after a switch-off</td><td data-label="Exists on main?">yes</td><td data-label="Fix">Option A extension</td><td data-label="State"><span class="dot built"></span>Built</td></tr>
+      <tr data-ss-id="dup-tribute-off"><td>Dragon tribute coins twice after a dragons switch-off</td><td data-label="Exists on main?">yes</td><td data-label="Fix">Slice U-c</td><td data-label="State"><span class="dot brief"></span>Brief ready, starts after A</td></tr>
+      <tr data-ss-id="dup-bodies"><td>A dragon killed while dragons are off comes back beside its corpse; herd animals and camp members in the switch tick come back</td><td data-label="Exists on main?">yes</td><td data-label="Fix">Slice U-c</td><td data-label="State"><span class="dot brief"></span>Brief ready</td></tr>
+      <tr data-ss-id="dup-caravan"><td>A caravan robbed or traded with while caravans are off reappears with the goods</td><td data-label="Exists on main?">yes</td><td data-label="Fix">Records kept at their own tick, capped at 24,576 (slice U-d)</td><td data-label="State"><span class="dot built"></span>Built, waits for review with U-c</td></tr>
+      <tr data-ss-id="dup-coin-resent"><td>Dragon tribute coin resent after a failed chest write; second house; second resident; block drops twice</td><td data-label="Exists on main?">yes</td><td data-label="Fix">Slice U-b</td><td data-label="State"><span class="dot built"></span>Core passed 126/126, create runs queued</td></tr>
+      <tr data-ss-id="dup-iaf"><td>Four Ice and Fire placements (roost, chamber, worms, adopt)</td><td data-label="Exists on main?">yes</td><td data-label="Fix">Slice N2</td><td data-label="State"><span class="dot built"></span>Built, final GameTest rerun queued</td></tr>
+      <tr data-ss-id="dup-postbox"><td>Create postbox and frogport goods, PostboxAccess, Frontier HELD_DRAW</td><td data-label="Exists on main?">yes</td><td data-label="Fix">A queued Create slice, the coordinator's own</td><td data-label="State"><span class="dot notyet"></span>Not started</td></tr>
+      <tr data-ss-id="dup-entity"><td>Entity-held records (caravan, band and herd takes, shearing, tame)</td><td data-label="Exists on main?">yes</td><td data-label="Fix">A queued records slice, the coordinator's own; three of them match vanilla's own behaviour</td><td data-label="State"><span class="dot notyet"></span>Not started</td></tr>
+    </tbody>
+  </table>
+
+  <h3 data-ss-id="power-h">Power loss is covered too, except a small risk on Windows</h3>
+  <div class="cards" data-ss-id="power">
+    <div class="card" data-ss-id="power-unix"><p class="label">Linux and macOS</p><p><strong>Covered.</strong> The folder syncs before the journal write: about 18 ms when something changed, off the server thread.</p></div>
+    <div class="card" data-ss-id="power-win"><p class="label">Windows</p><p><strong>A small risk stays.</strong> Windows cannot sync a folder from Java, so a small power-loss risk remains there. It is logged once.</p></div>
+  </div>
+</section>
+
+<section id="decisions" data-ss-id="decisions" data-ss-section>
+  <h2 data-ss-id="decisions-h">Decisions taken while you slept, all reversible</h2>
+  <p data-ss-id="decisions-p">The coordinator took these without waiting for you. Say if you want any changed.</p>
+  <div class="cards" data-ss-id="decision-groups">
+    <div class="card" data-ss-id="dec-formats">
+      <p class="label">Data formats, 5</p>
+      <p>Pre-release, no migrations, and all safe to uninstall: the keys drop.</p>
+      <ul>
+        <li><strong>Trains:</strong> a per-train record of applied ops in Create's train NBT, via a mixin. Up to 4,096 entries per train, about 2 KiB typical.</li>
+        <li><strong>Diesel oil:</strong> a record in CDG's oil SavedData, via a mixin.</li>
+        <li><strong>Destroy pollution:</strong> a <code>mic_rtsim</code> level attachment. NeoForge skips unknown attachments after uninstall.</li>
+        <li><strong>Caravans:</strong> the module's saved state gains a capped list of records kept while it is off.</li>
+        <li><strong>Fixture bumps:</strong> RTC7, RTC8, RTD8, RTN8, META 6, META 7.</li>
+      </ul>
+    </div>
+    <div class="card" data-ss-id="dec-process">
+      <p class="label">Process, 5</p>
+      <ul>
+        <li><strong>Flywheel instancing pack-wide,</strong> with your OK.</li>
+        <li><strong>M6 landed with its waits unconverted,</strong> then they were converted in <code>588b229c</code>.</li>
+        <li><strong>The flake fixes landed without full reruns.</strong></li>
+        <li><strong>Deleted <code>~/mic-trains-check</code>,</strong> 3.7 GB and unused.</li>
+        <li><strong>A memory file an agent wrote against the rules</strong> was moved aside.</li>
+      </ul>
+    </div>
+  </div>
+  <div class="card" data-ss-id="dec-design">
+    <p class="label">Design, 9</p>
+    <ul>
+      <li><strong>Journal written last,</strong> and only during a full world save. A single-dimension save from another mod leaves it for the next full save.</li>
+      <li><strong>One rule for the whole engine:</strong> a module switch only stops new decisions. Every record of what already happened is still heard, at its own tick.</li>
+      <li><strong>The save guard keeps waiting</strong> while a stuck chunk can still be saved, instead of giving up after 3 rounds. At server stop it skips the journal write rather than risk a duplicate. New counters in <code>/rtsim perf</code>.</li>
+      <li><strong>Records are always saved and loaded,</strong> whatever the module switch says.</li>
+      <li><strong>Industry pauses while replaying.</strong> This reverses an earlier replay-gate choice.</li>
+      <li><strong>Exchange and package op ids leave out the amounts.</strong> A re-decision with a different amount is treated as a repeat, so only the difference can be lost, never doubled.</li>
+      <li><strong>No despawn of dragons at a dragons switch-off:</strong> players would see them vanish. Recording the death is enough.</li>
+      <li><strong>No Java-side freeze of caravans at a switch-off,</strong> for the same reason.</li>
+      <li><strong>Option A lands alone first,</strong> to break a landing deadlock between the train fix and the journal change.</li>
+    </ul>
+  </div>
+</section>
+
+<section id="order" data-ss-id="order" data-ss-section>
+  <h2 data-ss-id="order-h">What lands next, in this order</h2>
+  <ol class="steps" data-ss-id="order-steps">
+    <li data-ss-id="step-a"><strong>The module switch fix (option A),</strong> alone, Rust only.</li>
+    <li data-ss-id="step-t"><strong>Train ambush loot (T + T2).</strong></li>
+    <li data-ss-id="step-ua"><strong>Journal last, rings and the save guard (U-a).</strong></li>
+    <li data-ss-id="step-ub"><strong>Resent coins, second houses and residents, double drops (U-b)</strong> whenever its runs pass; <strong>the four Ice and Fire placements (N2)</strong> when its rerun passes.</li>
+    <li data-ss-id="step-uc"><strong>Dragon tribute and bodies (U-c), then caravans (U-d),</strong> after one joint Opus review.</li>
+    <li data-ss-id="step-r"><strong>Industry op ids (R),</strong> after T2.</li>
+    <li data-ss-id="step-mowzie"><strong>Mowzie's Mobs M9,</strong> then M8, then M10.</li>
+  </ol>
+</section>
+
+<section id="open" data-ss-id="open" data-ss-section>
+  <h2 data-ss-id="open-h">Open, none of it blocking</h2>
+  <div class="grid" data-ss-id="open-grid">
+    <div data-ss-id="open-uc"><b>A question may come from U-c</b><p>Its agent is weighing whether to record the module switch in the journal. If that changes the save format or protocol, it comes to you first.</p></div>
+    <div data-ss-id="open-flakes"><b>Flake backlog</b><p>AdoptGameTests leftovers; one rescan test under heavy load; four size-based GameTest waits; four Rust <code>pressure_saves</code> reads.</p></div>
+  </div>
+  <h3 data-ss-id="queued-h">Queued</h3>
+  <ul class="chips" data-ss-id="queued">
+    <li>FanLinks hot spot</li>
+    <li>Dragons taking whole stock</li>
+    <li>The Create-only build (G0, TP19)</li>
+    <li>Third-party notices</li>
+    <li>TRAINS.md</li>
+    <li>Over-fed loop accelerator</li>
+    <li>Voyages</li>
+    <li>Viewer-layers GameTest</li>
+    <li>pack-gc.py subvol</li>
+    <li>DR7's borax tag edit (yours)</li>
+  </ul>
+  <p class="none" data-ss-id="nothing-waiting">Nothing is waiting on you.</p>
+</section>
+</main>
+<footer data-ss-react="off">Built for Ben from the coordinator's overnight report on mic-rtsim main, 25 October 2026. Private page. <a href="https://spacesheep.dev/@benmac/rtsim-hub">Back to the hub</a>.</footer>
+<script>
+(function () {
+  document.querySelectorAll("time[datetime*='T']").forEach(function (t) {
+    var d = new Date(t.getAttribute("datetime"));
+    if (isNaN(d)) return;
+    var onDay = d.getFullYear() === 2026 && d.getMonth() === 9 && d.getDate() === 25;
+    t.textContent = d.toLocaleString([], onDay
+      ? { hour: "numeric", minute: "2-digit" }
+      : { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+    t.title = d.toLocaleString([], { dateStyle: "full", timeStyle: "short" });
+  });
+})();
+</script>
+</body>
+</html>

@@ -334,6 +334,166 @@ public final class DragonGameTests {
     }
 
     /**
+     * RP-245 (audit row D8): the engine adopts a dragon again (adopt_again) under a newer epoch, and the body Java holds
+     * for the agent at the older one is not its body any more. A puppet of the agent at epoch 1 stands; DRAGON_ADOPT of
+     * another untagged dragon at epoch 2 releases it (captured with reason COMMAND at epoch 1, the body removed) and
+     * adopts the new one: one body of the agent is alive, tagged epoch 2, MATERIALIZED at epoch 2 names it. The cases that
+     * keep ALREADY_EMBODIED: an adopt at the same epoch, at an older one, and at a newer one whose target is already a
+     * puppet (of another agent): each is rejected, and none releases the held puppet.
+     */
+    @GameTest(template = DragonKit.ARENA, timeoutTicks = 600, batch = "dragon_adopt_supersede")
+    public static void anAdoptAtANewerEpochReleasesTheOlderPuppet(GameTestHelper helper) {
+        String test = "anAdoptAtANewerEpochReleasesTheOlderPuppet";
+        ServerLevel level = helper.getLevel();
+        long agent = DragonKit.newAgent(), other = DragonKit.newAgent();
+        Runnable unforce = DragonKit.forceAround(helper, 3);
+        Vec3 c = DragonKit.centre(helper);
+        BlockPos p = BlockPos.containing(c);
+        List<Entity> made = new ArrayList<>();
+        DragonBaseEntity[] old = {null};
+        Entity[] next = {null}, same = {null}, older = {null}, theirs = {null};
+        long[] before = new long[2];
+        DragonKit.onEnd(helper, () -> {
+            made.forEach(e -> {
+                if (!e.isRemoved())
+                    e.discard();
+            });
+            for (long a : new long[] {agent, other}) {
+                Entity b = bridge().body(a);
+                if (b != null && !b.isRemoved())
+                    b.discard();
+            }
+        });
+        DragonKit.materialize(DragonKit.young(agent, helper, c.add(0, 12, 0), 0));
+        DragonKit.materialize(DragonKit.young(other, helper, c.add(12, 12, 0), 0));
+        helper.startSequence()
+                .thenWaitUntil(() -> body(agent))
+                .thenWaitUntil(() -> body(other))
+                .thenExecute(() -> {
+                    old[0] = body(agent);
+                    theirs[0] = body(other);
+                    check("the held puppet is at epoch 1 (" + RtsimAttachments.tag(old[0]).epoch() + ")", RtsimAttachments.tag(old[0]).epoch() == 1);
+                    next[0] = fire().spawn(level, p.offset(-8, 0, 0), MobSpawnType.NATURAL);
+                    same[0] = fire().spawn(level, p.offset(-8, 0, 6), MobSpawnType.NATURAL);
+                    older[0] = fire().spawn(level, p.offset(-8, 0, -6), MobSpawnType.NATURAL);
+                    check("three untagged dragons spawned", next[0] instanceof DragonBaseEntity && same[0] instanceof DragonBaseEntity
+                            && older[0] instanceof DragonBaseEntity);
+                    made.add(next[0]);
+                    made.add(same[0]);
+                    made.add(older[0]);
+                    before[0] = bridge().superseded;
+                    before[1] = bridge().rejected;
+                    // The engine adopts again under epoch 2: the stale puppet at epoch 1 is released, the new body adopted.
+                    DragonKit.adopt(next[0].getUUID(), agent, 2, null);
+                })
+                .thenWaitUntil(() -> check("the new body adopted at epoch 2", RtsimApi.isPuppet(next[0]) && bridge().agentOf(next[0]) == agent))
+                .thenExecute(() -> {
+                    check("at epoch 2 (" + RtsimAttachments.tag(next[0]).epoch() + ")", RtsimAttachments.tag(next[0]).epoch() == 2);
+                    check("the older puppet released", old[0].isRemoved());
+                    check("counted as superseded (" + (bridge().superseded - before[0]) + ")", bridge().superseded == before[0] + 1);
+                    check("nothing rejected (" + (bridge().rejected - before[1]) + ")", bridge().rejected == before[1]);
+                    check("the agent's body is the new one", bridge().body(agent) == next[0]);
+                    int alive = 0;
+                    for (DragonBaseEntity d : level.getEntitiesOfClass(DragonBaseEntity.class, new net.minecraft.world.phys.AABB(p).inflate(128, 200, 128)))
+                        if (!d.isRemoved() && RtsimAttachments.isTagged(d) && RtsimAttachments.tag(d).agent() == agent)
+                            alive++;
+                    check("one body of the agent alive (" + alive + ")", alive == 1);
+                    List<ScriptedEngine.Received> gone = about(DragonRecords.DRAGON_DEMATERIALIZED, agent);
+                    check("one DEMATERIALIZED, at epoch 1, reason COMMAND (" + gone.size() + ")", gone.size() == 1
+                            && gone.get(0).view().getInt(DragonRecords.Dematerialized.EPOCH) == 1 && gone.get(0).aux() == DragonRecords.Dematerialized.COMMAND);
+                    List<ScriptedEngine.Received> m = about(DragonRecords.DRAGON_MATERIALIZED, agent);
+                    check("MATERIALIZED twice (" + m.size() + ")", m.size() == 2);
+                    ScriptedEngine.Received last = m.get(m.size() - 1);
+                    check("the last at epoch 2, naming the new body", last.view().getInt(DragonRecords.Materialized.EPOCH) == 2
+                            && DragonKit.uuidAt(last, DragonRecords.Materialized.ENTITY_MOST).equals(next[0].getUUID()));
+                    // The cases that keep ALREADY_EMBODIED: the same epoch, an older one, a newer one at a target that is a puppet.
+                    DragonKit.adopt(same[0].getUUID(), agent, 2, null);
+                    DragonKit.adopt(older[0].getUUID(), agent, 1, null);
+                    DragonKit.adopt(theirs[0].getUUID(), agent, 3, null);
+                })
+                .thenWaitUntil(() -> check("three rejections (" + (bridge().rejected - before[1]) + ")", bridge().rejected == before[1] + 3))
+                .thenExecute(() -> {
+                    List<ScriptedEngine.Received> r = about(DragonRecords.DRAGON_SPAWN_REJECTED, agent);
+                    check("three SPAWN_REJECTED for the agent (" + r.size() + ")", r.size() == 3);
+                    for (ScriptedEngine.Received x : r)
+                        check("each ALREADY_EMBODIED (" + x.aux() + ")", x.aux() == DragonRecords.SpawnRejected.ALREADY_EMBODIED);
+                    check("none released the held puppet (superseded " + (bridge().superseded - before[0]) + ")",
+                            bridge().superseded == before[0] + 1 && !next[0].isRemoved() && bridge().body(agent) == next[0]);
+                    check("the other agent's puppet is untouched", !theirs[0].isRemoved() && bridge().body(other) == theirs[0]
+                            && RtsimAttachments.tag(theirs[0]).agent() == other);
+                    check("the refused dragons stay untagged", !RtsimAttachments.isTagged(same[0]) && !RtsimAttachments.isTagged(older[0]));
+                    record(test, "supersede", "a puppet at epoch 1 and an ADOPT of another dragon at epoch 2: the old body released (DEMATERIALIZED epoch 1, "
+                            + "reason COMMAND), the new one adopted at epoch 2, one body alive; ADOPT at the same epoch, at an older one, and at a puppet "
+                            + "of another agent: ALREADY_EMBODIED, the held puppet kept");
+                })
+                .thenExecute(unforce)
+                .thenSucceed();
+    }
+
+    /**
+     * RP-246 (audit row D8, the fork): an ADOPT at a newer epoch whose target is gone (the dragon was removed before the
+     * command was read) still releases the older puppet, since the engine no longer holds that body at its epoch, and is
+     * then answered SPAWN_FAILED. A puppet of the agent at epoch 1 stands; a dragon is spawned and removed; DRAGON_ADOPT of
+     * its UUID at epoch 2: the puppet is gone (one DEMATERIALIZED at epoch 1, reason COMMAND), {@code superseded} is up by
+     * one, one DRAGON_SPAWN_REJECTED with SPAWN_FAILED names the agent at epoch 2, and the agent holds no body: the engine
+     * resumes the dragon abstract, and no stale body is left beside it.
+     */
+    @GameTest(template = DragonKit.ARENA, timeoutTicks = 600, batch = "dragon_adopt_failed")
+    public static void anAdoptOfAGoneDragonReleasesTheOlderPuppetAndFails(GameTestHelper helper) {
+        String test = "anAdoptOfAGoneDragonReleasesTheOlderPuppetAndFails";
+        ServerLevel level = helper.getLevel();
+        long agent = DragonKit.newAgent();
+        Runnable unforce = DragonKit.forceAround(helper, 3);
+        Vec3 c = DragonKit.centre(helper);
+        BlockPos p = BlockPos.containing(c);
+        DragonBaseEntity[] old = {null};
+        UUID[] gone = {null};
+        long[] before = new long[2];
+        DragonKit.onEnd(helper, () -> {
+            Entity b = bridge().body(agent);
+            if (b != null && !b.isRemoved())
+                b.discard();
+        });
+        DragonKit.materialize(DragonKit.young(agent, helper, c.add(0, 12, 0), 0));
+        helper.startSequence()
+                .thenWaitUntil(() -> body(agent))
+                .thenExecute(() -> {
+                    old[0] = body(agent);
+                    check("the held puppet is at epoch 1 (" + RtsimAttachments.tag(old[0]).epoch() + ")", RtsimAttachments.tag(old[0]).epoch() == 1);
+                    Entity target = fire().spawn(level, p.offset(-8, 0, 0), MobSpawnType.NATURAL);
+                    check("an untagged dragon spawned", target instanceof DragonBaseEntity);
+                    gone[0] = target.getUUID();
+                    target.discard();
+                    check("and removed before the command is read", target.isRemoved() && level.getEntity(gone[0]) == null);
+                    before[0] = bridge().superseded;
+                    before[1] = bridge().rejected;
+                    DragonKit.adopt(gone[0], agent, 2, null);
+                })
+                .thenWaitUntil(() -> check("the adopt answered (" + (bridge().rejected - before[1]) + " rejected)", bridge().rejected == before[1] + 1))
+                .thenExecute(() -> {
+                    check("the older puppet released", old[0].isRemoved());
+                    check("counted as superseded (" + (bridge().superseded - before[0]) + ")", bridge().superseded == before[0] + 1);
+                    check("the agent holds no body", bridge().body(agent) == null);
+                    List<ScriptedEngine.Received> r = about(DragonRecords.DRAGON_SPAWN_REJECTED, agent);
+                    check("one SPAWN_REJECTED (" + r.size() + ")", r.size() == 1);
+                    check("SPAWN_FAILED (" + r.get(0).aux() + ")", r.get(0).aux() == DragonRecords.SpawnRejected.SPAWN_FAILED);
+                    check("at epoch 2", r.get(0).view().getInt(DragonRecords.SpawnRejected.EPOCH) == 2);
+                    List<ScriptedEngine.Received> d = about(DragonRecords.DRAGON_DEMATERIALIZED, agent);
+                    check("one DEMATERIALIZED, at epoch 1, reason COMMAND (" + d.size() + ")", d.size() == 1
+                            && d.get(0).view().getInt(DragonRecords.Dematerialized.EPOCH) == 1 && d.get(0).aux() == DragonRecords.Dematerialized.COMMAND);
+                    int alive = 0;
+                    for (DragonBaseEntity x : level.getEntitiesOfClass(DragonBaseEntity.class, new net.minecraft.world.phys.AABB(p).inflate(128, 200, 128)))
+                        if (!x.isRemoved() && RtsimAttachments.isTagged(x) && RtsimAttachments.tag(x).agent() == agent)
+                            alive++;
+                    check("no body of the agent alive (" + alive + ")", alive == 0);
+                    record(test, "supersede-failed", "a puppet at epoch 1 and an ADOPT at epoch 2 of a dragon that is gone: the puppet released (DEMATERIALIZED "
+                            + "epoch 1, reason COMMAND, superseded +1), SPAWN_REJECTED SPAWN_FAILED at epoch 2, the agent holds no body");
+                })
+                .thenExecute(unforce)
+                .thenSucceed();
+    }
+
+    /**
      * A lair's own dragon: a dragon that joins inside a lair's box with no spawn type (Ice and Fire's lair
      * pieces never call finalizeSpawn) is reported as a STRUCTURE spawn of that lair, after its LAIR_FOUND,
      * and adopted as its occupant with the lair's home. A player then robs the hoard: a gold pile of three

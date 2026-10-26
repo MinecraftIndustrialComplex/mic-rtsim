@@ -285,7 +285,7 @@ public final class RescanBudgetGameTests {
         clearChunks(helper, 0, 0, 3, 3);
         forgetAll(helper);
         ServerLevel level = helper.getLevel();
-        long[] oneCall = new long[3];
+        long[] oneCall = new long[3], rescansBefore = new long[1];
         long[] spread = new long[4]; // cold: slices, longest tick; warm: slices, longest tick
         helper.startSequence()
                 .thenExecute(() -> {
@@ -315,9 +315,11 @@ public final class RescanBudgetGameTests {
                         oneCall[i] = System.nanoTime() - t0;
                     }
                     ind().districts().markDirty(level.dimension(), chunk(inChunk(helper, 1, 1)));
+                    // counted, not read off the slices: on a slow host the one-call rescans above split into slices too
+                    rescansBefore[0] = ind().districts().rescans();
                 })
                 .thenWaitUntil(() -> {
-                    check("the second spread detection is done", !ind().districts().rescanning() && ind().districts().lastRescanSlices() > 1);
+                    check("the second spread detection is done", !ind().districts().rescanning() && ind().districts().rescans() > rescansBefore[0]);
                     spread[2] = ind().districts().lastRescanSlices();
                     spread[3] = ind().districts().lastRescanLongestNanos();
                 })
