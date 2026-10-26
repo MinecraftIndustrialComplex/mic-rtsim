@@ -340,8 +340,8 @@ pub(super) struct Link {
     /// are the engine's acknowledged record of what happened, which Java will not send again, so
     /// they are heard by the same code as when on and their world inputs are kept in
     /// [`Link::kept`] at the records' own ticks, applied when the world next runs
-    /// ([`drain_kept`]). On again they are applied at once, in time order, before it catches up
-    /// ([`set_enabled`]).
+    /// ([`drain_kept`]). On again they are applied in time order, before it catches up
+    /// ([`drain_when_due`]).
     enabled: bool,
     /// The inputs heard while phase 1 was switched off, not applied yet: `(tick, input)` in time
     /// order (RP-300). The tick is the record's own world tick (`wt(GAME_TIME)`), the input was
@@ -350,6 +350,11 @@ pub(super) struct Link {
     /// after the shared modules' catch-up to its tick, at the switch-on, at the next `simulate`
     /// when on, and before a viewer module runs the shared clock past them ([`shared::run_to`]).
     kept: VecDeque<Logged>,
+    /// Phase 1 came on in a MODULES record whose switch-on drain has not run yet: set by
+    /// [`set_enabled`], taken by `shared::resets` ([`drain_when_due`]), after the viewer
+    /// modules that came on in the same record have applied the records they kept (RP-300, the
+    /// joint switch-on). Not saved.
+    pub(super) switch_on_due: bool,
     /// How many of [`Link::kept`] are in each class the cap may drop ([`drop_rank`]): the scan for
     /// the oldest of a class is skipped when there is none.
     kept_soft: [usize; DROP_RANKS],
@@ -443,6 +448,7 @@ impl Link {
             spawn_near: Vec::new(),
             enabled: true,
             kept: VecDeque::new(),
+            switch_on_due: false,
             kept_soft: [0; DROP_RANKS],
             kept_cap: KEPT_CAP,
             kept_dropped: 0,
@@ -1103,9 +1109,13 @@ pub(super) fn session_start(st: &mut State, module_mask: u32) {
 /// written still go out with their sequences, and answers are still taken: that is the protocol
 /// finishing, not the module running (choice PR13). Journaled records of what happened (a robbery,
 /// a trade, a taken member, a house placed, an adoption, a report...) are still heard: kept at
-/// their own ticks while off ([`Link::kept`], RP-300). **On:** the kept inputs are applied at
-/// once, in time order, each at its own tick ([`drain_kept`]); then the world runs to now at the
-/// next simulate (its missed events at once) and materializes again.
+/// their own ticks while off ([`Link::kept`], RP-300). **On:** the kept inputs are applied in
+/// time order, each at its own tick ([`drain_kept`]), by [`drain_when_due`] in the reset step of
+/// the same MODULES record (`shared::switch`), not here: a viewer module that comes on in that
+/// record (ECOLOGY, the conflict) has records of its own kept from the same window, and each of
+/// them must meet the world at its own tick, between phase 1's inputs, not after all of them
+/// (the joint switch-on). Then the world runs to now at the next simulate (its missed events at
+/// once) and materializes again.
 fn set_enabled(st: &mut State, on: bool) {
     let l = &mut st.phase1;
     let was = l.enabled;
@@ -1132,14 +1142,29 @@ fn set_enabled(st: &mut State, on: bool) {
         }
         l.spawn_near.clear();
         l.market_dirty.clear();
+        l.switch_on_due = false;
     }
     if on && !was {
         l.last_interest = i64::MIN;
         l.last_market = i64::MIN;
         l.markets_sent.clear();
-        if let Some(line) = switch_on_drain(st) {
-            log_info(&line);
-        }
+        l.switch_on_due = true;
+    }
+}
+
+/// The switch-on's drain, if [`set_enabled`] made it due: the third step of the resets
+/// `shared::resets` runs for a MODULES record, after the viewer modules that came on with
+/// phase 1 have applied the records they kept (each after the catch-up that already applied
+/// phase 1's inputs up to its own tick, `shared::run_to`) and before their replay ends. What is
+/// left is the rest of the window: phase 1's inputs after the viewers' last kept record. It runs
+/// at that MODULES record also when no viewer came on with it. Logs what it did
+/// ([`switch_on_drain`]).
+pub(super) fn drain_when_due(st: &mut State) {
+    if !std::mem::take(&mut st.phase1.switch_on_due) {
+        return;
+    }
+    if let Some(line) = switch_on_drain(st) {
+        log_info(&line);
     }
 }
 
@@ -1614,7 +1639,9 @@ fn apply_booked(st: &mut State, input: Input, at: u64) {
 /// Applies the kept inputs with tick up to `bound` (all when `None`) in time order, each at its own
 /// tick after the shared modules ran their events up to it (the catch-up a journaled record gets,
 /// `shared::catch_up_to`), so no input meets a world another module ran past it and none is
-/// booked at the frozen clock (RP-300, hazard J3). Called at the switch-on, at the top of
+/// booked at the frozen clock (RP-300, hazard J3). Called at the switch-on (a step of
+/// `shared::resets`, [`drain_when_due`]: after the records the viewer modules kept, each of which
+/// has already drawn in the inputs up to its own tick), at the top of
 /// `simulate`, and at the top of `shared::run_to` (a viewer module running the clock while phase 1
 /// is off). Does nothing while phase 1 is off and no viewer module runs the world (nothing moves
 /// it); a module about to run the world itself calls [`drain_before_run`] instead. While the
@@ -3604,7 +3631,8 @@ mod tests {
         b
     }
 
-    fn modules(st: &mut State, mask: u32) {
+    /// MODULES as phase 1 alone hears it (`observe_state`).
+    fn hear_modules(st: &mut State, mask: u32) {
         let b = record(obs::MODULES, obs::modules::SIZE, 0, |b| {
             wire::put_u32(b, obs::modules::MASK, mask)
         });
@@ -3616,6 +3644,15 @@ mod tests {
                 bytes: &b,
             },
         );
+    }
+
+    /// A MODULES record's phase 1 side: phase 1 hears the mask, and the resets the engine runs for
+    /// it after every flag is set (`shared::resets`) take the switch-on's drain, if it is due
+    /// (RP-300). The other modules' flags are left as the test set them: [`switch_all`] sets them
+    /// too.
+    fn modules(st: &mut State, mask: u32) {
+        hear_modules(st, mask);
+        shared::resets(st);
     }
 
     /// U10 (Ben: "Ignore everything"), with the rule of RP-300: switched off, phase 1 captures its
@@ -4470,6 +4507,184 @@ mod tests {
         assert!(line.contains("applied 1 of the 2 inputs"), "{line}");
         assert!(line.contains("1 wait for the replay clock"), "{line}");
         assert_eq!(st.phase1.kept_len(), 1);
+    }
+
+    /// The engine's MODULES step as the lib sees it: phase 1 hears the mask, then the four
+    /// modules switch together (`shared::switch`: every flag, then the resets).
+    fn switch_all(st: &mut State, mask: u32) {
+        hear_modules(st, mask);
+        shared::switch(st, mask);
+    }
+
+    /// The dragons' DRAGON_DIED of an agent nobody here knows, journaled at `game_time` under
+    /// observation `seq`: a record the dragons keep while off, and one a lair's dragon would book
+    /// at its own tick when it is applied.
+    fn dragon_died(seq: u64, game_time: i64) -> Vec<u8> {
+        use rtsim_ecology::boundary::{AttackerKind, Died, Obs, SpeciesDict, encode_obs};
+        let mut b = Vec::new();
+        let died = Obs::Died(Died {
+            agent: 0xD0D0,
+            epoch: 1,
+            killer_kind: AttackerKind::Player,
+            killer: (7, 8),
+            dimension: 0,
+            pos: (0.0, 64.0, 0.0),
+        });
+        encode_obs(seq, game_time, &died, &SpeciesDict::default(), &mut b);
+        b
+    }
+
+    /// The window of a joint switch-on (RP-300, review P2): phase 1 and the modules of `on`
+    /// (without phase 1's bit, every viewer off too) are switched off together; phase 1 hears a
+    /// village at tick 1,000, `keep` has a viewer module keep a record of tick 2,000 (journal it
+    /// off), and phase 1 hears another village at tick 3,000. Then everything is switched on in
+    /// one MODULES record. Returns the state with what each kept record of a viewer met when it
+    /// was applied (`State::kept_probe`).
+    fn a_joint_window(on: u32, keep: impl FnOnce(&mut State)) -> State {
+        const OFF: u32 = 0b0_0111;
+        let mut st = state();
+        st.dragons.engine.add_lair(
+            &mut st.phase1.world,
+            0x1234,
+            "Cinder Roost",
+            rtsim_ecology::species::Species::Fire,
+            rtsim_ecology::dragon::LairKind::Roost,
+            Pos::new(0, 1_500, 1_200),
+            70,
+            Tick(0),
+        );
+        switch_all(&mut st, OFF);
+        assert!(!st.phase1.enabled && !st.dragons.enabled && !st.conflict.enabled);
+        book(&mut st, join_of(1, 0), 1_000);
+        keep(&mut st);
+        book(&mut st, join_of(2, 300), 3_000);
+        assert_eq!(st.phase1.kept_len(), 2);
+        st.game_time = 4_000;
+        switch_all(&mut st, on);
+        assert!(st.phase1.enabled);
+        assert!(st.phase1.kept.is_empty(), "the window drained");
+        let joins: Vec<(u64, u64)> = st
+            .phase1
+            .log
+            .iter()
+            .filter_map(|l| match l.input {
+                Input::Join { key, .. } => Some((key, l.at)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(joins, vec![(1, 1_000), (2, 3_000)], "each at its own tick");
+        assert!(st.phase1.world.now().0 >= 3_000);
+        st
+    }
+
+    /// RP-300, the joint switch-on (review P2): phase 1 and ECOLOGY, which share a MODULES, come
+    /// on in one record, after a window off in which phase 1 heard a village (tick 1,000), the
+    /// dragons heard a death (tick 2,000), and phase 1 heard another village (tick 3,000). The
+    /// death meets the world at its own tick: the village before it is in, the one after it is
+    /// not yet, and the world's present is the death's, not the last input's. Phase 1's drain
+    /// ran first, at its own switch, with the dragons still off, so the whole window went in and
+    /// the world ran to 3,000 before the death was booked (and the dragons' events from the
+    /// switch-off to 2,000 ran on a world that already held a village of 3,000).
+    #[test]
+    fn a_joint_switch_on_applies_the_viewers_record_between_phase_1s_own_inputs() {
+        let st = a_joint_window(0b1_1111, |st| {
+            let died = dragon_died(5, 2_000);
+            super::super::dragons::journaled(
+                st,
+                &Rec {
+                    kind: rtsim_ecology::boundary::DRAGON_DIED,
+                    aux: 0,
+                    bytes: &died,
+                },
+            );
+            assert!(!st.dragons.kept.is_empty(), "the dragons kept the death");
+        });
+        assert_eq!(
+            st.kept_probe,
+            vec![(2_000, 2_000, 1)],
+            "(its tick, the world's present, phase 1 inputs still waiting) once the death was in"
+        );
+    }
+
+    /// The same with the conflict as the viewer (its bit is not ECOLOGY's): a record of its own
+    /// kept at 2,000, between the two villages, goes in at 2,000. With no camp the conflict does
+    /// not run the world to its record, so the world's present is the village before it, 1,000;
+    /// the village after it still waits.
+    #[test]
+    fn a_joint_switch_on_applies_the_conflicts_record_between_phase_1s_own_inputs() {
+        use rtsim_conflict::boundary::{Difficulty, Obs, encode_obs};
+        let st = a_joint_window(0b10_1111, |st| {
+            let mut b = Vec::new();
+            encode_obs(
+                6,
+                2_000,
+                &Obs::Difficulty(Difficulty { difficulty: 2 }),
+                &mut b,
+            );
+            super::super::conflict::journaled(
+                st,
+                &Rec {
+                    kind: rtsim_conflict::boundary::DIFFICULTY,
+                    aux: 0,
+                    bytes: &b,
+                },
+            );
+            assert!(!st.conflict.kept.is_empty(), "the conflict kept the record");
+        });
+        assert_eq!(
+            st.kept_probe,
+            vec![(2_000, 1_000, 1)],
+            "(its tick, the world's present, phase 1 inputs still waiting) once it was in"
+        );
+    }
+
+    /// A switch-on of phase 1 alone (no viewer module comes on with it, so no reset begins) still
+    /// drains in its MODULES record, in the resets' step for it, not before: phase 1 hearing the
+    /// record leaves the inputs kept, and the drain takes them in time order, each at its own
+    /// tick.
+    #[test]
+    fn a_switch_on_of_phase_1_alone_drains_in_the_resets_of_its_record() {
+        let mut st = state();
+        switch_all(&mut st, 0b1_0111);
+        assert!(!st.phase1.enabled && st.dragons.enabled);
+        book(&mut st, join_of(2, 300), 3_000);
+        book(&mut st, join_of(1, 0), 1_000);
+        st.game_time = 4_000;
+        hear_modules(&mut st, 0b1_1111);
+        assert!(st.phase1.enabled);
+        assert_eq!(st.phase1.kept_len(), 2, "heard, not drained yet");
+        assert!(st.phase1.switch_on_due);
+        shared::switch(&mut st, 0b1_1111);
+        assert!(st.phase1.kept.is_empty(), "the resets drained it");
+        assert!(!st.phase1.switch_on_due, "once");
+        let joins: Vec<(u64, u64)> = st
+            .phase1
+            .log
+            .iter()
+            .filter_map(|l| match l.input {
+                Input::Join { key, .. } => Some((key, l.at)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(joins, vec![(1, 1_000), (2, 3_000)], "in time order");
+    }
+
+    /// A reset a module runs in the middle of a session (a first record of its own, applied while
+    /// the kept records of a joint switch-on go in) is not the MODULES record's resets: it must
+    /// not take phase 1's drain, which would run before the kept records that follow it.
+    #[test]
+    fn a_modules_own_reset_inside_a_kept_record_does_not_take_phase_1s_drain() {
+        let mut st = state();
+        switch_all(&mut st, 0b0_0111);
+        book(&mut st, join_of(1, 0), 1_000);
+        hear_modules(&mut st, 0b1_1111);
+        assert!(st.phase1.switch_on_due);
+        shared::reset_these(&mut st, &[shared::Module::Dragons]);
+        shared::end_resets(&mut st, &[]);
+        assert!(st.phase1.switch_on_due, "still due: not this reset's");
+        assert_eq!(st.phase1.kept_len(), 1);
+        shared::switch(&mut st, 0b1_1111);
+        assert!(st.phase1.kept.is_empty());
     }
 
     /// A state with phase 1 off and a village adopted at tick 2,000 that is kept, not applied: the

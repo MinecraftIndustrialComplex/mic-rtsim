@@ -321,14 +321,20 @@ const RESETS: [Module; 4] = [
 /// MODULES (U10), after the world, the industry engine and phase 1 heard it: the four modules'
 /// switches, in two passes. First every module's flag, with a switch-off's own work (its queue
 /// dropped, its pages due once more, the ships' closures lifted) and a switch-on's reset made
-/// due; then the resets due, in one place ([`resets`]); then the areas booked meanwhile go to the
-/// herds and the conflict if they came on ([`introduce_herds`], [`introduce_conflict`]).
+/// due; then the resets due, in one place ([`resets`], where phase 1's switch-on drain, due once
+/// it heard the record, runs after the viewers' kept records); then the areas booked meanwhile go
+/// to the herds and the conflict if they came on ([`introduce_herds`], [`introduce_conflict`]).
 ///
 /// One pass ran each module's reset as its switch came (U-c's review, P2): the dragons and the
 /// herds share ECOLOGY's bit and MODULES reached the dragons first, so the dragons' reset applied
 /// the records they kept while off with the herds still switched off. Each kept record's
 /// catch-up ran the dragons through the window with no prey (no hunt), and the herds' reset then
 /// ran it with no predator.
+///
+/// Phase 1's own drain did the same in the other direction (U-d's review, P2): it ran when phase 1
+/// heard the record, before any flag here was set, so on a joint switch-on the whole window of
+/// phase 1's inputs went in with the viewers off, the world ran to the last of them, and each
+/// record a viewer kept met a world already past its tick.
 pub(super) fn switch(st: &mut State, mask: u32) {
     dragons::switched(st, mask & dragons::MODULE_ECOLOGY != 0);
     ships::switched(st, mask & ships::MODULE_SHIPS != 0);
@@ -345,33 +351,46 @@ pub(super) fn switch(st: &mut State, mask: u32) {
 
 /// Every reset that is due (a session start once every flag is set, a switch-on once every
 /// switch is heard, the first record after a session start's DICTs), in [`RESETS`]' order and
-/// in three steps:
+/// in four steps:
 ///
 /// 1. each module's engine begins its replay (`begin_replay`, the module's `begin_reset`);
 /// 2. the records the modules kept while switched off (RP-292) are applied as one list, in the
 ///    order `Replay` admitted them (their observation numbers: a copy's is its REASSERT's), each
 ///    after its own catch-up and at its own tick ([`floor`]), each module's own in the order it
 ///    heard them ([`apply_kept`]);
-/// 3. with no replay running, each module's replay end, at the hand-over's time.
+/// 3. phase 1's switch-on drain, if phase 1 came on in this MODULES record
+///    ([`phase1::drain_when_due`], RP-300): the inputs it kept while off that the viewers' kept
+///    records did not already draw in. Each of those records' catch-up ran phase 1's inputs up
+///    to its own tick ([`run_to`]), so a viewer's record meets the world at its own tick, with
+///    phase 1's earlier inputs in and its later ones not yet, and this step takes the rest. It
+///    runs also when no module began: a switch-on of phase 1 alone;
+/// 4. with no replay running, each module's replay end, at the hand-over's time.
 ///
 /// That is what a restart's replay does with the same records: every module's replay begins at
 /// the session start, the replayed records come in the journal's order, and the replay ends
 /// after the last. So a kept record's catch-up runs every module that came on with it, each in
 /// its replay: the dragons' kept records run the window with the herds as their prey, though
-/// the herds' own records come later in the list.
-///
-/// **Phase 1's drain goes here**: U-d slots it into this function after the viewers. A module
-/// that keeps records later joins [`RESETS`] and the merge.
+/// the herds' own records come later in the list. A module that keeps records later joins
+/// [`RESETS`] and the merge.
 pub(super) fn resets(st: &mut State) {
-    reset_these(st, &RESETS);
+    let begun = begin_these(st, &RESETS);
+    finish(st, &begun, true);
 }
 
 /// [`resets`] for `these` alone (a module's own reset: a first herd or camp in the middle of a
 /// session, a record that reaches an engine nothing made active). They hold no kept record: kept
 /// records make a module's reset due at its switch-on and run in [`resets`] there, or at the
-/// first record after a session start's DICTs.
+/// first record after a session start's DICTs. No phase 1 drain either: a reset of this kind runs
+/// inside the application of a module's record, often one of the kept ones, and phase 1's drain
+/// belongs to the MODULES record that made it due, after all of them.
 pub(super) fn reset_these(st: &mut State, these: &[Module]) {
-    let begun: Vec<Module> = these
+    let begun = begin_these(st, these);
+    finish(st, &begun, false);
+}
+
+/// Step 1 of [`resets`]: the engines of `these` that are due begin their replay.
+fn begin_these(st: &mut State, these: &[Module]) -> Vec<Module> {
+    these
         .iter()
         .copied()
         .filter(|&m| match m {
@@ -380,17 +399,26 @@ pub(super) fn reset_these(st: &mut State, these: &[Module]) {
             Module::Herds => herds::begin_reset(st),
             Module::Conflict => conflict::begin_reset(st),
         })
-        .collect();
-    end_resets(st, &begun);
+        .collect()
 }
 
-/// Steps 2 and 3 of [`resets`] for modules whose engines began their replay.
+/// The steps after the first for modules whose engines began their replay, with no phase 1 drain:
+/// a module's own reset in the middle of a session (`dragons::reset`).
 pub(super) fn end_resets(st: &mut State, begun: &[Module]) {
-    if begun.is_empty() {
-        return;
+    finish(st, begun, false);
+}
+
+/// Steps 2 to 4 of [`resets`]: the kept records of the `begun` modules (none: nothing), phase 1's
+/// switch-on drain if `drain_phase1` and it is due (with no module begun too: a switch-on of
+/// phase 1 alone), and the replay ends of the `begun` modules.
+fn finish(st: &mut State, begun: &[Module], drain_phase1: bool) {
+    if !begun.is_empty() {
+        apply_kept(st, begun);
     }
-    apply_kept(st, begun);
-    if st.replaying {
+    if drain_phase1 {
+        phase1::drain_when_due(st);
+    }
+    if begun.is_empty() || st.replaying {
         return;
     }
     for &m in begun {
@@ -459,6 +487,12 @@ fn apply_kept(st: &mut State, begun: &[Module]) {
             Module::Herds => herds::apply_kept(st, &rec),
             Module::Conflict => conflict::apply_kept(st, &rec),
             Module::Ships => {}
+        }
+        #[cfg(test)]
+        {
+            let at = phase1::world_tick(st, wire::i64_at(&bytes, obs::GAME_TIME));
+            st.kept_probe
+                .push((at, st.phase1.world.now().0, st.phase1.kept_len()));
         }
     }
     st.applying_kept = outer_kept;

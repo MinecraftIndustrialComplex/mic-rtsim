@@ -3976,6 +3976,97 @@ mod dragons {
         );
     }
 
+    /// The joint switch-on of U-d's review, P2, end to end (RP-300): phase 1 and ECOLOGY, which
+    /// share a MODULES record, go off together; in the window phase 1 hears a village, the
+    /// dragons hear their dragon killed by a player, and phase 1 hears another village; three
+    /// days later both come on in one record. Phase 1's drain runs in that record's resets, after
+    /// the dragons applied the death at its own tick: the dragon stays dead, its lair stands
+    /// empty from the death's tick and before the village after it, both villages are in and
+    /// nothing is left kept. The real engine path's check of the outcome; it passes with the old
+    /// order too (the dragons book the death at its own tick either way). The order itself is the
+    /// lib's, seen by a probe: `a_joint_switch_on_applies_the_viewers_record_between_phase_1s_own_inputs`.
+    #[test]
+    fn a_joint_switch_on_of_phase_1_and_the_dragons_keeps_the_death_at_its_own_tick() {
+        let dir = tmpdir("joint-on-dragon-died");
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        j.module_mask = MODULES;
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        j.dragon_obs(&O::LairFound(db::LairFound {
+            lair: LAIR,
+            late: false,
+            dimension: dim,
+            species: Species::Fire,
+            kind: LairKind::Roost,
+            min: (HOME.0 - 30, 60, HOME.2 - 30),
+            max: (HOME.0 + 30, 140, HOME.2 + 30),
+            home: HOME,
+        }));
+        let mut fed = untagged((0xD3, 0x2), SpawnKind::Structure, LAIR, dim);
+        if let O::Untagged(u) = &mut fed {
+            u.hunger = 100;
+        }
+        j.dragon_obs(&fed);
+        j.idle();
+        j.idle();
+        let a = adoptions(&j)[0];
+        assert_eq!(summary(&e).0, 1, "one dragon, embodied");
+        let villages = |e: &Engine| e.phase1_stats()[0];
+        assert_eq!(villages(&e), 0);
+
+        // Both off. A village at +100, the death at +200, another village at +300.
+        j.modules(0b0111);
+        j.idle();
+        let off_at = j.game_time;
+        j.game_time = off_at + 100;
+        j.adopt(0x91, "minecraft:village_plains", "human", 90, 0, 0);
+        j.idle();
+        j.game_time = off_at + 200;
+        let died_at = j.game_time;
+        j.dragon_obs(&O::Died(db::Died {
+            agent: a.agent,
+            epoch: a.epoch,
+            killer_kind: AttackerKind::Player,
+            killer: PLAYER,
+            dimension: dim,
+            pos: (f64::from(HOME.0), f64::from(HOME.1), f64::from(HOME.2)),
+        }));
+        j.idle();
+        j.game_time = off_at + 300;
+        let after_at = j.game_time;
+        j.adopt(0x92, "minecraft:village_taiga", "human", 90, 400, 0);
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        assert_eq!(summary(&e).0, 1, "nothing changes while off");
+        assert_eq!(villages(&e), 0, "nothing applied while off");
+        assert_eq!(
+            e.phase1_kept(),
+            4,
+            "both villages kept (a join and a work style each)"
+        );
+        let on_at = off_at + 3 * 24_000;
+        while j.game_time < on_at {
+            j.game_time += 1_000;
+            j.idle();
+        }
+
+        j.modules(MODULES);
+        j.idle();
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        assert_eq!(e.phase1_kept(), 0, "nothing left kept");
+        assert_eq!(villages(&e), 2, "both villages are in");
+        let alive = summary(&e).0;
+        let vacant = e.with_dragons(|d, _| d.lairs[0].vacant_since);
+        e.close(true, Duration::from_secs(5)).unwrap();
+        assert_eq!(alive, 0, "the dragon stays dead");
+        let vacant = vacant.expect("the lair stands empty").0 as i64;
+        assert!(
+            (died_at..after_at).contains(&vacant),
+            "empty from the death's own tick {died_at}, before the village at {after_at}: {vacant}"
+        );
+    }
+
     /// The lair's own dragon, hungry and abstract (captured), and a flock of 5,000 sheep 360
     /// blocks from its lair: its only prey, since the test world has no settlement. With `off`,
     /// ECOLOGY (the dragons' and the herds' one bit) goes off at once, a stale hurt of the

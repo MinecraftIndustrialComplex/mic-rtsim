@@ -756,7 +756,8 @@ shared phase 1 world. The ships keep U10 (see *Left*), phase 1 is slice U-d, and
       first record after its DICTs. A module's own reset in the middle of a session (a first herd
       or camp) is the same function for that module alone (`shared::reset_these`); it holds no kept
       record.
-    - Phase 1's drain (slice U-d) goes into `shared::resets`, after the viewers.
+    - Phase 1's drain (slice U-d) goes into `shared::resets`, after the viewers (done, RP-300: the joint
+      switch-on).
     - *Before* (P2), each module's reset ran as its switch came. ECOLOGY is the dragons' and the
       herds' one bit and MODULES reached the dragons first, so the dragons applied their kept
       records with the herds still off: each record's catch-up ran the window with no prey, and the
@@ -969,7 +970,8 @@ record applied while off goes in at its own tick, never at the frozen clock.
   ignored and counted in `ignored`, which now means only that.
 - `drain_kept` applies the list in order, each input after `shared::run_rounds` has run the world
   and the modules sharing its clock to its tick (so the dragons, ships, herds and conflict meet it
-  in order, S13). It runs at the switch-on (`set_enabled`), at the top of `simulate`, at the top of
+  in order, S13). It runs at the switch-on (`phase1::drain_when_due`, a step of `shared::resets`:
+  the joint switch-on, below), at the top of `simulate`, at the top of
   `shared::run_to` (a viewer module running the clock while phase 1 is off must not run it past a
   kept input) and in the dragons' and the ships' `ingest` before they run their engines
   (`drain_before_run`: a DRAGON_STATE or SHIP_STATE applies at the hand-over's time, and an engine's
@@ -1024,6 +1026,25 @@ record applied while off goes in at its own tick, never at the frozen clock.
   grows the drain, and the step that runs it, linearly with its marks: each is a node built into
   the world, about 25 ms apiece in the bench below. Inputs a replay's clock has not reached stay
   kept and the line says how many wait.
+
+- **The joint switch-on** (U-d's review, P2). Phase 1's bit and ECOLOGY's (the dragons' and the
+  herds'), or the conflict's, can come on in one MODULES record, and each of those modules kept
+  records of its own from the same window. The drain ran in `set_enabled`, when phase 1 heard the
+  record and before `shared::switch` set any flag, so the whole window of phase 1's inputs went in
+  with the viewers off, the world ran to the last of them, and each record a viewer kept (a
+  dragon killed in the window, a band wiped out) met a world already past its tick, with inputs of
+  its future in it. Now `set_enabled` only marks the drain due (`Link::switch_on_due`, not saved),
+  and `shared::resets` takes it as its third step, after `apply_kept` and before the replay ends
+  (`phase1::drain_when_due`, which also logs the line above). Each viewer's kept record's catch-up
+  (`shared::run_to`) already applies phase 1's inputs up to its own tick, so the record meets the
+  world at its tick, with phase 1's earlier inputs in and its later ones not yet; the drain then
+  takes what is left, and the replays end. A switch-on of phase 1 alone begins no reset, and the
+  step runs all the same (`finish` is entered with nothing begun). A module's own reset in the
+  middle of a session (`reset_these`, `end_resets`: a first herd, `dragons::reset`) does not take
+  it: it runs inside the application of a record, often a kept one, and would take the drain
+  before the records that follow. The first version of the move took the flag in `end_resets`
+  itself and that is what the probe showed: the dragon's record leaves `reset_if_due` behind it,
+  whose `end_resets` with nothing begun drained the window from inside `apply_kept`.
 
 **Why.** The engine acknowledges every journaled record it admits, whatever a module's switch
 (`Replay`), and Java drops what it saw acknowledged and does not send it again. Phase 1 used to
@@ -1159,11 +1180,49 @@ printed:
   inputs kept (3 adoptions, 2 base marks, 40 trades) give "applied 45 of the 45 inputs ... (base
   marks among them: 2) in ...", nothing kept gives nothing, and a replay clock at 5,000 with
   inputs at 2,000 and 9,000 gives "applied 1 of the 2 inputs" and "1 wait for the replay clock".
-  The call from `set_enabled` is seen in the output of `modules()` in the other tests (the line
+  The call from `drain_when_due` is seen in the output of `modules()` in the other tests (the line
   prints once per switch-on that had something kept), not asserted.
+
+**Tests of the joint switch-on** (`engine/phase1.rs`, and one in `tests/protocol.rs`). The lib's
+`State::kept_probe` (test builds only) records, for each record a viewer kept and `apply_kept`
+applied: its tick, the phase 1 world's present, and the phase 1 inputs still kept, once it is in.
+Failing first on `879c5367` (the drain in `set_enabled`), what each printed:
+
+- `a_joint_switch_on_applies_the_viewers_record_between_phase_1s_own_inputs`: phase 1 and ECOLOGY off
+  in one MODULES (`0b0_0111`), a lair for the dragons, a village heard at 1,000, a DRAGON_DIED
+  kept at 2,000, a village heard at 3,000, then on in one record (`0b1_1111`). Printed
+  `[(2000, 3000, 0)]` (the death met a world at 3,000 with nothing left waiting); wanted
+  `[(2000, 2000, 1)]`. After the move both villages are in, at their own ticks (1,000 and 3,000).
+- `a_joint_switch_on_applies_the_conflicts_record_between_phase_1s_own_inputs`: the same with the
+  conflict's bit (`0b10_1111`) and a DIFFICULTY record kept at 2,000. Printed `[(2000, 3000, 0)]`,
+  wanted `[(2000, 1000, 1)]`: with no camp the conflict does not run the world to its record, so
+  the present is the village before it. A conflict whose record has a camp to run is the dragons'
+  case with another module's clock, which the first test covers.
+- Both pass on the move. The first run of the move failed the first test with
+  `[(2000, 3000, 0)]` again, for the reason in the bullet above (the nested `end_resets`);
+  `a_modules_own_reset_inside_a_kept_record_does_not_take_phase_1s_drain` keeps that: a
+  `reset_these` and an `end_resets` with nothing begun leave the drain due.
+- `a_switch_on_of_phase_1_alone_drains_in_the_resets_of_its_record` (nothing begun): phase 1
+  hearing the record leaves both kept inputs kept and the flag due; `shared::switch` drains them
+  in time order and takes the flag, once.
+- The unit tests of the switch-on that called `modules(&mut st, 0b1111)` (the helper only made
+  phase 1 hear the record) now call `shared::resets` after it, as the engine does; five of them
+  failed first on the move for that alone (`a_base_marked_while_off_is_a_node_once_it_is_on_again`,
+  `kept_inputs_drain_in_time_order_each_at_its_own_tick`,
+  `a_switched_off_phase1_keeps_its_records_and_catches_up`,
+  `loss_records_over_the_cap_are_all_kept_and_applied_at_the_switch_on`,
+  `a_list_filled_to_the_cap_saves_loads_and_drains`).
+- `a_joint_switch_on_of_phase_1_and_the_dragons_keeps_the_death_at_its_own_tick` (protocol): the real
+  engine path, a dragon adopted and embodied, both off, a village, the player's kill, a village,
+  three days, both on: the dragon stays dead, its lair is empty from the kill's tick and before the
+  later village, both villages are in and nothing is kept. It passes on `879c5367` too (the dragons
+  book the death at its own tick either way); the order is only seen by the probe.
 
 **Left.**
 
+- The joint switch-on's order is shown for the dragons and the conflict as viewers; the herds,
+  which share ECOLOGY's bit, go through the same merged list (`apply_kept`) and the same catch-up,
+  and have no test of their own.
 - The census stays ignored while off (latest state; the next one after the switch-on lands).
 - WORK_CATALOG is taken at the frozen clock while off (see Chosen), which is harmless because the
   engine's reply to a catalogue is not tick-derived.
