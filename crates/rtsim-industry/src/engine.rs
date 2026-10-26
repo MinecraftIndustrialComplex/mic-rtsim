@@ -819,7 +819,7 @@ impl Engine {
     /// latest-wins samples that were in flight, so they are discarded (F6). Every district is
     /// unloaded until its chunks report in.
     pub fn session_start(&mut self, at: Tick) {
-        self.advance_to(at);
+        self.run_to(at);
         self.decided = at;
         self.sent_this_session.clear();
         // Asks of the session before may be lost with it: asked again as they come due.
@@ -842,8 +842,18 @@ impl Engine {
 
     /// Fires every breakpoint, pressure wake and approach hold due by `to`, in time order, after
     /// the replay coverage of every district whose chunks changed is brought up to date (I7).
-    /// The step calls this once the hand-over's records are in.
+    /// The step calls this once the hand-over's records are in, and it ends the step: the op
+    /// window keeps every id at or above the step's oldest decision tick until here (RP-259, the
+    /// slice R re-check). A replay in rtsim-jni is one step: its steps are held, and the held
+    /// step after the replay end calls this.
     pub fn advance_to(&mut self, to: Tick) {
+        self.run_to(to);
+        self.ops.end_step();
+    }
+
+    /// [`Engine::advance_to`] within a step (a session start, a raid that lands while industry is
+    /// held): the step goes on.
+    fn run_to(&mut self, to: Tick) {
         let now = self.now;
         self.flush_dirty(now);
         self.drain_networks(now);
@@ -5017,7 +5027,7 @@ impl Engine {
 
     fn threat_with(&mut self, t: &Threat, fuels: &[Good], room: i64, in_sight: bool) {
         let at = t.at.max(self.now);
-        self.advance_to(at);
+        self.run_to(at);
         // The raid is decided at the threat's own tick, which the module that sent it chose; the
         // engine's clock, which it may find past that, only moves (RP-270).
         self.decided = t.at;
