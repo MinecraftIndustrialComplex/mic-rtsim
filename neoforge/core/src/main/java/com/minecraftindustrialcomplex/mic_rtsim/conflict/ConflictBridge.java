@@ -844,8 +844,16 @@ public final class ConflictBridge implements SessionPlugin {
             return;
         Entity.RemovalReason reason = e.getRemovalReason();
         if (reason == Entity.RemovalReason.KILLED) {
-            if (sl.pendingDeath == null)
+            if (sl.pendingDeath == null) {
+                if (sl.chief && reconciler.secondBody(e)) {
+                    // A second puppet's animation ended (MZB-890): the throne body's CAMP_DEATH booked the chief dead while the puppet
+                    // floated, and its own death journaled nothing (onDeath). This removal is no death either, or settleDeaths would
+                    // journal a CHIEF_KILLED the engine drops. The slot is forgotten with no Death, as a member nobody books.
+                    forget(sl);
+                    return;
+                }
                 sl.pendingDeath = new Death(ConflictRecords.BY_NONE, null);
+            }
             return;
         }
         if (reason == Entity.RemovalReason.DISCARDED) {
