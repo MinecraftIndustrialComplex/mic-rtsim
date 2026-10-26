@@ -482,7 +482,18 @@ pub(super) fn begin_reset(st: &mut State) -> bool {
 /// before the replay end makes its band abstract and before the band's demand's deadline; the
 /// epoch every record names reaches the floor here, before the conflict decides anything (RP-57:
 /// nothing is decided while off).
+///
+/// A COMMAND_RESULT among them is the answer to a grove's tribute stack (`after_core`,
+/// `answered_again`): it takes the same catch-up and goes to [`answer_tribute`], at its own tick
+/// ([`tribute_tick`]).
 pub(super) fn apply_kept(st: &mut State, rec: &Rec<'_>) {
+    if rec.kind == obs::COMMAND_RESULT {
+        if rec.size() >= obs::command_result::SIZE {
+            shared::catch_up(st, rec);
+            answer_tribute(st, rec);
+        }
+        return;
+    }
     apply(st, rec);
 }
 
@@ -1388,11 +1399,11 @@ fn write_tribute(st: &mut State, w: &mut RecordWriter<'_>) -> (u64, bool) {
 }
 
 /// The tick an answer to a tribute stack is booked at: the conflict's and the world's present, or
-/// the record's if later.
+/// the record's if later. While the records kept while off are applied (`State::applying_kept`,
+/// RP-292) the floor is the conflict's own present, so the answer goes in at its own tick, not at
+/// the world's ([`shared::floor`], docs/replay-gate.md 9.7).
 fn tribute_tick(st: &State, gt: i64) -> Tick {
-    Tick(phase1::world_tick(st, gt))
-        .max(st.conflict.engine.now())
-        .max(st.phase1.world.now())
+    Tick(phase1::world_tick(st, gt)).max(shared::floor(st, st.conflict.engine.now()))
 }
 
 fn fail_tribute(st: &mut State, op: u64) {
@@ -1414,10 +1425,46 @@ pub(super) fn after_core(st: &mut State, rec: &Rec<'_>) {
         return;
     }
     if !st.conflict.enabled {
-        // U10: ignored. The stack stays in the core outbox until it is answered again, and Java
-        // answers DUPLICATE_OP if it is already in the chest (`answered_again`).
+        // RP-292 (docs/replay-gate.md 9.7): the switch gates only new decisions, and this answer
+        // is a record of what already happened. It cannot be taken now: `tribute_placed` picks
+        // the next stack and `tribute_failed` stocks the goods back, both decisions at a tick,
+        // and decisions wait for the switch. Nor can it wait to be answered again: the core's
+        // outbox completed the op on this very answer (whatever the switch), so the stack is
+        // never sent again, and Java forgets the op at the engine's acknowledgement. So it is
+        // kept with the conflict's other records and applied at its own tick at the switch-on
+        // ([`apply_kept`]).
+        keep_answer(st, rec);
         return;
     }
+    answer_tribute(st, rec);
+}
+
+/// A COMMAND_RESULT heard while switched off that answers one of the grove's stacks in flight is
+/// kept as [`journaled`] keeps a conflict record (RP-292): whole, as it came, saved with the
+/// conflict's kept page. One for an op that is no stack of the grove's is none of the conflict's.
+/// Whether the stack was in flight is read from the engine's placings, which do not change while
+/// off, so a second answer to the same op (a chunk's REASSERT copy, a DUPLICATE_OP) is kept too.
+/// At the switch-on the first takes the stack; the second finds no placing and no replayed stack
+/// (the camp's count passed the stack when it was placed), so it changes nothing.
+fn keep_answer(st: &mut State, rec: &Rec<'_>) -> bool {
+    let op = wire::u64_at(rec.bytes, obs::command_result::OP_ID);
+    if !st.conflict.engine.placings().any(|(o, _)| o == op) {
+        return false;
+    }
+    st.conflict.ignored += 1;
+    if let Some(w) = st
+        .conflict
+        .kept
+        .push(st.applying_copy, rec.bytes, "the conflict")
+    {
+        log_warn(&w);
+    }
+    true
+}
+
+/// The body of [`after_core`] with the conflict on, and of [`apply_kept`] for a kept answer: the
+/// tribute call, then what it decided goes out.
+fn answer_tribute(st: &mut State, rec: &Rec<'_>) {
     let op = wire::u64_at(rec.bytes, obs::command_result::OP_ID);
     let at = tribute_tick(st, wire::i64_at(rec.bytes, obs::GAME_TIME));
     let (c, w) = (&mut st.conflict.engine, &mut st.phase1.world);
@@ -1438,12 +1485,18 @@ pub(super) fn after_core(st: &mut State, rec: &Rec<'_>) {
 
 /// A COMMAND_RESULT for an op `Replay` already admitted: a tribute stack sent again after the
 /// pages lost its first answer (the conflict was off, or a crash came before a save). Java
-/// answered it DUPLICATE_OP: it is in the chest.
+/// answered it DUPLICATE_OP: it is in the chest. Switched off it is kept as [`after_core`]'s
+/// answers are (RP-292), and the op leaves the core outbox now, as it does when the answer is
+/// taken: the kept answer is saved, so the stack is not sent again.
 pub(super) fn answered_again(st: &mut State, rec: &Rec<'_>) {
-    if rec.kind != obs::COMMAND_RESULT
-        || rec.size() < obs::command_result::SIZE
-        || !st.conflict.enabled
-    {
+    if rec.kind != obs::COMMAND_RESULT || rec.size() < obs::command_result::SIZE {
+        return;
+    }
+    if !st.conflict.enabled {
+        if keep_answer(st, rec) {
+            let op = wire::u64_at(rec.bytes, obs::command_result::OP_ID);
+            st.outbox.complete(rtsim_kernel::journal::OpId(op));
+        }
         return;
     }
     let op = wire::u64_at(rec.bytes, obs::command_result::OP_ID);
