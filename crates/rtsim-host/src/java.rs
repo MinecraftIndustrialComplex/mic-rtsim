@@ -368,7 +368,12 @@ impl Java {
     /// the engine hears it at the next hand-over, in the same one as the world's save request if
     /// no hand-over came between.
     pub fn world_saved(&mut self, durable_obs_seq: u64) {
+        // The session start and the dictionary go first, as for any record; the hand-over's TICK
+        // stays the hand-over's own (a server counts the TICKs a buffer holds to know the engine
+        // fell behind).
+        let marked = std::mem::replace(&mut self.tick_marked, self.game_time);
         assert!(self.preamble(), "room for the preamble before WORLD_SAVED");
+        self.tick_marked = marked;
         let r = self
             .reserve(obs::WORLD_SAVED, obs::world_saved::SIZE, 0)
             .expect("room for WORLD_SAVED");
