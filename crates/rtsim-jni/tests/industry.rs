@@ -2575,6 +2575,164 @@ fn a_second_crash_after_a_save_before_the_first_drain_writes_no_failed_copy() {
     assert_eq!(iron_twice, iron_once, "no iron made or lost");
 }
 
+/// The other order (P3-2 of the build lead's review of RP-310, RP-314): Java's FAILED heard while
+/// the replay ran before the copy is decided again, so nothing takes the copy at the answer, and
+/// only `Link::heard`, in memory, drops it at the first drain after the replay end. Pages saved
+/// inside the replay end's hand-over (`save_now` runs after `replay_end_before` and before
+/// `simulate`'s drain) are past the FAILED answer and hold neither it nor the drop, so a second
+/// crash from them decides the copy again with no answer to hear, and it is written. Here a train
+/// raid's loot: the raider orders it again after each restart (as its own older pages make it,
+/// RP-183), and the held step decides it at the first `simulate` after the replay end. Session 0
+/// runs the raid with the world failing every carriage delta, so Java answers the loot FAILED and
+/// the engine takes it back (W10); the world saves after the answer and crashes with the pages
+/// still before the raid. Session 1 (the control) asks for its pages at once, with records behind
+/// them, and drops the copy at the first drain (`answered_unsent`). The second crash restarts from
+/// those pages: the loot goes under the live op and the world applies it. Benign: the loot is
+/// booked stolen when it is decided and the world's live answer settles it (applied here; a FAILED
+/// one would take it back, W10), so the world against its books is the control's. The chain write
+/// a store's wake decides again past its FAILED answer (the pages then hold the copy itself) has
+/// no crash fixture: the fake world has no package stores and never fails an IND_WRITE_CHAIN.
+#[test]
+fn a_raid_answered_failed_and_decided_again_past_its_answer_is_booked_after_a_second_crash() {
+    use rtsim_industry::fake::{RESULT_APPLIED, RESULT_FAILED};
+    use rtsim_industry::ids::TrainId;
+    use rtsim_kernel::journal::OpId;
+    let cfg = raid_line();
+    let dir = tmpdir("ind-raid-failed-twice");
+    let mut j = iron_java(&dir, cfg);
+    j.mc_run_until(day(3.0));
+    let train = TrainId(1);
+    let laden = |j: &Java| {
+        industry(&j.e, |ie| {
+            ie.legs()
+                .leg_of(train, ie.now())
+                .and_then(|id| ie.legs().get(id))
+                .is_some_and(|l| l.cargo.iter().any(|c| !c.1.is_empty()))
+        })
+    };
+    // The pages stop while the train is under way with cargo, before the raid.
+    loop {
+        while !laden(&j) {
+            j.mc_tick();
+            assert!(j.mc().t < day(8.0), "train 1 under way with cargo");
+        }
+        let through = j.next_obs - 1;
+        j.e.request_save(through);
+        mc_tick_until_durable(&mut j, through);
+        if laden(&j) {
+            break;
+        }
+    }
+    let through = j.e.durable_obs_seq();
+    let stolen = |j: &Java| industry(&j.e, |ie| ie.books.stolen.total());
+    let stolen_before = stolen(&j);
+    let raid = Threat {
+        id: 0xA11,
+        source: ThreatSource::Bandit,
+        class: ThreatClass::Siege,
+        count: 3,
+        strength: 3.0,
+        target: ThreatTarget::Train(train),
+        loads: None,
+        at: j.mc().t,
+    };
+    j.mc_mut().fail_carriage_deltas = true;
+    j.e.order(vec![Order::IndustryThreat(raid)]).unwrap();
+    while loot_ops(&j).is_empty() {
+        j.mc_tick();
+        assert!(j.mc().t < raid.at + 100, "the raid's loot is written");
+    }
+    let live = loot_ops(&j)[0];
+    for _ in 0..5 {
+        j.mc_tick();
+    }
+    j.mc_mut().fail_carriage_deltas = false;
+    assert!(
+        !j.mc().applied_ops().contains(&OpId(live)),
+        "the world refused the raid"
+    );
+    match answers(&j, live)[..] {
+        [(_, RESULT_FAILED)] => {}
+        ref a => panic!("one FAILED for the loot op {live:#x}: {a:?}"),
+    }
+    assert_eq!(
+        stolen(&j),
+        stolen_before,
+        "the FAILED answer took the loot back"
+    );
+    assert_eq!(j.e.durable_obs_seq(), through, "no later page save");
+    let jsave = j.world_save();
+    let msave = j.mc().saved();
+    let mut mc = j.mc.take().unwrap();
+    j.e.close(false, Duration::from_secs(5)).unwrap();
+    mc.restore(&msave);
+    // Session 1: the raider orders the raid again before the first step, so the held step decides
+    // it at the replay end. The world saves at once, and the pages through its journal's end are
+    // asked for with records right behind them, so they are taken inside the replay end's
+    // hand-over, before the first drain.
+    let e = engine_with(&dir, 256 * 1024, |c| c.industry_seed = Some(cfg.seed));
+    let mut j = restart(e, jsave, mc, MODULE_INDUSTRY);
+    j.e.order(vec![Order::IndustryThreat(raid)]).unwrap();
+    let s0 = j.next_obs - 1;
+    j.e.request_save(s0);
+    let jsave2 = j.world_save();
+    let msave2 = j.mc().saved();
+    fillers(&mut j, 40);
+    mc_tick_until_durable(&mut j, s0);
+    let end = Tick(j.mc().t.0 + 400);
+    j.mc_run_until(end);
+    assert_eq!(
+        j.e.durable_obs_seq(),
+        s0,
+        "no page save past the replay end's"
+    );
+    let control = books_delta(&j);
+    let once = (
+        loot_ops(&j),
+        j.e.with_industry(|_, l| l.answered_unsent),
+        stolen(&j),
+    );
+    let mut mc = j.mc.take().unwrap();
+    j.e.close(false, Duration::from_secs(5)).unwrap();
+    mc.restore(&msave2);
+    // The second crash: the pages are past the FAILED answer, so the replay hears none.
+    let e = engine_with(&dir, 256 * 1024, |c| c.industry_seed = Some(cfg.seed));
+    let mut j = restart(e, jsave2, mc, MODULE_INDUSTRY);
+    j.e.order(vec![Order::IndustryThreat(raid)]).unwrap();
+    j.mc_run_until(end);
+    let twice = books_delta(&j);
+    let sent = loot_ops(&j);
+    let stolen_twice = stolen(&j);
+    let applied = j.mc().applied_ops().contains(&OpId(live));
+    let answered = answers(&j, live);
+    eprintln!(
+        "loot {live:#x}: after one crash sent {:x?}, {} answered and not sent, stolen {} (before \
+         the raid {stolen_before}), the world against its books {control:?}; after the second \
+         sent {sent:x?}, applied {applied}, answers {answered:?}, stolen {stolen_twice}, the world \
+         against its books {twice:?}",
+        once.0, once.1, once.2
+    );
+    j.e.close(true, Duration::from_secs(5)).unwrap();
+    assert!(once.0.is_empty(), "after one crash the loot is never sent");
+    assert_eq!(once.1, 1, "the drop is `heard`'s, at the first drain");
+    assert_eq!(once.2, stolen_before, "and taken back");
+    assert_eq!(
+        sent,
+        vec![live],
+        "after the second the loot goes under the live op"
+    );
+    assert!(applied, "the world applies it");
+    assert!(
+        matches!(answered[..], [(_, RESULT_APPLIED)]),
+        "one APPLIED: {answered:?}"
+    );
+    assert!(stolen_twice > stolen_before, "the loot is booked stolen");
+    assert_eq!(
+        twice, control,
+        "the world against its books, after the second crash and after one"
+    );
+}
+
 /// A raider whose pages are older than its train raid decides it again after a crash, against an
 /// industry engine that is not held (docs/replay-gate.md §3.6; docs/choices-mowzie-build.md
 /// RP-180 to RP-186). The raid's op is its identity, so the world answers DUPLICATE, the link
