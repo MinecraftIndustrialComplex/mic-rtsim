@@ -4,6 +4,8 @@
 //! what that pool holds goes back to the store when no replay touches it, and the engine writes it
 //! into a loaded frogport as real packages (IND_WRITE_CHAIN).
 
+use std::collections::BTreeMap;
+
 use rtsim_industry::cmd::{ChunkReconcile, Cmd, DrawAction, HeldDraw, WriteChain};
 use rtsim_industry::engine::Engine;
 use rtsim_industry::ids::{BlockPos, ChunkPos, DistrictId, Good, GoodInfo, GoodVec, StoreId};
@@ -1339,4 +1341,264 @@ fn a_drawn_package_is_removed_after_the_rest_of_it_is_written() {
     e.advance_to(Tick(800));
     assert_eq!(asks(&mut e).0, vec![(DrawAction::Remove, vec![7])]);
     e.check_books().expect("books");
+}
+
+/// The engine's side of a write answered while industry is off (docs/choices-journal-barrier.md
+/// RP-285, P1-1). The mine replays toward the mill; the engine hands a write X on at 20,100, and
+/// Java writes it at 20,101, journaling its `CHAIN_IN` with X's op, as industry goes off. The
+/// switch on comes thirty periods later, past the ten after which an unanswered write is taken as
+/// lost (`WRITE_ANSWER_PERIODS`, choice SC113), and runs the engine's session start, which catches
+/// up the thirty periods. The link keeps the `CHAIN_IN` heard while off and books it at its own
+/// tick, before that session start: the store counts X's packages, and from then on Java is handed
+/// the iron the mine sent, once. The control is the link before 35a8294b, which ignored the
+/// record while off: the catch-up takes X as lost, and the writes after it hand Java X's iron a
+/// second time under new ops. Then Java writes every write as it comes, both ends load, and the
+/// rest is written. This stands in for a native fixture: the iron line learns no chain link, so no
+/// native rig makes an engine write past ten periods (RP-285's Tests).
+#[test]
+fn a_write_answered_while_industry_is_off_is_taken_at_its_tick_before_the_catch_up() {
+    let period = Tunables::default().replay.chain_write_ticks;
+    let on = 20_100 + 30 * period;
+    // (X's iron, packages counted written after the switch, X's included, iron handed to Java).
+    let run = |kept: bool| {
+        let mut e = pair(Tunables::default());
+        away(&mut e, MINE, 100);
+        e.advance_to(Tick(20_100));
+        let x = writes(&mut e);
+        assert_eq!(x.len(), 1, "one write a step: {x:?}");
+        assert_eq!(e.stores()[&S].counts.written, 0);
+        if kept {
+            written(&mut e, 20_101, &x[0]);
+        }
+        e.session_start(Tick(on));
+        let counted = e.stores()[&S].counts.written;
+        let caught_up = writes(&mut e);
+        for w in &caught_up {
+            written(&mut e, on, w);
+        }
+        live(&mut e, MILL, on);
+        live(&mut e, MINE, on);
+        let rest = run_writing(&mut e, on, on + 40 * period, period);
+        assert_eq!(owed(&e), 0, "everything owed is written");
+        e.check_books().expect("books");
+        (iron(&x), counted, iron(&x) + iron(&caught_up) + iron(&rest))
+    };
+    let (x, counted, handed) = run(true);
+    let (_, lost_counted, lost_handed) = run(false);
+    assert_eq!(counted, 1, "X's package is counted once, at the switch");
+    assert_eq!(lost_counted, 0, "the control never hears X");
+    assert_eq!(
+        lost_handed - handed,
+        x,
+        "the control hands Java X's iron again: {lost_handed} against {handed}"
+    );
+}
+
+/// `take_out` (the bridge's link, RP-285): a command decided and not drained yet leaves by its op,
+/// once, and the drain no longer hands it on.
+#[test]
+fn a_command_not_drained_yet_is_taken_out_by_its_op() {
+    let decided = || {
+        let mut e = pair(Tunables::default());
+        away(&mut e, MINE, 100);
+        e.advance_to(Tick(20_100));
+        e
+    };
+    let w = writes(&mut decided());
+    assert_eq!(w.len(), 1, "{w:?}");
+    let mut e = decided();
+    let other = rtsim_kernel::journal::OpId((0x49 << 56) | 0x1234);
+    assert_eq!(e.take_out(other), None);
+    assert_eq!(e.take_out(w[0].op), Some(Cmd::WriteChain(w[0].clone())));
+    assert_eq!(e.take_out(w[0].op), None);
+    assert!(e.drain_commands().is_empty());
+}
+
+// ---- what a restart that never read the store pages lost (RP-285) -------------------------------
+//
+// On main the link's `TABLES` lacked `STORE_TABLE`, so a restart restored every other page and no
+// package store. These tests restore a save without the stores' pages (the engine called directly,
+// as the link would have fed it) and compare it with the whole save. They characterise what main
+// did; the fixed list never reaches this state, and `rtsim-jni`'s tests/tables.rs guards the list.
+
+/// A save's pages without the package stores' (what main's link restored).
+fn without_stores(pages: Vec<(PageKey, Vec<u8>)>) -> Vec<(PageKey, Vec<u8>)> {
+    pages
+        .into_iter()
+        .filter(|(k, _)| k.table() != rtsim_industry::persist::STORE_TABLE)
+        .collect()
+}
+
+/// The two restores of one save: the whole one, and main's. Java's `declared` text is not saved,
+/// so after any restart the bridge sends every store's declaration again: the lost restore gets it
+/// at `at`, an empty store of the same epoch.
+fn both_restores(pages: Vec<(PageKey, Vec<u8>)>, at: u64) -> (Engine, Engine) {
+    let whole = Engine::restore(pages.clone(), Tunables::default()).expect("restore");
+    let mut lost = Engine::restore(without_stores(pages), Tunables::default()).expect("restore");
+    assert!(lost.stores().is_empty(), "no store page, no store");
+    send(&mut lost, at, Obs::PackageStore(store()));
+    assert!(lost.stores()[&S].drawn.is_empty() && lost.stores()[&S].on_hold.is_empty());
+    (whole, lost)
+}
+
+/// Package 7 drawn by the far replay, 8 only held; the engine saved at 230.
+fn frontier_with_a_drawn_package() -> Engine {
+    let mut e = frontier();
+    e.set_page_check(true);
+    for k in [K7, K8] {
+        send(&mut e, 200, keyed(ChainDirection::Held, k));
+    }
+    e.advance_to(Tick(205));
+    asks(&mut e);
+    send(&mut e, 220, keyed(ChainDirection::Drawn, K7));
+    e.advance_to(Tick(230));
+    e.drain_commands();
+    e
+}
+
+/// Java sends IND_HELD_LIST once a session, its drawn serials last (Frontier.listOnce). A restart
+/// that lost the stores leaves the engine with a drawn serial it does not know: it answers
+/// nothing, neither Remove nor Return. Java keeps the package drawn (it circles its boundary
+/// conveyor until the engine says otherwise; Frontier.draw, refusesDrawn), so it is stranded, not
+/// handed on a second time. The whole restore has the engine remove it once the mill's reconcile
+/// is applied (the control).
+#[test]
+fn a_drawn_package_the_engine_forgot_is_neither_removed_nor_given_back() {
+    let mut e = frontier_with_a_drawn_package();
+    let pages = e.save_changed().put;
+    let (mut whole, mut lost) = both_restores(pages, 300);
+    for x in [&mut whole, &mut lost] {
+        send(
+            x,
+            300,
+            Obs::HeldList(HeldList {
+                epoch: 0,
+                serials: vec![8],
+                drawn: vec![7],
+            }),
+        );
+        x.advance_to(Tick(302));
+    }
+    assert_eq!(drawn_keys(&whole), vec![K7]);
+    assert!(drawn_keys(&lost).is_empty() && held_keys(&lost).is_empty());
+    // The mill loads, its replay's iron goes to the world, and the reconcile is applied.
+    let mut removes = BTreeMap::new();
+    for (name, x) in [("whole", &mut whole), ("lost", &mut lost)] {
+        asks(x);
+        live(x, MILL, 3_000);
+        x.advance_to(Tick(3_100));
+        let (draws, rs) = asks(x);
+        assert!(draws.is_empty(), "{name}: {draws:?}");
+        assert!(
+            !rs.is_empty(),
+            "{name}: the replay's iron goes to the world"
+        );
+        reconciled(x, 3_100, &rs);
+        let mut all = Vec::new();
+        for t in (3_200..30_000).step_by(100) {
+            x.advance_to(Tick(t));
+            all.extend(asks(x).0);
+        }
+        removes.insert(name, all);
+    }
+    assert_eq!(removes["whole"], vec![(DrawAction::Remove, vec![7])]);
+    assert!(
+        removes["lost"].is_empty(),
+        "the lost restore never asks Java to remove or return key 7: {:?}",
+        removes["lost"]
+    );
+    // The journal tail names the draw itself (a `CHAIN_DRAWN` journaled after the save): an
+    // engine without the store gives the key back, so the package is held again.
+    let (_, mut lost) = both_restores(e.save_changed().put, 400);
+    send(&mut lost, 410, keyed(ChainDirection::Drawn, K7));
+    assert_eq!(asks(&mut lost).0, vec![(DrawAction::Return, vec![7])]);
+}
+
+/// If the stranded package ever does land (the epoch moves on at an announce and strips Java's
+/// marks, say), the whole restore puts its goods back into the pool first so the landing takes
+/// them there (`drawn_back`); the restore that lost the store has no drawn package to put back, so
+/// the replay's goods and the landed package are both the world's: a package duplicated.
+#[test]
+fn a_landing_of_a_forgotten_drawn_package_is_not_taken_from_the_replays_iron() {
+    let mut e = frontier_with_a_drawn_package();
+    let pages = e.save_changed().put;
+    let (mut whole, mut lost) = both_restores(pages, 300);
+    let counts = |x: &mut Engine| {
+        live(x, MILL, 310);
+        let mut landed = chain(MILL, ChainDirection::In, 1, None);
+        if let Obs::ChainPackage(p) = &mut landed {
+            p.key = Some(K7);
+        }
+        send(x, 320, landed);
+        let s = &x.stores()[&S];
+        (s.counts.drawn_back, s.counts.held_landed)
+    };
+    assert_eq!(counts(&mut whole), (1, 1));
+    assert_eq!(counts(&mut lost), (0, 0));
+}
+
+/// A write in flight when the engine saved: the whole restore waits for its answer (the store's
+/// `writing`), and sends nothing while it waits. The restore that lost the store has no mark of
+/// it and, its store declared again, writes the pool a cluster still holds toward the frogport a
+/// second time under a new op (the first op's answer then debits the pool as well).
+#[test]
+fn a_write_in_flight_is_sent_again_when_the_store_was_forgotten() {
+    let mut e = pair(Tunables::default());
+    e.set_page_check(true);
+    away(&mut e, MINE, 100);
+    away(&mut e, MILL, 100);
+    e.advance_to(Tick(6_100));
+    live(&mut e, MILL, 6_100);
+    e.advance_to(Tick(8_100));
+    let sent = writes(&mut e);
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    let pages = e.save_changed().put;
+    let (mut whole, mut lost) = both_restores(pages, 8_100);
+    let mut again = Vec::new();
+    for (name, x) in [("whole", &mut whole), ("lost", &mut lost)] {
+        x.advance_to(Tick(8_600));
+        again.push((name, writes(x)));
+    }
+    assert!(
+        again[0].1.is_empty(),
+        "the whole restore waits for the answer: {again:?}"
+    );
+    assert!(
+        !again[1].1.is_empty() && again[1].1.iter().all(|w| w.op != sent[0].op),
+        "the lost restore writes again under a new op: {again:?}"
+    );
+}
+
+/// The write whose debt was the store's owed (no cluster holds a pool): the lost restore forgot
+/// the debt, so it never writes it again; the write already sent still lands once, and its answer
+/// takes from nothing (the owed floors at zero), where the whole restore's debt is cleared by it.
+#[test]
+fn a_debt_whose_write_is_in_flight_is_forgotten_and_the_write_is_not_repeated() {
+    let mut e = frontier();
+    e.set_page_check(true);
+    send(&mut e, 200, keyed(ChainDirection::Held, K7));
+    e.advance_to(Tick(205));
+    asks(&mut e);
+    send(&mut e, 220, keyed(ChainDirection::Drawn, K7));
+    e.advance_to(Tick(500));
+    live(&mut e, MILL, 500);
+    e.advance_to(Tick(510));
+    let w: Vec<WriteChain> = writes(&mut e);
+    assert_eq!(w.len(), 1, "{w:?}");
+    let pages = e.save_changed().put;
+    let (mut whole, mut lost) = both_restores(pages, 510);
+    assert_eq!((owed(&whole), owed(&lost)), (iron(&w), 0));
+    for x in [&mut whole, &mut lost] {
+        x.advance_to(Tick(515));
+        assert!(
+            writes(x).is_empty(),
+            "no second write while the first is out"
+        );
+        written(x, 520, &w[0]);
+    }
+    assert_eq!((owed(&whole), owed(&lost)), (0, 0));
+    for x in [&mut whole, &mut lost] {
+        x.advance_to(Tick(5_000));
+        assert!(writes(x).is_empty(), "nothing is written again");
+    }
 }

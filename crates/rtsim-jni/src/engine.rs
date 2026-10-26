@@ -94,6 +94,9 @@ pub mod mirrored {
     pub use super::conflict::KEY_CONFLICT;
     pub use super::dragons::KEY_DRAGONS;
     pub use super::herds::KEY_HERDS;
+    /// The industry link's page tables (`stored_keys`, `deletions`): what a load reads and a fresh
+    /// start deletes. `tests/tables.rs` checks the engine's tables against it.
+    pub use super::industry::TABLES as INDUSTRY_TABLES;
     pub use super::paging::{HASH_MAGIC, hash_key};
     pub use super::ships::KEY_SHIPS;
     pub use super::worldmodel::KEY_META as WORLD_MODEL_META;

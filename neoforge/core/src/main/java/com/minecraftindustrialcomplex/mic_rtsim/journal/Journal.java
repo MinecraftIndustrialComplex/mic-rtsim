@@ -93,6 +93,14 @@ public final class Journal {
         appliedCmdOps.remove(opId);
     }
 
+    /**
+     * GameTests: a crash restored a journal saved while this op id's COMMAND_RESULT was still unacknowledged,
+     * so the op index rebuilt from it knows the op. {@link #forgetAppliedForTest} undoes it.
+     */
+    public void rememberAppliedForTest(long opId) {
+        appliedCmdOps.merge(opId, 1, Integer::sum);
+    }
+
     // ---- observation side -----------------------------------------------------------------------
 
     public long nextObsSeq() {
