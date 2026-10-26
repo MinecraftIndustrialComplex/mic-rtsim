@@ -10407,6 +10407,33 @@ and the reviews' fixes.
     trades reach the throne body), and `ConflictBridge`'s hand-off (the throne body's trades reach the new puppet, before
     `Traveller.made` adds the engine's memory on top). Any other pair (an Umvuthana, the Frostmaw) takes the existing branches
     unchanged. No JUnit: it needs the jar's entity. The M11c hand-back GameTest reads `getTradedPlayers` on the throne body.
+- **MZB-889** (step 9: the test kits for M11c; compiled only, the GameTests that use them are M11c's):
+  - `ConflictKit.chiefBody(faction, agent, epoch, health, players)` writes the record's AGENT (24): agent 0 is the chief at home (the
+    old four-argument form, which now calls it), an agent is the party the chief marched with, held for that party's MATERIALIZE
+    (MZB-805). A getter for each M11 counter, public static and read from the live bridge (nothing is cached): Camps' `heldHandBacks`,
+    `chiefHandBacksLate`, `chiefMerges`, `staleTakes`, `homeDeaths`, `puppetPaid`, `puppetsSecond`, `chiefBodiesAway`; the bridge's
+    `chiefBodiesUnmatched`, `travellerErrors`, `knockbacksZeroed`, `portalsCancelled`, `deathLootLost`, `repairs`, `repairsSkipped`,
+    `chiefMergesMissed`, `chiefDeathsAfterEnd`, `chiefsCalledHome`, `summonsAdopted`, `summonsRefused`. All are reset at
+    `sessionStarted`, so a test reads the counter before and after, as the others do.
+  - `FakePlayers.watching(level, at, name[, viewDistance])`: a `Hearer` joined through `level.addNewPlayer` (the entity manager and
+    the chunk map know it, so tracked entities are paired with it), with `keepAll` set before the join so the pairing the join
+    itself sends is kept. `Hearer.packets` holds every packet in order, a bundle as its parts (the pairing of an entity is a
+    `ClientboundBundlePacket`); `count(Class)`, `added(entityId)` and `removed(entityId)` read it. Fork (conservative): the
+    watcher's view distance is 4 chunks (the default of a mock player is 2, which pairs nothing farther than 32 blocks and would
+    make a test that places it 40 blocks off wait for ever), set through the `ClientInformation` the cookie gives; `hearing`'s
+    players are unchanged (their `keepAll` is off, so they keep no packet).
+  - `FakePlayers.pump(hearer)`: the three vanilla facts the brief names, read from the decompiled `PlayerChunkSender`, `ChunkMap` and
+    `MinecraftServer`. (1) `MinecraftServer.tickServer` sends chunks only to `PlayerList`'s players, and a fake player is in none,
+    so pump calls `sendNextChunks` itself. (2) `sendNextChunks` sends nothing while a batch is unacknowledged and the first allows
+    only one, so pump first acknowledges one batch per `ClientboundChunkBatchFinishedPacket` the watcher was sent (counted at
+    the send, `onChunkBatchReceivedByClient(64)`, never more acknowledgements than batches), then sends, up to four rounds a call
+    (a round that sends no batch ends the call). (3) An entity standing already is paired only by `ChunkMap.TrackedEntity.updatePlayer`,
+    which the server runs when the entity changes section or the player moves, and the chunk being sent does neither, so pump
+    ends with `ServerChunkCache.move(player)`, which re-evaluates every tracked entity against the player. It returns the
+    number of chunk packets it sent. A test calls it every tick of its wait (`thenWaitUntil`), since chunks load over many ticks.
+  - Not run through `chunk_waits.py`: neither file has a `@GameTest` method (the script converts a method's waits and needs
+    one). No JUnit: all of it needs a live level; M11c's first test that watches a puppet is the check, and the javadoc of
+    `watching` says "compiled only" as `addSeen`'s does.
 
 ## M12 S9
 
