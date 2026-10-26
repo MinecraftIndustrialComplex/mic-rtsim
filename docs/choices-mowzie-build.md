@@ -7046,7 +7046,8 @@ under its op id, as the dragons' (RP-210). Rust only; no GameTest, no Java.
   - **The status match keeps a last `_` arm.** A COMMAND_RESULT status is a `u32`, so the compiler
     cannot check a match over it for exhaustiveness. `after_core` names APPLIED, DUPLICATE_OP, FAILED and
     NOT_LOADED, and NOT_FREE and VANILLA_KNOWS (other commands' answers) as no tribute stack's, and a last
-    `_` covers a status it does not know.
+    `_` covers a status it does not know. Amended (MZB-765): the grove's site matches a typed
+    `CommandStatus` and has no `_` arm.
   - **NOT_LOADED taints nothing**: it changes no state the pages hold (the chest and the parking are not
     saved), so `after_core` neither taints the world nor takes commands for it.
   - **Tests.** Engine: `an_unloaded_stack_is_parked_under_its_op_until_the_chest_is_named_again`,
@@ -7129,6 +7130,24 @@ the docs). Rust and docs only; no GameTest, no Java. One record per fix, MZB-762
     the stack's own still unparks it, as before (named in the test): it is news, and the stack goes to its
     own chest once.
   - **The dragons** have no equivalent: `LairChest` carries no free count, so a report never says "full".
+- **MZB-765** (P3-4: a typed COMMAND_RESULT status at the grove's site):
+  - **The gap.** The grove's status match (`answer_tribute`) ended in `NOT_FREE | VANILLA_KNOWS => false`
+    and `_ => false`, so a status added to the wire slipped by as "no tribute stack's" with no build error.
+  - **The type.** `wire::CommandStatus` (crates/rtsim-jni/src/wire.rs): Applied, DuplicateOp, Failed,
+    NotFree, VanillaKnows, NotLoaded and `Unknown(u32)` for a number it does not know; `from_wire(u32)`
+    and `wire()` (the inverse). The wire numbers are the same, and so is every behaviour: the grove's site
+    is `match CommandStatus::from_wire(rec.aux)` with no `_` arm, and `NotFree`, `VanillaKnows` and
+    `Unknown(_)` still take nothing. Unit test `wire::tests::a_command_status_names_every_wire_number_and_keeps_the_rest`
+    (every number maps to its variant and back, no two share one, 0 and 7 and up are `Unknown`, whole). It
+    failed first as a build error on 7e1183ef (no such type). Adding a variant to the enum stops the build
+    at the grove's site (E0004, checked with a throwaway variant).
+  - **Follow-up, with the replay pushes: the other readers still compare the number.** None is converted
+    here: `dragons::after_core` (crates/rtsim-jni/src/engine/dragons.rs, a `match rec.aux` with `_ => false`),
+    `world.rs` `apply_journaled` (`obs::COMMAND_RESULT`, a `match rec.aux` with `_ => {}`), `op_of`
+    (crates/rtsim-jni/src/engine.rs, APPLIED or DUPLICATE_OP by `==`), and industry's `command_result`,
+    `answered_again` and the kept-answer test in crates/rtsim-jni/src/engine/industry.rs (comparisons
+    with DUPLICATE_OP, FAILED and APPLIED). A status added to the wire must be read at each of them by
+    hand until they take a `CommandStatus`.
 
 ## M11 Aloft
 
