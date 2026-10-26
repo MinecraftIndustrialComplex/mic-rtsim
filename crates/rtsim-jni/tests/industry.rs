@@ -5283,7 +5283,11 @@ mod ack_never_resends {
             switch_on(&mut r);
             the_copy_goes_once_in_session(r, x, 2)
         };
-        assert_eq!(control, Ok(()), "the control's world against the engine's books");
+        assert_eq!(
+            control,
+            Ok(()),
+            "the control's world against the engine's books"
+        );
         let (mut r, x, s2) = a_duplicate_restarted_off("ack-c5-page", false, 256 * 1024);
         let t2 = r.j.mc().t;
         r.run("the replay ends", t2 + 100, |r| {
@@ -5355,7 +5359,10 @@ mod ack_never_resends {
             r.after_tick();
         }
         let x = exchanges(&r)[before];
-        assert!(!r.j.mc().applied_ops().contains(&OpId(x)), "X is written, not applied");
+        assert!(
+            !r.j.mc().applied_ops().contains(&OpId(x)),
+            "X is written, not applied"
+        );
         r.run("the pages", day(8.0), |r| {
             r.j.e.durable_obs_seq() >= through
         });
@@ -5384,11 +5391,18 @@ mod ack_never_resends {
         let s2 = *r.c.lives_in(1).find(|l| l.op == x).unwrap();
         assert_eq!(s2.status, DUPLICATE, "refused live in session 1");
         let w2 = r.c.save(&r.j);
-        assert_eq!(r.j.e.durable_obs_seq(), through, "no page save past the first");
+        assert_eq!(
+            r.j.e.durable_obs_seq(),
+            through,
+            "no page save past the first"
+        );
         assert!(r.c.crash(&r.j) < s1.seq, "no ack at or past S1");
         r.modules = 0;
         r.restart(&w2);
-        assert_eq!(r.j.pages_obs, through, "session 2 restarts from the same pages");
+        assert_eq!(
+            r.j.pages_obs, through,
+            "session 2 restarts from the same pages"
+        );
         let t2 = r.j.mc().t;
         r.run("the replay ends", t2 + 100, |r| {
             r.j.e.stats.replays_ended.load(Ordering::Acquire) > 0
