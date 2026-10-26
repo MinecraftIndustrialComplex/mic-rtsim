@@ -55,6 +55,7 @@ final class CommandDispatcher implements Handover.CommandSink {
             case Cmd.DESPAWN_GROUP -> Cmd.DespawnGroup.SIZE;
             case Cmd.STEER_GROUP -> Cmd.SteerGroup.SIZE;
             case Cmd.TRANSFER_TO_CONTAINER -> Cmd.TransferToContainer.SIZE;
+            case Cmd.SITE_STATE -> Cmd.SiteState.UUIDS;
             case Cmd.MARKET -> Cmd.Market.GOODS;
             case Cmd.MERCHANT_OFFERS -> Cmd.MerchantOffers.OFFERS;
             case Cmd.WRITE_GOSSIP -> Cmd.WriteGossip.SIZE;
@@ -136,6 +137,13 @@ final class CommandDispatcher implements Handover.CommandSink {
             case Cmd.TRANSFER_TO_CONTAINER -> {
                 transferToContainer(b, at, now);
                 applied++;
+                return true;
+            }
+            case Cmd.SITE_STATE -> { // the site ledger's row (docs/boundary.md §2.4, MZB-1005)
+                if (com.minecraftindustrialcomplex.mic_rtsim.sites.SiteLedger.get(session.server).apply(b, at, size, now))
+                    applied++;
+                else
+                    malformed++;
                 return true;
             }
             case Cmd.MARKET -> {

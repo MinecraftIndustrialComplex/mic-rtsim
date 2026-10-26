@@ -25,6 +25,7 @@ use rtsim_jni::engine::{Config, Engine, Exec};
 use rtsim_jni::orders::Order;
 use rtsim_jni::wire::{self, RecordWriter, Records, cmd, obs};
 use rtsim_kernel::page::Durability;
+use rtsim_kernel::sites::{FoundRow, SiteKind, SiteState};
 
 /// docs/industry-boundary.md §2.2.
 pub const DICT_GOOD: u32 = 0x10;
@@ -207,9 +208,13 @@ pub struct Java {
     /// Under [`Policy::Refuse`]: module commands the reference codecs could not decode (skipped,
     /// unanswered).
     pub undecoded: u64,
+    /// Core's site ledger (world data: [`Java::world_save`] keeps it, an engine reset does not
+    /// touch it).
+    pub sites: FakeLedger,
 }
 
-/// What a "world save" keeps of the Java side: the journal SavedData.
+/// What a "world save" keeps of the Java side: the journal SavedData, and the site ledger, a world
+/// SavedData outside the engine's pages that a sim reset keeps.
 #[derive(Clone)]
 pub struct WorldSave {
     pub journal: VecDeque<(u64, Vec<u8>)>,
@@ -217,6 +222,61 @@ pub struct WorldSave {
     pub next_obs: u64,
     pub last_applied_cmd: u64,
     pub dict: Vec<(u32, String)>,
+    pub sites: FakeLedger,
+}
+
+/// Core's site ledger as the fake Java keeps it (`sites.SiteLedger`, docs/boundary.md §2.4 and
+/// §2.5, MZB-1000): each site's last SITE_STATE, its stamp (the game time it came) and the gap
+/// count then. It answers nothing. A plugin's found record carries [`FakeLedger::tail`].
+#[derive(Clone, Debug, Default)]
+pub struct FakeLedger {
+    pub rows: BTreeMap<(u32, u64), (SiteState, i64, u32)>,
+    /// The reinstall guard's resets so far ([`FakeLedger::gap`]).
+    pub gaps: u32,
+    /// SITE_STATEs applied, and those that did not decode.
+    pub applied: u64,
+    pub refused: u64,
+}
+
+impl FakeLedger {
+    /// A SITE_STATE record: replaces the site's row, stamped `now`.
+    pub fn apply(&mut self, rec: &[u8], now: i64) {
+        match SiteState::decode(rec) {
+            Ok(s) => {
+                self.rows
+                    .insert((s.kind.code(), s.key), (s, now, self.gaps));
+                self.applied += 1;
+            }
+            Err(_) => self.refused += 1,
+        }
+    }
+
+    /// The reinstall guard reset the sim: every row written before reads GAP.
+    pub fn gap(&mut self) {
+        self.gaps += 1;
+    }
+
+    pub fn row(&self, kind: SiteKind, key: u64) -> Option<&SiteState> {
+        self.rows.get(&(kind.code(), key)).map(|(s, _, _)| s)
+    }
+
+    /// The found tail for a site at game time `now`: its row as of the stamp and the ticks since,
+    /// or none (EXISTED when `existed`).
+    pub fn tail(&self, kind: SiteKind, key: u64, now: i64, existed: bool) -> FoundRow {
+        match self.rows.get(&(kind.code(), key)) {
+            Some((s, stamp, seen)) => {
+                FoundRow::from_state(s, now.saturating_sub(*stamp).max(0) as u64, *seen != self.gaps)
+            }
+            None => FoundRow {
+                flags: if existed {
+                    rtsim_kernel::sites::tail_flags::EXISTED
+                } else {
+                    0
+                },
+                ..FoundRow::none()
+            },
+        }
+    }
 }
 
 impl WorldSave {
@@ -227,6 +287,7 @@ impl WorldSave {
             next_obs: 1,
             last_applied_cmd: 0,
             dict: Vec::new(),
+            sites: FakeLedger::default(),
         }
     }
 }
@@ -275,6 +336,7 @@ impl Java {
             next_obs,
             last_applied_cmd: save.last_applied_cmd,
             dict: save.dict,
+            sites: save.sites,
             applied_cmd_ops,
             nonce,
             pages_obs,
@@ -341,6 +403,7 @@ impl Java {
             next_obs: self.next_obs,
             last_applied_cmd: self.last_applied_cmd,
             dict: self.dict.clone(),
+            sites: self.sites.clone(),
         }
     }
 
@@ -668,6 +731,13 @@ impl Java {
                 }
                 if seq <= self.last_applied_cmd {
                     self.stale_commands += 1;
+                    continue;
+                }
+                if rec.kind == cmd::SITE_STATE {
+                    // The ledger is world data: applied whatever the policy, never answered.
+                    self.sites.apply(rec.bytes, self.game_time);
+                    self.commands.push((k, rec.kind, 0));
+                    self.last_applied_cmd = seq;
                     continue;
                 }
                 if self.policy == Policy::Refuse {

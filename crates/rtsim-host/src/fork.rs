@@ -205,7 +205,7 @@ pub fn export_with(
             mid_copy(MidCopy::Pages(attempt))
         }) {
             Ok(Copied::Done(c)) => {
-                let done = finish(world, &world_abs, dir, &partial, c, attempt, &mut mid_copy);
+                let done = finish(world, &world_abs, dir, &partial, *c, attempt, &mut mid_copy);
                 if done.is_err() {
                     let _ = fs::remove_dir_all(&partial);
                 }
@@ -240,7 +240,8 @@ struct Taken {
 }
 
 enum Copied {
-    Done(Taken),
+    // Boxed: Taken carries the world save, the site ledger included (MZB-1011).
+    Done(Box<Taken>),
     Again(String),
 }
 
@@ -336,7 +337,7 @@ fn copy_once(
     // the engine logs it then), not a save racing the copy.
     let lost = (parsed.first_obs() > generation.obs_seq + 1)
         .then(|| (generation.obs_seq + 1, parsed.first_obs() - 1));
-    Ok(Copied::Done(Taken {
+    Ok(Copied::Done(Box::new(Taken {
         generation,
         pages: n,
         bytes,
@@ -344,7 +345,7 @@ fn copy_once(
         parsed,
         level,
         lost,
-    }))
+    })))
 }
 
 fn copy_file(from: &Path, to: &Path) -> Result<bool, String> {

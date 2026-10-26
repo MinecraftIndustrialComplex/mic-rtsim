@@ -303,6 +303,7 @@ start at 16.
 | 0x8003 | DESPAWN_GROUP | 0 | 16 u64 agent, 24 u32 epoch, 28 u32 reason | 32 | DEMATERIALIZED |
 | 0x8004 | STEER_GROUP | 0 | 16 u64 agent, 24 u32 epoch, 28 f32 speed, 32 f64 x, 40 f64 y, 48 f64 z | 56 | |
 | 0x8005 | TRANSFER_TO_CONTAINER | 0 | 16 u64 opId, 24 u32 dimension, 28 u32 item, 32 i32 x, 36 i32 y, 40 i32 z, 44 i32 count | 48 | COMMAND_RESULT |
+| 0x8006 | SITE_STATE | 0 | 16 u64 key (the module's site key), 24 u32 kind (1 camp, 2 lair, 3 nest), 28 u32 flags (1 short, 2 empty, 4 broken, 8 waiting), 32 f32 P now, 36 u16 K, 38 u16 count (members at home), 40 u16 away (members out), 42 u16 n, 44 u16 l, 46 u16 m, 48 u64 wait left now (kind units: game ticks, nests thousandths of a drilling day; 0 unless waiting), 56 (n + l + m) x (u64 most, u64 least): home, then left behind, then missing | 56 + 16(n + l + m) | |
 | 0x8010 to 0x8015 | phase 1 | | §4.2 | | |
 
 **SPAWN_GROUP member block** (24 bytes, then its items): 0 u32 member index, 4 u32 itemCount, 8 f32
@@ -319,6 +320,58 @@ health (0 = full), 12 i32 bodyA (-1 = let the body roll it), 16 i32 bodyB (-1 = 
 - **TRANSFER_TO_CONTAINER** is one stack (count up to the item's stack size; split bigger ones). It
   is all or nothing, through the block's NeoForge item handler. An op id whose COMMAND_RESULT(applied)
   is still in Java's journal is answered DUPLICATE and not applied again.
+- **SITE_STATE** (EQUILIBRIUM.md §2.3, slice S3, MZB-1005, MZB-1011) replaces the site's row in
+  core's site ledger (`sites.SiteLedger`, `data/mic_rtsim_sites.dat`), stamped with the overworld's
+  game time. Every module's engine sends it in the core command stream: after each step outside the
+  replay, a module turns the sites its engine marked changed into SITE_STATEs, latest wins per site,
+  written after every other command. Each takes a fresh sequence as it is written, above
+  `lastAppliedCmdSeq` like any new command, so Java applies it once and skips it as stale like any
+  other. It is never kept in the outbox, never resent and never in the pages, and the modules' sets
+  of changed sites are not saved either: a lost one is healed by the site's next change and by the
+  refresh its next found record gives (§2.5). A record whose size does not match its counts, or of
+  an unknown kind, is skipped as malformed; lists above K are cut to K (missing keeps its newest).
+  The layout's one home is `rtsim_kernel::sites`.
+
+### 2.5 The site found tail and kill credit (EQUILIBRIUM.md §2.2, §2.3, slice S3)
+
+**The found tail** (MZB-1004): core's site ledger hands a site's row back on the found record the
+plugin already sends, appended at the record's old end: FACTION_FOUND at 56 (§9.3), LAIR_FOUND at 80
+and NEST_FOUND at 48 (§6.3). Always 40 bytes, plus 16 a UUID (`SiteLedger.writeTail`,
+`rtsim_kernel::sites::FoundRow`):
+
+| Offset | Field |
+|---|---|
+| +0 | u32 flags: 1 ROW (a row follows), 2 GAP (the reinstall guard reset the sim since the row was written), 4 WAITING (the wait left is set), 8 EXISTED (no row, but the plugin knows the site stood before this engine life; nests only, since lairs and camps have LATE) |
+| +4 | u16 K, +6 u16 count |
+| +8 | f32 P as of the stamp |
+| +12 | u16 away, +14 u16 n |
+| +16 | u64 wait left as of the stamp (kind units) |
+| +24 | u64 elapsed: game ticks since the stamp, 0 when the world's clock is below it |
+| +32 | u16 l, +34 u16 m, +36 u32 reserved |
+| +40 | (n + l + m) x (u64 most, u64 least): home, left behind, missing |
+
+- Without a row it is 40 zero bytes, EXISTED aside. The engine decodes it to the record's end: the
+  counts must match the size and none may exceed K.
+- **Only relative values cross:** the pressure and the wait left as of the stamp, and the elapsed
+  game ticks. Camps and lairs age both by their own clock (P x 2^(-elapsed days / H), the wait less
+  the elapsed ticks, saturating at due now; `Pressure::handed_over`); nests are not aged (their clock
+  is drilling days, and nothing drills while the engine is gone). So an engine clock that restarted
+  after a reset neither shortens a wait nor resets a pressure.
+- **GAP** (MZB-1003): only the reinstall guard's reset means rtsim did not run. The ledger counts
+  each one at its first use after it (`ReinstallGuard.takeSiteGap`), and a row written under an
+  earlier count reads GAP. Every gap resets the engine, so the first census after one is the found
+  census, and GAP is §2.2's "whether rtsim ran since the last census".
+- The engine applies a tail only to a site new to this engine life; a site it knows already is
+  marked changed instead, so its row is refreshed by a SITE_STATE.
+
+**Kill credit** (MZB-1006, MZB-1008): every record that reports a sim member's death names its
+killer with one table, filled by core's `KillCredit`: 0 none, 1 player (a real player, a player's
+pet, or vanilla's kill credit naming either: a death within 100 ticks of a player's hit), 2 mob, 3
+other (a FakePlayer, a machine, MZB-111, or any other non-mob source), 4 taken (a tame or a carry,
+not a death; DRAGON_DIED and CAMP_DEATH). The UUID beside it is the credited player's. The engine maps
+the code to a loss cause with each kind's boss rule (`LossCause::from_credit`). HURT's
+RESIDENT_KILLED, HERD_KILLED, BAND_CASUALTIES, CHIEF_KILLED and NEST_LOSS keep their layouts; their
+kind and player now come from `KillCredit` (NEST_LOSS keeps its LossCause aux, MZB-1010).
 
 ## 3. The journal (A9, PLAN.md §4.9)
 

@@ -17,6 +17,8 @@ public final class Cmd {
     public static final int DESPAWN_GROUP = 0x8003;
     public static final int STEER_GROUP = 0x8004;
     public static final int TRANSFER_TO_CONTAINER = 0x8005;
+    /** Where a site stands, for core's site ledger (EQUILIBRIUM.md §2.3, docs/boundary.md §2.4). */
+    public static final int SITE_STATE = 0x8006;
 
     // Phase 1: caravans and markets (PLAN.md §8).
     public static final int MARKET = 0x8010;
@@ -111,6 +113,34 @@ public final class Cmd {
         public static final int Z = 40;     // i32
         public static final int COUNT = 44; // i32
         public static final int SIZE = 48;
+    }
+
+    /**
+     * SITE_STATE. Where one site stands now, for core's site ledger ({@code sites.SiteLedger}, EQUILIBRIUM.md §2.3,
+     * slice S3): its K, its members at home and away, its pressure now, the wait left now and its bodies' UUIDs. Every
+     * module's engine sends it (one core kind, MZB-1005); the layout's one home is {@code rtsim_kernel::sites}. Latest wins
+     * per (kind, key); no answer, no op id, never resent: a lost one is healed by the next change and by the refresh each
+     * found record gives a known site. Size {@code UUIDS + 16 (n + l + m)}, exactly.
+     */
+    public static final class SiteState {
+        public static final int KEY = 16;       // u64, the module's own site key
+        public static final int KIND = 24;      // u32, 1 camp, 2 lair, 3 nest
+        public static final int FLAGS = 28;     // u32, below
+        public static final int P = 32;         // f32, the pressure now
+        public static final int K = 36;         // u16
+        public static final int COUNT = 38;     // u16, members at home
+        public static final int AWAY = 40;      // u16, members out (parties, puppets)
+        public static final int N = 42;         // u16, home UUIDs
+        public static final int L = 44;         // u16, left-behind UUIDs
+        public static final int M = 46;         // u16, missing UUIDs
+        public static final int WAIT_LEFT = 48; // u64, kind units (ticks; nests: thousandths of a drilling day), 0 unless WAITING
+        public static final int UUIDS = 56;     // (n + l + m) x (u64 most, u64 least): home, left behind, missing
+
+        public static final int FLAG_SHORT = 1, FLAG_EMPTY = 2, FLAG_BROKEN = 4, FLAG_WAITING = 8;
+
+        public static int size(int bodies) {
+            return UUIDS + 16 * bodies;
+        }
     }
 
     // ---- phase 1 --------------------------------------------------------------------------------
