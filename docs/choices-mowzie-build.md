@@ -7006,6 +7006,26 @@ under its op id, as the dragons' (RP-210). Rust only; no GameTest, no Java.
     nothing). A grove whose chest is never named again keeps its stack parked until the next session
     start, which sends it again once (the dragons' too).
   - **Nothing is saved**, as for the dragons: `parked` is in memory only. The pages' format is the same.
+  - **Amendment, with slice U-c merged (RP-292).** A grove stack's answer heard while the conflict is
+    off is kept on the conflict's kept page and applied at the switch-on, at its own tick
+    (`keep_answer`, `apply_kept`; docs/choices-journal-barrier.md, RP-292). Both ways in go to one body,
+    `answer_tribute`, which holds the NOT_LOADED arm, so a kept NOT_LOADED parks the stack exactly as a
+    live one does: in flight under its op id, its goods not back in the stock, the chest forgotten if it
+    is still the stack's own, no taint and no command taken. The switch-on's reset runs `begin_replay`
+    first (which clears `parked`), then the kept answers, so the park is made after the clear and holds.
+    The stack is not sent before the plugin names its chest again, and then goes once under its own op.
+    The kept answer survives a crash on the kept page, and the new session parks it again at the
+    switch-on (parking itself is unsaved). U-c's own test of this case expected FAILED (the goods back in
+    the stock, nothing in flight, a new op for them): that is the double-placement path above, so it now
+    expects the park (`conflict::a_groves_tribute_stack_answered_not_loaded_with_the_conflict_off_is_parked_at_the_switch_on`,
+    the helper's `Answer::NotLoaded` arm), and
+    `conflict::a_groves_tribute_stack_answered_not_loaded_with_the_conflict_off_survives_a_crash_parked`
+    is the same with a save while off, a crash and a restart with the conflict still off.
+    Mutation, a kept NOT_LOADED applied as FAILED (`tribute_failed` when `State::applying_kept`): both
+    tests fail at "parked, in flight under its op id", (owed, in flight, stacks) (567, 0, 1) for
+    (567, 1, 1); the live-answer parking test still passes, so the mutation reaches the kept path only.
+    At the merge, before the test was changed, U-c's version of the test failed the same way against
+    the merged code ((567, 1, 1) for its (567, 0, 1)): the merge already parked a kept answer.
 - **MZB-761** (forks, each the dragons' unless said):
   - **`placings()` is still every stack in flight.** The brief said `placings()` leaves parked stacks out.
     It would make "in flight" read 0 for a parked stack in every test that counts them, and the dragons'
