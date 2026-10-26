@@ -6,7 +6,9 @@
 
 use rtsim_conflict::boundary::{self, Cmd, Obs};
 use rtsim_conflict::culture::{Cultures, PartyKind};
-use rtsim_conflict::engine::{CHIEF_SLOT, Conflict, Party, Phase, SlotState, Target, body_id};
+use rtsim_conflict::engine::{
+    CHIEF_SLOT, Conflict, Ended, Party, Phase, SlotState, Target, body_id,
+};
 use rtsim_conflict::synth::{self, CampRun};
 use rtsim_ecology::infra::NoInfrastructure;
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
@@ -819,6 +821,8 @@ fn an_unmet_chief_comes_home_as_a_spawn() {
     let (_, _, l, ahead) = chief_line(&since(&r, mark)).expect("a chief line at home");
     assert_eq!(l.action, boundary::ACTION_SPAWN, "a spawn, as before");
     assert!(matches!(ahead, Some(Cmd::ChiefBody(b)) if b.agent == 0));
+    // Nor does it hold the chief (MZB-853): no puppet of it was ever in the world.
+    assert_eq!(ended(&r), None, "an unmet band holds nothing");
     ok(&mut r);
 }
 
@@ -923,4 +927,851 @@ fn a_camp_death_after_home_books_once() {
     r.c.ingest(&mut r.w, &mut NoInfrastructure, &death, at);
     assert_eq!(death_books(&r), (before.0 + 1, before.1 + 1, true, 0));
     assert!(chief(&r).is_none(), "the slot freed");
+}
+
+// ---- MZB-853: the end of the chief's band -------------------------------------------------------
+
+/// The camp's end of its chief's band (MZB-853).
+fn ended(r: &CampRun) -> Option<Ended> {
+    r.c.camp(r.f).and_then(|c| c.ended)
+}
+
+/// The end and the index agree on the band, or there is neither.
+fn assert_end(r: &CampRun, want: Option<Ended>) {
+    assert_eq!(ended(r), want, "the camp's end");
+    let index: Vec<(u64, u32)> = r.c.chief_ended.iter().map(|(a, f)| (*a, *f)).collect();
+    let want_index: Vec<(u64, u32)> = want.iter().map(|e| (e.agent, r.f)).collect();
+    assert_eq!(index, want_index, "the index by agent");
+}
+
+/// The puppet of `agent`'s chief killed by the scripted player.
+fn puppet_killed(agent: u64, epoch: u32, op: u64) -> Obs {
+    Obs::ChiefKilled(boundary::ChiefKilled {
+        agent,
+        epoch,
+        by: boundary::BY_PLAYER,
+        killer: synth::PLAYER,
+        op,
+    })
+}
+
+/// Takes `agent`'s BAND_DEMATERIALIZED out of the plugin's queue for the test to deliver when it
+/// likes; the rest of the queue goes on a tick from now.
+fn hold_despawn(r: &mut CampRun, agent: u64) -> Obs {
+    let mut found = None;
+    let next = r.c.now() + 1;
+    for o in r.plugin.drop_queued() {
+        match o {
+            Obs::Dematerialized(ref d) if d.agent == agent && found.is_none() => found = Some(o),
+            o => r.plugin.push(next, o),
+        }
+    }
+    found.expect("the band's despawn queued")
+}
+
+/// A4 case 2's band: the grove goes out before the muster's end, so the chief's slot is Left, its
+/// throne body standing, and stays out. On the road.
+fn left_invasion_out(seed: u64) -> (CampRun, Handle<Party>) {
+    let mut r = quiet_grove(seed);
+    let generation = seat_chief(&mut r);
+    pay_at_home(&mut r, generation);
+    let at = r.c.now();
+    let target = Target::District(synth::REFINERY, synth::REFINERY_POS);
+    let p =
+        r.c.order_party(&mut r.w, r.key, PartyKind::Invasion, target, None, at)
+            .expect("an invasion");
+    r.flush(at);
+    r.camp_out();
+    let muster = r.c.parties[p].until;
+    r.run(muster + 200);
+    assert_eq!(r.c.parties[p].phase, Phase::Out, "on the road");
+    assert_eq!(chief(&r), Some((SlotState::Left, generation)), "left");
+    (r, p)
+}
+
+/// A led band followed home to a grove that is out (A4 case 3), its chief's slot Gone, or Left
+/// with its throne body standing (`left`): recalled, its puppet still in the world, so the end
+/// holds the chief. The band's agent, its epoch, the chief's generation, and the recall's
+/// BAND_DEMATERIALIZED, held back from the engine.
+fn home_out(seed: u64, left: bool) -> (CampRun, u64, u32, u32, Obs) {
+    let (mut r, p) = if left {
+        left_invasion_out(seed)
+    } else {
+        let (mut r, p) = led_invasion_out(seed);
+        r.camp_out();
+        (r, p)
+    };
+    let agent = Party::agent(p);
+    let generation = chief(&r).expect("a chief").1;
+    let home = followed_home(&mut r, p);
+    let epoch = r.c.parties[p].epoch;
+    r.run(home + 1);
+    assert!(!r.c.parties.contains(p), "home");
+    let despawn = hold_despawn(&mut r, agent);
+    let state = if left {
+        SlotState::Body
+    } else {
+        SlotState::Owed
+    };
+    assert_eq!(chief(&r), Some((state, generation)), "home in the books");
+    assert_end(
+        &r,
+        Some(Ended {
+            agent,
+            epoch,
+            generation,
+        }),
+    );
+    (r, agent, epoch, generation, despawn)
+}
+
+/// An Invasion ordered now: whether its chief leads it.
+fn led_now(r: &mut CampRun) -> bool {
+    let at = r.c.now();
+    let target = Target::District(synth::REFINERY, synth::REFINERY_POS);
+    let p =
+        r.c.order_party(&mut r.w, r.key, PartyKind::Invasion, target, None, at)
+            .expect("an invasion");
+    r.flush(at);
+    r.c.parties[p].chief
+}
+
+/// The band's BAND_DEMATERIALIZED of `epoch`, as Java sends it at a recall.
+fn despawned(agent: u64, epoch: u32) -> Obs {
+    Obs::Dematerialized(boundary::BandDematerialized {
+        agent,
+        epoch,
+        reason: 0,
+        survivors: Vec::new(),
+    })
+}
+
+/// MZB-853, release 1: a led band comes home to a grove that is out with its puppet still in the
+/// world (recalled, the despawn not yet in). The end holds the chief: the grove comes in and its
+/// census does not spawn the chief (the slot is Owed), and an Invasion ordered then goes without
+/// it. The band's BAND_DEMATERIALIZED releases it: the chief's SPAWN goes at once, its memory
+/// ahead, and it leads again. The controls: a CHIEF_KILLED of the band after the release books
+/// nothing, and the same band's despawn in before the grove comes in leaves an Invasion led.
+/// Without the hold the census sends the chief's SPAWN while the puppet stands.
+#[test]
+fn the_end_holds_the_chief_until_its_band_is_gone() {
+    let (mut r, agent, epoch, generation, despawn) = home_out(94, false);
+    let mark = r.cmds.len();
+    come_in(&mut r);
+    let to = r.c.now() + 50;
+    r.run(to);
+    assert!(
+        chief_line(&since(&r, mark)).is_none(),
+        "no chief line while the end holds it: {:#?}",
+        since(&r, mark)
+    );
+    assert_eq!(chief(&r), Some((SlotState::Owed, generation)), "still owed");
+    ok(&mut r);
+
+    let mark = r.cmds.len();
+    let at = r.c.now();
+    r.c.ingest(&mut r.w, &mut NoInfrastructure, &despawn, at);
+    r.flush(at);
+    assert_end(&r, None);
+    let cmds = since(&r, mark);
+    let (rec, index, l, ahead) = chief_line(&cmds).expect("the chief spawned at the release");
+    assert_eq!(l.action, boundary::ACTION_SPAWN);
+    assert_eq!(l.generation, generation);
+    assert!(
+        matches!(ahead, Some(Cmd::ChiefBody(b)) if b.agent == 0 && b.traded == vec![synth::PLAYER]),
+        "its memory ahead"
+    );
+    assert_eq!(answered(&mut r, rec.op, index), boundary::LINE_DONE);
+    assert_eq!(chief(&r), Some((SlotState::Body, generation)), "home, body");
+    assert_eq!(
+        r.plugin.camp_held(r.key, CHIEF_SLOT, generation).len(),
+        1,
+        "one throne body"
+    );
+    ok(&mut r);
+
+    // A death of the band's puppet after the release books nothing.
+    let before = death_books(&r);
+    let at = r.c.now();
+    r.c.ingest(
+        &mut r.w,
+        &mut NoInfrastructure,
+        &puppet_killed(agent, epoch, 0x8531),
+        at,
+    );
+    assert_eq!(death_books(&r), before, "a straggler books nothing");
+    assert!(led_now(&mut r), "the chief leads again");
+    ok(&mut r);
+
+    // The hold: an Invasion ordered while the end stands goes without the chief.
+    let (mut r, _, _, generation, _) = home_out(94, false);
+    come_in(&mut r);
+    let to = r.c.now() + 50;
+    r.run(to);
+    assert!(
+        !led_now(&mut r),
+        "the chief does not lead while the end holds it"
+    );
+    assert_eq!(
+        chief(&r),
+        Some((SlotState::Owed, generation)),
+        "nor is it drawn"
+    );
+    ok(&mut r);
+}
+
+/// MZB-853, release 2: home to a grove that is in, the chief's HAND_BACK answered DONE (the puppet
+/// consumed into the throne body) releases the end before the band's despawn, and NOTHING (case B,
+/// the throne body stood) does too. The control: a HAND_BACK answered STALE (the puppet was not
+/// there to take) releases nothing, and the owed chief is not spawned while the end holds it.
+/// Without the release the end stands until the despawn.
+#[test]
+fn a_hand_back_answered_releases_the_end() {
+    for (seed, outcome) in [
+        (95, boundary::LINE_DONE),
+        (96, boundary::LINE_NOTHING),
+        (97, boundary::LINE_STALE),
+    ] {
+        let (mut r, p) = led_invasion_out(seed);
+        let agent = Party::agent(p);
+        let generation = chief(&r).expect("a chief").1;
+        let home = followed_home(&mut r, p);
+        let epoch = r.c.parties[p].epoch;
+        // Decided and held back: the test answers it.
+        let cmds = r.decide(home + 1);
+        assert_handed_back(&r, &cmds, agent, epoch, generation);
+        let end = Some(Ended {
+            agent,
+            epoch,
+            generation,
+        });
+        assert_end(&r, end);
+        let (rec, index, ..) = chief_line(&cmds).expect("a chief line");
+        let answer = Obs::CampBodies(boundary::CampBodies {
+            faction: r.key,
+            epoch: rec.epoch,
+            op: rec.op,
+            lines: vec![boundary::LineAnswer {
+                line: index,
+                slot: CHIEF_SLOT,
+                generation,
+                action: boundary::ACTION_HAND_BACK,
+                outcome,
+            }],
+        });
+        let at = r.c.now();
+        r.c.ingest(&mut r.w, &mut NoInfrastructure, &answer, at);
+        let cmds = r.decide(at + 1);
+        if outcome == boundary::LINE_STALE {
+            assert_end(&r, end);
+            let s = r.c.camp(r.f).and_then(|c| c.chief()).expect("a chief");
+            assert_eq!((s.state, s.line), (SlotState::Owed, None), "owed, no line");
+            assert!(chief_line(&cmds).is_none(), "nothing spawned");
+            // The despawn releases it, and the chief is spawned.
+            r.c.ingest(
+                &mut r.w,
+                &mut NoInfrastructure,
+                &despawned(agent, epoch),
+                at + 1,
+            );
+            let cmds = r.decide(at + 2);
+            let (_, _, l, _) = chief_line(&cmds).expect("spawned at the despawn");
+            assert_eq!(
+                (l.action, l.generation),
+                (boundary::ACTION_SPAWN, generation)
+            );
+            assert_end(&r, None);
+        } else {
+            assert_end(&r, None);
+            assert_eq!(
+                chief(&r),
+                Some((SlotState::Body, generation)),
+                "outcome {outcome}"
+            );
+            assert!(chief_line(&cmds).is_none(), "nothing more to send");
+            // The despawn after it changes nothing.
+            r.c.ingest(
+                &mut r.w,
+                &mut NoInfrastructure,
+                &despawned(agent, epoch),
+                at + 1,
+            );
+            assert!(chief_line(&r.decide(at + 2)).is_none());
+            assert_eq!(chief(&r), Some((SlotState::Body, generation)));
+        }
+        let bad = r.check();
+        assert!(bad.is_empty(), "outcome {outcome}: {bad:#?}");
+    }
+}
+
+/// MZB-853, release 3: the band's puppet killed after its end (CHIEF_KILLED, the party gone) is
+/// the chief's death at its camp, booked once: one fall, one player's loss, the heir due, the
+/// memory cleared. (1) The slot Owed (its body went with the band): it is freed, its generation
+/// retired, and no census spawns it; the despawn after sends nothing, and the record's copy (the
+/// Sol Visage's) books nothing more. (2) The slot Body, its throne body standing, the grove in by
+/// then: the slot is dead and its throne body removed by a REMOVE at once; the answer frees the
+/// slot. Without the booking the death counts for nothing and the census spawns the chief again.
+#[test]
+fn a_puppet_killed_after_its_end_is_the_chiefs_death() {
+    // 1. Owed.
+    let (mut r, agent, epoch, generation, despawn) = home_out(97, false);
+    let before = death_books(&r);
+    let killed = puppet_killed(agent, epoch, 0x8532);
+    let at = r.c.now();
+    r.c.ingest(&mut r.w, &mut NoInfrastructure, &killed, at);
+    assert_eq!(
+        death_books(&r),
+        (before.0 + 1, before.1 + 1, true, 0),
+        "one fall, one loss, the heir due, the memory cleared"
+    );
+    assert_end(&r, None);
+    let camp = r.c.camp(r.f).expect("a camp");
+    assert!(
+        camp.index(CHIEF_SLOT, generation).is_none(),
+        "the slot freed"
+    );
+    // The copy, and the despawn after it.
+    let at = r.c.now();
+    r.c.ingest_copy(&mut r.w, &mut NoInfrastructure, &killed, at);
+    r.c.ingest(&mut r.w, &mut NoInfrastructure, &despawn, at);
+    assert_eq!(death_books(&r).0, before.0 + 1, "booked once");
+    let mark = r.cmds.len();
+    come_in(&mut r);
+    let to = r.c.now() + 50;
+    r.run(to);
+    assert!(
+        since(&r, mark)
+            .iter()
+            .all(|c| !matches!(c, Cmd::Reconcile(x)
+            if x.lines.iter().any(|l| l.slot == CHIEF_SLOT && l.generation == generation))),
+        "the dead chief is not spawned"
+    );
+    assert!(r.plugin.camp_held(r.key, CHIEF_SLOT, generation).is_empty());
+    ok(&mut r);
+
+    // 2. Body, the grove in by the death.
+    let (mut r, agent, epoch, generation, despawn) = home_out(98, true);
+    come_in(&mut r);
+    let to = r.c.now() + 50;
+    r.run(to);
+    assert_eq!(chief(&r), Some((SlotState::Body, generation)));
+    let before = death_books(&r);
+    let mark = r.cmds.len();
+    let at = r.c.now();
+    r.c.ingest(
+        &mut r.w,
+        &mut NoInfrastructure,
+        &puppet_killed(agent, epoch, 0x8533),
+        at,
+    );
+    r.flush(at);
+    assert_eq!(death_books(&r), (before.0 + 1, before.1 + 1, true, 0));
+    assert_end(&r, None);
+    assert_eq!(chief(&r), Some((SlotState::Dead, generation)), "dead");
+    let (rec, index, l, _) = chief_line(&since(&r, mark)).expect("the throne body's line");
+    assert_eq!(
+        (l.action, l.generation),
+        (boundary::ACTION_REMOVE, generation),
+        "the throne body removed"
+    );
+    assert_eq!(answered(&mut r, rec.op, index), boundary::LINE_DONE);
+    assert!(chief(&r).is_none(), "the slot freed by the answer");
+    assert!(r.plugin.camp_held(r.key, CHIEF_SLOT, generation).is_empty());
+    let at = r.c.now();
+    r.c.ingest(&mut r.w, &mut NoInfrastructure, &despawn, at);
+    ok(&mut r);
+}
+
+/// MZB-853, release 4: the chief's slot freed by anything else prunes the end: its throne body
+/// (the slot Body, the band home to a grove that is out) is killed, a CAMP_DEATH booked by
+/// `chief_death`. The index entry goes at the band's despawn, which spawns nothing. Without the
+/// prune the end names a generation the chief's slot does not hold (the audit's MZB-853).
+#[test]
+fn a_camp_death_prunes_the_end() {
+    let (mut r, agent, _, generation, despawn) = home_out(99, true);
+    let before = death_books(&r);
+    let at = r.c.now();
+    let death = chief_death(&r, generation);
+    r.c.ingest(&mut r.w, &mut NoInfrastructure, &death, at);
+    assert_eq!(death_books(&r), (before.0 + 1, before.1 + 1, true, 0));
+    assert_eq!(ended(&r), None, "pruned with the generation");
+    assert!(chief(&r).is_none(), "freed");
+    assert!(r.check().is_empty(), "{:#?}", r.check());
+    assert_eq!(
+        r.c.chief_ended.get(&agent),
+        Some(&r.f),
+        "the index waits for its agent"
+    );
+    let mark = r.cmds.len();
+    let at = r.c.now();
+    r.c.ingest(&mut r.w, &mut NoInfrastructure, &despawn, at);
+    r.flush(at);
+    assert_end(&r, None);
+    assert!(chief_line(&since(&r, mark)).is_none(), "nothing spawned");
+    // A puppet death after it books no second fall.
+    r.c.ingest(
+        &mut r.w,
+        &mut NoInfrastructure,
+        &puppet_killed(agent, 1, 0x8534),
+        at,
+    );
+    assert_eq!(death_books(&r).0, before.0 + 1, "one fall");
+    ok(&mut r);
+}
+
+/// MZB-853, release 5: the session ends with the end standing (the journal lost the band's
+/// despawn, a crash). At the replay end the chief is lost to no one: the slot as at a puppet's
+/// death (Owed freed; Body dead, its throne body removed by the next census), the heir due and
+/// the memory cleared, with no fall and no pressure step. The CHIEF_KILLED that comes later as a
+/// copy (on the Sol Visage) books nothing. The control: a clean stop, the despawn journaled before
+/// the restart, keeps the chief, spawned by the next census. Without the loss the end stands
+/// after the replay and the chief is held for good.
+#[test]
+fn an_end_standing_at_the_replay_end_is_a_loss() {
+    for left in [false, true] {
+        let (mut r, agent, epoch, generation, _despawn) = home_out(100 + u64::from(left), left);
+        let before = death_books(&r);
+        r.restart();
+        assert_end(&r, None);
+        assert_eq!(
+            death_books(&r),
+            (before.0, before.1, true, 0),
+            "left {left}: lost to no one, the heir due, the memory cleared"
+        );
+        let state = chief(&r).map(|s| s.0);
+        assert_eq!(state, left.then_some(SlotState::Dead), "left {left}");
+        let at = r.c.now();
+        r.c.ingest_copy(
+            &mut r.w,
+            &mut NoInfrastructure,
+            &puppet_killed(agent, epoch, 0x8535),
+            at,
+        );
+        assert_eq!(
+            death_books(&r).0,
+            before.0,
+            "left {left}: the copy books nothing"
+        );
+        come_in(&mut r);
+        let to = r.c.now() + 200;
+        r.run(to);
+        assert!(
+            r.plugin.camp_held(r.key, CHIEF_SLOT, generation).is_empty(),
+            "left {left}: no body of the lost chief"
+        );
+        ok(&mut r);
+    }
+
+    // The control: a clean stop.
+    let (mut r, _, _, generation, despawn) = home_out(102, false);
+    let at = r.c.now();
+    r.c.ingest(&mut r.w, &mut NoInfrastructure, &despawn, at);
+    let before = death_books(&r);
+    r.restart();
+    assert_eq!(death_books(&r), before, "nothing lost");
+    come_in(&mut r);
+    let to = r.c.now() + 200;
+    r.run(to);
+    assert_eq!(chief(&r), Some((SlotState::Body, generation)), "spawned");
+    ok(&mut r);
+}
+
+/// A4 case 2's band followed home: the grove out at the muster's end (the chief's slot Left, its
+/// throne body standing), in again while the band is away with the census's TAKE of the throne
+/// body held and answered STALE as the puppet came near (MZB-823). The tick it is home.
+fn left_home_in(seed: u64) -> (CampRun, Handle<Party>, Tick) {
+    let (mut r, p) = left_invasion_out(seed);
+    let generation = chief(&r).expect("a chief").1;
+    let at = r.c.now();
+    r.plugin.hold_chief(r.key, true, false, at);
+    let mark = r.cmds.len();
+    r.camp_in();
+    let to = r.c.now() + 10;
+    r.run(to);
+    let (take, take_index, l, _) = chief_line(&since(&r, mark)).expect("the census's chief line");
+    assert_eq!(l.action, boundary::ACTION_TAKE);
+    let home = followed_home(&mut r, p);
+    let at = r.c.now();
+    r.c.ingest(
+        &mut r.w,
+        &mut NoInfrastructure,
+        &Obs::CampBodies(boundary::CampBodies {
+            faction: r.key,
+            epoch: take.epoch,
+            op: take.op,
+            lines: vec![boundary::LineAnswer {
+                line: take_index,
+                slot: CHIEF_SLOT,
+                generation,
+                action: boundary::ACTION_TAKE,
+                outcome: boundary::LINE_STALE,
+            }],
+        }),
+        at,
+    );
+    assert_eq!(chief(&r), Some((SlotState::Left, generation)), "left");
+    (r, p, home)
+}
+
+/// The chief's line of `rec` answered `outcome`.
+fn chief_answer(
+    r: &CampRun,
+    rec: &boundary::CampReconcile,
+    index: u32,
+    l: &boundary::ReconcileLine,
+    outcome: u8,
+) -> Obs {
+    Obs::CampBodies(boundary::CampBodies {
+        faction: r.key,
+        epoch: rec.epoch,
+        op: rec.op,
+        lines: vec![boundary::LineAnswer {
+            line: index,
+            slot: CHIEF_SLOT,
+            generation: l.generation,
+            action: l.action,
+            outcome,
+        }],
+    })
+}
+
+/// MZB-853 with the chief's HAND_BACK in flight (M11b): the puppet killed before the hand-back
+/// reaches it journals CHIEF_KILLED for the ended band, which is release 3, booked once; the
+/// hand-back's answer after it (DONE or NOTHING) finds no end to release and books nothing more.
+/// (1) The slot Owed (Gone at home): freed at the death, the answer's generation retired. (2) The
+/// slot Body (Left at home, its throne body standing): dead at the death, its line still in
+/// flight so no REMOVE yet; the answer NOTHING clears the line, and the next census removes the
+/// throne body and frees the slot. Without release 3 the death books nothing and the chief lives.
+#[test]
+fn a_puppet_killed_while_its_hand_back_is_in_flight_dies_once() {
+    for (seed, outcome) in [(103, boundary::LINE_DONE), (104, boundary::LINE_NOTHING)] {
+        let (mut r, p) = led_invasion_out(seed);
+        let agent = Party::agent(p);
+        let home = followed_home(&mut r, p);
+        let epoch = r.c.parties[p].epoch;
+        let cmds = r.decide(home + 1);
+        let (rec, index, l, _) = chief_line(&cmds).expect("a chief line");
+        assert_eq!(l.action, boundary::ACTION_HAND_BACK, "in flight");
+        let before = death_books(&r);
+        let at = r.c.now();
+        r.c.ingest(
+            &mut r.w,
+            &mut NoInfrastructure,
+            &puppet_killed(agent, epoch, 0x8536),
+            at,
+        );
+        assert_eq!(
+            death_books(&r),
+            (before.0 + 1, before.1 + 1, true, 0),
+            "outcome {outcome}: once"
+        );
+        assert_end(&r, None);
+        assert!(chief(&r).is_none(), "the slot freed");
+        let answer = chief_answer(&r, &rec, index, &l, outcome);
+        r.c.ingest(&mut r.w, &mut NoInfrastructure, &answer, at);
+        r.c.ingest(
+            &mut r.w,
+            &mut NoInfrastructure,
+            &despawned(agent, epoch),
+            at,
+        );
+        assert_eq!(
+            death_books(&r),
+            (before.0 + 1, before.1 + 1, true, 0),
+            "outcome {outcome}: nothing more"
+        );
+        assert!(chief(&r).is_none(), "outcome {outcome}: nothing comes back");
+        assert!(
+            chief_line(&r.decide(at + 1)).is_none(),
+            "outcome {outcome}: no line"
+        );
+        let bad = r.check();
+        assert!(bad.is_empty(), "outcome {outcome}: {bad:#?}");
+    }
+
+    // 2. Body.
+    let (mut r, p, home) = left_home_in(105);
+    let agent = Party::agent(p);
+    let generation = chief(&r).expect("a chief").1;
+    let epoch = r.c.parties[p].epoch;
+    let cmds = r.decide(home + 1);
+    let (rec, index, l, _) = chief_line(&cmds).expect("a chief line");
+    assert_eq!(l.action, boundary::ACTION_HAND_BACK, "in flight");
+    assert_eq!(chief(&r), Some((SlotState::Body, generation)));
+    let before = death_books(&r);
+    let at = r.c.now();
+    r.c.ingest(
+        &mut r.w,
+        &mut NoInfrastructure,
+        &puppet_killed(agent, epoch, 0x8537),
+        at,
+    );
+    assert_eq!(
+        death_books(&r),
+        (before.0 + 1, before.1 + 1, true, 0),
+        "once"
+    );
+    assert_end(&r, None);
+    assert_eq!(chief(&r), Some((SlotState::Dead, generation)), "dead");
+    assert!(
+        chief_line(&r.decide(at + 1)).is_none(),
+        "no REMOVE over a line in flight"
+    );
+    let answer = chief_answer(&r, &rec, index, &l, boundary::LINE_NOTHING);
+    let at = r.c.now();
+    r.c.ingest(&mut r.w, &mut NoInfrastructure, &answer, at);
+    let s = r.c.camp(r.f).and_then(|c| c.chief()).expect("a chief");
+    assert_eq!((s.state, s.line), (SlotState::Dead, None), "dead, no line");
+    assert_eq!(
+        death_books(&r),
+        (before.0 + 1, before.1 + 1, true, 0),
+        "nothing more"
+    );
+    r.c.ingest(
+        &mut r.w,
+        &mut NoInfrastructure,
+        &despawned(agent, epoch),
+        at,
+    );
+    // The next census removes the throne body, the player gone from the throne.
+    let at = r.c.now();
+    r.plugin.hold_chief(r.key, false, false, at);
+    r.camp_out();
+    come_in(&mut r);
+    let to = r.c.now() + 50;
+    r.run(to);
+    assert_eq!(chief(&r), None, "freed by the census's REMOVE");
+    assert!(
+        r.plugin.camp_held(r.key, CHIEF_SLOT, generation).is_empty(),
+        "no throne body"
+    );
+    assert_eq!(death_books(&r).0, before.0 + 1);
+    ok(&mut r);
+}
+
+/// The journal after a led band's home, for the crash tests: a scenario, the records the last
+/// session journaled from home on, and the copy a holder brings in this session.
+struct Journal {
+    r: CampRun,
+    generation: u32,
+    records: Vec<Obs>,
+    copy: Option<Obs>,
+}
+
+/// K: the grove out at home, the slot Owed (or Body, `left`), the puppet killed by a player, then
+/// the band despawned; the CHIEF_KILLED's copy is the Sol Visage's.
+fn journal_killed(seed: u64, left: bool) -> Journal {
+    let (r, agent, epoch, generation, despawn) = home_out(seed, left);
+    let killed = puppet_killed(agent, epoch, 0x8538);
+    Journal {
+        r,
+        generation,
+        records: vec![killed.clone(), despawn],
+        copy: Some(killed),
+    }
+}
+
+/// D: the grove out at home, the slot Owed, the band despawned with its chief alive.
+fn journal_despawned(seed: u64) -> Journal {
+    let (r, _, _, generation, despawn) = home_out(seed, false);
+    Journal {
+        r,
+        generation,
+        records: vec![despawn],
+        copy: None,
+    }
+}
+
+/// H: the grove in at home, the chief's HAND_BACK applied by the plugin (the puppet taken into
+/// a throne body), its answer then the band's despawn journaled.
+fn journal_handed_back(seed: u64) -> Journal {
+    let (mut r, p) = led_invasion_out(seed);
+    let agent = Party::agent(p);
+    let generation = chief(&r).expect("a chief").1;
+    r.plugin.answer_ticks = 100;
+    let home = followed_home(&mut r, p);
+    r.run(home + 2);
+    assert!(!r.c.parties.contains(p), "home");
+    assert!(ended(&r).is_some(), "the end holds the chief");
+    let mut answer = None;
+    let mut despawn = None;
+    for o in r.plugin.drop_queued() {
+        match o {
+            Obs::CampBodies(ref b) if b.lines.iter().any(|a| a.slot == CHIEF_SLOT) => {
+                answer = Some(o)
+            }
+            Obs::Dematerialized(ref d) if d.agent == agent => despawn = Some(o),
+            _ => {}
+        }
+    }
+    Journal {
+        r,
+        generation,
+        records: vec![
+            answer.expect("the hand-back's answer"),
+            despawn.expect("the despawn"),
+        ],
+        copy: None,
+    }
+}
+
+/// MZB-853's crash tests: the session ends with a led band home and its end standing, and the
+/// journal reaches the next session up to each of its records (none, the first, all). The pages
+/// keep the end; the replay books what the journal kept; the replay end loses a chief whose
+/// puppet was not accounted for; a holder's copy then comes. Whatever the cut, the chief dies at
+/// most once (one fall and one player's loss, only when the journal kept the CHIEF_KILLED), is
+/// either kept or lost (an heir due, no throne body of its generation), never both; nothing is
+/// pushed while replaying; no end or index entry is left; and the camp's books and world agree
+/// once it is in. Without release 5 a cut before the despawn strands the chief (the end stands);
+/// without release 3 the killed chief is kept.
+#[test]
+fn a_crash_at_any_record_after_home_books_the_chief_once() {
+    type Make = fn(u64) -> Journal;
+    let cases: [(&str, Make, u64); 4] = [
+        ("killed, owed", |s| journal_killed(s, false), 106),
+        ("killed, body", |s| journal_killed(s, true), 107),
+        ("despawned", journal_despawned, 108),
+        ("handed back", journal_handed_back, 109),
+    ];
+    for (name, make, seed) in cases {
+        let n = make(seed).records.len();
+        for cut in 0..=n {
+            let Journal {
+                mut r,
+                generation,
+                records,
+                copy,
+            } = make(seed);
+            let end = ended(&r);
+            r.round_trip();
+            assert_end(&r, end);
+            let before = death_books(&r);
+            r.restart_to_replay();
+            let gate = r.c.replay_gate_counts();
+            for o in &records[..cut] {
+                let at = r.c.now();
+                r.c.ingest(&mut r.w, &mut NoInfrastructure, o, at);
+            }
+            let pushed = r.c.take_commands();
+            assert!(
+                !pushed
+                    .iter()
+                    .any(|c| matches!(c, Cmd::Reconcile(_) | Cmd::ChiefBody(_))),
+                "{name}, cut {cut}: pushed while replaying: {pushed:#?}"
+            );
+            assert_eq!(
+                r.c.replay_gate_counts().never,
+                gate.never,
+                "{name}, cut {cut}"
+            );
+            r.c.replay_done();
+            let present = r.c.now();
+            r.c.replay_present(present);
+            assert_end(&r, None);
+            if let Some(o) = &copy {
+                let at = r.c.now();
+                r.c.ingest_copy(&mut r.w, &mut NoInfrastructure, o, at);
+            }
+            let killed = records[..cut]
+                .iter()
+                .any(|o| matches!(o, Obs::ChiefKilled(_)));
+            let released = records[..cut]
+                .iter()
+                .any(|o| !matches!(o, Obs::ChiefKilled(_)));
+            let kept = released && !killed;
+            let after = death_books(&r);
+            let fall = u64::from(killed);
+            assert_eq!(
+                (after.0, after.1, after.2),
+                (before.0 + fall, before.1 + fall, !kept),
+                "{name}, cut {cut}: the falls, the losses, the heir"
+            );
+            come_in(&mut r);
+            let to = r.c.now() + 300;
+            r.run(to);
+            let held = r.plugin.camp_held(r.key, CHIEF_SLOT, generation).len();
+            assert_eq!(
+                held,
+                usize::from(kept),
+                "{name}, cut {cut}: the throne body"
+            );
+            assert_eq!(
+                chief(&r).is_some_and(|s| s.1 == generation),
+                kept,
+                "{name}, cut {cut}: the chief kept"
+            );
+            assert_eq!(
+                death_books(&r).0,
+                before.0 + fall,
+                "{name}, cut {cut}: no fall later"
+            );
+            ok(&mut r);
+        }
+    }
+}
+
+/// MZB-853's ending epoch: the end names the epoch its band ended in, and only that epoch's
+/// BAND_DEMATERIALIZED releases it. Replayed, it releases the end while the camp is out, pushing
+/// nothing (the census after the replay spawns the owed chief); a despawn of another epoch of
+/// the agent, or of the epoch for another agent, releases nothing, and the end is then lost at
+/// the replay end. The band that leads next is a new party: its agent is not the ended one, so no
+/// epoch the end named is used again for it. Without the epoch's check the other epoch releases.
+#[test]
+fn only_the_ending_epochs_despawn_releases_the_end() {
+    for (which, release) in [
+        ("the epoch", true),
+        ("a later epoch", false),
+        ("another agent", false),
+    ] {
+        let (mut r, agent, epoch, generation, _) = home_out(110, false);
+        r.round_trip();
+        r.restart_to_replay();
+        let despawn = match which {
+            "the epoch" => despawned(agent, epoch),
+            "a later epoch" => despawned(agent, epoch + 1),
+            _ => despawned(agent ^ 1, epoch),
+        };
+        let at = r.c.now();
+        r.c.ingest(&mut r.w, &mut NoInfrastructure, &despawn, at);
+        assert_eq!(
+            ended(&r).is_none(),
+            release,
+            "{which}: released while replaying"
+        );
+        let pushed = r.c.take_commands();
+        assert!(
+            !pushed
+                .iter()
+                .any(|c| matches!(c, Cmd::Reconcile(_) | Cmd::ChiefBody(_))),
+            "{which}: pushed while replaying: {pushed:#?}"
+        );
+        r.c.replay_done();
+        let present = r.c.now();
+        r.c.replay_present(present);
+        assert_end(&r, None);
+        assert_eq!(
+            death_books(&r).2,
+            !release,
+            "{which}: lost at the replay end"
+        );
+        come_in(&mut r);
+        let to = r.c.now() + 300;
+        r.run(to);
+        assert_eq!(
+            chief(&r).is_some_and(|s| s == (SlotState::Body, generation)),
+            release,
+            "{which}: spawned by the census"
+        );
+        if release {
+            let at = r.c.now();
+            let target = Target::District(synth::REFINERY, synth::REFINERY_POS);
+            let q =
+                r.c.order_party(&mut r.w, r.key, PartyKind::Invasion, target, None, at)
+                    .expect("an invasion");
+            r.flush(at);
+            assert!(r.c.parties[q].chief, "the chief leads the next band");
+            assert_ne!(Party::agent(q), agent, "a new agent");
+        }
+        ok(&mut r);
+    }
 }
