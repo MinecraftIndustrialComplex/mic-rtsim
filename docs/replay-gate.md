@@ -712,7 +712,9 @@ ahead:
   records decide wait in its outbox and go after the end, answered DUPLICATE by op where Java
   applied them (RP-272), and dropped unsent where Java answered them FAILED while the replay ran
   (Java keeps only the ops it applied; the link keeps those answers in memory until the first drain
-  after the end, RP-259); the threats and the deferred records are this session's, at its present,
+  after the end, RP-259, which is safe only with SEC-1's option A removing the copy when its answer
+  is heard: pages taken before that drain would otherwise hold the copy without the answer); the
+  threats and the deferred records are this session's, at its present,
   past every replayed record; the module switch sets the session start that runs at the end. Every
   industry op id derives with its decision's own tick, never the clock (RP-270, RP-271). The
   dragons' and pirates' raids still run industry's clock to their own tick when they land while
