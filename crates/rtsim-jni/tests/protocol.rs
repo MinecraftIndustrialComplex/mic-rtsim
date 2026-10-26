@@ -2783,6 +2783,89 @@ mod dragons {
         );
     }
 
+    /// U-c's review, P1 (RP-292, docs/replay-gate.md 9.7: "a record applied while off goes in at
+    /// its own tick"): the lair's own dragon, adopted and embodied, is killed by a player in the
+    /// switch-off's tick (journaled after the MODULES record), and the dragons are switched on
+    /// three days later with the player at the lair. The dragon stays dead, never materialized
+    /// again, and its lair stands empty from the death's own tick, not from the switch-on's.
+    /// Before: the record was booked no earlier than the world's present, so the switch-on ran
+    /// the three days first and then booked the death at the switch-on.
+    #[test]
+    fn a_dragon_killed_in_the_switchs_tick_stays_dead_after_a_late_switch_on() {
+        let dir = tmpdir("dragon-died-late-on");
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        j.module_mask = MODULES;
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        j.dragon_obs(&O::LairFound(db::LairFound {
+            lair: LAIR,
+            late: false,
+            dimension: dim,
+            species: Species::Fire,
+            kind: LairKind::Roost,
+            min: (HOME.0 - 30, 60, HOME.2 - 30),
+            max: (HOME.0 + 30, 140, HOME.2 + 30),
+            home: HOME,
+        }));
+        let mut fed = untagged((0xD3, 0x2), SpawnKind::Structure, LAIR, dim);
+        if let O::Untagged(u) = &mut fed {
+            u.hunger = 100;
+        }
+        j.dragon_obs(&fed);
+        j.idle();
+        j.idle();
+        let a = adoptions(&j)[0];
+        assert_eq!(summary(&e).0, 1, "one dragon, embodied");
+        assert_eq!(
+            e.with_dragons(|d, _| d.lairs[0].vacant_since),
+            None,
+            "the lair is lived in"
+        );
+
+        // Off, and the body dies in the switch's tick.
+        j.modules(0b1111);
+        let died_at = j.game_time;
+        j.dragon_obs(&O::Died(db::Died {
+            agent: a.agent,
+            epoch: a.epoch,
+            killer_kind: AttackerKind::Player,
+            killer: PLAYER,
+            dimension: dim,
+            pos: (f64::from(HOME.0), f64::from(HOME.1), f64::from(HOME.2)),
+        }));
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        assert_eq!(summary(&e).0, 1, "nothing changes while off");
+        let on_at = died_at + 3 * 24_000;
+        while j.game_time < on_at {
+            j.game_time += 1_000;
+            j.idle();
+        }
+
+        j.modules(MODULES);
+        let materialized = j.iaf.len();
+        j.players = vec![(PLAYER, dim, [3010.0, 70.0, 3005.0])];
+        for _ in 0..600 {
+            j.tick();
+        }
+        j.idle();
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        let again = j.iaf[materialized..]
+            .iter()
+            .filter(|(_, c)| matches!(c, D::Materialize(m) if m.agent == a.agent))
+            .count();
+        let alive = summary(&e).0;
+        let vacant = e.with_dragons(|d, _| d.lairs[0].vacant_since);
+        e.close(true, Duration::from_secs(5)).unwrap();
+        assert_eq!((alive, again), (0, 0), "(alive, materialized again)");
+        let vacant = vacant.expect("the lair stands empty").0 as i64;
+        assert!(
+            (died_at..on_at).contains(&vacant),
+            "empty from the death's own tick {died_at}, before the switch-on at {on_at}: {vacant}"
+        );
+    }
+
     // ---- a test's order waits for the replay end (docs/replay-gate.md §4.5, RP-74) ------------
 
     /// The replay ends this engine ran.
@@ -5994,6 +6077,112 @@ mod conflict {
         assert!(
             !log.iter().any(|l| l.kind == "withdrawn"),
             "nothing withdrawn"
+        );
+    }
+
+    /// The camp's envoy on its road to the player, its demand's deadline d0 days ahead, and the
+    /// killing goes on. The conflict is switched off, and in the switch's tick a mob wipes the band
+    /// out (`ConflictBridge.switchedOff` settles deaths in the switch's own tick): a record the
+    /// conflict keeps. Then it is switched on at game time `on_at(d0)` (at once when that is not
+    /// ahead), and a day passes. Returns (demands expired, demands withdrawn, casualties booked,
+    /// the envoy party's units left, the conflict's log from the switch-off on, d0).
+    #[allow(clippy::type_complexity)]
+    fn a_wipe_in_the_switchs_tick_then_a_switch_on_at(
+        tag: &str,
+        on_at: impl Fn(i64) -> i64,
+    ) -> (
+        u64,
+        u64,
+        u64,
+        u32,
+        Vec<rtsim_conflict::engine::LogEntry>,
+        i64,
+    ) {
+        let (_dir, e, mut j) = camp(tag);
+        let envoy = envoy_in_view(&mut j);
+        let d0 = envoy.deadline;
+        signal(&mut j, 2, 5, PLAYER);
+        j.idle();
+        let before = e.with_conflict(|c, _| c.stats.casualties);
+        let _ = e.conflict_log(true);
+
+        j.modules(0b1111);
+        wipe(&mut j, &envoy, cb::BY_MOB, (0, 0));
+        j.idle();
+        assert!(j.game_time < d0, "the wipe before the deadline");
+        let until = on_at(d0);
+        if until > j.game_time {
+            let limit = until - j.game_time + DAY;
+            advance_until(&mut j, 1_000, limit, "the switch-on's time", |j| {
+                j.game_time >= until
+            });
+        }
+        assert_eq!(
+            e.with_conflict(|c, _| c.stats.casualties),
+            before,
+            "kept, not applied while off"
+        );
+
+        j.modules(MODULES);
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        let end = j.game_time + DAY;
+        advance_until(&mut j, 600, 2 * DAY, "a day on", |j| j.game_time >= end);
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        let (st, _) = e.conflict_stats();
+        let booked = e.with_conflict(|c, _| c.stats.casualties) - before;
+        let units = e.with_conflict(|c, _| {
+            Party::of_agent(envoy.agent)
+                .and_then(|p| c.parties.get(p))
+                .map_or(0, |p| p.units.iter().map(|u| u.1).sum())
+        });
+        let log = e.conflict_log(false);
+        e.close(true, Duration::from_secs(5)).unwrap();
+        (st.expired, st.withdrawn, booked, units, log, d0)
+    }
+
+    /// U-c's review, P1 (RP-292, docs/replay-gate.md 9.7: "a record applied while off goes in at
+    /// its own tick"): a band wiped out in the switch-off's tick, the conflict switched on two days
+    /// past the demand's deadline. The wipe is booked at its own tick, before the deadline: the
+    /// demand is withdrawn, never expired, the band's casualties booked and the party gone.
+    /// Before: the record was booked no earlier than the world's present, so the switch-on ran the
+    /// whole window first; the deadline passed, the envoy went home with its units, and the wipe
+    /// found no one (expired 1, withdrawn 0, nothing booked).
+    #[test]
+    fn a_wipe_in_the_switchs_tick_is_booked_at_its_tick_after_a_late_switch_on() {
+        let (expired, withdrawn, booked, units, log, d0) =
+            a_wipe_in_the_switchs_tick_then_a_switch_on_at("conflict-wipe-late-on", |d0| {
+                d0 + 2 * DAY
+            });
+        assert_eq!(
+            (expired, withdrawn, booked > 0, units),
+            (0, 1, true, 0),
+            "(expired, withdrawn, casualties booked, units left)"
+        );
+        let gone = log
+            .iter()
+            .position(|l| l.kind == "withdrawn")
+            .expect("the demand withdrawn");
+        assert!(
+            (log[gone].tick as i64) < d0,
+            "withdrawn at the wipe's tick, before the deadline {d0}: {}",
+            log[gone].tick
+        );
+        assert!(
+            !log[..gone].iter().any(|l| l.kind == "home"),
+            "the band was still out at the wipe"
+        );
+    }
+
+    /// The control: the same wipe, the conflict switched on at once.
+    #[test]
+    fn a_wipe_in_the_switchs_tick_with_the_switch_on_at_once() {
+        let (expired, withdrawn, booked, units, _, _) =
+            a_wipe_in_the_switchs_tick_then_a_switch_on_at("conflict-wipe-on-at-once", |_| 0);
+        assert_eq!(
+            (expired, withdrawn, booked > 0, units),
+            (0, 1, true, 0),
+            "(expired, withdrawn, casualties booked, units left)"
         );
     }
 
