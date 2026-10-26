@@ -74,10 +74,17 @@ pub(crate) fn gate(c: &Cmd) -> Gate {
         Cmd::Reconcile(_) => verdicts(Q::Drop, R::Never),
         // A roar (RP-12).
         Cmd::TrainRobbed(_) => verdicts(Q::Keep, R::Drop),
-        // Goes only ahead of a stack, a spawn line or a hand-back, none made while replaying.
+        // Away (agent not 0): goes only just ahead of its band's MATERIALIZE, with the chief's
+        // stack and the same epoch, so it goes with it at a session start; the next meeting sends
+        // both again with a new epoch (MZB-804).
+        Cmd::ChiefBody(b) if b.agent != 0 => verdicts(Q::Drop, R::Never),
+        // Home: goes only ahead of a spawn line or a hand-back, none made while replaying.
         Cmd::ChiefBody(_) => verdicts(Q::Keep, R::Never),
-        // Latest wins per agent (MOWZIE.md §4.16): the abstract party's march.
-        Cmd::March(_) => verdicts(Q::Drop, R::Send),
+        // Latest wins per agent (MOWZIE.md §4.16): a party's march, built by `take_commands` and
+        // by `home`'s end only while not replaying. Java's map is a session's, so what is queued
+        // at the start goes with the session, and the first take after the replay sends every
+        // party's march afresh from the party (RP-170).
+        Cmd::March(_) => verdicts(Q::Drop, R::Drop),
         // The faction's hunts are state: every hunt still held goes again from them at the
         // replay end (`resend_notices`), after a journaled HUNT_APPLIED cleared its own (MZB-449).
         Cmd::OwedHunt(_) => verdicts(Q::Drop, R::Drop),
@@ -203,7 +210,7 @@ mod tests {
         (boundary::CAMP_RECONCILE, Queued::Drop, Replaying::Never),
         (boundary::TRAIN_ROBBED, Queued::Keep, Replaying::Drop),
         (boundary::CHIEF_BODY, Queued::Keep, Replaying::Never),
-        (boundary::BAND_MARCH, Queued::Drop, Replaying::Send),
+        (boundary::BAND_MARCH, Queued::Drop, Replaying::Drop),
         (boundary::OWED_HUNT, Queued::Drop, Replaying::Drop),
     ];
 
@@ -250,9 +257,9 @@ mod tests {
             o.push(c.clone());
         }
         let sent: Vec<u16> = o.take().iter().map(Cmd::kind).collect();
-        assert_eq!(sent, vec![boundary::TERRITORY, boundary::BAND_MARCH]);
+        assert_eq!(sent, vec![boundary::TERRITORY]);
         let want = GateCounts {
-            dropped: 8,
+            dropped: 9,
             ..GateCounts::default()
         };
         assert_eq!(o.counts(), want, "the drops are counted");
@@ -265,6 +272,49 @@ mod tests {
             o.push(c.clone());
         }
         assert_eq!(o.len(), cmds.len(), "after the replay every kind is queued");
+    }
+
+    /// The table is keyed by kind and the fixture's CHIEF_BODY is a home one (agent 0), so the
+    /// away CHIEF_BODY (MZB-804) has its own case: it goes with the MATERIALIZE it leads, and
+    /// the home one stays as the table says.
+    #[test]
+    fn an_away_chief_body_is_dropped_with_its_materialize() {
+        let cmds = boundary::tests::cmds();
+        let home = cmds
+            .iter()
+            .find(|c| matches!(c, Cmd::ChiefBody(_)))
+            .unwrap()
+            .clone();
+        let Cmd::ChiefBody(mut b) = home.clone() else {
+            unreachable!()
+        };
+        assert_eq!(b.agent, 0, "the fixture's is a home one");
+        b.agent = 1 << 40 | 5;
+        let away = Cmd::ChiefBody(b);
+        let m = cmds
+            .iter()
+            .find(|c| matches!(c, Cmd::Materialize(_)))
+            .unwrap()
+            .clone();
+        assert_eq!(
+            away.agent(),
+            Some(1 << 40 | 5),
+            "an away one names its agent"
+        );
+        assert_eq!(home.agent(), None, "a home one names none");
+        assert_eq!(gate(&away), verdicts(Queued::Drop, Replaying::Never));
+        assert_eq!(gate(&home), verdicts(Queued::Keep, Replaying::Never));
+        // The old session-start filter dropped every command naming an agent.
+        for c in [&away, &home] {
+            assert_eq!(gate(c).queued == Queued::Keep, c.agent().is_none(), "{c:?}");
+        }
+        let mut o = Outbox::default();
+        for c in [&home, &away, &m] {
+            o.restore(c.clone());
+        }
+        o.begin_replay();
+        let kept: Vec<Cmd> = o.take();
+        assert_eq!(kept, vec![home], "the away one goes with its MATERIALIZE");
     }
 
     /// A "never" kind decided while replaying is a bug (RP-4): in a debug build it panics; in

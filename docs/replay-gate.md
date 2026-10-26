@@ -152,6 +152,20 @@ checked against what landed and amended where main differs from what they assume
   `UNNAMED_GEN | session_first`, then is admitted. Every record dispatched while replaying therefore
   belongs to a generation of an earlier session (the pages' open one or one a replayed JOURNAL_GEN
   opened), and every record dispatched after the end to this session's.
+- **Residual: no conflict hook at a replayed generation switch** (M11a, MZB-853 and MZB-859's P4,
+  accepted by the coordinator). A replay that crosses an earlier session's generation switch runs
+  both sessions' records over the same pages with no replay end between them, so a module's
+  `replay_done` work for that earlier session never runs. The case found: a chief's band has ended
+  (`Camp.ended` holds), its HAND_BACK is answered STALE, a restart follows, then the chief's
+  CAMP_DEATH, then a crash. Live, the first restart's replay end loses the chief (MZB-853 release 5,
+  `chief_ends_lost`) and the later CAMP_DEATH finds no end and books nothing: (0, 0, true, false).
+  The crash replay of both sessions reaches the CAMP_DEATH with the end still holding and books the
+  death: (1, 1, true, false). One end and one heir on both paths, never two, so nothing is
+  duplicated; only the fall and the player loss differ. The test
+  `a_stale_hand_back_then_a_camp_death_across_a_replay_books_one_end` (rtsim-jni `protocol.rs`)
+  asserts both as they are. Making them agree needs a hook at the replay's generation switches that
+  runs each module's session-end work there; the slice that adds such hooks picks this case up and
+  changes that test's last stage to (0, 0, true, false).
 - **On main: the replay clock agrees.** While replaying the clock runs no further than the replay
   clock (§3.6), which each replayed record raises to its GAME_TIME. A copy is dispatched as its inner
   record, whose GAME_TIME is the original's (Java journals a REASSERT with the inner record's time),
@@ -627,6 +641,100 @@ live), docs/boundary.md and docs/choices-mowzie-build.md (both sides) and sim-mo
   it down again (RP-134, §4.4). The faction row boxes M9's hunts (216 bytes, MZB-672). No format
   change: RTC9 / META 8.
 
+**The M8 merge** (feat/mowzie-m8 at 959ada91, M8 on M7's pre-merge 2a80b4f0, merging M7 at 39c819f1,
+then M9 at 7153b7fe, then main at 5a45b9e6, each its own merge commit, a64599d6, 74dd20ae and
+1885aa7d; RP-150 to RP-153, MZB-690 to MZB-692). Main at e75265e7 came in with M7 and M9, which had
+both merged it; main moved on while the merge ran, and the third merge brings SEC-1 S6 (station
+joins, IndustryData format 4, Java only: no Rust, sim or conflict file), with no conflict. M8 adds no
+`Cmd` kind: slice C's outbox, new to M8, had AMBUSH_SPOT's and
+TRAIN_ROBBED's rows already, and §4.4's M8 paragraph has the push sites.
+
+The first merge brings slice C, M6 at 6d6c6658 and main (M7's merge, RP-102 to RP-104). Five files
+conflicted:
+
+1. **rtsim-jni engine/conflict.rs:** slice C's `replay_end` replaces M8's `resend_notices_if_due`.
+   M8's queue filter, which dropped AMBUSH_SPOT beside NOTICE at the replay end, becomes the second
+   kind of slice C's debug assertion: the gate drops both while replaying, so none is queued there.
+2. **docs/boundary.md:** the deferred kinds, both sides.
+3. **FrostmawGameTests.java:** both sides' imports and tests, with M7's `RtsimTests.io`.
+4. **sim-conflict.json and sim-mowzie.json:** M7's, regenerated at the end (below).
+
+Three more did not compile on slice C and needed the merge's hand: engine/rail.rs `resend_lurks`
+pushes each AMBUSH_SPOT through the gate (the outbox has no `extend`); tests/lurk.rs's
+BAND_CASUALTIES carries an op (`next_op`, MZB-589) and its restarts call `begin_replay(true)` (the
+fight test then `replay_done`); rtsim-cli sim/mowzie/lurk.rs asserts a trip runs after the replay
+(slice C has no `replaying` to set and restore), and its restart is `begin_replay(true)` then
+`resend_notices`.
+
+The second merge brings M9 (RTC9 / META 8, RP-130 to RP-132, MZB-670 to MZB-672). Five files
+conflicted:
+
+1. **engine.rs:** `raid_district` adds M9's survivor hunts and takes the loot as M9 does. `later` is
+   empty (M8 built TRAIN_PASSED, M9 the grove's kinds), kept for a later slice (MZB-691), and
+   `ingest` runs `rail_pass`, `train_passed`, `haven_chest`, `trade_booked` and `chief_paid`.
+2. **ConflictBridge.java:** M9's owed hunts beside M8's lurks, both cleared at a session's start and
+   failure; `spawn` keeps M8's hold points and M9's extras, and a lurk refused at its placing
+   discards the extras made with its bodies too (MZB-692); the tick runs the owed hunts, then holds
+   on `idle()`, which counts M8's lurks and roars.
+3. **ConflictRecords.java and MicRtsimMowziesMobs.java:** both sides (the record sizes; the
+   Frostmaw's lurker beside the grove's chests and strength).
+4. **docs/boundary.md:** AMBUSH_SPOT's row M8's, CAMP_RECONCILE's M9's (the mask action); the
+   resend paragraph both; no kind deferred.
+
+Beyond the conflicts: persist.rs takes the formats (below); rtsim-jni engine/conflict.rs's module
+doc says no kind is later; protocol.rs's `later_slices_records_are_counted_and_dropped` becomes
+`no_record_is_deferred_and_each_reaches_the_engine` (deferred 0, and its TRAIN_PASSED, for no
+party, reaches `train_passed` and counts stale).
+
+- **Formats:** the merged M8 is RTC10 and META 9 (MZB-690, persist.rs's format history): M9 took
+  RTC9 and META 8 and lands before M8. The magic is `RTCA` (four bytes; A for ten). M8 persists only
+  its five stats (a lurk is derived from the party's phase, kind and target, MZB-357): the stats are
+  M9's three, then M7's seven, then M8's five (lurks, lurks_ended, passes, passes_watched,
+  lurk_robberies). Save and load read the same fields in the same order. No migration.
+- **The eight points:** the gate covers every M8 push (§4.4's M8 paragraph); M8 adds no `Cmd` kind,
+  so the verdict test's sample already has both of its kinds. RP-57's table has TRAIN_PASSED read
+  now, and `ingest_copy` drops a TRAIN_PASSED copy after its fold (RP-150). A replayed pass is counted
+  and rolls nothing (RP-151, RP-154); after two crashes every pass of the second session up to
+  its world save can be stale while replaying (RP-152, a residual). The lurk's camp claim meets no camp hold (RP-153). RP-66, MZB-589's fillers,
+  the arrive order, M7's `rail_held` and the FactionRow pin need no change (RP-153).
+- **GameTests:** M8's (FrostmawGameTests from `aLurkPuppetTakenByAPlayerIsLetGoLikeAnyOrdinaryFrostmaw` on,
+  RailFrostmawGameTests, RailDirectionsGameTests and MowzieGameTests'
+  `aLurkRefusedAtItsPlacingClaimsNoCampBodyAndTheSetOutIsATake`) have no wait of either kind: every
+  `List.of` is built inside a `thenExecute` or a poll, every wait is a lambda (`io`, `paced`), and
+  the one `getEntity` check (FrostmawGameTests "the copy joined") is a `thenExecute` check right
+  after `addLegacyChunkEntities`, no unload wait. Nothing to convert.
+- **Sims** (wall_ms, fights_unheld and fight_record_gap_max filtered): sim-conflict against M8 has
+  M6's changes since M8's base (an invasion home with 20 left and a raid with 8; wire bytes 3,104
+  for 3,080, MZB-589's op on three BAND_CASUALTIES), M9's three stats at 0 and the state hashes;
+  against M9 M8's five stats at 0 and the hashes; against M7 both; against main M6's and M7's stats
+  too. The world hash is d450929438383fb2 in all five. sim-mowzie has M8's lurk checks (17 on run 1,
+  6 on run 8) and M9's runs and checks (runs 5, 6 and 12 built, the grove chaos with heirs on run
+  10), all ok. Against M8 its one changed line is M9's plunder at node 4 (0 items spare, not 1);
+  against M9 nothing but M8's checks, stats at 0, slice labels and hashes; against M7 both; against
+  main M6's changes too (blocked on 9 of 16 days, the camp chaos counts), as on every parent. No
+  check of any parent changed its outcome. Main at 5a45b9e6 has e75265e7's sims (S6 changes no
+  scenario file) and no Rust of S6's, so the sims were not run again after the third merge.
+- **Fixtures:** main's, conflict meta page 5, so the five tests that read the conflict's pages fail
+  on META 9 as on the M7 and M9 merges: rtsim-view's
+  `the_core_gametest_save_draws_every_layer_and_writes_nothing` and
+  `the_create_gametest_save_draws_every_layer_and_writes_nothing` ("meta page version 5, this build
+  reads 9"), `every_gametest_save_carries_and_matches_each_modules_hash` and
+  `a_hash_that_differs_is_flagged` (no conflict hash), and rtsim-host's
+  `gametest_worlds_open_in_the_host_with_their_saved_state` ("conflict: pages dropped").
+
+**The M8 fixes and the second-pass merges** (feat/mowzie-m8 from 14c896ee; RP-154 to RP-156).
+The merge check's P2: a replayed TRAIN_PASSED is counted and rolls nothing (RP-154, §4.4), so the
+replay never robs a train the live session may have robbed; RP-151, RP-152 (every pass of the
+second session up to its world save, not one train's roll) and RP-57's 0x080D row say so, and
+`lurk_robberies` counts only robberies told to Java. Then M9's merge-check fixes at 42e8fcc3 (RP-133,
+RP-134, MZB-672 amended, MZB-673; two doc conflicts; the FactionRow pin is M9's 216 again with
+hunts boxed, RP-155) and main at a11311aa (M6 landed with its P3s, its fixtures at RTC7 / META 6,
+slice S's ships; no conflict, RP-156). No format change: RTC10 / META 9. The sims regenerated on the
+merged head equal the committed ones but for wall_ms. The fixture tests that read the conflict's
+pages fail on META 9 against main's META 6 fixtures ("meta page version 6, this build reads 9"), the
+same five as on the earlier merges (listed under Fixtures above); the next fixture regeneration
+(the core and create GameTest saves) brings them to RTC10 / META 9.
+
 ## 3. The flag
 
 ### 3.1 Where it is set and cleared (rtsim-jni)
@@ -876,8 +984,9 @@ The counts live in the module's JNI stats, not saved.
 | AmbushSpot | drop | drop | a body's lurk |
 | Reconcile | drop | never | answers a CAMP_CENSUS of this session with spawn, adopt and take lines (MOWZIE.md §4.9); M5's `send_lines` orders only a camp that is in (`is_in`), false all through a replay: `begin_replay`'s `camp_session_start` makes every camp out and a census replayed only marks its camp out (RP-64) |
 | TrainRobbed | keep | drop | a roar (RP-12) |
-| ChiefBody | keep | never | goes only ahead of a stack, a spawn line or a hand-back, none of which is made while replaying |
-| March | drop | send | latest wins per agent (MOWZIE.md §4.16): the abstract party's march |
+| ChiefBody, home (agent 0) | keep | never | goes only ahead of a chief's spawn line or hand-back (`send_lines`, MZB-821) and from a census that found the chief short, none of which is made while replaying |
+| ChiefBody, away (agent not 0; M11) | drop | never | goes only just ahead of its band's MATERIALIZE, with the chief's stack and the same epoch, so it is dropped from the queue with it; pushed only by `spawn_wave`, whose `defer` returns while replaying; Java keeps it in memory only for that MATERIALIZE, so a dropped pair loses nothing and the next meeting sends both again at a new epoch (MZB-803, MZB-804) |
+| March (M10) | drop | drop | a party's march (MOWZIE.md §4.16): latest wins per agent, built from the party by `take_commands` at the first take after the replay end, and by `home` for a band's end, neither while replaying; Java's map is a session's (RP-170) |
 | OwedHunt (M9) | drop | drop | the faction's hunts are state: a raid replayed owes its hunt again, which the plugin had; every hunt still held goes at the replay end (`resend_notices`), after a journaled HUNT_APPLIED cleared its own (§7.4, MZB-449, RP-131) |
 
 The queued column is the old `session_start` filter exactly (agent kinds, Territory, Notice and
@@ -889,8 +998,9 @@ Reconcile have push sites (engine.rs about 1152, 2137, 2368, 3081, 4059, 4375, 4
 5127; engine/camp.rs about 629, `send_lines`, which M5 wrote as a `Vec` extend around the gate and
 the merge routes through `push`). M5 adds no `Cmd` kind: CAMP_RECONCILE and CHIEF_BODY were in the
 table already, and the engine pushes no CHIEF_BODY yet. AmbushSpot, TrainRobbed, ChiefBody and
-March have no push site; M7, M9 and M10 bring them, and their merges meet the exhaustive match.
-M7 (the M7 merge, §2.7) brings none of them and no other push site (below).
+March have no push site as this table was first written; M7, M9 and M10 bring them (M10's two are in RP-170's note below), and their merges meet the exhaustive match.
+M7 (the M7 merge, §2.7) brings none of them and no other push site (below); M8 (the M8 merge)
+brings AmbushSpot's and TrainRobbed's (below).
 M6 (the M6 merge, §2.7) adds no `Cmd` kind and no push site either. Its routes reach main's:
 - `camp_arrival`, `camp_refill` and the census's crystal mend order lines through `send_lines`,
   which orders only a camp that is in;
@@ -949,7 +1059,13 @@ OwedHunt, with its row above, and new push sites for two kinds that had rows:
   line M9 adds; `camp_heir` asks `is_in` itself too.
 - **CHIEF_BODY** goes ahead of a chief SPAWN line in `send_lines` and from a census that found the
   chief short (`chief_body_cmd`, which asks `is_in`). Never while replaying: the ChiefBody row's
-  "never" holds.
+  "never" holds. M11 adds two pushes. `send_lines` sends it ahead of the chief's HAND_BACK too
+  (MZB-821), under the same `is_in`. And `spawn_wave` pushes an away one (the band's agent, its
+  epoch, the camp's memory) directly before the MATERIALIZE of a band its chief leads in the chief's
+  own stack (`chief_own_stack`, the grove's culture), after `defer` has returned while replaying
+  (MZB-801, MZB-803). The writer keeps the conflict's queue in order, so the pair can be split across
+  two command buffers only at the end of one, the MATERIALIZE leading the next (protocol test P1,
+  MZB-859).
 - **Tribute stacks** are no conflict `Cmd`: `place_tribute` books a TRANSFER_TO_CONTAINER that
   rtsim-jni writes through the core outbox (`placings`, `push_with_op`) under a deterministic op
   (`tribute_op`, of the camp, the stack's index, the good and the amount), only for a camp that is
@@ -971,6 +1087,57 @@ OwedHunt, with its row above, and new push sites for two kinds that had rows:
   the faction's hunts: a second answer finds no hunt (MZB-449). HAVEN_CHEST has no op id and no
   holder carries one (GroveChests journals it at once); it is the chest's state, latest wins, so
   `ingest_copy` drops a copy, as it drops RAIL_PASS (RP-130).
+
+**M10's march (M10a, slice C's gate; RP-170).** BAND_MARCH (`Cmd::March`) had a row from the
+slice's table with the verdicts "drop" and "send", before it had a push site. M10 gives it the
+verdicts "drop" and "drop", because nothing pushes it while replaying and Java's map of marches is
+a session's:
+
+- **Built from the party, never from the replay.** `take_commands` builds a march record for each
+  party whose `march_due` flag is set, and only when `replaying` is false: while the replay runs it
+  builds none and leaves every flag and revision as they are. `begin_replay` marks every party, so
+  the first take after `replay_done` sends each one once, with what the replay left (a Fighting
+  band is Waiting by then). A record queued at the session start is dropped (the queued verdict), as
+  the flag was set again at that start.
+- **The band's end.** `home` pushes the ENDED record (revision plus one, after `camp_home`'s
+  hand-back lines and any recall) only when not replaying. A party that ends in the replay is gone
+  from the pages the session saves, and Java's map never held it.
+- **The gate backs the guards.** A push made while replaying anyway is dropped and counted in
+  `GateCounts::dropped`, never sent with a stale revision. The verdict test's sample line
+  (`every_command_kind_has_its_replay_verdicts`) holds the row: of the pushes made while
+  replaying, only TERRITORY is sent, and nine kinds are counted dropped.
+- **Orders that follow a band's body** (`steer_segment` toward home, a re-bind, the walk into a
+  fight) gate on `!replaying` where they act on an embodied party (MZB-484), so a replayed record
+  never makes the pages' bodies walk.
+
+**M8's lurk (the M8 merge, §2.7; RP-150 to RP-153).** M8 adds no `Cmd` kind: AMBUSH_SPOT and
+TRAIN_ROBBED had their rows above, and the verdict test's sample has both. Its push sites, all
+through `push` and the gate:
+
+- **AMBUSH_SPOT** goes from `lurk_start` (`arrive`'s Track arm, before the wait), from `lurk_end`
+  (`go_home`, the one way a lurk ends, the removal) and from `resend_lurks` (`resend_notices`, after
+  `replay_done`). Queued "drop" and "drop" while replaying: Java's lurk table lives for one session,
+  so a lurk begun or ended by a replayed record is state, and the replay end says every lurk still
+  standing once, at the party's epoch after the floors are lifted. `resend_lurks` drops any
+  AMBUSH_SPOT still in the outbox first, as `resend_notices` drops a NOTICE; with the gate's drops
+  there is none (rtsim-jni's `replay_end` asserts the same of its queue).
+- **TRAIN_ROBBED** goes from `train_passed` when the robbery took anything, which a live session
+  alone makes (a replayed pass rolls nothing, RP-154). Queued "keep" and "drop" while replaying: it
+  is the station's roar (RP-12), and none is decided then.
+- **A robbery's goods** are no `Cmd`: `train_passed` calls `ambush`, whose `infra.raid_train` takes
+  them from industry at industry's present, as M7's `Ev::Ambush` does (industry is not held). A
+  replayed pass is counted and never calls it (RP-154): the live session may have robbed the
+  train, and the replay's attack would be another op that Java applies again.
+- **The swipe and the roar** are Java's: the swipe is a held lurk puppet's strike when a carriage
+  comes in its reach (`ConflictBridge`'s strike through the `Lurker`), and the roar plays at the
+  station of a train TRAIN_ROBBED names. Neither sends a record the engine acts on.
+- **The hand-off** is main's: a lurking party seen is embodied by BAND_MATERIALIZE through §6's early
+  returns ("never" while replaying), and its puppets stand at the hold point Java finds from the
+  AMBUSH_SPOT. A camp body is handed to a puppet only from this hand-over's SET_OUT lines, which no
+  lurk meets (RP-153).
+- **TRAIN_PASSED** is an observation with no op id and no holder (ConflictBridge journals it at
+  once). `ingest` folds its epoch while replaying (RP-57), then `train_passed` counts it and, while
+  replaying, rolls nothing (RP-154); a copy is folded and dropped (RP-150).
 
 ### 4.5 Dragons and nests (rtsim-ecology boundary.rs `Cmd`)
 
@@ -1248,7 +1415,9 @@ made abstract here anyway. Each runs at the replay clock (§3.6).
   6 all placed, a copied death (units 5, `spawned` still 6), then Java's 6 survivors give
   `5.saturating_sub(6) + min(6, 6)` = 6. With it, `5 - 5 + min(6, 5)` = 5. CHIEF_KILLED: as `ingest`
   (by party). BAND_MATERIALIZED: the floor only. Every other kind: as `ingest`. Every copy that
-  names an epoch raises the floor to it first, live or replayed (RP-57).
+  names an epoch raises the floor to it first, live or replayed (RP-57). A BAND_CASUALTIES copy
+  whose party and epoch fall in a range the party booked when it resolved an arrival unwatched
+  counts nothing (RP-171, §6.1): the abstract resolve took that fight's losses.
 - **Herds** (RP-84): `Herds::ingest_copy`, called by rtsim-jni when `st.applying_copy` is `Some`.
   Every copy raises the floor first. HERD_KILLED, HERD_SHEARED and HERD_TAKEN go by member key and op
   id already, so they apply as `ingest`; every other kind (HERD_GROUP_STATE, HERD_MATERIALIZED,
@@ -1454,8 +1623,31 @@ resolve. The envoy, scout and Peaceful branches ask no watcher and are unchanged
   had it. Live the hold's tick
   is the event's own, and nothing changes.
 
+- **Resolved unwatched, a copy of its deaths counts nothing (RP-171).** An arrival (or a siege's round)
+  that the engine resolves unwatched because no record answered it may have been fought watched all the
+  same, with its BAND_MATERIALIZED and BAND_CASUALTIES records in a journal's lost tail; the casualties
+  survive on the entities that carried them (`RtsimAttachments.PENDING`, apart from the journal) and a
+  holder reasserts them as copies (§5.7). The abstract resolve took that fight's losses already, so a copy
+  of them must count nothing: when the unwatched resolve happens, the party books the epochs the fight could
+  have carried (`Party::unwatched`: its own epoch if the band was in its bodies, which a walk-in keeps, and
+  the one its next body takes), and `casualties(copy = true)` drops a BAND_CASUALTIES copy naming one of
+  them, with a log note. The resolve is booked in three places: the hold ended inside the replay at its slack
+  (RP-48), the hold the replay end let go (the poll that follows, whenever it comes), and an arrival the
+  replay clock never reached, which the first runs after the end decide live at their own tick between the
+  replay clock and the session's present (`Conflict::replay_present`, told by rtsim-jni at the end with the
+  hand-over's game time). An arrival after the present books nothing. The ranges are saved with the party
+  (RTC11, META 10 as they stand, §8), so a copy that comes sessions later is dropped too, and the
+  engine's next body cuts them short at the epoch it takes. A live record for such an epoch is a straggler
+  after the replay end and counts nothing, as before. The answered arm is unchanged: the fight is honoured
+  as the watched fight it was and the copies count its deaths once, by op id.
+
 **Losses accepted** (lose, never double):
 
+- A unit that died in Minecraft in a fight the replay resolved unwatched, but survived the abstract resolve,
+  stays alive in the books (RP-171): the copy that would have taken it is dropped. A loss of realism, not a
+  double: the band is never below what one account of the fight says. The same holds for a copy of a death
+  on the march at the party's own epoch when the band was in its bodies at the arrival (the walk-in keeps
+  the epoch). A CHIEF_KILLED copy is not a casualties copy and is not dropped.
 - A crash right after a watched arrival, before Java journaled its BAND_MATERIALIZED: the fight Java
   may have shown is resolved abstractly at the replay end.
 - A fight recorded at or past the slack (RP-48, RP-51, RP-56). The replay resolves the decision
@@ -1610,12 +1802,13 @@ for the same district (RP-135).
 | What | Change | Slice |
 |---|---|---|
 | Conflict, herds, ships pages | none (a held party's poll is an ordinary Ev::Party) | C, H, S |
+| Conflict: a party's row | `unwatched`, the epoch ranges of the fights its unwatched arrivals resolved (RTC11 and META 10 as M10 has them; no bump) (RP-171) | M10a |
 | Dragons pages: nest rows | `renewals: u32` (RTD7 to RTD8; the meta RTN7 to RTN8) | N |
 | Dragons pages: the outbox | NestRenew carries its serial | N |
 | Wire: NEST_RENEW | a u32 serial in the reserved slot at offset 32, size 40 before and after (docs/boundary.md §6.4, DragonRecords) | N |
 | SavedData: Nests | per nest the last serial and its engine life, and the last serial of each of the eight lives before it | N |
 | META | none (META_VERSION 2 is S4p's) | |
-| Not saved | `replaying`, `applying_copy`, `replay_end_due`, the gate's counts, `replay_clock`, the hand-over count; conflict's `held` map and the fill's death counts; each engine's epoch floors | C to S |
+| Not saved | `replaying`, `applying_copy`, `replay_end_due`, the gate's counts, `replay_clock`, the hand-over count; conflict's `held` map, `held_over`, `left_embodied`, `lost_until` and the fill's death counts; each engine's epoch floors | C to S |
 
 Nothing is released, so no compat work. After slice N: delete every `neoforge/*/run-gametest/world`
 in the worktree before the next GameTest run, and rerun crates/rtsim-view/tests/fixtures.rs; if it

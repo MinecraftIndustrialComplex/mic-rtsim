@@ -476,6 +476,11 @@ past s was offered s before it; a crash that lost the pages lost the generation'
 the record, and the copy applies. A record too large to wrap (32 bytes plus the record above
 MAX_RECORD) is journaled again plainly, as before generations, and counted (`/rtsim status`).
 
+A copy the host finds new is not always counted by the module. The conflict engine drops a
+BAND_CASUALTIES copy whose party and epoch name a fight the party's arrival resolved unwatched
+(replay-gate.md §6.1, RP-171): the abstract resolve took that fight's losses, so the copy adds
+nothing. The host counts it as applied all the same, and a second copy of it is dropped as above.
+
 **Where the engine keeps them.** The kernel's `Replay`: the open generation (nonce, last sequence, the
 copies applied in it) in the meta page (version 2). A closed generation never changes again, so the
 closed ones are written once, in blocks of 256 at page table 2 (magic `RTJG`): a save writes the blocks
@@ -1717,7 +1722,7 @@ are untouched.
 | 0x0811 | NOTICE_SHOWN | the notice's serial (FACTION_NOTICE's 60) | 24 u64 faction, 32 u64 playerMost, 40 u64 playerLeast (the notice's; (0, 0) the settlers) | 48 |
 | 0x0812 | CAMP_BODIES | lines n | 24 u64 faction, 32 u64 epoch, 40 u64 opId (the CAMP_RECONCILE's), 48 n × (u32 line (its index in the reconcile, from 0), u32 slot, u32 generation, u8 action (the answered line's, `ACTION_*`), u8 outcome: 1 done, 2 nothing to do, 3 stale, u16 reserved) | 48 + 16n |
 | 0x0813 | CAMP_OUT | 0 | 24 u64 faction, 32 u64 epoch (the one that ended) | 40 |
-| 0x0814 | CHIEF_PAID | items n | 24 u64 faction, 32 u32 slot, 36 u32 generation, 40 u32 flags (1 a stray), 44 reserved, 48 u64 playerMost, 56 u64 playerLeast, 64 u64 opId, 72 n × (u32 item, i32 count, u64 reserved) | 72 + 16n |
+| 0x0814 | CHIEF_PAID | items n | 24 u64 faction, 32 u32 slot, 36 u32 generation, 40 u32 flags (1 a stray, 2 a puppet (the chief slot, generation 0)), 44 reserved, 48 u64 playerMost, 56 u64 playerLeast, 64 u64 opId, 72 n × (u32 item, i32 count, u64 reserved) | 72 + 16n |
 | 0x0815 | DIFFICULTY | 0 | 24 u32 difficulty (§9.2), 28 reserved | 32 |
 | 0x0816 | HUNT_APPLIED | 0 | 24 u64 faction, 32 u64 district, 40 u64 opId (the OWED_HUNT's), 48 u32 killed, 52 reserved | 56 |
 | 0x0817 | HAVEN_CHEST | 0 | 24 u64 faction, 32 u32 dimension, 36 i32 x, 40 y, 44 z, 48 u32 free slots (as LAIR_CHEST), 52 reserved | 56 |
@@ -1725,8 +1730,8 @@ are untouched.
 All of 0x0800 to 0x0817 are journaled; 0x0090 and 0x0091 are latest-wins (§2.3), and 0x0092 and
 0x0093 are retired. Of the Mowzie kinds, the engine acts on DIFFICULTY, NOTICE_SHOWN, the camp records
 (0x080E, 0x080F, 0x0812, 0x0813 and 0x8808, with FACTION_FOUND's census), the chief's (0x0091 and
-0x880A) and the grove's (0x0810, 0x0814, 0x0816, 0x0817 and 0x880C) today; RAIL_PASS and TRAIN_PASSED
-are deferred (§9.6).
+0x880A), the grove's (0x0810, 0x0814, 0x0816, 0x0817 and 0x880C), the rail's RAIL_PASS (0x080C, M7)
+and the lurk's TRAIN_PASSED (0x080D, M8) today; none is deferred (§9.6).
 
 **List caps.** Every list of a variable-length record (observations and commands alike: members,
 items, waypoints, unit kinds, census bodies, traded players, reconcile lines) carries at most 1,024
@@ -1848,7 +1853,9 @@ refuses a count above the cap (`CodecError::TooMany`) and a record cut short of 
   ignores one for a faction it does not know or a culture with no camp bodies, and notes only a change
   of the crystal. One that comes while the engine replays waits for the replay end, the latest for each
   faction (docs/replay-gate.md §5.6, RP-100). **CHIEF_PAID** a player's first payment to an Umvuthi
-  body (its `rememberTrade`), with that body's slot and generation; **TRADED** a masked trade with the
+  body (its `rememberTrade`), with that body's slot and generation, or to a band's chief puppet with
+  PAID_PUPPET, the chief slot and generation 0 (tribute either way, and the payer remembered unless the
+  chief's slot is Dead, MZB-819); **TRADED** a masked trade with the
   grove's minions; **HAVEN_CHEST** a grove chest tribute can go into (MZB-422): the chest's place and
   free slots as they are, journaled so that a replay after a crash knows the chest the session knew
   (MZB-446). It names a state, so a copy is idempotent (the latest record wins). Java sends it from
@@ -1867,7 +1874,22 @@ refuses a count above the cap (`CodecError::TooMany`) and a record cut short of 
   the train out of the circle (a train gone from Create's list: its last sample). Like every record
   in 0x0100 to 0x7FFF it is **journaled**, kept until the engine acknowledges it; the engine counts
   it at its exit and holds it for the train's next arrival to name the line (MZB-311, MZB-319).
-  **TRAIN_PASSED** is a train passing a lurking party's AMBUSH_SPOT (§4.4).
+  **TRAIN_PASSED** is a train passing a lurking party's AMBUSH_SPOT (§4.4; live since M8, MZB-355,
+  MZB-363, MZB-364, MZB-374). The train sampler sends it, journaled, when the segment between a train's
+  last sample and this one (or the point alone, for a first sample) comes within the spot's `reach` of its
+  track point, in three dimensions, so a rail above or below a lurk is not beside it. It is sent once per
+  approach and armed again when the train is more than 64 blocks from the track point. `agent` and `epoch`
+  are the lurk's, as the AMBUSH_SPOT that made it carried them; `train` is the train's id as RAIL_PASS has
+  it; `carriage` is the index of the carriage whose leading point is nearest the track point; the
+  `watched` flag is set when a puppet of the lurk stands in the world at that moment. The engine rolls it
+  the same whether watched or not (MOWZIE.md P28). It is stale (counted, not rolled) when the party is gone,
+  is not lurking, or the record's epoch is later than the party's: a watch bumps the party's epoch past the
+  spot's, so an earlier epoch still counts. The record is stamped with the game time it is sent at, and the
+  engine takes it at that time (`Conflict::ingest` runs to it), so one stamped inside the lurk's wait
+  meets a live lurk and one stamped after its removal is stale. It has no op id and no holder carries it
+  (ConflictBridge journals it at once): a replayed one is counted and rolls nothing (RP-154,
+  docs/replay-gate.md §4.4), and a copy, were one ever sent, only raises the party's epoch floor and is
+  dropped (RP-150).
 
 ### 9.4 Commands
 
@@ -1876,14 +1898,14 @@ refuses a count above the cap (`CodecError::TooMany`) and a record cut short of 
 | 0x8800 | TERRITORY | flags: 1 removed | 16 u64 faction, 24 u32 dimension, 28 u32 signal mask (bit = signal number), 32 i32 x, 36 i32 z, 40 u32 radius, 44 reserved | 48 | |
 | 0x8801 | FACTION_NOTICE | rung (1 notice) | 16 u64 faction, 24 u64 playerMost, 32 u64 playerLeast ((0, 0): the settlers, anyone near), 40 u32 dimension, 44 u32 signal (the strongest), 48 i32 x, 52 i32 z, 56 f32 grievance, 60 u32 serial (the engine's, from 1, one per notice; NOTICE_SHOWN echoes it) | 64 | |
 | 0x8802 | ENVOY_MATERIALIZE | members m | 16 u64 agent, 24 u32 epoch, 28 u32 dimension, 32 u64 faction, 40 f64 x, 48 y, 56 z, 64 u64 playerMost, 72 u64 playerLeast (whom; (0, 0) any player), 80 u32 demand flags (1 tribute, 2 stop the signal), 84 u32 signal, 88 u32 tribute item (dictionary 2), 92 i32 tribute count, 96 i64 deadlineTick, 104 m × (u32 body, u32 count) | 104 + 8m | BAND_MATERIALIZED or BAND_SPAWN_REJECTED |
-| 0x8803 | BAND_MATERIALIZE | member stacks m | 16 u64 agent, 24 u32 epoch, 28 u32 dimension, 32 u64 faction, 40 u8 purpose (1 envoy, 2 scouts, 3 raid, 4 invasion, 5 siege, 6 plunder), 41 u8 flags (1 hostile, 2 the war chief leads, 4 SURFACE, 8 a fight's wave, not a sighting's: echoed in BAND_MATERIALIZED, not in BAND_SPAWN_REJECTED, RP-54), 42 u16 wave, 44 f32 bearing (degrees from +x toward +z), 48 f64 arcX, 56 f64 arcZ, 64 u32 arcRadius (0: spawn at the arc's centre), 68 f32 half width (degrees), 72 f64 targetX, 80 targetY, 88 targetZ, 96 u64 targetPlayerMost, 104 u64 targetPlayerLeast, 112 f32 speed (blocks a tick), 116 reserved, 120 m × (u32 body, u32 count, u32 flags: 1 the chief is in this stack, 2 the stack's units are made without a crystal; u32 reserved) | 120 + 16m | BAND_MATERIALIZED or BAND_SPAWN_REJECTED |
+| 0x8803 | BAND_MATERIALIZE | member stacks m | 16 u64 agent, 24 u32 epoch, 28 u32 dimension, 32 u64 faction, 40 u8 purpose (1 envoy, 2 scouts, 3 raid, 4 invasion, 5 siege, 6 plunder), 41 u8 flags (1 hostile, 2 the war chief leads, 4 SURFACE, 8 a fight's wave, not a sighting's: echoed in BAND_MATERIALIZED, not in BAND_SPAWN_REJECTED, RP-54; a walked-in band's fight sends this flag with m = 0 members when every member is placed already, MZB-700: see "A band seen on the march"), 42 u16 wave, 44 f32 bearing (degrees from +x toward +z; at arcRadius 0 the way the band on the march faces, MZB-457, MZB-482), 48 f64 arcX, 56 f64 arcZ, 64 u32 arcRadius (0: spawn at the arc's centre), 68 f32 half width (degrees), 72 f64 targetX, 80 targetY, 88 targetZ, 96 u64 targetPlayerMost, 104 u64 targetPlayerLeast, 112 f32 speed (blocks a tick), 116 reserved, 120 m × (u32 body, u32 count, u32 flags: 1 the chief is in this stack, 2 the stack's units are made without a crystal; u32 reserved) | 120 + 16m | BAND_MATERIALIZED or BAND_SPAWN_REJECTED |
 | 0x8804 | BAND_STEER | flags: 1 attack at the target | 16 u64 agent, 24 u32 epoch, 28 f32 speed, 32 f64 x, 40 f64 y, 48 f64 z, 56 i64 arriveTick | 64 | |
 | 0x8805 | BAND_RECALL | reason: 1 bored, 2 routed, 3 done, 4 passing out of view, 5 the player left, 6 settled (the demand was settled, or the world became Peaceful) | 16 u64 agent, 24 u32 epoch, 28 u32 timeoutTicks, 32 f64 towardX, 40 f64 towardZ | 48 | BAND_DEMATERIALIZED |
 | 0x8806 | DEMAND_SETTLED | 1 paid, 2 signal cut, 3 expired, 4 refused, 5 withdrawn | 16 u64 faction, 24 u64 agent (the envoy, 0 none), 32 u64 playerMost, 40 u64 playerLeast, 48 u32 signal, 52 reserved | 56 | |
-| 0x8807 | AMBUSH_SPOT | flags: 1 removed (the lurk ended) | 16 u64 agent, 24 u32 epoch, 28 u32 dimension, 32 u64 faction, 40 f64 trackX, 48 trackY, 56 trackZ (the sampled track point), 64 f64 spotX, 72 spotY, 80 spotZ (where the body stands), 88 f32 reach (blocks from the track point), 92 reserved | 96 | TRAIN_PASSED |
+| 0x8807 | AMBUSH_SPOT | flags: 1 removed (the lurk ended) | 16 u64 agent, 24 u32 epoch, 28 u32 dimension, 32 u64 faction, 40 f64 trackX, 48 trackY, 56 trackZ (the sampled track point), 64 f64 spotX, 72 spotY, 80 spotZ (where the body stands; y is the track's and Java finds the floor), 88 f32 reach (blocks from the track point), 92 reserved | 96 | TRAIN_PASSED |
 | 0x8808 | CAMP_RECONCILE | lines n | 16 u64 faction, 24 u64 epoch, 32 u64 opId (the engine's, §9.2), 40 f64 throneX, 48 throneY, 56 throneZ, 64 f32 direction, 68 u32 flags (1 the throne spot is given), 72 n × (u32 slot, u32 generation, u32 body (dictionary 3; 0 none), u8 action: 1 spawn, 2 adopt a stray, 3 take, 4 set out, 5 hand back, 6 remove, 7 seat the heir, 8 mask (take a warrior at home for the heir: slot 0, generation 0, Java takes the one farthest from every player, and its CAMP_BODIES line names the slot and generation it took; always sent with a 7 in the same reconcile, MZB-408); u8 flags: 1 the chief, 2 crystal held; u16 reserved, u64 a, u64 b: a stray's UUID (adopt, remove a stray), a party's agent and epoch (set out, hand back), else 0) | 72 + 32n | CAMP_BODIES |
 | 0x8809 | TRAIN_ROBBED | 0 | 16 u64 faction, 24 u64 train | 32 | |
-| 0x880A | CHIEF_BODY | traded t | 16 u64 faction, 24 u64 agent (0 at home), 32 u64 epoch (the party's, or the camp's at home), 40 f32 health, 44 u32 flags (1 crystal held), 48 t × (u64 playerMost, u64 playerLeast) | 48 + 16t | |
+| 0x880A | CHIEF_BODY | traded t | 16 u64 faction, 24 u64 agent (0 at home; the party's away, just ahead of its BAND_MATERIALIZE with the chief's stack), 32 u64 epoch (the party's, or the camp's at home), 40 f32 health, 44 u32 flags (1 crystal held), 48 t × (u64 playerMost, u64 playerLeast) | 48 + 16t | |
 | 0x880B | BAND_MARCH | waypoints w | 16 u64 agent, 24 u32 revision, 28 u32 dimension, 32 u64 faction, 40 u32 culture (dictionary 5; 0 none), 44 u8 kind (BAND_MATERIALIZE's purposes, 1 envoy to 6 plunder), 45 u8 phase (1 mustering, 2 out, 3 waiting, 4 fighting, 5 home), 46 u8 flags (1 the chief leads, 2 ended, 4 joint), 47 reserved, 48 u64 partner (the joint attack's other contingent), 56 i64 musterEndTick, 64 u32 unit kinds k, 68 reserved, 72 k × (u32 body, u32 count), then w × (i32 x, i32 z, i64 tick) | 72 + 8k + 16w | |
 | 0x880C | OWED_HUNT | 0 | 16 u64 faction, 24 u64 district, 32 u64 opId (the engine's, allocator 0x43), 40 u64 replaced (the op of the hunt this one replaced while it was in flight, 0 none), 48 u32 dimension, 52 u32 count, 56 i32 centreX, 60 i32 centreZ, 64 u32 radius (blocks), 68 u32 rest (the animals to kill instead of `count` when the last op the plugin applied for this faction and district is `replaced`; 0 with no `replaced`) | 72 | HUNT_APPLIED |
 
@@ -1891,7 +1913,9 @@ Every conflict command is per session: puppets never outlive one (the dragons' S
 U4), so none is kept or resent, with four exceptions. TERRITORY is sent again for every faction at a
 session start (`Conflict::session_start`, C2-9), and every FACTION_NOTICE that no NOTICE_SHOWN has
 answered goes again after the journal's replay, so that a NOTICE_SHOWN the pages missed ends its
-notice first (MOWZIE.md ledger 14, MZB-20, MZB-31). Every OWED_HUNT no HUNT_APPLIED has answered goes
+notice first (MOWZIE.md ledger 14, MZB-20, MZB-31). AMBUSH_SPOT goes again once for each lurking party
+after the replay (`resend_lurks`, MZB-353), a REMOVED never, because the plugin's lurk table lives for
+one session. Every OWED_HUNT no HUNT_APPLIED has answered goes
 again with the notices, for the same reason (MZB-449); and a hunt whose replaced op's answer comes late
 goes again at once with the count that is left (`rest`, below), a count of 0 being the hunt cancelled. Neither goes
 while the session's replay is open (`Conflict::replaying`): the host takes every command out of the
@@ -1900,7 +1924,8 @@ again, would reach the plugin of the next session, which had forgotten what it a
 would die twice. A replay only changes the books; `resend_notices` sends every hunt still held, once,
 when the replay has caught up (MZB-449, amended at the re-check; the guard is temporary, until
 fix/replay-push's one choke point for the outbox declares OWED_HUNT not-while-replaying). BAND_MARCH goes again for
-every party at a session start (MOWZIE.md §4.16, slice M10). A CAMP_RECONCILE not answered by a
+every party at a session start, once the replay has caught up (MOWZIE.md §4.16, MZB-484; the outbox's gate drops it
+until then). A CAMP_RECONCILE not answered by a
 session's end is void; the camp's next census is reconciled afresh (MOWZIE.md §4.9). DEMAND_SETTLED 4
 (refused) answers an ENVOY_ANSWER refusal or an attack: a refused demand is never a cut signal
 (C2-12). DEMAND_SETTLED 5 (withdrawn) follows the last member of an envoy party falling when no
@@ -1910,10 +1935,116 @@ with a new demand (MOWZIE.md ledger 14, MZB-22). No BAND_RECALL follows when nob
 Minecraft; one for members still spawned has reason 6 (MZB-32). The plugin drops the demand it held
 and plays nothing for it.
 
+**AMBUSH_SPOT** is a war party lying in wait at a Create track (M7's Track target, M8; MZB-351, MZB-352,
+MZB-359, MZB-360, MZB-374). The engine sends it when the party arrives at its Track target, flags 0, and
+again with flag 1 (removed) at every end of the lurk: patience out, a watched fight's end, wiped out,
+the chief's fall, Peaceful (all through `go_home`). A recall alone does not end it. The agent is its key:
+a new one for the agent replaces the earlier (latest wins) and a removed one drops it by agent, never by
+epoch (a watch bumps the party's epoch past the spot's, and the removal goes out at the party's).
+`track` is the sampled track point and `spot` is where the body stands, both at the track's y: **the
+spot's y is the track's, not the floor's, and Java finds the floor** (a scan from the track's y + 4 down
+to its y - 8 for a block with a sturdy top face and the body's box free above it, else the surface). A
+lurking agent's BAND_MATERIALIZE puts its stacks at the spot (its arc ignored) and its BAND_STEER is
+ignored while the lurk stands; the body is held there awake, restricted to its hold point, and may swipe a
+passing carriage's riders (the plugin's `Lurker`). **The hold point is Java's, not the spot's, where a plugin
+knows the rail's direction** (the create plugin does, for straight, diagonal and sloped track; MZB-360): the
+engine's spot is the point `SPOT_BLOCKS` toward the den along the line from the track point, which is on the rail's
+normal only for a rail along an axis and a den square to it (a diagonal rail puts it 3.5 off, a den off the line
+puts it oblique, a den within a block of the line puts it 5 along +x, which for an east-west rail is the track
+itself). So the body is held at the block centre `SPOT_BLOCKS` from the rail's centre line on the normal through
+`track` (within 0.4, and within 1.5 along the rail), on the side of the rail the spot lies on, else the other
+side; a spot within half a block of the line takes the rail's left-hand side, looking along its axis. If neither
+side has a standable floor in a chunk that ticks entities the lurk is refused: no body is made, the stack is
+tried again after 100 ticks. With no rail direction known (no plugin, a curve's middle, a crossing) the body stands
+at the spot, as before. `reach` is the distance from the track point at which
+the sampler sends TRAIN_PASSED (8.0 blocks). A lurk is not saved: the engine derives it from the party's
+phase, kind and target, so the pages stay at M7's format (MZB-357).
+
+**The spot's distance is a contract between four numbers** (MZB-374; review C and the build lead's choice). The
+engine puts the spot `SPOT_BLOCKS` (rail.rs, 5.0) from the track point toward the den, in whole blocks (the block
+plus 0.5 as a double); Java stands the body `SPOT_BLOCKS` from the rail's centre line (the hold point above), and
+the contract is about that distance. `reach` (`AMBUSH_REACH`, 8.0) is only the radius at which the sampler sends TRAIN_PASSED; it
+is not how far the body can strike. A strike is the plugin's call, gated on a smaller number: the create plugin's
+sampler (`TrainSampler.STRIKE_REACH`, 6.0) strikes a carriage whose living rider, seated or standing on it (else its
+bogey point), will be within 6.0 blocks, horizontally, of the puppet when the swing lands, `SWING_TICKS` (9) ticks on, at the train's
+present speed. The Frostmaw's swipe hits a target whose horizontal centre distance less its half-width is at most
+6.5 and whose 3D feet-to-feet distance is at most 6.5 plus its half-width (about 6.8 for a player). A rider is
+about 2 above the puppet's feet, which puts the 3D cut at sqrt(6.8^2 - 2^2) = 6.5 horizontally, so the gate leaves
+about 0.5 for the prediction's error (the horizontal cut alone would leave 0.8). The fourth number is the Lurker's `stand()` (the Frostmaw's `STAND`,
+0.5): how far from the hold point its hold lets the body rest. The rule, in two inequalities, is checked by
+`TrainSampler.spotContract` against the Lurker's stand and the live body's half-width (create's GameTest 9, every
+variant):
+
+```
+SPOT_BLOCKS + slack + stand                <= STRIKE_REACH     5.0 + 0.4 + 0.5       <= 6.0   the far side of the stand is in reach
+SPOT_BLOCKS - nearSlack - stand - reach    >= RAIL_CLEARANCE   5.0 - 0.4 - 0.5 - 2.0 >= 1.5   the near edge of the box is off the rail
+```
+
+`slack` is `LurkSpots.LATERAL_SLACK` (0.4), how far a block centre the body can rest on may be from `SPOT_BLOCKS`
+on the far side (Create's rails give exactly 5.0 along an axis and 4.95 on a diagonal, so the real far side is 5.5).
+For a rail along an axis `nearSlack` is the same 0.4 and `reach` the body's half-width (the rail meets the box's
+side). A diagonal rail meets the box's corner, so `reach` is `halfWidth * sqrt 2` (2.83 for the Frostmaw) and
+`nearSlack` is `LurkSpots.OBLIQUE_NEAR_SLACK` (0.17): 5.0 - 0.17 - 0.5 - 2.83 = 1.5, so the rule holds by itself and
+not by the lattice. Java stands the body on a floor within 2 blocks of the rail's height only (an embankment's crown
+or a cutting's rim is another level: the swipe is 3D). Where no direction is known (a curve's middle, a crossing) and
+a rail lies within the body's half-width plus `RAIL_CLEARANCE` of the engine's spot, the lurk is refused; with none
+near (or no create plugin) the engine's spot stands. A rider on a carriage is struck by the swipe's 3D reach (6.5
+plus half the rider's width), a bogey point by the horizontal `STRIKE_REACH`.
+
+`SPOT_BLOCKS` is mirrored in `TrainSampler` and pinned on the Rust side (`tests/lurk.rs`): a change to it, the
+strike reach or a stand is a change to all of them, made together. A body kind with another swing registers its own
+stand through `Lurker.stand()`, and its own gate if its reach differs. Where a body actually rests is the hold's
+doing and is looked at in the GameTest (the Frostmaw's 4-wide body steers loosely, so it may rest beyond its
+stand; the test asks only for the stand, `Lurker.stand()` from the hold point, which the contract counts on, and
+records the figure).
+
+**TRAIN_ROBBED** tells the plugin a lurk took something from a train (the engine's roll hit and the
+train's cargo lost at least one item, of any good). `faction` is the robbing camp's key and `train` the
+train's id. It is a sound and an animation, nothing written: the plugin keeps `(train, faction)` in a
+per-session map (256 at most, the oldest dropped; a train robbed again waits as the newest), a held
+puppet of a lurk of that faction roars at once, and when that train next reaches a station (the create
+plugin's arrival hook) every non-spectator player within 64 blocks (three-dimensional) of the station
+hears the camp's sound (a real player: a NeoForge `FakePlayer`, a deployer's or a mod's stand-in, is skipped; a
+GameTest's `FakePlayers` hearer is an ordinary `ServerPlayer` and does hear), placed 32 blocks toward the camp at the notices' volume (a camp with no sound
+plays the raid horn). The entry goes only once a player heard it, so an arrival with nobody near keeps it
+for the next one. No chat, action-bar or title line, and nothing goes back to the engine.
+
 **BAND_MARCH** replaces the agent's earlier ones (the higher revision wins). The engine's ticks in it
 (musterEndTick, each waypoint's) are game time, as ENVOY_MATERIALIZE's deadline; its waypoints are the
 party's route from the segment it is on (`route[seg]` and `times[seg]`), in chart coordinates. Its
-joint flag and partner are zero until alliances land (CONFLICT-LIFE.md §2.16).
+joint flag and partner are zero until alliances land (CONFLICT-LIFE.md §2.16). Amended for M10
+(MZB-482, MZB-451, MZB-484):
+
+- **musterEndTick is 0 once the band has set out.** It is the muster's end only in phase 1 (mustering);
+  in every later phase it is 0.
+- **The revision is per session.** Java's map of marches is a session's and starts empty; the engine's revision for a party counts up from the saved one, so a
+  restart's first record is one past the pages' last and Java takes whatever revision a session's
+  first record carries. The higher revision replaces the lower; a lower one is dropped.
+- **When a record goes.** The engine sends one when what it says has changed: a new party (mustering),
+  the muster's end, a change of phase or of route (a wait, a fight, the walk home), a loss of units
+  (every kind of loss, a unit left at the camp that dies, the chief's fall or succession turning the
+  chief flag off), and a long route's new segment (MZB-455). It sends nothing for a segment's
+  advance, because the waypoints carry their times and Java reads the position from them with
+  the shared rule (`BandMarch.chartPos`, truncating toward zero). Several changes in one step make
+  one record. A census (a camp coming in or going out) sends none and ends no party. A record
+  with the ended flag (2) goes when the band is home and its row removed (and also when no unit of
+  a band without a chief is left alive); Java drops the agent from its map. Every party goes again
+  at a session start, once the replay has caught up.
+- **None goes while the session's replay catches up.** The engine builds no march record while it
+  replays (`take_commands` and `home` guard on it, MZB-484), and the outbox's `gate` (docs/replay-gate.md
+  §4.4, RP-170) drops a BAND_MARCH pushed or queued then. The first take after the replay's end sends
+  every party's record, with what the replay left (a fighting band is waiting by then), so Java's map is
+  never given a replay's mid-state and never hears of a band that ended in the replay.
+- **What Java does with it (M10b, MZB-720 to MZB-731).** Java keeps the latest record per agent and sends
+  nothing back for it. It lays a materialized band out as a column (rows of two, a raptor pack's pairs
+  abreast, the war chief at the rear), turns the column at each BAND_STEER, and trims what it holds beyond
+  the record's counts. A band in phase 3 or 4 is held in the square two chunks inside its nearest player's
+  entity-ticking edge, checked every 20 ticks. The trim cuts pending members first, then placed members no
+  player sees (within the entity's tracking range, 128 blocks at the least, bounded by the view distance), never
+  one in sight; it books nothing and journals nothing, and an ENDED
+  record trims nothing. The walk-in, the clamp and the trim are Java's alone: the engine learns of them from
+  the next records and from the bodies' own casualties. A HAND_BACK line sends its band home whatever the
+  line's outcome, the camp not in included (MZB-726).
 
 ### 9.5 How Java would apply them
 
@@ -1967,13 +2098,32 @@ abstract raids there.
 **A band seen on the march** (its leg crosses a player's interest area) is materialized at its
 place (`arcRadius` 0) and steered along its road (BAND_STEER, one per waypoint, with the tick it
 should get there); it is recalled (reason 4) where its walk leaves the view. Bands on their way home
-are not materialized.
+are materialized too (M10, MZB-482): a routed or finished band walking home in the interest area is met
+as any band on the march is, at its place on the way, facing the way it walks (the bearing of a
+BAND_MATERIALIZE at `arcRadius` 0, MZB-457), steered along the rest of its route, and recalled where the
+walk leaves the view. Java's walk-in places the stacks as the arrival of a band on the march does
+(MZB-469 to MZB-472).
+
+**A walked-in fight sends an empty record (MZB-700; Java echoes it, MZB-728).** A band that walked in in
+its bodies (MZB-461) fights in them: the engine steers it (BAND_STEER with the attack flag, `arrive`
+0) and then sends, in the same step, a BAND_MATERIALIZE flagged BAND_FIGHT (8) for the members not in
+Minecraft yet. When every member is placed already (a band met on its road with the quota's room full,
+or under the quota, has them all out) that record has **no members** (m = 0), and it is still sent: it
+is the fight's one record, the one a restart's replay finds to release the held arrival
+(docs/replay-gate.md §6.1, RP-23; MZB-491), and without it the replay resolves the walked-in fight a
+second time as an abstract raid. **Java must echo an empty flagged record and spawn nothing**: place no stack, take its
+`wave` number as one had (the next wave's `wave` is higher, so no ALREADY_EMBODIED), and answer
+BAND_MATERIALIZED at once with the command's flags (8) and `spawned` 0. It must not answer it with
+BAND_SPAWN_REJECTED BAD_RECORD, as a record with m <= 0 is answered today: a refusal of this record
+is read by a replay as the fight's refusal (RP-54) and loses the fight's live parity. The engine
+counts such a record in neither `waves` nor `materialized`, which count bodies sent.
 
 **Mowzie's later records** (MOWZIE.md §4; the Java half of each comes with the slice that builds its
 engine half, §9.6). The train sampler (M7, built; `mic_rtsim_create.TrainSampler`) samples each Create
 train once every 20 ticks and reports RAIL_PASS for each pass through a camp's range (§4.3). Against an AMBUSH_SPOT it samples the track point, sends TRAIN_PASSED for each train within
-the reach (watched when a player watches the spot), and stops at the removed flag; it plays the
-robbed-train roar for TRAIN_ROBBED when that train next reaches a station with a player near (§4.4).
+the reach (watched when a puppet of the lurk stands in the world), and stops at the removed flag; it
+plays the robbed-train roar for TRAIN_ROBBED when that train next reaches a station with a player near
+(§4.4).
 The camp reconciler (§4.9) sends a census when a camp comes in and CAMP_OUT when it goes out, applies
 a CAMP_RECONCILE's lines only while its epoch is in and answers with CAMP_BODIES, and reports each
 camp body's death once (CAMP_DEATH). CHIEF_BODY is written into a chief's body (health, crystal, trade
@@ -2036,9 +2186,11 @@ memory by `setTradedPlayersCompound`) before its stack, spawn line or hand-back 
 - **Withdrawn demands** (ledger 14): DEMAND_SETTLED 5 above. The feud holds on Envoy to the old
   deadline, then a fresh envoy brings a new demand; a withdrawal never brings the climb forward
   (MZB-22).
-- **Deferred kinds.** The engine half of TRAIN_PASSED (M8) comes later, as do its commands, which
-  the engine does not send yet. RAIL_PASS is built (M7): the engine counts it and the train sampler
-  sends it. Until then rtsim-jni decodes each, translates its ids, counts it
+- **Deferred kinds.** None now. RAIL_PASS is built (M7): the engine counts it and the train
+  sampler sends it. TRAIN_PASSED is built (M8): the sampler sends it, the engine rolls it, and
+  AMBUSH_SPOT and TRAIN_ROBBED are live commands (MZB-374). The grove's HAVEN_CHEST, TRADED and
+  CHIEF_PAID are built (M9). A later slice's record whose engine half is not built yet
+  (`Conflict::later`, empty now) goes the deferred way: rtsim-jni decodes it, translates its ids, counts it
   (`ConflictLinkStats::deferred`) and drops it before the shared clock runs for it: no module
   catches up for a deferred record. One with an op id spends it in the engine, in rtsim-jni as in
   `Conflict::ingest`, so the same record again is not counted twice (MZB-23).

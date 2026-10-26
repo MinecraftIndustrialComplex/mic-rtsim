@@ -12,6 +12,8 @@
 //!   codec; a scripted player answers envoys (ignore, pay, refuse, attack) and fights bands that
 //!   materialize near it (a share killed per wave, the war chief or not).
 
+pub mod march;
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use rtsim_industry::fake::{self, FDistrict, FInventory, FakeWorld, Visit, exposed, survey};
@@ -249,6 +251,8 @@ struct Body {
     /// the band (MZB-109), so it is never a survivor, and its death is a CHIEF_KILLED alone. Its
     /// value is the body id.
     chief: Option<u32>,
+    /// A band that fights a player: its materialize carried BAND_HOSTILE.
+    hostile: bool,
 }
 
 /// A body in a camp's world: the jar's own entity, tagged with its slot and generation, or a stray
@@ -307,6 +311,10 @@ enum Hold {
     /// A player near a chief body or targeted by it (`holdRemoval`): its TAKE, REMOVE or SET_OUT.
     /// No time limit; a census, the camp's out or the heir seated over the body answers it stale.
     Removal,
+    /// The chief's own puppet floating home (Java's homing, MZB-821): its HAND_BACK, for
+    /// `chief_float` ticks, or until the puppet is killed on the way
+    /// ([`FakeConflict::kill_homing_chief`]).
+    Homing,
 }
 
 /// The lines of a reconcile the plugin holds, with the reconcile they belong to, the tick they
@@ -350,6 +358,10 @@ pub struct FakeConflict {
     pub player: Uuid,
     pub answer: Answer,
     pub fight: Option<Fight>,
+    /// The latest BAND_MARCH of each party that has not ended (MZB-476), as Java's `MarchPath`
+    /// keeps it: a record replaces an earlier one, an older revision is dropped, an ENDED one
+    /// removes the party's.
+    pub marches: BTreeMap<u64, boundary::BandMarch>,
     bodies: BTreeMap<u64, Body>,
     queue: Vec<(Tick, u64, Obs)>,
     seq: u64,
@@ -414,6 +426,18 @@ pub struct FakeConflict {
     /// player leaves ([`FakeConflict::watch_throne`], [`FakeConflict::hold_chief`]) or, for the
     /// throne's, `HOLD_MAX` ticks after they arrived; answered stale at a census or the camp's out.
     held: Vec<HeldLines>,
+    /// The away CHIEF_BODY of each agent, kept until the agent's next MATERIALIZE, as Java keeps a
+    /// chief's memory for the record that carries its stack (MZB-803).
+    pending_chief: BTreeMap<u64, boundary::ChiefBody>,
+    /// MATERIALIZEs carrying a chief's own stack that found their CHIEF_BODY pending (its agent and
+    /// epoch), and those that found none: a failure each (MZB-838).
+    pub chief_bodies_matched: u32,
+    pub chief_bodies_missing: u32,
+    /// Ticks the chief's HAND_BACK of a band whose body holds its chief waits while the puppet
+    /// floats home, as Java's homing holds it (0: it goes at once; MZB-821). The band's
+    /// BAND_DEMATERIALIZED goes after that time, as Java's goes only once the puppet is gone
+    /// (MZB-853).
+    pub chief_float: u64,
 }
 
 /// A warrior a MASK may take: tagged, not the chief, in the footprint.
@@ -439,6 +463,7 @@ impl FakeConflict {
             player,
             answer: Answer::Ignore,
             fight: None,
+            marches: BTreeMap::new(),
             bodies: BTreeMap::new(),
             queue: Vec::new(),
             seq: 0,
@@ -467,6 +492,10 @@ impl FakeConflict {
             uuids: 0,
             walk_off_deaths: 0,
             held: Vec::new(),
+            pending_chief: BTreeMap::new(),
+            chief_bodies_matched: 0,
+            chief_bodies_missing: 0,
+            chief_float: 0,
         }
     }
 
@@ -490,12 +519,18 @@ impl FakeConflict {
     }
 
     pub fn next_due(&self) -> Option<Tick> {
-        let held = self
-            .held
-            .iter()
-            .filter(|h| h.kind == Hold::Throne)
-            .map(|h| h.since + HOLD_MAX);
+        let held = self.held.iter().filter_map(|h| self.deadline(h));
         self.queue.iter().map(|e| e.0).chain(held).min()
+    }
+
+    /// When held lines go by themselves: the throne's at `HOLD_MAX`, a homing chief's after
+    /// `chief_float`; the others wait with no limit.
+    fn deadline(&self, h: &HeldLines) -> Option<Tick> {
+        match h.kind {
+            Hold::Throne => Some(h.since + HOLD_MAX),
+            Hold::Homing => Some(h.since + self.chief_float),
+            Hold::Fight | Hold::Removal => None,
+        }
     }
 
     /// Observations due by `to`, in time then push order, each through the codec.
@@ -565,7 +600,17 @@ impl FakeConflict {
                 m.arc_radius,
                 m.bearing_deg
             ),
-            Cmd::Steer(s) => format!("steer {:x} to ({:.0}, {:.0})", s.agent, s.pos.0, s.pos.2),
+            Cmd::Steer(s) => format!(
+                "steer {:x} to ({:.0}, {:.0}){}",
+                s.agent,
+                s.pos.0,
+                s.pos.2,
+                if s.flags & boundary::STEER_ATTACK != 0 {
+                    ", attack"
+                } else {
+                    ""
+                }
+            ),
             Cmd::Recall(r) => format!("recall {:x}, reason {}", r.agent, r.reason),
             Cmd::Settled(s) => format!("demand of {:x} settled, outcome {}", s.faction, s.outcome),
             Cmd::AmbushSpot(a) => format!(
@@ -605,6 +650,7 @@ impl FakeConflict {
                         faction: e.faction,
                         members: e.members.iter().copied().collect(),
                         chief: None,
+                        hostile: false,
                     },
                 );
                 self.push(
@@ -655,17 +701,35 @@ impl FakeConflict {
                 }
             }
             Cmd::Materialize(m) => {
+                // A chief that is a body of its own goes as a stack of its own, the chief alone, after
+                // the first stack (MZB-801): its memory came just before, as an away CHIEF_BODY of
+                // this epoch (MZB-803). A pending one is spent on the agent's next record either way.
+                let own_chief = m.flags & boundary::BAND_CHIEF != 0
+                    && m.members
+                        .iter()
+                        .skip(1)
+                        .any(|s| s.count == 0 && s.flags & boundary::MEMBER_CHIEF != 0);
+                let pending = self.pending_chief.remove(&m.agent);
+                if own_chief {
+                    if pending.is_some_and(|b| b.epoch == u64::from(m.epoch)) {
+                        self.chief_bodies_matched += 1;
+                    } else {
+                        self.chief_bodies_missing += 1;
+                    }
+                }
                 let b = self.bodies.entry(m.agent).or_insert(Body {
                     epoch: m.epoch,
                     faction: m.faction,
                     members: BTreeMap::new(),
                     chief: None,
+                    hostile: false,
                 });
                 if b.epoch != m.epoch {
                     b.epoch = m.epoch;
                     b.members.clear();
                     b.chief = None;
                 }
+                b.hostile = m.flags & boundary::BAND_HOSTILE != 0;
                 // As Java makes a stack: its count in units, and for the band's chief stack one
                 // body more, the chief (MZB-109; a count of 0 is the chief alone, MZB-127).
                 for s in &m.members {
@@ -698,53 +762,29 @@ impl FakeConflict {
                 if let Some(f) = self.fight.filter(|f| {
                     m.flags & boundary::BAND_HOSTILE != 0 && (!f.only_at_base || m.arc_radius > 0)
                 }) {
-                    for s in &m.members {
-                        let k = (f64::from(s.count) * f.kill_share).floor() as u32;
-                        if k > 0 {
-                            if let Some(b) = self.bodies.get_mut(&m.agent)
-                                && let Some(n) = b.members.get_mut(&s.body)
-                            {
-                                *n = n.saturating_sub(k);
-                            }
-                            // Its own op id, as Java commits each (MZB-589): the engine counts a
-                            // repeated op once. A counter, so the sims stay deterministic.
-                            let op = self.op();
-                            self.push(
-                                at + f.after,
-                                Obs::Casualties(boundary::BandCasualties {
-                                    agent: m.agent,
-                                    epoch: m.epoch,
-                                    by: boundary::BY_PLAYER,
-                                    body: s.body,
-                                    count: k,
-                                    killer: self.player,
-                                    op,
-                                }),
-                            );
-                        }
-                    }
-                    // The chief's body dies: an extra body, no unit of the band (MZB-109), so no
-                    // survivor is lost with it; Java sends CHIEF_KILLED alone (MZB-272).
-                    if f.kill_chief
-                        && m.flags & boundary::BAND_CHIEF != 0
-                        && m.wave == 0
-                        && self
-                            .bodies
-                            .get_mut(&m.agent)
-                            .is_some_and(|b| b.chief.take().is_some())
-                    {
-                        let op = self.op();
-                        self.push(
-                            at + f.after + 20,
-                            Obs::ChiefKilled(boundary::ChiefKilled {
-                                agent: m.agent,
-                                epoch: m.epoch,
-                                by: boundary::BY_PLAYER,
-                                killer: self.player,
-                                op,
-                            }),
-                        );
-                    }
+                    let stacks: Vec<(u32, u32)> =
+                        m.members.iter().map(|s| (s.body, s.count)).collect();
+                    self.play_fight(f, m.agent, m.epoch, &stacks, at);
+                }
+            }
+            // A walked-in fight (MZB-461): the band is told to attack where it stands, with no
+            // wave to send. The scripted player fights what it holds, as it fights a wave
+            // (MZB-493). A segment's own attack steer has an arrival time; this one has none.
+            Cmd::Steer(s)
+                if s.flags & boundary::STEER_ATTACK != 0
+                    && s.arrive == 0
+                    && self
+                        .bodies
+                        .get(&s.agent)
+                        .is_some_and(|b| b.epoch == s.epoch && b.hostile) =>
+            {
+                if let Some(f) = self.fight {
+                    let stacks: Vec<(u32, u32)> = self.bodies[&s.agent]
+                        .members
+                        .iter()
+                        .map(|(&k, &v)| (k, v))
+                        .collect();
+                    self.play_fight(f, s.agent, s.epoch, &stacks, at);
                 }
             }
             Cmd::Recall(r) => {
@@ -804,9 +844,87 @@ impl FakeConflict {
             | Cmd::Steer(_)
             | Cmd::Settled(_)
             | Cmd::AmbushSpot(_)
-            | Cmd::TrainRobbed(_)
-            | Cmd::ChiefBody(_)
-            | Cmd::March(_) => {}
+            | Cmd::TrainRobbed(_) => {}
+            // An away chief's memory waits for its MATERIALIZE; one at home is the throne's.
+            Cmd::ChiefBody(b) => {
+                if b.agent != 0 {
+                    self.pending_chief.insert(b.agent, b);
+                }
+            }
+            // The march record (MZB-476): the latest revision of a party's is kept, an ENDED one
+            // drops it, and the held body is trimmed to its counts (MZB-473; keyed by body id,
+            // as the record's units are).
+            Cmd::March(m) => {
+                if m.flags & boundary::MARCH_ENDED != 0 {
+                    self.marches.remove(&m.agent);
+                } else if self
+                    .marches
+                    .get(&m.agent)
+                    .is_none_or(|old| old.revision < m.revision)
+                {
+                    if let Some(b) = self.bodies.get_mut(&m.agent) {
+                        for &(body, count) in &m.units {
+                            if let Some(n) = b.members.get_mut(&body) {
+                                *n = (*n).min(count);
+                            }
+                        }
+                    }
+                    self.marches.insert(m.agent, m);
+                }
+            }
+        }
+    }
+
+    /// The scripted player's fight on a band: `kill_share` of each stack falls `after` ticks
+    /// later, each a BAND_CASUALTIES of its own op id, as Java commits each (MZB-589), and the
+    /// chief's body dies once, if one stands, as CHIEF_KILLED alone.
+    fn play_fight(&mut self, f: Fight, agent: u64, epoch: u32, stacks: &[(u32, u32)], at: Tick) {
+        for &(body, count) in stacks {
+            let k = (f64::from(count) * f.kill_share).floor() as u32;
+            if k > 0 {
+                if let Some(b) = self.bodies.get_mut(&agent)
+                    && let Some(n) = b.members.get_mut(&body)
+                {
+                    *n = n.saturating_sub(k);
+                }
+                // Its own op id, as Java commits each (MZB-589): the engine counts a repeated op
+                // once. A counter, so the sims stay deterministic.
+                let op = self.op();
+                self.push(
+                    at + f.after,
+                    Obs::Casualties(boundary::BandCasualties {
+                        agent,
+                        epoch,
+                        by: boundary::BY_PLAYER,
+                        body,
+                        count: k,
+                        killer: self.player,
+                        op,
+                    }),
+                );
+            }
+        }
+        // The chief's body dies: an extra body, no unit of the band (MZB-109), so no survivor is
+        // lost with it; Java sends CHIEF_KILLED alone (MZB-272). Any fight of a band kills the
+        // chief once, if a body holds one: a band that walked in (MZB-461) placed it with its
+        // sighting (MZB-491).
+        if f.kill_chief
+            && self
+                .bodies
+                .get_mut(&agent)
+                .is_some_and(|b| b.chief.take().is_some())
+        {
+            let op = self.op();
+            self.push(
+                at + f.after + 20,
+                Obs::ChiefKilled(boundary::ChiefKilled {
+                    agent,
+                    epoch,
+                    by: boundary::BY_PLAYER,
+                    killer: self.player,
+                    op,
+                }),
+            );
         }
     }
 
@@ -1005,13 +1123,133 @@ impl FakeConflict {
         self.replay_held(faction, at);
     }
 
+    /// Whether the band a chief's HAND_BACK names (`a`, at epoch `b`) still holds its chief's
+    /// puppet in the world.
+    fn homing(&self, l: &boundary::ReconcileLine) -> bool {
+        self.bodies
+            .get(&l.a)
+            .is_some_and(|b| u64::from(b.epoch) == l.b && b.chief.is_some())
+    }
+
+    /// The chief's puppet of the band `agent` at `epoch` leaves the world (home on its throne,
+    /// killed, or its line answered): its body id, if it stood. A band whose members are gone
+    /// already is gone with it.
+    fn take_chief(&mut self, agent: u64, epoch: u64) -> Option<u32> {
+        let b = self
+            .bodies
+            .get_mut(&agent)
+            .filter(|b| u64::from(b.epoch) == epoch)?;
+        let chief = b.chief.take();
+        if b.members.is_empty() {
+            self.bodies.remove(&agent);
+        }
+        chief
+    }
+
+    /// A player kills the chief's puppet of `faction` while it floats home (its HAND_BACK held by
+    /// `chief_float`): a CAMP_DEATH of the line's slot and generation, by the player, at `at`, and
+    /// the line answered stale, as Java finds its puppet gone (MZB-824, MZB-853). `false` when no
+    /// chief of the faction is homing.
+    pub fn kill_homing_chief(&mut self, faction: u64, at: Tick) -> bool {
+        let Some(i) = self
+            .held
+            .iter()
+            .position(|h| h.faction == faction && h.kind == Hold::Homing)
+        else {
+            return false;
+        };
+        let h = self.held.remove(i);
+        let Some(l) = h
+            .lines
+            .iter()
+            .map(|e| e.1)
+            .find(|l| l.action == boundary::ACTION_HAND_BACK)
+        else {
+            self.held.insert(i, h);
+            return false;
+        };
+        let body = self.take_chief(l.a, l.b).unwrap_or(l.body);
+        let op = self.op();
+        let death = boundary::CampDeath {
+            faction,
+            by: boundary::BY_PLAYER,
+            body,
+            flags: boundary::DEATH_CHIEF,
+            slot: l.slot,
+            generation: l.generation,
+            killer: self.player,
+            op,
+        };
+        // The puppet leaves its marker with its death, as a camp body does.
+        self.death_holders.push(death);
+        self.push(at, Obs::CampDeath(death));
+        self.apply_lines(h.faction, h.epoch, h.op, false, h.lines, at);
+        true
+    }
+
+    /// A player pays the chief's puppet of `faction` away from its camp (MZB-819): CHIEF_PAID with
+    /// PAID_PUPPET, the chief's slot and generation 0, at `at`. Its op.
+    pub fn pay_puppet(
+        &mut self,
+        faction: u64,
+        player: Uuid,
+        items: Vec<boundary::Item>,
+        at: Tick,
+    ) -> u64 {
+        let op = self.op();
+        self.push(
+            at,
+            Obs::ChiefPaid(boundary::ChiefPaid {
+                faction,
+                slot: crate::engine::CHIEF_SLOT,
+                generation: 0,
+                flags: boundary::PAID_PUPPET,
+                player,
+                op,
+                items,
+            }),
+        );
+        op
+    }
+
+    /// The chief's puppet of `faction` comes within 32 blocks of its throne while the census's TAKE
+    /// of the throne body is held on a player there: Java answers the held TAKE stale, and the
+    /// slot is the puppet's to settle by its own line (MZB-823). `false` when no such TAKE is held.
+    pub fn puppet_near_throne(&mut self, faction: u64, at: Tick) -> bool {
+        let mut found = false;
+        for mut h in self.take_held(Some(faction), Some(Hold::Removal)) {
+            let (take, rest): (Vec<_>, Vec<_>) = h.lines.iter().copied().partition(|(_, l)| {
+                l.action == boundary::ACTION_TAKE && l.slot == crate::engine::CHIEF_SLOT
+            });
+            let (epoch, op) = (h.epoch, h.op);
+            if !rest.is_empty() {
+                h.lines = rest;
+                self.held.push(h);
+            }
+            if !take.is_empty() {
+                found = true;
+                self.apply_lines(faction, epoch, op, false, take, at);
+            }
+        }
+        found
+    }
+
+    /// The chiefs standing in the world as puppets of `faction`'s bands (MZB-801).
+    pub fn band_chiefs(&self, faction: u64) -> usize {
+        self.bodies
+            .values()
+            .filter(|b| b.faction == faction && b.chief.is_some())
+            .count()
+    }
+
     /// What each of `lines` waits on, if it does (the camp being in at their epoch): the throne
     /// for a chief SPAWN or the pair of a plain seat (a player within 160 blocks of it); for the
     /// pair seated over the old chief's body, that body in a fight; for a TAKE, REMOVE or SET_OUT
     /// of a chief body, a player near it or targeting it.
     fn waits(&self, faction: u64, lines: &[boundary::ReconcileLine]) -> Vec<Option<Hold>> {
         use boundary::{
-            ACTION_MASK, ACTION_REMOVE, ACTION_SEAT_HEIR, ACTION_SET_OUT, ACTION_SPAWN, ACTION_TAKE,
+            ACTION_HAND_BACK, ACTION_MASK, ACTION_REMOVE, ACTION_SEAT_HEIR, ACTION_SET_OUT,
+            ACTION_SPAWN, ACTION_TAKE,
         };
         let Some(camp) = self.camps.get(&faction) else {
             return vec![None; lines.len()];
@@ -1034,6 +1272,11 @@ impl FakeConflict {
                 },
                 ACTION_SPAWN if l.flags & boundary::LINE_CHIEF != 0 => {
                     camp.watched.then_some(Hold::Throne)
+                }
+                // The chief's puppet floats home from where its band ended (MZB-821): its
+                // HAND_BACK goes when it is there.
+                ACTION_HAND_BACK if l.flags & boundary::LINE_CHIEF != 0 => {
+                    (self.chief_float > 0 && self.homing(l)).then_some(Hold::Homing)
                 }
                 ACTION_TAKE | ACTION_REMOVE | ACTION_SET_OUT => camp
                     .bodies
@@ -1076,16 +1319,20 @@ impl FakeConflict {
         taken
     }
 
-    /// The throne's lines whose `HOLD_MAX` is up by `to` go, each at its own deadline. A removal
-    /// and a pair over a fighting chief have no limit.
+    /// The throne's lines whose `HOLD_MAX` is up by `to` go, and a homing chief's whose
+    /// `chief_float` is, each at its own deadline. A removal and a pair over a fighting chief have
+    /// no limit.
     fn release_held(&mut self, to: Tick) {
-        let (mut over, kept): (Vec<HeldLines>, Vec<HeldLines>) = std::mem::take(&mut self.held)
+        let (over, kept): (Vec<HeldLines>, Vec<HeldLines>) = std::mem::take(&mut self.held)
             .into_iter()
-            .partition(|h| h.kind == Hold::Throne && h.since + HOLD_MAX <= to);
+            .partition(|h| self.deadline(h).is_some_and(|d| d <= to));
         self.held = kept;
-        over.sort_by_key(|h| h.since);
-        for h in over {
-            let at = h.since + HOLD_MAX;
+        let mut over: Vec<(Tick, HeldLines)> = over
+            .into_iter()
+            .map(|h| (self.deadline(&h).expect("a deadline"), h))
+            .collect();
+        over.sort_by_key(|e| e.0);
+        for (at, h) in over {
             self.apply_held(h, at);
         }
     }
@@ -1227,6 +1474,61 @@ impl FakeConflict {
             .camps
             .get(&r.faction)
             .is_some_and(|c| c.epoch != 0 && c.epoch == r.epoch);
+        // Java's homecoming (MZB-464): each HAND_BACK line names a party (`a`) and its epoch
+        // (`b`), and one the plugin holds at that epoch is ended whatever the line's outcome:
+        // its body is gone, and BAND_DEMATERIALIZED (reason 1) names its survivors. A chief's
+        // puppet with a line of its own floats home while `chief_float` runs (MZB-821): its body
+        // stays, the chief alone, and the band's end goes after it, as Java's goes only once the
+        // puppet is gone (MZB-853).
+        let mut ended: Vec<(u64, u64)> = Vec::new();
+        for l in r
+            .lines
+            .iter()
+            .filter(|l| l.action == boundary::ACTION_HAND_BACK)
+        {
+            if ended.contains(&(l.a, l.b)) {
+                continue;
+            }
+            ended.push((l.a, l.b));
+            let homing = live
+                && self.chief_float > 0
+                && r.lines.iter().any(|c| {
+                    c.action == boundary::ACTION_HAND_BACK
+                        && c.flags & boundary::LINE_CHIEF != 0
+                        && (c.a, c.b) == (l.a, l.b)
+                        && self.homing(c)
+                });
+            let members = match self.bodies.get_mut(&l.a) {
+                Some(b) if u64::from(b.epoch) == l.b && homing => {
+                    Some((b.epoch, std::mem::take(&mut b.members)))
+                }
+                Some(b) if u64::from(b.epoch) == l.b => {
+                    self.bodies.remove(&l.a).map(|b| (b.epoch, b.members))
+                }
+                _ => None,
+            };
+            if let Some((epoch, members)) = members {
+                let survivors = members
+                    .iter()
+                    .map(|(&k, &v)| (k, v))
+                    .filter(|e| e.1 > 0)
+                    .collect();
+                let leave = if homing {
+                    self.leave_ticks.max(self.chief_float + 1)
+                } else {
+                    self.leave_ticks
+                };
+                self.push(
+                    at + leave,
+                    Obs::Dematerialized(boundary::BandDematerialized {
+                        agent: l.a,
+                        epoch,
+                        reason: 1,
+                        survivors,
+                    }),
+                );
+            }
+        }
         let waits = if live {
             self.waits(r.faction, &r.lines)
         } else {
@@ -1301,6 +1603,12 @@ impl FakeConflict {
         }
         let mut answers = Vec::new();
         for (index, l) in &lines {
+            // The chief's HAND_BACK takes its band's chief puppet out of the world whatever its
+            // outcome: on the throne (DONE), consumed beside the body standing there (NOTHING,
+            // MZB-821's case B), or gone (STALE).
+            if l.action == boundary::ACTION_HAND_BACK && l.flags & boundary::LINE_CHIEF != 0 {
+                self.take_chief(l.a, l.b);
+            }
             let mut taken = None;
             let outcome = if !live
                 || (!pair_ok
@@ -1904,6 +2212,13 @@ impl CampRun {
             .min()
             .unwrap_or(to)
             .clamp(t + 1, to);
+            // The march audit looks every `march::STEP` ticks (run 13).
+            let next = if march::active() {
+                next.min(t + march::STEP)
+            } else {
+                next
+            };
+            march::begin(&self.c);
             for (at, o) in self.plugin.due(next) {
                 self.c.ingest(&mut self.w, &mut *self.infra, &o, at);
             }
@@ -1914,6 +2229,7 @@ impl CampRun {
                 self.next_obs = next + 1_200;
             }
             self.flush(next);
+            march::end(&self.c, t, next);
             if self.audits {
                 self.track();
             }
@@ -1924,6 +2240,7 @@ impl CampRun {
     /// What the engine decided, to the plugin.
     pub fn flush(&mut self, at: Tick) {
         let cmds = self.c.take_commands();
+        march::took(&self.c, &cmds);
         self.cmds.extend(cmds.iter().cloned().map(|c| (at, c)));
         self.plugin.apply(cmds, at);
     }
@@ -1971,7 +2288,9 @@ impl CampRun {
     pub fn decide(&mut self, to: Tick) -> Vec<Cmd> {
         self.c
             .run_until(&mut self.w, &mut rtsim_ecology::infra::NoInfrastructure, to);
-        self.c.take_commands()
+        let cmds = self.c.take_commands();
+        march::took(&self.c, &cmds);
+        cmds
     }
 
     /// The camp comes in and the census reaches the engine, whose commands are held back (as
@@ -2007,10 +2326,14 @@ impl CampRun {
     }
 
     /// A session restart with nothing to replay: [`CampRun::restart_to_replay`], and the replay
-    /// over at once, as the host ends it when the journal has caught up (`replay_done`).
+    /// over at once, as the host ends it when the journal has caught up (`replay_done`), then the
+    /// session's present as the host tells it right after (`replay_present`, MZB-748: the engine's
+    /// own now, the hand-over's game time of a restart with nothing to replay).
     pub fn restart(&mut self) {
         self.restart_to_replay();
         self.c.replay_done();
+        let present = self.c.now();
+        self.c.replay_present(present);
     }
 
     /// A session restart that leaves the replay open: the plugin's observations not yet journaled
@@ -2023,12 +2346,14 @@ impl CampRun {
         self.plugin.drop_queued();
         // What the plugin held is in its memory, which a session's end clears.
         self.plugin.take_held(None, None);
+        self.plugin.pending_chief.clear();
         self.plugin.forget_hunts();
         for camp in self.plugin.camps.values_mut() {
             camp.epoch = 0;
         }
         // The host's session start: the engine came back from its pages, and its replay begins
-        // (docs/replay-gate.md §5.1, RP-2, RP-31).
+        // (docs/replay-gate.md §5.1, RP-2, RP-31). Java's map of marches starts empty.
+        march::session();
         self.c.begin_replay(true);
         self.flush(at);
         if self.plugin.holders_again {
@@ -2289,6 +2614,10 @@ pub struct RailLine {
     pub owner: Uuid,
     /// Sorted by `from`: each entry runs until the next.
     pub service: Vec<Service>,
+    /// How many trains run the line, taking the legs in turn and each waiting for its own last
+    /// arrival before it sets out again (M8's industry, MZB-371). 0 is a fresh train for every leg,
+    /// as the meter's runs have it (MZB-330).
+    pub trains: u64,
 }
 
 impl RailLine {
@@ -2311,6 +2640,7 @@ impl RailLine {
                 per_day,
                 path: 0,
             }],
+            trains: 0,
         }
     }
 }
@@ -2344,7 +2674,10 @@ struct Crossing {
 
 /// A leg's geometry against the dens, from a departure at 0: its length in ticks, and where
 /// the sampler (every 20 ticks) sees it in each circle.
-fn leg_shape(path: &[(f64, f64)], dens: &[RailDen]) -> (f64, Vec<Crossing>) {
+type Shape = (f64, Vec<Crossing>);
+
+/// A leg's [`Shape`].
+fn leg_shape(path: &[(f64, f64)], dens: &[RailDen]) -> Shape {
     let len: f64 = path
         .windows(2)
         .map(|s| (s[1].0 - s[0].0).hypot(s[1].1 - s[0].1))
@@ -2416,6 +2749,104 @@ impl Jitter {
     }
 }
 
+/// A station dwell, in ticks: how long a train of a line with `trains` stands at its end before it
+/// sets out again (PLACEHOLDER, 30 seconds).
+pub const DWELL_TICKS: u64 = 600;
+
+/// One leg a synthetic train runs (M8, MZB-371): on which line and routing, which way, who runs it
+/// and when it sets out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RailLeg {
+    pub line: usize,
+    pub path: usize,
+    /// From the line's `b` to its `a`.
+    pub back: bool,
+    pub train: u64,
+    pub depart: Tick,
+    /// Ticks from the departure to the arrival, rounded up.
+    pub duration: u64,
+}
+
+impl RailLeg {
+    /// The leg's stations, in the order it runs them.
+    pub fn ends(&self, lines: &[RailLine]) -> (StationEnd, StationEnd) {
+        let l = &lines[self.line];
+        if self.back { (l.b, l.a) } else { (l.a, l.b) }
+    }
+
+    /// The leg's polyline in the order it runs it.
+    pub fn polyline(&self, lines: &[RailLine]) -> Vec<(f64, f64)> {
+        let p = &lines[self.line].paths[self.path];
+        if self.back {
+            p.iter().rev().copied().collect()
+        } else {
+            p.clone()
+        }
+    }
+}
+
+fn path_len(path: &[(f64, f64)]) -> f64 {
+    path.windows(2)
+        .map(|s| (s[1].0 - s[0].0).hypot(s[1].1 - s[0].1))
+        .sum()
+}
+
+/// Every leg the `lines` run before `to`, line by line in the order they are made (a line of
+/// `trains` can delay one past the next). Each leg's headway is jittered
+/// uniformly by up to `jitter` of itself, from `seed`. A line of `trains` trains gives its legs to
+/// them in turn, alternating each train's direction, and holds a train back until it has
+/// arrived and stood its [`DWELL_TICKS`]; a line of none gives every leg a train of its own.
+pub fn rail_legs(lines: &[RailLine], seed: u64, jitter: f64, to: Tick) -> Vec<RailLeg> {
+    let mut out: Vec<RailLeg> = Vec::new();
+    for (li, line) in lines.iter().enumerate() {
+        let mut rng = Jitter(seed ^ (li as u64 + 1).wrapping_mul(0xD6E8_FEB8_6659_FD93));
+        let n = line.trains.max(1);
+        let mut free = vec![0u64; n as usize];
+        let mut leg = 0u64;
+        for (si, s) in line.service.iter().enumerate() {
+            let end = line.service.get(si + 1).map_or(to, |n| n.from.min(to));
+            if s.per_day <= 0.0 {
+                continue;
+            }
+            let h = TICKS_PER_DAY as f64 / s.per_day;
+            let mut t = s.from.0 as f64 + h * rng.next();
+            while t < end.0 as f64 {
+                let back = (leg / n) % 2 == 1;
+                let (k, train) = if line.trains == 0 {
+                    (0, ((li as u64 + 1) << 40) | (leg + 1))
+                } else {
+                    let k = leg % n;
+                    (k as usize, ((li as u64 + 1) << 40) | (k + 1))
+                };
+                leg += 1;
+                let mut depart = t.round() as u64;
+                if line.trains > 0 {
+                    depart = depart.max(free[k]);
+                }
+                let path = &line.paths[s.path];
+                let len = if back {
+                    let rev: Vec<(f64, f64)> = path.iter().rev().copied().collect();
+                    path_len(&rev)
+                } else {
+                    path_len(path)
+                };
+                let duration = (len / TRAIN_SPEED).ceil() as u64;
+                free[k] = depart + duration + DWELL_TICKS;
+                out.push(RailLeg {
+                    line: li,
+                    path: s.path,
+                    back,
+                    train,
+                    depart: Tick(depart),
+                    duration,
+                });
+                t += h * (1.0 + jitter * (2.0 * rng.next() - 1.0));
+            }
+        }
+    }
+    out
+}
+
 /// Every pass and arrival the `lines` make before `to`, in time order. Each train's headway is
 /// jittered uniformly by up to `jitter` of itself (MZB-330 uses 0.4), from `seed`; a pass is the
 /// sample nearest the den, reported when the train leaves the circle, for every den the sampler
@@ -2428,65 +2859,121 @@ pub fn rail_events(
     to: Tick,
 ) -> Vec<(Tick, RailEvent)> {
     let mut out: Vec<(Tick, RailEvent)> = Vec::new();
-    for (li, line) in lines.iter().enumerate() {
-        let mut rng = Jitter(seed ^ (li as u64 + 1).wrapping_mul(0xD6E8_FEB8_6659_FD93));
-        let shapes: Vec<[(f64, Vec<Crossing>); 2]> = line
-            .paths
-            .iter()
-            .map(|p| {
-                let back: Vec<(f64, f64)> = p.iter().rev().copied().collect();
-                [leg_shape(p, dens), leg_shape(&back, dens)]
-            })
-            .collect();
-        let mut leg = 0u64;
-        for (si, s) in line.service.iter().enumerate() {
-            let end = line.service.get(si + 1).map_or(to, |n| n.from.min(to));
-            if s.per_day <= 0.0 {
+    let shapes: Vec<Vec<[Shape; 2]>> = lines
+        .iter()
+        .map(|line| {
+            line.paths
+                .iter()
+                .map(|p| {
+                    let back: Vec<(f64, f64)> = p.iter().rev().copied().collect();
+                    [leg_shape(p, dens), leg_shape(&back, dens)]
+                })
+                .collect()
+        })
+        .collect();
+    for leg in rail_legs(lines, seed, jitter, to) {
+        let line = &lines[leg.line];
+        let depart = leg.depart.0;
+        let (duration, hits) = &shapes[leg.line][leg.path][usize::from(leg.back)];
+        for c in hits {
+            let den = dens[c.den];
+            let exit = depart + c.exit;
+            if exit < den.since.0 {
                 continue;
             }
-            let h = TICKS_PER_DAY as f64 / s.per_day;
-            let mut t = s.from.0 as f64 + h * rng.next();
-            while t < end.0 as f64 {
-                let back = (leg % 2) as usize;
-                leg += 1;
-                let depart = t.round() as u64;
-                let train = ((li as u64 + 1) << 40) | leg;
-                let (duration, hits) = &shapes[s.path][back];
-                for c in hits {
-                    let den = dens[c.den];
-                    let exit = depart + c.exit;
-                    if exit < den.since.0 {
-                        continue;
-                    }
-                    out.push((
-                        Tick(exit),
-                        RailEvent::Pass(boundary::RailPass {
-                            faction: den.key,
-                            train,
-                            owner: line.owner,
-                            dimension: 0,
-                            pos: (c.at.0, line.y, c.at.1),
-                            entry: (depart + c.entry) as i64,
-                            exit: exit as i64,
-                        }),
-                    ));
-                }
-                let (from, to_end) = if back == 0 {
-                    (line.a, line.b)
-                } else {
-                    (line.b, line.a)
-                };
-                out.push((
-                    Tick(depart + duration.ceil() as u64),
-                    RailEvent::Arrive(RailCall {
-                        train,
-                        line: Some((from, to_end)),
-                    }),
-                ));
-                t += h * (1.0 + jitter * (2.0 * rng.next() - 1.0));
-            }
+            out.push((
+                Tick(exit),
+                RailEvent::Pass(boundary::RailPass {
+                    faction: den.key,
+                    train: leg.train,
+                    owner: line.owner,
+                    dimension: 0,
+                    pos: (c.at.0, line.y, c.at.1),
+                    entry: (depart + c.entry) as i64,
+                    exit: exit as i64,
+                }),
+            ));
         }
+        let (from, to_end) = leg.ends(lines);
+        out.push((
+            Tick(depart + duration.ceil() as u64),
+            RailEvent::Arrive(RailCall {
+                train: leg.train,
+                line: Some((from, to_end)),
+            }),
+        ));
     }
     out.sort_by_key(|e| e.0);
     out
+}
+
+// ---- the lurk table (M8): what the Java side keeps of the engine's lurks ------------------------
+
+/// Java's lurk table (MZB-354, MZB-371): one entry for each lurking band, by agent, from the
+/// AMBUSH_SPOT that put it there to the one with the removed flag. It lives for one session.
+#[derive(Clone, Debug, Default)]
+pub struct LurkTable {
+    spots: BTreeMap<u64, boundary::AmbushSpot>,
+}
+
+impl LurkTable {
+    /// Hears one command. A spot adds its agent's lurk (or replaces it: the newest wins), the
+    /// removed flag drops it. Returns the spot of a lurk added, `None` for anything else.
+    pub fn hear(&mut self, cmd: &Cmd) -> Option<boundary::AmbushSpot> {
+        let Cmd::AmbushSpot(s) = cmd else {
+            return None;
+        };
+        if s.flags & boundary::AMBUSH_REMOVED != 0 {
+            self.spots.remove(&s.agent);
+            None
+        } else {
+            self.spots.insert(s.agent, *s);
+            Some(*s)
+        }
+    }
+
+    /// A new session: the table is empty.
+    pub fn clear(&mut self) {
+        self.spots.clear();
+    }
+
+    pub fn len(&self) -> usize {
+        self.spots.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.spots.is_empty()
+    }
+
+    pub fn get(&self, agent: u64) -> Option<&boundary::AmbushSpot> {
+        self.spots.get(&agent)
+    }
+}
+
+/// The tick the train of `leg` passes a lurk's track point, if it passes within the spot's reach
+/// (MZB-371): the first sampler tick at or after the leg's nearest approach to the point, as the
+/// timetable puts it there. The leg is a straight run along its polyline at [`TRAIN_SPEED`].
+pub fn pass_tick(lines: &[RailLine], leg: &RailLeg, spot: &boundary::AmbushSpot) -> Option<Tick> {
+    let path = leg.polyline(lines);
+    let (px, pz) = (spot.track.0, spot.track.2);
+    let mut best: Option<(f64, f64)> = None;
+    let mut before = 0.0;
+    for s in path.windows(2) {
+        let (dx, dz) = (s[1].0 - s[0].0, s[1].1 - s[0].1);
+        let l = dx.hypot(dz).max(1e-9);
+        let f = (((px - s[0].0) * dx + (pz - s[0].1) * dz) / (l * l)).clamp(0.0, 1.0);
+        let (qx, qz) = (s[0].0 + dx * f, s[0].1 + dz * f);
+        let d = (px - qx).hypot(pz - qz);
+        if best.is_none_or(|b| d < b.0) {
+            best = Some((d, before + l * f));
+        }
+        before += l;
+    }
+    let (d, arc) = best?;
+    if d > f64::from(spot.reach) {
+        return None;
+    }
+    let step = SAMPLE_TICKS as f64 * TRAIN_SPEED;
+    let ticks = ((arc / step).ceil() as u64 * SAMPLE_TICKS).min(leg.duration);
+    Some(Tick(leg.depart.0 + ticks))
 }

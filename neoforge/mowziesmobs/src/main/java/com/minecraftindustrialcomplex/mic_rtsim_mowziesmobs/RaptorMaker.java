@@ -32,6 +32,12 @@ final class RaptorMaker implements ConflictBodies.Maker {
     /** The followers a raptor brings: the jar makes 4 or 5, and §4.13's 2.6 for a pack fits 4. */
     static final int PACK = 4;
 
+    /** A raptor travels as a pack (MZB-469): the column gives each its own stack, a pair abreast and well apart. */
+    @Override
+    public boolean pack() {
+        return true;
+    }
+
     @Override
     public Mob make(ServerLevel level, double x, double y, double z, float yaw, List<Mob> extras) {
         if (level.getDifficulty() == Difficulty.PEACEFUL)

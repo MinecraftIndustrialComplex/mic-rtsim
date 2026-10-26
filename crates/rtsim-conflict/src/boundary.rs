@@ -147,6 +147,9 @@ pub const LINE_NOTHING: u8 = 2;
 pub const LINE_STALE: u8 = 3;
 /// CHIEF_PAID flags.
 pub const PAID_STRAY: u32 = 1;
+/// Paid to the chief's puppet with its band away: the slot is the chief slot, generation 0
+/// (MZB-819).
+pub const PAID_PUPPET: u32 = 2;
 /// CHIEF_STATE and CHIEF_BODY flags.
 pub const CHIEF_CRYSTAL: u32 = 1;
 /// DIFFICULTY values (Minecraft's `Difficulty` ids).
@@ -495,7 +498,7 @@ pub struct ChiefPaid {
     pub faction: u64,
     pub slot: u32,
     pub generation: u32,
-    /// `PAID_STRAY`.
+    /// `PAID_STRAY`, or `PAID_PUPPET` (the chief slot, generation 0).
     pub flags: u32,
     pub player: Uuid,
     pub op: u64,
@@ -845,6 +848,49 @@ pub struct BandMarch {
     pub waypoints: Vec<(i32, i32, i64)>,
 }
 
+impl BandMarch {
+    /// Where the band is at game tick `t`, in the route's chart (MZB-454): the one position rule
+    /// the engine's `party_chart_pos` and Java's `MarchPath.chartAt` share.
+    ///
+    /// - None with no waypoint; the first waypoint while mustering; the last while waiting or
+    ///   fighting.
+    /// - Out and home: the segment `s` is the largest index at most `len - 2` whose tick is at
+    ///   most `t` (0 when none), and the position is `party_chart_pos`'s arithmetic on it: its
+    ///   start when `t1 <= t0` or `t <= t0`, its end when `t >= t1`, else each axis
+    ///   `(a + (b - a) * fr) as i32`, which truncates toward zero as Java's `(int)` does.
+    ///
+    /// The result is in the chart: `Conflict::party_pos` folds it into the canonical cell, Java's
+    /// `MarchPath.at` folds the block centre.
+    pub fn chart_pos(&self, t: i64) -> Option<(i32, i32)> {
+        let w = &self.waypoints;
+        let first = w.first()?;
+        let last = w.last()?;
+        match self.phase {
+            MARCH_MUSTERING => Some((first.0, first.1)),
+            MARCH_WAITING | MARCH_FIGHTING => Some((last.0, last.1)),
+            MARCH_OUT | MARCH_HOME => {
+                if w.len() < 2 {
+                    return Some((first.0, first.1));
+                }
+                let s = w[..w.len() - 1].iter().rposition(|q| q.2 <= t).unwrap_or(0);
+                let (a, b) = (w[s], w[s + 1]);
+                if b.2 <= a.2 || t <= a.2 {
+                    return Some((a.0, a.1));
+                }
+                if t >= b.2 {
+                    return Some((b.0, b.1));
+                }
+                let fr = (t - a.2) as f64 / (b.2 - a.2) as f64;
+                Some((
+                    (f64::from(a.0) + (f64::from(b.0) - f64::from(a.0)) * fr) as i32,
+                    (f64::from(a.1) + (f64::from(b.1) - f64::from(a.1)) * fr) as i32,
+                ))
+            }
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Cmd {
     Territory(Territory),
@@ -900,7 +946,7 @@ impl Cmd {
     }
 
     /// The agent a party's command addresses (dropped from the outbox at a session start, which
-    /// derives them again).
+    /// derives them again). An away CHIEF_BODY names its party's; a home one names none.
     pub fn agent(&self) -> Option<u64> {
         match self {
             Cmd::Envoy(c) => Some(c.agent),
@@ -909,6 +955,7 @@ impl Cmd {
             Cmd::Recall(c) => Some(c.agent),
             Cmd::AmbushSpot(c) => Some(c.agent),
             Cmd::March(c) => Some(c.agent),
+            Cmd::ChiefBody(c) if c.agent != 0 => Some(c.agent),
             _ => None,
         }
     }
@@ -2440,6 +2487,18 @@ pub(crate) mod tests {
         assert_eq!(b.len(), 408);
     }
 
+    /// The sample march's bytes, pinned. Java's `MarchPathTest` decodes the same hex, so a layout
+    /// drift on either side fails a test (MZB-720).
+    pub(crate) const SAMPLE_MARCH_HEX: &str = "0b888800030000000100000000000000050000000000000004000000010000004d0000000000000002000000030201000000000000000000600900000000000002000000000000000100000008000000020000000400000084030000e8030000600900000000000052030000c00300001c0c000000000000bc0200000c0300002823000000000000";
+
+    #[test]
+    fn a_march_record_is_the_bytes_java_pins() {
+        let mut b = Vec::new();
+        encode_cmd(1, &cmds().pop().unwrap(), &mut b);
+        let hex: String = b.iter().map(|x| format!("{x:02x}")).collect();
+        assert_eq!(hex, SAMPLE_MARCH_HEX);
+    }
+
     #[test]
     fn faction_found_carries_the_census_in_its_reserved_word() {
         let mut b = Vec::new();
@@ -2796,5 +2855,69 @@ pub(crate) mod tests {
         // The retired id decodes as nothing.
         b[0..2].copy_from_slice(&0x0092u16.to_le_bytes());
         assert_eq!(decode_obs(&b), Err(CodecError::Unknown(0x0092)));
+    }
+
+    fn march_on(phase: u8, waypoints: Vec<(i32, i32, i64)>) -> BandMarch {
+        BandMarch {
+            agent: 5,
+            revision: 1,
+            dimension: 1,
+            faction: 77,
+            culture: 2,
+            kind: 3,
+            phase,
+            flags: 0,
+            partner: 0,
+            muster_end: 0,
+            units: Vec::new(),
+            waypoints,
+        }
+    }
+
+    /// MZB-454, MZB-477: the march's position rule, the flat vector. Out, route (0, 0), (100, 37),
+    /// (100, -50) at ticks 1000, 1100, 1200. The -6 is truncation toward zero, not floor.
+    #[test]
+    fn a_march_is_placed_by_the_party_chart_pos_rule() {
+        let m = march_on(
+            MARCH_OUT,
+            vec![(0, 0, 1_000), (100, 37, 1_100), (100, -50, 1_200)],
+        );
+        for (t, want) in [
+            (999, (0, 0)),
+            (1_000, (0, 0)),
+            (1_050, (50, 18)),
+            (1_100, (100, 37)),
+            (1_150, (100, -6)),
+            (1_200, (100, -50)),
+            (1_300, (100, -50)),
+        ] {
+            assert_eq!(m.chart_pos(t), Some(want), "tick {t}");
+        }
+        // Home walks the same way: the rule is the phase's two arms, not its number.
+        let h = march_on(MARCH_HOME, m.waypoints.clone());
+        assert_eq!(h.chart_pos(1_150), Some((100, -6)));
+        // Mustering is the route's first point, whatever the time; waiting and fighting are its
+        // last.
+        let w = vec![(0, 0, 1_000), (100, 37, 1_100), (100, -50, 1_200)];
+        assert_eq!(
+            march_on(MARCH_MUSTERING, w.clone()).chart_pos(1_150),
+            Some((0, 0))
+        );
+        assert_eq!(
+            march_on(MARCH_WAITING, w.clone()).chart_pos(0),
+            Some((100, -50))
+        );
+        assert_eq!(march_on(MARCH_FIGHTING, w).chart_pos(0), Some((100, -50)));
+        // No waypoint: no place. One waypoint out: that one.
+        assert_eq!(march_on(MARCH_OUT, Vec::new()).chart_pos(5), None);
+        assert_eq!(
+            march_on(MARCH_HOME, vec![(7, -9, 40)]).chart_pos(500),
+            Some((7, -9))
+        );
+        // A segment of no duration holds its start (`t1 <= t0`), and the walk goes on after it.
+        let z = march_on(MARCH_OUT, vec![(0, 0, 10), (50, 50, 10), (90, 10, 30)]);
+        assert_eq!(z.chart_pos(9), Some((0, 0)));
+        assert_eq!(z.chart_pos(10), Some((50, 50)));
+        assert_eq!(z.chart_pos(20), Some((70, 30)));
     }
 }

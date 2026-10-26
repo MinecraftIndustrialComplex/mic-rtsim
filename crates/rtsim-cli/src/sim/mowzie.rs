@@ -19,6 +19,8 @@
 //!
 //! Exit 1 if a check fails, 64 on bad arguments.
 
+mod lurk;
+mod march;
 mod rail;
 
 use std::path::PathBuf;
@@ -52,8 +54,8 @@ const RUNS: [(u32, &str, &str, &str); 13] = [
     (
         1,
         "a line through a range: notice, raid, repeat, invasion; ambushes; a kill and the heir",
-        "M2, the ladder on kills: notice, raid, repeat, invasion; M7, the meter on 4, 12, 24 and 50 legs a day and a trunk of 14 lines",
-        "ambushes M8",
+        "M2, the ladder on kills: notice, raid, repeat, invasion; M7, the meter on 4, 12, 24 and 50 legs a day and a trunk of 14 lines; M8, the ambushes on a 12- and a 24-a-day line with two trains each",
+        "",
     ),
     (
         2,
@@ -96,8 +98,8 @@ const RUNS: [(u32, &str, &str, &str); 13] = [
     (
         8,
         "save and restore mid-lurk and mid-reconcile",
-        "M4, a reconcile in flight: saved and loaded, voided by a restart and ordered again",
-        "the lurk, a cowed time and a meter's decay M8",
+        "M4, a reconcile in flight: saved and loaded, voided by a restart and ordered again; M8, a lurk, a cowed time and a meter's decay: saved and loaded, blob and paged, and a session restart",
+        "",
     ),
     (
         9,
@@ -112,14 +114,30 @@ const RUNS: [(u32, &str, &str, &str); 13] = [
          a grove's chaos with heirs and Invasions",
         "the Umvuthi's marches M10, held lines M5 and M9, the chief's casualties on a march M11",
     ),
-    (11, "an Invasion with its chief", "", "M10, M11"),
+    (
+        11,
+        "an Invasion with its chief",
+        "M10a, the grove's Invasion on the march record (in and out, 12.6), the chief killed away, \
+         a camp that comes in while out, the held throne body and seat, the re-binds, the arrival \
+         170 blocks from the only player, the fight that loses its watcher, the abstract dead \
+         counted once; M11a, the chief's own stack met on the road, at its fight and home, its \
+         hand-back home from Gone and Left, a payment to its puppet, its puppet killed as it \
+         floats home",
+        "",
+    ),
     (
         12,
         "the heir farmed for 60 years",
         "M9a, the Umvuthi killed as its heir stands: the wait and the rate at base 6 and 24",
         "",
     ),
-    (13, "the march record", "", "M10"),
+    (
+        13,
+        "the march record",
+        "M10a, the march audit over runs 1, 5, 10 and 11 stepped 20 ticks at a time, no census \
+         ends a party, the seams of an x-wrapped and a glued world",
+        "",
+    ),
 ];
 
 struct Opts {
@@ -221,6 +239,7 @@ fn main(o: Opts) -> i32 {
             1 => {
                 let mut out = den_ladder(o.seed, slice);
                 rail::meter(&mut out.checks);
+                lurk::ambushes(&mut out.checks);
                 out
             }
             2 => rail_run(2, slice, rail::cut),
@@ -235,9 +254,15 @@ fn main(o: Opts) -> i32 {
                 o
             }
             7 => den_kills(slice),
-            8 => reconcile_in_flight(slice),
+            8 => {
+                let mut out = reconcile_in_flight(slice);
+                lurk::trips(&mut out.checks);
+                out
+            }
             10 => camp_reconciler(o.seed, slice),
+            11 => march::invasion_marches(slice),
             12 => heir_farmed(slice),
+            13 => march::march_record(o.seed, slice),
             _ => RunOut {
                 run: *n,
                 built: false,
@@ -382,8 +407,7 @@ fn feed(
             );
         }
         t = Tick(t.0 + HOUR);
-        c.run_until(w, &mut NoInfrastructure, t);
-        let _ = c.take_commands();
+        let _ = synth::march::advance(c, w, &mut NoInfrastructure, t);
         let x = c.feud(f, a);
         let s = x.map_or(Step::None, |x| x.step);
         if tr.rungs.last().map(|r| r.1) != Some(s) {

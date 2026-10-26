@@ -311,9 +311,11 @@ public final class UmvuthanaWorldGameTests {
                 })
                 .thenWaitUntil(() -> {
                     ConflictBridge.Party p = ConflictKit.party(agent[0]);
-                    check("the party stands", p != null && p.stacks().size() == 2);
-                    check("the warriors are placed", p.stacks().get(0).state() == ConflictBridge.StackState.PLACED && p.stacks().get(0).bodies().size() == 3);
-                    check("the raptor is placed", p.stacks().get(1).state() == ConflictBridge.StackState.PLACED && p.stacks().get(1).bodies().size() == 1);
+                    // The column (MZB-722): the warriors are a row of two and a row of one, the raptor a pack's one stack.
+                    check("the party stands: three stacks (" + (p == null ? "none" : p.stacks().size()) + ")", p != null && p.stacks().size() == 3);
+                    check("the warriors' first row is placed", p.stacks().get(0).state() == ConflictBridge.StackState.PLACED && p.stacks().get(0).bodies().size() == 2);
+                    check("their second row is placed", p.stacks().get(1).state() == ConflictBridge.StackState.PLACED && p.stacks().get(1).bodies().size() == 1);
+                    check("the raptor is placed", p.stacks().get(2).state() == ConflictBridge.StackState.PLACED && p.stacks().get(2).bodies().size() == 1);
                 })
                 .thenIdle(10)
                 .thenExecute(() -> {

@@ -60,6 +60,23 @@ public final class BridgeEvents {
         bus.addListener(EventPriority.LOWEST, false, net.neoforged.neoforge.event.level.BlockEvent.EntityPlaceEvent.class, BridgeEvents::onPlace);
         bus.addListener(BridgeEvents::onTagsUpdated);
         bus.addListener(BridgeEvents::onContainerClose);
+        // M11 (MZB-810, MZB-815): a floating puppet is not pushed by an explosion, and no band's puppet takes a portal.
+        bus.addListener(EventPriority.LOWEST, false, net.neoforged.neoforge.event.level.ExplosionKnockbackEvent.class, BridgeEvents::onKnockback);
+        bus.addListener(net.neoforged.neoforge.event.entity.EntityTravelToDimensionEvent.class, BridgeEvents::onTravel);
+    }
+
+    /** An explosion's push of an entity (MZB-810): zeroed for a floating puppet. Last, so no other listener's value outlives it. */
+    private static void onKnockback(net.neoforged.neoforge.event.level.ExplosionKnockbackEvent event) {
+        net.minecraft.world.entity.Entity e = event.getAffectedEntity();
+        if (!e.level().isClientSide() && com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictBridge.INSTANCE.zeroKnockback(e))
+            event.setKnockbackVelocity(net.minecraft.world.phys.Vec3.ZERO);
+    }
+
+    /** A trip to another dimension (MZB-815): cancelled for a band's puppet. */
+    private static void onTravel(net.neoforged.neoforge.event.entity.EntityTravelToDimensionEvent event) {
+        net.minecraft.world.entity.Entity e = event.getEntity();
+        if (!e.level().isClientSide() && com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictBridge.INSTANCE.cancelPortal(e))
+            event.setCanceled(true);
     }
 
     /** Damage really dealt to a puppet or a resident (HURT, PLAN.md §8.7). */

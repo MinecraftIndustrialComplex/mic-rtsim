@@ -5,7 +5,8 @@ MZB-#, and each slice takes ids from its own range so slices built side by side 
 M1 1 to 49, M2 50 to 99, M3 100 to 149, M4 150 to 199, M5 200 to 249, M6 250 to 299, M7 300 to 349,
 M8 350 to 399, M9 400 to 449, M10 450 to 499, M11 500 to 549, M12 550 to 599. Each slice writes only
 under its own heading. MZB-589 is lent from M12's range to M6 (the BAND_CASUALTIES op id, which rides with
-M6's branch); M12 skips it.
+M6's branch); M12 skips it. MZB-700 to 719 are M10's review fixes (its range was full).
+MZB-720 to 749 are M10b's and M10c's.
 
 ## M1 Records
 
@@ -3987,6 +3988,14 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
   Handle<Party>) -> bool` is true for a war party (`kind.is_war()`) with a Track target in `Phase::Waiting`
   or `Phase::Fighting`. A player who comes on the lurk starts a watched fight there (`start_fight`, 3928,
   sets Fighting), and the lurk goes on through it: a train may pass mid-fight.
+  - Amendment (built, step 1): no engine path reaches Fighting with a Track target. `arrive`'s Track arm
+    comes before the arm that calls `start_fight`, and `wait_over` fights only a Siege. A player who comes on
+    a lurk is `seen` (the band is embodied and Waiting, its epoch bumped), not in a fight. `lurking` still
+    covers Fighting, as the design says, because it costs nothing and a later path to a fight there would
+    otherwise end no lurk; `tests/lurk.rs` forces the phase to test it. The conservative choice, taken
+    without asking.
+  - Amendment (built): the old arrive note "waits at the track by ..." is `lurk_start`'s note, "the raid
+    lies in wait by the track at (x, z)" (the party kind's name), so a Track arrival notes once.
 - **MZB-352** (ending a lurk): the same record with `AMBUSH_REMOVED`, sent first in `go_home` (3710) when
   `lurking(p)`, before it changes the phase or the target. Every end of a lurk passes through `go_home`, so
   that is the one place:
@@ -4000,8 +4009,21 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
 - **MZB-353** (resend): `resend_lurks()`, called from `resend_notices` (4625) after `replay_done`. It sends
   one AMBUSH_SPOT (flags 0) for each lurking party, in handle order. `session_start` drops agent commands,
   and Java's lurk table lives for one session, so a restart sends each lurk exactly once more.
+  - Amendment (built, step 1): `resend_lurks` first drops any AMBUSH_SPOT still queued (one a replayed
+    record made again), as `resend_notices` drops queued notices, so what is kept is what goes and a lurk
+    is never sent twice in a session. `lurk_start` and `lurk_end` are the only other pushers.
+  - Amendment (review A, P3): the host never reached that drop. `resend_notices_if_due` calls
+    `take_commands` first (rtsim-jni `conflict.rs`), which moves a replay-made AMBUSH_SPOT from the
+    engine's outbox into the link's queue, and the `retain` that followed dropped only Notices, so the
+    spot went out twice (harmless: same epoch, the later wins). The `retain` drops a queued
+    `Cmd::AmbushSpot` too (one that carries test names is a test's order and stays). The protocol test
+    is step 3's. `fix/replay-push`'s gate will also cover this (it holds the engine's commands until the
+    replay has caught up), but its `Outbox` has no `extend`, so when that branch merges `resend_lurks`
+    needs a push loop where it now calls `self.outbox.extend(lurks)`.
 - **MZB-354** (home): `home()`'s kept-row branch (about 3842) rewrites a Track target to `Pos(track)`, so a
   row kept after its party is home never reads as a lurk.
+  - Amendment (built, step 1): the removal went at `go_home`, so the kept row says nothing more. It keeps
+    phase Waiting with a bare-position target, and `lurking` is false for it.
 - **MZB-355** (TRAIN_PASSED): TrainPassed leaves `Conflict::later` for `train_passed(w, infra, tp, at)`.
   - The party is `Party::of_agent(tp.agent)`. It must exist, be `lurking`, and have `tp.epoch <=
     party.epoch`; otherwise `stats.stale`.
@@ -4011,11 +4033,55 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
     .below(1000) < ambush_milli` (500).
   - A hit calls `ambush` for `tp.train`. That is I24's attack (source Boss, strength 41.7, carry 64, cap
     10%, the industry's cooldown of 24,000 ticks per train per class, the loot destroyed).
-  - When it took more than 0 items, the engine sends `Cmd::TrainRobbed { faction: key, train }`.
+  - When it took more than 0 items (of any good: see MZB-356's review amendment), the engine sends
+    `Cmd::TrainRobbed { faction: key, train }`.
+  - Amendment (built, step 2): `ingest` passes `train_passed` the record's time as `at.max(now)`, and the
+    roll's stream slot takes that tick. The stale test is written as the design's: stale when the party
+    is gone, is not lurking, or `tp.epoch > party.epoch` (a watch bumps the party's epoch past the one
+    the spot carried, so an earlier epoch still counts). A Peaceful world never reaches the roll (its
+    bands are home, so the pass is stale), and `ambush`'s own `peace_held` arm stays as it was for the
+    on-the-way caller.
+  - Amendment (review B): the rtsim-jni protocol test
+    `a_pass_that_hits_robs_the_train_with_an_infrastructure_and_nothing_without_one` has the "with an
+    infrastructure" half back. A lurk is passed by 24 booked trains (1,280 of a declared good each) in a
+    session with the industry module on: 10 robberies, each of the party's carry (80, under a tenth of
+    1,280), 800 items in the industry's books, the engine's count and its TRAIN_ROBBED commands, and the
+    industry's cooldown on exactly the 10 trains robbed. The same passes in a session with the module off
+    are counted and rob nothing. With `with_infra` made to always hand `NoInfrastructure` the test fails at
+    "the roll hit on some of 24 passes, not all: 0". The good must be declared in Java's dictionary (an
+    undeclared one stalls the industry command queue, and the conflict queue behind it, so no
+    TRAIN_ROBBED goes out: found while writing the test).
 - **MZB-356** (ambush): `ambush` (3150) returns the items it took and takes the note's wording: "on the way"
   for the on-the-way caller, "by the track" for a lurk. Its Peaceful arm (`peace_held`) is unchanged.
+  - Amendment (built, step 2): `ambush` is `pub(crate)` and takes the wording as `how: &str`; it returns 0
+    for Peaceful and for no hit, so only a robbery of something sends TRAIN_ROBBED.
+  - Amendment (review A, P2): it returns the items of any good the cargo held, not those of the world's
+    goods alone. Cargo that maps to no good of the world's still goes to `ledger.unmapped` as before, and
+    still leaves the note's count and `items_from_districts` at the world's goods, but the train is short
+    and the roar goes (MOWZIE.md's cue is the cargo gone). `take_industry_loot` returns `(mapped, all)`;
+    the district raid reads `mapped`. A hit that found an empty cargo (0 items) sends none. The tests
+    are `a_robbery_of_nothing_sends_no_train_robbed` (skipped; empty cargo) and
+    `a_robbery_of_unmapped_goods_still_sends_train_robbed`.
 - **MZB-357** (persistence): nothing new. A lurk is derived from the party's phase, kind and target, and
   Track has been persisted since M7. The pages stay at M7's format.
+  - Amendment (built, step 2; review A adds the fifth): the new stats (`lurks`, `lurks_ended`, `passes`,
+    `passes_watched`, and `lurk_robberies`, the TRAIN_ROBBED sent) are appended to the saved stats list. That list is length-prefixed and read with `unwrap_or(0)`, so a page
+    written before them reads zeros and no reader breaks; the page layout is M7's, and a save is four
+    varints longer. Every state hash moves for that reason alone (stats are hashed with the state), so
+    `sim conflict` and `sim mowzie` regenerate with only their state hashes and the new stat fields
+    different.
+  - Amendment (built, steps 1 and 2): the Rust tests are `crates/rtsim-conflict/tests/lurk.rs`. The
+    design's `a_recall_does_not_end_a_lurk` and `a_lurk_goes_on_through_a_watched_fight` are one test
+    (`a_fight_at_the_track_is_still_a_lurk_and_a_session_turns_it_back_to_waiting`, the phase forced:
+    MZB-351's amendment). The cooldown test runs the real industry engine through `IndustryLink` with two
+    booked legs, so the 24,000 ticks per train per class are the industry's own.
+  - Amendment (review A, P3): three more lurk-end tests. `a_player_leaving_a_watched_lurk_recalls_it_
+    without_ending_it` (ledger 8: `player_left` on an embodied lurk, Waiting and forced Fighting, sends
+    one Recall and no removal). `a_seen_lurk_takes_passes_at_the_epoch_its_spot_carried` (a real
+    `Ev::Seen` from a player's area; passes at the spot's epoch and the band's count, one of a later epoch
+    is stale; the removal goes at the band's new epoch). `a_band_whose_bodies_die_at_the_camp_takes_its_
+    lurk_down_once` (the camp harness: a band at a track with every body left behind, killed by
+    CAMP_DEATH, ends through `member_died`'s `go_home`).
 - **MZB-358** (news): an ambush makes no news. An unwatched one has no witness (CL-D61). A watched one is
   seen in the world by its watcher, and the engine books no first-hand report for it, as it books none for
   a puppet's blows. The owner learns from the short train and the roar (MZB-366). A rout of a lurking party
@@ -4028,6 +4094,20 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
   - The table is cleared at session end.
   - The create plugin reads it through `RtsimApi.lurks()` (an unmodifiable view) and
     `RtsimApi.lurkBody(long agent)` (the live puppet, or null).
+  - Amendment (built, step 5): the table is a `LinkedHashMap<Long, Lurk>` by agent (iteration in begin
+    order), read through an unmodifiable view. It is dropped by agent, never by epoch (a `seen` lurk's passes
+    carry E against the party's E+1, MZB-371's list). It is cleared by `sessionStarted`, `sessionStopping`,
+    `sessionFailed`, `serverStopped` and `switchedOff`, and `idle()` counts it and the pending roars, so
+    the bridge does not sleep with either. The lurk's dimension is read from the names dictionary without
+    the level, so a spot for a level not loaded yet is kept. `lurkBody` answers a live puppet of a party that
+    is not recalling.
+  - Amendment (review C, item 4; compiled, not run): the bridge's `held` flag, which a switch-off reads to
+    decide whether there is anything to clear, was `!byAgent.isEmpty() || ...` without the lurks and the
+    pending roars. It is now `held = !idle()`, and `idle()` counts both (as the amendment above says it did), so
+    a module switched off with only a lurk or a pending roar left still runs `switchedOff`, which captures the
+    parties and calls `clearLurks()`. `trainCalled` returns at once when the conflict module is off (a module
+    that is off plays no roar for a train arriving). The `floors` map (a remembered floor y by agent) is
+    deleted with its three removals: nothing ever put into it or read it.
 - **MZB-360** (placement): a stack of a lurking agent's BAND_MATERIALIZE is placed at the spot, not on the
   arc.
   - Its y comes from a scan from track y + 4 down to track y - 8 for a block with a sturdy top face
@@ -4036,6 +4116,123 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
     z)`.
   - Then `restrictTo(spot, 2)` and the hold (MZB-361). A puppet already live when AMBUSH_SPOT comes is held
     at once and walks to the spot.
+  - Amendment (built, step 5): a lurking agent's stacks are anchored at the spot in `materialize` (the
+    anchor on the spot, offsets zeroed, the heading toward the track), not walked there. BAND_STEER is
+    ignored while the agent has a lurk. A new AMBUSH_SPOT for a live party re-anchors its stacks, and
+    releases and re-holds its puppets only if the spot moved.
+  - Amendment (the re-check's P2, the spot contract covered one geometry only; compiled and the JUnit run, the
+    GameTests not run): the engine's spot (`spot_toward`: 5 whole blocks along the line from the track point
+    to the den) is 5 from the rail and square to it only for a rail along an axis and a den square to it.
+    For a rail on a diagonal a due-north den puts it 3.5 off the rail; a den off the line by 4 puts it 4 off;
+    a den within a block of the line gives 5 along +x, which is on the rail for an east-west one. The numbers
+    of MZB-365's contract are about the body's distance to the rail's centre line, so Java now places the
+    body and the engine's spot only says which side of the rail:
+    - Core `RailAxes` (`Vec3 at(ServerLevel, Vec3 point)`: the rail's horizontal direction at the point, any
+      length or sign, or null), registered with `RtsimApi.registerRailAxes` (kept in `LurkSpots`). The core
+      cannot name Create; the create plugin registers `RailDirections`. Nothing registered, or null: the
+      engine's spot with the floor scan above, as before.
+    - `LurkGeometry.candidates` (pure doubles, so JUnit runs it: `LurkSpotsTest`) returns block centres, best
+      first. A body's centre can rest only on a block's centre (the navigation ends a wide body's path there,
+      the wide-body fix in MZB-361's amendment), so the point is the block centre whose distance to the rail's
+      centre line is within `LATERAL_SLACK` (0.4) of `SPOT_BLOCKS` and whose offset along the rail from the
+      track point is at most `ALONG_MAX` (1.5; the strike does not care where along the rail), nearest to both
+      first, ties by x then z. On the den's side first (the sign of the spot's offset from the line along the
+      normal `(-az, ax)`), then the other. A spot within `ON_LINE` (0.5) of the line takes the left-hand
+      normal first. Why 0.4: the block centres of a diagonal's side lie on lines `1/sqrt 2` = 0.707 apart,
+      so the nearest is up to 0.354 off for a line that misses the lattice (a JUnit test sweeps the track
+      point's fraction). Create's own rails run through block centres, so the real figures are exact: 5.0
+      for XO and ZO, 4.95 (7/sqrt 2) for PD and ND.
+    - `ConflictBridge.holdPoint` takes the first candidate that is standable (`standAt`: the column's chunk
+      ticks entities, a block with a sturdy top face between the track's y + 4 and y - 8 with the body's box
+      free above it, no heightmap fallback) plus the slot's offset in its stack. It is used at spawn
+      (`spawn` makes the body there: no walk) and by `holdLurks` for a body that has no hold point yet.
+      `Slot.holdAt` is set at spawn; `Slot.place` and `Slot.lag` use it, so `ConflictFollowGoal` (LEASH
+      6.0) does not walk a member back to the engine's spot. `ConflictKit.lurkHold(agent)` reads it (GameTests only; it was on `RtsimApi` until the second re-check).
+    - Refused: neither side has a standable candidate. At spawn `spawn` returns false, the stack is tried
+      again after `RETRY_FAILED` (100) ticks, and `lurksRefused` counts each; at `holdLurks` the body is
+      despawned and the stack waits `REQUEUE_COOLDOWN` (200). There was no refusal before: the choice is
+      new (a lurk with no floor beside the rail costs the party its ambush, as a stack with no floor costs
+      it its placing).
+    - Create's `RailDirections` scans the 3 x 3 x 3 blocks about the track point for `ITrackBlock`
+      pieces (`TrackShape.getAxes()`: XO, ZO, PD, ND, the slopes and the portal shapes have one axis, the
+      `CR_*` crossings two) and takes the line through a block's centre nearest the point, its horizontal
+      direction; null when the nearest line is farther than `ON_RAIL` (0.75), when a crossing is within it,
+      when two lines of different directions are as near as each other (`TIE` 0.05), or the chunk is not
+      loaded. Known gap: a bezier curve's middle has no block of its own, so a lurk on a curve keeps the
+      engine's spot (the contract holds there only as far as the engine's spot happens to be square to
+      the rail); a lurk at a curve's end piece uses that piece's axis.
+    - Tests (written and compiled, not run): `LurkSpotsTest` (JUnit, run: nine cases: square, oblique, on
+      the line, both diagonals over a sweep of fractions, order, no axis), `FrostmawGameTests` (an oblique
+      den, a den on the line, the den's side without a floor, neither side with a floor then the south laid
+      again: four tests with a stub `RailAxes` for an east-west rail), `RailDirectionsGameTests` (real
+      track blocks of each shape), and test 9's three variants in `RailFrostmawGameTests` (MZB-370).
+    - Forks: the hold point is the nearest block centre within 0.4 of 5.0, not exactly 5.0 (a body cannot
+      rest between blocks); "refused" is as above; the diagonal is covered by the JUnit geometry and the
+      provider's GameTest, not by a pass of test 9 on a diagonal rail (a diagonal fixture is a larger
+      (the contract is for the first body).
+  - Amendment (the second re-check's P3, embankments and cuttings, a curve's middle, a diagonal's corner;
+    compiled and the JUnit run, the GameTests not run):
+    - `standAt` takes a floor within `STAND_RISE` (2.0) of the rail's y, not the search of y + 4 down to y - 8:
+      a floor whose top is 3 or more above or below the rail is the rim of a cutting or the crown of an
+      embankment, a long walk from the rail and out of the strike's reach in the vertical (the swipe is 3D, and
+      the gate's 6.0 horizontal absorbs |dy| up to 2.5 only). Such a column is no candidate, so the other side
+      is tried, and with neither the lurk is refused as before. The no-axis path keeps `floorAt` (the heightmap
+      fallback of M5's placing), since there is no rail to be level with.
+    - With no axis known (a curve's middle, a crossing, no create plugin), `holdPoint` asks `RailAxes.trackNear(level,
+      point, radius)` (a default method, false) about the engine's spot at the track's height, with the radius the body's
+      half-width plus `LurkGeometry.RAIL_CLEARANCE` (1.5): 3.5 for the 4-wide Frostmaw, the least at which its box
+      could reach the rail's clearance. A rail within that is refused (the same refusal as a side with no floor);
+      none, and the engine's spot stands, so the no-plugin case works as before. Create's `RailDirections.trackNear`
+      scans the blocks within the radius (centre to point, horizontal) and 3 blocks of height for an `ITrackBlock`
+      or a `FakeTrackBlock`, the block Create fills a curve's span with (a bezier piece has an `ITrackBlock` only
+      at its two ends). The refusal is a fork: the alternative, placing a body near a curve by the nearest track
+      segment's direction, needs the bezier's tangent per segment (not read here), and a refused lurk is retried
+      (`RETRY_FAILED`) and only costs the party its ambush at that point of the line.
+    - A diagonal rail's centre line meets the corner of a square box, not its side, so the Frostmaw's 2.0 half-width
+      is 2.83 against the rail. The candidate window is asymmetric for a rail not along an axis: far slack 0.4
+      (unchanged), near slack `OBLIQUE_NEAR_SLACK` (0.17): 5.0 - 0.17 - 0.5 - 2.83 = 1.50, the clearance, by
+      construction rather than by the 4.95 the block lattice happens to give (1.61 clear). `LurkGeometry.nearSlack(axis)`
+      is the pick; an axis rail keeps the 0.4 both sides. Off Create's lattice (the track point not on the rail's
+      line) the den's side may have no block centre in the narrower window; the other side, the mirror lattice,
+      always has one (a JUnit sweep checks it), so the body goes there and the lurk is not refused for it.
+    - Tests (written and compiled, not run): `LurkSpotsTest` (the sweep above, three diagonal cases, `nearSlack`),
+      `FrostmawGameTests` (a cutting on the den's side stands the body on the other; no axis and a rail near is
+      refused with the radius and point asserted, then the engine's spot once none is near), `RailDirectionsGameTests`
+      (`trackNear` at a crossing, the corner of two lines, a fake track block, 3 blocks of height and bare ground).
+  - Amendment (the second re-check's P3, a refusal after the claim; compiled, not run): `spawn` computed the hold point
+    only in the branch with no camp body to hand off, and after `reconciler.claim`. A refusal there left the SET_OUT
+    it had claimed (the current slot's, when the claimed body was not a `Mob`) marked done for the tick, and the
+    hand-off branch never asked for a hold point at all: a camp Frostmaw a player can see was handed to a puppet,
+    which `holdLurks` then found no point for and discarded (its camp body already removed with its records on a
+    marker). Now `spawn` asks `holdPoint` first for every slot of a lurking party, and refuses the whole stack
+    (`lurksRefused`, the made bodies discarded, the earlier slots' claims released, `RETRY_FAILED`) before it claims a
+    camp body. The SET_OUT is then unclaimed, and the tick's end resolves it as the take it is for a line no
+    materialize claimed (§4.9: the engine gets fresh puppets when the party is seen later). The camp body a player
+    can see is still removed: taken, with its records on a marker, not handed to a puppet that is then discarded
+    unseen. (The third check found the first wording of this amendment, "nothing discarded", wrong.) The residual is
+    what a take loses against a hand-off: the body's health and crystal state (the fresh puppet starts whole); the
+    engine takes any found body of a `Left` slot whose party is not mustering (camp.rs, the census reconcile), so
+    only an engine check of the hold point before the set-out would leave the body in its camp. That is backlog; M8
+    makes no engine change. A hand-off with a lurk
+    sets the hold point at spawn (the puppet starts where the camp body stood and the hold walks it to the point).
+    `holdLurks` keeps its own refusal for a body that stood before its lurk was known (or whose spot moved), a body
+    a player may see as well; it despawns and requeues as before (the lurk arriving after a placed party is not a
+    case the engine makes: AMBUSH_SPOT precedes BAND_MATERIALIZE). Fork: the take instead of the hand-off is the
+    only outcome a refused hold can have, since the camp body cannot both stay in the camp and be handed over; the
+    alternative, keeping the SET_OUT claimed and answering it later, would hold the camp's count open for the
+    retry. Test (written and compiled, not run): `MowzieGameTests.aLurkRefusedAtItsPlacingClaimsNoCampBodyAndTheSetOutIsATake`
+    (no hand-off made, one taken, the camp holds nothing, no puppet stands, the refusal counted).
+  - Amendment (the third check's P3, `trackNear` refused falsely; compiled and the JUnit run, the GameTests not run):
+    `RailAxes.trackNear` took the point at the track's height and looked 3 blocks above and 3 below it, so a body that
+    stands on an embankment or a bank 2 or 3 above a lower line (or beside a lower line on a cutting's far side) was
+    refused for a rail it could not touch. It is now `trackNear(level, point, radius, height)`: `point` is the body's
+    feet, as `holdPoint` asks it (the floor `floorAt` finds at the engine's spot, no longer the track's y), and the
+    blocks that count are those from the feet's block up to `height` above it (the body's height: 4.0 for a Frostmaw);
+    a rail below the feet or above the head is not near. Radius unchanged (half the width and the rail clearance, 3.5).
+    `RailDirections.NEAR_HEIGHT` is gone. For the flat ground the tests lay the floor's top is the track's y, so the
+    point is the same one as before. Tests (written and compiled, not run): `RailDirectionsGameTests` (a rail at the
+    head's block counts, one above the head, one below the feet, and the fixture's own track 3 blocks under the feet,
+    do not), `FrostmawGameTests` (the point and the height asked).
 - **MZB-361** (Lurker): a new core interface, registered per entity type id with
   `RtsimApi.registerLurker(String entityType, Lurker l)` (an id string, as `BodyKinds.registerStandIn`
   takes, so it can be called in the plugin's constructor before the registries freeze). The core looks
@@ -4043,7 +4240,7 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
   ```java
   public interface Lurker {
       void hold(Mob mob, Vec3 spot);      // each server tick while it lurks
-      boolean strike(Mob mob, Vec3 at);   // start a strike at a carriage point; false if busy
+      boolean strike(Mob mob, Vec3 at, Vec3 motion); // start a strike at a carriage point that moves by motion a tick; false if busy
       void release(Mob mob);              // the lurk ended or the body left it
       void roar(Mob mob);                 // a train it robbed is gone
   }
@@ -4058,20 +4255,170 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
     - while a strike's swing runs (`getAnimation() == SWIPE_ANIMATION` and `getAnimationTick() <= 9`), it
       sets `yBodyRot`, `yRot` and `yHeadRot` to the strike's bearing.
   - `strike`: only in `NO_ANIMATION`. It records the bearing, turns the body, and calls
-    `AnimationHandler.INSTANCE.sendAnimationMessage(frostmaw, EntityFrostmaw.SWIPE_ANIMATION)`.
+    `AnimationHandler.INSTANCE.sendAnimationMessage(frostmaw, EntityFrostmaw.SWIPE_ANIMATION)`. The bearing
+    is toward where the point will be when the swing lands (MZB-365's second amendment), so it takes the
+    point's motion.
   - `release`: `setAlwaysActive(false)` and `clearRestriction()`.
   - `roar`: in `NO_ANIMATION`, `sendAnimationMessage(frostmaw, EntityFrostmaw.ROAR_ANIMATION)`. The jar
     plays its own roar sound in that animation.
   - Calling the jar's own animation is what MOWZIE.md §4.4 asks; the hold is new because the restriction
     does not hold an awake Frostmaw with a target (see the jar facts).
+  - Amendment (built, steps 5 and 7): the hold runs in `ConflictBridge.endOfTick` after the placings. A
+    slot's hold spot (`Slot.holdAt`) is set at its first hold from the placed x and z and the floor scan
+    (MZB-360). The core's `Lurkers.DEFAULT` restricts to the spot once (radius 2) and walks back beyond 4
+    blocks, strikes nothing and roars nothing. `FrostmawLurker` also sets `yBodyRotO` with the bearing and
+    keeps the strike's bearing in a `WeakHashMap`; it stops its navigation in any animation, so a swipe or a
+    roar is not walked out of. Registered in the plugin's constructor as
+    `RtsimApi.registerLurker("mowziesmobs:frostmaw", new FrostmawLurker())`.
+  - Amendment (review C, item 3; the GameTest is written and compiled, not run): the strike's bearing was
+    removed only in `release`, so it outlived its swing. `hold` pins the body to it during any plain swipe up
+    to tick 9, which includes the Frostmaw's own swipes at a player (the jar's `AnimationAreaAttackAI.tick`
+    turns the body to its target by up to 30 degrees a tick until the hit frame, and its area attack reads
+    `yBodyRot`): after one strike by a train, every later plain swipe at a player was held to the old
+    carriage's bearing and its 135 degree arc missed the player. Now `hold` removes the bearing as soon as the
+    animation is not a swipe, or is past `SWIPE_HIT_TICK`. A swipe-twice is not pinned and never was.
+    `aStrikesBearingDoesNotTurnTheFrostmawsOwnLaterSwipes` (mowziesmobs, batch `frostmaw_lurk_bearing`): a held
+    puppet strikes at a point east of it (yaw -90), the swing ends, a player (1000 health) stands 4 blocks west,
+    and at tick 8 or 9 of the first plain swipe at the player the body's `yBodyRot` is more than 90 degrees from
+    the strike's. Expected on the unfixed code: it stays at -90, and the test fails with "the swipe at the player
+    turned away from the strike's bearing -90.0 (yBodyRot -90.0, 0.0 degrees off it)" (pinned at the hold, or 30
+    degrees on at the worst before it). The 90 degree line is a guess at how far the jar's lookAt gets the body
+    in eight ticks: the 180 degree geometry makes the unfixed code fail by 60 degrees or more, and a fixed body
+    short of it would fail the test falsely; if the round shows that, lower it.
+  - Amendment (review C, item 4, D1; compiled, not run): the walk-back called `getNavigation().moveTo(spot)`
+    at every hold while the body was beyond `STAND`, a path search a tick for a body that was already on its
+    way. Now `hold` calls `moveTo`
+    only when the navigation is done, or its `getTargetPos()` is more than a block (squared distance 2.0) from
+    the spot's block, so one search serves the whole walk. A private `stop(Mob)` stops the navigation in the
+    swipe, other-animation and within-`STAND` branches as before (behaviour unchanged) and counts a live path it
+    drops (`nav.isDone()` false before the stop). `FrostmawLurker` keeps two counters, `searches` and `dropped`, and the core `Lurker` gains two
+    default methods, `pathSearches()` and `pathsDropped()` (zero for a Lurker that keeps no count), so the create
+    project's test reads them through `Lurkers.of(mob)` without naming a Mowzie class. The counters are
+    plugin-wide, not per body; the one test that reads them differences them over its hold. Test 9 logs the
+    held puppet's path searches and dropped paths per second (MZB-370's item 4 amendment). The body's own
+    goals search besides, and the jar's navigation (`MMPathNavigateGround`) may restart a path of its own: the
+    counters measure what the hold asked for, not the pathfinder's total. No threshold: a count, not a check.
+  - Amendment (the build lead's spot-distance choice, with a wide-body fix found writing it; compiled, not run):
+    - `STAND` is 0.5 (it was 1.5): the contract in MZB-365's fourth amendment. `Lurker.stand()` returns it.
+    - The walk-back aimed the navigation at the spot, and a wide body does not end a path on its target. A path's
+      last node is the box's corner and vanilla puts the body's centre `(int) (width + 1) * 0.5` past it
+      (`Path.getEntityPosAtNode`): 2.5 blocks for the 4-wide Frostmaw, against a spot at a block's centre. So a
+      walk back to the spot ended 2.0 blocks east and 2.0 south of it (toward the rail where the spot lies north
+      of the rail, as in test 9, and 2.8 blocks from the spot in any case). `hold` now aims at `spot - nodeOffset` on both axes (`(int) (width + 1) * 0.5 - 0.5`: 2.0 for the
+      Frostmaw, 0 for a body under a block wide), with accuracy 0 (`moveTo(x, y, z, 0, speed)`, the node itself,
+      not one short). The D1 test (no search while the navigation heads there) compares the navigation's target
+      block with that aimed block.
+    - A body that cannot get within `STAND` would search every tick. By my reading of the sources, not measured:
+      the Mowzie navigation finishes a path when the body is within 0.5 on each axis of the node's position (up to
+      0.71 off in a corner), its move control turns 7 degrees a tick (`new MMEntityMoveHelper(this, 7.0f)`) at a
+      speed attribute of 0.3, so it does not stop on a point and 0.5 is below what a walk leaves it at. A walk-back
+      is therefore searched at most once in `RESEARCH_TICKS` (10) ticks of one body (a game-time stamp by body, in
+      a weak map, dropped in `release`), and the figure test 9 logs (searches per second) shows the rate.
+    - Test 9 asserts where the body rests, not that it rests within `STAND` (MZB-370's amendment).
+  - Amendment (the re-check's P1, the hold lost to the jar's chase; compiled, not run): the core's `aim` gives a
+    held puppet the nearest player within 50 blocks, and the jar's `EntityFrostmaw.tick` then walks it to that
+    target every tick it is more than 5.5 blocks off (`getNavigation().moveTo(target, 1.0)`, 0.95 in the slam),
+    replacing the hold's path, while the hold looked again once in `RESEARCH_TICKS` (10): the puppet followed a
+    player to the rail. Inside the stand the jar's `getNavigation().stop()` each tick cleared the hold's path
+    and a fresh A* ran each tick. Fix: `EntityFrostmawMixin` wraps the three `PathNavigation.moveTo(Entity, double)`
+    and the three `PathNavigation.stop()` calls in `tick()` (counted in the jar by javap and cfr, `require = 3,
+    allow = 3`) with `@WrapOperation`; for a body that `FrostmawLurker.holds(f)` the chase is not made and the
+    stop is not made (`moveTo` returns false, as the jar reads a failed path). `holds` is a game-time stamp the
+    hold sets each tick it runs, good for 3 ticks (`HELD_FRESH`) and dropped in `release`, so a hold that lapses
+    without a release (a plugin or lurk table reset) frees the jar's chase again within three ticks, and a body
+    that is not held is never touched. While held the Frostmaw's `RandomStrollGoal` and `MoveTowardsRestrictionGoal`
+    are taken out of its goal selector (kept with their priority in the body's `Lurker.Memo`, put back by `release`; the second re-check's P2 below moved them from a weak map): the
+    stroll walks a body up to its restriction radius (2) from the spot's block, which is past `STAND` and toward
+    the rail. Not taken out: the jar's attack animations and their turn toward the target (a swipe at a player in
+    reach is the jar's own; the strike's bearing is MZB-361's amendment above). The 10 tick throttle stays: with
+    the chase gated it only limits repeated tiny searches when the body rests just beyond `STAND` (the navigation
+    ends a path within 0.5 on each axis, so a rest at 0.55 to 0.7 is possible; the round decides whether a rest
+    within `STAND` is reliable, and the steady-stretch check allows `STEADY_PATHS` = 2 new paths).
+  - Amendment (the re-check's P2; see MZB-360's): the `spot` the hold is given is the hold point, not the
+    engine's spot (`Slot.holdAt`, set at spawn), so the restriction, the walk-back and the leash are about the
+    place Java chose beside the rail.
+    `aHeldPuppetWalksBackToItsSpotAndDoesNotChaseItsTarget` (mowziesmobs, batch `frostmaw_lurk_chase`): a held
+    puppet with no crystal is moved 2 blocks north of its spot and set on a hovering 1000 health player 8
+    blocks west (past the jar's 5.5 and 6.5); it must be within `STAND` of the spot within 200 ticks, never
+    nearer the player than the spot is less `STAND`, and then for 100 ticks stay within `STAND` and be given at
+    most 2 new paths (a new non-null `getPath()` instance, polled each tick). Expected on the unfixed code: the
+    jar's chase runs nine ticks in ten and the puppet walks west: "back within 0.5 blocks of its spot in 200
+    ticks (... the closest it came to the spot ...)" fails first, or if it stands the later checks (nearest
+    approach, new paths) fail. The figures are recorded (`back`, `steady`).
+  - Amendment (the second re-check's P2, the dodge leap; compiled, not run): a player within the jar's 4-block
+    dodge range dealing 16 damage (the jar sums `damage`, a sum that loses 1 every 7 ticks), or any lava damage,
+    starts `DODGE_ANIMATION`, and at its tick 6 the jar does `setDeltaMovement(m.x, 0.6, m.z)` with `m` the body's
+    motion plus 1.7 blocks a tick at `dodgeYaw`: a 10 to 14 block leap off the spot, which the six chase calls did not
+    cover. Choice (a fork the lead may flip): wrap the call, do not block the dodge. `EntityFrostmawMixin` wraps the
+    `EntityFrostmaw.setDeltaMovement(DDD)V` calls of `tick()` (`require = 2, allow = 2`: the dodge's, cfr line 430, and
+    the asleep branch's, line 592, which a held body never runs), and for a body `FrostmawLurker.holds` it passes the
+    body's own current x and z and the call's y (0.6): the body hops in place and lands where it was, and the jar's
+    animation state stays what the jar has it (the dodge runs its 15 ticks and ends on its timer, its
+    `wantsToIceBreathAfterDodging` is still consumed, the dodge cooldown is set). Blocking the dodge instead would
+    need a wrap of `hurt` to keep the jar's `shouldDodgeMeasure` and `wantsToIceBreathAfterDodging` from being set
+    on some of its paths and not others, and a lava hurt starts the dodge before the measure is read. Two tests
+    (mowziesmobs, batches `frostmaw_lurk_dodge_player` and `frostmaw_lurk_dodge_lava`): a held puppet without a crystal is hurt once
+    (20 damage by a player 3 blocks west whom it targets; 1 damage of lava), the dodge is seen to pass tick 7, and for
+    40 ticks it is never more than `STAND` from its hold point. Expected on the unfixed code: "the puppet never left
+    its stand while it dodged: strayed 11.9 of 0.5" (or more).
+  - Amendment (the second re-check's P2, `taken` leaks and pins the server; compiled, not run): the plugin kept the
+    walking goals it took out of a held body in a `WeakHashMap<Mob, List<...>>`, and each goal holds its body (the
+    goal's `mob` field), so the value reached the key and the entry never cleared: a puppet that left the world by any
+    way but a release (`despawn` at a requeue, a recall or `capture`, or a death settled after the body was removed)
+    was held with its level until the server stopped. Fix (the core `Slot` keeps it, as `stripped` is kept):
+    `Lurker.hold(mob, spot, memo)` and `Lurker.release(mob, memo)` get a `Lurker.Memo`, a one-object holder the bridge
+    creates at a slot's first hold and keeps in `Slot.lurkMemo`; `FrostmawLurker` keeps its `Taken(goals)` record in
+    it and empties it in `release`. The bridge empties the memo in `releaseLurk`, which now asks the Lurker for every
+    body it holds, removed from the world or not (it skipped removed ones), and `despawn` calls it first, so a
+    discarded body's stamp, bearing and search time (weak maps whose values do not reach the body, which stay) go too.
+    The interface change touches only `FrostmawLurker` and `Lurkers.DEFAULT` (nothing else implements `Lurker`).
+    `FrostmawLurker.tracked(mob)` (a stamp, a bearing or a search time) is the GameTests' view. Tests: the module-off
+    test also asserts `!tracked(body)` after the discard, and `aKilledHeldPuppetLeavesNothingInTheLurker` (batch
+    `frostmaw_lurk_killed`) kills a held puppet, waits for the casualty and the removal, and asserts that nothing is
+    tracked and the bridge has no member for it. A session stop proper is not made in a GameTest (the session is
+    shared); the module switched off runs the same `capture`.
+    - Correction (the third check's P3): the killed test does not fail on 86f97f99: `settleDeaths` released the dying
+      body while it was still in the world (`isDeadOrDying`, not yet removed), so the old release ran. It stays as a
+      guard. The leaks are driven by `aHeldPuppetRemovedBySomethingElseLeavesNothingInTheLurker` (batch
+      `frostmaw_lurk_discarded`: a held body discarded from outside, `left` with reason DISCARDED, `gone`, `forget`, whose
+      release was skipped for a removed body: fails on 86f97f99 by reading, the plugin still tracking the body) and by
+      the module-off test (a session stop's `capture`, whose `despawn` never asked the Lurker on 86f97f99: fails there
+      by reading). A requeue (`holdLurks` refusing, `despawn`) takes the same `despawn`. None has run; `tracked` is new
+      in this range, so the old build does not compile them and "fails before" is a reading of its code.
+  - Amendment (the third check's P3, the second `noLeap` wrap and lava; compiled, not run): the wrap on
+    `EntityFrostmaw.setDeltaMovement(DDD)V` matched both calls of `tick()` (`require = 2, allow = 2`); the second, cfr
+    line 592 (bytecode offset 2954), is the asleep and waking branch's `setDeltaMovement(0, y, 0)`, which stills the body
+    and which a hold wants too, and a held body that is waking (the ACTIVATE animations) does run it. Wrapping it kept
+    the body's own horizontal motion through a stilling. Now the wrap is pinned to `ordinal = 0` (the dodge's, offset
+    1017, the first of the two by javap of the 1.8.2 jar), `require = 1, allow = 1`. Fork: this gives up the earlier
+    "a jar with any other count fails to load" (a third call, or the dodge's call moving behind another, is no longer
+    caught); the alternative, two wraps with an ordinal each, would keep a check on the second at the cost of a
+    second hook that does nothing, and the pin is the tighter match. And a held body in lava (`isInLava()`) is let leap:
+    the original velocity goes through whole, so the dodge carries it out of the lava instead of hopping it in place
+    until it burns. The lava dodge test hurts the body with a lava damage source, not in lava, so it still dodges in
+    place; a body standing in lava has no test.
 - **MZB-362** (the target): the restriction gates targeting (M6's MZB-279), so a restricted Frostmaw never
   picks a player up itself. Every 20 ticks of the hold, a puppet with no target gets
   `level.getNearestPlayer(TargetingConditions.forCombat().range(50), mob)` (its follow range).
+  - Amendment (built, step 5): before taking the nearest player, the rule drops a target that is dead, in
+    another level, or beyond `OUT_OF_VIEW` (64 blocks), so a held puppet is not left on a player who left.
 - **MZB-363** (TRAIN_PASSED from the sampler): at each sample, for each lurk in the train's dimension, the
   segment's distance to the track point at or within `reach` sends TRAIN_PASSED.
   - It is sent once per approach, and armed again when the train is beyond 64 blocks of the point.
   - `RtsimApi.trainPassed(long agent, int epoch, boolean watched, int carriage, long train)` writes it with
     `beginJournaled`, carrying the table's epoch.
+  - Amendment (built, step 6): the distance is three-dimensional, from the track point to the sample's
+    segment (the rig's `LurkTable` is horizontal), so a rail above or below a lurk is not beside it. A
+    train's approach to a lurk is `Approach{lurk, armed, struck}` in a map by agent, made when a pass or a
+    strike first needs one. It is valid only while its `lurk` is the table's instance (identity), so a lurk
+    begun again by its agent (a replay resend, a moved spot) starts armed; entries of lurks that are gone or
+    replaced are pruned at each 20-tick rebucket, and an entry is dropped when the train is beyond 64
+    blocks. The sampler now runs when a lurk waits even if no territory minds the rail
+    (`anyMinding(SIGNAL) || !lurks().isEmpty()`), and clears its near set with its states. The sampler sends a
+    pass the moment a sample meets the lurk and keeps no pending pass, so REMOVED (the table entry gone) stops
+    the next sample's pass at once, and the approach left over is pruned within a second (MZB-371's list: the
+    rig's drop of a pending pass). `RtsimApi.trainPassed` needs the
+    session up and returns whether it wrote.
 - **MZB-364** (watched): `PASSED_WATCHED` when `lurkBody(agent)` is live. `carriage` is the index of the
   carriage whose leading point is nearest the track point, computed only when sending.
 - **MZB-365** (near a puppet): a train whose last sample is within 64 blocks of a live lurk puppet joins a
@@ -4080,6 +4427,177 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
     puppet calls `RtsimApi.strike(agent, point)` once per carriage per approach.
   - The swipe moves no cargo: the cargo comes from the TRAIN_PASSED roll. It is real for riders, since the
     jar's area attack strikes living entities in its arc.
+  - Amendment (built, step 6): the near set holds a train when the segment of its sample is within 64
+    blocks of the lurk's track point and the lurk has a live puppet (the puppet stands within the restriction
+    of the spot, a few blocks from the track point); the design's wording was "of the puppet". A
+    refused strike (a busy puppet) does not mark the carriage struck: it is tried again each tick while the
+    point stays in reach, so a carriage is struck at most once and a refusal loses nothing (the design
+    marked it on the call). `RtsimApi.strike` picks the nearest held puppet of the agent. The near set drops a
+    train that is invalid, derailed or without a graph.
+  - Second amendment (found writing test 9, step 8; the design's geometry could not land a blow). The swing
+    lands at animation tick 9, so 9 or 10 ticks after the call, and a carriage point at 1.0 blocks a tick has
+    moved 9 or 10 blocks by then. The jar's area attack (`AnimationAreaAttackAI.hitEntities`) takes living
+    entities whose 3D `distanceTo` (feet to feet) is within range + half their width (6.5 + 0.3 for a zombie),
+    then keeps those whose horizontal distance less half their width is within 6.5 and whose bearing is within
+    67.5 degrees of `yBodyRot`. With the design's spot 5 blocks off the rail and a strike at the first tick
+    the point is 6.5 blocks away (along the rail 4.15 from the closest approach), the point is 4.85 past the
+    closest approach when the swing lands: 6.96 blocks horizontally, and 84 degrees off the bearing the body
+    was turned to. Both miss. Three changes:
+    - `Lurker.strike(mob, at, motion)` and `RtsimApi.strike(agent, at, motion)` (and `ConflictBridge.strike`)
+      take the point's displacement a tick, and `FrostmawLurker` turns to `at + motion * 9`
+      (`SWIPE_HIT_TICK`), where the point will be at the landing. `TrainSampler.motionOf` is the track's
+      direction at the point (a 0.25-block step along its edge, never across a node) times `train.speed`, zero
+      for a stopped train.
+    - The test's spot is 4 blocks off the rail (`LATERAL`), so the point is within the swing's range when it
+      lands: 5.6 to 6.3 blocks horizontally, from a strike at the first tick within 6.5.
+    - The test's rider sits on a seat directly on the first bogey (rail + 2), the least a seat can be, which
+      keeps the 3D distance short (about 6.1 to 6.7 against the limit of 6.8 at worst). The figures are
+      predictions: nothing has run. If the round shows the landing a tick off, `SWIPE_HIT_TICK` and
+      `LATERAL` are the two numbers to move.
+    A real player on a train passing a lurk at speed is struck in the same way; a train at a standstill in
+    reach is struck at once, with a zero motion.
+    (The last sentence was false as built; see the third amendment: the gate looked at where the carriage was,
+    not where it would be.)
+  - Third amendment (review C, item 2; written and compiled, not run): the gate and the aim at speed. As built,
+    the strike fired when a bogey point was within 6.5 blocks (horizontal) of the puppet now, and aimed at that
+    point plus its motion. At 1.0 blocks a tick the swing lands 9 ticks later with the carriage 9 blocks on. The
+    engine's spot is `SPOT_BLOCKS` (5) off the rail (rail.rs: whole blocks toward the den, written as block +
+    0.5), so a point first in reach at 6.5 is 4.15 along from the closest approach and lands 4.85 past it: 6.96
+    blocks horizontally from a puppet 5 off, out of the swipe's 6.5. The test passed only because it laid the
+    spot 4 off (`LATERAL`), which the engine never does. A real player at speed was not struck. Now:
+    - The gate is on the landing point. `TrainSampler.landingOf` is where a bogey point will be `SWING_TICKS`
+      (9) ticks on at the train's present speed: Create's own `TravellingPoint.getPositionWithOffset(graph,
+      speed * 9, false)` while the point stays on its edge (curves included), and straight on from the edge
+      end's tangent (`TrackEdge.getDirectionAt`) past an edge end. A carriage is struck when that landing is
+      within `STRIKE_REACH` = 6.0 blocks (horizontal) of the puppet: the swipe's 6.5 less what its 3D
+      feet-to-feet filter (6.5 + half the width, so 6.8 for a zombie) takes for a rider seated about 2 above the
+      puppet's floor (6.0 horizontal is about 6.3 in 3D). A cheap first test (`STRIKE_REACH + 9 * |speed| + 4`
+      plus the carriage's `bogeySpacing`, from a bogey point now) skips the carriages that cannot be in reach, so
+      the landing is computed only for the few that can.
+    - The aim is at a living rider if the carriage carries one (`CarriageContraptionEntity.getPassengers()`, the
+      first that will be in reach; it is taken to move as the bogey nearer to it does), since the swipe hits
+      living entities and a bogey point misses a rider at the middle or the rear of a long carriage. A carriage
+      with a living rider that will not be in reach is not struck. A carriage with no living rider is struck at
+      its leading bogey's point, else its trailing one's. The motion passed is the landing less the position,
+      over 9, so the plugin's `at + motion * 9` is the landing.
+    - The prediction follows the track within one edge. Past a node it goes straight on, and a bend beyond the
+      node makes the aim err by about the part of the 9 ticks past the node squared over twice the bend's radius
+      (a train at 1.4 blocks a tick covers 12.6 blocks in the swing; a tight Create curve is a few blocks of
+      error). That is the recorded bound, not a fix: the swipe's 67.5 degree arc and its 6.5 reach absorb part of
+      it. A train that changes speed during the swing (a station stop, a signal) errs by the change. Neither is
+      tested.
+    - Test 9 runs at the engine's own spot, 5 blocks off (`LATERAL` 5), at 0.5, 1.0 and 1.4 blocks a tick
+      (`rail_frostmaw_lurk_slow`, `rail_frostmaw_lurk`, `rail_frostmaw_lurk_fast`: the same body with the speed
+      passed in; the slow and the fast skip the bait, the hold's checks and the hearer, which the 1.0 run
+      covers), each asserting that the rider is hit. Expected on the unfixed code: the 0.5 run probably hits
+      (the swing lands 4.5 on, 0.35 past the closest approach: 5.0 horizontal), while the 1.0 and 1.4 runs miss
+      (landing 6.96 and about 9.8 horizontally) and fail with "the zombie was hurt at <speed> (health 1000.0
+      of 1000.0)". Nothing has run.
+  - Fourth amendment (the build lead's choice after review C; written and compiled, not run): the spot-distance
+    contract. The gate's 6.0 left a puppet resting 1.5 off its spot (the old `STAND`) on the far side from the
+    rail 6.5 from the track: inside the jar's reach (a target is hit when its horizontal centre distance less its
+    half-width is at most 6.5, so a player at about 6.8 from the Frostmaw's centre) and outside the gate, so such
+    a puppet never struck. The choice, reversible: keep `STRIKE_REACH` at 6.0, which leaves about 0.5 for the
+    prediction's error (see the correction below), and shrink the hold's `STAND` to 0.5 (MZB-361's amendment). The rule is one check in two
+    inequalities, `TrainSampler.spotContract(stand, halfWidth)`:
+    - `SPOT_BLOCKS + stand <= STRIKE_REACH`: 5.0 + 0.5 = 5.5 <= 6.0, a margin of 0.5.
+    - `SPOT_BLOCKS - stand - halfWidth >= RAIL_CLEARANCE`: 5.0 - 0.5 - 2.0 = 2.5 >= 1.5, a margin of 1.0.
+    `TrainSampler.SPOT_BLOCKS` (5.0) mirrors rail.rs's constant beside `STRIKE_REACH`, with a comment naming
+    rail.rs, and `RAIL_CLEARANCE` (1.5) is the clearance test 9 already asserted. The Rust side pins its own
+    number: `the_spots_distance_is_the_one_the_java_plugin_mirrors` (`crates/rtsim-conflict/tests/lurk.rs`;
+    compiled and run, it passes), whose message names what else moves with it. `Lurker.stand()` (default
+    `Lurkers.STRAY`, 4.0, a body that never strikes) exposes the number so create's test reads it without naming
+    a Mowzie class. Test 9 in every variant records the figures and fails if the rule does not hold for the
+    Lurker's stand and the live body's half-width (`getBbWidth() / 2`); `LATERAL` is `(int)
+    TrainSampler.SPOT_BLOCKS`, so the test lays the engine's spot by construction. A fourth variant pins the
+    puppet at the far side of its stand and asserts the strike at 1.4 blocks a tick (MZB-370's amendment).
+    A Lurker of another body kind registers its own `stand()`, and its own gate if its reach differs.
+  - Correction (the re-check's P3): the margin the 6.0 gate leaves is about 0.5, not 0.8. The jar's area attack
+    (`AnimationAreaAttackAI.hitEntities`) has two cuts on a target: the horizontal centre distance less its
+    half-width at most 6.5 (6.8 for a 0.6-wide target), and the 3D feet-to-feet distance at most 6.5 plus its
+    half-width (6.8). A rider is about 2 above the puppet's feet (a seat on the bogey, or a floor one block above
+    it), so the 3D cut allows sqrt(6.8^2 - 2^2) = 6.5 horizontally, and the binding cut is the 3D one. The gate's
+    6.0 leaves 0.5 for the prediction's error. The
+    contract's own inequalities are unchanged; it is the room the gate has for the prediction that is smaller
+    than quoted.
+  - Amendment (the re-check's P2; compiled, not run): the contract is about the hold point's distance to the rail's
+    centre line, which Java now sets (MZB-360's amendment), within `LurkSpots.LATERAL_SLACK` (0.4) of
+    `SPOT_BLOCKS`. `spotContract` counts the slack: `SPOT_BLOCKS + slack + stand <= STRIKE_REACH` (5.0 + 0.4 + 0.5
+    = 5.9 <= 6.0) and `SPOT_BLOCKS - slack - stand - halfWidth >= RAIL_CLEARANCE` (5.0 - 0.4 - 0.5 - 2.0 = 2.1 >=
+    1.5). The slack is the worst case; Create's rails put the body at exactly 5.0 (XO, ZO) or 4.95 (PD, ND), so
+    the real far side is 5.5 (5.45). A lurk on a curve keeps the engine's spot (no axis there) and so only the
+    engine's own geometry.
+  - Amendment (the re-check's P2, a standing rider was ignored; compiled, the GameTests not run): `aimAt` took
+    only the carriage's seated passengers (`getPassengers()`) as riders, so a living entity standing at the middle
+    or the rear of a long carriage was no rider: with no seated one the carriage was struck at its leading bogey's
+    point, up to a carriage length ahead of the entity, and the swing missed it. Now `TrainSampler.ridersOf(entity,
+    body)` returns, in order, the seated passengers; the living entities in the carriage's `collidingEntities`
+    (Create's server collision registers mobs and the like that stand on it, each for three ticks); and the living
+    entities found by a search about the carriage whose feet stand on a block of it, by Create's own test (the
+    position 0.2 below the feet, in the carriage's frame, is a key of `getContraption().getBlocks()`;
+    `ContraptionCollider.worldToLocalPos`, which its client mixin uses). `aimAt` tries them in that order and takes
+    the first that will be in reach when the swing lands; a carriage with any rider that will not be is still not
+    struck, and one with none is struck at a bogey point as before.
+    - Why a search and not `collidingEntities` alone (the brief's mechanism): a real player standing on a carriage
+      is never in it on the server. `ContraptionCollider.collideEntities` reaches `registerColliding` only after
+      `if (playerType == PlayerType.SERVER) continue;`, and the only other caller is a mixin in
+      `foundation/mixin/client`. Read in Create's sources, not run; the riders GameTest records whether the player
+      is in the set. Mobs are in it, so they are covered either way.
+    - The search box is a circle about the contraption's anchor (`Contraption.bounds` is in the carriage's frame;
+      the entity's own bounding box is not turned with it, so it is not used) of the bounds' largest horizontal
+      reach plus `RIDER_MARGIN` (3.0), and as high as its largest vertical reach plus 3.0. Who counts is Create's
+      `AbstractContraptionEntity.canCollideWith` (no spectator, no `noPhysics`, nothing already riding, no hanging
+      entity, seat or projectile). The aim moves as the bogey nearer to the rider does, as for a seated one.
+    - Cost: one entity search per carriage per tick while it is in the cheap range of a lurk's puppet and
+      unstruck (about twenty ticks a pass at one block a tick), against a box a few blocks across. Not measured.
+    - Known gap: a player standing at the edge of a platform beside a carriage is not a rider (his feet are over no
+      block of it); one standing on a carriage that Create has not yet told the server of is, as the server
+      sees his position. A bystander mob that stands on the carriage (a villager in it) is a rider and the carriage
+      waits for it.
+  - Amendment (the second re-check's P3, an armor stand was a rider; compiled, not run): `ridersOf` took any
+    living entity, and an `ArmorStand` is one that collides with a contraption (it is no seat, projectile or hanging
+    entity), so one standing on a carriage drew a strike off the bogey point and a carriage with one was not struck at
+    its bogey when the stand was out of reach. A rider is now a living entity that is alive and a `Mob` or a `Player`
+    (`TrainSampler.rides`), in all three of its sources. Nothing else in vanilla is a living non-mob except the
+    stand; a mod's decoration that extends `Mob` is a mob by every other rule here.
+  - Amendment (the second re-check's P3, a rider on the next carriage, a rider's height, a diagonal's corner;
+    compiled, not run):
+    - `strikeAt` looks at the riders of every unstruck carriage in the cheap range before it aims at any bogey. A
+      first pass takes each carriage's riders (once, kept) and strikes the first whose landing is in reach; a second
+      pass strikes a carriage that has no rider, at its bogey, only when the first struck nothing. Before, the
+      loop went carriage by carriage, so a riderless carriage in front took the swing at its bogey (the puppet then
+      busy for the swing) while a rider on the next carriage, in reach a tick later, was refused. The loop returns
+      at the first strike that starts: the puppet is busy, so a second would be refused. A carriage with a rider that
+      is not in reach is still not struck.
+    - A rider's reach is the swipe's own, in 3D: `TrainSampler.reachesRider` takes the landing point's distance to the
+      body's feet in three dimensions against `SWIPE_RANGE` (6.5) plus half the rider's width (6.8 for a player),
+      the jar's 3D cut. The horizontal `STRIKE_REACH` (6.0) stays for a bogey point, which has no height of its own.
+      So a rider on a carriage floor 2 above the body, or the body 2 below on a bank, is struck when 3D-near, and
+      one the horizontal gate would have passed at 6.0 and the 3D cut refuses (|dy| above 3.2) is not.
+    - `spotContract(stand, halfWidth, diagonal)`: for a diagonal rail the box's corner meets the rail, so the reach is
+      `halfWidth * sqrt(2)` and the near slack `OBLIQUE_NEAR_SLACK` (MZB-360's amendment); the rule holds by
+      itself, 5.0 - 0.17 - 0.5 - 2.83 = 1.50 >= 1.5 (it rested on the 4.95 the lattice gives before). Test 9 asserts
+      it for an axis rail and for a diagonal.
+    - The ordering of the two passes had no test: it needs a train of two carriages, one with a rider, in front of a
+      puppet, which the riders test's one-carriage line does not lay (the third check's P3 adds one: the next
+      amendment).
+  - Amendment (the third check's P3, the bogey pass, the gate and the test of the order; compiled, not run):
+    - `strikeAt` skips its second pass (the bare bogeys) whenever any carriage in the cheap range has a rider, struck
+      or not in reach: a riderless carriage 0's bogey must not spend the swing (`SWING_TICKS`, the puppet busy) while
+      carriage 1's rider is still outside `riderAim`'s window and will be inside it a tick or two on. A train none of
+      whose gated carriages has a rider is struck at its bogeys as before.
+    - The gate is built from the longest reach: `far = SWIPE_RANGE + 1.0 + SWING_TICKS * |speed| + BODY_SLACK`, not
+      from the horizontal `STRIKE_REACH`, so a rider at a long carriage's overhang (up to 6.8 in 3D, a block or so
+      more than the bogey's 6.0) is not gated out before `riderAim` is asked.
+    - Test (written and compiled, not run): `RailFrostmawGameTests.theSwingGoesToARiderOnTheNextCarriageBeforeABareBogeyInFront`
+      (batch `rail_frostmaw_riders_first`). A stopped train of a short carriage and a long one with a plank floor
+      (`mixedCars`); the puppet two blocks past carriage 0's bogey, 5 off the rail. A zombie (AI on, goals out, feet
+      on the plank) first on the far plank of carriage 1, out of the swipe's 3D reach with the carriage gated in: no
+      strike in the 40 ticks after the sampler has seen the train (fails with the bogey pass left running). Then on the
+      near plank, in reach: the puppet's yaw at the first strike is within 20 degrees of the bearing to the zombie
+      and more than 20 off the bearing to the bogey, the two being 35 or more apart (fails on the carriage-by-carriage
+      order of the second re-check, where the bogey of carriage 0 is struck first). The premises (the bogey in reach,
+      the planks' 3D distances against the range, the bearings apart) are checked in the test.
 - **MZB-366** (the roar at a station):
   - TRAIN_ROBBED adds `(train, faction)` to a per-session pending map in `ConflictBridge`, capped at 256
     with the oldest dropped.
@@ -4093,13 +4611,86 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
     `play` is split so both use one `playToward(faction, dimension, x, z, player)`.
   - The entry is dropped only once a player heard it, so an arrival with nobody near keeps it for the next.
   - No chat, action-bar or title line.
+  - Amendment (built, steps 5 and 6): `trainCalled` is public on `RtsimApi` and plays to non-spectator
+    players that are not `FakePlayer`s within 64 blocks (three-dimensional) of the station. The level comes
+    from `ServerLifecycleHooks.getCurrentServer()` and the station's dimension. A camp with no sound still
+    gets the raid horn (`playToward`'s fallback), so the roar needs a declared camp with a sound
+    (MZB-367).
 - **MZB-367** (the den's sound): `DenKind.sound()` returns `MMSounds.ENTITY_FROSTMAW_ROAR`. So a den's
   notices roar too, instead of the raid horn: both are in-world sounds.
 - **MZB-368** (the puppet roars): on TRAIN_ROBBED, a live lurk puppet of that faction is told `roar`.
+  - Amendment (built, step 5): only held puppets (a live slot with a hold spot) of lurks of that faction
+    are told; a puppet not yet placed hears nothing, and the pending entry stays for the station.
 - **MZB-369** (UR-1 and D1): puppets are never saved (M3), and the lurk table and the pending roars are per
   session, so nothing stays in the world. The sampler's lurk work is a list scan per sample over the lurks
   (at most one per lurking party). The every-tick reads are for trains within 64 blocks of a live puppet
   only, and the hold is one call per live puppet a tick.
+  - Amendment (review C, item 1; the GameTest is written and compiled, not run): "nothing stays in the world"
+    was false for a take. `gone(keepBody=true)` (a player's Carry On pickup, or anything else's take) left the
+    body in the world as an ordinary mob, and `forget` cleared the slot's hold spot without asking the
+    `Lurker`, so the body kept `restrictTo(spot, 2)` and its `alwaysActive` true for good (it is in the
+    Frostmaw's NBT), which breaches UR-1. `forget` now calls `releaseLurk(sl)`, which asks the Lurker to undo
+    the hold and clears the spot, and `take` returns before Carry On saves the body, so the saved NBT is the
+    released one. The other paths that clear a hold or drop a slot were read and need nothing: `despawn`
+    (a requeue, a recall, `capture` at a session's end or the module's switching off, a hand-back) discards
+    the body, so no hold outlives it (the second re-check found the Lurker's own state did: `despawn` now calls
+    `releaseLurk` first, MZB-361's last amendment); a death or a removal by something else leaves a dead or removed body
+    (`forget` now releases a dying one too, which is harmless); a recall or a moved or ended lurk already
+    called `releaseLurk`. (Corrected by the re-check's P3; the first draft said a body unloaded with its chunk
+    is saved held and the join check discards it as a stale copy. A held body is never saved: it carries the
+    core's `mic_rtsim:agent` tag, and `EntitySaveMixin` makes `shouldBeSaved` false for a tagged entity, which is
+    the filter every chunk save applies, and `saveAsPassenger` false, so a body riding something or saved by
+    `Entity.save` is left out too. Its chunk is written without it.)
+    Three GameTests in the mowziesmobs project (`FrostmawGameTests`, written and compiled, not run), sharing one
+    fixture (`Held`: a one-unit Frostmaw band lurking at a spot, held), because the brief made this a UR-1 break
+    and so its test must uninstall and reinstall:
+    - `aLurkPuppetTakenByAPlayerIsLetGoLikeAnyOrdinaryFrostmaw` (batch `frostmaw_lurk_taken`, the mock player's
+      `PICKUP`) and `aLurkPuppetTakenByNoPlayerIsLetGoLikeAnyOrdinaryFrostmaw` (batch `frostmaw_lurk_taken_other`,
+      `TakeReason.PLUGIN`, no player). At once after the take: no puppet, no restriction, not always-active,
+      `alwaysActive` false in the saved NBT, and the same of a body made from that NBT. Then the engine's
+      BAND_CASUALTIES (by player, or by other) is waited for, `requestSaveAtNextStep` has it acknowledged, and the
+      body's `mic_rtsim:pending` record drops (it is the one thing of mic_rtsim on the body until then, so the
+      first save is checked for the hold only). The uninstall is the module switch the other GameTests use
+      (`RtsimConfig.Test.setModule(Module.CONFLICT, false)` and `BridgeEvents.moduleSwitchesChanged`, as
+      `IndustryGameTests` and `ModuleSwitchGameTests` do; no GameTest removes a mod, and none is named for an
+      uninstall. The uninstall emulation is the NBT round trip below, not the switch: a taken body has left the
+      bridge, so the module going off discards nothing of it, and the saved-NBT checks stand for the mod's
+      removal (the re-check's P3)):
+      the saved NBT of the acknowledged body has no `neoforge:attachments` key of `mic_rtsim:`, no
+      `NeoForgeData` key and no tag with `mic_rtsim`, no word of `mic_rtsim` anywhere in its string form, and
+      `alwaysActive` false, which is what a world without mic_rtsim and the plugin reads (NeoForge skips an
+      unknown attachment; there is none to skip). The body stays after 40 ticks with the module off, alive and
+      ordinary (no restriction, not always-active, not the bridge's). The reinstall is the module on again and a
+      copy of the saved NBT, with a new UUID, added as a chunk would add it: after 60 ticks both bodies are
+      ordinary Frostmaws, nothing is held by the lurk (`lurkBody` null), and the lurk is ended and leaves the
+      table. The mock player (`PICKUP`) is not a `FakePlayer`, so the casualty is by a player.
+    - Expected on the unfixed code, both: the first check to trip is the saved NBT's, "the taken body, before the
+      engine has the casualty,: alwaysActive false in its saved NBT" (it is true there). This replaces the first
+      draft's "the taken body has no restriction (true)", which was the first to trip on the unfixed code and so
+      stood in front of the UR-1 check (the re-check's condition 2; see the amendment below).
+    - `aLurkPuppetHeldWhenTheModuleSwitchesOffLeavesNothingInTheWorld` (batch `frostmaw_lurk_off`) is the other end
+      of the uninstall, a puppet still held when the module goes off: the body is discarded, the lurk has no body,
+      and 60 ticks after the module is on again no Frostmaw stands within 24 blocks of the spot. It passes on the
+      unfixed code too (a guard that the release does not change what the switch-off does, which discards the
+      body). The test restores the switch when it ends, passed or failed.
+  - Known gap, outside M8 (the re-check's P3; recorded, not fixed): a held puppet is kept out of every chunk save,
+    but `EntitySaveMixin` leaves `saveWithoutId` alone on purpose, because a dimension change copies an entity
+    through it and the copy must keep its tag so the join check knows it. So a third party that captures a
+    mob by calling `saveWithoutId` on it directly (a capture item that does not go through `Entity.save`, which
+    the mixin does cover) would write the held body's NBT, `alwaysActive` true among it, and the released body
+    would come out of that item holding. Carry On's pickup does not: `take` releases the hold first (above). Left
+    open for the dimension copies; closing it means telling a dimension copy from a capture in `saveWithoutId`,
+    which nothing in M8 needs. The same goes for any other plugin's puppet kind.
+  - Amendment (the re-check's condition 2; the test is rewritten and compiled, not run): the take test's checks
+    run in the order of the claim they make. A body made from the saved NBT is what a world without the mod
+    reads, so the saved NBT is saved and read first (`h.saveOrdinary`, then the copy's `alwaysActive`), then
+    the live body's (no restriction, not always-active). The copy's "has no restriction" check is dropped: a
+    restriction is never in NBT, so it was true on any code and checked nothing. The expected failing value on
+    the code before the fix is the saved NBT's `alwaysActive` ("the taken body, before the engine has the
+    casualty,: alwaysActive false in its saved NBT"). The fail-first run is a worktree at 875ac2bd (the head before
+    review C) with only the test file changed, on the throwaway branch `test/m8-ur1-failfirst`, for the lead to run
+    with `gametest.sh mowziesmobs`; the two take tests are the ones expected to fail there, the
+    `..._LeavesNothingInTheWorld` one to pass.
 - **MZB-370** (test choices):
   - Test 8's rider is `helper.makeMockPlayer(GameType.SURVIVAL)` added with `addFreshEntity`, as M6's thief
     (MZB-281), so the ice ball's `getEntitiesOfClass` sees it. It is seated with `addSittingPassenger`.
@@ -4111,17 +4702,284 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
   - `FakePlayers.Hearer` gains `sounds` (each `ClientboundSoundPacket`) and `titles` (title, subtitle and
     action-bar packets). `hearing` builds its `ServerGamePacketListenerImpl` as a subclass whose
     `send(Packet<?>)` records them.
+  - Amendment (built, step 5): `ConflictKit.trainsPassed(agent)` reads the TRAIN_PASSED records the
+    scripted engine received (the bridge keeps no per-agent counter), and `lurkStrikes()` the bridge's
+    strike counter.
+  - Amendment (built, step 8; nothing run): `RailFrostmawGameTests` has one fixture, `Line` (the far chunks,
+    the cleared box and floor, a 150-block track, the stations, the train, and its restoring), which test 10
+    runs on unchanged in behaviour, and four tests in four batches.
+    - Test 8 is two tests. `anIceBallUnseatsARiderFromACarriage` (batch `rail_frostmaw_ice`) is the static
+      form. `theIceBallHitRatesAgainstAMovingTrain` (batch `rail_frostmaw_ice_rates`, 16,000 ticks) is the
+      moving form, split off because its 16 passes and their cooldowns take thousands of ticks and the
+      static form should not wait on them, and because it is a measurement: it logs
+      `[gametest] ice ball v=<v>: <hits>/4` and fails only if the rider is on two vehicles. The design's "within
+      60 ticks of the freeze ending the rider has no vehicle" is a wait for no vehicle, with the freeze itself
+      failing the test if it holds the rider 200 ticks (the jar's is 50).
+    - The riders are health 1000, so a swipe or a freeze cannot kill one. The mock player is a plain `Player`
+      (`GameTestHelper.makeMockPlayer`: not a `ServerPlayer`, `isLocalPlayer` true), added with
+      `addFreshEntity`; `FakePlayers` players (the bait and the hearer) are in `level.players()` only. The
+      Frostmaw's target is set again at every poll (the restriction gates targeting, MZB-362, and a target
+      once dropped is not found again), in the hold phase too.
+    - Test 9 lays its lurk 40 blocks ahead of the train on the 150-block line (not a 96-block straight with
+      the lurk at its middle), its second station 60 blocks along from the first on the side the train goes,
+      the spot 4 blocks off (MZB-365's second amendment), and the camp's sound is the registry holder
+      `mowziesmobs:frostmaw.roar` (the plugin's `DenKind.sound()` is a `DeferredHolder`; the create project
+      names no Mowzie class). The hold's checks are: within 2 blocks of the spot, the near edge at least 0.5
+      off the rail's centre line (the spot's is 2.0; the Frostmaw stands within 1.5 of it, and away from the
+      rail while it has the bait), `alwaysActive` true, a target at some poll. The bait walks 0.05 blocks a
+      tick away from the rail, 30 blocks off to begin with.
+    - The yBodyRot check is the puppet's `yBodyRot` against the bearing from the puppet to the zombie at the
+      first poll that finds the zombie's health down (the swing landed in the tick before, the zombie moved
+      at most a block: 14 degrees at 4 blocks off, inside the 30 allowed).
+    - The roar part is in the other order than the design's: TRAIN_ROBBED, then `Train.arriveAt` the second
+      station with nobody within 64 blocks (nothing plays; the entry stays), then `arriveAt` the first with
+      the hearer 20 blocks off (one sound packet, the roar's, and nothing in `raw`, `overlay` or `titles`;
+      the entry gone). The entry goes once a player has heard it, so the arrival with nobody near has to be
+      first. `Train.arriveAt(GlobalStation)` is public and safe to repeat, and is what `TrainMixin` hooks, so
+      the test drives the real path without moving the train. The hearer stands 20 blocks behind the first
+      station, away from the lurk, so it is about 61 blocks from the puppet (not a target, 50; out of the
+      puppet's own sounds) and 80 from the second station.
+    - Amendment (review C, item 2; written and compiled, not run): test 9 is three tests, one body at three
+      speeds (MZB-365's third amendment). Its spot is 5 blocks off the rail, the engine's own `SPOT_BLOCKS`, not
+      the 4 above (which the engine never lays), and the train runs at 0.5, 1.0 and 1.4 blocks a tick with
+      `manualTick` and a set `speed`, so it moves exactly that a tick. Each asserts that the rider is hurt. The
+      1.0 run (`rail_frostmaw_lurk`) keeps the whole test; the other two (`_slow`, `_fast`) skip the bait, the
+      hold's checks and the hearer and end after the TRAIN_PASSED check. The rider is still the seated zombie, so
+      the 3D filter is the one MZB-365's third amendment gates on.
+    - Amendment (review C, item 4; written and compiled, not run):
+      - Test 9's clearance gate is a near edge at least 1.5 blocks off the rail's centre line (it was 0.5). The
+        puppet's edge is its distance to the centre line less 2; the spot is `LATERAL` = 5 off, so the edge is 3.0
+        at the spot and 1.5 at the nearest the hold lets it stand (within `STAND` = 1.5 of the spot). The margin at
+        that nearest legal stand is nil, so a puppet pushed to the rail side of its stand fails exactly on the
+        line; it normally drifts away from the rail with the bait as its target, and the wall of the test is the
+        one place a failure would show it.
+      - Test 9's hold phase logs the hold's path searches and dropped paths per second
+        (`Lurkers.of(puppet).pathSearches()` and `pathsDropped()`, differenced over the hold; MZB-361's D1
+        amendment). A record, not a check; the first run's figure is the baseline.
+      - Test 8's moving half (`theIceBallHitRatesAgainstAMovingTrain`) now fails when no pass at the slowest
+        speed (0.5 blocks a tick) froze the rider, with "at least one pass at 0.5 blocks a tick froze the rider
+        (0/4, balls thrown at it: n)". It stays a measurement for the other speeds. This is a new gate on a
+        test that had none, so there is no earlier failing value to quote; the first run decides whether one pass
+        in four at the slowest speed is a fair floor.
+    - Amendment (the build lead's spot-distance choice; written and compiled, not run), superseding the 1.5 stand
+      in the item 4 amendment above:
+      - With `STAND` at 0.5 the near edge is 2.5 at the nearest the hold lets the body rest (5.0 - 0.5 - 2.0),
+        against the 1.5 clearance: a margin of 1.0, where the 1.5 stand had none. The clearance check reads the
+        body's width (`getBbWidth() / 2`) and `TrainSampler.RAIL_CLEARANCE`.
+      - Every variant records the spot, stand, half-width, reach and clearance, and fails if
+        `TrainSampler.spotContract(Lurkers.of(puppet).stand(), halfWidth)` is not null, or if `LATERAL` is not the
+        sampler's `SPOT_BLOCKS`.
+      - The full test also records where the puppet rests 60 ticks after the bait goes, and fails if that is more
+        than `STRIKE_REACH - SPOT_BLOCKS` (1.0) from the spot: the strike gate's margin, not `STAND`, because the
+        body may rest beyond its stand (MZB-361's amendment). That check can fail on the first run; if it does,
+        the figure it prints is what the hold really leaves, and the contract's numbers move to it.
+        (Superseded by the re-check's P3: the check is that the body rests within `Lurkers.of(puppet).stand()` of
+        its hold point, the rest point of the `Den`, which is what the contract counts on and what `STAND` 0.5
+        makes the hold keep; the 1.0 bound let a body rest 0.5 beyond the stand and still pass, and the
+        contract's far side is the stand's. The figure is still recorded, with the strike gate's margin beside it.)
+      - `aLurkingFrostmawAtTheFarSideOfItsStandStillSwipesAtOnePointFourBlocksATick` (batch
+        `rail_frostmaw_lurk_far`, 2400 ticks): the 1.4 pass without the bait, the hold's checks or the hearer, with
+        `LurkRun.pin()` setting the puppet at `stand - 0.001` from the spot on the line away from the rail, with no
+        horizontal motion, at the rider's setup and every poll until the zombie's health first drops. It asserts
+        what the other passes do: a strike, the zombie hurt, the bearing within 30 degrees, no carriage box in
+        the puppet's, the block counts unchanged, one TRAIN_PASSED. With the old stand (1.5) the contract check
+        fails first ("the far side of the stand is 6.5 blocks from the track point, past the strike reach (6.0)"),
+        and without it the pinned puppet, 6.5 from the rail, would see the landing no nearer than 6.5 and never
+        strike ("the lurk struck at 1.4 (0)"). With the stand at 0.5 the landing comes to 5.5 at the nearest,
+        inside the gate.
+    - Amendment (the re-check's P2; written and compiled, not run): test 9 takes a `Den` (where the den lies, so
+      the engine's spot) and a rest point (where the hold must stand the body): `SQUARE` is the earlier test
+      (spot 5 north, rest the spot); `OBLIQUE`, the den 4 east and 4 north (spot +4, -4; rest 5 north of the
+      track point); `ON_LINE`, the den on the rail (spot 5 along +x; rest 5 south, the left-hand side). Every
+      run checks that `ConflictKit.lurkHold(agent)` is the rest point and the body was made within its stand of it.
+      The hold phase's stray, clearance, pin and bait use the rest point (the bait is placed on the body's side
+      of the rail, `away()`). Two new tests for the oblique den (`rail_frostmaw_lurk_oblique`, speed 1.0, and
+      `_oblique_far`, 1.4 with the body pinned at the far side of its stand) and one for the den on the line
+      (`_online`, 1.0); they skip the bait, hold and hearer as the other short runs do.
+    - Amendment (the re-check's P2, a standing rider; written and compiled, not run): test 9 takes a `Rider`
+      (`SEATED`, the earlier tests; `MIDDLE` and `REAR`), and `Line` a `longCar` flag. A long carriage
+      (`longCars`) is one carriage of two small bogeys `LONG_SPAN` (8) blocks apart on the station's track, a
+      floor of seven oak planks on the blocks between them, controls on the first bogey, all glued, and no
+      second carriage: a second one behind it would be struck at its own bogey point, which the old code could
+      also land on a rider at the rear (it passes 5 blocks behind the zombie), and the test would not tell the
+      old code from the new. Create's assembler needs the first bogey at the first block past the station, bogeys
+      at least 3 apart, and the second in the first's glue group; read from `StationBlockEntity.assemble`, not run.
+      - `Line.stand` puts a zombie on the plank in the middle (`MIDDLE`) or the one next to the rear bogey (`REAR`),
+        planks ordered along the way the train goes, at the plank's top (plus 0.01 before the second re-check), and checks that Create's own
+        standing test finds a block of the carriage under it. The zombie is a mob because Create's server
+        collision carries mobs and does not carry a player. The drive ramps up to the speed over ten ticks from
+        the tick the zombie is put on, so a jolt from rest does not leave it behind; if it still slips, the first
+        failure is the hit check, not a setup check, which is a defect of the test.
+      - `aLurkingFrostmawSwipesARiderStandingAtTheMiddleOfALongCarriage` (`rail_frostmaw_lurk_standing_middle`)
+        and `...AtTheRearOfALongCarriage` (`rail_frostmaw_lurk_standing_rear`), speed 1.0, the engine's own spot,
+        pass only (no bait, hold or hearer): the same assertions as the seated pass (a strike, the zombie hurt,
+        the bearing within 30 degrees, no carriage box touching the puppet's, the block counts unchanged, one
+        TRAIN_PASSED). On the code before the fix the strike is aimed at the leading bogey's point, 5 (middle) or
+        8 (rear) blocks ahead of the zombie, so the zombie's landing is about 9.7 or 12.4 blocks from the
+        puppet when the gate opens (the point's is 6.0): out of the swipe's 6.5, and the carriage is marked struck, so the expected failure is "the zombie was hurt
+        at 1.0 (health 1000.0 of 1000.0)".
+      - `aStandingPlayerAndAStandingMobAreRidersOfACarriageAndABystanderIsNot` (`rail_frostmaw_riders`): a mock
+        player (a plain `Player`, the kind Create's server skips) and a zombie stand on the stopped long
+        carriage's floor, a second mock player 3 blocks beside it; `TrainSampler.ridersOf` returns the first two
+        and not the third. A player is not carried by Create, so the train does not move in this test; the
+        moving tests use a mob.
+    - Amendment (the second re-check's P2 and P3s in the riders and standing tests; compiled, not run):
+      - The riders test's mock players fell: a mock player is a plain `Player`, which Create's server collision does
+        not hold up, so it fell through the carriage in the five idle ticks before `ridersOf` was read, and the
+        bystander too. `Line.stand` now gives a player `setNoGravity(true)` and zero motion (the bystander likewise).
+      - A zombie standing on a carriage (the riders test and the `MIDDLE` and `REAR` passes) was `noAi`, which has no
+        travel and so no gravity, and hovered 0.01 above the plank where Create may never have registered it as
+        colliding. `Line.stand` now leaves a mob's AI on with every goal and target goal removed (it walks nowhere
+        and attacks nothing), and puts its feet exactly on the plank's top, so gravity presses it onto the floor as
+        it does a real rider and Create carries it. The seated zombie stays `noAi` (it is a passenger).
+      - The bystander stands level with the floor 1.6 blocks beside the player on it (it was 3.0), 1.1 past the
+        plank's edge, and an armor stand stands on the floor with the player: `ridersOf` returns neither.
+      - The second re-check's P3 tests of placement are listed in MZB-360's amendment (a cutting, a curve's middle,
+        `trackNear`); the spot contract is checked for a diagonal as well as an axis rail (MZB-365's amendment).
+      - The chase test (`aHeldPuppetWalksBackToItsSpotAndDoesNotChaseItsTarget`) fails when the puppet is back later than
+        `BACK_TICKS` (200): the wait ended whenever it was back, within the test's own longer timeout, so the budget
+        was named in the message and never enforced.
+    - Cleanup: a recall (RECALL_DONE) and a wait for BAND_DEMATERIALIZED on a pass, a removal and a recall
+      on a failure; the train, its glue, the track, the stations and the box are put back as they were
+      (`TrainWatch.forget` too).
+  - Amendment (the third check's P3; written and compiled, not run): three test changes. (1)
+    `RailFrostmawGameTests.theSwingGoesToARiderOnTheNextCarriageBeforeABareBogeyInFront` (batch
+    `rail_frostmaw_riders_first`; MZB-365's amendment) on a new fixture, `Line.mixed` / `mixedCars` (a short
+    single-bogey carriage in front of a long one with a plank floor), `Line.planks` and `Line.standOn` (the riders
+    test's `stand` is now `planks` and `standOn`). It reads the strike's aim off the puppet's yaw, which the Lurker sets
+    at the strike, and the absence of a strike off `lurkStrikes`; the sampler's sight of the train off TRAIN_PASSED.
+    (2) `FrostmawGameTests.aHeldPuppetRemovedBySomethingElseLeavesNothingInTheLurker` (batch
+    `frostmaw_lurk_discarded`) drives the leak the killed-puppet test does not reach (MZB-361's third-check
+    correction): a held body discarded without the death path, the memo gone from the Lurker after. The killed-puppet
+    test passes on 86f97f99 (`settleDeaths` released first) and is kept as a guard, its "fails before" claim dropped;
+    the discard test and the module-off test fail there by reading (`FrostmawLurker.tracked` is new). (3) The
+    `trackNear` assertions of `RailDirectionsGameTests` and the curve test of `FrostmawGameTests` take the body's
+    height and the floor-up count (MZB-360's amendment).
 - **MZB-371** (run 1's ambush half):
   - The synth's rail lines also run as booked legs in a FakeWorld industry through `IndustryLink`, so
     `raid_train` finds the leg and its cargo.
   - Its Java emulation keeps the lurk table from AMBUSH_SPOT. It sends TRAIN_PASSED when a train of a line
     passes within 8 blocks of a lurk's track point, at the tick its timetable puts it there.
+  - Amended at step 4 (the build, `rtsim-cli/src/sim/mowzie/lurk.rs` and `rtsim-conflict/src/synth.rs`):
+    - **The legs.** `synth::rail_legs(lines, seed, jitter, to)` is the list `rail_events` is now written
+      over (the events are byte-identical for a line with `trains: 0`). `RailLine.trains` (0 = a fresh train
+      id per leg, as in M7; n = n trains that take the legs in turn, train `k` going again `DWELL_TICKS`
+      (600) after it arrives, so a train never overlaps its own leg). A leg runs out on the line's path and
+      back on the next lap of its train, and carries its `RailLeg { train, depart, duration }`.
+    - **The table's lag.** Java hears each command `LAG` (100) ticks after the engine says it (one command
+      drain, a placeholder). A pass in the few ticks between a lurk's end and Java hearing of it is the one
+      stale TRAIN_PASSED the engine may count, so "no pass is stale except just after a lurk ended" is checked
+      against the lurk's end, not against the table: a stale pass must fall in `[end, end + LAG]`. (With only
+      the lower bound, a table that kept a removed lurk's passes, by not dropping them on REMOVED, still
+      passed with 4953 stale passes at 12 legs a day and 12238 at 24; with the upper bound it fails with
+      those numbers.)
+    - **`synth::pass_tick(lines, leg, spot)`** is the first sampler tick (every 20 ticks, at the trains'
+      1.4 blocks a tick) at or after the polyline's nearest approach to the spot's track point, when that
+      is within the spot's reach.
+    - **The cargo.** Each line's two trains carry 1280 and 320 of one good a leg, so the Frostmaw's 64-item
+      carry binds on the first (a tenth of 1280 is 128) and the industry's 10% theft cap on the second
+      (32); two trains over a 2-day wait lose at most 64 + 32 each time they are robbed, 192 over the wait,
+      under §4.4's 256. (At 640 and 320 the first train's tenth was 64, the carry itself, so a carry of 1000
+      or no cap at all gave the same theft.) The run checks that every robbery takes `min(64, cargo / 10)`
+      of its train, and that each train's robberies all take the one value. Mutated, the carry at 1000
+      fails that check (59 of 119 robberies off at 12 legs a day, 48 of 96 at 24; the 1280-item train loses
+      128), the day and wait limits too (128 over 64; a wait of 320 over 256); with no cap (`theft_cap_ppm`
+      at 1,000,000) only that check fails (60 of 119, 48 of 96; the 320-item train loses 64).
+    - **The share.** `ambush_milli` rolls on every pass, but the industry's per-train cooldown
+      (`cooldown_ticks` 24,000) turns a hit into `attacks_skipped` when the train was robbed in the last
+      day. So the share is judged on the first pass of a train in each day of a wait that the cooldown
+      leaves open (not skipped, and the industry's own cooldown on the train over when the pass came: the
+      rig reads it with `Engine::train_cooldown_until(train)`, the latest of the train's per-class
+      cooldowns, so a robbery on a band's march, 16 of the 112 ambushes of the 24-a-day line, closes it
+      too), pooled over the two trains and both lines and 8 seeds; the roll's own rate over every counted
+      pass is checked against the same band as a second figure, and reported per line.
+    - **The roll's independence.** The rate of the roll on the counted pass that follows a miss of the same
+      lurk and train, and on the one that follows a hit, are each held to the same band (12 legs a day: 53%
+      of 325 after a miss, 51% of 363 after a hit; 24: 49% of 437, 53% of 450). Mutated to a roll keyed by
+      the train alone (`slot(train)` for `slot(train ^ at.rotate_left(32))` in the engine's roll), it fails
+      at 0% of 254 after a miss and 100% of 434 after a hit at 12 legs a day, 0% of 297 and 100% of 590 at
+      24; the share check fails too then (64%), but only by chance before.
+    - **Legs a day.** The detail line says what the trains made: 11.9 legs a day on the 12-a-day line and
+      23.9 on the 24-a-day line, so the two trains with a 600-tick dwell do keep the named rate (a
+      line's lap is well under 1,800 ticks in the rig's scene).
+    - **The three counts of a robbery.** The engine's `stats.lurk_robberies`, the TRAIN_ROBBED commands the
+      rig heard (the train and the tick of each) and the industry's own `books.stolen` delta for each pass
+      must agree pass for pass: the same trains at the same ticks, and the items the engine counted for a
+      pass equal the ones the industry booked. (The check was the engine's counter against the rig's count
+      of the engine's own command, one site: it could not disagree.)
+    - **What the emulation does not model (review B; documented, no engine outcome moves).** Each
+      divergence from MZB-363's sampler is a place where Java's pass can differ from the rig's by a few
+      ticks or by one pass, never by a rule:
+      - *Sample times.* `pass_tick` counts its 20-tick samples from the leg's departure; Java's sampler
+        samples a train every 20 ticks of its own phase (the server tick), not of the departure. A pass
+        can come up to 19 ticks earlier or later than the rig's.
+      - *One pass per leg.* The rig sends one TRAIN_PASSED for a leg, at the polyline's nearest approach.
+        Java re-arms an approach once the train is more than 64 blocks from the track point, so a leg that
+        runs by the point, away beyond 64 blocks and back within reach would send two. A rig leg is a
+        straight run and passes a lurk's point once.
+      - *The dimension* is ignored: the rig has one, and Java skips a lurk in another dimension from the
+        train's.
+      - *No TrainArrived reaches the industry.* The legs are booked as departed and never arrive there, so
+        a leg's cargo is not delivered and no stock moves except what a lurk takes. Cooldowns, theft caps
+        and the books are the industry's own all the same.
+      - *Curves.* The rig takes the polyline's nearest approach to the point against the spot's reach;
+        Java tests the chord of each 20-tick sample against it. On a curve a chord cuts across the bend,
+        so Java can read a nearer or a farther distance than the polyline's, and a point just inside or
+        outside the reach can differ. The rig's lines are one straight run each (`straight(x)`), where the
+        chord and the polyline agree, so no number here depends on it.
+    - **What Java must match when it lands (steps 5 and 6; these do move engine outcomes).** The rig's
+      table (`synth::LurkTable`, `hear` in `lurk.rs`) is the specification, and run 1's stale-pass check
+      (a stale pass only in `[end, end + LAG]`) fails for a Java that does not:
+      - *Drop by agent.* AMBUSH_REMOVED removes the lurk by agent, not by epoch. A lurk the engine saw
+        (`seen`) has its passes carry epoch E against the party's E+1, and its REMOVED goes out at E+1.
+      - *Latest wins.* A second AMBUSH_SPOT for an agent (a session start's resend, a watch's new epoch)
+        replaces the first; the table holds one lurk for each agent.
+      - *Clear at session end.* The table is per session and is empty at a new one; the engine sends each
+        lurk again once (MZB-353).
+      - *Drop the sampler's pending work on REMOVED.* The rig drops the agent's scheduled passes
+        (`self.due.retain(|_, tp| tp.agent != s.agent)`, `lurk.rs`) as it hears the removal, and again on a
+        new spot of the agent. In Java that is the sampler's approach state for the agent (MZB-363's
+        `approaches`) and any pass the same sample was about to send: a removed lurk sends nothing from
+        the tick Java hears it, and a lurk begun again by the agent starts armed.
 - **MZB-372** (run 8): save and restore, blob and paged, at four points: mid-lurk, in a cowed time, in a
   meter's decay (a booked `Ev::Rail` and held passes), and with a reconcile in flight.
   - Each is compared with an uninterrupted control: the outbox (by bytes, in order), the stats, and each
     feud's grievance by `to_bits` must be identical.
   - A session restart at each point sends exactly one more AMBUSH_SPOT per lurking party, and the next
     census orders the reconcile's lines again (M4).
+  - Amended at step 4 (the three lurk points are `lurk::trips`; the reconcile point is M4's
+    `reconcile_in_flight`, unchanged), each run on seeds 0 and 1 of the 12-a-day line:
+    - **Mid-lurk**: two dens' bands (the second den at (1200, 1000)) lie in wait at once, each with a
+      pass behind it; if the second never lurks while the first does, one band with two passes will do.
+    - **Cowed**: two dens lurk on the line; once the first den's band has a pass behind it, its chief is
+      killed (`chief_killed`, as run 7 does). A day later, inside the 6-day cowed time, a Killing signal of
+      twice the Raid rung's threshold provokes the first den's feud again, and the save or restart comes
+      right after it (in that order, the signal and then the trip). The control must be cowed at the trip,
+      and the second den must begin a lurk after it (the tail that is compared). The first den stays empty
+      for the rest of the run, and that is the rig's limit, not the engine's: the rig founds its dens with
+      `add_faction`, which makes no camp ledger (FACTION_FOUND is what makes it in the pack, `camp_found`),
+      and `plan_arrival` (a renewal culture's next member: the Frostmaw has no recruits,
+      `recruits_per_day` 0, so its next body is the renewal wait's, 6 days a first kill, 12 for a player's)
+      returns early for a faction with no ledger, so no arrival is ever booked and the feud climbs, waits
+      out the cowed time and blocks on the empty pool. Founding the dens by FACTION_FOUND would give them
+      ledgers, but a ledger camp draws its bodies from the camp world (`bodies_ready` is BLOCKED while
+      `drawable()` is short), so the rig would need the plugin's answers (run 6's `CampRun` has them);
+      that is not a small change to this rig. (Without the provocation the first den's feud sits at Notice
+      for the 56 days after, flat at its grievance: the meter's pressure alone does not climb back to
+      Raid.)
+    - **Decay**: the line runs 24 legs a day and is cut to 4 on day 7; the point is the first tick from
+      then with a band lurking, a held pass and a booked rail event (about day 9.3 in seeds 0 and 1, with
+      one lurk). So the meter is decaying and a lurk is in wait, its table and its passes among what is
+      saved. No lurk begins after the trip (the meter no longer climbs), which is why the lurk is compared
+      by the restart arms (one spot said again) and not by a new start. (The 12-a-day line cut on day 10
+      had no lurk at its point: the claim then covered the meter and the held passes only.)
+    - **The tapes.** Each arm leaves the same tape: the commands in wire order, the stats, the hourly
+      grievance by bits, the lurk table's own commands (`lurk_wire`) and the state hash. Blob and Paged
+      must equal the control's tape whole. The restart arm is compared by its lurk stream, its grievances and
+      the lurk and pass stats (the command stream differs only by the one resent spot per lurking party,
+      which is checked as `resent == lurking`). A second restart arm, `Trip::PagedRestart`, opens the engine
+      from its pages and then starts the session, as the host does after a crash or a clean shutdown (a
+      few lines on the same `restart` step); it is held to the same comparison and to no load drift.
 - **MZB-373** (what M8 needs):
   - From M7: `Target::Track` and the arrival's Track arm, the sampler with its per-train state, and
     RAIL_PASS live.
@@ -4131,6 +4989,26 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
   - M6 adds no `alwaysActive` and no lurk restriction, so M8 adds `Lurker`.
 - **MZB-374** (boundary.md): TRAIN_PASSED is live (the "come later" list, boundary.md:1752). AMBUSH_SPOT's
   spot y is the track's, with Java finding the floor. TRAIN_ROBBED's roar is a sound only.
+  - Amendment (review C, item 4): boundary.md's AMBUSH_SPOT section now states the spot-distance contract:
+    rail.rs `SPOT_BLOCKS` (5.0) against `AMBUSH_REACH` (8.0, the TRAIN_PASSED radius only), the sampler's
+    `STRIKE_REACH` (6.0, horizontal, on the landing point `SWING_TICKS` = 9 ticks on) and the Lurker's stand
+    (1.5 at the time; now 0.5, below) and restriction radius (2); the margin is 1.0 at the spot and was
+    nil-to-negative at the far side of a stand of 1.5, so the numbers move together. Its TRAIN_ROBBED section says who hears the station roar: a non-spectator
+    player in range who is not a NeoForge `FakePlayer` (`ConflictBridge.trainCalled` skips those; the
+    GameTests' `FakePlayers` hearer is a plain `ServerPlayer`, so it hears).
+  - Amendment (the build lead's spot-distance choice): boundary.md's contract paragraph is rewritten as the
+    checked rule of MZB-365's fourth amendment: `SPOT_BLOCKS + stand <= STRIKE_REACH` and `SPOT_BLOCKS - stand -
+    halfWidth >= RAIL_CLEARANCE`, with the stand 0.5, `SPOT_BLOCKS` mirrored in the sampler and pinned in Rust,
+    and the body's real rest looked at by the GameTest rather than assumed.
+  - Amendment (the re-check's P2): boundary.md's AMBUSH_SPOT section says where Java stands the body (the rail's
+    normal through `track`, `SPOT_BLOCKS` off the rail's centre line, the spot giving the side; refused when
+    neither side is standable; the engine's spot when no rail direction is known), and the contract's two
+    inequalities count `LATERAL_SLACK` (MZB-360's and MZB-365's amendments). The wire is unchanged: `spot` is
+    still the engine's point.
+  - Amendment (the second re-check's P3): boundary.md's contract block takes the diagonal's corner (`halfWidth *
+    sqrt 2` and the near slack 0.17), the floor within 2 of the rail's y, and the refusal when no direction is known
+    and a rail is within the body's half-width plus the rail clearance of the engine's spot (MZB-360's and MZB-365's
+    amendments). The wire is unchanged.
 
 ### M8 design for the implementer
 
@@ -4326,6 +5204,8 @@ each at its own far base, scripted engine):
      nothing. A second arrival with nobody near plays nothing, and the entry stays (`pendingRoars()`).
    - A scripted REMOVED: `alwaysActive` is false, `hasRestriction()` is false, and the agent is gone from
      `RtsimApi.lurks()`.
+   - Built at step 8, not run: the spot is 4 blocks off, the line 150 blocks and test 8 two tests (MZB-365's
+     second amendment, MZB-370's last).
 
 **Rust tests** (`crates/rtsim-conflict/tests/lurk.rs`):
 - The lurk's life: `a_raid_on_a_track_sends_its_ambush_spot`,
@@ -4339,22 +5219,35 @@ each at its own far base, scripted engine):
   `the_cooldown_bounds_a_train_to_one_robbery_a_day` (a FakeWorld industry).
 - News and persistence: `an_ambush_makes_no_news`, `a_lurk_survives_a_save_mid_wait` (blob and paged),
   `the_on_the_way_note_keeps_its_wording`.
-- rtsim-jni's protocol test: TRAIN_PASSED is live, not deferred, and reaches the engine with an
-  infrastructure.
+- rtsim-jni's protocol tests (`crates/rtsim-jni/tests/protocol.rs`, module `conflict`):
+  `a_train_passed_is_live_and_meets_the_lurk_of_its_own_time` (TRAIN_PASSED is live, `deferred` does not
+  count it; a pass stamped inside the wait meets a live lurk although the hand-over is past the patience, one
+  stamped after the end is stale; the lurk's start and removal reach the plugin once each, in Java's
+  dictionary) and `a_lurk_goes_to_the_plugin_once_after_each_session_start` (a lurk a replayed record made
+  goes once after a crash restart, not twice; the clean restart resends it once; fails with two spots when
+  the `retain` of MZB-353's amendment does not drop the queued AMBUSH_SPOT). The host's own catch-up
+  (`shared::catch_up`) is for the other modules: `Conflict::ingest` runs the conflict to the record's time
+  itself, so mutating the catch-up out changes neither test.
 
 **Sim runs** (`rtsim-cli sim mowzie`, MZB-330's seeds and tolerances):
-- **Run 1, the ambushes** (RUNS row 1's "ambushes M8"; MZB-371): the 12- and 24-a-day lines, each with two
-  trains.
+- **Run 1, the ambushes** (built at step 4; MZB-371): the 12- and 24-a-day lines, each with two trains,
+  over 8 seeds and 45 days.
   - Every Raid on a track sends AMBUSH_SPOT at its arrival and REMOVED when it ends.
   - At most 64 items are robbed per train per day, and at most 256 over a middling 2-day wait with two
     trains.
-  - The share of each train's first daily pass that robs is between 35% and 65% over the 8 seeds
-    (`ambush_milli` 500).
-  - The robbed goods are in the ledger's destroyed share (ledger 10). `stats.ambushes` equals the
-    TRAIN_ROBBED count.
-  - No TRAIN_PASSED is stale except after a lurk ended.
-- **Run 8, save and restore** (MZB-372): the four points, each blob and paged, against the control; then
-  the session restarts at each.
+  - Each robbery takes `min(64, cargo / 10)` of its train (cargo 1280 and 320: 64 and 32).
+  - The share of each train's first open pass of a day of the wait (the industry's cooldown on the train
+    clear) that robs is between 35% and 65% (`ambush_milli` 500), pooled over the trains and seeds; the
+    roll's rate over every counted pass is held to the same band, and so is its rate on the pass after a
+    miss and the one after a hit (independence).
+  - The robbed goods are in the ledger's destroyed share (ledger 10), and the industry's `books.stolen`
+    equals them. The engine's `stats.lurk_robberies`, the TRAIN_ROBBED commands heard and the industry's
+    books per pass agree (review A, P3: `stats.ambushes` also counts the on-the-way ambushes, which send
+    no roar, so it is the larger).
+  - No TRAIN_PASSED is stale except in the `LAG` ticks after a lurk ended.
+- **Run 8, save and restore** (built at step 4; MZB-372): the three lurk points (the Decay point with a
+  band lurking), each blob and paged, against the control; then the session restarts at each, plain and
+  after a load from pages. The fourth, a reconcile in flight, is M4's.
 
 **Work split** (in order; each step's tests green and committed before the next):
 0. Branch (MZB-350).
@@ -4414,6 +5307,54 @@ each at its own far base, scripted engine):
 - `start_fight` and `seen` bump the party's epoch, so the lurk table's epoch is older than the party's
   after a watch: TRAIN_PASSED is stale only on a later epoch (`<=`), never on an unequal one
   (`party_of`'s filter).
+- A SEEN lurk's passes carry epoch E (the spot's, which is what Java's table holds) against the party's
+  E+1, and they pass; but the REMOVED goes out at E+1. Java must drop a lurk by agent, never by an epoch
+  match (a table keyed or checked by epoch keeps the lurk of a band that was watched). Review C checks
+  this on the Java side (MZB-359).
+- `resend_lurks` says a lurk once per drain of the queue; once per SESSION is the host's `notices_due`
+  flag. A host that calls `resend_notices` twice in a session sends it twice.
+
+### The M8 merge (MZB-690 to MZB-692)
+
+M8 (feat/mowzie-m8 at 959ada91) merged M7 at 39c819f1 (a64599d6), M9 at 7153b7fe (74dd20ae) and main at
+5a45b9e6 (1885aa7d); docs/replay-gate.md §2.7 "The M8 merge" has the conflicts and §4.4 the gate rows;
+RP-150 to RP-153 the replay records.
+
+- **MZB-690** (the formats: RTC10 and META 9; the M8 merge): M8 appends its five stats (`lurks`,
+  `lurks_ended`, `passes`, `passes_watched`, `lurk_robberies`) to the saved stats list and kept M7's
+  format, since the list is length-prefixed and an older page reads zeros (MZB-357's amendment). On the
+  merged head M8 lands after M9 (RTC9, META 8), and a layout that changes at all takes a number of its
+  own, as M7's and M9's did: the blob is RTC10 and the meta page 9. The stats are M9's three
+  (`tribute_stacks`, `hunts_owed`, `hunts_killed`), then M7's seven, then M8's five; save and load
+  read the same fields in the same order. No migration: an RTC9 blob or a META 8 page is refused, as
+  every older one is ("meta page version 8, this build reads 9"). The magic is one little-endian
+  `u32` of four bytes and "RTC10" is five, so it is `RTCA` (A for ten, as in hex), written as RTC10 in
+  persist.rs's history; the 'RTC' prefix and one version byte stay, as in RTC2 to RTC9. Not taken: a
+  second magic word, or a version field after the magic (a blob layout change for a number). MZB-357's
+  "the pages stay at M7's format" holds for M8 alone, not on the merged head.
+- **MZB-691** (`Conflict::later` kept, empty; the M8 merge): M8 took TRAIN_PASSED out of `later` and
+  M9 took its grove kinds, so on the merged head `later` names nothing and returns false. It stays, with
+  its call in `ingest` and rtsim-jni's deferred branch, for a later slice's new record (MZB-23).
+  rtsim-jni's later-kinds test becomes
+  `no_record_is_deferred_and_each_reaches_the_engine`: `deferred` is 0, a CHIEF_PAID spends its op id
+  as before, and a TRAIN_PASSED for no party reaches `train_passed` and counts `stale`. Not taken:
+  deleting `later` and the deferred path (a design change for the slice that next needs it, not the
+  merge's).
+- **MZB-692** (a lurk refused at its placing discards the extras too; the M8 merge, ConflictBridge
+  `spawn`): M8 refuses a lurk whose hold point has no standable floor before any camp body is claimed,
+  discarding the bodies already made for the stack and unclaiming the hand-offs (the second re-check's
+  P3). M9 makes extras with a body (a raptor's pack, MZB-428), kept in `madeExtras` and discarded on
+  M9's own failure path. Without the merge's line the refusal left a made body's extras standing with
+  no puppet to follow. The refusal now discards `madeExtras` as M9's failure path does. A Frostmaw has
+  no extras, so no test of either branch reaches it; compiled, not run. The comment over the refusal
+  says, beside M8's "the camp body is still removed", that a grove's take waits while a player is near
+  (Rule U, MZB-433) and a den's goes at once.
+- **MZB-693** (the third-pass merge: M9's GameTest round fixes and slice N): M8 merged feat/mowzie-m9 at
+  c1bd6472, which carries M9's round fixes (MZB-675 to MZB-678) and main at 4e694452 (slice N, the nest
+  renewal serial, RTD8 and RTN8). The merge was clean. `tools/chunk_waits.py` then put the site-load
+  waits of M8's own GameTests on ChunkWait's two clocks: six tests in FrostmawGameTests and
+  `aLurkRefusedAtItsPlacingClaimsNoCampBodyAndTheSetOutIsATake` in MowzieGameTests. M8's rail
+  GameTests (RailDirectionsGameTests, RailFrostmawGameTests) needed no change.
 
 ## M9 Umvuthana
 
@@ -6450,7 +7391,9 @@ conversion or the merge: the tests had been compiled but never run.
   not in a column" is replaced by MZB-469 to MZB-472.
 - **MZB-484** (no M10 push while the session's replay catches up): under rtsim-jni, `take_commands` moves the
   whole outbox into the JNI queue after every ingest, so the engine's `outbox.retain` filters never see a
-  command pushed while `replaying`. Each M10 push is therefore gated where it is made:
+  command pushed while `replaying`. Each M10 push is therefore gated where it is made. (Since slice C, "at the
+  push" is also the outbox's `gate`, exhaustive over every kind, with a verdict per kind while replaying;
+  BAND_MARCH's is drop, MZB-486. The guards below stay: they keep the revision and the flags from moving.)
   - **BAND_MARCH.** `take_commands` builds no march record while `self.replaying`. It leaves `march_due` and
     the flags as they are. `home` pushes its ENDED record only when not replaying, though the flag and the
     row go either way.
@@ -6967,9 +7910,3063 @@ counter and a no-cascade test.
 - **The command count.** `take_commands` returns more commands now. Tests that count them, or index into
   them, need the march records filtered out.
 
+### M10a build records (MZB-485 to MZB-499)
+
+What the implementation of the engine half (M10a) decided. The design's records are MZB-450 to MZB-484
+above; the replay gate's are RP-170 and up in docs/replay-gate.md.
+
+- **MZB-485** (the base; amends MZB-450): `feat/mowzie-m10` starts from `feat/mowzie-m8`'s merged head
+  (14c896ee: M8 with M7 and M9 at 7153b7fe, M6 and main at a11311aa's parents), not from M9 alone. M8 lands
+  before M10 and both change rtsim-conflict's engine and its persisted state, so M10 builds on the tree it
+  will merge into; MZB-450 asked for M9 plus M6, which M8's head carries. Step 1 then merged
+  `feat/mowzie-m9` at 42e8fcc3 (the M9 check's fixes: RP-133, RP-134, MZB-672 boxed hunts, MZB-673) and
+  `design/mowzie-m10`'s four design commits. MZB-672's pin: M8 adds no `Faction` field (MZB-690 to MZB-692), so
+  `FactionRow` is the M9 check's 216 (200 + 8 + 8), not the 232 M8's merge had pinned; tests/rail.rs asserts
+  216 and M8's RP-153 point 7 now says so. No `run-gametest/world` existed in any project of this worktree to
+  delete. The saved state is **RTC11 / META 10**, magic `RTCB` (M8's is `RTCA`; M10 lands after M8), no
+  migration.
+- **MZB-486** (BAND_MARCH's gate; amends MZB-484's "gated where it is made"): `Cmd::March` was already a kind
+  with a row in slice C's gate, with the verdicts drop and send (docs/replay-gate.md §4.4), before it had a push
+  site. M10 pushes it from two places, `take_commands` (the march records) and `home` (a band's end), and
+  guards both on `!replaying`. The outbox gate (outbox.rs `gate`, exhaustive, RP-170) is the backstop at the
+  push that MZB-484 asked for: its verdict is now **drop while replaying**, not send, since a record sent
+  from a replay would carry a stale revision and Java's map is a session's. Queued at the session start it
+  drops as well (the verdict was already drop). The verdict test's sample line and the §4.4 row move with it.
+  Fork taken: this changes an existing row, which the lead's brief did not name, and the conservative option
+  is the stricter one (nothing sent while replaying); the first take after the replay end sends every party
+  once (MZB-451), so nothing is lost.
+- **MZB-487** (the saved form of a party's march; MZB-453 built): `put_party` and `get_party` end with
+  `march_rev` (var u64), `march_due` (a bool) and `unseen_due` (a u64 tick), after `casualty_ops`. The magic is
+  `RTCB`, META_VERSION 10, with the history comments extended. `march_due` is saved, so a mark made before a
+  save survives it; `Conflict::rebuild_march_due` builds the unsaved list from the flags in handle order, at
+  the end of `load` and of `open_paged` (the parties are resident in both). `begin_replay` marks every party
+  again, so a saved flag and a replay's mark meet at one entry (`march_changed` pushes only a clear flag). The
+  revision is saved with the party: Java's per-session map takes any revision a session's first record
+  carries, and a restart's first record is one past the pages' last. Fork: a state hash now moves with a
+  take's flags, so two engines that took commands at different steps differ by hash; no existing test
+  compares such a pair.
+- **MZB-488** (the build order; amends the design's work split): the books' step (`lose_units`' clamp,
+  MZB-462; `camp_home` returning a bool and `home`'s fallback recall, MZB-463) was built and committed before the
+  walk home (MZB-456). The walk leaves a band embodied up to its row's end, so the fight-end tests that counted a
+  recall at the fight's end (lurk.rs, mowzie_records.rs) now meet the recall at `home`, and that recall exists
+  only with the fallback. `camp_home` returns true when it sent a HAND_BACK line or recalled (a camp that is in
+  with no hand-back line, a camp with no ledger, and a camp that is out with nothing embodied return false);
+  `home` recalls an embodied band with RECALL_DONE toward its camp when nothing handled it, for every kind. The
+  clamp keeps each `spawned` entry no larger than its unit's count while the band is embodied.
+- **MZB-489** (the walk home as built; MZB-456): `go_home` walks when the band is embodied, the reason is
+  RECALL_DONE, RECALL_BORED or RECALL_ROUTED, some `spawned` entry is above 0, the kind is not Envoy, the world is
+  not Peaceful and the outbox is not replaying; any other band is recalled toward its camp as before. The first
+  home segment is steered by `go_home` and each later one by `start_segment`, both through `steer_segment`, which
+  also owns the edge_stop seam rule (a segment that would cross a seam is recalled with RECALL_PASSING toward its
+  end) and books the watcher's unseen check. The home steer never carries STEER_ATTACK (only a war band's last
+  segment out does). The row's end at `home` is where the fallback recall of MZB-463 lands. Fork: the fight-end
+  tests in tests/mowzie_records.rs that read a band's `embodied` after a fight now read "embodied before its walk
+  home" (a replayed band is recalled while the live one walks, MZB-484), and the refused-fight helper runs on
+  until the band's row is gone so it meets the fallback recall's epoch. No test of a seam on the way home was
+  written: no engine test builds an edge_stop topology.
+- **MZB-490** (`seen` skips a band with nobody alive; amends MZB-457): `seen` no longer skips a Home band, and
+  it now also skips any band whose `alive()` is 0. A band wiped out on the road or in a fight is routed home
+  with its dead and walks the row home abstract (or in bodies that are all gone); materializing it would embody a
+  party with no member to place (`spawn_wave`'s fill is empty, the epoch moves and `spawned` is cleared), and
+  tests/frostmaw.rs's chief-killed-then-counted-out case met exactly that with the player's area still valid
+  after the fight. Before this step Home was skipped whole, so this guard did not exist; Out and Waiting bands
+  always have a member alive. `march_bearing` is MZB-457 as designed (Out and Home toward the segment's end, or
+  along the segment when standing on it; Waiting the way it came; else 0).
+- **MZB-491** (the replay reads a walked-in band's fight; amends RP-56's flag rule): a band that walked in
+  fights at the epoch it was met at (MZB-461), so its fight record is of its own epoch. `honour` takes a
+  BAND_MATERIALIZED flagged BAND_FIGHT as the fight when it is of a newer epoch (as before) or of the party's
+  own epoch with the party's arrival held (`held_since`); a flagged record of the own epoch with no hold is a
+  later wave of a fight in progress, and counts nothing new. A sighting's record (unflagged) only embodies
+  and keeps the hold, as RP-56 has it.
+- **MZB-492** (a walked-in fight may send no wave, so the fight leaves no record; closed by MZB-700 at the review): the arc
+  of `start_fight` on an embodied band sends only the members not placed yet (MZB-461), and a band met on
+  the road has all of them placed up to the quota already (`wave_fill`'s room is the quota less `spawned`,
+  and the sighting filled it; a band under the quota has everyone out). The arc wave is then empty and
+  `spawn_wave` sends nothing, so the fight's first BAND_MATERIALIZED, the record a replay's hold waits for
+  (RP-23, RP-48), comes only with a later wave after a death. Consequences, all kept as they fall: a restart
+  during such a held arrival resolves it unwatched at the slack (RP-48) while the session that went on fought
+  it, and the fight's casualties of that epoch count against the stacks the sighting's record rebuilt; and
+  `fights_unanswered` is not set for a walked-in band, since no first wave answers its decision (the stat
+  would otherwise take a wave interval). Conservative fork: the wire is left as designed. Two ways to close
+  it, both Java-side and so M10b's to design: a BAND_MATERIALIZE with no members flagged BAND_FIGHT that Java
+  echoes at once, or a record echoed for an attack steer. Tests that stood on a sighting's record followed
+  by the fight's in one step (RP-56's case B, `a_sighting_journaled_with_a_held_arrivals_fight_is_no_double`
+  and its `Records::SightingWithTheFight`) were removed with the gap. A walk-in with members left to send is
+  tested at the engine in tests/mowzie_march.rs (`spawned` set short by hand); no replay test covers it.
+- **MZB-493** (FakeConflict plays a walked-in fight; amends MZB-476's "steers stay ignored"): a BAND_STEER with
+  STEER_ATTACK and `arrive` 0 (the walk-in's attack order; a segment's own attack steer has an arrival time)
+  for a hostile body it holds at that epoch plays the scripted `fight` on what it holds, as it plays a wave.
+  The wave's fight and the steer's share `play_fight`, which also kills the chief once whenever a fight finds
+  one standing (a walked-in band placed it with its sighting, and `m.wave == 0` and BAND_CHIEF on the wave no
+  longer gate it). The command log's steer line adds ", attack" for an attack steer. MZB-476's march record
+  (latest revision per party, dropped on ENDED, the held body clamped to the record's counts) and a HAND_BACK
+  line ending the held body at its epoch (BAND_DEMATERIALIZED reason 1 after `leave_ticks`, its survivors)
+  are built as designed.
+- **MZB-494** (the test harness after the walk-in; forks): mowzie_records.rs's `Run` gains `sight` (default
+  true) and `observe`, which with `sight` clear makes the player's report and its area but routes no sighting.
+  `raid_band` clears it, so the replay-gate tests keep abstract arrivals (a band never met on its march fights
+  from the arrival at its own first epoch): the first-wave-refused test expects the recall of epoch 1, not 2,
+  and the record-gap test reads the fight's record as the band's first. The straggler variant now builds its
+  older epoch by meeting the band, logging the player out (the recall) and watching again at the arrival.
+  The siege's `Then::Fight` is unrouted, since a waiting siege met first sits at the quota (MZB-492). The
+  scenario test (tests/scenario.rs) accepts the director's arc waves or the walked-in attack steer as the
+  fight.
+- **MZB-495** (MZB-466's counter, as built; forks): `ConflictStats::unbooked_home_deaths` counts a
+  BAND_CASUALTIES or CHIEF_KILLED that names a party that is gone, at an epoch `home` sent HAND_BACK lines
+  for that Java has not answered. The open lines are `Conflict::home_open`, per party agent: the faction, the
+  epoch, the slots of the lines (for the log), when they went, and the ops already counted. In memory only;
+  a restart starts empty, and an entry older than a day is dropped when the next is made. `camp_home` makes
+  it when a HAND_BACK line goes (not for a recall or a spawn line, and nothing is made during a replay,
+  where nothing embodies). The band's BAND_DEMATERIALIZED at that epoch is the answer and clears it, whatever
+  came of the line (MZB-464). Each op counts once, so a copy, a reassert and a second ingest change nothing.
+  Booked nowhere: no casualty, no signal, no party, slot, pool or camp ledger touched; the log line (kind
+  `unbooked`, when the log is on) names the party's agent, the epoch and the camp slots of its lines. The
+  record names a body, not a slot, so the slots are the lines'. Java's matching log is M10b's. The no-cascade
+  test sits in tests/camp.rs (`a_puppet_killed_between_the_end_and_its_hand_back_is_counted_and_costs_nothing_else`),
+  where the grove harness is: a band walks home embodied, a casualty, a chief record and their copies reach
+  the engine after `home`, and the books (slots, parties, pool, stats less the counter) equal the same run
+  without them, the camp's audit agreeing.
+
+- **MZB-496** (the two rtsim-jni conflict tests that relied on arc waves for a band met on the road; forks):
+  `factions_take_notice_send_envoys_take_tribute_once_and_raid_in_waves_across_a_crash` and
+  `a_held_arrivals_replayed_fight_counts_its_casualties_once` assumed the old arrival: a band whose wave
+  came on an arc from the first record. After the sighting (MZB-461) the whole band under the quota is
+  placed in a column on its road and the arrival walks it in (STEER_ATTACK, the same epoch), so a fully
+  placed raid sends no arc wave at all. The first test now waits for the attack steer for the raid, for the
+  invasion's sighting plus its first arc wave (a day, since the wave comes after the arrival and the wave
+  interval), and checks the rout as a walk home (a steer with `arrive` > 0, no RECALL_ROUTED). The second
+  test's replay is the walked-in fight resolved unwatched: its sighting's BAND_MATERIALIZE is the one record
+  after the pages, no fight record exists to honour (MZB-492's gap, which M10b or the review may close with
+  an echo of the attack steer), and the casualties count once at the sighting's epoch; the band is Home,
+  abstract, at the replay end. Taken the conservative way: the tests pin what the engine does now and say
+  where it is a gap, rather than building a fight record the engine does not have. (MZB-700 closed the gap
+  and changed both tests: the walk-in sends an empty fight record.)
+
+- **MZB-497** (the four rtsim-jni protocol tests of M10, and where the `lose_units` one lives; forks): in
+  tests/protocol.rs's conflict module, beside the replayed-casualty tests, each with the live player out of
+  the band's view until the replay has caught up (MZB-484):
+  - `a_session_start_sends_each_party_its_march_after_the_replay_has_caught_up`: 4,000 fillers make the
+    replay several hand-overs on a minimum-size buffer; after each hand-over that leaves records to send,
+    no BAND_MARCH has been sent (`reopen_watching` steps one hand-over at a time with `Java::flush`, since
+    `idle` is two); then one record for every party, at the page's revision plus one, with the units the
+    replayed casualties left.
+  - `a_casualty_on_the_walk_home_across_a_restart_counts_once_and_the_next_march_carries_it`: a routed raid
+    walking home in bodies, a casualty journaled after the pages and the crash before any step, so its
+    march record was never built; the replay counts it once and the session's record carries it.
+  - `an_invasion_from_a_grove_that_comes_in_sends_no_march_and_keeps_the_cap` (test 28's engine half):
+    the grove comes in at the muster's end, the band's revision and record count stay put until its
+    arrival, which is a record, and a raid is refused while the invasion holds 8 of the grove's 9 and goes
+    once they are home; pool plus away never pass the cap. The band had no war chief in this harness (a
+    grove's strays carry no chief byte), so what the test pins is that no flag of the record changed;
+    run 11 and the GameTests carry the chief's cases.
+  - Fork, `lose_units` across a restart: the JNI harness has no village to raid (a village needs
+    `adopt`, a market and a player placed 170 blocks from it), so the test is the engine's, in
+    crates/rtsim-conflict/tests/mowzie_march.rs
+    (`the_dead_of_an_abstract_fight_in_bodies_are_counted_once_at_the_recall_and_across_a_restart`): a raid
+    walks to Ashby in bodies, a second player 170 blocks off re-binds it, the village's defence takes 4 of
+    12, `spawned` follows (8), the watcher leaves and the recall's stack is the 8; one dies on the walk off;
+    Java's despawn leaves 7, not the 3 an unclamped stack would leave. Its second arm saves the engine
+    after the recall and replays the despawn from the pages. It fails with the clamp removed. The
+    journal path of a restart is the same code (`Dematerialized` on a recalled stack), so the JNI
+    harness would add only the wire.
+  - No crash or reassert copy test is added: M10 adds no holder-carried record (MZB-467).
+
+- **MZB-498** (the march audit, run 13; forks): `rtsim_conflict::synth::march` (crates/rtsim-conflict/src/synth/march.rs)
+  is the map Java keeps of marches, built from the engine's own `Cmd::March` records, and held against the
+  engine, step by step. Design:
+  - **It lives beside `CampRun`, not in the engine.** A thread-local state, off unless a run turns it `on()`;
+    `advance(c, w, infra, to)` is `run_until` and `take_commands` when off (run 1, 5, 10 and 11 are what they
+    were), and 20-tick steps (`begin`, run, `took`, `end`) when on. `CampRun::run`, `flush` and `decide`
+    carry the same hooks, so a stepped run of CampRun is audited without a change of its script.
+  - **What a step checks.** A party unchanged across the step (same `plan` and `march_rev`, no mark pending) has
+    `BandMarch::chart_pos(t)` of the latest record equal `Conflict::party_chart_pos` at every tick of the step,
+    which is the shared position rule read from both ends (`party_chart_pos` is now `pub`). A changed party
+    is compared at the step's end: position, phase, the units' sum, the end of the route. A change of route,
+    phase, count or chief flag has a record taken in its step. A party that left the engine has no record
+    left in the map; a revision never goes down.
+  - **Fork: a party with no one alive and no chief.** The engine keeps the shell until it is reaped, but its
+    record says ENDED and Java drops it (`march_record`'s `alive() == 0 && !chief`). The audit expects no held
+    record for it and counts the shell-steps rather than comparing a position. Without this rule the first
+    run of the audit failed on every such shell.
+  - **Fork: a new engine.** A sim run builds many engines and Java's map starts empty for each (MZB-451). The
+    audit takes an engine whose clock is behind the last step's for a new one (`State::sync`) and
+    `restart_to_replay` calls `session()`. The conservative alternative, an explicit reset in every builder,
+    would have meant touching every sim run; the clock rule costs nothing to the runs that do not audit.
+  - **Fork: no position check while a replay runs.** No record is built then (MZB-484), so a party with a mark
+    pending is counted as `pending` and not compared.
+  - Run 13's other checks: no census ends a party (ten `camp_out`/`camp_in` cycles of an Invasion out send no
+    ENDED, and one is sent at its end), and the seams: on an x-wrapped world and on a glued (Petroff-Guyou)
+    one a band that crosses the seam and routs has its cell the fold of its block centre at every tick, no
+    jump out or home, a rout route that is `here` plus the road it came by without a lap, a first segment as
+    long as its walk, and the walk home as long as the engine says.
+
+- **MZB-499** (run 11, the grove's Invasion with its chief; forks): the run drives the engine the way the
+  host does and sets fields by hand only where a test must stand a band in bodies with nobody tracking it.
+  - Players are moved by `Conflict::observe_player` (the host's entry), not `set_player_pos`, and leave by
+    `player_left`. Where a case needs the band embodied with no one watching, the run sets `embodied`,
+    `epoch += 1` and `spawned = units` as a watched fight leaves them (tests/mowzie_march.rs does the same).
+  - The grove is `fast_grove`: six-day heir wait and a 12.0-day clock (`grove_cultures(6.0, 192.0, 6.0)`),
+    plunder off, nine found, so the chief's slot runs Left, Gone and freed inside one run. The led Invasion
+    draws the Umvuthi (strength 12.6 against the raid's 3.8), and its march record's kind byte is 4, not
+    5: the byte is `PartyKind`'s, not `Step`'s.
+  - A chief killed away routs the band (`chief_killed_by`): the record goes Home with no chief flag, the feud
+    steps Invasion to Scouts (`chief_rout_steps` 2), and the slot is Dead for a Left chief and freed for a
+    Gone one (`chief_died_away`); the heir comes due at 12.0 days.
+  - Where the muster ends before a camp comes in, the run goes to the muster's end first, so the chief is
+    Gone when the camp returns and the throne body is the held one.
+  - The held set-out is answered stale with one removal (the camp left while its set-out was held); the
+    seat waits on a fight past `HOLD_MAX` (6,000 ticks) and then sits; the three re-binds (walked off,
+    followed, logged out) send no recall and with nobody there one `RECALL_PASSING`.
+  - The arrival with the only player 170 blocks off is abstract and walked home; at 150 it is a fight.
+  - The abstract fight's dead are counted once: 8 of 12, 6 left, 5 after the despawn, the same across a
+    save/load restart.
+
+### M10a review fixes (MZB-700 to MZB-719)
+
+The Opus review of 16f853cc (one P1, two P2s, three P3s) and its fixes, one commit each, each with the
+reviewer's repro made into a test that failed before the fix. Ids here, since M10's range (MZB-450 to
+MZB-499) is full.
+
+- **MZB-700** (a walked-in fight always sends its BAND_FIGHT record, empty when every member is placed;
+  closes MZB-492; amends MZB-496): the P1 of the review. A band met on its road and placed by its sighting
+  walks into its fight (MZB-461) with nothing left to send, so `spawn_wave` sent no record, and a restart
+  from pages saved before the arrival replayed a held arrival that never met a BAND_FIGHT-flagged record
+  (MZB-491): the slack (RP-48) resolved it as an unwatched abstract raid, with loot, on top of the
+  casualties the Minecraft fight had already booked. Repro (`a_walked_in_fight_in_the_replayed_window_is_
+  resolved_once`, tests/mowzie_records.rs): before the fix the restart's run had the abstract raid at tick
+  55870 and no watched raid, where the live run had no raid and one watched; after it both agree.
+  - **The fix is the reviewer's sketch (e6b123c).** `start_fight` passes `walked_in` to `spawn_wave`, which
+    sends the BAND_MATERIALIZE flagged BAND_FIGHT (arc, bearing, epoch of the sighting, `wave` the
+    band's next) with no members when `wave_fill` is empty. Any other call with an empty fill still sends
+    nothing. The record is journaled by Java's echo; `honour` reads it as the walked-in fight (own epoch,
+    the hold present) and `fight_held` releases the hold, which is MZB-491's `held` rule at work.
+  - **Fork (the lead's, conservative): the empty record counts in neither `stats.waves` nor
+    `stats.materialized`,** which count bodies sent. `wave` does advance, since `honour` sets a replayed
+    band's wave to the record's plus one and the next wave of the live band must carry a number Java has
+    not seen (Java refuses a repeated one as ALREADY_EMBODIED). `fights_unanswered` is still not set for a
+    walk-in: RP-51's gap stat stays about the first wave of bodies.
+  - **The scripted plugin needs nothing:** it echoes every BAND_MATERIALIZE, and its fight on an empty
+    stack list does nothing (the walk-in's attack steer, sent first, played the fight).
+  - **The three tests that pinned the gap now expect the record.**
+    `a_band_walking_into_its_fight_sends_only_the_members_not_placed` (tests/mowzie_march.rs): a placed band
+    sends one flagged record at its own epoch with no members and the stats do not move (before: no record);
+    the unplaced arm is as it was, with the stats up by one. `a_held_arrivals_replayed_fight_counts_its_
+    casualties_once` (rtsim-jni): the walk-in sends one flagged empty record at the sighting's epoch (before:
+    no new epoch and no wave); the restart replays two records after the pages (the sighting's and the echo),
+    honours the fight (`raids_watched` is the live session's plus one, before: unchanged, unwatched), and the
+    band is Waiting and abstract at the replay end as any fighting band is (before: Home, abstract).
+    `factions_take_notice_send_envoys_take_tribute_once_and_raid_in_waves_across_a_crash`: the invasion's
+    walk-in is asserted as exactly one empty flagged record, and its wave list counts waves of bodies only
+    (before: the first "arc wave" came after the arrival and the casualties; the empty record is an arc record
+    sent at the arrival, so the list would have ended before the casualties).
+  - **For M10b (Java, later), a requirement written in docs/boundary.md:** Java must accept a BAND_FIGHT
+    BAND_MATERIALIZE with m = 0, spawn nothing, and echo BAND_MATERIALIZED with flags 8 and `spawned` 0.
+    `ConflictBridge.materialize` answers m <= 0 with BAND_SPAWN_REJECTED BAD_RECORD today, which a replay
+    reads as the fight's refusal (RP-54).
+
+- **MZB-701** (`exit_time` steps to the first tick the truncated position is outside; amends MZB-458): the first
+  P2 of the review. `exit_time` solved the continuous path for the tick it leaves the watcher's circle
+  (`view_radius + party_radius + 16`, 192), but `inside_now`, which `rebind_to` and `exit_time`'s own first check
+  share (MZB-458), reads the truncated chart position, up to sqrt 2 blocks off the path. Booked at the root, the
+  band's `unseen` found the same player still inside and booked a tick on, every tick, until the truncated
+  position left. Repro (`a_near_tangent_exit_is_not_rebooked_tick_after_tick`, tests/mowzie_march.rs): a road
+  400 blocks along +x and 1 along +z (integer waypoints make it near-axis), the watcher moved to where it is
+  tangent to the circle, on the lower-z side: 645 ticks of tick-on bookings in a row before the fix, each a wheel
+  event, a `rebind_to` scan of the players and an exit solve (and `enforce_budget` when paged), no wire bytes;
+  after it one re-bind and 2 events, the band recalled at the same tick (34620) as before.
+  - **The fix is the reviewer's sketch (fe642b6):** after the root, `t` steps on while `inside_now` is still
+    Some, capped at the segment's end (`b`, outside, so the loop ends there at the latest). The exit is still
+    decided by the one position rule, as MZB-458 has it.
+  - **The stepping's cost, and its worst case.** Each step is one `inside_now` (a chart position and a
+    topology image), no event, no allocation. The truncated position is outside once the path is sqrt 2 blocks
+    beyond the circle of radius R; on a chord that takes at most sqrt(2 sqrt 2 R + 2) blocks of walk past the
+    continuous exit, reached on a tangent. For R = 192 that is 23.3 blocks: 1,167 steps at 0.02 blocks a tick
+    (the slowest culture; 778 at 0.03), once per booking, against the same number of wheel events before.
+    A cap at the segment's end holds it for any speed; the test asserts the repro's 644 steps against this
+    figure. A non-tangent exit needs a handful of steps (the step needed is under 1.5 blocks of radial
+    walk over the speed's radial component).
+  - **Not done:** a binary search on the first outside tick (the predicate is not monotone near a tangent, the
+    truncated position can step back inside), and a separate cap on the steps (the segment's end is the cap).
+
+- **MZB-702** (`seen` skips an envoy on its way home; amends MZB-457 and MZB-490): the second P2 of the review.
+  MZB-490 made `seen` meet a band on its way home as one on its way out, skipping only a band with nobody alive.
+  An envoy refused in view of its player goes home recalled (MZB-456: an envoy never walks home in bodies) with
+  `go_home` clearing the feud it came for; the same player, still watching, met it again on that way, and
+  `materialize_envoy` then sent a demand of nothing to player (0, 0), which Java shows as a settlers' "<Culture>
+  Envoy" with the "other" line, recalled again (reason 4) where it walked off. Repro
+  (`a_refused_envoy_is_not_met_again_on_its_way_home`, tests/mowzie_records.rs): before the fix an ENVOY_MATERIALIZE
+  with epoch 2, player (0, 0), no flags and a count of 0 at tick 18616, and a second RECALL at 20004; after it
+  neither. The fix is the reviewer's sketch (5abaf42): `seen` returns for an Envoy whose phase is Home. A war band
+  on its way home is still met (MZB-482, MZB-490). The committed `sim-conflict.json` carried this envoy
+  (MZB-704).
+
+- **MZB-703** (the review's P3s; no behaviour change):
+  - **MZB-491's `held` rule is tested.** At 16f853cc a mutation of it (`held` read only for a newer epoch) failed
+    nothing. The P1 repro (MZB-700) is its test: with `held` mutated to `flagged && newer`, both
+    `a_walked_in_fight_in_the_replayed_window_is_resolved_once` (tests/mowzie_records.rs) and
+    `conflict::a_held_arrivals_replayed_fight_counts_its_casualties_once` (rtsim-jni) fail, since a walk-in's
+    fight record is of the band's own epoch and only the hold makes it the fight. In `honour` it is `held`,
+    not `fight`, that decides: mutating `fight` (`flagged && newer`) still passes, because `fight` only
+    routes a flagged record with no hold to `unheld_fights`, and `held` is read after it.
+  - **The `!replaying` guard on `home`'s BAND_MARCH ENDED push stays,** with a comment: the gate's Drop of
+    BAND_MARCH (docs/replay-gate.md §4.4) covers the send too (the review's mutation of the guard passed). The
+    guard keeps a replay from building a record for a row that goes, and from bumping `march_rev` on it.
+  - **The sims' explanation is corrected in MZB-704** (the re-met envoy and the `unseen` loop).
+
+- **MZB-704** (the sims regenerated on the review's fixes, and their differences explained; corrects the
+  explanation of aa37308a): `scenario/results/sim-conflict.json` and `sim-mowzie.json` regenerated at the head of
+  the fixes and compared with the files at 16f853cc, `wall_ms` filtered out. aa37308a's subject put the changes
+  down to "homebound bands materialized and steered" and the BAND_MARCH records; the review found two more causes
+  in what it committed, and the events count was one of them.
+  - **sim-conflict.json, events:** ignore 516 to 213, tribute 320 to 74, converter 295 to 183. These were the
+    `unseen` loop (MZB-701): bands left the player's view along the sims' near-axis roads, and each was re-booked
+    a tick on until its truncated position left. Before M10a the runs had 209, 73 and 182 (91b4887c); the few
+    left over (4, 1, 1) are M10a's own events (march records due, the stepped bookings).
+  - **seen, materialized, recalls, wire bytes:** ignore 7 to 6 of each, tribute 9 to 5, converter 5 to 3; wire
+    bytes tribute 5728 to 4384 (4 times 336) and converter 3440 to 2768 (2 times 336). These were envoys met
+    again on their way home (MZB-702): ENVOY_MATERIALIZE "demand 0 of item 0 or stop signal 0", a BAND_STEER and a
+    BAND_RECALL (reason 4, once 5), 1, 4 and 2 of them, none a homebound band in bodies. The log's "envoy seen
+    by a player" lines for them are gone with them.
+  - **The walk-in's empty record (MZB-700):** the ignore run gains two BAND_MATERIALIZE lines with 0 members, after
+    the attack steers, at 13.74 (the invasion, wave 1) and 20.96 (the raid, wave 1). Its wire bytes do not
+    move (one envoy fewer, 336, against two records of 168), and `waves` (5) and `materialized` do not count
+    them.
+  - **State hashes:** each run's first hash moves (ignore ca482f9e... to a3ca695d..., tribute 6f9db43c... to
+    440876fb..., converter 9b9d5856... to f8c87821...), and the restore check's two hashes agree with each other
+    (a3ca695d530b6e2e); the world hashes, the rungs, the casualties, the raids and every check are as they were.
+  - **sim-mowzie.json moves only in run 13's audit line.** Run 10: 3,536,041 steps to 3,524,449 and 11,882
+    shell-steps to 11,797; the stepped run takes a step for each wheel event off the 20-tick grid, so the loop's
+    events were most of it (with the stepping off, 3,535,821 steps; with the empty record off, 3,524,164; with
+    the envoy rule off, 3,524,472: the effects overlap). Run 11: 3,097,181 steps to 3,097,182, the walk-in's
+    echo (with the empty record off it is 3,097,181). Both audits pass; records, changes and ENDED counts are
+    the same.
+
+- **MZB-705** (the P1 fix across a crash, whichever record the journal ends at; the build lead's request after the
+  review): `conflict::a_walked_in_fight_is_settled_once_whichever_record_the_journal_ends_at` (rtsim-jni). S0 is
+  the held-arrival test's (pages older than the arrival, a walk-in with the whole band placed, 3 of 12 fallen in 2
+  BAND_CASUALTIES records); the world save's journal is cut after each of five records and a session opens on the
+  pages and the cut journal. The harness's world save keeps the journal only (`WorldSave`): see the Java stores below.
+  - **Cut before the walk-in's echo** (Java applied the walk-in, the echo comes a tick after the command and the
+    journal does not hold it): the replay holds the arrival (RP-23), nothing answers the hold and the replay end
+    resolves it unwatched, once (RP-48): the log's "finds nothing to raid", `raids_watched` unmoved, 12 of 12 alive,
+    then home. The fight's 3 deaths were in the lost tail: **a loss, not a double** (what is lost is that the
+    arrival was fought watched in S0 and is resolved unwatched here, and its deaths).
+  - **Cut at the echo, after the first casualty, among them, after every record:** the fight is honoured as
+    watched once (`raids_watched` +1, no unwatched resolve), the band 12, 10, 9, 9 alive, which is n minus the
+    deaths the journal holds, counted once; abstract (Waiting) after the replay, then home. Never below the
+    session that went on (9).
+  - **In all five orders:** no BAND_MATERIALIZE with members goes to Java in the replay's session or on the band's
+    way home, so the placed members are not spawned again; the fight is settled once, never both watched and
+    unwatched. With the P1 fix switched off the first precondition fails (the journal holds one echo after the
+    pages, not two: there is no echo to cut at); the full-journal replay's double is the held-arrival test's
+    failure (MZB-700).
+  - **Two Java stores sit outside the journal, and the exactness above does not cover them.** (a) The band's
+    bodies: persistence-required mobs saved with their chunks (`ConflictBodies.hold`). After a restart the world
+    can hold bodies beside a band the engine holds abstract; what the bridge does with them at load is M10b's and
+    is not tested here. (b) Holders' pending records (`RtsimAttachments.PENDING`, saved with the entity or chunk
+    that carries them): the REASSERT copies. `conflict::a_holders_copy_of_the_deaths_of_an_unanswered_walk_in_counts_once`
+    pins the cut-before-the-echo order with copies: the arrival resolved unwatched, then the copies count the
+    fight's 3 deaths once by op id (`casualty_ops`; a second copy is dropped): 12, then 9 alive.
+  - **The double that remained after MZB-705, closed by MZB-706:** in that order, an abstract resolve that costs
+    units (a district or a village that defends itself) cost them on top of the copied deaths, since
+    `casualties(copy)` takes by identity and did not ask whether the arrival was resolved unwatched. By the code,
+    not exercised in the harness (the camp's base has nothing to raid); MZB-706 exercises it at engine level and
+    fixes it. The jni test above now pins the closed order: the copies count nothing.
+
+- **MZB-706** (a holder's copy of the deaths of a fight the replay resolved unwatched counts nothing; the build
+  lead's decision after MZB-705: "lose, never double"). When an arrival (a war party's, or a siege's round) is
+  resolved unwatched because no record answered it, the party books it: `Party::unwatched`, a list of inclusive
+  epoch ranges, saved with the party. `casualties(copy)` and `release_before`'s Casualties guard drop a
+  BAND_CASUALTIES copy whose party and epoch fall in a range, with a log note ("unwatched"); the abstract resolve took
+  that fight's losses, so the copy adds nothing. The test of the double, at engine level
+  (`a_holders_copies_of_an_unanswered_walk_in_add_nothing_to_the_abstract_resolve`, mowzie_records.rs): the
+  walk-in of `a_raid_met_on_its_road_after_the_save` against a district that routs the raid (`Walls` with `rout`:
+  every raider held at the walls, half of them fallen, `abstract_loss_share`), the journal cut before the
+  walk-in's echo, the live session's 3 BAND_CASUALTIES records as a holder's copies. Band of 12: the abstract
+  resolve leaves 6; **before the fix the copies took 3 more (3 alive, the same fight counted twice: the
+  failing assertion reads `left: (3, 3) right: (6, 6)`)**, seen with the copy drop switched off for a hold let
+  go by the replay end and for one ended inside the replay, and with MZB-707's booking switched off for the
+  third shape; after the fix 6, and the second set of copies adds nothing. The control (`a_holders_copies_of_an_answered_walk_in_still_count_once`):
+  the journal ends at the echo, nothing is resolved abstractly, the copies count the 3 deaths, once.
+  - **Which copies reach `casualties`:** only `Obs::Casualties`. `ingest_copy` sends it to `release_before` and
+    `casualties(copy = true)`; `Materialized`, `RailPass`, `HavenChest` and `TrainPassed` do nothing beyond the
+    epoch fold, and every other kind goes to `ingest` (the arm that was there; a CHIEF_KILLED copy among them is
+    not a casualty and is not dropped, see MZB-708). No match was added, so there is no new arm to keep
+    exhaustive: the drop is a guard inside `casualties`, which the one arm reaches, and a second inside
+    `release_before`'s existing Casualties guard. A holder's REASSERT of a BAND_CASUALTIES is the one copy of a
+    fight's deaths.
+  - **The fields.** `Party::unwatched: Vec<(u32, u32)>` (bounded at `UNWATCHED_KEPT` = 8, the oldest first
+    out), the one new persisted field: a party row ends with its length and the pairs (var u64 each), inside
+    RTC11 (`RTCB`) and META 10 as they stand; **no version bump** (the brief). The booking cannot sit in `Held`:
+    `held` is in memory and a copy can come sessions later (the entity's chunk is loaded after another restart);
+    `the_unwatched_epoch_ranges_of_a_party_survive_a_save_whole_and_paged` pins whole and paged, and the engine
+    test applies the copies to a reloaded engine. The state hash moves with the field (sim-mowzie.json's seed
+    hashes). No new stat (a stat is a format change); the log note counts the drops for tests.
+  - **Which epochs.** The fight the last session may have run carried the party's own epoch when it walked in in
+    its bodies (`embodied`: MZB-461, `start_fight`'s `walked_in`), else the one its next body takes
+    (`next_epoch`: max of the epoch and the floor, plus 1). The party books `(epoch, fresh)` when it was in its
+    bodies at the arrival and `(fresh, fresh)` when it was not, so a copy of a death on the march at the party's
+    own epoch still counts when the band was not in view at the arrival. `next_epoch` cuts the ranges short at
+    the epoch it hands out (`r.1 = min(r.1, epoch - 1)`, dropped when empty): the engine's next body owns that
+    epoch and every later one, and a copy naming it is that body's own.
+  - **A live record for such an epoch counts nothing, and did not before.** After the replay end no party is in
+    its bodies (`replay_done` clears `embodied`, `spawned` and `recalled`), so a live BAND_CASUALTIES is a
+    straggler (`in_view` and `walk_off` both false), whatever the epoch: nothing changes and nothing is
+    booked for it. While replaying, a live record is the original of a death the session that went on
+    counted, and RP-59 ends the hold before it.
+    `a_live_record_of_an_unanswered_walk_in_counts_nothing_after_the_replay_end` pins it for the walk-in's
+    epoch, the next one and the party's own.
+
+- **MZB-707** (the lost window: an arrival the replay clock never reached). The jni test of MZB-705 does not
+  hold the arrival: the journal ends before it, the replay clock stops at the last record (before the arrival),
+  and the engine runs on from there to the hand-over's game time, where the arrival fires live at its own tick
+  with no player routed and resolves unwatched. That is the common crash, and booking only held arrivals missed it
+  (the jni test still saw the double). The engine now books **any** unwatched resolve of a war arrival or siege
+  round that happens after the replay end at a tick on or before the session's present, and the host tells it
+  the present: `Conflict::replay_present(Tick)`, called by rtsim-jni's `conflict::replay_end` right after
+  `replay_done` with the hand-over's game time (an in-memory field, `lost_until`; not a wire or page change).
+  An arrival after the present is this session's own and books nothing
+  (`an_arrival_after_the_sessions_present_books_nothing`). The three replay shapes the engine test covers are
+  the clock stopping before the arrival (this window), a hold let go by the replay end (`held_over`: the poll
+  may come after the present, so the hold keeps its own record of the plan and of whether the bodies were in
+  Minecraft), and a hold ended inside the replay at its slack (RP-48; `hold_ending`). `left_embodied` records
+  which parties were in their bodies at the end, because the end clears the flag before the arrival decides.
+  Fork taken: the engine learns the present through a new public method, not a changed `replay_done`
+  signature, so that the engine-level callers and the other modules are untouched; a caller that never tells
+  it keeps the held-arrival booking alone.
+  - **jni:** `conflict::a_holders_copy_of_the_deaths_of_an_unanswered_walk_in_counts_nothing_more` (the MZB-705
+    test, expectations changed: the books stay at n, 12, after the copies, which the host still finds new and
+    applies, once, `copies == (k, 0)` then `(k, k)`) and the control
+    `a_holders_copy_of_the_deaths_of_an_answered_walk_in_still_counts_once` (the journal cut at the echo:
+    `raids_watched` +1, no unwatched resolve, the copies take the books from 12 to 9, once).
+
+- **MZB-708** (what MZB-706 accepts as lost; the residual the build lead asked to record).
+  - **A unit that really died in Minecraft but survived the abstract resolve stays alive in the books.** The
+    resolve of an unwatched arrival and the fight Java ran are two different draws; the copy that would have
+    taken the real deaths is dropped, so a unit the fight killed and the resolve spared lives on in the
+    engine. A loss of realism, not a double (the band is never below what one account of the fight says; it
+    can be above what Minecraft saw). Added to replay-gate.md §6.1's "Losses accepted" (RP-171).
+  - **A copy of a death on the march, at the party's own epoch, is dropped** when the band was in its bodies at
+    the arrival: the range includes the walk-in's epoch, which is also the march's. The death was real and
+    is not booked. Lose, never double.
+  - **An epoch-reuse hole** if the engine's next body takes the lost fight's epoch before a copy arrives:
+    `next_epoch` cuts the ranges there, so a copy naming the fight's epoch counts as that body's. Needs a
+    holder to outlive an entire later fight of the same party; not guarded.
+  - **A CHIEF_KILLED copy is not dropped.** It reaches `chief_killed_by` through `ingest` (a boss band's chief
+    is reported as CHIEF_KILLED alone, never as BAND_CASUALTIES), guarded by the party's `chief` flag and the
+    op id. Whether an unwatched resolve that already took that unit leaves the flag set, so that a copy would
+    take the unit twice, is not examined here (the brief names the casualties copies); told to the lead.
+  - **Booked also when nothing was fought** (the unwatched arrival the last session also resolved unwatched):
+    no copy of that epoch exists then, so the booking costs nothing, except a march death of a band that was in
+    view (the item above).
+  - **Sims:** sim-mowzie.json moves in its hash details alone (the party row gained a field: the first seed
+    state of runs, the audit's lines "state ... against ...", 7 lines); sim-conflict.json moves in `wall_ms`
+    alone (its state hash, the restore check's two agree) and is left as committed.
+
+### M10b build records (MZB-720 to MZB-739)
+
+What the Java half of the march (M10b) decided, one commit per design step. The design's records are MZB-450 to
+MZB-484 and are not repeated. Everything here runs in `core`'s ConflictBridge; the plugin adds one method
+(`Maker.pack()`). The pure parts are plain classes (`MarchPath`, `MarchTable`, `MarchColumn`, `StopSquare`,
+`MarchTrim`) so JUnit runs them without a server; the bridge's own paths need a server and are M10c's GameTests.
+
+- **MZB-720** (`ConflictRecords.March` and `MarchPath`; step 1):
+  - The decode is `MarchPath.decode(buffer, at, size, waypoints, names)`. It returns null (the bridge counts
+    `malformed`) when the record is shorter than its own counts say (`72 + 8k + 16w`, computed in longs so a
+    hostile count cannot wrap), or when the phase is outside 1 to 5. A unit entry of a body the dictionary
+    does not name is left out, since no held body can carry that name; a dimension or culture the dictionary
+    does not name reads as null.
+  - Units are a `Map<String, Integer>` summed by body name, not fastutil: core's test classpath has no fastutil.
+  - `chartAt(t)` is MZB-454's rule and `at(t, topo)` folds the block centre (MZB-477). The interpolation runs in
+    doubles so a long segment cannot overflow an int difference; the result truncates toward zero as the
+    engine's `as i32` does.
+  - **MZB-479 as built:** the bridge uses `chartAt` as its frame (the head, the stop's distance tests) and
+    never maps through TP11's image. The frames agree away from a seam; across one the design's own trap
+    ("the seam gap") applies and M10c's moving test stays on a flat world.
+  - Pinned by `MarchPathTest` (10): the engine's bytes (`SAMPLE_MARCH_HEX` in `boundary.rs`, which has its own
+    Rust test), MZB-477's vectors, every phase's position, truncation, short records and bad phases.
+- **MZB-721** (the march map; step 2):
+  - `MarchTable` keeps the latest record per agent by unsigned revision; an equal or lower one is `STALE`; an
+    ENDED record drops the path, remembers the agent, and every later record of that agent is dropped (`ENDED`
+    outcome, `marchEnds`).
+  - It is cleared at a session start, at a session's end and while the conflict module is off. **The clear
+    on switch-off is not gated on `held`:** a march is kept with no party (the engine may say it before the
+    materialize that embodies the band), so a party-less table must still go. **Fork (recorded, not
+    built):** after a switch-off and on again the engine is not known to send every party again, so a band
+    still marching may have no map until its next change. It follows the lurks' and the design's convention
+    (nothing is saved); the cost is a column that does not turn and a stop that is not held until the next
+    record, and the trim's next run.
+  - Reads for GameTests: `march(agent)` and `marchEnded(agent)`, whether or not the party is embodied.
+  - Counters `marchRecords`, `marchStale`, `marchEnds`, `trimmed`, `walkIns`, `clamps`, reset at a session start.
+- **MZB-722** (the column; step 3):
+  - `MarchColumn.plan` splits each entry into stacks of at most two (a row), `ConflictBridge.ROW` (1.5) behind the
+    row before. A body whose maker says `pack()` (the raptor) gets one stack per member, a pair abreast at
+    plus and minus `PACK_SIDE` (3.0) and each pair `PACK_ROW` (6.0) behind the last. Both are PLACEHOLDERS.
+  - Met on the march (radius 0) the entries line up one behind the other in record order from the head, and the
+    war chief rides alone at the rear of all. The chief's stack flag is on the first entry of wave 0 only
+    (engine.rs); a later wave's entries never make a chief. On an arc each entry keeps its own column from its
+    arc point with its side the entry's spread, and its chief at the rear of its own rows.
+  - A stack's offset from the band's target is `-h * back + r * side`, `r = (-hz, hx)`. The heading at radius 0
+    is the record's bearing (MZB-457); on an arc it runs from the centroid of the arc points to the target.
+  - **A lurk keeps its rows' `back` and ignores their sides** (MZB-360 stands the stack at the spot). The steer
+    that follows a lurk's end is slightly imprecise (the offsets were zeroed while it held); accepted, since
+    the next steer lays the column out whole.
+  - `ConflictBodies.Maker.pack()` defaults to false (the interface stays functional) and `RaptorMaker` returns
+    true. `ConflictBodies.pack(body)` reads it. D4 holds: the plugin only says which body is a pack.
+  - Existing GameTests that count a band's stacks (ConflictGameTests, TalkNewsGameTests) see more stacks now;
+    fixing those assertions is M10c's.
+- **MZB-723** (the turns in `steer`; step 4): a steer takes the column's head as the front stack's anchor less
+  its offset (`frontStack`: the stack in play with the least `back`, the lower index on a tie), sets the
+  heading from the head to the new point (the old heading when the head is on the point), and gives every stack in
+  play its place in the turned column. `frontStack` is package-private so `Camps` can use it (MZB-726).
+- **MZB-724** (the stop; step 5): a band is stopped while the bridge holds a march of it in phase 3 or 4 in its own
+  level. On the 20-tick beat (`STOP_BEAT`, PLACEHOLDER) or at once when a record has just put it in the stop
+  (and when the band is first materialized):
+  - **The square** is two chunks inside (MZB-746; one when first built) the nearest player's entity-ticking edge
+    (`StopSquare.square`), from the server's simulation distance. **The nearest player** is the nearest non-spectator player in the level
+    within `STOP_REACH` (256) of the head. With no such player nothing is moved.
+  - **Walk-in** (pending stacks): a stack whose anchor is outside the square comes in where its line to the head
+    crosses it (Liang and Barsky; the head clamped into the square when the line never does), pulled half a
+    block inside, then walks on toward its old end clamped into the square. It is marked dirty for a test;
+    the square only picks the point, and it is placed only if the chunks it needs tick (MZB-471).
+  - **Clamp** (placed stacks): a stack whose walk end is outside its player's square has the end clamped into it
+    and walks on from where it stands, so it never walks out of the ticking area to be taken back to pending.
+  - A walk keeps the stack's arrival tick when it is still ahead (`st.t1`), else walks at the band's speed.
+  - Nothing is journaled (MZB-467). `StopSquareTest` (6) pins the geometry.
+- **MZB-725** (the trim; step 6; MZB-473 as built):
+  - A record that is not ENDED and not stale marks a held band `trimNow`. The trim runs at the end of that
+    tick, and on the 20-tick beat while the band is `trimDue`. `MarchTrim.pick` (pure, `MarchTrimTest` 6)
+    chooses the member.
+  - **Per body** (the war chief apart): `living` is the band's members that are alive, not dying, not removed,
+    over its stacks in play; `want` is the record's count for that body (0 when it lists none). The trim
+    cuts `living - want`, one at a time. Then the chief if the record lacks the chief flag.
+  - **Order of cuts:** a pending member first (it was never in the world), the rearmost stack's (by `back`,
+    then stack index, then slot index, each highest first); then, among placed stacks, the rearmost member
+    that no non-spectator player in the level is within `OUT_OF_VIEW` (64) of. A placed member with no body
+    (waiting for its refill) is unseen. When every member left to cut is in sight the band stays `trimDue`
+    and the trim tries again on the beat: nothing vanishes in front of a player.
+  - **A cut** is `despawn` (body, goals, lurk, extras), `alive` false, `trimmed` up by one; a stack left with
+    no member is unwatched and gone. It books nothing, is no survivor in a later BAND_DEMATERIALIZED, and
+    journals nothing.
+  - **Fork (conservative): the trim runs before the stop's walk-in and the placing, not after,** so a pending
+    member the books have lost is cut before it is placed, not placed in sight and then uncuttable.
+  - **Fork (conservative): a record whose dimension is not the band's, or is unnamed, trims nothing.**
+  - **A band cut to no member stays held** until the engine ends it, as a band whose members all died does:
+    `pass` marks its stacks gone, and no BAND_DEMATERIALIZED is sent by the trim (the engine sent the
+    record, so the engine knows).
+  - The trim is per member only on a record's arrival or on the beat while due (D1).
+- **MZB-726** (the homecoming; step 7; MZB-464 as built, and MZB-466's Java half):
+  - `Camps.reconcile` registers, before any line is played, every party a HAND_BACK line names whose party the
+    bridge holds at the line's epoch, whatever the line's outcome and whether the camp is in or declared at all.
+    The final `homeAt` loop no longer dereferences the site: with no site the band walks off from its front
+    stack's anchor, and a band with no stack in play (nothing to walk) is simply ended through `recallStep`.
+  - This closes a strand and a double: a band handed back to a camp that is not in answered every line stale,
+    and its puppets stood where they were for good (the engine had ended the party) beside the camp's body
+    the reconciler spawns when the camp comes in.
+  - **MZB-466's Java half:** `unbookedHomeDeaths` counts, and a debug log line names the body, party and epoch of,
+    each loss (casualty, chief, take) of a member of a band whose march the engine has ended while the bridge
+    still holds it and has not begun its homecoming. It books nothing more (the engine drops it).
+  - Needs a server to show; M10c's test list below covers it.
+  - **Amended by M10c (P3-1 of the M10b review):** a HAND_BACK whose `addFreshEntity` fails (another mod cancelled the
+    body's join) answers STALE and leaves the puppet standing, but the pre-pass still walked the band home, and the walk
+    despawned the puppet the line had kept. `Camps` now takes such a band out of the homecoming (`handBack` adds its
+    agent to a `staying` set that `reconcile` removes from the map before the `homeAt` loop). **Choice, the narrow form:**
+    only the failed add stays. Every other STALE with the camp in (no free place, Peaceful, a kind that made no body) is
+    a line with no puppet behind it, so nothing is stranded and the band still walks home; skipping the homecoming for
+    those would leave a band the engine has ended standing for good. The band that stays is the band of the next census's
+    orders (the existing `aHandBackWhoseJoinAnotherModCancelsKeepsThePuppetAndIsStale`, unchanged, asserts `!recalling()`).
+    **Wrong, reverted by MZB-751** (see "The M10 end review"): a STALE books nothing and the next order is a SPAWN, so the kept band was stranded.
+- **MZB-727** (`ConflictKit` for M10c; step 8): `march(MarchSpec)` scripts a BAND_MARCH (agent, revision, dimension,
+  faction, kind, phase, flags, muster end, units by body name, waypoints as `{x, z, tick}`); `trimmed()`,
+  `walkIns()`, `clamps()` and `unbookedHomeDeaths()` read the counters. It works on the stub and on the native engine.
+- **MZB-728** (the empty flagged BAND_MATERIALIZE; MZB-700's requirement): a BAND_FIGHT (8) record with m = 0 is
+  valid (`Materialize.emptyFight`, `MaterializeRecordTest` 4). The bridge places nothing, takes the wave as had on
+  a party at that epoch, ends no epoch (a new epoch's empty record does not capture the old party), and answers
+  BAND_MATERIALIZED with the command's flags and `spawned` 0. An empty record without the fight flag, or with
+  a negative count, is still BAND_SPAWN_REJECTED BAD_RECORD. **Fork (conservative):** the other refusals still
+  apply to an empty record (unknown dimension; a wave the party already had, a recalling party, or another
+  dimension: ALREADY_EMBODIED), since a repeat is a genuine repeat. The echo counts in `materialized`, the
+  bridge's own count of echoes.
+- **MZB-729** (the bodies at load; the question MZB-705 left to M10b): **nothing doubles or strands a puppet,
+  and M10 changes nothing there. No code was needed.**
+  - A puppet is persistence-required (`ConflictBodies.hold`) and carries an `AgentTag` (agent, epoch) that
+    is saved with it. The world can therefore hold puppets on disk: after a crash, or in a chunk that
+    unloaded while the session lived.
+  - Every tagged entity that joins a level is checked first (`BridgeEvents.onJoin`, highest priority,
+    "puppets never outlive a session"). With no session it is stale; with one, `ConflictBridge.admit` takes only
+    the exact live object of a live slot of a live party at that epoch (or an extra of one). Anything else is
+    cancelled, ejected and discarded, and counted in `staleDiscarded`. After a restart `byUuid` is empty, so
+    every saved puppet and every saved raptor follower is discarded as it loads. A saved copy of a puppet
+    the session despawned, requeued, trimmed or handed home (its `byUuid` entry is gone) is discarded the same way;
+    a saved copy of a puppet still in `byUuid` whose object was unloaded is not that object either.
+  - So the engine's book is the only account: a unit of a band the engine holds abstract is alive in the book and
+    has no body, and if the band is embodied again its bodies are new. A clean stop also leaves none (`capture`
+    despawns every puppet at `sessionStopping`).
+  - **The camp bodies are the other store, and are not puppets:** a camp's own bodies carry `CAMP_MEMBER`,
+    not `AgentTag`, are indexed on join (`Camps.onJoin`) and are reconciled by the census against the
+    ledger (M5, MZB-660, MZB-661). A slot set out whose body sat in an unloaded chunk is found by the next
+    census and taken by the ledger's TAKE or REMOVE line. M10's march sends no new line and creates no
+    new body, and the trim and the homecoming touch puppets only.
+  - **What M10 does touch, walked through** (a band killed or walked home while its puppets sat in an unloaded
+    chunk): the engine's HAND_BACK finds no live puppet (`puppetOf` wants a body that is in the world) and
+    plays the line as a spawn at the camp's edge (MZB-213); the party's remaining slots walk home or vanish
+    through `homeAt` and `recallStep` (despawning a removed body is guarded); the saved copy is discarded when
+    its chunk loads. One body of the unit results. A trimmed slot's saved copy is discarded the same way.
+  - **For M10c (not tested here):** a GameTest that builds a copy of a placed puppet from its saved NBT
+    (tag included) before (a) a trim cuts that slot, (b) a homecoming sends its band away, (c) the engine
+    ends its band, and then adds the copy to the level: it must be discarded (`staleDiscarded` up by one, no
+    entity with its UUID, the unit's count unchanged). `PuppetJoinGameTests` does this for a phase 1 group.
+- **MZB-730** (D1, D3, UR-1 and notices, audited): no per-member work was added to a tick handler. The march map costs a
+  decode and a put per record; the stop runs on the beat; the trim runs on a record and on the beat while due.
+  Two per-member loops exist from M3 and M5 and are not M10b's: `checkPlaced` visits a placed stack's members
+  each tick, and `pass` calls `watch` for each pending stack each tick (cheap while no member crosses a
+  chunk edge, one read per member). The column makes more stacks per band (nine members are about six
+  stacks), so the pending tests are per stack and per changed chunk, as before. No entity type and no
+  mixin was added (D3, MZB-474). Nothing new is saved anywhere (UR-1): the map and the counters are memory. No
+  chat, action-bar or title line is sent for any of it.
+- **MZB-731** (what M10c's GameTests must cover that M10b could not): tests 22 and 33 of the design, and:
+  - The column in the world: rows of two, a pack's pairs, the chief at the rear when met, the turns after a
+    steer (positions, not counters), placed only in ticking chunks and not flickering at a chunk edge.
+  - The stop: walk-in, clamp and a stack held inside the square for a player who stands still; the band's head
+    on the march's chart at a seam (kept on a flat world).
+  - The trim: nothing cut in sight, the cut on the beat once the hearer goes, pending first, a chief cut when the
+    record lacks one, an ENDED record trimming nothing, a record for another dimension trimming nothing.
+  - The homecoming: a HAND_BACK to a camp that is not in; a failed `addFreshEntity`; no site.
+  - The empty flagged BAND_MATERIALIZE: the echo (one BAND_MATERIALIZED, flags 8, aux 0, no BAND_SPAWN_REJECTED), then a
+    wave with the next number is accepted.
+  - MZB-729's saved-copy test, and MZB-466's counter in a GameTest.
+  - The existing stack-count assertions the column changes.
+
+### M10c build records (MZB-740 to MZB-749)
+
+What the march's GameTests (M10c) decided. The tests are in `core`'s `MarchGameTests` and `ConflictGameTests`, and
+in the Mowzie module's `MarchMowzieGameTests`; each logs what it compared on a `[gametest]` line.
+
+- **MZB-740** (fork; the branch's base): `feat/mowzie-m10` had no `ChunkWait` and no `tools/chunk_waits.py`; they are
+  on `origin/main` and on `feat/mowzie-m9`. Merging `feat/mowzie-m9` into the branch conflicts in `engine.rs` and
+  `mowzie_records.rs`, files M10c does not own, so that merge was not made (a `UU` in a file not edited is a stop).
+  **`origin/main` (d64f4eb8) was merged instead** (e94585ba): it conflicted only in this file (the design records), where
+  the branch's side was kept. The tests use `ChunkWait`'s two clocks as the brief says.
+- **MZB-741** (the stop's GameTests; step 3): the two stop tests run at simulation distance 8 and 4. A GameTest server's
+  simulation distance is changed for the test and restored when it ends, pass or fail. The square the tests compare
+  against is `ConflictBridge.stopSquare(pcx, pcz, simulationDistance)`, a public static that is the bridge's own
+  (`StopSquare.square`), so a change of the inset moves no test and the tests never restate the inset. `Stack` and `Party`
+  gained read-only accessors for the GameTests in step 2 (`trimDue()`, `back()`, `side()`, `chief()`, `anchorAt(now)`); none
+  of them changes a field.
+- **MZB-742** (the Mowzie march tests; step 8): four tests in `MarchMowzieGameTests`, all in a far place of their own
+  (`MowzieKit.Far`), none run by the implementer (the build rule). Test 32 is two methods, the in-view half
+  (`aBandWalksHomeInViewAndIsHandedBack`) and the out half
+  (`aGroveThatIsOutRecallsItsBandAndTheNextCensusSpawnsItsBodies`); test 28's Java half
+  (`aGroveThatComesInTakesWhatItsMarchLeft`) is one method with two groves 320 blocks apart (past Rule U's 160), one with a
+  player near when it comes in and one without, so the held removal and the free take are each proved in the same run;
+  test 22's march case is `aBandSetsOutAndComesHomeInPlainView`.
+- **MZB-743** (what "no body appears or vanishes" means in a test): a per-tick sampler (`MowzieKit.everyTick`, so at the end
+  of the tick) lists the jar's warriors of an area and its difference from the last tick. A vanishing and an appearance are
+  one swap when they are within two ticks and six blocks (a hand-off) of each other. The tests then say what each swap
+  must carry (health within 1.5, mask, weapon) and which events are left over (the taken or the spawned fourth body), and
+  that no event happens within 128 blocks of the player (test 22). The positions tolerances are four blocks for a body
+  handed back and six for a puppet made at a body's place (a puppet walks a tick between the two reads). If they prove too
+  tight on a first run the failure line holds the distance, so the tolerance can move on a measured value.
+- **MZB-744** (what could not be written, and why): the Umvuthi's puppet and its throne part are M11's, so no test here
+  puts the chief in a band that is handed back; test 28's engine half (the Invasion still reaches its target; pool plus
+  away stay at the cap) and the engine's count of the march belong to the rtsim-jni protocol tests; the "band met walking
+  home is embodied" variant of test 32 is covered in the engine by `tests/mowzie_march.rs`,
+  `a_band_met_on_the_road_either_way_is_placed_facing_its_march_and_steered` (its `home = true` pass), not by test 33
+  (core), whose `column()` sends no march record (corrected by MZB-755). Forms that move are driven by `ConflictKit.steer` at 0.2 blocks
+  a tick so the walk is in the test and the recall reads the real anchor; the stationary form is only written for the
+  out half's idle (40 ticks, about 8 blocks), where the puppets walk toward the centre over unloaded chunks.
+- **MZB-745** (sight; P2 and P3-4 of the Opus review of M10b): the trim (MZB-473) and the recall used one fixed 64 blocks
+  (`OUT_OF_VIEW`) as "a player can see it", so a band was cut, or sent home and gone, in plain view of a player 100 blocks
+  off (a warrior is tracked to 128). Both now ask one helper, `ConflictBridge.sightRange(entity, level)`:
+  `min(max(128, type.clientTrackingRange() * 16), serverViewDistance * 16)`, and a view distance of 0 or less (a GameTest
+  server's) is no bound. 128 is `SIGHT_FLOOR`: a warrior's and a raptor's tracking range, and vanilla's despawn distance.
+  `OUT_OF_VIEW` stays for what it also was, the distance at which a held puppet drops its target (`aim`).
+  - **Extras count.** A member is seen when its body or any of its extras (a raptor's four followers) is within the range
+    of a player: a leader out of sight with a follower in sight is not cut and not despawned.
+  - **Spectators are ignored on purpose** (P3-4), as vanilla's despawn ignores them (`getNearestPlayer` with no spectators):
+    a spectator beside a band does not keep it from being cut or recalled. The GameTest puts one 10 blocks from the band.
+  - The recall's `seen` and the trim's `inSight` are the same rule now; a recalled band stays while a player is anywhere
+    in the entity's sight, where it went at once for a player between 64 and 128 blocks off.
+  - GameTests (MarchMowzieGameTests): `theTrimAndTheRecallSeeAsFarAsTheServerSends` (a player at 100: nothing cut, still
+    due; a player at 170 and a spectator at 10: cut on the beat; a player at 100 and a BAND_RECALL: the band stays, goes
+    within a few ticks of the player's going) and `aRaptorWhoseFollowerAPlayerSeesIsNotCutAndIsOnceNoneIs` (leader at 140,
+    one follower held at 120, the others at 146: not cut; the follower moved out: cut on the beat with its pack). The
+    brief gave 100 and 160, and 66 against 50, for the old 64 rule; the numbers here are against the 128 the rule now is,
+    and the far player stands at 170 (past the 160 of the Umvuthi's tracking range of 10). The tests set the server's view
+    distance to 10 (restored when the test ends). No other band GameTest relies on a player between 64 and 128 blocks off
+    (the ones that recall use a one-tick timeout), so none is moved by the wider rule.
+- **MZB-746** (the stop's inset; P3-2 of the Opus review of M10b): the stop's square is **two chunks** inside the
+  entity-ticking edge, not one (`StopSquare.INSET`): chunks `pcx - r` to `pcx + r`, `r = max(0, s - 2)`. At a low
+  simulation distance a body a fight pushed a chunk off its place left the ticking area, and `checkPlaced` took the stack
+  back to pending (a flicker). The floor is the player's own chunk, so a simulation distance of 2 or less still leaves a
+  square (16 by 16 blocks). MZB-724's "one chunk inside" and the design texts' (`MOWZIE.md` §§4.16 and 7, the
+  ledger's MZ-17) are this record's now; `docs/boundary.md` is corrected. At the two distances the stop's GameTests
+  use, the square is 13 chunks across at 8 and 5 at 4. `StopSquareTest` (8) is rewritten for it, with the floor and
+  an every-distance check of the two-chunk margin; the stop's GameTest at 4 now asserts the east margin is exactly 32
+  blocks and the square's four sides are two chunks in (`aStoppedBandKeepsToTheSquareAtSimulationDistanceFour` is the
+  GameTest the review asked for), and the one at 8 asserts the same.
+
+- **MZB-747** (later waves fall in behind the column; P3-3 of the Opus review of M10b): `materialize` reset the party's
+  heading from the record's bearing and planned every wave from `back` 0, so a band's later wave met on the march
+  (radius 0) appeared on the first rows of the wave already out, bodies in bodies. Now a wave of a party that has a
+  stack still in play (not `GONE`, pending ones count) keeps the party's heading (`p.hdx`, `p.hdz`: a steer may have
+  turned it, and the rows out were laid by it) and its plan starts at `MarchColumn.after(rear.back, rearIsPack)`: one
+  `ROW` behind the rearmost stack, or one `PACK_ROW` when that is a raptor's. `MarchColumn.plan` has a fifth
+  argument, `start` (the old four-argument form is `start` 0), which moves the first row of a met plan and is not used
+  on an arc. Conservative choices: an arc wave is unchanged (each wave's stacks walk off their arc points on their own
+  and the existing GameTests place by them); the first wave's war chief stays at the rear of the first wave, not of
+  the whole band (the later wave's rows are behind it, and the chief is not moved); a gap behind stacks that died is
+  left (the rearmost is taken over every stack in play, not only the living, so a wave never lands on a dead
+  stack's rows). `MarchColumnTest` gains five tests (the next row after a grunt's and a raptor's, a later wave
+  starting behind the rows out, a later wave behind a raptor pair, a start of nothing and an arc ignoring it, every
+  unit kept with only the rows moved); no GameTest changes (`anEmptyFightWaveIsEchoedAndTheNextWaveComes` places a
+  second wave and asserts counts and states, not places).
+
+- **MZB-748** (the synthetic restarts tell the present; P3-5 of the Opus review of M10b): the host calls
+  `replay_present` right after `replay_done` (rtsim-jni's `replay_end`, MZB-707); the two synthetic restarts that end
+  a replay called `replay_done` alone, so the lost window (`lost_until`) stayed `Tick::ZERO` in them and a sim
+  could not see what the host's engine sees. `synth::CampRun::restart` and the CLI march sim's crash branch
+  (`sim/mowzie/march.rs`) now call `replay_present(now)` with the engine's own `now()` taken after the replay end:
+  with nothing to replay the hand-over's game time is the restart's own tick. `restart_to_replay` is left as it is
+  (the caller closes the replay and tells the present itself, as the engine tests do). Checked: `cargo test
+  --workspace --no-fail-fast` passes everywhere but three targets, `rtsim-host --test host`
+  (`gametest_worlds_open_in_the_host_with_their_saved_state`) and `rtsim-view --test fixtures` and `--test hashes`
+  (four tests), all on the committed GameTest saves under `crates/rtsim-view/tests/data`: "conflict: pages dropped",
+  "meta page version 7, this build reads 10". They are saves of an older format (the cause is the fixtures, not this
+  change, which touches no format or reader); regenerating them takes a GameTest run (M10a's page format moved META to 10), which this build does not do.
+  `cargo clippy -p rtsim-conflict -p rtsim-cli --all-targets -- -D warnings` is clean. `sim conflict` and `sim mowzie`
+  (all 13 runs, seed 7) regenerated to a scratch file and compared with `scenario/results/sim-conflict.json` and
+  `sim-mowzie.json`, `wall_ms` filtered out: **no difference**, so neither file is regenerated (an arrival after the
+  restart is after `now`, the present, and books nothing). Both runs exit 0 with every check ok. rustfmt was run
+  on the two files, both clean at HEAD.
+
+### The M10 merge of M8's head (MZB-750)
+
+- **MZB-750** (M10 at ed24fba4 merges feat/mowzie-m8 at d1570ea9). M8's head carries M9's check fixes (RP-133
+  to RP-136), M9's GameTest round fixes (MZB-675 to MZB-678), M8's chunk waits (MZB-693), and main at 4e694452
+  (slice N). Four files conflicted:
+  - `rtsim-conflict` `engine.rs`, the siege round's unwatched resolve. M10's `book_unwatched_hold` comes first,
+    then M9's `resolve` with the decision's tick (`self.hold_ending.unwrap_or(round)`, RP-136), as the
+    auto-merged arrival path already has it. `book_unwatched_hold` does not touch `hold_ending`.
+  - `tests/mowzie_records.rs`. Both sides appended tests at the end. M10's are kept, and M9's RP-135 and RP-136
+    block follows them. M9's two `Run` initializers take M10's `sight` from the run they copy (`r.sight`,
+    `like.sight`), as M10's own copies do.
+  - This file and docs/replay-gate.md. The newer M9 text is kept (RP-154, RP-155, the RP-134 bullet the M9
+    re-check corrected, and the M9 re-check section). In replay-gate.md's format table, M10's conflict row is kept
+    beside N's dragons row.
+
+  `cargo test -p rtsim-conflict` passes, and the Java compiles. `ConflictGameTests`'
+  `aNoticeWaitsForThePlayersNextEntryAcrossALogout` and `signalsInsideATerritoryAreCountedAndBatched` still have
+  unwrapped site-load waits, as they do on main. They are left as they are unless the round fails them.
+
+### The M10 end review (MZB-751 to MZB-759)
+
+An Opus review of M10's head (2443e915) found one P1, one P2 and seven P3s. Each fix is one commit; the lead owns P3-4
+(M11's design takes the deferrals that test list does not name).
+
+- **MZB-751** (P1-1: MZB-726's amendment was wrong, and is reverted). MZB-726 (P3-1 of the M10b review) took a band
+  whose HAND_BACK answered STALE out of the homecoming (`Camps.staying`, `removeAll(staying)`), on the reading that
+  the puppet stays, the next census orders "it" again, and the same line would then come once more. None of that is
+  how the engine behaves. A STALE books nothing (camp.rs, the answer loop: "a stale line books nothing"), the slot
+  stays Owed with no party (`go_home` cleared `s.party` and ended the party when it sent the HAND_BACKs), and the
+  next order for that slot is a SPAWN from `spawn_lines`, never the same HAND_BACK. The engine has no row for the
+  band any more and sends nothing more for it. So keeping the band stranded it:
+  - every puppet of the band stayed held in `byAgent` until the session ended, with no engine row (breaking MZB-463,
+    "no puppet outlives its band's row");
+  - the band's other slots were already handed back or spawned in the same reconcile, so the raptor pack and the
+    puppet stood beside the camp's bodies: a double in the same tick, and a second one when the next census spawned
+    the cancelled slot beside its own puppet;
+  - `home_open` never closed, so a stranded puppet's later death counted as unbooked.
+
+  `Camps` is back to the MZB-464 rule: every band a HAND_BACK names is walked home whatever the line's outcome (the
+  camp not in, a stale line, a failed `addFreshEntity`), the puppet whose join was cancelled with it. Nothing is lost:
+  the slot is Owed and the census respawns it (MZB-244). The commit that added `staying` (9f4197e5) changed only
+  `Camps.java` and this file, so the revert is its whole code change. **The GameTest** is renamed
+  `aHandBackWhoseJoinAnotherModCancelsKeepsThePuppetAndIsStale` to
+  `aHandBackWhoseJoinAnotherModCancelsIsStaleAndTheBandStillWalksHomeToOneBody` and says the true thing: after the
+  STALE it sends the SPAWN line for slot 0 the engine would send, then asserts the SPAWN is DONE, the party is gone
+  (`ConflictKit.party(agent)` null), both puppets are removed, and exactly one body (and one body in all) is held for
+  slot 0. Its waits are `waits.logic` on ChunkWait's tick clock (one `waits.chunks` for the site); no chunk
+  forcing is undone from a listener. **Why it fails at 2443e915** (read from the code, not run): the STALE puts the
+  band in `staying`, so `homeAt` never runs: the party stays in `byAgent` and `ConflictKit.party(agent)` is not null
+  ("the party is gone" never passes; the wait runs out its 2000 tick budget), and the puppets are not removed; the SPAWN
+  would also have made a body beside the standing puppet of slot 0. **Engine side:** nothing in camp.rs or
+  boundary.rs assumes the band stays after a STALE (`go_home` ends the party and zeroes `s.party` before any line is
+  sent, and a STALE answer is dropped by the answer loop); there is no Rust test of a STALE HAND_BACK to change.
+  The MZB-726 amendment above is corrected in place with a pointer here.
+- **MZB-752** (P2-1: the seam lap of `go_home`, MZB-456). No test failed when `go_home` took its start from
+  `party_pos` (the canonical cell) instead of `party_chart_pos` (the cell in the route's chart): all 812
+  rtsim-conflict and rtsim-jni tests passed. The CLI's `sim mowzie` seam check (`sim/mowzie/march.rs`) covers it, but it
+  is not a cargo test. `tests/mowzie_march.rs` now has
+  `a_band_routed_after_the_seam_walks_home_from_its_chart_position_not_a_lap_away`: an x-wrapped world (period 1200),
+  a raid whose target lies across the seam from the camp (x 900 to 100), the band walked out in 20 tick steps until its
+  chart cell and canonical cell differ, then routed by `chief_killed`; it asserts the way home is the chart cell then
+  the road it came by back to front, and its first segment is as long as the walk made. **Mutation:** with
+  `party_pos` at engine.rs:5025 the test fails, "the route home starts at the chart cell (1200, 1000), not the
+  canonical (0, 1000)": the route is `[(0, 1000), (900, 1000)]`, a first segment of 900 blocks for a walk
+  of 300 (the right route's first segment is the 300 blocks from (1200, 1000) back to the camp's x 900), and passes
+  with `party_chart_pos`.
+- **MZB-753** (P3-1: sight is horizontal). MZB-745's `seenBy` measured 3D (`pl.distanceToSqr(e)`). Vanilla's
+  tracking (`ChunkMap.TrackedEntity.updatePlayer`) uses the horizontal distance, so a player 150 blocks up and 50 out
+  still sees a band that the trim cut and the recall despawned. `seenBy` now asks `MarchTrim.withinSight(dx, dz,
+  range)`, `dx*dx + dz*dz <= range*range` on the ground plane (the one pure seam; `ConflictBridge` is not loadable in a
+  JUnit). `MarchTrimTest.sightIsMeasuredOnTheGroundPlaneNotInThreeDimensions` has the two cases: 50 out (a player high
+  above and close in horizontally) is in sight at 128, and 150 out at ground level is not; and the edge and a diagonal.
+  Not done (the review named it, the brief did not): each player's own view distance and the scaled tracking range
+  (`sightRange` still uses the server's view distance); visual only.
+- **MZB-754** (P3-3: the stop's inset in the design text). MZB-746 made the stop's square two chunks inside the
+  entity-ticking edge, and said the design texts were its now, but `MOWZIE.md` still said "one chunk inside" at
+  §2 (the custom-roll ledger's pending-stack row), §4.14's tunables table, §4.16's stop paragraph, §6's cost table, §7
+  test 34's walk-through, and the §8 MZ-17 row. All six now say two chunks. No other file keeps the old
+  inset: `docs/boundary.md` was corrected by MZB-746, and `StopSquare.java`'s comment is about why one chunk was not
+  enough.
+- **MZB-755** (P3-5: MZB-744's pointer was wrong). MZB-744 said test 32's "band met walking home is embodied"
+  variant is test 33. Test 33's `column()` sends no march record. The coverage is
+  `tests/mowzie_march.rs::a_band_met_on_the_road_either_way_is_placed_facing_its_march_and_steered`, whose `home = true`
+  pass meets a Home band, embodies it in one group and steers it along its segment. MZB-744's text is corrected in
+  place.
+- **MZB-756** (P3-6: a stale doc comment). The comment on `a_save_at_the_first_live_record_reads_no_held_raid_as_a_fight`
+  (`rtsim-jni/tests/protocol.rs`) said "A band going home is never seen"; MZB-457 made that false (`seen` meets a Home
+  band). The test still passes for the reason now written: `seen` waits for the replay end, and a sighting's
+  BAND_MATERIALIZE carries no BAND_FIGHT flag, so it is not read as the held raid's fight. Comment only. The file's
+  base is not rustfmt-clean, so it is not formatted.
+- **MZB-757** (P3-2 and P3-7, residuals, nothing built):
+  - *A later wave at radius 0* (MZB-747). The engine cannot reach it: `seen` always takes a new epoch, and that
+    epoch's materialize captures the old party. Only `ConflictKit` drives it, and only JUnit covers it. An arc wave
+    overwrites `p.hdx`/`p.hdz` of a party with stacks already out (ConflictBridge, in `materialize`); the next steer
+    recomputes the heading, so it is harmless. Not covered: a wave at radius 0 through a real engine, because no engine
+    path produces one.
+  - *Test 33's 150-block clause* (a fight whose target does not tick through to its end). Met in parts: the stop
+    GameTest's band C is clamped and holds at simulation distance 8 and at 4 (`MarchGameTests.aStoppedBandKeepsToThePlayersSquare`
+    and `...AtSimulationDistanceFour`). Not covered: a run in which the fight's target itself does not tick for the whole
+    fight, which needs a long GameTest with a player parked at the edge, and is left for the M10 acceptance round.
+  - The review's "not checked by tests, reasoned safe" items are unchanged: a HAND_BACK answer against the band's
+    BAND_DEMATERIALIZED cut with the camp in (only the camp-out case, camp.rs's `camp_out` path, is tested), a set-out
+    hand-off cut with a march, and CHIEF_KILLED copies after an unwatched resolve.
+
 ## M11 Aloft
 
-(none yet)
+The Umvuthi's puppet aloft with its Invasion, CHIEF_BODY's travel (agent not 0), the chief's stack, its
+hand-off and hand-back at the throne, its death away and its loot, its summons, and the M9 and M10 clauses
+deferred here (MZB-414, MZB-421, MZB-428, MZB-432, MZB-440, MZB-441, MZB-443, MZB-480, MZB-744, P3-4 of M10's
+end review). Designed only; the records below are the design's, and "### M11 design for the implementer"
+gives the changes, tests and work split.
+
+- **MZB-800** (base, reads and ids):
+  - The implementation branch `feat/mowzie-m11` starts from M10's landed head. This design read
+    `feat/mowzie-m10` at 2443e915; line numbers below are that copy's. M10's end review moved it to 1c2644af
+    while this was written: engine.rs, camp.rs, boundary.rs, outbox.rs, synth.rs and GroveKind.java are
+    unchanged there; `ConflictBridge.java` changes only `seenBy` (1947 to 1958, MZB-753); `Camps.java` is
+    4 lines shorter from 1168 to 1394 and 5 lines shorter from 1395 on (the `staying` revert, MZB-751). Each
+    Camps line below gives both, as "1395 (1390)". Re-check all of them after M10 lands.
+  - The doc's top table gives M11 the ids 500 to 549. The build lead's brief gives it MZB-800 to MZB-849
+    for the design and MZB-850 to MZB-899 for the build, and the header is left as it is. This design uses
+    MZB-800 to MZB-842, each checked free with `git log --all -S`.
+  - Jars: Mowzie's Mobs 1.21.1-1.8.2 with cfr in `target/m11-mowzie-cfr` (and `EntityHandler` alone in
+    `target/m11-eh`); vanilla 1.21.1 with NeoForge's patches from the NeoForm decompile in `target/m11-nf`;
+    NeoForge's own event and attachment classes from its sources jar in `target/m11-nfev` and
+    `target/m11-nfev2`. Mowzie line numbers are the cfr output's, which match MOWZIE.md's.
+- **MZB-801** (the chief's stack, ledger 24; `spawn_wave`, engine.rs 5391 to 5494):
+  - A new `chief_own_stack(c)` (engine.rs, beside `chief_stack` at 1123) holds when the culture's chief is a
+    body of its own (`c.def.chief_body.is_some()`, the grove's). `chief_stack` and its MZB-414 doc comment
+    (1119 to 1122) stay for the chief that is one of its band's bodies (the Frostmaw); the comment is
+    rewritten to say the grove's chief now goes as a stack of its own.
+  - `spawn_wave` appends one stack `{ body: body_id(chief_body), count: 0, flags: MEMBER_CHIEF }` after the
+    fill's stacks when `x.chief && chief_own_stack(&c) && !walked_in && x.spawned.is_empty()`: in the first
+    BAND_MATERIALIZE with bodies of each epoch, whether that is a sighting (`seen`, 5943), a watched fight
+    (`start_fight`, 5288) or a later `wave` (5570) after an empty or rejected first one. BAND_CHIEF is set on
+    that record. The chief is in no fill: `place` and `spawned` do not count it, and no quota or wave does
+    (MOWZIE.md §4.5, "Who leads").
+  - A count-0 stack is the chief alone, as M3's Java makes the chief of a stack as an extra body (MZB-109)
+    and as synth.rs's FakeConflict already reads it (685 to 712).
+  - A walked-in band (`walked_in`) keeps the puppets of its earlier wave, its chief's among them, so no
+    second chief stack is sent.
+  - Reason: §4.5's "Each time the engine sends CHIEF_BODY and then the chief's own stack, with MEMBER_CHIEF,
+    in the band's first BAND_MATERIALIZE"; `x.spawned.is_empty()` is "first with bodies" whatever `x.wave`
+    says (SPAWN_REJECTED at 6768 clears `spawned` and keeps `wave`).
+- **MZB-802** (a chief never appears alone; fork, and Ben question 1): `spawn_wave`'s early return
+  (`fill.is_empty() && !walked_in`, 5407) is kept, so a band whose units are all dead or already placed and
+  that still has its chief sends nothing, and its Umvuthi stays abstract until its band has a body to show.
+  Conservative: it adds no new path through `place`, `wave` and the stats, and a band with no warriors left
+  is rare (an Invasion routs when the chief falls, and walks home with what it has). Rejected for now: a
+  lone chief stack. Recommended answer for Ben: keep it.
+- **MZB-803** (CHIEF_BODY away, agent not 0; MOWZIE.md 480, §4.5 "When it has a body"):
+  - `spawn_wave` pushes `Cmd::ChiefBody` just before the BAND_MATERIALIZE that carries the chief's stack (the
+    push at 5487), and only then: `faction` the key, `agent` the party's, `epoch` the party's (`x.epoch`, the
+    same as the materialize's), `health` 0, `flags` 0, `traded` the camp's memory (`camp.traded`, as
+    `chief_body_record` at camp.rs 451 reads it).
+  - Health 0 means "the body keeps its own" (MZB-421), which for a fresh puppet is full: the engine keeps no
+    chief health, and out of a fight the Umvuthi heals 0.3 a tick (§3.1). Fork: a health the engine tracked
+    would need a new saved field and a report; full is what the plan says it nearly always is.
+  - A new `fn chief_body_away(&self, p) -> Cmd` in camp.rs builds it beside `chief_body_record`.
+  - A faction with no camp ledger has no memory: `traded` is empty.
+- **MZB-804** (the gate's ChiefBody row; replay rules 1 to 3):
+  - outbox.rs `gate` (78): the one arm splits in two, still with no `_` arm:
+    - `Cmd::ChiefBody(b) if b.agent != 0 => verdicts(Q::Drop, R::Never)`: it rides with a MATERIALIZE, whose
+      row is (drop, never), so it is dropped from the queue with it and is never decided while replaying;
+    - `Cmd::ChiefBody(_) => verdicts(Q::Keep, R::Never)`: the home row as today.
+  - It is never pushed while replaying: `spawn_wave`'s `defer` (5401) returns before both pushes. So the
+    gate's "never" is never reached, and if it were, it is counted and `debug_assert!`ed, not a release
+    panic (outbox.rs module doc).
+  - Books: the command touches no count, pool or slot in the engine; Java keeps it in memory only until its
+    MATERIALIZE. Dropped with a dropped MATERIALIZE, nothing is lost: the next meeting sends both again.
+  - docs/replay-gate.md §4.4's ChiefBody row gets the two verdicts and the reason.
+- **MZB-805** (Java keeps CHIEF_BODY away for its MATERIALIZE):
+  - `Camps.chiefBody` (1966 (1961)) returns at 1971 (1966) for agent not 0. It forwards instead to a new
+    `ConflictBridge.chiefBodyAway(agent, epoch, memory)`, which keeps the latest per agent in a map in memory.
+  - The bridge's `spawn` takes it for a chief slot whose party's agent and epoch match, and hands it to the
+    body kind's Traveller (MZB-807) as the body is made. It waits for its MATERIALIZE across buffers and
+    ticks: rtsim-jni's `write_queue` (rtsim-jni `engine/conflict.rs` 1160 to 1210) can end a command buffer
+    between the two. A MATERIALIZE of a later epoch for that agent, the party's `finish` or the session's end
+    drops it, counted (`chiefBodiesUnmatched`). The map is cleared at `sessionStopping`, `sessionFailed` and
+    the session's start.
+  - The puppet's later spawns from pending (the ticking edge, `requeue`) keep the memory on the slot, so a
+    stack taken back and placed again is made with the same health and players.
+- **MZB-806** (the puppet's making): the Mowzie module registers `ConflictBodies.registerMaker(UMVUTHI, new
+  UmvuthiMaker())`. Its `make`:
+  1. `EntityHandler.UMVUTHI.get().create(level)`, `moveTo(x, y, z, yaw, 0)`;
+  2. `setDirection(quarter(yaw))`, where `quarter` inverts the jar's `setYRot((direction - 1) * 90)`
+     (`EntityUmvuthi.java:452`): `floorMod(round(yaw / 90) + 1, 4)`;
+  3. `finalizeSpawn(level, difficulty, MobSpawnType.EVENT, null)`, which may turn it toward a player holding
+     its spawn egg (`946-958`) and restricts it where it stands (`960-962`);
+  4. `setDirection(quarter(yaw))` again, the private `direction` through the accessor (MZB-813), and yaw,
+     body yaw and head yaw to that quarter;
+  5. `setNoGravity(true)`.
+
+  The bridge's `spawn` (ConflictBridge 1410) does the rest as for any puppet: the claim of a SET_OUT (the
+  hand-off), the kind's `copy` from the throne body, the AgentTag, `ConflictBodies.hold`, `addFreshEntity`.
+  The Y it is made at is the aloft height (MZB-808) when not handed off; a hand-off starts on the throne.
+- **MZB-807** (the Traveller hook; ledger 24's "march in Java"):
+  - Core gains `conflict/Traveller.java` and `RtsimApi.registerTraveller(String body, Traveller t)`, as M8's
+    `Lurker` and `registerLurker`. The interface: `made(level, body, memory)`, `step(level, body, way,
+    memo)`, `home(level, body, spot, direction, memo)` (true once settled there), `release(body, memo)`,
+    `died(body, memo)`, and `Memo memo()`.
+  - The ConflictBridge gives a traveller's slot no `ConflictFollowGoal` (1535 to 1536). It calls `step` once a
+    tick for each live traveller slot, after the level's entities and block entities have ticked (in
+    `endOfTick`, 1695, before the trim), with the slot's place (`placeXZ`), the party's attack flag
+    (`Party.attack`, 192), the target and whether the party is recalled or homing.
+  - The plugin's `UmvuthiAloft` implements it for UMVUTHI; the pure rules are core's `AloftRules`, tested in
+    JUnit (core's src/test, as `MarchTrimTest`), so the Mowzie module, which has no JUnit, holds only glue.
+  - Reason: the plan says "how it travels is the Mowzie plugin's, for the one body kind it knows floats"; the
+    pass has to run after the entity ticks, which only the bridge's end of tick does.
+- **MZB-808** (its height):
+  - Every 10 ticks the target height is the highest MOTION_BLOCKING top over the columns under its box and
+    the columns along its way out to 8 blocks ahead, plus 2. Each column is read with
+    `ServerChunkCache.getChunkNow(cx, cz)` and `chunk.getHeight(MOTION_BLOCKING, x & 15, z & 15)`; a column
+    whose chunk is not at hand is skipped and counted (`heightColumnsSkipped`), never loaded.
+  - `ChunkAccess.getHeight` returns the top block's y, one less than `Level.getHeight` (which the bridge's
+    `Slot.place` uses, 477 to 488). So the body's foot goes to `top + 1 + 2`.
+  - It rises at up to 0.1 a tick and sinks at up to 0.05. While it is more than 1 block below its target it
+    takes no horizontal step (it rises first), so it lifts straight up out of the throne past the backrest
+    and over a wall before it reaches it.
+  - With no column read at all (all unloaded), the target stays as it was.
+- **MZB-809** (its pace and move): each tick `step` sets the body's motion to zero, calls
+  `resetFallDistance()`, moves it with `move(MoverType.SELF, step)` toward its place at up to 0.1 blocks
+  horizontally plus the vertical step of MZB-808, then calls `restrictTo(blockPosition(), -1)`. A dying body
+  (`isDeadOrDying()`) is not stepped.
+- **MZB-810** (pushes; jar fact 3): the bridge cancels a push of an aloft puppet by zeroing its
+  `ExplosionKnockbackEvent` (`setKnockbackVelocity(Vec3.ZERO)`, `ExplosionKnockbackEvent.java:50`, fired at
+  `Explosion.java:303`) when the affected entity is a live traveller puppet that is aloft. A creeper's or a
+  wind charge's explosion that runs before the Umvuthi's own tick would else lift it through its own
+  `travel`: the jar's `tick` zeroes only the horizontal motion (444), and the step's zeroing comes after.
+  A fan's push lands after the entity ticks (block entities tick after entities), so the step's zeroing
+  wipes it. Counted (`knockbacksZeroed`).
+- **MZB-811** (getting stuck):
+  - No headway: the horizontal distance to its place has not shrunk by 0.5 blocks in 100 ticks while it is
+    more than 8 blocks off. Then the target height rises by 8, up to 24 in all, one step each 100 ticks
+    without headway.
+  - Still held 100 ticks after the 24: it is moved to its place, at its target height there, the first tick
+    no player within 160 blocks horizontally has a clear line to it, or after 1,200 ticks held. The line is
+    the plugin's own block clip (`AloftRules.clear`: an integer DDA from the player's eye to the body's
+    middle over `getChunkNow` chunks, a block that blocks motion stopping it; a column not at hand counts as
+    blocking), since `hasLineOfSight` gives up past 128 (`LivingEntity.java:3039`). Counted (`stuckMoves`).
+  - Headway resets the rise; the raise drops back as its height rule allows.
+- **MZB-812** (settle and rise):
+  - It settles when the party's attack flag is set and it is within 32 blocks of the target horizontally, or
+    when its target is a player and `hasLineOfSight(target)` holds. It sinks at 0.05 with collision and, once
+    `onGround()` or blocked from below, clears `noGravity` and calls `restrictTo` where it sits, radius -1.
+  - Over a fluid (the top block under its box holds one) it does not sink: it floats on toward its place and
+    settles at the first ground; with the attack flag set and within 8 blocks of the target over a fluid, it
+    stays where it floats, restricted there.
+  - It rises again only when the attack flag is clear and it has had no player target for 200 ticks: the
+    plugin sets `noGravity` again and the height rule takes it.
+  - Distances here are horizontal, as sight is (MZB-753, `MarchTrim.withinSight`).
+- **MZB-813** (the re-pair; jar fact 1):
+  - The plan names "an accessor mixin on `ServerEntity`'s `direction`". `ServerEntity` has no such field; the
+    field is `EntityUmvuthi`'s `private int direction` (284), which `tick` copies from the synced value only
+    at `tickCount` 1 (446 to 447) and turns into yaw every tick (452 to 453). The accessor is
+    `@Mixin(EntityUmvuthi.class) interface EntityUmvuthiAccessor` with `@Accessor(value = "direction", remap =
+    false)`, a getter and a setter.
+  - When its way is more than 55 degrees from its facing, no ability is active (`getActiveAbility() ==
+    null`), at least 200 ticks after its last re-pair, and it is not dying: it is held still for 2 ticks (no
+    step), then the pass sets the synced direction (`setDirection`), the private field, yaw, body yaw and head
+    yaw to the new quarter, builds a `new ServerEntity(level, body, 1, true, p -> {})` (constructor at
+    `ServerEntity.java:71`, base at 77), collects `sendPairingData(player, new
+    PacketAndPayloadAcceptor<>(list::add))` (247 to 303), as `addPairing` (238 to 244) does, for one player
+    in the level, and sends `new ClientboundBundlePacket(list)` with
+    `level.getChunkSource().broadcast(body, bundle)`, which reaches the players tracking it and no others.
+  - Hold still first: the temporary tracker's position base is the body's position now, and the live tracker
+    keeps its own base; a client's fresh body decodes the next relative moves from the add packet's position.
+    The Umvuthi's update interval is 1 (`EntityHandler`, `target/m11-eh` 143), so after one tick with no move
+    the live tracker's base is the body's position and both agree. Two ticks is the margin.
+  - Skipped and counted (`repairsSkipped`) when the body is an `IEntityWithComplexSpawn`, or when the collected
+    packets hold anything but the vanilla pairing set (an attachment sync payload): `sendPairingData` is per
+    player (`AttachmentSync.syncInitialEntityAttachments(entity, player, ...)`, `AttachmentSync.java:212-217`),
+    and one bundle for every tracker is right only when nothing in it is per player. Fork: a bundle per player
+    would need each tracker's connection, which `ChunkMap` keeps private.
+  - The client side (`ClientLevel.java:351-356`): NeoForge posts `EntityJoinLevelEvent` for the fresh body
+    before the old body of that id is removed, and a client mod that cancels it keeps the old body, so a
+    cancelled join leaves the old facing, never a gap.
+- **MZB-814** (the trail): every 10 ticks, for each player within 160 blocks horizontally, a few
+  `minecraft:small_flame` under the body through `ServerLevel.sendParticles(player, options, true, ...)`
+  (long distance). PLACEHOLDER: on. Not for a settled or dying body. Test 31's screenshots settle whether it
+  stays (MZB-836).
+- **MZB-815** (portals): core's `BridgeEvents` cancels `EntityTravelToDimensionEvent` (cancellable,
+  `EntityTravelToDimensionEvent.java:26`; posted at the top of `Entity.changeDimension`, `Entity.java:2720`,
+  which every portal use goes through) for any entity that is a live puppet of a band, aloft or not.
+  Counted (`portalsCancelled`).
+- **MZB-816** (the summons, ledger 25; MZB-428's extras):
+  - A `@WrapOperation` mixin on `EntityUmvuthi$SpawnFollowersAbility` at its `Level.addFreshEntity` call
+    (`EntityUmvuthi.java:1050`). When the summoner is a live chief puppet
+    (`ConflictBridge.chiefPuppetFaction(summoner) != 0`), it calls a new `ConflictBridge.adoptSummons(summoner,
+    summons)`, which tags it with the party's AgentTag, holds it, adds it to the chief slot's `extras` and to
+    `extraOf`, before the original call; a join that fails removes it from both. Each adoption first prunes
+    the extras that are dead or removed.
+  - At the throne (no puppet) the call is untouched: its summons stay strays.
+  - The summons come at the summoner's y + 2.5 with an upward push (1042, 1051), so aloft they fall about 4.5
+    blocks and may take fall damage. Their deaths book nothing (extras), as MZB-428 says.
+- **MZB-817** (death aloft and the loot; jar facts 4 and 5):
+  - At the first `LivingDeathEvent` of a traveller puppet the bridge calls `Traveller.died`, which clears
+    `noGravity`; it is no longer stepped, so it falls during its death animation.
+  - The drops come at the animation's end (`MowzieEntity.tickDeath`, 453 to 466), 115 ticks after the
+    death, when `settleDeaths` (2333 to 2363) has long since journaled CHIEF_KILLED and forgotten the slot.
+    Today `onDrops` (2327) asks `live(dead)`, which is null by then, so the Sol Visage would carry no record.
+    And a forgotten body taken out by `discardAll` (717), by its chunk unloading (tagged, so not saved) or by
+    the server stopping loses its loot.
+  - So `settleDeaths`, for a chief body settled with no drops yet, adds `Dying(body, record, seq)` to a new
+    bridge list. `onDrops` checks that list first and carries the record onto the drops at once
+    (`session.carryOnEntity`), and the entry goes.
+  - A new `tickDying(now)` in `endOfTick` finishes a dying body whose chunk no longer ticks entities: it sets
+    `deathTime = 1_000_000` and calls `baseTick()`, which runs the jar's own end (`tickDeath`: the killer from
+    the kill data, `dropAllDeathLoot` with the kill cause, event 60, removal). No Mowzie class overrides
+    `baseTick`, `deathTime` is a public field, and `Level.shouldTickDeath` is true, so no accessor or
+    invoker is needed (jar fact 4). A body removed before its drops is counted (`deathLootLost`).
+  - `sessionStopping` (652) finishes every dying body after its `settleDeaths` and before the captures;
+    `sessionFailed` (666) before `discardAll`; `discardAll` skips a body on the list.
+- **MZB-818** (a crash inside the death animation; Ben question 2): the puppet is never saved, so a crash
+  in those 115 ticks loses the Sol Visage. It never doubles it. Conservative: keep the jar's animation and
+  its drop timing. Rejected: a third mixin that drops at death, which changes the boss's own death. Recommended
+  answer for Ben: accept the loss on a crash.
+- **MZB-819** (a payment to the puppet; PAID_PUPPET; fork, a wire flag):
+  - Today a puppet's payment journals nothing: `Camps.chiefPaid` (2038 (2033)) asks `campOf`, which is null
+    for a tagged body (2020 (2015)). So a masked player's gold is taken by the jar and the engine never books
+    the tribute nor remembers the payer.
+  - `chiefPaid` falls back to the bridge: for a body with `chiefPuppetFaction(e) != 0` it writes CHIEF_PAID
+    with that faction, slot CHIEF_SLOT, generation 0 and flags PAID_PUPPET (2, a new constant beside
+    PAID_STRAY in boundary.rs 149 and ConflictRecords).
+  - camp.rs `chief_paid` (1795 to 1814) remembers the payer when PAID_PUPPET is set and the faction's chief
+    slot is not Dead, and books the tribute either way. docs/boundary.md's CHIEF_PAID row (1646) gets "2 a
+    puppet". Reason: §4.5 "a masked player can trade with it as at home, the payment booked as CHIEF_PAID".
+- **MZB-820** (the hand-over copies the memory): GroveKind's `copy` (290) also unions the jar's
+  `getTradedPlayers` of `from` into `to` through `setTradedPlayersCompound`, as `chiefBody` (261) does, so a
+  hand-off carries the throne's memory to the puppet and a hand-back carries the puppet's to the throne.
+- **MZB-821** (the chief's HAND_BACK; camp.rs `camp_home`, 1217 to 1300):
+  - `chief_puppet = embodied && x.chief && chief_own_stack(culture)` is read before the slot loop.
+  - The chief slot joins `hand` when `chief_puppet && is_in && s.line.is_none()`, from Gone (as today) and
+    from Left (new: its throne body may stand, MZB-823). Left still becomes Body.
+  - In the line loop the chief gets ACTION_HAND_BACK when `chief_puppet`, without using `puppets` (the chief
+    is in no `spawned`); else a Gone chief gets ACTION_SPAWN as today, and a Left one gets no line. The
+    comment "A chief body has no puppet before M11" (1255) goes.
+  - `send_lines` (the CHIEF_BODY push at 1045 to 1052) sends CHIEF_BODY ahead of a chief HAND_BACK as of a
+    chief SPAWN, so the hand-back's body is made knowing the memory.
+  - The engine books a HAND_BACK's DONE or NOTHING for a Body slot as nothing (camp_bodies' match, no arm),
+    so the Left case costs no books.
+- **MZB-822** (the held chief HAND_BACK; MOWZIE.md §4.5 "Coming home"):
+  - `Camps.handBack` (1395 (1390)) holds a chief line whose puppet stands, as a new Held type HELD_HANDBACK
+    (3, beside 257 to 259). It sets the slot's homing goal through `bridge.homeChief(sl, spot, direction)`:
+    the throne spot and direction of the site. The band goes into `homecoming` as today (MZB-751), and
+    `recallStep` (2106) keeps a homing slot.
+  - Each tick `playHeld` asks `Traveller.home`: the puppet floats to the spot, re-pairs to the throne's
+    direction, and settles; then the line plays as today's hand-back (make, `copy`, CampMember, the memory
+    CHIEF_BODY left for the epoch, `addFreshEntity`, DONE).
+  - Bounded by `RECALL_TIMEOUT` (1,200, 106) from the line's arrival: then it plays where the puppet stands
+    (counted, `chiefHandBacksLate`).
+  - A puppet gone meanwhile (taken back at the edge, a failed session): the line plays as a held spawn. A
+    puppet that died: MZB-824.
+- **MZB-823** (two bodies at the hand-back, case B):
+  - A chief HAND_BACK that finds a tagged standing body of its slot and generation (`tagged`, the branch at
+    the top of `handBack`) still floats the puppet to the spot, then copies the puppet's health and traded
+    players into the standing body, the puppet goes, and the answer is NOTHING.
+  - A held chief TAKE (the grove came in while the Invasion was out, with a player near) is answered STALE once
+    a live chief puppet of that faction is within 32 blocks of the throne, horizontally (§4.5 "The grove while
+    it is away"). The engine then still has the slot Left with no line, so its `home` sends the chief
+    HAND_BACK of MZB-821.
+  - If `home` runs before that STALE (the slot's line is busy, so no HAND_BACK goes), the band is recalled
+    (`home`'s MZB-463 recall), the puppet goes when Rule U lets it (MZB-827), and the throne body stays: one
+    body, the puppet's health lost (counted, `chiefMergesMissed`).
+- **MZB-824** (a chief puppet killed after its march ended; MZB-466):
+  - If Camps holds the party's chief HAND_BACK (held or in this tick's lines), the bridge's `journalLoss` does
+    not write CHIEF_KILLED. Camps journals a CAMP_DEATH for the line's slot and generation, on a marker where
+    the body died, as `Camps.death` (1926 (1921)) does, with the killer of MZB-826; it answers the line STALE
+    and forgets the slot.
+  - The engine's `camp_death` sends the chief slot to `chief_death` (camp.rs 2461), which handles an Owed or
+    Body slot: the heir, the pressure step, the memory cleared; `chief_killed_at_camp` books the fall.
+  - Otherwise (the grove was out at home, and the band is recalled): CHIEF_KILLED as today. `home` removed the
+    party (engine.rs 5194) and opened no `home_open` entry (camp.rs 1277 opens one only for HAND_BACK lines
+    sent), so `unbooked_home_death` (engine.rs 7155) finds nothing and the record counts for nothing. The slot
+    went Gone to Owed at `camp_home`, so the next census spawns it: a boss killed in that window comes back.
+    Java logs and counts it (`chiefDeathsAfterEnd`). Fork, and Ben question 4: an engine map of ended
+    parties' chiefs would need saving; the window is a recall at a grove that is out with a player near the
+    puppet, rare (§4.5's fourth exception). Recommended answer: accept it, counted.
+  - Outcome (amended at M11a step 3b, MZB-853): not accepted. The puppet is a real EntityUmvuthi whose loot
+    table drops the Sol Visage when a player kills it, so a chief the census spawned back would be farmable. The
+    engine keeps the band's end on its camp (`Camp.ended`, RTC12), which holds the chief (no SPAWN, no lead) until
+    the band's BAND_DEMATERIALIZED or the chief's HAND_BACK answer; a CHIEF_KILLED of the band while it stands is
+    the chief's death at its camp, booked once. Java's `chiefDeathsAfterEnd` stays Java's own counter.
+- **MZB-825** (second bodies both ways; MZB-431):
+  - The puppet killed first: `Camps.chiefDiedAway(faction)`, called from the bridge's CHIEF_KILLED, marks the
+    faction's standing chief body (`standingChief`, 2000 (1995)) a second body (`markSecond`, 1790 (1785)).
+  - The throne body killed first (CAMP_DEATH of the chief slot): `Camps.death` asks the bridge for the
+    faction's live chief puppet and marks it second too. Its death journals nothing (`onDeath`'s
+    `secondBody` return at 2291), its drops are cancelled, its `die` takes no warriors (the M9 `die` mixin),
+    and the trim cuts it once the march drops MARCH_CHIEF (with Rule U, MZB-827).
+- **MZB-826** (BAND_CASUALTIES take the camp's killer; MZB-432's M11 note): the bridge's `onDeath` (2289) for a
+  member that is not the chief uses `Camps.killer(dead, source)` (1874 (1869)) in place of `byKind(killer)`,
+  for every culture. So the warriors the Umvuthi's `die` kills are credited by `getKillCredit` as the plan
+  says (§4.5 "Killed away"). Fork: other cultures' deaths by fire or fall after a player's hit now name that
+  player, as vanilla's own credit does; one rule for every band.
+- **MZB-827** (Rule U for the band's removals; MOWZIE.md §4.5 "Rule U"):
+  - A new `Camps.holdsChief(Mob body)` asks the kind of the body's faction (`holdRemoval`, GroveKind 242).
+  - `trim` (1870 to 1901) does not cut a chief while it holds; it stays due and is tried on the stop's beat.
+  - `recallStep` (2106) does not despawn a chief while it holds, until the recall's timeout (RECALL_TIMEOUT),
+    after which it goes as the plan says ("whoever is near").
+  - The four exceptions do not ask: the ticking edge (`requeue`, 2088), an `edge_stop` recall's timeout, a
+    failed session (`sessionFailed`) and home with the grove out (after the timeout).
+  - Reason: `sightRange` (1942) is capped by the view distance (128 at view 8), below Rule U's 160, so out of
+    sight is not enough.
+- **MZB-828** (Rule U is horizontal; fork): `GroveKind.playerWithin` (229) measures 3D (`distanceToSqr`). It
+  becomes horizontal, as sight is (MZB-753). It only widens the holds (a horizontal distance is never more
+  than the 3D one).
+- **MZB-829** (Carry On): a creative player can lift the puppet (MOWZIE.md 446 to 449). `gone` (2369) calls
+  the traveller's `release` (clears `noGravity`) before it untags the body and carries the record, so the
+  body Carry On stores and puts down is an ordinary Umvuthi with gravity. The pickup is CHIEF_KILLED with
+  that player (`takeFromSim`, `gone`, `journalLoss`).
+- **MZB-830** (the hand-off as it sets out): no logic change. With a chief stack in the materialize, the
+  bridge's `spawn` claims the chief's SET_OUT like any other (`claim`, 1443 (1438)), the throne body is
+  handed to the puppet on the throne, and the height rule lifts it straight up (MZB-808). Unseen, the SET_OUT
+  is a take held under Rule U as today. Only the comment at `resolveSetOuts` (1506 (1501)) changes: "a chief
+  not met as it sets out is a take".
+- **MZB-831** (sight for the aloft): every "within N blocks of a player" the aloft asks (the stuck rule's
+  160, the trail's 160, the settle's 32, the take's 32) is horizontal, through `MarchTrim.withinSight`
+  (MZB-753).
+- **MZB-832** (confirmations):
+  - D3: no new entity, block, item or pose. Two mixins, both the plan's: the direction accessor (ledger 24,
+    on `EntityUmvuthi`, not `ServerEntity`) and the summons wrap (ledger 25, `1050`). The loot needs none
+    (MZB-817).
+  - UR-1: nothing new is written into another mod's NBT. `setTradedPlayersCompound` writes the jar's own
+    field. `noGravity` is vanilla's and lives only on a tagged puppet, which is never saved; every path that
+    untags a puppet (Carry On, the hand-back's new body) leaves a body with gravity.
+  - No chat, action bar or title: `ConflictNews.post` is the only news hook and it is a no-op (MZB-101). No
+    pacts.
+- **MZB-833** (D1: the aloft's cost): given under "D1" in the design below. It is the one thing in the
+  conflict that runs per body per tick, for at most one body per Invasion.
+- **MZB-834** (the replay rules 4 and 5): no new Obs kind. The RP-57 list and the ending-epoch test are in the
+  design below.
+- **MZB-835** (exactness across a crash): the table is in the design below. Every row leaves at most one body,
+  one death and one drop.
+- **MZB-836** (test 31 runs as a GameTest, plus one client run for the looks; Ben question 3): a GameTest
+  server has no client. The facts the server can see (ids, UUID, health, `healthLost`, effects, ability
+  timers, target, kill credit, the one tracker, no events, the bundle's packets as a mock player's connection
+  receives them, the boss bar's players, the trail's packet at 100 blocks) are a GameTest. The looks
+  (screenshots with and without the trail, over grass and water, the legs' twitch, the swap's frame, the boss
+  music) need a client: one run of the dev client under the headless sway recipe ("Agent GUI and capture
+  traps"), scripted by a test command, done by the lead after M11c; it gates nothing. Recommended answer for
+  Ben: yes, that run, with its screenshots shown to him.
+- **MZB-837** (the tests' homes): Rust in a new `crates/rtsim-conflict/tests/mowzie_aloft.rs`; rtsim-jni
+  protocol tests in `crates/rtsim-jni/tests/protocol.rs` (hand-formatted, its base is not rustfmt-clean);
+  JUnit `AloftRulesTest` in core's src/test; GameTests in a new `AloftMowzieGameTests` in the Mowzie module,
+  each on its own far base (MZB-247), one batch per test, plus the Umvuthi clauses of test 33 in a batch of
+  their own (the simulation distance is server-wide).
+- **MZB-838** (run 11 with the aloft): the run and its audit are in the design below.
+- **MZB-839** (the work split): M11a Rust, M11b Java, M11c GameTests, in the design below.
+- **MZB-840** (the Frostmaw's later wave; found, left): `spawn_wave`'s MEMBER_CHIEF for a chief that is one of
+  its band's bodies asks `x.wave == 0` (5418). SPAWN_REJECTED of a first wave (6763 to 6769) clears
+  `spawned` and keeps `wave`, so a later `wave` would send the Frostmaw without MEMBER_CHIEF. Not M11's; not
+  checked whether `wave` is reached then. Reported to the lead.
+- **MZB-841** (the aloft's numbers): every distance, rate and period of MZB-808 to MZB-814 (2 blocks over the
+  top, 8 ahead, 0.1 up, 0.05 down, 0.1 a tick across, 100 and 1,200 ticks stuck, 8 and 24 raised, 32 to settle,
+  200 to rise, 55 degrees and 200 ticks to re-pair, 10 ticks a look) is a PLACEHOLDER constant in core's
+  `AloftRules`, named once there; the Mowzie glue reads them from it. Test 31's client run (MZB-836) is
+  where they are judged.
+- **MZB-842** (what M10 must change, with file and line; all in M11's build):
+  - engine.rs 1119 to 1122 (`chief_stack`'s doc), 5418 and 5466 to 5470 (`spawn_wave`'s chief stack and
+    BAND_CHIEF), the push at 5487;
+  - outbox.rs 78 (the gate's ChiefBody row);
+  - camp.rs 1045 to 1052 (CHIEF_BODY ahead of a chief HAND_BACK), 1225 to 1262 (`camp_home`'s chief line),
+    1795 to 1814 (`chief_paid`'s PAID_PUPPET);
+  - boundary.rs 149 (PAID_PUPPET beside PAID_STRAY);
+  - Camps.java 1971 (1966) (agent not 0 forwarded), 1395 (1390) (`handBack`'s held chief and case B), 1506
+    (1501) (the comment), 1926 (1921) (`death` marks the puppet second), 2038 (2033) (`chiefPaid`'s puppet);
+  - ConflictBridge.java 1535 to 1536 (no follow goal for a traveller), 1695 (`endOfTick`: the aloft pass and
+    `tickDying`), 1870 to 1901 (`trim`'s chief), 2037 (`checkPlaced`'s Y for a traveller), 2106
+    (`recallStep`), 2289 (`onDeath`'s killer), 2327 (`onDrops`), 2333 to 2363 (`settleDeaths`' dying list),
+    2369 (`gone`'s release), 2389 (`journalLoss`, MZB-824), 652, 666 and 717 (the session's end);
+  - GroveKind.java 229 (horizontal), 290 (`copy`'s traded union);
+  - synth.rs 806 (the FakeConflict reads CHIEF_BODY away) and its chief HAND_BACK answer.
+- **MZB-843** (test 29's re-binding clauses): they stay in the engine's tests (M10's Rust tests and run 11's
+  `rebinds`, `arrivals` and `watcher_lost`), with no GameTest. Their whole decision is the engine's (`rebind_to`,
+  `unseen`, `player_left`, `arrive`), and M11's GameTests script the engine through ConflictKit (MZB-478), so a
+  GameTest of them would only replay its own script. Java's half (bodies kept while no BAND_RECALL comes, a fight
+  turned to waiting) is M10's and tested there. MZB-440's other clauses (the puppet, the second body, the four
+  exceptions) are M11c's 29a to 29c.
+
+### M11 design for the implementer
+
+**Where it stands.** Designed only; no code. Branch `design/mowzie-m11` (this doc), made from `feat/mowzie-m10` at
+2443e915. The implementation branch `feat/mowzie-m11` starts from M10's landed head (MZB-800). The Rust is
+`nice -n 19 nix develop .# -c cargo test -p rtsim-conflict -p rtsim-jni -p rtsim-cli` from the repo root, with
+`CARGO_TARGET_DIR` the worktree's own target/. The Java is `./gradlew -PwithMowzie -PskipJni --offline` in neoforge/
+(never `nix develop path:`, which hashes target/).
+
+Line numbers are 2443e915's. At 1c2644af (M10 after its end review) the Rust files and GroveKind.java are unchanged,
+ConflictBridge.java changes only `seenBy` (1947 to 1958), and Camps.java lines from 1168 on are 4 or 5 lower; each
+Camps line is given as "1395 (1390)", the second at 1c2644af. Paths:
+- camp.rs is `crates/rtsim-conflict/src/engine/camp.rs`;
+- FakeConflict is `crates/rtsim-conflict/src/synth.rs`, its audit `crates/rtsim-conflict/src/synth/march.rs`;
+- run 11 is `crates/rtsim-cli/src/sim/mowzie/march.rs` (146), run 13 the same file (844);
+- ConflictBridge, Camps, MarchTrim and ConflictRecords are in core's `.../mic_rtsim/conflict/`, RtsimSession in core's
+  `.../mic_rtsim/bridge/`, the test kits in core's `.../mic_rtsim/gametest/`;
+- the plugin is `neoforge/mowziesmobs/src/main/java/com/minecraftindustrialcomplex/mic_rtsim_mowziesmobs/`.
+
+**Jar facts.** MZB-800 says where each was read. Mowzie line numbers are the cfr output's.
+
+*Mowzie's Mobs 1.21.1-1.8.2*
+- `EntityUmvuthi`:
+  - Abilities (210 to 260): DIE (210), HURT, BELLY, TALK, ROAR, SUNSTRIKE, SOLAR_FLARE, SPAWN and SPAWN_SUNBLOCKERS
+    (250, 251), SOLAR_BEAM, BLESS, SUPERNOVA. Its AI starts one only when `getActiveAbility() == null` (488 to 525).
+  - `private int direction` (284). `tick` zeroes the horizontal motion only (444), copies the synced direction into
+    the field at `tickCount` 1 only (446, 447), and sets yaw to `(direction - 1) * 90` every tick (452, 453).
+    `setDirection` (701) writes the synced value only.
+  - `restrictTo` is overridden (804). `die` (859) calls `super.die` twice (858 to 871). Its loot table is
+    `LootTableHandler.UMVUTHI` (936, 937).
+  - `finalizeSpawn` turns it toward a player holding its spawn egg (946 to 958) and restricts it where it stands,
+    radius -1 (960 to 962).
+  - `SpawnFollowersAbility` (a public static class, 997) summons at the summoner's y + 2.5 (1042), restricts each
+    summons to `entity.getRestrictCenter()` with radius 25 (1046), adds it with `entity.level().addFreshEntity`
+    (1050), and pushes it 0.5 up and 0.7 out (1051).
+- `MowzieEntity`:
+  - `dropAfterDeathAnim` (137); `bossInfo`, a protected `MMBossInfoServer` (148).
+  - `tickDeath` (453 to 466): once `deathTime` reaches `getDeathDuration()`, it drops with the kill cause, sends
+    event 60 and removes the body.
+  - `dropAllDeathLoot` (471 to 473) drops only when `deathTime > 0`; `die` (477 to 479) keeps the kill cause.
+  - `startSeenByPlayer` (527 to 529) adds the player to the boss bar; `stopSeenByPlayer` (532) removes it.
+- `MowzieGeckoEntity.getDeathDuration` (70 to 75): the active animation ability's duration, else 20.
+- `EntityHandler` UMVUTHI: `setUpdateInterval(1)`, `clientTrackingRange(10)` (`target/m11-eh` 143).
+- No Mowzie class overrides `baseTick`.
+
+*Vanilla 1.21.1 with NeoForge's patches*
+- `Mob`: `isWithinRestriction` (1300 to 1306); `restrictTo` (1308 to 1311); `getRestrictCenter`; `hasRestriction`
+  (1325): a radius of -1 is no restriction, though the centre is still set.
+- `LivingEntity`:
+  - `baseTick` (395) calls `tickDeath` (565) at 480, when `isDeadOrDying() && level.shouldTickDeath(this)`;
+  - `isDeadOrDying` (1134);
+  - `die` posts `LivingDeathEvent` first (1408, 1409);
+  - `dropAllDeathLoot` (1462) captures the drops and posts `LivingDropsEvent`;
+  - `checkFallDamage` (346 to 370) sends landing particles only past `SAFE_FALL_DISTANCE` (3);
+  - `hasLineOfSight` (3033 to 3043) returns false past 128 blocks.
+- `Entity`:
+  - `baseTick` (434), `move` (619), `setNoGravity` (1165), `resetFallDistance` (2555);
+  - `changeDimension` (2719) posts `EntityTravelToDimensionEvent` first (2720);
+  - `canTrample` (3721 to 3726) needs `random < fallDistance - 0.5`.
+- `FarmBlock.fallOn` (109 to 116) turns farmland to dirt only through `canTrample`.
+- `Level`: `getHeight(type, x, z)` (383 to 389) is the chunk's `getHeight` plus 1; `shouldTickDeath` (625) is true.
+- `ServerLevel.isPositionEntityTicking` (1710).
+- `ServerChunkCache`: `getChunkNow` (173) never loads; `broadcast(entity, packet)` (482) sends to that entity's
+  trackers only.
+- `ServerEntity`:
+  - the position codec (58); the constructor (71) sets the base (77);
+  - `addPairing` (238 to 244) collects `sendPairingData(player, new PacketAndPayloadAcceptor<>(list::add))` into one
+    `ClientboundBundlePacket`;
+  - `sendPairingData` (247) ends with `AttachmentSync.syncInitialEntityAttachments(entity, player, ...)`, which is
+    per player (`AttachmentSync.java:212-217`);
+  - `getPositionBase` (306).
+- `Explosion.java:303` asks `EventHooks.getExplosionKnockback`, which posts `ExplosionKnockbackEvent`; its
+  `setKnockbackVelocity` (50) replaces the push.
+- `EntityTravelToDimensionEvent` is cancellable (26).
+- `ClientLevel` (351 to 356) posts `EntityJoinLevelEvent` for an added entity before it removes the old entity of
+  that id.
+- `PlayerChunkSender`: at most one unacknowledged batch until the client acknowledges one (34, 50, 51, 110 to 117).
+  `MinecraftServer` (1081) sends the next chunks only to the player list's players.
+
+**Contradictions with the plan** (each with the conservative pick):
+1. **The direction field.** MOWZIE.md 382 names `ServerEntity`'s private `direction`. `ServerEntity` has none. The
+   field is `EntityUmvuthi`'s (284), so the accessor mixin goes on `EntityUmvuthi` (MZB-813).
+2. **One bundle for every tracker.** NeoForge's pairing data are per player (the attachment sync), so the re-pair is
+   skipped and counted when anything per player is in it (MZB-813).
+3. **No explosion lifts it.** Ledger 24 relies on the step's zeroing. The jar zeroes only the horizontal motion
+   (444), and an explosion before the Umvuthi's own tick lifts it through its own travel. The bridge zeroes the
+   knockback (MZB-810).
+4. **A dying chief's loot.** `settleDeaths` forgets the slot long before the drops (115 ticks later), so the drops
+   carry no record and a body taken out meanwhile loses its loot. The Dying list keeps it (MZB-817). No loot accessor
+   is needed: `deathTime` and `baseTick` are public.
+5. **A payment to the puppet.** The plan books it as CHIEF_PAID "as at home". Today it journals nothing (`campOf` is
+   null for a tagged body). Hence PAID_PUPPET (MZB-819).
+6. **The summons.** They come at y + 2.5 with an upward push, restricted round the summoner's restriction centre
+   (1042 to 1051). Aloft they fall about 4.5 blocks (MZB-816), and only the step's `restrictTo` each tick keeps them
+   round the puppet (test 23's clause).
+7. **The height.** `ChunkAccess.getHeight` is one less than `Level.getHeight`. "2 blocks over the top" is a foot at
+   `top + 1 + 2` (MZB-808).
+8. **The clip.** `hasLineOfSight` gives up past 128, so the stuck rule's 160 has its own clip (MZB-811).
+9. **Rule U and sight.** `sightRange` is capped by the view distance (128 at 8), below Rule U's 160. So the trim and
+   the recall ask `holdsChief` (MZB-827).
+10. **The re-pair's base.** The throwaway tracker's position base is the body's position. So the body holds still 2
+    ticks first (MZB-813).
+11. **The client's join.** It is posted before the old body is removed, so a cancelled join keeps the old facing
+    (MZB-813).
+12. **`chief_stack`.** MZB-480 keeps it false for the grove. M11 adds `chief_own_stack` beside it rather than turn
+    it on, because the Frostmaw's code reads `chief_stack` as "the chief is one of the band's bodies" (MZB-801).
+
+**Gaps the plan leaves** (not contradictions):
+- With the grove out at home, a chief killed after its march ended comes back free at the next census (MZB-824,
+  question 4). Closed at M11a by MZB-853.
+- The Frostmaw's later wave lacks MEMBER_CHIEF after a rejected first wave (MZB-840, not M11's).
+- rtsim-jni's `write_queue` (rtsim-jni `engine/conflict.rs` 1160 to 1210) can end a command buffer between a
+  CHIEF_BODY and its MATERIALIZE. Java's match waits across buffers and ticks (MZB-805).
+
+**What earlier slices must provide** (keep these as they are):
+- M10:
+  - MZB-751's revert: a STALE hand-back walks the band home;
+  - MZB-753's horizontal sight (`MarchTrim.withinSight`);
+  - the column with the chief's stack at the rear (MZB-480), and `MarchPath` with `march(agent)`.
+- M9:
+  - GroveKind's `playerWithin` (229), `holdRemoval` (242), `chiefBody` (261) and `copy` (290);
+  - the Held types (Camps 259);
+  - the `die` mixin (`EntityUmvuthiMixin`);
+  - `markSecond` and `secondBody` (MZB-431);
+  - CHIEF_BODY at home (MZB-421, `chief_body_record`, camp.rs 451).
+- M8: `Lurker` and `RtsimApi.registerLurker` (321), the pattern `Traveller` copies.
+- M6: `FakePlayers` and ledger 22's barrier.
+- M3: the count-0 chief stack (MZB-109, MZB-127), in Java and in FakeConflict (synth.rs 685 to 712).
+- MZB-589: `session.carryOnEntity` and the holder's reassert.
+
+**Engine** (rtsim-conflict):
+- `engine.rs`:
+  - `chief_own_stack(c)` beside `chief_stack` (1123), and the doc comment at 1119 to 1122 rewritten (MZB-801).
+  - `spawn_wave` (5391 to 5494):
+    - after the fill's stacks, the chief's stack `{ body: body_id(chief_body), count: 0, flags: MEMBER_CHIEF }`
+      when `x.chief && chief_own_stack(&c) && !walked_in && x.spawned.is_empty()`;
+    - BAND_CHIEF (5466 to 5470) when `x.chief` and either `chief_stack` or `chief_own_stack` holds, on every wave,
+      as the Frostmaw's is (Java makes a chief only from a stack that also has STACK_CHIEF, ConflictBridge 1114 to
+      1118);
+    - just before the push at 5487, and only when the chief's stack was appended,
+      `self.outbox.push(self.chief_body_away(p))`.
+
+    Both pushes come after the `defer` at 5401, so neither is made while replaying (MZB-803, MZB-804).
+  - Nothing else. `camp_death`, `chief_death` (camp.rs 2461) and `unbooked_home_death` (7155) handle MZB-824's cases
+    as they are.
+- `engine/camp.rs`:
+  - `chief_body_away(&self, p) -> Cmd` beside `chief_body_record` (451) (MZB-803).
+  - `send_lines` (the push at 1045 to 1052): CHIEF_BODY also ahead of a chunk with the chief's HAND_BACK
+    (MZB-821).
+  - `camp_home` (1217 to 1300) (MZB-821):
+    - `chief_puppet` before the slot loop;
+    - the slot loop (1234 to 1245) hands the chief slot from Left as from Gone;
+    - the line loop (1247 to 1262) gives the chief ACTION_HAND_BACK when `chief_puppet`;
+    - the comment at 1255 goes.
+  - `chief_paid` (1795 to 1814) (MZB-819):
+    - with PAID_PUPPET, the slot is the faction's chief slot found by slot id, since `camp.index(slot, generation)`
+      fails for generation 0;
+    - the payer is remembered when that slot is not Dead;
+    - the tribute is booked either way.
+- `boundary.rs`:
+  - `PAID_PUPPET: u32 = 2` beside PAID_STRAY (149);
+  - `Cmd::agent` (947) returns `Some(b.agent)` for a ChiefBody with `b.agent != 0` (only outbox.rs's test reads it;
+    see Traps).
+- `outbox.rs`: the gate's ChiefBody arm (78) splits in two, still with no `_` arm (MZB-804). Its unit test's TABLE
+  (197) is keyed by kind, so add an explicit away case beside it (Traps).
+- `synth.rs` (FakeConflict):
+  - `Cmd::ChiefBody` (806): an away one is kept per agent (`pending_chief`) until its MATERIALIZE. A MATERIALIZE with
+    a chief stack and no pending one of its epoch adds a failure (`chief_bodies_missing`).
+  - The chief's HAND_BACK (`apply_line`, 1559) takes the band's chief (`bodies[agent].chief = None`) whether it
+    answers DONE or NOTHING (case B).
+  - `chief_float: u64` (default 0): the chief's HAND_BACK of a band whose body holds its chief is held that long, as
+    Java's homing is (a new `Hold::Homing` in `waits`, 1082).
+  - `kill_homing_chief(faction, at)` kills the puppet within that time: a CAMP_DEATH of the line's slot and
+    generation, `BY_PLAYER` with the fake's player, and the line answered STALE (MZB-824).
+  - `pay_puppet(faction, player, at)`: CHIEF_PAID with PAID_PUPPET, the chief slot and generation 0.
+- `synth/march.rs` (the audit; MZB-838):
+  - `took` (204) reads `Cmd::ChiefBody` and `Cmd::Materialize` as well as `Cmd::March`.
+  - New `Totals` fields: `chief_bodies_away` and `chief_stacks`.
+  - New failures:
+    - an away CHIEF_BODY not followed at once, in the same take, by a BAND_MATERIALIZE of its agent and epoch that has
+      BAND_CHIEF and one MEMBER_CHIEF stack of count 0;
+    - a MEMBER_CHIEF stack of a band whose culture has `chief_own_stack`, with no away CHIEF_BODY just before it;
+    - two chief stacks for one agent and epoch;
+    - a chief stack for a party whose `chief` is false;
+    - a CHIEF_BODY or BAND_MATERIALIZE taken while `replaying()`;
+    - at a step's end, a party with `chief`, `chief_own_stack`, a non-empty `spawned` and an epoch that had no chief
+      stack, unless it walked in.
+- rtsim-jni: tests only.
+
+**Java, core:**
+- `conflict/Traveller.java` (new) and `RtsimApi.registerTraveller(String body, Traveller t)` (beside
+  `registerLurker`, 321) (MZB-807).
+- `conflict/AloftRules.java` (new; pure, no Minecraft state):
+  - the constants of MZB-841;
+  - `quarter(yaw)`;
+  - the target height from column tops;
+  - the vertical step with its rise and sink caps;
+  - the stuck state machine (headway, raises, the hold, the move);
+  - settle and rise;
+  - the re-pair gate (angle, ability, cooldown, the 2-tick hold);
+  - `clear` (the integer DDA);
+  - the horizontal distances, through `MarchTrim.withinSight` (package-private, so `AloftRules` lives in the same
+    package).
+- `ConflictBridge.java`:
+  - `chiefBodyAway(agent, epoch, memory)` and its map (MZB-805). `sessionStarted` (624), `sessionStopping` (652) and
+    `sessionFailed` (666) clear it, and `finish` drops the agent's entry.
+  - `spawn` (1410) hands the memory to the traveller's `made`. A traveller's slot gets no `ConflictFollowGoal`
+    (1535, 1536).
+  - The spawn Y and `checkPlaced` (2037 to 2071), for a traveller, add its lift (the memo's height) to `place`'s
+    ground Y. Without it a displaced puppet is teleported to the ground.
+  - `endOfTick` (1695): the aloft pass (`step` for each live traveller slot, with `placeXZ`, `Party.attack` (192),
+    the target, and recalled or homing) before the trim; then `tickDying`.
+  - The re-pair helper (MZB-813): a throwaway `ServerEntity`, `sendPairingData` with a `PacketAndPayloadAcceptor`,
+    a check for anything but the vanilla pairing set, then `broadcast`.
+  - `adoptSummons(summoner, summons)` (MZB-816).
+  - The Dying list (MZB-817):
+    - `settleDeaths` (2333 to 2363) adds a chief body with no drops yet;
+    - `onDrops` (2327) reads the list first;
+    - `tickDying`;
+    - the session's ends at 652 and 666;
+    - `discardAll` (717) skips a listed body.
+  - `onDeath` (2289): `Traveller.died` at the first death; for a member that is not the chief, `Camps.killer` (MZB-826).
+  - `gone` (2369) calls `release` before it untags (MZB-829).
+  - `journalLoss` (2389) asks Camps for a held chief HAND_BACK first (MZB-824). Otherwise it journals CHIEF_KILLED,
+    and counts `chiefDeathsAfterEnd` when the party's march had ENDED.
+  - `trim` (1870 to 1901, in `cutFrom`) and `recallStep` (2106) ask `Camps.holdsChief` (MZB-827).
+  - `homeChief(slot, spot, direction)` (MZB-822).
+  - The counters MZB-805 to MZB-829 name, each with a getter for ConflictKit.
+- `Camps.java`:
+  - `chiefBody` (1966 (1961)) forwards agent not 0 (1971 (1966)) to the bridge (MZB-805).
+  - `HELD_HANDBACK = 3` beside 259; `handBack` (1395 (1390)) holds a chief line whose puppet stands, and does case B
+    (MZB-822, MZB-823).
+  - `playHeld` (1522 (1517)) asks `Traveller.home`, then plays the line as a hand-back, or late at RECALL_TIMEOUT.
+  - The held chief TAKE is answered STALE once a live chief puppet of the faction is within 32 blocks of the throne,
+    horizontally (MZB-823).
+  - `death` (1926 (1921)): the chief slot's death marks the faction's live puppet second (MZB-825).
+  - `chiefDiedAway(faction)` (new): marks `standingChief` (2000 (1995)) second through `markSecond` (1790 (1785)).
+  - `holdsChief(Mob)` (new, MZB-827).
+  - `chiefPaid` (2038 (2033)): the puppet fallback with PAID_PUPPET (MZB-819).
+  - The comment at `resolveSetOuts` (1506 (1501)) (MZB-830).
+  - The CAMP_DEATH for a held chief HAND_BACK whose puppet died (MZB-824).
+- `BridgeEvents.java`: listeners for `ExplosionKnockbackEvent` (MZB-810) and `EntityTravelToDimensionEvent` (MZB-815).
+  Each is one identity lookup in the bridge's map of live puppets.
+- `ConflictRecords.java`: `PAID_PUPPET = 2`.
+- Test kits:
+  - `ConflictKit.chiefBody(faction, agent, epoch, health, players)`, which writes AGENT (24); today's overload writes
+    none;
+  - getters for the counters;
+  - `FakePlayers.watching(level, at, name)`: a Hearer joined through `addNewPlayer` that keeps every packet;
+  - `FakePlayers.pump(p)`: sends its next chunks and acknowledges one batch for each
+    `ClientboundChunkBatchFinishedPacket` it was sent (the server sends chunks only to its list's players, and holds
+    back after one unacknowledged batch).
+
+**Java, plugin** (the Mowzie module):
+- `mixin/EntityUmvuthiAccessor.java` (new): `@Mixin(EntityUmvuthi.class)` with `@Accessor(value = "direction", remap =
+  false)`, a getter and a setter. The module already has `EntityUmvuthiMixin` (M9's `die`), so the name differs.
+- `mixin/UmvuthiSummonsMixin.java` (new): `@Mixin(targets = "...EntityUmvuthi$SpawnFollowersAbility")` with a
+  `@WrapOperation` on its `Level.addFreshEntity` call (1050) (MZB-816).
+- The module's mixins json lists both.
+- `UmvuthiMaker.java` (MZB-806) and `UmvuthiAloft.java` (the `Traveller`; MZB-807 to MZB-814), registered in
+  `MicRtsimMowziesMobs` beside the RaptorMaker.
+- `GroveKind.java`: `playerWithin` (229) horizontal (MZB-828); `copy` (290) unions the traded players (MZB-820).
+
+**Docs:**
+- `docs/boundary.md`:
+  - CHIEF_PAID's row (1646): flags "1 a stray, 2 a puppet (the chief slot, generation 0)";
+  - CHIEF_BODY's row (1827): "agent (0 at home; the party's away, just ahead of its BAND_MATERIALIZE with the chief's
+    stack)".
+- `docs/replay-gate.md` §4.4: the ChiefBody row (957) becomes two, away (drop, never) and home (keep, never), with
+  their reasons; the note at 1029 adds the away push.
+- `MOWZIE.md` ledger 24 (371 to 399): the direction field (382) is `EntityUmvuthi`'s, and the knockback clause names
+  `ExplosionKnockbackEvent`, as M10 amended boundary.md (MZB-482).
+
+**D1** (MZB-833). The cost is per aloft chief puppet, and there is at most one per Invasion that a player sees.
+- **Each tick aloft:**
+  - one `move(MoverType.SELF, v)` of at most 0.1 across and 0.1 up, which is vanilla's collision for one 1.5 × 3.2
+    box (the block shapes of about 2 × 4 × 2 cells);
+  - `setDeltaMovement(ZERO)`, `resetFallDistance()` and `restrictTo`;
+  - the settle's target check, through the mob's own `getSensing().hasLineOfSight`, which the jar's goals fill each
+    tick anyway.
+- **Every 10 ticks:**
+  - the height: up to 9 columns under its box and 8 ahead, each a `getChunkNow` lookup and a heightmap array read, so
+    17 lookups;
+  - the trail: one particle packet to each player within 160 blocks.
+- **While stuck:**
+  - every 100 ticks without headway, one distance compare;
+  - while held after the 24 (at most 1,200 ticks), every 10 ticks, one clip from each player within 160: an integer
+    DDA of at most about 400 cells, each a `getChunkNow` and a block state read.
+- **At most one re-pair in 200 ticks:** a throwaway `ServerEntity` and its pairing packets (the add packet, the
+  entity data, attributes, equipment and effects, as for a mob coming into view), sent as one bundle to its trackers.
+- **Settled:** nothing beyond the jar's own AI, which an Umvuthi on its throne runs too.
+- **Server-wide hooks:**
+  - `ExplosionKnockbackEvent`, per entity an explosion pushes;
+  - `EntityTravelToDimensionEvent`, per change of dimension.
+
+  Each is one identity lookup in the bridge's map of live puppets, which is empty when no band is out. The summons
+  wrap is one call per summons, and only inside the Umvuthi's SPAWN ability.
+- **The Dying list:** one entry per chief puppet in its 115-tick death; `tickDying` makes one
+  `isPositionEntityTicking` read per entry per tick.
+- **Against M10's column:** each column member costs its `ConflictFollowGoal` and vanilla navigation every tick, plus
+  the bridge's steering per band per beat (MZB-475). The aloft replaces the chief's follow goal and navigation with one
+  collision move. So the chief costs about as much as one column member, plus 17 lookups and one packet per nearby
+  player every 10 ticks: about one member's share in a column of a few dozen.
+
+**The replay rules** (rp-slice-common's six; MZB-804, MZB-834):
+1. **One choke point.** M11 adds no command kind. Its one new push is `Cmd::ChiefBody` from `spawn_wave` through
+   `self.outbox.push`, which asks `gate`. The gate's ChiefBody arm splits in two, still with no `_` arm.
+   - The other push site is `send_lines` (camp.rs 1045 to 1052), now for the chief's HAND_BACK too.
+   - A grep for `Cmd::ChiefBody(` finds those two pushes and three exhaustive matches: the gate, FakeConflict's (806)
+     and rtsim-jni's `write_queue` (rtsim-jni `engine/conflict.rs` 1238 to 1242).
+2. **Nothing embodies while replaying, and no panic.**
+   - `spawn_wave`'s two pushes come after its `defer` (5401).
+   - The chief's HAND_BACK rides a CAMP_RECONCILE, whose row is (drop, never), so `send_lines` is never reached while
+     replaying, as for M9's spawn line.
+   - Were either reached, the gate counts it and `debug_assert!`s. It is not a release panic (the outbox module doc).
+3. **The books.**
+   - The away CHIEF_BODY touches no count, pool or slot. Dropped from the queue at a replay's start together with its
+     MATERIALIZE (both drop), it loses nothing: the next meeting sends both again with a new epoch.
+   - The chief's stack is in no `spawned`, `place` or wave count, so a dropped MATERIALIZE leaves the units' books as
+     today.
+   - The chief's HAND_BACK books Body on DONE. For a Left slot, DONE or NOTHING books nothing new. A STALE leaves the
+     slot for the next census, as today's lines do.
+   - PAID_PUPPET books the tribute once, by its op id, and the memory is a set.
+4. **RP-57.** No new Obs kind. `party_epoch` (boundary.rs 605 to 635) is unchanged:
+
+   | Kind | Epoch | Answer |
+   |---|---|---|
+   | BAND_MATERIALIZED (with the chief's stack) | the party's | raises the floor (608) |
+   | BAND_SPAWN_REJECTED | the party's | raises the floor (609) |
+   | BAND_DEMATERIALIZED (the chief a survivor or not) | the party's | raises the floor (610) |
+   | BAND_CASUALTIES (the `die` kills) | the party's | raises the floor (611) |
+   | CHIEF_KILLED (the puppet) | the party's | raises the floor (612) |
+   | CHIEF_PAID (PAID_PUPPET) | none (a slot and generation) | `None` |
+   | CAMP_DEATH (MZB-824) | a camp's, Java's op id | `None` |
+   | CAMP_BODIES (the chief's HAND_BACK) | a camp's | `None` |
+   | CHIEF_BODY away | the MATERIALIZE's, allocated with it | a command, never replayed |
+
+5. **An ending epoch is never reused:** test A7, below.
+6. **Controls:** each test below names one.
+
+**Exactness across a crash** (MZB-835). A crash is a journal ending at a record. The puppet and its summons are never
+saved (UR-1).
+1. **CHIEF_BODY and its MATERIALIZE sent; nothing back yet.** No record. Java's map is memory only. The engine meets
+   the band again with a new epoch and sends both again. No body.
+2. **BAND_MATERIALIZED journaled, the puppet made aloft.** The puppet is not saved. The replay raises the floor. The
+   chief is in no unit, so no unit is counted twice. One body at most: none until the next meeting.
+3. **The hand-off as it sets out** (the SET_OUT claimed: throne body out, puppet in). This is ledger 22's barrier: the
+   journal's answer waits for the entity chunk with the throne body gone to be on disk.
+   - Before that write, the throne body stands and the line is answered again.
+   - After it, the Umvuthi is only in the engine (Left, with the party) until the next meeting or home.
+   - Never two.
+4. **Travel, the re-pair, the trail, pushes.** No record.
+5. **PAID_PUPPET journaled.** The same order and window as M9's CHIEF_PAID at the throne. The memory is a set, so a
+   payment journaled twice through a holder's reassert is remembered once.
+6. **CHIEF_KILLED journaled, inside the 115-tick animation.** The body is not saved, so the Sol Visage is lost and
+   never doubled (MZB-818, question 2). The replay books the kill once, by its op id.
+7. **The loot dropped** (at the animation's end, at the ticking edge, or at a stop). The drops carry the CHIEF_KILLED
+   record (`carryOnEntity`). The item is saved with its chunk or lost with it, once either way, and a reassert from it
+   books once by its op id.
+8. **The stop.** `sessionStopping` finishes every dying body before it saves, so a clean stop never loses loot. A
+   failed session finishes them before `discardAll`.
+9. **The chief's HAND_BACK held while the puppet homes.**
+   - A crash leaves the line in flight and the puppet gone. The next census answers the stale epoch's lines, and the
+     engine's slot is Gone or Left with a line: as M9's crash rows for a spawn line. The chief is spawned once on the
+     throne, or left standing.
+   - Never two: the puppet is not saved.
+10. **The held line played** (body made, DONE). This is ledger 22's barrier: the body's chunk is on disk before the
+    journal's DONE.
+    - A crash between leaves the body and an unanswered line. The body's holder reasserts it, booked once, and a
+      later HAND_BACK finds it held (NOTHING).
+11. **Case B, the merge** (NOTHING). The health copied into the standing body is lost with a crash before its chunk
+    is saved, and the line is answered again. The puppet is gone, so the HAND_BACK finds the standing body: NOTHING.
+    One body.
+12. **CAMP_DEATH after the end** (MZB-824). It is journaled on a marker, as `Camps.death`'s is.
+    - A crash before it: the kill is lost with the puppet. The held line replays and the chief is spawned on the
+      throne, alive.
+    - After it: the death is booked once, and the line is answered STALE.
+    - One death or none, never two.
+13. **The second body's death.** It journals nothing. The mark is memory only, so after a crash the throne body is
+    an ordinary body of a Dead slot, which the census removes under Rule U (M9's I5). The first death is booked once.
+14. **The Carry On pickup.** CHIEF_KILLED goes through `takeFromSim`, with the record carried onto the stored body
+    (MZB-589). The body Carry On stores has gravity and no tag. One death; the body is the player's.
+
+No row leaves two bodies, two deaths or two drops.
+
+**Rust tests** (`crates/rtsim-conflict/tests/mowzie_aloft.rs`, new; A7 in `mowzie_records.rs`):
+- **A1** `the_chief_body_goes_ahead_of_the_chiefs_stack` (MZB-801, MZB-803):
+  - *Set-up:* a grove culture whose chief leads Invasions, and an Invasion led by its chief. A player is put through
+    `World::set_player_pos` to meet it:
+    1. on the road (`seen`);
+    2. at its target (`start_fight`);
+    3. at a later wave, after an injected SPAWN_REJECTED of the first;
+    4. walking home after a rout (`seen` on the home leg).
+  - *Asserts:* each time, the take holds a CHIEF_BODY (the band's agent and epoch, health 0, flags 0, the camp's
+    memory) and then at once the MATERIALIZE of that agent and epoch. That MATERIALIZE has BAND_CHIEF and, last, the
+    stack `{ chief_body, 0, MEMBER_CHIEF }`. `spawned` and the wave counts are as without the chief. A second wave of
+    the same epoch, and a walk-in, send neither.
+  - *On the base:* no CHIEF_BODY and no chief stack is sent.
+  - *Controls:* the Frostmaw's band sends no CHIEF_BODY and keeps its MEMBER_CHIEF on its first wave; a grove's raid
+    without its chief sends neither.
+- **A2** `a_band_with_only_its_chief_left_sends_nothing` (MZB-802):
+  - *Set-up:* an Invasion whose warriors are all dead abstractly while its chief lives; then it is met.
+  - *Asserts:* no MATERIALIZE and no CHIEF_BODY.
+  - *Control:* with one warrior left, both are sent. This control fails on the base, since the base sends no
+    CHIEF_BODY.
+- **A3** `an_away_chief_body_is_dropped_with_its_materialize` (MZB-804):
+  - *Set-up:* an engine with an away CHIEF_BODY and its MATERIALIZE queued, saved to pages and loaded; then
+    `begin_replay`.
+  - *Asserts:* both are dropped. A meeting while replaying pushes neither (`counts.deferred` rises, `never` stays 0).
+  - *On the base:* the away CHIEF_BODY is kept and outlives its MATERIALIZE.
+  - *Control:* a home CHIEF_BODY queued beside them is kept.
+- **A4** `the_chief_is_handed_back_at_home` (MZB-821):
+  - *Set-up:* an embodied Invasion with its chief comes home:
+    1. to a grove that is in, its chief slot Gone;
+    2. the same, with the slot Left (the grove was out at the muster's end);
+    3. to a grove that is out.
+  - *Asserts:*
+    1. the reconcile is CHIEF_BODY home (agent 0, the camp's epoch) and then a chunk with the chief's HAND_BACK
+       (LINE_CHIEF); DONE leaves the slot Body;
+    2. the same; NOTHING (case B) leaves Body and the books unchanged;
+    3. BAND_RECALL with RECALL_DONE and no line; the slot is Owed and the next census sends a SPAWN.
+  - *On the base:* a Gone chief gets a SPAWN, and a Left one no line.
+  - *Control:* a band never embodied (`chief_puppet` false) gets today's lines.
+- **A5** `a_payment_to_the_puppet_is_remembered` (MZB-819):
+  - *Set-up:* CHIEF_PAID with PAID_PUPPET, the chief slot, generation 0 and player P is ingested.
+  - *Asserts:* the tribute is booked once; P is in the camp's memory; the next CHIEF_BODY, away or home, carries P.
+  - *On the base:* P is not remembered (`index` fails for generation 0).
+  - *Controls:* with the slot Dead (killed away), the tribute is booked and the heir's memory stays empty; a CHIEF_PAID
+    with flags 0 and generation 0 is a stray's tribute, as today.
+- **A6** `a_camp_death_after_home_books_once` (MZB-824):
+  - *Set-up:* home with the grove in, the chief's HAND_BACK in flight. Then CAMP_DEATH (the chief slot and generation,
+    BY_PLAYER, P) and the line's STALE are ingested, in both orders.
+  - *Asserts:* the chief dies once: `chief_killed_at_camp` once, the heir due, the memory cleared. No CHIEF_KILLED is
+    booked, and the slot is Dead.
+  - *On the base:* the chief's line is a SPAWN, so the first assert (a HAND_BACK in flight) fails.
+  - *Control:* a throne death at home with no line in flight books the same.
+- **A7** `an_aloft_chiefs_ended_epoch_is_never_reused` (rule 5; in `mowzie_records.rs` beside
+  `every_record_naming_an_epoch_raises_its_floor` (2202), reusing `Reached`):
+  - *Set-up:* an Invasion with its chief embodied at epoch e (CHIEF_BODY and the chief's stack taken). In the
+    replayed window, on Pages, Fresh and Copy:
+    1. CHIEF_KILLED at e, then BAND_DEMATERIALIZED at e;
+    2. BAND_DEMATERIALIZED at e with the chief alive.
+  - *Asserts:* after the replay end a new meeting's MATERIALIZE and its CHIEF_BODY both name one epoch above e.
+  - *On the base:* the CHIEF_BODY assertion fails, since none is sent. The floor itself is RP-57's and holds on the
+    base, which is the point: the new command brings no epoch of its own.
+  - *Control:* with no record replayed, the meeting takes the epoch the pages hold plus one.
+
+**Protocol tests** (rtsim-jni, `tests/protocol.rs`'s conflict module; hand-formatted, not rustfmt'd):
+- **P1** `an_away_chief_body_leads_its_materialize_on_the_wire`:
+  - *Asserts:* the decoded command stream holds CHIEF_BODY (0x880A, agent not 0) directly before its BAND_MATERIALIZE,
+    with one epoch. With the command buffer filled so that it ends after the CHIEF_BODY, the MATERIALIZE leads the
+    next buffer with nothing between.
+  - *Control:* a home CHIEF_BODY precedes its CAMP_RECONCILE as today.
+- **P2** `a_payment_to_the_puppet_survives_a_restart`:
+  - *Set-up:* CHIEF_PAID (PAID_PUPPET) written, then a crash before any save.
+  - *Asserts:* the replay books the tribute once; the next CHIEF_BODY carries the payer.
+  - *Control:* a stray's payment, as M9's test.
+- **P3** `the_payer_reaches_the_throne_body_at_home`:
+  - *Set-up:* a payment to the puppet; the band comes home with the grove in.
+  - *Asserts:* the home CHIEF_BODY ahead of the chief's HAND_BACK carries the payer.
+  - *Control:* with no payment, the memory is the camp's as before.
+- **P4** `a_camp_death_after_the_end_books_once_across_a_replay`:
+  - *Set-up:* A6's CAMP_DEATH and STALE written, then a restart between them and after both.
+  - *Asserts:* one death booked, one heir.
+  - *Control:* a CHIEF_KILLED for the same ended party books nothing (MZB-466's counter), as M10's test.
+
+**JUnit** (core's src/test, `AloftRulesTest`; each rule at its threshold and one either side):
+- `quarter` at 0, 45, 90, 135, 180 and -90 degrees, against the jar's `(direction - 1) * 90`.
+- The height: `top + 3` for the foot; the highest of the columns; an unread column skipped.
+- The vertical step: the caps of 0.1 up and 0.05 down; no horizontal step while more than 1 below.
+- The stuck machine:
+  - headway of 0.5 in 100 ticks (0.49 and 0.51);
+  - raises of 8 to 24;
+  - the hold of 100 after the 24;
+  - with a clear line, the move at 1,200 held; with none, at once;
+  - headway resets the raises.
+- Settle and rise: 32 blocks with the flag (31.9, 32.1); a player target in sight; a fluid under it (floats on, or
+  stays within 8); the rise after 200 ticks with no flag and no player target.
+- The re-pair gate: 55 degrees (54, 56), the 200-tick cooldown, an active ability, dying, the 2-tick hold.
+- `clear`: a block between, a non-blocking block (grass, glass panes as they block motion), a column not at hand
+  counted as blocking.
+- Distances are horizontal: a player 150 across and 100 up is within 160.
+
+**GameTests** (`AloftMowzieGameTests` in the Mowzie module's gametest package; MZB-837). These hold for every one:
+- **Batches and scripting.** Each test is its own batch on its own far base (`MowzieKit.Far`, MZB-247). It is
+  scripted through ConflictKit (MZB-478): the bands, marches, steers, recalls, reconciles and CHIEF_BODY are the
+  test's own records. So none needs the real engine; the engine's halves are the Rust and protocol tests.
+- **A chief's band.** The CHIEF_BODY away and its MATERIALIZE go in one `ConflictKit.together`, with the band's
+  `flags |= FLAG_CHIEF` and the stack `StackSpec(UMVUTHI, 0, true)`.
+- **Waits.** Every wait is on ChunkWait's two clocks (`ChunkWait.of(helper, logic)`):
+  - `waits.chunks` for a load or an unload;
+  - `waits.logic` for the rule's ticks;
+  - `waits.eachTick` per tick, never `helper.onEachTick`.
+
+  Run `neoforge/tools/chunk_waits.py` over the file.
+- **Forcing.** Chunks are held with `waits.hold(at, blocks)` or by the Far itself. They are released as the
+  sequence's last steps (`hold.release()`, `far.releaseAll()` at MowzieKit 275), never from a listener near the arena:
+  the listener runs after the next batch's structure is placed and forced. The Far's own `onEnd` release stays only
+  as the backstop for a failed test, far from any arena.
+- **Players.** `FakePlayers.addSeen` where chunks must tick; `FakePlayers.add` where only distance counts;
+  `FakePlayers.watching` plus `pump` where packets must arrive through tracking. Each is removed (`removeSeen`)
+  before any release. A test that sets the view or simulation distance (both server-wide) restores both inside its
+  sequence.
+- **Listeners.** Event listeners a test registers are unregistered inside its sequence.
+
+The tests:
+
+1. **22-aloft** `anUmvuthiSetsOutAndComesHomeInPlainView` (test 22's "in plain view", for the chief; MZB-822,
+   MZB-830).
+   - *Set-up:* a grove laid on the far base (`MowzieKit.Grove`) with its Umvuthi on the throne and 4 warriors, all
+     tagged by a reconcile. A mock player (`addSeen`) stands 150 blocks off, at view distance 10. The script:
+     1. the SET_OUT lines for the chief and the warriors;
+     2. CHIEF_BODY away and the MATERIALIZE with the chief's stack;
+     3. a march out that passes within 100 blocks of the player, and back;
+     4. at home, CHIEF_BODY home and the HAND_BACK lines.
+   - *Asserts:*
+     - Each tick there is at most one Umvuthi within 160 blocks of the player.
+     - While it is within 128, it moves under 0.5 blocks a tick, except at the hand-off and hand-back, which replace
+       it at the same point (within 0.01).
+     - The puppet keeps the throne body's health and memory.
+     - At home the line waits until the puppet has settled on the spot; then the throne body stands there, DONE.
+   - *Fails without:* MZB-830 (the SET_OUT is a take and the throne body vanishes in sight); MZB-822 (the hand-back
+     plays at once and the Umvuthi jumps from aloft to the throne).
+   - *Control:* the warriors' HAND_BACKs in the same reconcile play at once where they stand.
+2. **23a** `anAloftUmvuthiKeepsItsHeight` (MZB-806, MZB-808, MZB-809).
+   - *Set-up:* a flat grass strip 200 blocks long. Across the route stand a 6-block wall, an oak (trunk 5, leaves to
+     8) and a roof (7 × 7 slabs on posts, 4 up). The route's last 20 blocks run into a chunk the Far does not force
+     and nothing loads. A mock player (`addSeen`) stands beside the start. The script: CHIEF_BODY away with health 250
+     and the player in its memory; the MATERIALIZE (4 warriors and the chief's stack); a march along the route.
+   - *Asserts:*
+     - The puppet appears at the column's rear (the chief's place in `MarchPath`, within 1 block). It has
+       `isNoGravity()`; its private and synced direction are the quarter of the route's heading; health 250; and
+       `hasTradedWith(player)`.
+     - Every tick its horizontal move is at most 0.1 (plus 1e-6), its vertical move at most 0.1, and
+       `level.noCollision(body)` holds.
+     - Once at its target, every 10 ticks its foot is within 0.05 of `max top + 3` over the columns under its box and
+       8 ahead. It is over the wall before reaching it.
+     - At the unloaded chunk, `heightColumnsSkipped` rises, and a `ChunkEvent.Load` listener sees no load of that
+       chunk.
+   - *Fails without:* MZB-808's look-ahead (it meets the wall and stops); `getChunkNow` (the chunk loads); MZB-809's
+     cap (it moves at the column's pace).
+   - *Control:* the same band without the chief's stack makes no Umvuthi, and its warriors march as in M10.
+3. **23b** `anAloftUmvuthiSettlesAndRises` (MZB-809, MZB-812).
+   - *Set-up:* flat grass, a puppet aloft as in 23a, and a mock player (`addSeen`).
+   - *Steps and asserts:*
+     1. A steer with the attack flag and the target 40 blocks off: it stays aloft to 32 blocks, then sinks at most
+        0.05 a tick. On landing, `isNoGravity()` is false, `getRestrictCenter()` is its block, and `hasRestriction()`
+        is false (radius -1).
+     2. A second band with no flag and the player as its target, in sight: it settles.
+     3. With the flag still set, the player made invisible and then moved 200 blocks off: it stays down for 400 ticks.
+     4. The flag dropped and no player target: after 200 ticks it rises (`isNoGravity()`) and is back at its place
+        within 2 blocks inside 400 ticks.
+     5. An iron golem beside the route, its target the puppet: the puppet neither sinks nor stops (headway every 100
+        ticks). Summons it makes aloft (SPAWN started through the jar's ability handler, as its AI does) have
+        `getRestrictCenter()` within 1 block of the puppet's block at the summons, with radius 25.
+   - *Fails without:* the settle rule (step 1 stays aloft); the per-tick `restrictTo` (step 5's centre is the
+     puppet's spawn point); a settle on any target (the golem sets it down).
+   - *Control:* the throne Umvuthi's summons have their centre at the throne, the jar's own rule.
+4. **23c** `pushesAndPortalsLeaveItAloft` (MZB-810, MZB-815).
+   - *Set-up:* a puppet aloft on a straight route at a steady target height.
+   - *Steps:*
+     1. A creeper's explosion (`level.explode` with the creeper as source, power 3) 2 blocks under it, from a
+        `LevelTickEvent.Pre` listener, so it lands before the entities tick (the order that leaks).
+     2. A wind charge's explosion (as `AbstractWindCharge.explode` makes it) from the same listener.
+     3. A fan's push from a `LevelTickEvent.Post` listener (0.4 up and 0.4 out, `hurtMarked`). It lands after the
+        entities and block entities and before the bridge's step, as a Create fan's does.
+     4. A lit nether portal across its route.
+   - *Asserts:*
+     - After each push its foot stays within 0.5 blocks of its target height, and within 0.5 of its line.
+     - `knockbacksZeroed` counts steps 1 and 2.
+     - It passes through the portal blocks and stays in the overworld with the same id; `portalsCancelled` counts.
+   - *Fails without:* MZB-810 (steps 1 and 2 lift it more than 1 block); the step's zeroing (step 3); MZB-815 (it
+     travels).
+   - *Control:* an untagged Umvuthi beside the route, `NoGravity` set by the test, is lifted by each push. For the
+     portal, an `EntityTravelToDimensionEvent` the test posts for that body is not cancelled. There is no real trip
+     to the nether, which would generate chunks.
+5. **23d** `aStuckUmvuthiRisesThenIsMoved` (MZB-811; the farmland).
+   - *Set-up:* two bands 300 blocks apart on the far base. Each meets a stone ceiling 3 blocks over its foot, 20
+     wide and 30 long across its route, with its place 40 blocks past the far edge. Band A has a mock player
+     (`addSeen`) 30 blocks off with a clear line to it. Band B has no player within 160. Band B's place is over a 9 ×
+     9 farmland field, with the attack flag set once it is moved, and its target 10 blocks off.
+   - *Asserts:*
+     - Under the ceiling neither makes headway. Each target rises 8 at each 100 ticks without headway, to 24 (read
+       from the traveller's memo through a test getter).
+     - B is moved to its place at its target height there at the first check after the 24's 100 ticks.
+     - A is held while the player has the line, and is moved at the first tick past 1,200 held. `stuckMoves` is 2.
+     - B then sinks onto the farmland. The farmland stays, and a Hearer 20 blocks off receives no `BLOCK` particle
+       packet.
+   - *Fails without:* the stuck rule (both stay under the ceiling past 2,000 ticks); the clip (A is moved in the
+     player's view at once); `resetFallDistance` each tick (a 24-block sink is a fall of 24, so `canTrample` turns
+     the farmland to dirt and the landing sends particles).
+   - *Control:* a third puppet on a clear route of the same length counts no stuck step.
+6. **23e** `anUmvuthiKilledAloftFallsAndDropsOnce` (MZB-817).
+   - *Set-up:* a puppet 12 blocks over grass, and a mock player 20 blocks off who kills it (`MowzieKit.kill`).
+   - *Asserts:*
+     - Two `LivingDeathEvent`s for the body, and one CHIEF_KILLED (`ConflictKit.about`) naming the player.
+     - From the death's tick, `isNoGravity()` is false and it falls.
+     - At the animation's end (115 ticks, logged), one Sol Visage lies where it fell, carrying the record.
+     - Then no Umvuthi with `NoGravity` is in the level, and its chunk, saved and read back (`MowzieKit
+       .unloadedWithout`), holds no Umvuthi.
+   - *Fails without:* `died` (it hangs aloft through its death); the Dying list (the drop carries no record).
+   - *Control:* an untagged Umvuthi killed on the ground drops one Sol Visage at the same tick count.
+7. **24** `theChiefsSummonsArePuppets` (MZB-816).
+   - *Set-up:* a settled puppet whose target is a mock player 10 blocks off, and a grove with its own Umvuthi on a
+     throne 200 blocks away. SPAWN is started on each through the jar's ability handler. An `EntityJoinLevelEvent`
+     listener at HIGHEST priority records each summons' tag, and whether the extras hold it then.
+   - *Asserts:*
+     - Each of the puppet's summons (warriors and cranes) is tagged with the party's AgentTag and in the chief slot's
+       extras before it joins, and `ConflictBridge.admit` (733) lets it in.
+     - The march record's counts and the band's units are unchanged, and killing one books nothing.
+     - After its chunk unloads (`MowzieKit.unloadedWithout`), the saved chunk lacks it.
+   - *Fails without:* the wrap (the summons are untagged strays).
+   - *Control:* the throne Umvuthi's summons are untagged strays.
+8. **25p** `aPaymentToThePuppetIsRemembered` (test 25's puppet clauses; MZB-819, MZB-820).
+   - *Set-up:* an Invasion's puppet settled 60 blocks from its grove's throne, and a masked mock player
+     (`MowzieKit.mask`) who pays it (`MowzieKit.payUmvuthi`). Later the band comes home: a scripted CHIEF_BODY home
+     without the player, and the chief's HAND_BACK.
+   - *Asserts:*
+     - One CHIEF_PAID is journaled with the faction, the chief slot, generation 0 and PAID_PUPPET.
+     - The puppet's `hasTradedWith(player)` holds.
+     - The throne body the hand-back makes has `hasTradedWith(player)`, though the scripted CHIEF_BODY lacks it.
+   - *Fails without:* MZB-819 (no CHIEF_PAID); MZB-820 (the throne body lacks the player).
+   - *Control:* a payment to the throne Umvuthi journals CHIEF_PAID with its slot and generation and flags 0, as in
+     M9.
+   - The engine's half (remembered, carried, kept across a restart) is A5, P2 and P3.
+9. **26** `anUmvuthiKilledAwayRoutsItsInvasion` (MZB-817, MZB-826, MZB-827).
+   - *Set-up:* a settled puppet with 6 warriors of its column, 3 within 30 blocks and 3 beyond 35. A mock player is
+     its target, and kills it.
+   - *Asserts:*
+     - One CHIEF_KILLED with the player, and one Sol Visage at the animation's end.
+     - The 3 near warriors die by the jar's `die`, each a BAND_CASUALTIES naming the player as `getKillCredit` gives
+       it (`Camps.killer`). The 3 far ones live.
+     - The grove's scripted REMOVE of the throne body is held while a second mock player stands within 160 blocks of
+       the throne, and applies when that player leaves.
+   - *Rule U in the trim:*
+     - A second puppet settles and fights at view distance 8 (sight 128). A BAND_MARCH without MARCH_CHIEF arrives
+       (the books' chief lost). Its target is a mock player 170 blocks off horizontally, set again each tick.
+     - The trim does not cut it for 1,300 ticks (`holdsChief`, by the target).
+     - With the target cleared, it is cut at the next beat.
+   - *Fails without:* MZB-826 (the casualties name kind none, from `byKind` of a death with no entity); MZB-827 (the
+     trim cuts it, out of sight).
+   - *Control:* the far warriors book nothing, and the cleared target is cut.
+   - The feud's fall to Scouts and the walk home are run 11's (`killed_away`).
+10. **29a** `aSecondUmvuthiBodyBooksNothing` (test 29's second-body clause, both ways; MZB-825).
+    - *Set-up:* a grove comes in while its Invasion's puppet is out, with a mock player 50 blocks from the throne, so
+      the throne body's take is held. A tagged warrior stands 10 blocks from the throne. A second grove on the base,
+      300 blocks off, is set up the same way.
+    - *Asserts:*
+      - First grove, the puppet killed first: CHIEF_KILLED once and one Sol Visage. Then the throne body is killed:
+        no Sol Visage within 8 blocks after its animation, the warrior lives, no CAMP_DEATH and no CHIEF_KILLED, and
+        the body is removed.
+      - Second grove, the throne body killed first: CAMP_DEATH of the chief slot once, and one Sol Visage. Then the
+        puppet is killed: no CHIEF_KILLED, no drop, and no warrior of its column within 30 dies.
+    - *Fails without:* MZB-825 (the second death journals and drops again, and its `die` kills warriors).
+    - *Control:* each order's first death books and drops once.
+11. **29b** `aHeldTakeIsAnsweredStaleAsThePuppetComesHome` (MZB-823).
+    - *Set-up:* as 29a's first grove, the take held by the player. The puppet's health is set to 180, and a second
+      mock player pays it. The march brings it home. When the take is answered STALE, the script sends the chief's
+      HAND_BACK (as the engine does for a Left slot with no line, MZB-821) with CHIEF_BODY home.
+    - *Asserts:*
+      - STALE comes in the tick the puppet comes within 32 blocks of the throne, horizontally.
+      - The HAND_BACK floats the puppet to the spot. Then one Umvuthi stands on the throne with health 180 and the
+        payer in its memory, the puppet is gone, and the answer is NOTHING.
+    - *Fails without:* MZB-823 (the take stays held and the HAND_BACK makes a second body).
+    - *Control:* with no player near the throne, the take plays as the grove comes in, and the HAND_BACK makes the
+      body from the puppet (DONE).
+12. **29c**, the four exceptions: four tests, each its own batch.
+    - **29c-edge** `anAloftUmvuthiAtTheTickingEdgeIsTakenBack`:
+      - *Set-up:* simulation distance 8, view 10. A puppet aloft 130 blocks from a mock player (`addSeen`) on an
+        axis; the player steps 20 blocks back, so its chunk stops ticking entities.
+      - *Asserts:* it is taken back to pending that tick (`requeue`, with no Rule U); no Umvuthi is within 200
+        blocks; the chunk, saved and read back, holds none.
+      - *Fails if* `requeue` asked Rule U (it hangs in a chunk that does not tick, with `NoGravity`).
+      - *Control:* a warrior of the same column at the same distance goes in the same tick.
+      - Restores both distances inside the sequence.
+    - **29c-seam** `anEdgeStopRecallReachesThePuppetAtItsTimeout`:
+      - *Set-up:* a scripted BAND_RECALL with RECALL_PASSING; a mock player 140 blocks off at view distance 8 (out of
+        sight, within 160).
+      - *Asserts:* the puppet stays until the recall's timeout (1,200), goes at it, and BAND_DEMATERIALIZED follows.
+      - *Fails without:* MZB-827 (it goes at once, out of sight).
+      - *Control:* with the player 170 blocks off, it goes at once.
+    - **29c-failed** `aFailedSessionCapturesEveryPuppet` (its own batch, since the failure is the server's):
+      - *Set-up:* a puppet aloft, a settled one, and one killed 20 ticks before. `engine.failForTest()` is called as
+        EngineFailureGameTests (39) does, then `restartGlobalForTest` inside the sequence.
+      - *Asserts:* `sessionFailed` captures both live puppets; the dying body finishes first (one Sol Visage);
+        nothing floats.
+      - *Fails without:* the Dying list's finish in `sessionFailed` (the dying body is discarded with no drop).
+      - *Control:* a warrior puppet is captured the same way.
+    - **29c-home** `aHomecomingWithItsGroveOutIsRecalled`:
+      - *Set-up:* the grove's footprint is not loaded (the grove out). A scripted BAND_MARCH ENDED and BAND_RECALL
+        with RECALL_DONE at the throne spot. A mock player 150 blocks from the throne at view distance 8.
+      - *Asserts:* the puppet stays until the timeout and goes at it. Killed in that window by the player, it
+        journals CHIEF_KILLED and `chiefDeathsAfterEnd` is 1 (question 4's counted case).
+      - *Control:* the same at a grove that is in sends HAND_BACKs (32t), not a recall.
+    - The re-binding clauses: MZB-843.
+13. **31s** `anAloftUmvuthiReadsAndTurns`: the server's facts (MZB-813, MZB-814). The looks are MZB-836's client
+    run.
+    - *Set-up:*
+      - A puppet aloft on a route with a 90-degree turn. A `FakePlayers.watching` hearer 20 blocks off and one 100
+        blocks off, each pumped every tick, and a plain Hearer 170 blocks off.
+      - First check that the hearers come to track the body (its `TrackedEntity`'s `seenBy`, by reflection). If they
+        cannot, the bundle is read from a package-private `UmvuthiAloft.lastBundle` along with `seenBy`'s size, and
+        the build record says so.
+      - Sunblock and fire are set on the body before the turn, a ROAR is started, and the player hits it once.
+    - *Asserts:*
+      - **The re-pair:**
+        - the turn brings a re-pair within 200 ticks, after 2 ticks without a move;
+        - each tracking hearer receives one `ClientboundBundlePacket` whose add packet has the body's id and UUID,
+          a yaw within 45 degrees of the new way, and the body's position, equal to the live tracker's
+          `getPositionBase` (by reflection);
+        - none comes while the ROAR is active, none within 200 ticks of the last (a second turn 100 ticks later
+          waits), and none for a dying body;
+        - `repairsSkipped` is 0, or the build record says which payload stopped it.
+      - **The server's body:**
+        - it keeps its id, UUID, health, `healthLost` (by reflection, if the field exists), Sunblock, fire, ability
+          timers, target and `lastHurtByPlayer`;
+        - `ChunkMap` holds one tracker for the id;
+        - no `PlayerEvent.StartTracking` or `StopTracking`, `EntityJoinLevelEvent`, `EntityLeaveLevelEvent` or
+          `LivingDeathEvent` fires for it in the re-pair's tick;
+        - the boss bar's players (`bossInfo`, by reflection) are the same before and after.
+      - **The trail:** the 100-block hearer receives `small_flame` packets every 10 ticks with the long-distance flag,
+        and the 170-block one receives none.
+      - **The hand-off and home** (the clause's last two parts):
+        - From a grove that is in, with a mock player 120 blocks off, the hand-off puppet faces its route out, rises
+          past the backrest with `noCollision` every tick, and floats out after its warriors.
+        - With a block placed over the throne, it is met by the stuck rule.
+        - At home it floats to the spot, re-pairs to the throne's direction and settles before the hand-back.
+      - L2 Hostility's moving traits, if the mod is in the test run, are logged.
+    - *Fails without:* MZB-813 (no bundle; the hearer gets no add packet); the 2-tick hold (the add packet's position
+      differs from the live tracker's base).
+    - *Control:* a 40-degree turn brings no re-pair in 400 ticks.
+14. **32t** `theUmvuthiIsHandedBackOnItsThrone` (test 32's throne clause; MZB-821, MZB-822).
+    - *Set-up:* a grove that is in; an Invasion's puppet and 4 warriors come home, with a mock player 100 blocks off.
+      The scripted homecoming: CHIEF_BODY home, then the HAND_BACK lines.
+    - *Asserts:*
+      - Each warrior becomes a tagged vanilla body where it stands that tick.
+      - The chief's line is held (HELD_HANDBACK) while its puppet floats to the spot, re-pairs and settles. Then one
+        Umvuthi stands on the throne with the puppet's health, DONE.
+      - **Late:** with the spot blocked so it cannot settle, the line plays at RECALL_TIMEOUT where the puppet stands
+        (`chiefHandBacksLate` 1).
+      - **Grove out:** a BAND_RECALL comes instead and no HAND_BACK. The puppet goes, out of sight or at the
+        timeout, and the next census's scripted SPAWN puts it on the throne.
+    - *Fails without:* MZB-822 (the chief's line plays at once: the Umvuthi jumps from aloft to the throne).
+    - *Control:* the warriors' lines play at once in the same reconcile.
+15. **33u** `theUmvuthiAppearsBeyond128AndCarryOnTakesIt` (test 33's Umvuthi clauses; its own batch; MZB-829).
+    - *Set-up:* simulation distance 8, then 10, restored inside the sequence. A band with its chief marches on an
+      axis toward a mock player (`addSeen`) from 300 blocks off.
+    - *Asserts:*
+      - Each stack's distance from the player as it appears is logged; the Umvuthi's is never under 128 at either
+        distance.
+      - A creative mock player picks the puppet up with `RtsimApi.takeFromSim(body, TakeReason.PICKUP, player)`, the
+        call Carry On's handler makes (as FrostmawGameTests 690 does): one CHIEF_KILLED naming that player, and the
+        body untagged with `isNoGravity()` false.
+      - Put down, it is an ordinary Umvuthi, a stray.
+    - *Fails without:* the pending test for the chief's stack (it appears nearer than 128 at 8); `gone`'s release
+      (put down, it floats).
+    - *Control:* the warriors' distances are logged against 128 to 144 (8) and 160 to 176 (10), as M10's test 33.
+16. **35** `anAloftUmvuthiCrossesARiver` (MZB-812's fluid rule).
+    - *Set-up:* a river 3 deep and 20 wide across the route, and a raft (5 × 5 planks) on open water 40 blocks
+      downstream.
+    - *Asserts:*
+      - Over the river its foot is 2 blocks over the water's top face (`top + 3`, within 0.05), `isInWater()` is
+        false, and its box is clear of fluid every tick. It reaches its target.
+      - With the attack flag set over the river, 15 blocks from a target on the far bank, it floats on and settles on
+        the bank.
+      - With the target a mock player on the raft, it stays aloft within 8 blocks, restricted where it floats, and
+        never enters the water.
+      - Killed over the river, its body falls in, and one Sol Visage drops at the animation's end.
+    - *Fails without:* the fluid rule (it sinks into the river).
+    - *Control:* the same route over grass settles at once on the flag.
+17. **36a** `aDyingChiefDropsItsLootAtAStop` and **36b** `aDyingChiefTakenBackAtTheEdgeDropsItsLoot` (MZB-817,
+    MZB-818). Each is its own batch; 36a's restart is global.
+    - *Set-up:* a settled puppet whose target is a mock player (`addSeen`) 20 blocks off; the player kills it.
+    - *Steps:*
+      - 36a: 40 ticks into the animation, `RtsimSession.restartGlobalForTest` (151: stopping, save, stop, start)
+        inside the sequence.
+      - 36b: 40 ticks in, the player moves away until the chunk stops ticking entities (`waits.chunks`).
+    - *Asserts (each):*
+      - At the stop or the edge, the body finishes: one Sol Visage on the ground within 2 blocks of its x and z.
+      - CHIEF_KILLED is booked once with the player, after the restart too.
+      - Nothing more drops after the restart, or when the player comes back.
+      - `deathLootLost` is 0.
+    - *Fails without:* the Dying list (36a: the stop takes the tagged body with no loot; 36b: the body never ticks, and
+      its unload loses the loot, `deathLootLost` 1).
+    - *Control:* the same kill with the player staying drops once at the animation's end (115 ticks, logged).
+
+**Run 11 with the aloft** (MZB-838). `invasion_marches` (146) keeps its parts, which now carry the chief's stack
+wherever a player meets an Invasion led by its chief. It gains these, with the FakeConflict's new knobs:
+- `aloft_chief_body`: an Invasion led by its chief, met on the road, at its fight and walking home. Each meeting
+  sends CHIEF_BODY and then the chief's stack, and the fake's `pending_chief` matches each. No chief stack goes for a
+  walk-in. `chief_bodies_missing` is 0.
+- `aloft_home`: home with the grove in, from a Gone slot and from a Left one. CHIEF_BODY home is ahead of the chief's
+  HAND_BACK; the slot is Body after DONE or NOTHING; one chief body in the camp's world. With the grove out: recalled,
+  and spawned at the next census.
+- `aloft_paid`: `pay_puppet`, then home. The home CHIEF_BODY carries the payer, and the tribute is booked once.
+- `aloft_killed_after_home`: `chief_float` 200, then `kill_homing_chief`. One CAMP_DEATH; the heir is due after its
+  wait; no CHIEF_KILLED is booked; one chief body at most throughout.
+
+Each part ends on `holds` (`sim/mowzie.rs` 876: the books against the world, I1 to I6). Run 13 (`march_record`) steps
+run 11 with the audit on. Its checks gain one line, which requires the audit's new failures to be 0 and
+`chief_bodies_away` and `chief_stacks` above 0 and equal. M11a plants the bug once (the CHIEF_BODY pushed after the
+MATERIALIZE) to see the audit fail, and removes it.
+
+**Work split** (MZB-839; each sub-slice is committed and tested on its own):
+- **M11a, Rust** (rtsim-conflict and rtsim-cli; rtsim-jni tests only):
+  1. boundary.rs's PAID_PUPPET and `Cmd::agent`; outbox.rs's split arm and its test's away case.
+  2. `chief_own_stack`, `chief_body_away`, and `spawn_wave`'s chief stack, BAND_CHIEF and push. A1 to A3.
+  3. `camp_home`'s chief line and `send_lines`. A4 and A6.
+  4. `chief_paid`'s PAID_PUPPET. A5.
+  5. A7.
+  6. FakeConflict's knobs and the audit's checks.
+  7. Run 11's new parts; runs 11 and 13.
+  8. P1 to P4.
+  9. The docs (boundary.md, replay-gate.md, MOWZIE.md ledger 24).
+
+  **Opus review here**, focused on:
+  - the books across a restart (the chief in no `spawned`);
+  - the gate's split;
+  - the audit failing on the planted bug.
+- **M11b, Java** (core and plugin). It can run beside M11a, since every test of it scripts its records:
+  1. ConflictRecords' PAID_PUPPET, `Traveller`, `registerTraveller`, and `AloftRules` with `AloftRulesTest`.
+  2. The plugin's accessor, `UmvuthiMaker`, `UmvuthiAloft` and registration.
+  3. The bridge: `chiefBodyAway`; no follow goal; the pass in `endOfTick`; `checkPlaced` and the spawn Y; the re-pair;
+     the trail.
+  4. BridgeEvents' knockback and portal listeners.
+  5. The death: `died`, the Dying list, `tickDying`, `onDrops`, the session's ends, `discardAll`.
+  6. Camps: HELD_HANDBACK, `homeChief`, case B, the held take's STALE within 32, `chiefDiedAway` and the puppet marked
+     second, `holdsChief` in the trim and `recallStep`, `chiefPaid`'s fallback, `journalLoss` for MZB-824, and
+     `onDeath`'s killer.
+  7. The summons mixin and `adoptSummons`.
+  8. GroveKind 229 and 290.
+  9. The test kits: ConflictKit's `chiefBody` overload and counters; `FakePlayers.watching` and `pump`.
+
+  **Opus review here**, focused on:
+  - D1: nothing per tick but the pass, and one lookup per hook;
+  - the Dying list across every end;
+  - Rule U's holds and the four exceptions;
+  - no unsaved body left with `NoGravity`.
+- **M11c, GameTests** (after M11b; all scripted, none needs the real engine):
+  1. 23a to 23e, then 35.
+  2. 24, 25p and 26.
+  3. 29a, 29b and the four 29c tests.
+  4. 32t and 22-aloft.
+  5. 31s.
+  6. 33u, 36a and 36b.
+  7. The re-run of the Mowzie module's earlier GameTests (27, 28, 30, 32, 33, 34).
+
+  **Opus review at the end**, of M11 whole, against ledger 24, §4.5, and the aloft clauses of tests 22 to 36.
+- **Then** the lead's client run for test 31's looks (MZB-836). It gates nothing.
+
+**Forks** (each taken conservatively, with its reason in its record):
+- MZB-801: `chief_own_stack` beside `chief_stack`.
+- MZB-802: no lone chief stack.
+- MZB-803: health 0 away.
+- MZB-810: zero the knockback.
+- MZB-813: skip a re-pair with per-player data.
+- MZB-818: keep the jar's drop timing.
+- MZB-819: PAID_PUPPET.
+- MZB-824: the free respawn, counted.
+- MZB-826: `Camps.killer` for every culture.
+- MZB-828: Rule U horizontal.
+- MZB-836: test 31 as a GameTest plus one client run.
+- MZB-843: re-binding stays in the engine's tests.
+
+**Questions for Ben** (recommended answer first; the lead takes it while he is away):
+1. **MZB-802.** A band whose warriors are all dead but whose Umvuthi lives: does the Umvuthi stay abstract until the
+   band has a body to show?
+   - **Recommended:** yes, keep it abstract.
+   - Alternative: send a lone chief stack.
+2. **MZB-818.** A crash inside the chief's 115-tick death animation loses its Sol Visage. It never doubles it.
+   - **Recommended:** accept the loss.
+   - Alternative: a mixin that drops the loot at death, which changes the boss's own death.
+3. **MZB-836.** Test 31's looks.
+   - **Recommended:** one dev-client run under the headless sway recipe, by the lead after M11c, with the screenshots
+     shown to Ben; it gates nothing.
+   - Alternative: no client run, only the GameTest's server facts.
+4. **MZB-824.** A chief puppet killed after its march ended, with its grove out, comes back at the next census.
+   - **Recommended:** accept it, counted (`chiefDeathsAfterEnd`).
+   - Alternative: a saved engine map of ended parties' chiefs.
+
+**Traps.**
+- **The outbox's unit test.** Its TABLE (outbox.rs 197) is keyed by kind. The old-filter loop (229) uses
+  `Cmd::agent()` (boundary.rs 947), which today returns None for every ChiefBody, and the fixture's ChiefBody
+  (boundary.rs 2360) has agent 0. The split arm passes the test unexercised: add an away case.
+- **`chief_paid`'s index.** `camp.index(slot, generation)` fails for generation 0, so PAID_PUPPET finds the chief slot
+  by id.
+- **A split pair.** rtsim-jni's `write_queue` can end a buffer between CHIEF_BODY and its MATERIALIZE. Java's match
+  must not assume one buffer or one tick.
+- **The height's off-by-one.** `ChunkAccess.getHeight` is the top block; `Level.getHeight` is one above it.
+- **Knockback.** The jar zeroes only the horizontal motion. A push that lands before its tick lifts it through its own
+  travel; one after the entities' tick is wiped by the step.
+- **The dying puppet.** `settleDeaths` forgets the slot 115 ticks before the drops. Without the Dying list, the drops
+  carry no record, and any removal of the forgotten tagged body loses the loot.
+- **Sight below Rule U.** `sightRange` is capped by the view distance (128 at 8), and a GameTest server's view
+  distance of 0 is no bound. A test of Rule U sets the view distance.
+- **Pairing data are per player.** `sendPairingData` takes a NeoForge `PacketAndPayloadAcceptor`, not a `Consumer`,
+  and ends with a per-player attachment sync.
+- **The client's join comes before the old body's removal** (`ClientLevel` 351 to 356).
+- **`MarchTrim.withinSight` is package-private.** `AloftRules` sits in core's conflict package; the Mowzie glue calls
+  `AloftRules`.
+- **The Mowzie module already has an `EntityUmvuthiMixin`** (M9's `die`). The accessor is `EntityUmvuthiAccessor`.
+- **`checkPlaced` teleports to the ground.** A displaced traveller needs its lift added, or it is pulled down every
+  check.
+- **Mock players do not track.** `FakePlayers.add` and `hearing` players have no chunk tracking view, and
+  `addSeen` players are not in the player list, so the server never sends them chunks. And `PlayerChunkSender` holds
+  back after one unacknowledged batch. A test that needs tracked packets uses `watching` and `pump`.
+- **A failed session is the server's.** 29c-failed and 36a each run alone in their batch.
+- **The nether.** A control that really travels to the nether generates chunks there. Post the event instead.
+- **Earlier traps that bit this design:**
+  - the cfr extract lacked `EntityHandler` (extract it alone);
+  - neoformruntime's numbering differs from moddev's;
+  - cfr on extracted classes runs about 47 lines off;
+  - keep extracts in your own worktree;
+  - NeoForge's events are in its sources jar, not the NeoForm decompile;
+  - zsh's `echo =====` fails.
+
+### M11a build records (MZB-850 to MZB-869)
+
+M11a's implementer appends its records under this heading only (the Rust side).
+
+- **MZB-850** (step 1, the gate's split; MZB-804 built): `PAID_PUPPET = 2` sits beside `PAID_STRAY` in
+  boundary.rs, and `Cmd::agent` returns the agent of a CHIEF_BODY whose agent is not 0 (a home one still names
+  none). The gate's ChiefBody arm is two guarded arms, away (drop, never) and home (keep, never), with no `_` arm.
+  The outbox's TABLE stays keyed by kind with the home row, since the fixture's CHIEF_BODY is a home one; the new
+  unit test `an_away_chief_body_is_dropped_with_its_materialize` is the away case. On the base it failed first at
+  `away.agent()` (None, want the agent) and then, with only `Cmd::agent` changed, at the gate (Keep, want Drop);
+  it now holds the old filter's rule for both (kept exactly when no agent is named), and a queue of home, away and
+  MATERIALIZE keeps only the home one at `begin_replay`. The old-filter loop of the table test needs no change:
+  `Cmd::agent` is read only there and in this test.
+- **MZB-851** (step 2, the chief's stack and its CHIEF_BODY; MZB-801, MZB-803 built): `chief_own_stack` sits
+  beside `chief_stack` in engine.rs, whose doc now names the Frostmaw's chief as one of its band's bodies.
+  `spawn_wave` appends `{ umvuthi, 0, MEMBER_CHIEF }` when `x.chief && chief_own_stack && !walked_in &&
+  x.spawned.is_empty()`, sets BAND_CHIEF when `x.chief` and either rule holds (for the shipped cultures that is
+  `x.chief`: the two rules are each other's negation), and pushes `chief_body_away(p)` (camp.rs, beside
+  `chief_body_record`) just before the MATERIALIZE that carries the stack, both after the `defer`. Tests in the new
+  `tests/mowzie_aloft.rs`:
+  - A1 `the_chief_body_goes_ahead_of_the_chiefs_stack`: met on the road, at the target, after a refused first wave
+    and on the way home, each first wave with bodies has the pair (agent, epoch, health 0, flags 0, the camp's
+    memory with the payer of a payment at home), the chief stack last, `spawned` and `stats.waves` counting the
+    units only. A walk-in, and a second wave of the epoch, send neither. The fight cases set `spawn_quota` to 2
+    and the scripted player kills each wave, since the quota counts what stands, not what a wave sends: a second
+    wave comes only after deaths, a wave interval after them (`casualties` reschedules it). Its controls (the
+    Frostmaw's first stack is its chief and no CHIEF_BODY goes; a grove raid its Umvuthi does not lead sends
+    neither) are their own test.
+  - A2 `a_band_with_only_its_chief_left_sends_nothing`: the warriors' deaths are set on `units` (a test stand-in
+    for abstract deaths); `seen` already returns for a band with nothing alive (MZB-490), so the early return of
+    MZB-802 is not the one that holds it. The control, one warrior left, sends both.
+  - A3 `an_away_chief_body_is_dropped_with_its_materialize`: the band met on its way home with the commands not
+    taken, then home at a grove that is in, so a home CHIEF_BODY (ahead of the chief's line) is queued after the
+    pair; saved and loaded, the queue holds all three, and `begin_replay` keeps the home one only. A meeting while
+    replaying is deferred and pushes neither (`never` 0).
+
+  On the base: a mutation back to the base rule (`own_chief` false, BAND_CHIEF on `chief_stack` only) fails A1
+  (no pair met on the road), A2's control ((1, 0), want (1, 1)) and A3 (no away CHIEF_BODY queued); the gate's
+  away arm mutated to keep fails A3 at "the away CHIEF_BODY is dropped". The controls pass on both.
+- **MZB-852** (step 3, the chief's HAND_BACK; MZB-821 built): `camp_home` reads `chief_puppet = embodied && x.chief &&
+  chief_own_stack(culture)` before its slot loop. The chief slot joins `hand` from Left as from Gone when
+  `chief_puppet && is_in && s.line.is_none()` (Left still becomes Body), and the line loop gives it ACTION_HAND_BACK
+  without touching `puppets`; a chief with no puppet comes home as a SPAWN from Gone and with no line from Left, as
+  before. `send_lines` sends the home CHIEF_BODY ahead of a chunk with the chief's SPAWN or HAND_BACK. Tests in
+  `tests/mowzie_aloft.rs`:
+  - A4 `the_chief_is_handed_back_at_home`: the band is met 300 ticks short of home and followed there, so it is
+    embodied as it arrives. (1) The grove in, the slot Gone: CHIEF_BODY home (agent 0, the camp's epoch, the
+    payer) then the chunk with the chief's HAND_BACK (LINE_CHIEF, the band's agent and epoch); DONE, the slot
+    Body, one throne body. (2) The slot Left: the grove goes out before the muster's end, comes in while the band
+    is away with a player at the throne (`hold_chief`), so its census's TAKE of the throne body is held; the test
+    answers that TAKE STALE as Java's MZB-823 rule does when the puppet comes near (the fake has no such rule).
+    The same pair goes; NOTHING (case B), the slot Body, the slot count and `chiefs_killed` unchanged, one throne
+    body. (3) The grove out at home: BAND_RECALL with RECALL_DONE and no chief line, the slot Owed, and the next
+    census sends the SPAWN behind a home CHIEF_BODY. The control `an_unmet_chief_comes_home_as_a_spawn`: a band
+    never met gets a SPAWN as before.
+  - A6 `a_camp_death_after_home_books_once`: the hand-back decided and held back (`decide`), then CAMP_DEATH (the
+    chief slot and generation, BY_PLAYER, the payer) and the line's STALE ingested in both orders: one fall
+    (`chiefs_killed` + 1), one player's loss, the heir due, the memory cleared, the generation retired. Its
+    control, a throne death at home with no line, books the same.
+
+  Deviation from A6's text, recorded: the design says the slot is Dead afterwards. `chief_death` frees an Owed or
+  Body slot (`free(i, true)`, the generation retired), and only a chief that died away while its throne body stood
+  is left Dead (`chief_died_away`). The test asserts the generation is gone from the books, which is what keeps a
+  second copy of either record from booking anything.
+
+  On the base: `chief_puppet` mutated to false fails A4 at (1) (action 1, a SPAWN, want 5) and A6 at "a hand-back
+  in flight" (the same); the Left arm's push mutated away fails A4 at (2) (no chief line at home); `send_lines`
+  mutated back to SPAWN only fails A4 at "no CHIEF_BODY ahead of the hand-back" (and A3, whose home record is now
+  the hand-back's). The control passes on all three.
+
+- **MZB-853** (step 3b, the end of a chief's band; MZB-824's outcome amended; a format change, RTC12 `RTCC`, META
+  11, approved by the lead and the coordinator):
+  - The record. `Camp.ended: Option<Ended { agent, epoch, generation }>`, saved with the camp (agent and
+    generation never 0), and the engine's index `chief_ended` (agent to faction), saved in the resident section
+    with strictly increasing keys. `camp_home` sets it (`hold_end`) for a band with `x.chief` and
+    `chief_own_stack` whose puppet may still stand: embodied (its epoch) or with a recall not yet answered (the
+    latest recalled epoch), naming the chief slot's generation at home. A faction keeps one at most: its chief
+    leads no party while one holds it, and an older one still kept is one whose generation was freed.
+  - While it holds (`Camp::ended_holds`: the chief slot still has that generation), `send_lines` drops a chief
+    SPAWN of that generation and `chief_can_lead` is false. `camp_home` still turns Gone into Owed and Left into
+    Body (the audit wants every away slot in a live party), so the end holds the slot, not its state.
+  - The releases, as built:
+    1. `chief_band_gone`, from the BAND_DEMATERIALIZED handler: that agent and exactly that epoch. An owed chief
+       with no line at a camp that is in gets its SPAWN now (behind the home CHIEF_BODY, by `send_lines`); at
+       one that is out, its next census spawns it.
+    2. `camp_bodies`: the chief's HAND_BACK of that generation answered DONE or NOTHING (the puppet consumed).
+       STALE releases nothing.
+    3. `chief_killed_home`, from CHIEF_KILLED's no-party branch before `unbooked_home_death`: an Owed slot is
+       freed (`free(i, true)`), a Body slot made Dead; then `chief_killed_at_camp` (the killer for BY_PLAYER
+       only) and `chief_lost(renewal_cause(by))`. At a camp that is in, a Dead slot with no line gets its REMOVE
+       now; otherwise the next census's Dead branch removes the throne body it finds. A copy of the record is
+       not booked again (`first_time`), and finds no end anyway.
+    4. `Camp::free` of the chief slot takes the end of that generation (a CAMP_DEATH through `chief_death`, a
+       MASK, anything). Its index entry is left and dropped when next looked up (`ended_of`) or at the replay end.
+    5. `chief_ends_lost`, at `replay_done` after the held chief states: each end still standing is a chief lost
+       to no one, the slot changed as in 3, `chief_lost(LossCause::Other)` (no pressure step, no fall, as
+       `chief_died_away`), every index entry dropped. A CHIEF_KILLED copy after it finds no end and books
+       nothing.
+  - The audit (`camp_audit`, MZB-853): an end has its index entry, its generation is the chief slot's, the slot is
+    home, no chief SPAWN of it is in flight, and no party of the faction is led by its chief.
+  - Forks, each the conservative option:
+    - The index is saved. The records that release an end (BAND_DEMATERIALIZED, CHIEF_KILLED) name no faction,
+      `Party::agent` encodes none and the party is gone; a scan of every camp at each record would page the
+      faction table in (the paging budget), and a map rebuilt at load would need the same scan (the host, and
+      `round_trip`, load with no replay). The audit checks the end-to-index direction only.
+    - Release 1 takes the exact epoch: an older epoch's despawn says nothing of the latest one's puppet.
+    - Release 5 is a loss with no pressure step: whether the puppet was killed is unknown, and a player's kill
+      that the journal kept is booked by 3 during the replay.
+    - No new stats fields; the steps write notes ("chief").
+  - The replay-push rules. No new command kind: the SPAWN and REMOVE go through `send_lines` (the gate's
+    Reconcile and ChiefBody arms, as before) and only at a camp that is in, and every camp is out from
+    `begin_replay` to its next census, so nothing is pushed while replaying (the crash and ending-epoch tests
+    take the commands while replaying and find none). No new record kind: BAND_DEMATERIALIZED and CHIEF_KILLED
+    already raise their party's floor (`fold_epoch` through `party_epoch`, RP-57), and the end's band is gone,
+    so its next band is a new party with a new agent and no epoch an end named is used again.
+  - Tests in `tests/mowzie_aloft.rs`, each shown failing by a mutation first:
+    - Release 1 `the_end_holds_the_chief_until_its_band_is_gone`: the grove out at home, the despawn held back;
+      the grove comes in, no chief line for 50 ticks, the slot Owed; the despawn releases the end and the SPAWN
+      goes at once behind the camp's memory, answered DONE, one throne body; a straggler CHIEF_KILLED then books
+      nothing and the chief leads again; with the end standing, an Invasion goes without its chief. Mutations:
+      the `send_lines` hold off fails "no chief line while the end holds it" (the SPAWN goes with the puppet
+      standing); `chief_can_lead`'s check off fails the hold half (the chief leads).
+    - Release 2 `a_hand_back_answered_releases_the_end`: DONE and NOTHING release before the despawn, which then
+      changes nothing; the control STALE releases nothing, nothing is spawned, and the despawn then releases
+      and spawns. Mutation: the release off leaves the end after DONE.
+    - Release 3 `a_puppet_killed_after_its_end_is_the_chiefs_death`: Owed (one fall, one loss, the heir, the
+      memory cleared, the slot freed; the copy and the despawn book nothing; no SPAWN at the next census) and
+      Body with the grove in (Dead, the REMOVE now, DONE frees the slot). Mutation: release 3 off gives (0, 0,
+      false, 1), want (1, 1, true, 0).
+    - Release 3 with the HAND_BACK in flight (M11b's ordering) `a_puppet_killed_while_its_hand_back_is_in_flight_dies_once`:
+      Owed then the answer DONE, and NOTHING; Body (A4 case 2's Left path) then NOTHING, which leaves the slot
+      Dead with no line, and the next census removes the throne body. Each books once and strands nothing. The
+      same mutation fails it.
+    - Release 4 `a_camp_death_prunes_the_end`: Body, CAMP_DEATH of the chief slot; the end goes with the
+      generation, the despawn then empties the index and spawns nothing, a later CHIEF_KILLED books no second
+      fall. Mutation: the prune in `free` off leaves the end.
+    - Release 5 `an_end_standing_at_the_replay_end_is_a_loss`: Owed and Body, the despawn never journaled; the
+      heir due and the memory cleared with no fall and no loss; the copy books nothing; no body of the old
+      generation after the next census. The control, a clean stop (the despawn in first), keeps the chief.
+      Mutation: `chief_ends_lost` off leaves the end after the replay.
+    - Crash `a_crash_at_any_record_after_home_books_the_chief_once`: four journals (the puppet killed with the
+      slot Owed, and with it Body; the band despawned; the HAND_BACK applied, then the despawn), each cut before
+      every record, through a save and load and a replay, then the holder's copy. One fall and one player's loss
+      exactly when the cut kept the CHIEF_KILLED; the chief kept (Body, one throne body) exactly when a release
+      came first and no death, else lost (an heir due, no body of its generation); nothing pushed while
+      replaying (`never` unchanged); no end or index left; the audit and the world checks clean. Release 3 off
+      fails "killed, owed, cut 1" ((0, 0), want (1, 1)); release 5 off fails at the end left.
+    - The ending epoch `only_the_ending_epochs_despawn_releases_the_end`: replayed, the ending epoch's despawn
+      releases while replaying and pushes nothing, and the census after spawns the chief, which leads a new
+      agent's band; a later epoch's, or another agent's, releases nothing, and the end is lost at the replay
+      end. Mutation: the epoch check off fails "a later epoch: released while replaying".
+    - A4's control now also asserts that an unmet band holds nothing.
+  - M11b's notes. A CAMP_DEATH of the chief slot with its HAND_BACK in flight is accepted (A6, in both orders
+    with the STALE): nothing changes. A CHIEF_KILLED of an ended party is release 3 and books the death, not
+    nothing (MZB-824's outcome above).
+  - The fixtures. The workspace run at this step: 2,001 passed, 5 failed, 25 ignored. The 5 are the expected
+    ones: rtsim-view's `the_core_gametest_save_draws_every_layer_and_writes_nothing`,
+    `the_create_gametest_save_draws_every_layer_and_writes_nothing` (fixtures),
+    `every_gametest_save_carries_and_matches_each_modules_hash`, `a_hash_that_differs_is_flagged` (hashes), and
+    rtsim-host's `gametest_worlds_open_in_the_host_with_their_saved_state`. Their saves carry the conflict's META 7
+    ("this build reads 11"), so RTC12 makes no other test fail; the lead regenerates them from fresh worlds.
+- **MZB-854** (step 4, a payment to the puppet; MZB-819 built): `chief_paid` with PAID_PUPPET (and not PAID_STRAY)
+  for the chief slot finds the faction's chief slot by its id (`Camp::chief`, since `index` fails for generation 0)
+  and remembers the payer unless that slot is Dead; with neither flag it reads `index(slot, generation)` and a Body
+  slot, as before. The tribute is booked either way through `pay_tribute`, and a copy (the same op) books nothing
+  by the ingest's op dedupe. Test A5 `a_payment_to_the_puppet_is_remembered` (`tests/mowzie_aloft.rs`): the
+  payment on the road books tribute once and the payer is remembered; the band met again sends an away CHIEF_BODY
+  with the payer, and home with the grove in the CHIEF_BODY ahead of the HAND_BACK carries it. The controls: the
+  chief killed away (`chief_died_away`) with its slot Left (Dead) and Gone (freed), then a puppet's payment is
+  tribute and the heir's memory stays empty; flags 0 and generation 0 is a stray's tribute with no memory. On the
+  base rule (the PAID_PUPPET branch mutated to false) A5 fails at the memory: `[(24301, 2827)]`, want the payer
+  `(42405, 23130)` beside the player. The controls pass on both.
+- **MZB-855** (found by A5's control; a fix outside the design): `chief_died_away` took the chief slot's index
+  before `camp_sync`, which inserts the slots for a pool's unfollowed gain in id order, below the chief's
+  (`CHIEF_SLOT` is `u32::MAX`). With such a gain the chief moved up one place and the stale index named the new
+  warrior's Owed slot: that slot was freed (its generation retired) in the chief's place, and the chief's slot
+  stayed Left (or Gone) with its party routed. CHIEF_KILLED reaches it through `chief_killed_by` whenever the
+  grove's chief leads a band, so this is a live path since M9, not a test-only one. The fix checks the chief slot
+  is away, syncs, then takes the index. The other index-after-sync sites (`camp_death`, the MZB-853 releases) were
+  already in that order. Test `a_chief_killed_away_after_the_pool_grew_dies_in_its_own_slot`: the band leaves with
+  the grove out (a whole warrior in the pool with no slot yet), two days on CHIEF_KILLED through `chief_killed_by`:
+  the ledger gains the slot, every warrior slot is unchanged, and the chief's is Dead in its generation; the
+  control (the slot Gone, the ledger up to date) frees the chief's slot. With the index taken before the sync the
+  test fails at "the ledger followed a gain" (the new slot freed at once) and A5's control at `Some(Left)`, want
+  `Some(Dead)`.
+- **MZB-856** (step 5, A7; the replay-push rules' rule 5 for the aloft chief): `an_aloft_chiefs_ended_epoch_is_never_reused`
+  in `tests/mowzie_records.rs`, beside `every_record_naming_an_epoch_raises_its_floor` and reusing `Reached`. A
+  grove Invasion its Umvuthi leads, out on the road and never met (`aloft_band`), is saved (the engine's pages and
+  the world's), then met: MATERIALIZE and its away CHIEF_BODY at e, one above the epoch the pages hold. On an engine
+  and a world loaded from those pages, replayed on Pages, Fresh and Copy: (1) CHIEF_KILLED at e then
+  BAND_DEMATERIALIZED at e; (2) BAND_DEMATERIALIZED at e; the control nothing. After `replay_done` the band is met
+  again: its MATERIALIZE is at e + 1 in (1) and (2), and at e in the control, so the floor is what keeps e from
+  being used again; the CHIEF_BODY goes with it at the same epoch in (2) and the control.
+  - Deviation from the design's assert, recorded: in (1) no CHIEF_BODY goes after the replay. The replayed
+    CHIEF_KILLED killed the chief away (`chief_killed_by`), so the band is no longer led and sends no chief stack;
+    the test asserts the chief is gone in (1) and present otherwise.
+  - The world is loaded from its own save beside the engine's pages: on the world the first meeting moved, the
+    same observation at the same tick is not a new one, and nothing meets (every case, the control too, gave no
+    MATERIALIZE). A trap for any test that meets a band twice across a load.
+  - On the base: the CHIEF_BODY never goes (the first meeting's assert, `None`, want `Some(1)`, shown by the
+    `chief_body_away` push mutated away). The floor itself is RP-57's: with `fold_epoch` mutated to fold nothing,
+    (1) and (2) on all three reach MATERIALIZE at 1, want 2 (and in (2) the CHIEF_BODY at 1 too); the control
+    passes on both.
+- **MZB-857** (step 6, the fake's chief knobs and the march audit's chief checks; MZB-838 built):
+  - The fake (`synth::FakeConflict`), as Java is to behave in M11b:
+    - An away CHIEF_BODY waits in `pending_chief` (by agent) and is spent on that agent's next MATERIALIZE. A
+      MATERIALIZE with BAND_CHIEF and a count-0 MEMBER_CHIEF stack after the first stack is a chief's own stack;
+      it counts `chief_bodies_matched` when the pending one names its epoch, else `chief_bodies_missing`.
+      `restart_to_replay` clears `pending_chief`, since Java's is per session.
+    - `chief_float` (0 by default, so every earlier run is unchanged): a chief HAND_BACK (LINE_CHIEF) of a band
+      whose body still holds its chief puppet is held as `Hold::Homing` for that many ticks, as Java's homing
+      holds it (MZB-821). The band's members go at once and its body is kept with the chief alone; its
+      BAND_DEMATERIALIZED goes at `max(leave_ticks, chief_float + 1)`, after the puppet (MZB-853).
+      `deadline()` gives each hold kind its limit (Throne at HOLD_MAX, Homing at `chief_float`, the others none)
+      for `next_due` and `release_held`.
+    - Any answer to a chief HAND_BACK takes the puppet out of the world (DONE on the throne, NOTHING beside the
+      standing body, STALE gone).
+    - `kill_homing_chief`: the homing puppet killed, as a CAMP_DEATH of the line's slot and generation by the
+      player, with its marker, then the line answered STALE. `pay_puppet(faction, player, items, at)`:
+      CHIEF_PAID with PAID_PUPPET, the chief slot and generation 0. `puppet_near_throne`: the census's TAKE of
+      the chief, held as a Removal on a player at the throne, answered STALE once the puppet comes near (models
+      Java's MZB-823). `band_chiefs`: the chief puppets the bands hold, for "one Umvuthi at most".
+  - The audit (`synth/march.rs`, run 13's stepped runs): an away CHIEF_BODY is followed at once, in the same take,
+    by the MATERIALIZE of its agent and epoch with BAND_CHIEF and exactly one MEMBER_CHIEF stack of count 0. A
+    MATERIALIZE carrying a chief stack has its CHIEF_BODY just before it, one per (agent, epoch), and its party
+    is led by its chief. No CHIEF_BODY or MATERIALIZE is taken while replaying. At each step's end, a band its
+    chief leads in bodies had its stack in that epoch. Totals `chief_bodies_away`, `chief_stacks` and
+    `chief_failed` (counted among `failed` too).
+  - Forks, each the conservative option:
+    - The stack checks apply only where `chief_own_stack` holds (the grove's culture). A Frostmaw-style chief
+      rides in a unit stack and sends no away CHIEF_BODY.
+    - The end-of-step check covers only the epochs a MATERIALIZE went for (`materialized`). Run 11's
+      `abstract_dead` puts a band in bodies by hand, as a watched fight leaves it, with no MATERIALIZE. Without
+      the hold it gave 12 false failures ("no chief stack went"), and Java was never told of those bodies.
+    - The `stacks` and `materialized` sets are cleared only when the audit syncs to a new engine. An epoch is
+      the party's for good (RP-57), so a second stack in an epoch after a reload is a failure too.
+    - A refused spawn (SPAWN_REJECTED) sends the chief's pair again at the same epoch (A1 case 3), and the audit
+      would call that "two chief stacks". The fake never refuses a spawn, so no run reaches it. A fake that
+      refuses would need the set keyed by wave.
+    - "Led by its chief" reads the party's flag as the step began or as it is now. A chief killed later in the
+      same step is not the stack's fault.
+  - The planted bug (`spawn_wave` pushes the CHIEF_BODY after the MATERIALIZE) fails the audit in run 13:
+    - "the chief's own stack" fails with 52 failures;
+    - run 13's position line fails too, since the audit's failures are shared ("the chief's stack at epoch 1 with
+      no away CHIEF_BODY just before it");
+    - run 11's `aloft_chief_body` fails in each case with "0 pairs, 1 chief stacks, 0 matched, 1 missing".
+
+    Reverted, run 13 passes: run 10 17 away CHIEF_BODYs and 17 stacks, run 11 9 and 9, runs 1 and 5 none, 0
+    failures.
+- **MZB-858** (step 7, run 11's aloft parts and runs 11 and 13): `invasion_marches` gains four parts after
+  `abstract_dead`, on `quiet_grove(8)` (and `fast_grove(8)` for the last):
+  - `aloft_chief_body` (MZB-801, MZB-803, MZB-838): an Invasion its Umvuthi leads is met on the road, at its
+    fight and on its way home. Each meeting sends one pair and one chief stack, and the fake matches it with none
+    missing. Met on the road, the band walks into its fight in the bodies it has and sends neither.
+  - `aloft_home` (MZB-821, MZB-823): home in bodies, the chief's HAND_BACK of its agent, epoch and generation
+    (LINE_CHIEF) goes with the camp's memory just ahead of it:
+    - from Gone it is answered DONE;
+    - from Left (the grove out at the muster's end, then the census's TAKE held on a player at the throne and
+      answered STALE as the puppet comes near) it is answered NOTHING;
+    - either way the slot is Body in its generation, with one Umvuthi;
+    - to a grove that is out, the band is recalled RECALL_DONE with no line, the slot is Owed, and the next
+      census spawns the chief behind a home CHIEF_BODY.
+  - `aloft_paid` (MZB-819): 9 gold nuggets paid to the puppet on the road are 9000 of tribute, booked once (the
+    same after the settle), and the payer is remembered. The home CHIEF_BODY ahead of the HAND_BACK carries it.
+  - `aloft_killed_after_home` (MZB-824, MZB-853): `chief_float` 200 and the puppet killed as it floats home:
+    - one CAMP_DEATH and no CHIEF_KILLED, with the line stale;
+    - (falls, losses) (1, 1) and the slot freed;
+    - the heir due at 12 days (6 x 2^1) and seated;
+    - never more than one Umvuthi body.
+  - Run 11's row is built now (its slices list is empty), and its RUNS entry names the M11a parts. Run 13 gains
+    "the chief's own stack (MZB-838)": no chief failure, and away CHIEF_BODYs equal the chief stacks and are more
+    than 0.
+  - Each part was failed first by a mutation of the rule it names (`/tmp/mzbuild/m11a-mut/s7.sh`, run 11 only,
+    each reverted):
+    - M1, no chief stack in `spawn_wave`: `aloft_chief_body` gives "0 pairs, 0 chief stacks, 0 matched" in each
+      case. `aloft_killed_after_home` gives "held while it floats false; killed false", since the fake's band
+      holds no puppet.
+    - M2, `camp_home`'s `chief_puppet` false: `aloft_home` gives no HAND_BACK (Gone answered [], body false);
+      `aloft_paid` gives "carries the payer false"; `aloft_killed_after_home` gives "HAND_BACK sent false".
+    - M3, the PAID_PUPPET branch reading `index(slot, generation)`: `aloft_paid` gives "remembered false". The
+      tribute is still booked once.
+  - The whole `sim mowzie` (seed 7) passes: 151 checks, 0 failures, written to `scenario/results/sim-mowzie.json`.
+    - Runs 7, 9, 10 and 12 are unchanged.
+    - Runs 1 to 6 and 8 differ only in the state hashes their save checks print, as RTC12 (MZB-853) changes
+      every save. Their pass marks and other details are unchanged.
+    - Run 11 gains its four parts. Run 13's counts grow with run 11 (2,968 records to 2,988).
+- **MZB-859** (step 8, the protocol tests P1 to P4; MZB-801, MZB-804, MZB-819, MZB-821, MZB-824, MZB-853 through the
+  link): in `tests/protocol.rs`'s `conflict` module, under "M11a: the grove's chief aloft, through the link". A grove
+  of 12 strays, the first an Umvuthi the first census adopts as its chief (`seated_grove`), sends an Invasion its
+  chief leads toward a target 600 blocks off, ordered with the player away (`led_invasion`). The road is 30,000
+  ticks at the culture's 0.02 blocks a tick, so following it home takes a limit of what is left of the road, not a
+  day. Each test was failed first by a mutation of the rule it names (`/tmp/mzbuild/m11a-mut/s8.sh`, each reverted):
+  - **P1** `an_away_chief_body_leads_its_materialize_on_the_wire`: met on its road, the away CHIEF_BODY (the camp's
+    key, the band's agent, health 0, no flags, no memory) is Java's command directly before the MATERIALIZE of the
+    same agent and epoch (BAND_CHIEF, the chief's own stack last), in one command buffer. Met again after a recall
+    with 8,190 fillers (a TRAIN_ROBBED of a faction nobody has, 32 bytes each) ordered ahead, the 48-byte
+    CHIEF_BODY ends a 262,144-byte buffer: that buffer holds the fillers and the CHIEF_BODY only, is marked
+    CMD_FLAG_MORE, and the MATERIALIZE leads the next buffer at a new epoch. The fake matches both stacks (2 matched,
+    0 missing) and holds one puppet. The control: the band comes home unseen, and the chief's SPAWN (its
+    generation) goes directly behind a home CHIEF_BODY (agent 0, the reconcile's epoch, no memory) in one buffer.
+    The planted bug (the CHIEF_BODY pushed after its MATERIALIZE) fails the first meeting with "the CHIEF_BODY is
+    not directly before a MATERIALIZE"; M1 (no chief stack) with "the band's CHIEF_BODY never reached Java".
+  - **P2** `a_payment_to_the_puppet_survives_a_restart`: the pages are saved with the band on its road and unmet,
+    then it is met, and the puppet is paid 9 gold nuggets by PAID_PUPPET (the record written twice under one op)
+    and a stray 5 by a second player (PAID_STRAY, the control). Tribute is 14, each once, and the camp remembers
+    the puppet's payer only. After the band leaves, the server dies: the replay books 14, each payment once, the
+    payer is remembered, the band is still Out, and met again its CHIEF_BODY carries the payer. M3 (the payment
+    reading `index(slot, generation)`) fails with "the puppet's payer, not the stray's": `[]`.
+  - **P3** `the_payer_reaches_the_throne_body_at_home` and its control
+    `with_no_payment_the_throne_body_carries_the_camps_memory`: met, paid (or not), left, and followed home with the
+    grove in. The chief's line is a HAND_BACK of the band's agent and the chief's generation with LINE_CHIEF, and
+    the home CHIEF_BODY directly ahead of it in one buffer carries the payer (the control: empty). Answered, the
+    chief's slot is Body at the next census. M3 fails P3 at the memory (`[]`) and passes the control; M2
+    (`camp_home`'s `chief_puppet` false) fails both with no chief line at the homecoming.
+  - **P4** `a_camp_death_after_the_end_books_once_across_a_replay` (death first) and
+    `a_stale_hand_back_then_a_camp_death_across_a_replay_books_one_end` (STALE first): `chief_float` 10 days, the
+    band followed home, its HAND_BACK in flight and `Camp.ended` holding (agent, epoch, generation); the pages are
+    saved. Then the CAMP_DEATH (BY_PLAYER, DEATH_CHIEF, the chief's slot and generation) and the line's STALE in
+    that order, a crash and restart between them and another after both, never saved again. The books (falls,
+    player losses, an heir due, the slot holds the generation), from (0, 0, false, true):
+    - death first: (1, 1, true, false) after the death, after each restart and after the STALE;
+    - STALE first: unchanged after the STALE (STALE releases nothing); (0, 0, true, false) after the first
+      restart, as release 5 (`chief_ends_lost`) loses the chief to no one at the replay's end; the same after the
+      live CAMP_DEATH, which finds no index and books nothing; (1, 1, true, false) after the second restart;
+    - no end is left after the last restart, and the heir is due from the first booking on.
+
+    The control (death first): a CHIEF_KILLED of the ended band after the death books nothing and counts one
+    `unbooked_home_death` (MZB-466). M2 fails both at "the chief's line at home". With release 5 off (the call in
+    `replay_done` removed, M4) the STALE-first test fails at the first restart, (0, 0, false, true), want
+    (0, 0, true, false); death first passes, as the death releases the end itself.
+  - Forks, each the conservative option:
+    - P2's payment is after the last save, as the design's "a crash before any save" means for the payment: the
+      pages hold the band on its road, unmet. Saving before the meeting is what lets the band be met again after
+      the replay.
+    - P4's control is moved after the death. The design's, a CHIEF_KILLED for the ended party with no death before
+      it, is now the chief's death by MZB-853 release 3 (`chief_killed_home`), so it would book, not be counted.
+    - The STALE-first case books differently at the last stage than it did live, and the test asserts both as
+      they are. Live, the first replay's end loses the chief (no fall, no loss) and the CAMP_DEATH books nothing.
+      The replay after the second crash runs both sessions' records over the same pages with no replay end between
+      them, so the CAMP_DEATH finds the end still holding and books the death (1, 1). One end and one heir either
+      way, never two. Making the replay lose the chief at the replayed session boundary would need a conflict hook
+      at the journal's generation switches, a change to the replay's driver outside this slice; recorded as a
+      residual for the lead.
+  - Mutation M4's `pt.sh` revert cannot find an empty string, so its revert was by hand (the line put back, the
+    tree checked clean); its line is in the record, not in `s8.sh`.
+  - Checks: rtsim-jni's protocol tests 177 passed; clippy on rtsim-jni `--all-targets -D warnings` clean.
+- **MZB-860** (step 9, the docs; the design's "Docs" list):
+  - docs/boundary.md: CHIEF_PAID's row gives the flags as "1 a stray, 2 a puppet (the chief slot, generation 0)",
+    and its §9.3 sentence adds the payment to a band's chief puppet (tribute either way, the payer remembered
+    unless the chief's slot is Dead, MZB-819). CHIEF_BODY's row gives the agent as "0 at home; the party's away,
+    just ahead of its BAND_MATERIALIZE with the chief's stack".
+  - docs/replay-gate.md §4.4: the ChiefBody row is two, as `outbox.rs`'s gate has them: home (agent 0; keep,
+    never), ahead of a chief's spawn line or hand-back and from a census that found the chief short; away (agent
+    not 0; drop, never), dropped from the queue with its MATERIALIZE and pushed only by `spawn_wave` after its
+    `defer`. The M6-merge note's CHIEF_BODY entry adds M11's two pushes (ahead of the HAND_BACK, and the away one
+    before the MATERIALIZE) and that the pair splits across command buffers only at a buffer's end (P1).
+  - MOWZIE.md ledger 24: the re-pair's accessor mixin is for `EntityUmvuthi`'s private `direction` (the design's
+    contradiction 1, MZB-813); the step's zeroing lifts no shell or fan, and an explosion's push (a wind charge's
+    too) is zeroed in its `ExplosionKnockbackEvent` (contradiction 3, MZB-810). The item is rewrapped to the
+    file's 104 columns; no other word changed.
+
+### M11b build records (MZB-870 to MZB-889)
+
+M11b's implementer appends its records under this heading only (the Java side). MZB-890 to MZB-899 are left for M11c
+and the reviews' fixes.
+
+- **MZB-870** (step 1: `AloftRules`, the pure rules; MZB-841's constants):
+  - Core's `conflict/AloftRules.java`, in `MarchTrim`'s package so that distances go through the package-private
+    `withinSight`. Every constant is named once there and is a PLACEHOLDER (MZB-841): `CLEARANCE` 2, `AHEAD` 8, `RISE`
+    0.1, `SINK` 0.05, `PACE` 0.1, `LOW` 1, `LOOK` 10, `STUCK_PERIOD` 100, `HEADWAY` 0.5, `STUCK_FAR` 8, `RAISE` 8,
+    `RAISE_MAX` 24, `HOLD_MAX` 1200, `SIGHT` 160, `SETTLE` 32, `HOVER_NEAR` 8, `RISE_AFTER` 200, `TURN` 55,
+    `REPAIR_COOLDOWN` 200, `REPAIR_HOLD` 2.
+  - The three machines are small objects the plugin keeps in a body's memo, each allocation-free per tick: `Stuck`
+    (one compare a tick until a 100-tick period ends), `Repair` (the gate) and the DDA `clear` with a `Cells`
+    callback. The callback answers OPEN, BLOCKS or ABSENT (a chunk not at hand), so the rule never reads a level
+    and the glue decides what blocks motion (a glass pane does, grass does not).
+  - Choices where the design left a hair open, each the conservative reading:
+    - `quarter` takes a yaw halfway between two quarters to the later one (`Math.round` rounds half up), so 45 is
+      direction 2. The jar turns the body to that quarter the same tick, so the choice is a facing only.
+    - `Stuck` measures each period from where the last one ended, not from the start of the stuck spell, so a body
+      that creeps 0.4 a period is stuck for as long as it creeps; a headway of exactly 0.5 is headway.
+    - Within `STUCK_FAR` (8) of its place it is never stuck, and a period ending there resets the raises.
+    - A held body looks for a player's line every `LOOK` ticks; `moveDue` takes `seen` as "some player within 160
+      has a clear line" and moves at once when none has, or after 1,200 held ticks whatever the players see.
+    - `Repair.gate` restarts its hold whenever any condition fails during it (the way straightens, an ability
+      starts, it begins to die), so the 2 ticks are always consecutive and the body is still when the packet is built.
+    - `clear` leaves out the eye's cell and the body's cell, which are the ends; a line within one cell is clear.
+      Crossing a cell edge it prefers the x axis, then y, then z, and stops when every axis has crossed its cells,
+      so rounding at a corner cannot step past the target's cell.
+  - Tests: `AloftRulesTest`, 52 tests (51 at step 1's commit; MZB-872 added the quarter's range test). First run
+    against a stub that answered each rule's neutral value, 42 of the 51 failed, each for its own rule's assertion; the
+    9 that passed were the neutral cases (a body not stuck, a gate saying no, nothing to rise). Then green against the
+    rules.
+- **MZB-871** (step 1: `Traveller`, `Travellers`, `registerTraveller`, PAID_PUPPET):
+  - `conflict/Traveller.java` copies `Lurker`'s shape, a `Memo` with `get(Class)` and `set`, kept by the bridge on
+    the body's slot and emptied with it. Its calls: `made(level, body, memory, memo)` (the chief's CHIEF_BODY is the
+    memory, MZB-805), `step(level, body, way, memo)`, `home(level, body, spot, direction, memo)` (true once settled; MZB-872: direction is the jar's 1 to 4),
+    `release(body, memo)` and `died(body, memo)`. `Way` is one reused object the bridge fills: the place's x and z,
+    the walk's target x and z, the attack flag, recalled, and the game time. Fork, taken conservatively: the design
+    lists `step(level, body, way, memo)` without the target player or `homing`; the target is the mob's own
+    (`getTarget`) and the homing is a different call (`home`), so neither is a `Way` field.
+  - `conflict/Travellers.java` is `Lurkers`' registry by type id string; `of(EntityType)` is looked up once per slot
+    when the slot is made (D1), and returns null when nothing is registered, so a pack without a traveller pays one
+    empty-map check per slot made.
+  - `RtsimApi.registerTraveller(String, Traveller)` beside `registerLurker`.
+  - `ConflictRecords.ChiefPaid.PAID_PUPPET = 2` beside `PAID_STRAY`, documented with its slot (`CHIEF_SLOT`, -1) and
+    generation 0. The Rust constant is M11a's (boundary.rs 149).
+
+- **MZB-872** (step 2: the jar's direction is 1 to 4; a design formula corrected, test first):
+  - The design's MZB-806 gave `quarter(yaw) = floorMod(round(yaw / 90) + 1, 4)`, which is 0 to 3. The jar's
+    `direction` is 1 to 4 (`setYRot((direction - 1) * 90)`, `EntityUmvuthi.java:452`) and 0 is its "unset": the
+    constructor rolls `nextInt(4) + 1` when the synced value is 0, and `checkBlocksByFeet` (647 to 662) matches no
+    branch for 0. A body made with a quarter of 0 would have faced north (yaw 0 is direction 1) but been unset in
+    the jar's own eyes, and a yaw of 270 (direction 4) would have come out 0.
+  - So `AloftRules.quarter` is `floorMod(round(yaw / 90), 4) + 1`, 1 to 4, and 0 is never returned. Written the
+    other way round: `AloftRulesTest` gained `quarterInvertsTheJarsDirectionToYaw`, `quarterIsNeverZero` and
+    `quarterRoundsToTheNearestQuarterAndWraps`; three failed against the design's formula (the range), then green.
+  - `Traveller.home` takes the throne's direction as the jar numbers it (`Camps.Site.throneDirection()` is already 1
+    to 4), so nothing converts at the hand-back.
+- **MZB-873** (step 2: where the re-pair lives; MZB-813):
+  - The brief lists the re-pair under step 3 (the bridge), but the plugin's `UmvuthiAloft` calls it and could not be
+    compiled without it, so it is in step 2's commit and step 3 has the rest.
+  - Core's `conflict/Repairs.java` (package-private): `send(level, body)` builds the throwaway `ServerEntity` (update
+    interval 1, `trackDelta` true), collects `sendPairingData` into a list through a `PacketAndPayloadAcceptor`, and
+    broadcasts one `ClientboundBundlePacket` with `ServerChunkCache.broadcast`, which reaches the players tracking the
+    body and nobody else. `ConflictBridge.rePair(Mob)` counts it (`repairs`, `repairsSkipped`, both reset at
+    `sessionStarted`), and `RtsimApi.rePair(Mob)` is what a plugin calls (D4).
+  - The skip rule is exact. The bundle must hold only the vanilla pairing set (add, entity data, attributes,
+    equipment, effects, passengers, link, motion) and NeoForge's `AdvancedAddEntityPayload`.
+    `sendPairingData` ends in `AttachmentSync.syncInitialEntityAttachments(entity, player, ...)`, which is per
+    player, and a payload of a mod is too; so one bundle for every tracker is right only when none is in it. A
+    skipped re-pair is counted and sends nothing: the body keeps its old facing on every client, never a wrong one.
+  - Correction of the design (found reading the jar, compile-checked): the design skipped any body that is an
+    `IEntityWithComplexSpawn`. `MowzieEntity` implements it (its `writeSpawnData` writes nothing, `readSpawnData`
+    only sets the previous yaws to the head's, which is what a re-paired body wants), so every Mowzie mob would be
+    skipped and the re-pair would never run for the Umvuthi. NeoForge's complex spawn is one payload,
+    `AdvancedAddEntityPayload` (`IEntityExtension.sendPairingData`), the same bytes for every player; the check is now
+    on the packet's payload class, so it is let through and an attachment payload still stops the bundle. 31s's
+    "`repairsSkipped` is 0" is then reachable; if a Mowzie attachment ever appears it is the one that stops it.
+  - The `NOBODY` case (no player in the level) is neither counted nor sent.
+- **MZB-874** (step 2: `UmvuthiMaker`; MZB-806):
+  - `ConflictBodies.registerMaker(UMVUTHI, new UmvuthiMaker())`. It makes the jar's Umvuthi, `moveTo` the quarter's
+    yaw, sets the synced direction, calls `finalizeSpawn(EVENT)` as `ConflictBodies.create` does (the follow-range
+    bonus and the restriction; an EVENT spawn never turns it toward a player's egg), then sets the quarter again in the
+    synced value, the private field (through `EntityUmvuthiAccessor`) and the three yaws, and `noGravity`. The jar
+    copies the synced value into the field only at `tickCount` 1 and turns it into yaw every tick, so the private
+    field is the one that must be right after the first tick, which is why the accessor sets it.
+  - `UmvuthiMaker.face(u, quarter)` is the one place the facing is set; the Traveller's re-pair and `home` use it.
+  - No Peaceful guard: the Umvuthi's `shouldDespawnInPeaceful` is not set for it (only its target selector refuses a
+    player on Peaceful), unlike the raptor's pack. The bridge's hostile-stand-in rule for Peaceful is unchanged.
+  - `EntityUmvuthiAccessor` is `@Mixin(EntityUmvuthi.class)` with `@Accessor(value = "direction", remap = false)`,
+    a getter and a setter, in the mixins json beside `EntityUmvuthiMixin`. The design's "accessor on `ServerEntity`"
+    named a field that class does not have (MZB-813's own note).
+  - `GroveKind.remember(u, memory)` is `chiefBody`'s body made static, so `made` applies the engine's memory with
+    exactly the throne body's rule (union of the traded players, health above 0 capped at the maximum).
+- **MZB-875** (step 2: `UmvuthiAloft`, the Traveller; MZB-807 to MZB-814; forks and readings):
+  - One singleton registered for `mowziesmobs:umvuthi`; one `Aloft` per puppet in the core's memo (its `Stuck`, its
+    `Repair`, a column buffer, its heights, its settle). The module has no JUnit, so the file is glue over
+    `AloftRules` and is covered by M11c's GameTests 23a to 23e and 31s (MZB-836); step 2 is compile-checked.
+  - `step`: a settled body is not stepped until `rises`; otherwise `settles` (attack flag unless recalled, or a
+    player target in `getSensing().hasLineOfSight`) picks the landing: SINK sinks 0.05 a tick with collision and no
+    step across, and settles at `onGround()` or `verticalCollisionBelow` (`setNoGravity(false)`, `restrictTo(block,
+    -1)`); HOVER stands over its fluid and counts as settled (it rises by the same 200-tick rule); AIR marches.
+  - `march`: the look every `LOOK` ticks, the stuck machine, the turn gate, then one `move(SELF)` of at most 0.1
+    across and 0.1 up, motion zeroed before and after it, `resetFallDistance`, `restrictTo(block, -1)`. A turn's HOLD
+    ticks take no step at all, and the GO tick sends before it moves, so the throwaway tracker's base is the body's
+    position, equal to the live tracker's after 2 still ticks.
+  - Forks, each conservative:
+    - The recalled band's attack flag is ignored for the settle test: a band walking off must not set its chief down
+      to fight what it is leaving (MZB-749's recall).
+    - The height reads every column under the box at each block ahead (up to 4 a block, 9 under it), not the
+      design's centre column ahead: a 1.5-wide box clips a wall's corner the centre misses. About 36 lookups every 10
+      ticks against the design's 17; still a `getChunkNow` and an array read each.
+    - A held puppet is moved to its place's own columns at their foot rule (no look ahead); a place whose columns are
+      not at hand waits for the next look (10 ticks), never loads. Counted `stuckMoves`.
+    - The line to a player uses the block's collision shape (`getCollisionShape(...).isEmpty()`), which a glass pane
+      and leaves have, as `hasLineOfSight`'s COLLIDER clip does, not `blocksMotion`.
+    - While settled or sinking the puppet is not stuck-ticked and not turned; `rise` starts a new `Stuck`.
+    - The turn gate treats a place within 1 block as having no way (it would turn on noise) and an active ability as
+      busy.
+    - `lift(memo)` is `CLEARANCE` (2) while aloft and 0 once grounded, so the bridge's displaced-body teleport (step
+      3) puts a floating puppet back in the air and a grounded one on the ground.
+    - `home`: floats with the same height rule (no turn gate), then at the spot turns to the throne's direction with
+      its own 2-tick hold (the gate's 200-tick cooldown would only slow it), sends one re-pair, and sinks onto the
+      spot's y; true once `onGround`, blocked below, or within 0.001. It arrives within 0.25 blocks horizontally.
+      An active ability waits the turn.
+  - The trail (MZB-814) is in `UmvuthiAloft` (the Traveller sends the particles; the brief lists it under step 3). 3
+    `small_flame` a body at its feet every `LOOK` ticks to each player within 160 blocks horizontally, through
+    `ServerLevel.sendParticles(player, ..., true, ...)`. Not while settled or dying. PLACEHOLDER: on.
+  - Test reads on the singleton: `raised(memo)`, `target(memo)`, `settled(memo)`; counters `heightColumnsSkipped` and
+    `stuckMoves` are instance fields (the session does not reset them: a GameTest reads their deltas).
+
+- **MZB-876** (step 3: the away CHIEF_BODY's map in the bridge; MZB-805):
+  - `ConflictBridge.chiefBodyAway(agent, epoch, memory)` (package-private, for `Camps.chiefBody`, which step 6 makes
+    forward it) keeps the latest per agent in `chiefAway` (an `Away(epoch, memory)` record), in memory only (UR-1).
+    Nothing clears it between command buffers or ticks: rtsim-jni's `write_queue` can end a buffer between the
+    CHIEF_BODY and its BAND_MATERIALIZE, and the entry waits.
+  - The claim is at the slot's making, not at each spawn: `materialize` gives the entry to the chief stack's slot
+    (`Slot.chiefMemory`) and removes it from the map, so a stack taken back to pending and placed again makes its body
+    with the same memory (the design's "keep the memory on the slot"), and a map entry never outlives its materialize.
+    A materialize with no chief stack (a later wave) leaves it.
+  - An entry for another epoch than the materialize's is dropped and counted (`chiefBodiesUnmatched`), checked after
+    the already-embodied refusal and before `capture` of the old epoch's party. An entry whose epoch is the ending
+    party's own, still unclaimed when `unregister` runs, is dropped and counted too (a party whose chief stack never
+    came). `unregister` compares epochs: the next epoch's entry is already in the map when the old party is captured at
+    its materialize, and must survive it. Cleared at `sessionStarted`, `sessionStopping`, `sessionFailed` and
+    `serverStopped`.
+  - The memory is the engine's CHIEF_BODY as sent (health 0 for an away one, MZB-803: the body keeps its own, which
+    for a fresh puppet is full). Not updated from the body at a takeback: the engine keeps no chief health (MZB-803's
+    fork), so a requeued puppet is made full again, with the players the engine sent.
+- **MZB-877** (step 3: a traveller's slot and body; MZB-807, MZB-808):
+  - `Slot` gains `traveller` (looked up once, from the slot's type, by `Travellers.of`), `travelMemo` (the
+    Traveller's own `memo()`, kept on the slot so it dies with it), `chiefMemory`, and `homeSpot` and `homeDirection`
+    (MZB-822, set by step 6's `homeChief`; the pass already leaves a homing slot alone).
+  - `spawn`: the ground Y of a traveller's own place gets `lift(null)` added (2: it is made in the air, not set down to
+    be lifted, which a first tick's pull would turn into a fall); a hand-off or a lurk's point keeps the ground, as
+    a hand-off starts on the throne (MZB-806). `made(level, body, chiefMemory, memo)` runs after the hand-off's `copy`
+    in the same try as the Maker, so a throwing plugin fails the stack's placing as a failed Maker does (retry after
+    `RETRY_FAILED`), never half a stack. `UmvuthiAloft.made` empties the memo first: a slot made again must not
+    keep the last body's heights.
+  - A traveller's slot gets no `ConflictFollowGoal` and no navigation; `travelling` (a list of the slots in the world
+    with a Traveller) holds it, added with the bodies' joins and dropped in `despawn` after `Traveller.release`. So
+    the pass costs a `List.isEmpty` a tick for a pack with no traveller (D1).
+  - `checkPlaced`'s teleport of a displaced body adds `lift(memo)` to the ground: 2 while aloft, 0 once it has
+    settled.
+- **MZB-878** (step 3: the aloft pass; MZB-807, MZB-809):
+  - `endOfTick` calls `aloft(now)` after the parties' `pass` and before the trim loop (so before `trim`, MZB-827), once
+    every level ticked its entities and block entities. For each slot in `travelling`, from the end (so a slot whose
+    body went by a path that never called `despawn` is dropped as it is met): `Way.set(placeX, placeZ, target x and z,
+    party.attack, party.recalling, now)` and `Traveller.step`.
+  - The way's target is the stack's `ex`, `ez` (the point the party's walk is toward, which the attack flag is
+    about), its place is `placeX(f)`, `placeZ(f)` at the stack's walked fraction (no allocation).
+  - Not stepped: a body with a pending death or dying (`isDeadOrDying`, MZB-817 lets it fall), one held at a lurk's
+    point, one called home (`homeSpot`; the reconciler asks `Traveller.home`, MZB-822), and one whose block does not tick
+    entities (`RtsimSession.entitiesTickAt`, the test `checkPlaced` uses: a body there is the placing's to bring
+    back).
+  - A Traveller that throws is logged (the first 3 a session) and counted (`travellerErrors`), and the pass goes on
+    with the next body: one plugin bug must not fail the session and with it every party. Next tick it is tried again.
+
+- **MZB-879** (step 4: the two listeners; MZB-810, MZB-815):
+  - `BridgeEvents.register` adds a listener for `ExplosionKnockbackEvent` at `EventPriority.LOWEST` (so no other
+    listener's velocity outlives the zeroing; the event is not cancellable) and one for `EntityTravelToDimensionEvent`.
+    Each handler is a server-side call to one method of `ConflictBridge`, which is one `byUuid` lookup, behind
+    `byUuid.isEmpty()` (D1: nothing for a pack with no band out, and one `HashMap` read per affected entity of an
+    explosion otherwise).
+  - `ConflictBridge.zeroKnockback(entity)`: the entity is the exact live body of a live slot with a Traveller, and the
+    Traveller says it floats (`Traveller.aloft(body, memo)`, a new default method that answers false). The handler then
+    sets the knockback to `Vec3.ZERO`, counted in `knockbacksZeroed`. `UmvuthiAloft.aloft` is `body.isNoGravity()`:
+    gravity is off in the air and hovering over a fluid, and is back once it has set down (`land`) or is dying
+    (`died`), so a settled body on the ground and a dying one are pushed as any mob is (MZB-810 says "aloft"; the
+    design's step zeroing, `setDeltaMovement(ZERO)`, covers a push after the entities tick as the design says).
+  - `ConflictBridge.cancelPortal(entity)`: true for the exact live body of a live slot (aloft or not, any kind of band)
+    and for a live slot's extra (`extraOf`: a raptor's follower, or the Umvuthi's summons once step 7 adopts them). The
+    handler cancels the trip and counts `portalsCancelled`. FORK: the design says "a live puppet of a band"; the
+    extras are the band's own bodies in the bridge's book (MZB-428), and `admit` would refuse the copy a portal use
+    makes anyway, so the trip would only lose the body. Cancelling is the conservative pick.
+  - The lead's invariant (BAND_DEMATERIALIZED only after the chief puppet is gone or its death is journaled): a
+    cancelled portal is a body kept, not a body gone with no record. Both counters reset at `sessionStarted`.
+  - No JUnit: both methods need a live `Slot` and a server entity, which core's JUnit has none of. MZB-810 and MZB-815
+    are covered by M11c's GameTest 23c, as the design says.
+
+- **MZB-880** (step 5: the death hook and the Dying list; MZB-817):
+  - `onDeath` calls `Traveller.died` at the first death only (`sl.traveller != null && sl.pendingDeath == null`: the
+    jar posts two `LivingDeathEvent`s for one death, as 23e says), inside a try that counts a throwing plugin in
+    `travellerErrors`. `UmvuthiAloft.died` already clears `noGravity`; the aloft pass already skips a dying body, so it falls
+    through its 115 ticks.
+  - `settleDeaths` adds `Dying(body, record bytes, seq)` to `dying` (a new list, named apart from `Camps`' private
+    `Dying`) for a chief slot settled with `drops == null` (the `LivingDropsEvent` has not come: the jar's
+    `dropAllDeathLoot` skips the first death while `dropAfterDeathAnim` and `deathTime == 0`) and a body that is not
+    removed. A chief whose drops came at once (any plain mob) takes the old path. Only the chief is listed: the design
+    names the chief, and a warrior of another mod with a death animation keeps today's behaviour (a fork not taken).
+  - `onDrops` looks at the list first, and only when it is not empty (D1): the entry whose body is the dead entity goes
+    off the list and `session.carryOnEntity(drop, List.of(record), seq)` is called for each drop still in the world. The
+    drops are carried before they join the level; `carry` keeps the attachment and `dropPendingWhenAcked` finds the item
+    by id later, as for any drop.
+  - `deathLootLost` (public, reset at `sessionStarted`) counts a dying body removed for any reason but the jar's own
+    end (`RemovalReason.KILLED`) with its entry still listed, and a finish at a stop that could not remove it. A KILLED
+    removal with the entry still listed (the drop event never reached the bridge: the module off, a session failed, no
+    kill cause) is not a loss of ours and is not counted. `dyingBodies()` reads the list for the GameTests.
+- **MZB-881** (step 5: `tickDying`, the ends of a session, `despawn`):
+  - `endOfTick` calls `tickDying` first, right after the `s != session || failed` check and before the module-off
+    return, with the list non-empty only: a dying body must finish with the module off or no party left (a held-free
+    tick returns early further down, which is why the call cannot live below it). For each entry (from the end, so a
+    drop that takes entries off the list is safe): removed -> off the list (counted unless KILLED); no longer
+    dying -> off the list; the position still entity ticking (`RtsimSession.entitiesTickAt`, the check the aloft pass
+    uses: false with no player and no forced chunk) -> its own tick ends it; else `deathTime = 1_000_000` and `baseTick()`,
+    the jar's own end (`tickDeath` of `MowzieEntity`, 462 to 477). A throwing `baseTick` is logged and the entry kept
+    for the next tick (or counted at a stop).
+  - `sessionStopping` finishes every dying body (the same code, with the position check off) after `settleDeaths` and
+    before `reconciler.sessionStopping` and the captures, so the loot is on the ground with its record before the save.
+    `sessionFailed` does so before `discardAll`, in a try (a failed session's `carry` may throw: the list is cleared and the
+    discard goes on). `sessionStarted` and `serverStopped` clear the list; a non-empty list at `sessionStarted` is
+    logged (it would be loot with no record).
+  - `despawn` keeps its other work for a dying body but does not discard it (`!m.isRemoved() && !isDying(m)`). The
+    design names `discardAll`; `despawn` is the one call that discards, so the guard sits there and covers `discardAll`
+    and every other caller. A forgotten slot is `alive == false`, so `capture`, `requeue`, `recallStep` and `refill`
+    never reach its body; `discardAll` and the aborted `spawn` are the two that do.
+- **MZB-882** (step 5: the lead's invariant, BAND_DEMATERIALIZED only once the chief puppet is gone or its death is
+  journaled), kept on every path this step touches:
+  - A dying chief is journaled (CHIEF_KILLED, with `commitWithOpId`) in `settleDeaths` before it is on the list, and
+    `capture` always runs `settleDeaths(p, now)` before it despawns anything and before `finish` writes the
+    BAND_DEMATERIALIZED, so the order is the journal's. `sessionStopping` settles, finishes the dying and only then
+    captures. A listed body is never counted a survivor (`finish` counts alive non-chief slots only, and the chief is
+    never a survivor).
+  - A body that dies in a stop or a failed session that has not been settled yet is settled first by
+    `sessionStopping`'s `settleDeaths`; a failed session journals nothing (it discards).
+  - No JUnit: the Dying list, the plugin's `died` and the session ends need a live `ServerLevel` and a Mowzie body, which core's
+    JUnit has none of. 23e, 29c-failed, 36a and 36b (M11c) are the tests; the invariant's own test (a scripted
+    BAND_DEMATERIALIZE of a party whose chief puppet died 20 ticks before, then the journal's order) is M11c's too: a
+    record of this step for the M11c writer.
+- **MZB-883** (step 6: a chief HAND_BACK is held while the puppet floats home; MZB-822, MZB-823, MZB-830; forks):
+  - `Camps.handBack` holds the chief's line (a puppet with a Traveller) as `HELD_HANDBACK = 3` and calls `bridge.homeChief(slot,
+    throne, direction)`: the slot's `homeSpot` and `homeDirection` are set, the aloft pass skips it (it already did, step 3) and
+    `Camps.playHeldHandBack` asks `bridge.homeStep` each tick, which is `Traveller.home` behind the entity-ticking check and a
+    try (a throwing plugin plays the line where the puppet stands, counted in `travellerErrors`: a puppet that cannot float home
+    must not hold its line for good). The band goes into `homecoming` as the reconcile always did for a HAND_BACK (MZB-751), so
+    its recall starts the same tick; the recall keeps the puppet (MZB-884).
+  - Played when settled, or at `RECALL_TIMEOUT` from the line's arrival (`AloftRules.handBackDue`, counted late by
+    `chiefHandBacksLate` through `handBackLate`). `playHandBack` is the plain hand-back's body with the puppet's own place:
+    one Umvuthi on the throne with `copy` (health) and the CHIEF_BODY memory of the epoch (traded players only: health 0 at home,
+    so the puppet's health is kept), `chiefGeneration` set to the line's (a body made by a hand-back must not be taken for a
+    retired generation by `secondBody`), added before the puppet goes (MZB-236), DONE. A failed `make` or a refused join is
+    STALE with the home released, as a plain hand-back that fails (MZB-751).
+  - Case B (MZB-823): a standing tagged body of the slot and generation at play time gets `copy` from the puppet, the puppet goes,
+    the answer is NOTHING, `chiefMerges` counts it. No second body is ever made. Fork (conservative): the puppet still floats to the
+    spot first, as the design says, rather than merging where it hangs.
+  - A held chief TAKE (and a chief take held in `playHeld`) is answered STALE once a live chief puppet of the faction is within
+    32 blocks horizontally of the throne in the camp's dimension (`AloftRules.takeStale`, `bridge.chiefPuppetNear`, counted
+    `staleTakes`). A REMOVE and a SET_OUT are not asked.
+  - A puppet gone when the line arrives plays as a spawn (MZB-213); one that dies in the same tick (pending death, not yet
+    journaled) holds the line so that the death is the CAMP_DEATH of MZB-885; one marked a second body (the throne body was
+    killed first) is answered STALE with the home released (fork: nothing is handed back for a chief the engine has booked dead).
+  - A held HAND_BACK answered stale for any reason (the camp out, an epoch's end, an unplayable site) releases the puppet's home
+    through `answerStale`, so the band's recall takes it as any member's; a module off or a session's end drops the lines
+    with the parties captured (MZB-886).
+  - `Camps.chiefBody` forwards an agent-carrying CHIEF_BODY to `bridge.chiefBodyAway` (the dispatch of MZB-876 had no caller;
+    `chiefBodiesAway` counts it), with the party's epoch, whatever the camp's state.
+  - The comment at `resolveSetOuts` (MZB-830) now says that a chief set-out no materialize claims is a take that waits for
+    Rule U, and one a materialize claims is handed to the puppet in `claim`. No logic change, as the design says.
+- **MZB-884** (step 6: Rule U for the trim and the recall; MZB-827, MZB-828's reader; fork):
+  - `Camps.holdsChief(Mob)` asks the kind of the puppet's faction (`bridge.chiefPuppetFaction`, then `holdRemoval`); false with no
+    declared camp of that faction (nothing to ask; fork, conservative to the old behaviour), and false for a throwing kind.
+  - `cutFrom` marks a chief puppet with a Traveller as not cuttable while it holds (the stack stays due, tried on the stop's
+    beat). `trimmable` also excludes a slot called home: its line is the reconciler's.
+  - `recallStep` decides per slot with `keepsChief` (`AloftRules.recallKeeps`): a homing puppet is kept until its recall's
+    deadline plus one more `RECALL_TIMEOUT`, one Rule U holds until the deadline. Fork: the grace past the deadline exists for a
+    lost line only (the line plays itself at `RECALL_TIMEOUT`, which is the deadline's own length, so in the normal case the
+    grace is never spent); without it a line that played one tick after the deadline would find no puppet and spawn a body. A
+    dead or dying puppet is never kept. The stack of a kept puppet stays PLACED and the party stays open (`any`), so
+    `finish` waits for it; the other slots of that stack go as before.
+  - The four exceptions of the design do not ask: the ticking edge (`requeue`), a failed session, the module off and a session's
+    end go through `despawn` or `capture`, never `recallStep`; `edge_stop`'s timeout and a home with the grove out go through the
+    deadline, after which Rule U no longer holds.
+  - `chiefMergesMissed` counts a chief puppet a recall despawns while its camp's throne body stands (`throneBodyStands`): the
+    puppet's health is lost, one body (MZB-823's last bullet).
+- **MZB-885** (step 6: the deaths, the credits, the pickup and the payment; MZB-819, MZB-824, MZB-825, MZB-826, MZB-829):
+  - `journalLoss` for a chief slot with a Traveller first asks `Camps.chiefDiedHome`: when the party's chief HAND_BACK is held
+    (or in the queue of a pass in flight), the death is a CAMP_DEATH of the line's slot and generation on a marker where the puppet
+    died, with the credit the bridge took (`credit`, the kill credit), the news posted, `homeDeaths` counted, the throne body that
+    may stand marked second, and the line answered STALE after it (the order: death first, then the answer). It returns that
+    record, which `settleDeaths` carries on the drops and the Dying list as for CHIEF_KILLED. Otherwise it journals CHIEF_KILLED
+    as before and counts `chiefDeathsAfterEnd` when the party's march had ended, recalled or not (the recalled case is the one
+    the engine counts for nothing, MZB-824's second bullet; accepted, counted, logged at debug).
+  - The marks (MZB-825): `Camps.chiefDiedAway(faction)`, from the bridge's CHIEF_KILLED, marks the camp's standing chief body
+    second; `Camps.death` for the chief slot marks the faction's puppets with a Traveller second through `bridge.chiefPuppets`.
+    Only a kind whose puppet floats comes here (a Traveller on the slot), so the Frostmaw is unchanged. A second puppet's death
+    in the bridge's `onDeath` journals nothing, still calls `Traveller.died` (it would hang aloft with no gravity otherwise) and
+    its slot is not forgotten (fork: the cancel case, where another mod undoes the death, leaves a member that is alive; the
+    recall or the trim discards a dead one).
+  - `onDeath` for a member that is not the chief takes `Camps.killer` (MZB-826), for every culture (the design's fork, kept).
+  - `gone` releases the Traveller before it untags and carries the record, and drops the slot from the aloft list (MZB-829);
+    `despawn` also empties the home spot.
+  - `chiefPaid` falls back to the party's chief puppet: faction from `chiefPuppetFaction`, slot `CHIEF_SLOT`, generation 0,
+    PAID_PUPPET (MZB-819), counted `puppetPaid`. It does not need the camp reported (the faction may have no site), and a
+    camp's own body is never a puppet, so the old path is unchanged.
+  - New counters (all reset at `sessionStarted`): in the bridge `chiefMergesMissed`, `chiefDeathsAfterEnd`, `chiefsCalledHome`;
+    in `Camps` `heldHandBacks`, `chiefHandBacksLate`, `chiefMerges`, `staleTakes`, `homeDeaths`, `puppetPaid`, `puppetsSecond`,
+    `chiefBodiesAway`.
+- **MZB-886** (step 6: the lead's invariant on the paths added; BAND_DEMATERIALIZED only once the chief puppet is gone or its death
+  is journaled):
+  - The aloft move: the puppet is stepped, never removed, by the pass. Death aloft: the death is journaled in `settleDeaths`
+    (CHIEF_KILLED, or the CAMP_DEATH of MZB-885 when its HAND_BACK is held) before the Dying list takes the body, and `capture` and
+    the recall both settle before they write. A second puppet's death journals nothing by design (the engine booked the chief's
+    death at the throne body's CAMP_DEATH, which is the journaled death for this path); the dead body is not a standing puppet.
+  - The throne hand-off (SET_OUT claimed by a materialize) is step 3's, unchanged. The hand-back (MZB-883): the line is held and the
+    band's recall keeps the puppet (`keepsChief`, `any`), so the party stays open until the line has played (the puppet is
+    then despawned by `handBack`) or the deadline plus the grace has passed. STALE hand-back walked home: `answerStale` releases
+    the home, and the recall despawns the puppet when Rule U allows, the party's end waits for that.
+  - The portal cancel keeps the puppet in the world, in its party. The module off and a session's end go through `capture`
+    (settle, despawn, finish), the one path that despawns a puppet Rule U holds, by design.
+  - A path that cannot keep it: none that this step adds. The one place it yields is the grace (MZB-884): after the deadline plus
+    `RECALL_TIMEOUT` a homing puppet is despawned and the party ends, which is a puppet gone, so the invariant holds there too.
+    A chief that dies before its HAND_BACK arrives is journaled as CHIEF_KILLED for a party the engine already ended
+    (`chiefDeathsAfterEnd` counts it when no line is held); the BAND_DEMATERIALIZED still follows the journal.
+  - No JUnit for the order (a live level and a Mowzie body are needed; see MZB-882). The rules that decide it are tested:
+    `AloftRulesTest`'s `recallKeeps`, `handBackDue`, `handBackLate` and `takeStale` tests, which failed against stubs first
+    (6 failures on their own rules) and passed after (59 in the class). The order is M11c's GameTest, with the chief puppet dying
+    aloft at a party's end and CHIEF_KILLED before BAND_DEMATERIALIZED asserted from the journal.
+- **MZB-887** (step 7: the chief puppet's summons; MZB-816; D3's second mixin):
+  - `UmvuthiSummonsMixin` (new, in the module's mixins json) is a `@WrapOperation` on `Level.addFreshEntity(Entity)` in
+    `EntityUmvuthi$SpawnFollowersAbility.beginSection` (the one such call, `allow = 1`; the jar's line 1050, a check against the
+    cfr extract of this session: `entity.level().addFreshEntity(umvuthana)`, the receiver's static type `Level`). The summoner
+    is `Ability.getUser()`. For a client level, a summoner that is not an Umvuthi, or a summons that is not a `Mob`, the call is
+    the original. Otherwise `RtsimApi.adoptSummons(user, mob)` runs first, the original joins it, and a refused join calls
+    `RtsimApi.dropSummons` (new API, two static methods over `ConflictBridge.INSTANCE`; the module has no other way into core).
+  - `ConflictBridge.adoptSummons(summoner, summons)`: one `byUuid` lookup (an empty map returns at once, D1); the summoner must be a
+    live, non-dying chief puppet with a Traveller (a body with none of the three, such as a grove's own Umvuthi at its throne or
+    the Frostmaw, is untouched: its summons stay strays). It prunes the slot's extras that are dead or removed (from `extraOf`
+    too), tags the summons with the party's `AgentTag(agent, epoch)`, holds it (`ConflictBodies.hold`, persistence required: it is
+    never saved, the tag sees to that), and puts it in a fresh `extras` list and in `extraOf`, all before the join, so
+    `admit` lets it in. `dropSummons` undoes the map entry, the list entry and the tag. Counters `summonsAdopted` and
+    `summonsRefused` (public, reset at `sessionStarted`) are for the GameTests.
+  - Fork (conservative): the extras list is replaced, not edited (`Slot.extras` may be the immutable `List.of()`), one small
+    list per summons, which is a few per Invasion's whole life.
+  - Their lifetime is a raptor's follower's (MZB-428): `despawn` and a party's end discard them, `isExtra` cancels their drops and
+    experience (MZB-643), their deaths book nothing, the portal listener refuses their trips (MZB-815). The summons come at the
+    summoner's y + 2.5 with an upward push, so aloft they fall about 4.5 blocks; only the step's `restrictTo` each tick keeps them
+    round the puppet (test 23's clause, as the design says). No change to what the jar does to them.
+  - No JUnit: it needs a live level and the jar's ability. Test 24 (M11c) is the check; the mixin applying at all is the lead's
+    first GameTest run (`defaultRequire` 1 makes a missed target fail at load, not silently).
+- **MZB-888** (step 8: GroveKind's two lines; MZB-828 and MZB-820):
+  - `GroveKind.playerWithin` is horizontal: `AloftRules.near` (the one distance the aloft rules, the take's staleness and Rule U share)
+    in place of `distanceToSqr`. A player high above or deep below a point counts as near as one beside it, which is how a body's
+    sight is measured (MZB-753). It can only widen a hold, never narrow it, since the ground-plane distance is never more than the 3D
+    one. Its two callers are both in GroveKind: `holdSpawn` (the throne's 160-block hold, MZB-433) and `holdRemoval` (Rule U's, on a chief
+    body); both only wait the longer for a player overhead, so nothing else changes.
+  - `GroveKind.copy` carries the trade memory between two Umvuthi: `remember(to, new ChiefBody(0f, 0, from.getTradedPlayers()))`, the
+    union `chiefBody` does (the body's list plus the memory's, a `LinkedHashSet`, written with `setTradedPlayersCompound`, so nothing
+    is journaled). Fork (conservative): health 0 in the memory, so `remember` leaves the health `copy` has just set (the old body's,
+    capped at the new one's maximum) alone. `copy(from, to)` has four callers, all of them a body replacing a body, and the union
+    runs the right way in each: `Camps`' hand-back make (two sites) and case B's merge into the standing throne body (the puppet's
+    trades reach the throne body), and `ConflictBridge`'s hand-off (the throne body's trades reach the new puppet, before
+    `Traveller.made` adds the engine's memory on top). Any other pair (an Umvuthana, the Frostmaw) takes the existing branches
+    unchanged. No JUnit: it needs the jar's entity. The M11c hand-back GameTest reads `getTradedPlayers` on the throne body.
+- **MZB-889** (step 9: the test kits for M11c; compiled only, the GameTests that use them are M11c's):
+  - `ConflictKit.chiefBody(faction, agent, epoch, health, players)` writes the record's AGENT (24): agent 0 is the chief at home (the
+    old four-argument form, which now calls it), an agent is the party the chief marched with, held for that party's MATERIALIZE
+    (MZB-805). A getter for each M11 counter, public static and read from the live bridge (nothing is cached): Camps' `heldHandBacks`,
+    `chiefHandBacksLate`, `chiefMerges`, `staleTakes`, `homeDeaths`, `puppetPaid`, `puppetsSecond`, `chiefBodiesAway`; the bridge's
+    `chiefBodiesUnmatched`, `travellerErrors`, `knockbacksZeroed`, `portalsCancelled`, `deathLootLost`, `repairs`, `repairsSkipped`,
+    `chiefMergesMissed`, `chiefDeathsAfterEnd`, `chiefsCalledHome`, `summonsAdopted`, `summonsRefused`. All are reset at
+    `sessionStarted`, so a test reads the counter before and after, as the others do.
+  - `FakePlayers.watching(level, at, name[, viewDistance])`: a `Hearer` joined through `level.addNewPlayer` (the entity manager and
+    the chunk map know it, so tracked entities are paired with it), with `keepAll` set before the join so the pairing the join
+    itself sends is kept. `Hearer.packets` holds every packet in order, a bundle as its parts (the pairing of an entity is a
+    `ClientboundBundlePacket`); `count(Class)`, `added(entityId)` and `removed(entityId)` read it. Fork (conservative): the
+    watcher's view distance is 4 chunks (the default of a mock player is 2, which pairs nothing farther than 32 blocks and would
+    make a test that places it 40 blocks off wait for ever), set through the `ClientInformation` the cookie gives; `hearing`'s
+    players are unchanged (their `keepAll` is off, so they keep no packet).
+  - `FakePlayers.pump(hearer)`: the three vanilla facts the brief names, read from the decompiled `PlayerChunkSender`, `ChunkMap` and
+    `MinecraftServer`. (1) `MinecraftServer.tickServer` sends chunks only to `PlayerList`'s players, and a fake player is in none,
+    so pump calls `sendNextChunks` itself. (2) `sendNextChunks` sends nothing while a batch is unacknowledged and the first allows
+    only one, so pump first acknowledges one batch per `ClientboundChunkBatchFinishedPacket` the watcher was sent (counted at
+    the send, `onChunkBatchReceivedByClient(64)`, never more acknowledgements than batches), then sends, up to four rounds a call
+    (a round that sends no batch ends the call). (3) An entity standing already is paired only by `ChunkMap.TrackedEntity.updatePlayer`,
+    which the server runs when the entity changes section or the player moves, and the chunk being sent does neither, so pump
+    ends with `ServerChunkCache.move(player)`, which re-evaluates every tracked entity against the player. It returns the
+    number of chunk packets it sent. A test calls it every tick of its wait (`thenWaitUntil`), since chunks load over many ticks.
+  - Not run through `chunk_waits.py`: neither file has a `@GameTest` method (the script converts a method's waits and needs
+    one). No JUnit: all of it needs a live level; M11c's first test that watches a puppet is the check, and the javadoc of
+    `watching` says "compiled only" as `addSeen`'s does.
+
+### M11c build records (MZB-890 to MZB-919)
+
+M11c's implementer appends its records under this heading only. At the commits below every GameTest is compiled only; the GameTest
+rounds of phase 2 are the check, and what they found is recorded after them.
+
+- **MZB-890** (step 0, P2 of the M11b review: a second puppet's animation end journaled a death after all; breaks MZB-825, MZB-885 and
+  MZB-886):
+  - The path: the throne body is killed while the puppet floats (`Camps.death` marks the puppet second and the engine books the chief dead),
+    a player kills the puppet (`onDeath` sees a second body, calls `died` and returns, so the slot lives with no `pendingDeath`), a watched
+    stack is not discarded (RECALL_TIMEOUT 1200 ticks, the animation 115), and at the animation's end the jar removes the body as KILLED,
+    which `left` read as a death (`pendingDeath = BY_NONE`). `settleDeaths` then journaled a CHIEF_KILLED the engine drops (the chief flag
+    went at the throne's CAMP_DEATH) and counted `chiefsKilled`, `chiefDeathsAfterEnd` and a news post.
+  - The fix, commit c57bdd7d (`ConflictBridge.left`, nine lines): a KILLED removal of a chief slot with no `pendingDeath` whose body is
+    second (`reconciler.secondBody`) calls `forget(sl)` and returns, with no Death, as for a member nobody books. A first death (a
+    `pendingDeath` is set), any other removal reason, and every non-chief slot are unchanged.
+  - The audit of the paths that end a second puppet, read from the code (no test but MZB-892's): only a slot with a `pendingDeath` is
+    journaled by `settleDeaths` and put on the Dying list, and this KILLED branch was the only place a second body got one, so the list
+    never holds a second body (`finishDying` at a stop or a failure has nothing of it to finish). The bridge's own removals (a recall,
+    `discardAll`, `requeue` and `despawn`) set `removing` or take the slot out before the jar reads the reason, so `left` returns at once
+    for them; `despawn` discards a second body whole (it is not in `isDying`), which is right, as the engine has the chief dead and no loot
+    is owed. The band's BAND_DEMATERIALIZED still waits for the slot to be gone, as for any member: `forget` is the same removal a
+    forgotten member gets.
+  - Two paths are NOT fixed (outside the brief, left for the lead, no test): a Carry On pickup of a second puppet (`take`, which calls
+    `gone` with the player) journals a CHIEF_KILLED naming the player, which the engine drops as it dropped P2's (an extra journal line, no
+    count the engine keeps); and `requeue` and `recallStep` discard a second puppet that is dead while its slot is still alive (in its
+    animation), as they discard any member.
+  - The test is `aSecondPuppetsAnimationEndJournalsNothing` (MZB-892). **Revert c57bdd7d for one round and it must fail** (the
+    CHIEF_KILLED, `chiefsKilled` and `chiefDeathsAfterEnd` rise past the animation).
+- **MZB-891** (step 0, P3 of the M11b review: a HAND_BACK that reaches a second puppet in its animation played as a spawn):
+  - The path: `handBack` and `playHeldHandBack` found no puppet (`puppetOf` needs `isAlive()`) and no dying chief (a second body has no
+    `pendingDeath`), so they skipped the `second.contains` stale answer, and `spawnLine` stood a throne body of the retired generation
+    until the next census took it.
+  - The fix, commit 08c261b9 (Camps and ConflictBridge): both paths answer STALE when `retiredChief(c, line)` or the new
+    `ConflictBridge.secondPuppet(party, body)` holds. `secondPuppet` finds the party's chief slot of that body that is `alive`, has an
+    entity not removed and a second body, so it counts while the puppet floats and while it is in its animation, which `puppetOf` does not.
+    The `second.contains(sl.entity)` branch of `playHeldHandBack` is the same test, now before the lookup, so it is gone from below it.
+  - The fork the brief names (a late HAND_BACK of the retired generation after P2's fix forgot the slot, with no puppet to find): it also
+    answers STALE. Conservative option: keyed on what Java journaled, not on the puppet. `Camps.retired` is a `Set<Retired(faction,
+    generation)>` (memory only, as `second`; emptied at a session's start and where `second` is cleared), added to at the two places Java
+    journals the chief slot's CAMP_DEATH (`death`, for the throne body, and the home death of a puppet that died at home). `retiredChief`
+    is true for a line of the chief slot (`CampReconcile.CHIEF_SLOT`) of a retired faction and generation. Why this and not "no puppet found
+    means stale": a HAND_BACK of a live generation whose puppet is simply not found yet (the band not materialized, the line held) must
+    still be held or spawned, and the retired set is the one fact that says the engine has that chief dead. Why the generation is in the
+    key: the next generation of the same faction's chief is not retired and must hand back. It holds one entry for each chief death of a
+    session. It is not saved: a restart empties it, and the engine then has its own record of the chief.
+  - The test is `aHandBackOfARetiredChiefIsAnsweredStale` (MZB-892). **Revert 08c261b9 for one round and it must fail** (the first delivery,
+    with the puppet in its animation, stands a throne body; the second, after the puppet is gone, does too).
+- **MZB-892** (step 0's GameTests, commit 15c6171a): `aSecondPuppetsAnimationEndJournalsNothing` (batch `aloft_second_puppet_death`) and
+  `aHandBackOfARetiredChiefIsAnsweredStale` (batch `aloft_retired_hand_back`), each with its control in a second grove (a puppet that is not
+  second, killed the same way, journals one CHIEF_KILLED; a HAND_BACK to a live puppet still hands back). `ConflictBridge.Slot` gained three
+  read-only accessors for them: `travelMemo`, `homeSpot` and `dying`.
+- **MZB-893** (steps 1 and 2, commits 108c1fe0, a138306c, 0767b6b6 and 35d0a916): the Aloft tests 23a to 23e, 35, 24, 25p and 26, in
+  `AloftMowzieGameTests` (batches named `aloft_*`, one grove or lane for each case, a control each).
+  - 23a `anAloftUmvuthiKeepsItsHeight` (MZB-806, 808, 809): a wall, an oak and a roof across a flat lane; the foot is at each structure's top
+    + 3, and every tick across at most 0.1, up at most 0.1, down at most 0.05, the box clear of blocks. The control band has no chief's stack.
+    An unread column (MZB-808's `getChunkNow` null) cannot be made to happen here, since the ticket's neighbour ring makes every chunk the
+    look reaches readable: that skip stays JUnit's (`AloftRulesTest`).
+  - 23b `anAloftUmvuthiSettlesAndRises` (MZB-809, 812): it stays aloft until within 32 blocks of the steer's end, sinks at most 0.05 a tick,
+    settles on a target in plain view, stays down with the flag dropped and the player back, rises no sooner than 200 ticks after its last
+    player target, and is at its place inside 400 ticks of rising; an iron golem as target does not settle it; its summons' restriction
+    centre is its own block, radius 25 (the control: a throne body's summons keep the throne's).
+  - 23c `pushesAndPortalsLeaveItAloft` (MZB-810, 815): a power-3 blast two blocks under it, a wind charge's blast, a push of 0.4 up and 0.4 out
+    after the entities tick, an `EntityTravelToDimensionEvent` and a column of lit portal blocks leave it where it floats (the listeners are
+    removed inside the sequence; an untagged Umvuthi with no gravity is the control, which the same blast moves).
+  - 23d `aStuckUmvuthiRisesThenIsMoved` (MZB-811): a stone ceiling 3 over the foot; the raise reads 8, 16, 24 a hundred ticks apart; B (no
+    player within 160) is moved to its place a hundred ticks later; A (a player with a line) is held and moved at the first look past 1,200
+    ticks; B then sinks onto a farmland field and every block stays farmland (no fall counted), the watcher sent no block particle.
+  - 23e `anUmvuthiKilledAloftFallsAndDropsOnce` (MZB-817): it falls through its animation, one CHIEF_KILLED, one Sol Visage at the animation's
+    end, the same ticks after death as the control's; no Umvuthi is left with its gravity off, and its chunks let go and forced again hold none.
+  - 35 `anAloftUmvuthiCrossesARiver` (MZB-812): a 20-wide river, a 56-wide lake with a raft, and a dry control; the puppet never sinks into or
+    touches water, hovers over the lake within 8 blocks of its steer's end, and when killed there falls and drops one Visage.
+  - 24 `theChiefsSummonsArePuppets` (MZB-816): a settled puppet's SPAWN and sunblockers carry the party's AgentTag at their join, are admitted
+    and never saved by vanilla (`summonsAdopted` up, `summonsRefused` not); a warrior of theirs killed books nothing; the control (a throne
+    Umvuthi's) are strays, saved and read back. Fork (conservative): the jar's AI is off, so the test starts the abilities itself and checks
+    the adoption rule, not the jar's choice to cast.
+  - 25p `aPaymentToThePuppetIsRemembered` (MZB-819, 820): the payment to a puppet journals a CHIEF_PAID with PAID_PUPPET and is remembered
+    through the hand-back though CHIEF_BODY named no player; the control (a throne Umvuthi) journals flags 0 as M9's. 26
+    `anUmvuthiKilledAwayRoutsItsInvasion` (MZB-817, 826, 827): the near warriors die by the jar's `die` with their credit naming the player, the
+    far ones live; the throne body's REMOVE is held while a second player is within 160 and played when gone; Rule U keeps the trim from
+    cutting an out-of-sight puppet for 1,300 ticks and the next stop beat cuts it once its target is cleared.
+- **MZB-894** (step 3, commits 8c7720f4 and 44ad41dd): 29a `aSecondUmvuthiBodyBooksNothing` (MZB-825: two groves 320 apart, the puppet killed
+  first in one and the throne body in the other; each order's first death books and drops once, the second journals nothing, drops nothing,
+  changes no counter, and its `die` takes no warrior), 29b `aHeldTakeIsAnsweredStaleAsThePuppetComesHome` (MZB-820 to 823: the held TAKE is
+  answered STALE within two ticks of the puppet being within `TAKE_STALE` of the throne, the hand-back merges the puppet's health and memory
+  into the throne body, the control grove plays at once) and the 29c group (MZB-817, 824, 827, 882):
+  `anAloftUmvuthiAtTheTickingEdgeIsTakenBack` (a real player steps 20 blocks and the edge goes from 143.5 to 111.5; the puppet and its
+  warrior are removed together within 2 ticks, `requeued` up by two, nothing left standing or saved), `anEdgeStopRecallReachesThePuppetAtItsTimeout`
+  (the seam: a puppet Rule U holds goes at the record's own timeout, the unheld control at once), `aFailedSessionCapturesEveryPuppet`
+  (`failForTest`: every puppet out, the dying chief's loot dropped by `sessionFailed`, a new session starts clean),
+  `aHomecomingWithItsGroveOutIsRecalled` (RECALL_DONE, the puppet held until `RECALL_TIMEOUT`, a kill in the window is journaled and counted
+  in `chiefDeathsAfterEnd`) and the lead's invariant's own test `aRecallAfterTheChiefsDeathJournalsTheDeathFirst` (a chief killed 20 ticks
+  before its recall and one in the recall's tick: each CHIEF_KILLED has the lower observation sequence than its BAND_DEMATERIALIZED).
+  - `Watch` is a nested helper of the test class: a real player of the level (`FakePlayers.addSeen`) on the west column of a chunk, with
+    simulation distance s and view s + 2, `start`, `check`, `ground`, `step(dx)` (`moveTo` plus `chunkSource.move`), `edge` and `end`. Fork
+    (conservative): a real player, not the mock the other kits use, since the edge of an entity-ticking area exists only for one; the original
+    distances are taken before any Watch sets its own and each is put back inside the sequence. `Lane` takes a first chunk so that a grove's
+    declared footprint stays unloaded (Rule U needs only the site). The name carries the distance, so two Watches never clash.
+- **MZB-895** (step 4, commit 57a17d73): 32t `theUmvuthiIsHandedBackOnItsThrone` (MZB-820 to 822: grove N's chief line is held until its puppet
+  floats to the spot and turns, then the Umvuthi stands on the throne with the puppet's health and exactly the two players' memory; the
+  warriors' lines play at once as the control; grove L's puppet is 200 blocks off and its line plays at `RECALL_TIMEOUT`, `chiefHandBacksLate`
+  up by one; grove O is out, so a recall and no hand-back, and the census's SPAWN stands the throne Umvuthi later) and 22-aloft
+  `anUmvuthiSetsOutAndComesHomeInPlainView` (MZB-822, 830: one Umvuthi within 160 blocks of the player at the end of every tick from before
+  the set-out to after the hand-back, the one in 128 moving under 0.5 blocks a tick and each swap within 0.1 blocks).
+- **MZB-896** (step 5, commit df36da95; the first test to run `FakePlayers.watching` and `pump` on a server, MZB-889): 31s
+  `anAloftUmvuthiReadsAndTurns` (MZB-813, 814): four watching hearers, pumped every tick by `MowzieKit.everyTick` (a near one, a far one at 126
+  blocks with view distance 7, an away one 147 blocks west with view distance 2, and the control's), the pairing read from the tracker's
+  `seenBy` by reflection. The checks: the trail's small_flame packets (the far hearer too, the away one none); no add packet during an ability;
+  each re-pair read in its own tick (one add with the body's id and UUID, the previous tick's position and the live tracker's base, a yaw
+  within 45 degrees of the way, a bundle carrying the new direction, the glowing bit and every effect); the server's body the same across
+  the tick, no join, leave, start or stop tracking, or death; the cooldown and the dying check of the gate; and a control (40 degrees at
+  0.2) that gets no add beyond its pairing. The legs are the control's 100 blocks at 0.2, south 60 blocks at 0.2, west at 0.3 and north at 0.3.
+  - Forks (conservative), each a way to ask the server a question it can answer: the glowing bit is made by `setGlowingTag` (no fire, so
+    nothing burns the test's chief), the health loss by `setHealth` and `setHealthLost`, the effects by `addEffect`; the atomicity of the
+    bundle a pairing sends is not asserted (`Hearer.packets` keeps a bundle as its parts, so a split bundle cannot be told from one), only
+    what its parts carry. The ROAR duration and the windows are guesses that the first round fixes. If `pump` does not pair a body here,
+    MZB-889's "compiled only" stands and this test is where it is fixed.
+- **MZB-897** (step 6, 33u `theUmvuthiAppearsBeyond128AndCarryOnTakesIt`, commits bab9a68b and cee9be5c; MZB-829): a copy of core's
+  `MarchGameTests.column` for a band that carries its chief. A `Watch` at simulation distance 8, then 10; a band of six warriors and the
+  chief (three rows of two and the chief's stack at the rear, four stacks, 1.5 blocks apart) comes in from 170 blocks (200 at 10) east on the
+  player's row at 0.1 a tick, toward a target 60 blocks east of the player. Checks: one BAND_MATERIALIZED with none placed and no BAND_SPAWN_REJECTED,
+  four pending stacks and no Umvuthi in a 400-block box; each stack is placed the tick its anchor is within 1 block inside the ticking
+  edge (143.5 at distance 8, 175.5 at 10), once, front first, every body in an entity-ticking chunk; the warriors appear 128 to 144 blocks
+  from the player (160 to 176), the Umvuthi never under 128 and in the same range (128 to 144, 160 to 176 at 10), floating from its first sight. A creative mock player takes it
+  with `RtsimApi.takeFromSim(body, TakeReason.PICKUP, player)` (the call Carry On's handler makes): no puppet, gravity on, no member, NoGravity
+  absent from its saved NBT, one CHIEF_KILLED by that player. A body made from that NBT with a new UUID is put down: 40 ticks on, it and the taken
+  body are alive, no puppet, no member, gravity on and no higher than where it was taken. Fails without the pending test (a chief nearer than
+  128) and without `gone`'s release (put down, it floats).
+  - Forks (conservative): the start is 170 and 200 blocks, the first past each ticking edge, not M10's 300 (the checks are of the edge and the
+    walk is 0.1 a tick); the put-down is emulated by a copy from the saved NBT with a new UUID (the item's own placement is Carry On's, and a
+    copy in the world is the case the rule must handle); the taker is `makeMockPlayer(CREATIVE)`, not in the level, so the area under test
+    does not change; the grove of the faction is declared and never forced (out), so nothing but the band's rules is under test; the pickup
+    and the put-down are checked at both distances.
+- **MZB-898** (step 6, 36a `aDyingChiefDropsItsLootAtAStop`, commit cee9be5c; MZB-817): two bands on two lanes, each a puppet and a warrior,
+  each puppet settled before a masked player 20 blocks off (the jar's AI off and the target held by hand each tick, as 29c's failed session
+  does). The control is killed by its player and its loot lands 100 to 130 ticks later; the subject is killed and 40 ticks into its animation
+  `RtsimSession.restartGlobalForTest` stops the session and starts it again. It checks: the body finished there and then, removed as KILLED, one
+  Sol Visage within 2 blocks of its x and z, nothing dying, the one CHIEF_KILLED the first session booked naming the player (read from the old
+  engine with `RtsimTests.recordsFor`), at most one more in the new engine's, and 150 ticks on still one Visage.
+  - Fork (conservative): `deathLootLost` is the bridge's, and the bridge is a singleton that resets its counters at `sessionStarted`, so a
+    loss inside the stop would hide in the restart. The proof is therefore the loot itself and the removal reason KILLED (a body removed any
+    other way is a lost one), not the counter. The control runs first, as the restart is global.
+- **MZB-899** (step 6, 36b `aDyingChiefTakenBackAtTheEdgeDropsItsLoot`, commit cee9be5c; MZB-817, MZB-818): a `Watch` (simulation distance 8, view
+  10) and two bands 20 blocks east of it, 15 apart on z, each puppet settled before the player. The control is killed first and drops at its
+  animation's end. The subject is killed and 40 ticks into its animation the player steps 128 blocks west: its chunk stays loaded (within the view
+  distance) but stops ticking entities, and the body must be finished within 3 ticks of it stopping: removed as KILLED, one Visage within 2
+  blocks, nothing dying, `deathLootLost` unchanged, the one CHIEF_KILLED naming the player. The player comes back 128 blocks east: 100 ticks on,
+  still one Visage and one CHIEF_KILLED. Here the counter can be read (the session is not restarted). The "3 ticks" and the 100 to 130 tick
+  window are guesses the first round fixes. The recall of the bands and `Watch.end()` are inside the sequence.
+- **MZB-900** (step 6's optional 31h, not written): its clause is covered in parts by 22-aloft (a player's plain view), 32t (the throne), 23d
+  (stuck), 23a and 23b (height and settle) and 31s (the re-pair as the server sees it), and a test of its own would add no fact. Conservative
+  option: do not write a test the others have made, and say so.
+- **MZB-901** (step 7, for the lead): the re-run of the earlier module GameTests (27, 28, 30, 32, 33 and 34) is a run, not code. Phase 2's final
+  clean round of both projects does it, and its logs (`target/m11c-gt<N>-<project>.log`) are the record.
+- **MZB-902** (GameTest round 1, commit a69bff6d; MZB-889): the first round found that `FakePlayers.Hearing.send` recorded each packet and then
+  sent it as any listener does, and NeoForge's `NetworkRegistry.checkPacket` throws "Payload mowziesmobs:message_update_boss_bar may not be sent
+  to the client!" for a mod payload on a mock connection that negotiated nothing. A hearer that tracks the chief got one (31s, then a server crash
+  from the leaked hearers). A custom payload is now recorded and not sent, and a bundle goes on without its payloads. No test reads a payload.
+- **MZB-903** (round 1; commit a69bff6d): every hearer of 31s and of the stuck test (23d) is taken out through `ConflictKit.onEnd` as well as in
+  the sequence (a new `hearersOut`), as `MowzieKit.player` and `Watch` already are. A test that failed in the middle left its hearers standing in the
+  level, tracking and pumping the next tests' bodies, and that was the crash.
+- **MZB-904** (round 1; commit a69bff6d): two facts of the jar the first checks did not allow for. An Umvuthi out of battle heals 0.3 a tick
+  (`healsOutOfBattle`), so a read some ticks after the set was 77.3 for 77: every health check now goes through `healthIs`, which allows the
+  heal (9 over, to the maximum) and never less. The jar's `die` takes the devoted Umvuthana within 30 blocks with their Umvuthi (MZB-432), so a
+  band's warrior is a casualty when its chief is killed near it: the invariant test allows at most that one casualty (never the chief's) and the
+  failed-session test does not ask the dying chief's warrior to stand. This is the engine's rule for a first body and unchanged by M11.
+- **MZB-905** (round 1; commit a69bff6d): 23a waited for the puppet at the end of the lane, and the chief's stack walks at the column's rear, 1.5
+  blocks behind the steer's end, so it stopped at x0 + 148.5 and the wait ran out. The end is steered 4 blocks on, and the marks and the wait are
+  unchanged.
+- **MZB-906** (round 1; commit a69bff6d): the retired hand-back test read its band's epoch from the party after the puppet's death, when the party
+  may be gone ("holds no party yet"). It reads the epoch while the band lives. The line's answer does not depend on the party.
 
 ## M12 S9
 
@@ -7551,7 +11548,7 @@ conservative option at its fork.
 | 0x0808 ENVOY_ANSWER | the envoy's | `ingest`'s fold; a copy, `ingest_copy`'s |
 | 0x0809 TRIBUTE_PAID | the envoy's (agent 0: at the camp, no party) | `ingest`'s fold, before the op-id dedupe; agent 0 names no party, so nothing to fold |
 | 0x080B BAND_LOOTED | the party's | `ingest`'s fold, before the op-id dedupe and the unheld fight's skip; a copy, `ingest_copy`'s |
-| 0x080D TRAIN_PASSED | the party's | A later kind: `ingest`'s fold comes before the `later` return; a copy goes to `ingest_copy` from rtsim-jni's later-kind branch (changed here: it called `ingest`) |
+| 0x080D TRAIN_PASSED | the party's (the lurk table's) | Read since the M8 merge (`train_passed`, no longer a later kind, MZB-691): `ingest`'s fold while replaying, before `train_passed`'s stale check, which compares the party's epoch (RP-151, RP-152); a pass that is not stale is counted and, while replaying, rolls nothing (RP-154); a copy, `ingest_copy`'s fold, then the record is dropped (RP-150). Java journals it at once with no holder, so none is copied. Before the merge: a later kind, `ingest`'s fold before the `later` return; a copy went to `ingest_copy` from rtsim-jni's later-kind branch (changed here: it called `ingest`) |
 | 0x080F CAMP_CENSUS, 0x0812 CAMP_BODIES, 0x0813 CAMP_OUT | a camp's (u64) | Java's op id for the census, never an epoch the engine allocates, so it cannot name one the engine would issue again; `party_epoch` is None. M6's census body bit BODY_CRYSTAL names none either |
 | Every other conflict kind (FACTION_FOUND, TERRITORY_SIGNAL, POLLUTION, GIFT_GIVEN, CHIEF_STATE, HAVEN_CHEST, DIFFICULTY, RAIL_PASS, CAMP_DEATH, TRADED, NOTICE_SHOWN, CHIEF_PAID, HUNT_APPLIED) | none | Nothing to fold. `party_epoch` matches every `Obs` variant by name, so a new kind does not compile until it says. After the M6 merge: CHIEF_STATE is read and names a faction, held while replaying (RP-100); CAMP_DEATH's DEATH_CHIEF names a slot and generation, no epoch. After the M7 merge: RAIL_PASS is read (`rail_pass`, no longer a later kind) and names a faction, a train and an owner, no epoch; the industry's TRAIN_ARRIVED and TRAIN_UNWATCHED reach the conflict through `rail_call` with a train and a line only, so M7 adds nothing to fold (RP-102). After the M9 merge: HUNT_APPLIED (new, 0x0816) names a faction, a district and the hunt's op; HAVEN_CHEST (0x0817 now, journaled) a faction, a chest and its free slots; TRADED and CHIEF_PAID a faction and, for CHIEF_PAID, a camp slot and generation; none an epoch, and `party_epoch` names HUNT_APPLIED with the others. M9 changes no kind that names an epoch. A copy of any of them folds nothing; `ingest_copy` drops a HAVEN_CHEST copy (RP-130), and the others are skipped by op id (TRADED, CHIEF_PAID) or find no hunt (HUNT_APPLIED) |
 | A conflict record that does not decode | unknown | Skipped with a warning before any module code (rtsim-jni `journaled`), as before: its epoch cannot be read |
@@ -7885,6 +11882,102 @@ docs/replay-gate.md §2.7 "The M9 merge" has the conflicts and §4.4 the gate ro
     the chief slot (slot and generation), and an Umvuthi that leads a party has no stack in it
     (MZB-414), so no chief death goes through `casualty_ops`.
 
+### The M8 merge (RP-150 to RP-153)
+
+M8 (feat/mowzie-m8 at 959ada91) merged M7 at 39c819f1 (a64599d6), M9 at 7153b7fe (74dd20ae) and main at
+5a45b9e6 (1885aa7d); docs/replay-gate.md §2.7 "The M8 merge" has the conflicts and §4.4 the gate rows;
+MZB-690 to MZB-692 the build records.
+
+- **RP-150** (a copied TRAIN_PASSED; the M8 merge, point 2): TRAIN_PASSED (0x080D) names the lurk's
+  agent and the epoch of the lurk table's entry, with no op id, and no holder carries it:
+  `ConflictBridge.trainPassed` journals it at once. Until the merge it was a later kind: rtsim-jni's
+  later-kind branch sent a copy to `ingest_copy`, which folded its epoch and passed it to `ingest`,
+  where `later` dropped it. With `later` empty (MZB-691) a copy would reach `train_passed` and roll
+  again, at the copy's tick and so in a new slot (`train ^ at.rotate_left(32)`), and could rob the train a second
+  time (I25's cooldown aside). Java never sends one; as RP-104 does for RAIL_PASS, `ingest_copy` no
+  longer trusts that: it folds the copy's epoch (RP-57, as for every kind) and drops the record.
+  Test: tests/lurk.rs `a_copied_train_passed_is_dropped_and_robs_nothing` (a copy at `ambush_milli`
+  1000 counts no pass and no robbery, asks no threat and leaves the band lurking; the control, the
+  same pass ingested, counts (1, 1) and robs train 7; without the arm the copy counts (1, 1), checked
+  and undone).
+- **RP-151** (TRAIN_PASSED while replaying; the M8 merge, points 1 to 3; §4.4's M8 paragraph;
+  corrected by RP-154, which replaces its roll): with `later` empty a replayed TRAIN_PASSED reaches
+  `train_passed`. `ingest` folds its epoch first (RP-57), then the party must exist, lurk and not be
+  of an older epoch than the record's, else `stale`. A pass that is not stale is counted
+  (`passes`, `passes_watched`) and, while replaying, rolls nothing (RP-154). This record first read
+  that it rolled as live (the same key, slot and game time) and took the goods from industry at
+  industry's present, as M7's `Ev::Ambush` does while replaying, on the reasoning that the conflict
+  and industry pages are saved in one batch, so a robbery after the save is in neither. That was
+  wrong for a pass the live session robbed: industry is not held (§3.6, RP-24; decided by the
+  coordinator, 2026-10-24), and `attack_train` derives its op from industry's present, so the replay's
+  robbery is a different op from the live one and Java removes the goods a second time (RP-154).
+  Its TRAIN_ROBBED would have dropped at the gate in any case (the roar is lost, RP-12). The lurk
+  itself is state: `lurk_start` and `lurk_end` run while replaying as live, their AMBUSH_SPOTs drop
+  at the gate, and `resend_lurks` says each lurk still standing at the replay end, at its epoch after
+  the floors (§4.4). No ambush spot is chosen from a pass: the spot is the target's
+  (`Target::Track`), fixed when the raid set out. Nothing is decided while replaying that §5 or §6
+  would hold: a seen lurk embodies through BAND_MATERIALIZE's early returns, and sightings wait (§6).
+  No change beyond RP-154's.
+- **RP-152** (a pass stale while replaying after two crashes; the M8 merge, point 2; a residual, not
+  built): `train_passed` compares the record's epoch with the party's, not with the floor, since
+  `ingest`'s fold has put the record's epoch in the floor already (a check on the floor would pass
+  every record). After a crash the party's epoch rises to its floor only at `replay_done`, and the
+  AMBUSH_SPOT `resend_lurks` sends carries that epoch. So with pages at epoch E, records of E+1
+  journaled after them, and a second crash before the next page save, every pass the second
+  session journaled (epoch E+1, the table's) up to its world save W2, not one train's, finds the
+  party at E when the third session replays it, paged, and is stale. Those passes robbed live. The
+  replay robs nothing of them, as it robs nothing of any replayed pass since RP-154, stale or not;
+  what staleness costs is their count (`passes` and `passes_watched` miss them, `stale` gets them).
+  Losing is the right direction (lose, never double), bounded by one world-save interval of passes.
+  The option not taken: read the party's floor as it was before the record's fold (a per-record
+  snapshot in `ingest`), for a case that needs two crashes inside one page interval and, since
+  RP-154, buys only the count.
+- **RP-153** (the rest of the eight points; the M8 merge, points 3 to 7; no change):
+  - Point 3, the camp claim. A lurk's puppet takes a camp body only through `Camps.claim`, which
+    matches this hand-over's SET_OUT lines by agent, epoch and body, for a camp that is in at the
+    line's epoch. A lurk begins at the track after the march, so a lurking party is never placed in
+    the hand-over of its own set-out; and no SET_OUT goes while replaying (the Reconcile row's
+    "never", every camp out from `begin_replay`). A set-out no materialize claims, or one a refused
+    lurk unclaims (`spawn`'s hold-point refusal comes before the claim), resolves at the tick's end
+    as a take (`resolveSetOuts`), which waits while a player is near for a kind that holds removals
+    (a grove's, Rule U, MZB-433) and goes at once for a den. MZB-224's hold and M6's recount hold
+    (`c.recount`, `strayHold`) hold SPAWN lines only, and no lurk makes one; MowzieGameTests'
+    `aLurkRefusedAtItsPlacingClaimsNoCampBodyAndTheSetOutIsATake` pins the refusal.
+  - Point 4 (RP-66). M8's protocol tests drive the lurk through `with_conflict_mut` and the engine's
+    own orders, not `Order::ConflictCommand`, so the wait for the replay end changes none of them.
+  - Point 5 (MZB-589). M8's one BAND_CASUALTIES literal (tests/lurk.rs) carries `op: next_op()`;
+    no M8 test counts hand-overs, so `ONE_HAND_OVER` is not needed.
+  - Point 6. `arrive`'s arm order is M7's (Envoy, Scouts, peaceful, Track, then the hold, §6.1);
+    M8's `lurk_start` is in the Track arm, before the hold, so a lurking arrival is never held, and
+    on Peaceful a band at a track goes home without lurking. M7's `rail_held` (RAIL_PASSes held per
+    train for a line) and M8's lurk do not meet: the lurk has no held state, it is derived from the
+    party's phase, kind and target (MZB-357).
+  - Point 7. M8 adds nothing to `Faction`, so MZB-672's FactionRow pin followed M9's row: 200 + 24
+    + 8 = 232 with M9's hunts unboxed (M9 at 7153b7fe), and since the second-pass merge of M9's
+    check fixes (42e8fcc3), which boxes them, 200 + 8 + 8 = 216 again (RP-155). M10 took the boxed
+    row at its step 1 merge (MZB-485).
+- **RP-154** (a replayed TRAIN_PASSED rolls nothing; the M8 fixes pass, P2; corrects RP-151): in
+  `train_passed`, after the pass is counted (`passes`, and `passes_watched` when watched), `if
+  self.outbox.replaying() { return; }` comes before the roll. A pass the replay brings back is
+  counted and never rolls: no `ambush`, no `raid_train`, no TRAIN_ROBBED, `lurk_robberies` unchanged.
+  Why: the roll is keyed by train and the record's `at`, so a pass the live session robbed hits
+  again in the replay; industry is not held (§3.6, RP-24) and `attack_train` (rtsim-industry
+  `engine.rs`) derives its IND_CARRIAGE_DELTA op from industry's present `now`, so the op differs
+  from the live one and Java (`TrainWatch`, `opApplied`) removes the goods a second time. Lose,
+  never double: a robbery the live session never made (the pass came after the pages and the
+  industry save) is lost too, bounded by one world-save interval of passes; the cargo stays on the
+  train. The option not taken: derive industry's attack op from the threat's `at` and the train
+  id, so that Java answers DUPLICATE_OP for a replayed robbery and the replay may roll as live;
+  main's `Ev::Ambush` shares the root (it too robs at industry's present while replaying), so the
+  lead asked the coordinator, and this guard is the conservative option until that answer comes.
+  `stats.lurk_robberies` counts only the robberies told to Java, so only a live session's (its
+  doc at `Stats` says so). Test: tests/lurk.rs `a_replayed_train_passed_is_counted_and_never_rolls`
+  (`begin_replay`, a pass at `ambush_milli` 1000, which hits when it rolls: counted (1, 1 watched),
+  no threat asked, no loot, no ambush note, no TRAIN_ROBBED, `lurk_robberies` 0; the control, after
+  `replay_done` the same pass live robs train 7; without the guard the test fails at "no attack on
+  the train was asked", checked and undone). RP-151, RP-152, RP-57's 0x080D row, replay-gate.md
+  §4.4 and boundary.md §9.3 say a replayed pass rolls nothing.
+
 ### The M9 check (RP-133 to RP-134)
 
 The Opus check of the M9 merge (feat/mowzie-m9 at 7153b7fe) found one P2 and four P3s; P3-3 and
@@ -8012,6 +12105,44 @@ pointer above; P3-4 is the RP-134 wording above. No format change: RTC9 / META 8
     session 3 was sent the hunt again; after, session 2 sends session 1's op and session 3 nothing.
   - Residual: `resolve`'s industry threat ids still hash the poll's tick (an observation only, never
     sent), as RP-133 said.
+
+### The M8 second-pass merges (RP-155 to RP-156)
+
+The M8 fixes pass (RP-154, rail.rs's guard, af4c72d1 and its format commit) came first; then each
+merge, its own commit, with feat/mowzie-m8 as the first parent.
+
+- **RP-155** (feat/mowzie-m9 at 42e8fcc3: RP-133 hunt ops of held raids, RP-134 tribute stacks,
+  MZB-672 amended, MZB-673; the FactionRow pin). Two conflicts. rtsim-jni engine/conflict.rs's
+  module doc: M9's HAVEN_CHEST sentence ("latest wins, and has no op id, so `Conflict::ingest_copy`
+  drops a copy, RP-130") over M8's, and M8's `later` sentence (none since M8's TRAIN_PASSED and M9's
+  grove kinds) over M9's "TRAIN_PASSED": both facts kept, no code. This file: both sections kept
+  (the M8 merge's, with RP-154, then M9's check). Everything else merged without a conflict, and
+  `later` stays empty. The pin: M8's first merge raised tests/rail.rs's
+  `a_world_with_no_rail_keeps_base_layout_but_for_pointers` to 200 + 24 + 8 = 232 because M9's
+  `Faction.hunts` was an unboxed Vec; M9's check boxes it (`Option<Box<Vec<Hunt>>>`, MZB-672
+  amended) and changes the same line to 200 + 8 + 8 = 216. One test, one value: M9's side is taken
+  (the 232 side would fail), M8 adding no `Faction` field, so the row is M9's 216 plus nothing
+  (re-derived: the test passes at 216 in the merged tree). M9's new tests (`mowzie_records.rs`,
+  `grove.rs`, protocol.rs's stack tests) run beside M8's lurk tests and pass.
+- **RP-156** (origin/main at a11311aa: M6 landed with its P3s, its fixtures at RTC7 / META 6, slice S
+  and SEC-1 S6). No conflict, and the merge changes only rtsim-view's `fixtures.rs` and its fixture
+  data (the saves of 1290d0b7, conflict meta page 6): the rest of main had come with the earlier
+  merges of it. `cargo test --workspace`: the five fixture tests fail as on every earlier merge,
+  since this build reads META 9 (rtsim-view `fixtures`:
+  `the_core_gametest_save_draws_every_layer_and_writes_nothing` and
+  `the_create_gametest_save_draws_every_layer_and_writes_nothing`; `hashes`:
+  `every_gametest_save_carries_and_matches_each_modules_hash` and `a_hash_that_differs_is_flagged`;
+  rtsim-host `host`: `gametest_worlds_open_in_the_host_with_their_saved_state`). A sixth,
+  rtsim-cli `view`'s `at_100000_districts_a_full_world_request_keeps_the_budget_and_the_sidecar_its_cap`,
+  failed once in the loaded full run (its district card carried the note "Its machines are read
+  from the world as the card is opened: 0 of its 2 chunks so far", a timing note) and passes alone:
+  a load flake, not the merge's. The sims regenerated on the merged head (`sim conflict` and `sim
+  mowzie`, every check of every run ok) are the committed files but for `wall_ms`: they came in
+  unchanged, M6's changes were in M8's sims already, and neither M9's check fixes nor RP-154 moves
+  a run (no sim replays a pass). Against main (a11311aa) the differences are M7's, M8's and M9's
+  and the same as the M8 merge listed: sim-conflict's three stat sets and the conflict state hash;
+  sim-mowzie's runs built by M7, M8 and M9, M8's lurk checks, M9's grove checks and plunder at node
+  4 (0 items spare, not 1), and the state hashes in its save checks.
 
 ### Slice H (herds)
 
