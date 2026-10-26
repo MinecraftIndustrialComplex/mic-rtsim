@@ -542,9 +542,17 @@ public final class FrostmawGameTests {
         double[] trackAt = {0.0, -4.0}, spotAt = {0.0, 0.0};
         /** Run after the floor is laid and before the lurk is sent (the placement tests dig holes in it). */
         Runnable afterFloor;
+        /**
+         * The test's clocks. The sequence's own waits are chunk waits (the floor's chunks, and the engine's round
+         * trips that stand the puppet: {@code io} waits, as everywhere in the Mowzie kit), so the test's logic waits
+         * count from the puppet standing, not from the test's start: under load a lurk took more than the whole logic
+         * budget to stand, and the module-off test failed at its first logic wait.
+         */
+        final ChunkWait waits;
 
-        Held(GameTestHelper helper, String test) {
+        Held(GameTestHelper helper, String test, ChunkWait waits) {
             this.test = test;
+            this.waits = waits;
             this.far = new Far(helper, test);
             this.level = far.level;
             this.x = far.bx + 8;
@@ -554,11 +562,11 @@ public final class FrostmawGameTests {
         /** The sequence up to a held puppet: the lurk is in the table, the puppet stands, tagged, awake for good, restricted. */
         GameTestSequence up(GameTestHelper helper) {
             return lurking(helper)
-                    .thenWaitUntil(io(() -> {
+                    .thenWaitUntil(waits.chunks(io(() -> {
                         check("the puppet stands", RtsimApi.lurkBody(agent) instanceof EntityFrostmaw);
                         EntityFrostmaw p = (EntityFrostmaw) RtsimApi.lurkBody(agent);
                         check("and is held: awake for good and restricted", p.isAlwaysActive() && p.hasRestriction());
-                    }))
+                    })))
                     .thenExecute(() -> {
                         f[0] = (EntityFrostmaw) RtsimApi.lurkBody(agent);
                         ConflictKit.onEnd(helper, () -> {
@@ -584,7 +592,7 @@ public final class FrostmawGameTests {
         GameTestSequence lurking(GameTestHelper helper) {
             return helper.startSequence()
                     .thenExecute(() -> far.force(far.k, far.z0))
-                    .thenWaitUntil(far.ready())
+                    .thenWaitUntil(waits.chunks(far.ready()))
                     .thenExecute(() -> {
                         int y = MowzieKit.platform(level, far.bx + 2 - pad, far.bx + 14 + pad, far.bz + 2 - pad, far.bz + 14 + pad) + 1;
                         spot[0] = new Vec3(x + 0.5 + spotAt[0], y, z + 0.5 + spotAt[1]);
@@ -594,7 +602,7 @@ public final class FrostmawGameTests {
                         ConflictKit.ambushSpot(agent, 1, faction, far.dim, new double[] {track[0].x, track[0].y, track[0].z},
                                 new double[] {spot[0].x, spot[0].y, spot[0].z}, 8.0f);
                     })
-                    .thenWaitUntil(io(() -> check("the lurk is in the table", RtsimApi.lurks().containsKey(agent))))
+                    .thenWaitUntil(waits.chunks(io(() -> check("the lurk is in the table", RtsimApi.lurks().containsKey(agent)))))
                     .thenExecute(() -> {
                         ConflictKit.Band b = ConflictKit.band(agent, faction, far.dim);
                         b.arcX = spot[0].x;
@@ -664,7 +672,7 @@ public final class FrostmawGameTests {
      * check after the take fails. The first check to trip is the saved NBT's, the uninstall check proper: "the taken
      * body, before the engine has the casualty,: alwaysActive false in its saved NBT" (it was true). Not run.
      */
-    @GameTest(template = ARENA, timeoutTicks = 1500, batch = "frostmaw_lurk_taken", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "frostmaw_lurk_taken", skyAccess = true)
     public static void aLurkPuppetTakenByAPlayerIsLetGoLikeAnyOrdinaryFrostmaw(GameTestHelper helper) {
         taken(helper, "aLurkPuppetTakenByAPlayerIsLetGoLikeAnyOrdinaryFrostmaw", true);
     }
@@ -674,13 +682,14 @@ public final class FrostmawGameTests {
      * casualty is by other, and the body is let go the same way. On the code before the fix: "the taken body, before
      * the engine has the casualty,: alwaysActive false in its saved NBT". Not run.
      */
-    @GameTest(template = ARENA, timeoutTicks = 1500, batch = "frostmaw_lurk_taken_other", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "frostmaw_lurk_taken_other", skyAccess = true)
     public static void aLurkPuppetTakenByNoPlayerIsLetGoLikeAnyOrdinaryFrostmaw(GameTestHelper helper) {
         taken(helper, "aLurkPuppetTakenByNoPlayerIsLetGoLikeAnyOrdinaryFrostmaw", false);
     }
 
     private static void taken(GameTestHelper helper, String test, boolean byPlayer) {
-        Held h = new Held(helper, test);
+        ChunkWait waits = ChunkWait.of(helper, 1500);
+        Held h = new Held(helper, test, waits);
         Player[] taker = new Player[1];
         int by = byPlayer ? ConflictRecords.BY_PLAYER : ConflictRecords.BY_OTHER;
         h.up(helper)
@@ -701,13 +710,13 @@ public final class FrostmawGameTests {
                     check("the taken body is not always-active (" + f.isAlwaysActive() + ")", !f.isAlwaysActive());
                     check("the lurk is still in the table", RtsimApi.lurks().containsKey(h.agent));
                 })
-                .thenWaitUntil(io(() -> {
+                .thenWaitUntil(waits.chunks(io(() -> {
                     List<ScriptedEngine.Received> c = ConflictKit.about(ConflictRecords.BAND_CASUALTIES, h.agent);
                     check("the engine has the casualty", c.size() == 1);
                     check("by " + by + ", not " + c.get(0).aux(), c.get(0).aux() == by);
-                }))
+                })))
                 .thenExecute(() -> RtsimTests.engine().requestSaveAtNextStep())
-                .thenWaitUntil(io(() -> check("acknowledged: the body carries no records", !h.f[0].hasData(RtsimAttachments.PENDING))))
+                .thenWaitUntil(waits.chunks(io(() -> check("acknowledged: the body carries no records", !h.f[0].hasData(RtsimAttachments.PENDING)))))
                 .thenExecute(() -> {
                     // The uninstall: the module off. The body is not the bridge's, so it stays as it is.
                     h.off(helper, true);
@@ -736,7 +745,7 @@ public final class FrostmawGameTests {
                             + " nothing of mic_rtsim on it once the engine has the casualty; the module off and on left it alone");
                     ConflictKit.ambushRemoved(h.agent, 1, h.faction, h.far.dim);
                 })
-                .thenWaitUntil(io(() -> check("the lurk is gone from the table", !RtsimApi.lurks().containsKey(h.agent))))
+                .thenWaitUntil(waits.chunks(io(() -> check("the lurk is gone from the table", !RtsimApi.lurks().containsKey(h.agent)))))
                 .thenSucceed();
     }
 
@@ -752,7 +761,7 @@ public final class FrostmawGameTests {
     public static void aLurkPuppetHeldWhenTheModuleSwitchesOffLeavesNothingInTheWorld(GameTestHelper helper) {
         ChunkWait waits = ChunkWait.of(helper, 1500);
         String test = "aLurkPuppetHeldWhenTheModuleSwitchesOffLeavesNothingInTheWorld";
-        Held h = new Held(helper, test);
+        Held h = new Held(helper, test, waits);
         h.up(helper)
                 .thenExecute(() -> h.off(helper, true))
                 .thenWaitUntil(waits.logic(() -> check("the held body is gone with the module off", h.f[0].isRemoved())))
@@ -790,7 +799,7 @@ public final class FrostmawGameTests {
     public static void aKilledHeldPuppetLeavesNothingInTheLurker(GameTestHelper helper) {
         ChunkWait waits = ChunkWait.of(helper, 1500);
         String test = "aKilledHeldPuppetLeavesNothingInTheLurker";
-        Held h = new Held(helper, test);
+        Held h = new Held(helper, test, waits);
         h.up(helper)
                 .thenExecute(() -> {
                     check("the premise: the plugin keeps a stamp for the held body", tracked(h.f[0]));
@@ -823,7 +832,7 @@ public final class FrostmawGameTests {
     public static void aHeldPuppetRemovedBySomethingElseLeavesNothingInTheLurker(GameTestHelper helper) {
         ChunkWait waits = ChunkWait.of(helper, 1500);
         String test = "aHeldPuppetRemovedBySomethingElseLeavesNothingInTheLurker";
-        Held h = new Held(helper, test);
+        Held h = new Held(helper, test, waits);
         h.up(helper)
                 .thenExecute(() -> {
                     check("the premise: the plugin keeps a stamp for the held body", tracked(h.f[0]));
@@ -866,7 +875,7 @@ public final class FrostmawGameTests {
     public static void aHeldPuppetWalksBackToItsSpotAndDoesNotChaseItsTarget(GameTestHelper helper) {
         ChunkWait waits = ChunkWait.of(helper, 1500);
         String test = "aHeldPuppetWalksBackToItsSpotAndDoesNotChaseItsTarget";
-        Held h = new Held(helper, test);
+        Held h = new Held(helper, test, waits);
         ServerPlayer[] player = new ServerPlayer[1];
         double[] closest = {Double.MAX_VALUE}, nearest = {Double.MAX_VALUE}, stray = {0};
         long[] from = new long[2];
@@ -950,7 +959,7 @@ public final class FrostmawGameTests {
      * the {@value #DODGE_WATCH} ticks after. On the code before the fix it is carried 10 blocks or more off in the
      * dodge: "the puppet never left its stand while it dodged: strayed 11.9 of 0.5". Not run.
      */
-    @GameTest(template = ARENA, timeoutTicks = 1500, batch = "frostmaw_lurk_dodge_player", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "frostmaw_lurk_dodge_player", skyAccess = true)
     public static void aHeldPuppetHurtByAPlayerNearbyDoesNotLeapOffItsSpot(GameTestHelper helper) {
         dodged(helper, "aHeldPuppetHurtByAPlayerNearbyDoesNotLeapOffItsSpot", true);
     }
@@ -959,13 +968,14 @@ public final class FrostmawGameTests {
      * The same for lava (MZB-361): the jar starts a dodge at once on lava damage, with no player or target, and its
      * tick 6 leaps the same. Not run.
      */
-    @GameTest(template = ARENA, timeoutTicks = 1500, batch = "frostmaw_lurk_dodge_lava", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "frostmaw_lurk_dodge_lava", skyAccess = true)
     public static void aHeldPuppetHurtByLavaDoesNotLeapOffItsSpot(GameTestHelper helper) {
         dodged(helper, "aHeldPuppetHurtByLavaDoesNotLeapOffItsSpot", false);
     }
 
     private static void dodged(GameTestHelper helper, String test, boolean byPlayer) {
-        Held h = new Held(helper, test);
+        ChunkWait waits = ChunkWait.of(helper, 1500);
+        Held h = new Held(helper, test, waits);
         ServerPlayer[] player = new ServerPlayer[1];
         Vec3[] home = new Vec3[1];
         double[] stray = {0.0};
@@ -993,7 +1003,7 @@ public final class FrostmawGameTests {
                     from[0] = h.level.getGameTime();
                     check("the blow lands", f.hurt(blow, byPlayer ? 20f : 1f));
                 })
-                .thenWaitUntil(() -> {
+                .thenWaitUntil(waits.logic(() -> {
                     EntityFrostmaw f = h.f[0];
                     if (byPlayer)
                         f.setTarget(player[0]); // the restriction gates its own targeting (MZB-362)
@@ -1001,7 +1011,7 @@ public final class FrostmawGameTests {
                     if (f.getAnimation() == EntityFrostmaw.DODGE_ANIMATION && f.getAnimationTick() >= 7)
                         leapt[0] = true;
                     check("the watch ran " + (h.level.getGameTime() - from[0]) + " of " + DODGE_WATCH + " ticks", h.level.getGameTime() - from[0] >= DODGE_WATCH);
-                })
+                }))
                 .thenExecute(() -> {
                     check("the jar's dodge ran past its leap at tick 6 (the premise)", leapt[0]);
                     check("the puppet never left its stand while it dodged: strayed " + stray[0] + " of " + FrostmawLurker.STAND,
@@ -1011,7 +1021,7 @@ public final class FrostmawGameTests {
                             + stray[0] + " blocks from its hold point in " + DODGE_WATCH + " ticks");
                     ConflictKit.ambushRemoved(h.agent, 1, h.faction, h.far.dim);
                 })
-                .thenWaitUntil(io(() -> check("the lurk is gone from the table", !RtsimApi.lurks().containsKey(h.agent))))
+                .thenWaitUntil(waits.chunks(io(() -> check("the lurk is gone from the table", !RtsimApi.lurks().containsKey(h.agent)))))
                 .thenSucceed();
     }
 
@@ -1030,7 +1040,8 @@ public final class FrostmawGameTests {
 
     /** As above, the dug columns taken out {@code depth + 1} blocks deep from the floor's top (8: the whole search; 2: a cutting whose bottom is 3 below the rail). */
     private static void placedAt(GameTestHelper helper, String test, double[] spotAt, boolean digNorth, boolean digSouth, int depth, double[] expectAt) {
-        Held h = new Held(helper, test);
+        ChunkWait waits = ChunkWait.of(helper, 1500);
+        Held h = new Held(helper, test, waits);
         h.pad = 1;
         h.trackAt = new double[] {0.0, 0.0};
         h.spotAt = spotAt;
@@ -1059,7 +1070,7 @@ public final class FrostmawGameTests {
                     check("and the engine's spot (" + h.spot[0].x + ", " + h.spot[0].z + ") was not where it went", h.spot[0].distanceTo(want) > 1.0);
                     ConflictKit.ambushRemoved(h.agent, 1, h.faction, h.far.dim);
                 })
-                .thenWaitUntil(io(() -> check("the lurk is gone from the table", !RtsimApi.lurks().containsKey(h.agent))))
+                .thenWaitUntil(waits.chunks(io(() -> check("the lurk is gone from the table", !RtsimApi.lurks().containsKey(h.agent)))))
                 .thenSucceed();
     }
 
@@ -1088,8 +1099,8 @@ public final class FrostmawGameTests {
         double[] south = {0.0, 5.0};
         int[] firstRefusals = {0};
         h.lurking(helper)
-                .thenWaitUntil(io(() -> check("the lurk was refused (" + (ConflictKit.bridge().lurksRefused - refused[0]) + " times)",
-                        ConflictKit.bridge().lurksRefused > refused[0])))
+                .thenWaitUntil(h.waits.chunks(io(() -> check("the lurk was refused (" + (ConflictKit.bridge().lurksRefused - refused[0]) + " times)",
+                        ConflictKit.bridge().lurksRefused > refused[0]))))
                 .thenExecute(() -> {
                     check("no Frostmaw stands in the place", h.level.getEntitiesOfClass(EntityFrostmaw.class,
                             new AABB(h.x - 14, h.track[0].y - 12, h.z - 14, h.x + 14, h.track[0].y + 12, h.z + 14)).isEmpty());
@@ -1107,13 +1118,13 @@ public final class FrostmawGameTests {
                             b.discard();
                     });
                 })
-                .thenWaitUntil(io(() -> check("the retry stands the puppet", RtsimApi.lurkBody(h.agent) instanceof EntityFrostmaw)))
+                .thenWaitUntil(h.waits.chunks(io(() -> check("the retry stands the puppet", RtsimApi.lurkBody(h.agent) instanceof EntityFrostmaw))))
                 .thenExecute(() -> {
                     h.f[0] = (EntityFrostmaw) RtsimApi.lurkBody(h.agent);
                     holds(h, test, south);
                     ConflictKit.ambushRemoved(h.agent, 1, h.faction, h.far.dim);
                 })
-                .thenWaitUntil(io(() -> check("the lurk is gone from the table", !RtsimApi.lurks().containsKey(h.agent))))
+                .thenWaitUntil(h.waits.chunks(io(() -> check("the lurk is gone from the table", !RtsimApi.lurks().containsKey(h.agent)))))
                 .thenSucceed();
     }
 
@@ -1123,7 +1134,7 @@ public final class FrostmawGameTests {
      * from the rail's line). The puppet is held 5 north of the track point, on the rail's normal. On the code before
      * the fix it stands at the engine's spot: "the hold point is (...), a block centre 5.0 off the rail". Not run.
      */
-    @GameTest(template = ARENA, timeoutTicks = 1500, batch = "frostmaw_lurk_place_oblique", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "frostmaw_lurk_place_oblique", skyAccess = true)
     public static void aLurkPuppetForAnObliqueDenStandsOnTheRailsNormal(GameTestHelper helper) {
         placedAt(helper, "aLurkPuppetForAnObliqueDenStandsOnTheRailsNormal", new double[] {4.0, -4.0}, false, false, new double[] {0.0, -5.0});
     }
@@ -1134,7 +1145,7 @@ public final class FrostmawGameTests {
      * the rail, +x: the south). On the code before the fix the puppet stands on the rail: "the hold point is (...)".
      * Not run.
      */
-    @GameTest(template = ARENA, timeoutTicks = 1500, batch = "frostmaw_lurk_place_online", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "frostmaw_lurk_place_online", skyAccess = true)
     public static void aLurkPuppetForADenOnTheRailTakesTheLeftHandSide(GameTestHelper helper) {
         placedAt(helper, "aLurkPuppetForADenOnTheRailTakesTheLeftHandSide", new double[] {5.0, 0.0}, false, false, new double[] {0.0, 5.0});
     }
@@ -1144,7 +1155,7 @@ public final class FrostmawGameTests {
      * point (and beside it) have the floor dug out to below the search, and the puppet is held on the other side of
      * the rail instead, 5 south. Not run.
      */
-    @GameTest(template = ARENA, timeoutTicks = 1500, batch = "frostmaw_lurk_place_other", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "frostmaw_lurk_place_other", skyAccess = true)
     public static void aLurkPuppetWhoseDensSideHasNoFloorStandsOnTheOtherSide(GameTestHelper helper) {
         placedAt(helper, "aLurkPuppetWhoseDensSideHasNoFloorStandsOnTheOtherSide", new double[] {0.0, -5.0}, true, false, new double[] {0.0, 5.0});
     }
@@ -1156,7 +1167,7 @@ public final class FrostmawGameTests {
      * 2 of the rail only, and the puppet is held on the other side instead. On the code before (a floor 8 below to 4
      * above) it stands in the cutting: "the hold point is (...), a block centre 5.0 off the rail". Not run.
      */
-    @GameTest(template = ARENA, timeoutTicks = 1500, batch = "frostmaw_lurk_place_cutting", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "frostmaw_lurk_place_cutting", skyAccess = true)
     public static void aLurkPuppetWhoseDensSideIsACuttingStandsOnTheOtherSide(GameTestHelper helper) {
         placedAt(helper, "aLurkPuppetWhoseDensSideIsACuttingStandsOnTheOtherSide", new double[] {0.0, -5.0}, true, false, 2, new double[] {0.0, 5.0});
     }
@@ -1172,7 +1183,7 @@ public final class FrostmawGameTests {
     public static void aLurkWithNoRailDirectionButARailNearItsSpotIsRefusedAndStandsOnceNoneIs(GameTestHelper helper) {
         ChunkWait waits = ChunkWait.of(helper, 1500);
         String test = "aLurkWithNoRailDirectionButARailNearItsSpotIsRefusedAndStandsOnceNoneIs";
-        Held h = new Held(helper, test);
+        Held h = new Held(helper, test, waits);
         boolean[] near = {true};
         double[] asked = {Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN};
         RailAxes before = LurkSpots.axes();
@@ -1231,7 +1242,7 @@ public final class FrostmawGameTests {
      * and tries the stack again after its retry delay, not each tick); the south floor comes back and the retry
      * stands the puppet there. Not run.
      */
-    @GameTest(template = ARENA, timeoutTicks = 1500, batch = "frostmaw_lurk_place_refused", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "frostmaw_lurk_place_refused", skyAccess = true)
     public static void aLurkWithNoFloorOnEitherSideOfTheRailIsRefusedAndTriedAgain(GameTestHelper helper) {
         placedAt(helper, "aLurkWithNoFloorOnEitherSideOfTheRailIsRefusedAndTriedAgain", new double[] {0.0, -5.0}, true, true, null);
     }
@@ -1253,7 +1264,7 @@ public final class FrostmawGameTests {
     public static void aStrikesBearingDoesNotTurnTheFrostmawsOwnLaterSwipes(GameTestHelper helper) {
         ChunkWait waits = ChunkWait.of(helper, 1500);
         String test = "aStrikesBearingDoesNotTurnTheFrostmawsOwnLaterSwipes";
-        Held h = new Held(helper, test);
+        Held h = new Held(helper, test, waits);
         ServerPlayer[] player = new ServerPlayer[1];
         float[] stale = new float[1], yaw = new float[1];
         boolean[] swiped = new boolean[1];
