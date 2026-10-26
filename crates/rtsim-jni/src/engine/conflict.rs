@@ -1226,9 +1226,20 @@ fn reject(st: &mut State, cmd: &Cmd, reason: u32) {
 
 /// Writes the queued conflict commands while they fit; each takes the next sequence. Returns the
 /// highest sequence written and whether some wait for the next buffer.
+///
+/// Nothing while the conflict waits for Java's dictionary with kept records (`kept_waiting`,
+/// RP-292): the first hand-over may end right after the DICTs, and the stacks the kept answers
+/// are for are still in `placing` with no op in the core outbox (the answer completed it). Written
+/// again, a stack would go in the chest twice; with the dimension's DICT not yet there,
+/// `fail_tribute` would put its goods back in stock, and the kept APPLIED would find no stack. The
+/// conflict decides nothing meanwhile, so no other command is queued: all of it waits for the
+/// reset, which runs at the first record after the DICTs.
 pub(super) fn write_queue(st: &mut State, w: &mut RecordWriter<'_>) -> (u64, bool) {
     if !st.conflict.enabled {
         st.conflict.queue.clear();
+        return (0, false);
+    }
+    if kept_waiting(st) {
         return (0, false);
     }
     let (mut highest, more) = write_tribute(st, w);

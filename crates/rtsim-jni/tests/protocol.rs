@@ -12286,7 +12286,21 @@ mod conflict {
     #[derive(Clone, Copy, PartialEq)]
     enum Answer {
         Applied,
+        /// APPLIED, then a DUPLICATE_OP for the same op, both heard while off.
+        AppliedTwice,
         NotLoaded,
+    }
+
+    /// What happens to the engine between the switch-off and the switch-on.
+    #[derive(Clone, Copy, PartialEq)]
+    enum Restart {
+        /// Nothing: the same session.
+        No,
+        /// A save while off, a crash, and a restart with the conflict still off.
+        Off,
+        /// A save while off, a crash, and a restart with the conflict on, whose first hand-over
+        /// ends right after the DICTs (`Java::end_after_dicts`).
+        On,
     }
 
     /// RP-292 (docs/replay-gate.md 9.7, the grove's twin of RP-291): a tribute stack answered while
@@ -12300,7 +12314,8 @@ mod conflict {
     /// left to answer it, and the grove sent no more (the answer is not heard again, and a stack
     /// sent again under its op would be put in the chest twice). `crash`: a save while off, a
     /// crash, and a restart with the conflict still off carry the kept answer on its page.
-    fn a_grove_stack_answered_with_the_conflict_off(name: &str, crash: bool, answer: Answer) {
+    fn a_grove_stack_answered_with_the_conflict_off(name: &str, restart: Restart, answer: Answer) {
+        let crash = restart != Restart::No;
         let (dir, e, mut j) = grove(name, 3);
         camp_in(&mut j);
         let block = j.dict_id(wire::DICT_ITEM, "minecraft:gold_block");
@@ -12329,14 +12344,43 @@ mod conflict {
         let first = tribute_ops(&j);
         assert_eq!(first.len(), 1, "the first stack is out, and only it");
         assert_eq!(owed_tribute(&e), (567, 1, 1), "in flight");
-        let placed = answer == Answer::Applied;
+        let placed = answer != Answer::NotLoaded;
         assert_eq!(
             j.containers.get(&chest).copied(),
             placed.then_some(64),
             "Java's answer is journaled, not yet heard"
         );
         j.unloaded_transfers = false;
+        let good = e.with_conflict(|c, _| c.placings().next().unwrap().1.good);
+        let stock = |e: &Engine| {
+            e.with_conflict(|c, w| {
+                let node = c.factions[c.faction_of_key(CAMP).unwrap() as usize].node;
+                w.market(node).lines[good as usize].stock
+            })
+        };
+        let stock_at_the_answer = stock(&e);
         j.modules(MODULES & !MODULE_CONFLICT);
+        if answer == Answer::AppliedTwice {
+            let op = *first.iter().next().unwrap();
+            let seq = j
+                .journal
+                .iter()
+                .find(|(_, r)| {
+                    wire::u16_at(r, wire::R_KIND) == obs::COMMAND_RESULT
+                        && wire::u64_at(r, obs::command_result::OP_ID) == op
+                })
+                .map(|(_, r)| wire::u64_at(r, obs::command_result::CMD_SEQ))
+                .expect("the first answer is journaled");
+            j.journal(
+                obs::COMMAND_RESULT,
+                obs::command_result::SIZE,
+                obs::command_result::DUPLICATE_OP,
+                |r| {
+                    wire::put_u64(r, obs::command_result::CMD_SEQ, seq);
+                    wire::put_u64(r, obs::command_result::OP_ID, op);
+                },
+            );
+        }
         j.idle();
         j.idle();
 
@@ -12373,14 +12417,46 @@ mod conflict {
                 std::mem::replace(&mut j.conflict_plugin, synth::FakeConflict::new(PLAYER));
             let containers = j.containers.clone();
             let _ = j.crash();
-            let (e, mut j) = reopen_mask(&dir, saved, gt, 256 * 1024, MODULES & !MODULE_CONFLICT);
-            j.conflict_plugin = plugin;
-            // The chest's chunk was saved with the world.
-            j.containers = containers;
-            j.idle();
-            assert!(tribute_ops(&j).is_empty(), "the new session sent nothing");
-            assert_eq!(owed_tribute(&e).1, 1, "still in flight, its answer kept");
-            (e, j)
+            if restart == Restart::On {
+                // The first hand-over ends right after the DICTs: the reset that applies the kept
+                // answer waits for the first record after them, and this step's writes come
+                // before it.
+                let e = engine(&dir, 256 * 1024);
+                let mut j = Java::open(e.clone(), saved);
+                j.module_mask = MODULES;
+                j.game_time = gt;
+                j.conflict_plugin = plugin;
+                j.containers = containers;
+                j.end_after_dicts = true;
+                j.flush();
+                assert!(
+                    tribute_ops(&j).is_empty(),
+                    "no TRANSFER is written again for the stack answered while off"
+                );
+                assert_eq!(
+                    j.containers.get(&chest).copied(),
+                    placed.then_some(64),
+                    "the chest holds what it held"
+                );
+                assert_eq!(owed_tribute(&e).1, 1, "its answer is kept, not yet taken");
+                assert!(
+                    stock(&e) <= stock_at_the_answer,
+                    "the goods did not go back to the stock: {} after the restart, {} at the answer",
+                    stock(&e),
+                    stock_at_the_answer
+                );
+                (e, j)
+            } else {
+                let (e, mut j) =
+                    reopen_mask(&dir, saved, gt, 256 * 1024, MODULES & !MODULE_CONFLICT);
+                j.conflict_plugin = plugin;
+                // The chest's chunk was saved with the world.
+                j.containers = containers;
+                j.idle();
+                assert!(tribute_ops(&j).is_empty(), "the new session sent nothing");
+                assert_eq!(owed_tribute(&e).1, 1, "still in flight, its answer kept");
+                (e, j)
+            }
         } else {
             (e, j)
         };
@@ -12436,14 +12512,55 @@ mod conflict {
 
     #[test]
     fn a_groves_tribute_stack_answered_with_the_conflict_off_is_placed_once() {
-        a_grove_stack_answered_with_the_conflict_off("grove-off", false, Answer::Applied);
+        a_grove_stack_answered_with_the_conflict_off("grove-off", Restart::No, Answer::Applied);
     }
 
     /// The kept answer is on the conflict's kept page: a save while off, a crash, and a restart
     /// with the conflict still off carry it to the switch-on.
     #[test]
     fn a_groves_tribute_stack_answered_with_the_conflict_off_survives_a_crash() {
-        a_grove_stack_answered_with_the_conflict_off("grove-off-crash", true, Answer::Applied);
+        a_grove_stack_answered_with_the_conflict_off(
+            "grove-off-crash",
+            Restart::Off,
+            Answer::Applied,
+        );
+    }
+
+    /// P2 of U-c's review: the restart comes back with the conflict on, and its first hand-over
+    /// ends right after the DICTs (the preamble filled the buffer). The conflict waits for the
+    /// first record after them to apply the kept answer, and writes nothing meanwhile: the stack
+    /// is still in `placing`, and the answer took its op out of the core outbox, so a write would
+    /// send it again (the coin in the chest twice) or, with the dimension's DICT not yet there,
+    /// put its goods back in stock while the kept APPLIED later finds no stack.
+    #[test]
+    fn a_groves_tribute_stack_answered_off_is_not_written_again_while_the_restart_waits_for_the_dicts()
+     {
+        a_grove_stack_answered_with_the_conflict_off(
+            "grove-off-dicts",
+            Restart::On,
+            Answer::Applied,
+        );
+    }
+
+    /// A second answer to the same op heard while off (a DUPLICATE_OP after the APPLIED) is kept
+    /// too and changes nothing at the switch-on.
+    #[test]
+    fn a_groves_tribute_stack_answered_twice_with_the_conflict_off_is_placed_once() {
+        a_grove_stack_answered_with_the_conflict_off(
+            "grove-off-twice",
+            Restart::No,
+            Answer::AppliedTwice,
+        );
+    }
+
+    /// The same across a restart that comes back with the conflict still off.
+    #[test]
+    fn a_groves_tribute_stack_answered_twice_with_the_conflict_off_is_placed_once_across_a_crash() {
+        a_grove_stack_answered_with_the_conflict_off(
+            "grove-off-twice-crash",
+            Restart::Off,
+            Answer::AppliedTwice,
+        );
     }
 
     /// A NOT_LOADED answer heard while off goes back to the grove's stock at the switch-on.
@@ -12451,7 +12568,7 @@ mod conflict {
     fn a_groves_tribute_stack_answered_not_loaded_with_the_conflict_off_goes_back_to_its_stock() {
         a_grove_stack_answered_with_the_conflict_off(
             "grove-off-unloaded",
-            false,
+            Restart::No,
             Answer::NotLoaded,
         );
     }
