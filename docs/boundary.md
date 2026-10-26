@@ -322,7 +322,8 @@ health (0 = full), 12 i32 bodyA (-1 = let the body roll it), 16 i32 bodyB (-1 = 
   is still in Java's journal is answered DUPLICATE and not applied again. A container whose chunk is
   not loaded is answered NOT_LOADED, never FAILED: the chunk may have been written ahead of the
   journal holding the op (§3.1), so the engine must send it again under the same op id and never
-  the items under a new one (RP-210).
+  the items under a new one (RP-210). The dragons' lair tribute and the Umvuthana grove's tribute
+  (§9.6) both park such a stack under its op id (MZB-760).
 
 ## 3. The journal (A9, PLAN.md §4.9)
 
@@ -1989,7 +1990,18 @@ memory by `setTradedPlayersCompound`) before its stack, spawn line or hand-back 
   kept: the gift is every stack answered since the last save (not one stack), the journal ahead of the
   world, and nothing is ever lost (MZB-446, amended at the re-check). APPLIED or
   DUPLICATE_OP lowers what is owed and sends the next stack; FAILED returns the goods and forgets the
-  chest. A raid on an unwatched district leaves a hunt owed (`Faction.hunts`, MZB-424): OWED_HUNT for
+  chest. NOT_LOADED (the chest's chunk was not loaded, so Java did not look for the op in it) parks the
+  stack under its op id, as the dragons' (RP-210, MZB-760): the chunk may hold the stack already,
+  written ahead of the journal and carrying its APPLIED record, which it copies when it loads, so the
+  goods stay out of the stock, what is owed does not change, and the stack is not sent again every
+  step. The set of parked stacks is not saved: a new session sends them again. The grove's chest is
+  forgotten only if it is still the stack's own (the same dimension and place; a chest named since,
+  elsewhere, is kept for the next stack), and a parked stack holds the next back. The grove's next
+  HAVEN_CHEST, or a CAMP_OUT, which forgets the chest too, sends the stack again under its op id,
+  to the chest it went to first and not the one named now: a DUPLICATE_OP answer (or the chunk's
+  REASSERT) books it placed, and the chunk without the stack gets it. A replayed NOT_LOADED for a
+  stack no placing holds (decided after the last save) books nothing, and the camp's count does not
+  pass it, so the census after the replay decides it again as the same op. A raid on an unwatched district leaves a hunt owed (`Faction.hunts`, MZB-424): OWED_HUNT for
   each district, a new raid on the same district replacing it with the counts added and capped, and
   HUNT_APPLIED clears the one with its op id whatever `killed` is; an answer for the op a hunt replaced
   leaves the hunt held at its `rest` and sends it again with that count and no `replaced`, and any other op
