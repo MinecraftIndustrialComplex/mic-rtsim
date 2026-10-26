@@ -836,6 +836,22 @@ impl Engine {
         out
     }
 
+    /// A chain write `op` of `store` that the host still holds goes to Java again at `at`, its
+    /// session start (docs/choices-journal-barrier.md RP-294): its answer is awaited from then.
+    /// The host calls this before [`Engine::session_start`], whose catch-up over a stretch with
+    /// the module switched off would otherwise take the answer as lost ten periods after the drain
+    /// that first handed the write on (`WRITE_ANSWER_PERIODS`, choice SC113) and write the
+    /// frogport again under a new op while the held write goes too. Returns whether the store
+    /// still awaited `op` (an answered or superseded write is left as it is).
+    pub fn hand_on_again(&mut self, store: StoreId, op: OpId, at: Tick) -> bool {
+        if !self.stores.get(&store).is_some_and(|s| s.awaits_write(op)) {
+            return false;
+        }
+        self.stores
+            .get_mut(&store)
+            .is_some_and(|s| s.write_handed_on_again(op, at))
+    }
+
     /// A session start (the bridge's SESSION_START): open learning windows are lost with the
     /// latest-wins samples that were in flight, so they are discarded (F6). Every district is
     /// unloaded until its chunks report in.
