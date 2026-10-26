@@ -371,21 +371,22 @@ Sizes are estimates by analogy with code that exists; they are not measured.
 24. **The Umvuthi aloft, and the march in Java** (§4.5, §4.16; MZ-16 (a), Ben): its puppet given
     `setNoGravity(true)` at its spawn and moved once a tick, in the bridge's server-tick pass after the
     level's entities have ticked, which skips a body that `isDeadOrDying()`: its motion set to zero and
-    its fall distance reset (`resetFallDistance`), so no explosion, wind charge, shell or fan lifts it
-    and it never lands as from a fall, then `move(MoverType.SELF, step)` toward its place at the
-    column's rear at up to 0.1 blocks a tick, then `restrictTo` where it is, radius -1, so its summons
-    keep to it; its target height from the `MOTION_BLOCKING` heightmap over its box's columns and 8
-    blocks ahead, every 10 ticks, read only through `getChunkNow`; the stuck rule (a rise of up to 24
-    blocks, then a `moveTo` its place once no player within 160 blocks has a clear line to it by the
-    plugin's own block `clip`, or after 1,200 ticks); its direction set before its first tick at every
-    spawn, and after that turned by a re-pair (an accessor mixin for the server's private `direction`
-    field, `setDirection` and its yaw, body yaw and head yaw set, then a temporary `ServerEntity`'s
-    pairing packets sent as one bundle with `ServerChunkCache.broadcast` to the clients already tracking
-    it; ChunkMap untouched) when its way is more than 55 degrees off, with no active ability, at most
-    once in 200 ticks; the trail's particles every 10 ticks, sent long-distance; settling within 32
-    blocks of the target with the attack flag, or on a player target it has in sight, never onto a
-    fluid, then `noGravity` cleared and `restrictTo` where it sits; rising once the attack flag has
-    dropped and it has had no player target for 200 ticks; `noGravity` cleared at its first
+    its fall distance reset (`resetFallDistance`), so no shell or fan lifts it and it never lands as
+    from a fall, and an explosion's push (a wind charge's too) zeroed in its `ExplosionKnockbackEvent`,
+    since one before the body's own tick would lift it, then `move(MoverType.SELF, step)` toward its
+    place at the column's rear at up to 0.1 blocks a tick, then `restrictTo` where it is, radius -1, so
+    its summons keep to it; its target height from the `MOTION_BLOCKING` heightmap over its box's
+    columns and 8 blocks ahead, every 10 ticks, read only through `getChunkNow`; the stuck rule (a rise
+    of up to 24 blocks, then a `moveTo` its place once no player within 160 blocks has a clear line to
+    it by the plugin's own block `clip`, or after 1,200 ticks); its direction set before its first tick
+    at every spawn, and after that turned by a re-pair (an accessor mixin for `EntityUmvuthi`'s private
+    `direction` field, `setDirection` and its yaw, body yaw and head yaw set, then a temporary
+    `ServerEntity`'s pairing packets sent as one bundle with `ServerChunkCache.broadcast` to the clients
+    already tracking it; ChunkMap untouched) when its way is more than 55 degrees off, with no active
+    ability, at most once in 200 ticks; the trail's particles every 10 ticks, sent long-distance;
+    settling within 32 blocks of the target with the attack flag, or on a player target it has in sight,
+    never onto a fluid, then `noGravity` cleared and `restrictTo` where it sits; rising once the attack
+    flag has dropped and it has had no player target for 200 ticks; `noGravity` cleared at its first
     `LivingDeathEvent`, so a body killed aloft falls as it dies; a dying chief's loot dropped if its
     puppet is taken back; `EntityTravelToDimensionEvent` cancelled for every tagged puppet, so no body
     of a band leaves through a portal it drifts or walks into; laying out a band met on the march as a
