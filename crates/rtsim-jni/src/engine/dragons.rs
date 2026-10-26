@@ -55,7 +55,7 @@ use rtsim_kernel::rows::PageSource;
 
 use super::paging::{self, Kept, Live, Pager};
 use super::shared::{self, Module};
-use super::{State, TransferCmd, log_error, log_info};
+use super::{State, TransferCmd, log_error, log_info, log_warn};
 use crate::wire::{self, Rec, RecordWriter, cmd, obs};
 
 /// The dragons' pages: table 0x4400 ('D'), next to the industry engine's 0x4900 and phase 1's
@@ -490,7 +490,13 @@ pub(super) fn op_of(rec: &Rec<'_>) -> u64 {
 pub(super) fn journaled(st: &mut State, rec: &Rec<'_>) {
     if !st.dragons.enabled {
         st.dragons.ignored += 1;
-        st.dragons.kept.push(st.applying_copy, rec.bytes);
+        if let Some(w) = st
+            .dragons
+            .kept
+            .push(st.applying_copy, rec.bytes, "the dragons")
+        {
+            log_warn(&w);
+        }
         // The epoch it names is taken at once all the same (docs/replay-gate.md §5.3, RP-57,
         // RP-75): the dragons' next body, once they run again, is above it.
         let dict = java_species(st);

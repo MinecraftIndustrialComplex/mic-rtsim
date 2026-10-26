@@ -657,7 +657,13 @@ fn translate(st: &State, o: &mut Obs) {
 pub(super) fn journaled(st: &mut State, rec: &Rec<'_>) {
     if !st.conflict.enabled {
         st.conflict.ignored += 1;
-        st.conflict.kept.push(st.applying_copy, rec.bytes);
+        if let Some(w) = st
+            .conflict
+            .kept
+            .push(st.applying_copy, rec.bytes, "the conflict")
+        {
+            log_warn(&w);
+        }
         return;
     }
     apply(st, rec);

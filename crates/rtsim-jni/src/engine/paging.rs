@@ -186,6 +186,19 @@ pub fn kept_key(meta: PageKey) -> PageKey {
     PageKey::new(meta.table(), meta.id() + 2)
 }
 
+/// How many records a module's [`Kept`] list holds before each one more is counted and warned
+/// of (at the first and then at each power of two of the count, [`Kept::push`]). None is ever
+/// dropped: each is a record of what already happened, a death, a taming or a robbery that would
+/// come back undone.
+///
+/// The bound is what Java still reports after a switch-off, and that is small. The herds' and the
+/// conflict's bridges stop at the switch-off, once the switch's tick's deaths are settled
+/// (`HerdBridge.endOfTick`, `ConflictBridge.switchedOff`), so their lists hold that tick's records
+/// and the hand-overs Java sent before it heard the switch. The dragons have no switch hook, and
+/// their bodies report until Java's own capture takes them out of the world: a list past this
+/// many is a dragon body Java never captures, or a bridge that did not stop.
+pub const KEPT_WARN_AT: usize = 4_096;
+
 /// The records a switched-off module heard (docs/replay-gate.md 9.7, RP-292): "The switch gates
 /// only new decisions; every record of what already happened is heard; a record applied while off
 /// goes in at its own tick, never at the frozen clock." Each journaled record of the module's
@@ -193,11 +206,16 @@ pub fn kept_key(meta: PageKey) -> PageKey {
 /// the order it came; the module applies them at its switch-on (its reset, between its engine's
 /// `begin_replay` and its replay end), each after its own catch-up. They are saved with the
 /// module's pages (a page of their own, [`kept_key`]), so a save that trimmed them from Java's
-/// journal never loses them.
+/// journal never loses them, and that page is written only when the list changed ([`Kept::save`]).
 #[derive(Default)]
 pub(super) struct Kept {
     /// Oldest first.
     recs: Vec<KeptRec>,
+    /// Records kept past [`KEPT_WARN_AT`] since the engine started (not saved). None is dropped.
+    pub(super) over: u64,
+    /// The list changed since a save last wrote its page, or that save failed: the next save
+    /// writes it. Clean as read at load (the page holds it as it is).
+    dirty: bool,
 }
 
 /// One kept record: the copy's generation nonce (`st.applying_copy`) and the record's bytes.
@@ -208,14 +226,40 @@ impl Kept {
         self.recs.is_empty()
     }
 
-    /// Keeps one record, as it came (`copy`: `st.applying_copy`).
-    pub(super) fn push(&mut self, copy: Option<u64>, bytes: &[u8]) {
+    /// Keeps one record, as it came (`copy`: `st.applying_copy`). Past [`KEPT_WARN_AT`] records
+    /// it is counted ([`Kept::over`]) and kept all the same; the line to log (`who`: the module,
+    /// as "the dragons") comes back at the first one past and then at each power of two of the
+    /// count.
+    pub(super) fn push(&mut self, copy: Option<u64>, bytes: &[u8], who: &str) -> Option<String> {
         self.recs.push((copy, bytes.to_vec()));
+        self.dirty = true;
+        if self.recs.len() <= KEPT_WARN_AT {
+            return None;
+        }
+        self.over += 1;
+        self.over.is_power_of_two().then(|| {
+            format!(
+                "{} records {who} heard while switched off are kept, past the {KEPT_WARN_AT} Java \
+                 should still report after a switch-off: none is dropped ({} kept past it so far)",
+                self.recs.len(),
+                self.over
+            )
+        })
     }
 
     /// Every record kept, oldest first; none left.
     pub(super) fn take(&mut self) -> Vec<KeptRec> {
+        if !self.recs.is_empty() {
+            self.dirty = true;
+        }
         std::mem::take(&mut self.recs)
+    }
+
+    /// A save failed or was not made (`drain`): the page it wrote may not be on disk, so the next
+    /// save writes it again. Any save the IO lane commits was built after the step saw every
+    /// failed one (PF14), so after this.
+    pub(super) fn save_failed(&mut self) {
+        self.dirty = true;
     }
 
     fn encode(&self) -> Vec<u8> {
@@ -245,7 +289,10 @@ impl Kept {
             recs.push((is_copy.then_some(nonce), bytes));
         }
         r.finish().map_err(bad)?;
-        Ok(Kept { recs })
+        Ok(Kept {
+            recs,
+            ..Kept::default()
+        })
     }
 
     /// Reads the kept records of the module whose meta page is `meta` (none when the store holds
@@ -258,17 +305,21 @@ impl Kept {
         }
     }
 
-    /// The kept records' part of a save: written whenever there are any, whether or not the save
-    /// writes the module (a switched-off module's meta page stays as it was, U10), and live with
-    /// its pages. None kept: a save that writes the module deletes the page with the rest of its
-    /// table; one that keeps the module's pages finds none to delete (records are only taken at a
-    /// switch-on, and a save that follows writes the module: it is on, or `save_due` from the
-    /// switch-off after).
-    pub(super) fn save(&self, meta: PageKey, batch: &mut SaveBatch, live: &mut Live) {
+    /// The kept records' part of a save: while there are any, written if the list changed since
+    /// a save last wrote it (or that save failed), whether or not the save writes the module (a
+    /// switched-off module's meta page stays as it was, U10), and live with its pages either way.
+    /// None kept: a save that writes the module deletes the page with the rest of its table; one
+    /// that keeps the module's pages finds none to delete (records are only taken at a switch-on,
+    /// and a save that follows writes the module: it is on, or `save_due` from the switch-off
+    /// after).
+    pub(super) fn save(&mut self, meta: PageKey, batch: &mut SaveBatch, live: &mut Live) {
         if self.recs.is_empty() {
             return;
         }
-        batch.put(kept_key(meta), &self.encode());
+        if self.dirty {
+            batch.put(kept_key(meta), &self.encode());
+            self.dirty = false;
+        }
         if let Live::Pages(pages) = live {
             pages.push(kept_key(meta));
         }
@@ -395,6 +446,10 @@ pub(super) fn drain(st: &mut State) {
         st.paging.in_flight = st.paging.in_flight.saturating_sub(1);
         if !o.ok {
             st.paging.failures_seen += 1;
+            // The kept pages that save wrote may not be on disk: the next save writes them again.
+            st.dragons.kept.save_failed();
+            st.herds.kept.save_failed();
+            st.conflict.kept.save_failed();
         }
         let Tickets {
             herds,
@@ -489,5 +544,80 @@ mod tests {
         c.succeeded();
         assert!(rx.try_recv().expect("c's tickets came back").ok);
         assert_eq!(failures.load(Ordering::Acquire), 2);
+    }
+
+    fn a_record(seq: u64) -> Vec<u8> {
+        let mut b = vec![0u8; crate::wire::obs::BODY];
+        crate::wire::put_u64(&mut b, crate::wire::obs::OBS_SEQ, seq);
+        b
+    }
+
+    /// U-c's review, P3: a kept list past [`KEPT_WARN_AT`] drops nothing, counts each record past
+    /// it, and warns at the first and then at each power of two of the count.
+    #[test]
+    fn a_kept_list_past_its_bound_warns_at_powers_of_two_and_drops_nothing() {
+        let mut k = Kept::default();
+        for i in 0..KEPT_WARN_AT as u64 {
+            assert!(k.push(None, &a_record(i), "the dragons").is_none());
+        }
+        assert_eq!(k.over, 0);
+        let mut warned = Vec::new();
+        for i in 0..5u64 {
+            if let Some(w) = k.push(None, &a_record(10_000 + i), "the dragons") {
+                warned.push((k.over, w));
+            }
+        }
+        assert_eq!(k.over, 5);
+        let at: Vec<u64> = warned.iter().map(|(n, _)| *n).collect();
+        assert_eq!(at, [1, 2, 4], "the first past and each power of two");
+        assert!(
+            warned[0].1.starts_with("4097 records the dragons heard")
+                && warned[0].1.contains("4096"),
+            "the line names the module, the count and the bound: {}",
+            warned[0].1
+        );
+        assert_eq!(k.take().len(), KEPT_WARN_AT + 5, "none dropped");
+    }
+
+    /// U-c's review, P3 (D1): the kept page is written when the list changed since a save last
+    /// wrote it, or that save failed, and stays live either way; a list as read is clean.
+    #[test]
+    fn the_kept_page_is_written_only_when_the_list_changed() {
+        let meta = PageKey::new(0x4400, 0);
+        let save = |k: &mut Kept| {
+            let mut batch = SaveBatch::new();
+            let mut live = Live::Pages(Vec::new());
+            k.save(meta, &mut batch, &mut live);
+            let Live::Pages(live) = live else {
+                unreachable!()
+            };
+            (batch.len(), live.contains(&kept_key(meta)))
+        };
+        let mut k = Kept::default();
+        assert_eq!(save(&mut k), (0, false), "none kept, no page");
+        k.push(None, &a_record(1), "the herds");
+        assert_eq!(save(&mut k), (1, true), "a new record: written");
+        assert_eq!(
+            save(&mut k),
+            (0, true),
+            "unchanged: not written, still live"
+        );
+        k.save_failed();
+        assert_eq!(save(&mut k), (1, true), "the save failed: written again");
+        assert_eq!(save(&mut k), (0, true));
+        k.push(Some(7), &a_record(2), "the herds");
+        assert_eq!(save(&mut k), (1, true), "another record: written");
+        let mut read = Kept::decode(&k.encode()).expect("decodes");
+        assert_eq!(
+            save(&mut read),
+            (0, true),
+            "as read at load: on disk as it is"
+        );
+        assert_eq!(read.take().len(), 2);
+        assert_eq!(
+            save(&mut read),
+            (0, false),
+            "taken: nothing kept, the page goes"
+        );
     }
 }

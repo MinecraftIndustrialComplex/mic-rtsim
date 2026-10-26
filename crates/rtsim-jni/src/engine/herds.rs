@@ -470,7 +470,9 @@ pub(super) fn journaled(st: &mut State, rec: &Rec<'_>) {
             st.herds.engine.fold_epoch(o);
         }
         st.herds.ignored += 1;
-        st.herds.kept.push(st.applying_copy, rec.bytes);
+        if let Some(w) = st.herds.kept.push(st.applying_copy, rec.bytes, "the herds") {
+            log_warn(&w);
+        }
         return;
     }
     apply(st, rec);
