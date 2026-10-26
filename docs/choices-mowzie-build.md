@@ -5377,6 +5377,12 @@ RP-150 to RP-153 the replay records.
   `waits.logic(st.far.ready())`, a chunk wait on the logic clock, and the chest test's HAVEN_CHEST wait loaded a 5
   by 5 rect inside its logic wait; those are now `waits.chunks(...)`, the chest's split into a chunk wait and then
   the logic wait for the record.
+- **MZB-697** (the masked player strikes from beside the warrior): on the rerun after MZB-696,
+  `aMaskedPlayerIsNotTargetedByTheBand` failed its reach check, "26.378878 of 26.36": after 100 ticks of walking
+  toward the bare player, even the warrior nearest the masked player stood past the hurt-by goal's reach of where
+  the masked player had stood (MZB-678 picked the nearest warrior, which was not enough). A player who strikes a
+  warrior stands within a blow's reach of it, so the masked player now steps to 3 blocks east of the struck
+  warrior (away from the bare one) before the blow. The reach check and the 20-tick answer stay.
 
 ## M9 Umvuthana
 
