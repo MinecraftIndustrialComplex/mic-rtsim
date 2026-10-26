@@ -280,8 +280,11 @@ public final class Camps {
         }
     }
 
-    /** A tagged body's death, journaled at the end of the tick once certain (or at the next reconcile). */
-    private record Dying(LivingEntity body, int by, UUID killer) {}
+    /**
+     * A body's death, journaled at the end of the tick once certain (or at the next reconcile): a tagged body's
+     * ({@code faction} 0), or an untagged stray's the last census of {@code faction} listed (MZB-1014).
+     */
+    private record Dying(LivingEntity body, int by, UUID killer, long faction) {}
 
     /** A chief's CHIEF_STATE waiting to be written: its flags and health (MZB-274). */
     private record ChiefState(int flags, float health) {}
@@ -339,6 +342,8 @@ public final class Camps {
      * CHIEF_BODY records forwarded to the bridge for a party away.
      */
     public long heldHandBacks, chiefHandBacksLate, chiefMerges, staleTakes, homeDeaths, puppetPaid, puppetsSecond, chiefBodiesAway;
+    /** Untagged strays' deaths journaled, so a member written off as missing whose tag was stripped still counts (MZB-1014). */
+    public long strayDeaths;
 
     /**
      * GameTests only: while the level's game time is below this, {@code ChunkTicketLevelUpdatedEvent} is
@@ -380,6 +385,7 @@ public final class Camps {
         deaths = carried = markers = heldSpawns = recounts = strayWatches = strays = 0;
         heldRemovals = heldPairs = heirs = masks = secondBodies = chiefBodies = chiefBodiesWritten = chiefPaid = traded = 0;
         heldHandBacks = chiefHandBacksLate = chiefMerges = staleTakes = homeDeaths = puppetPaid = puppetsSecond = chiefBodiesAway = 0;
+        strayDeaths = 0;
         polls = pollChanges = 0;
         chiefStates = chiefStatesQueued = 0;
     }
@@ -2039,14 +2045,34 @@ public final class Camps {
      * death (MZB-431), and the jar posts the event twice for an Umvuthi, so it is keyed on the UUID.
      */
     void onDeath(LivingEntity dead, DamageSource source) {
-        if (RtsimAttachments.campMember(dead) == null || RtsimAttachments.isTagged(dead))
+        if (RtsimAttachments.isTagged(dead))
             return;
+        if (RtsimAttachments.campMember(dead) == null) {
+            // An untagged stray a census listed (a member written off as missing whose tag was stripped): its death
+            // names its UUID, which the engine knows if the camp misses it (MZB-1014).
+            Site c = strayOf(dead);
+            if (c != null) {
+                ConflictBridge.Credit credit = killer(dead, source);
+                dying.putIfAbsent(dead.getUUID(), new Dying(dead, credit.by(), credit.killer(), c.faction));
+            }
+            return;
+        }
         if (secondBody(dead)) {
             secondBodies++;
             return;
         }
         ConflictBridge.Credit credit = killer(dead, source);
-        dying.putIfAbsent(dead.getUUID(), new Dying(dead, credit.by(), credit.killer()));
+        dying.putIfAbsent(dead.getUUID(), new Dying(dead, credit.by(), credit.killer(), 0L));
+    }
+
+    /** The camp whose last census listed {@code e} as an untagged stray, or null. */
+    private Site strayOf(LivingEntity e) {
+        if (kindOf(e) == null)
+            return null;
+        for (Site c : sites.values())
+            if (c.strayBodies.get(e.getUUID()) == e)
+                return c;
+        return null;
     }
 
     /**
@@ -2078,6 +2104,11 @@ public final class Camps {
             LivingEntity e = d.body();
             if (!e.isRemoved() && !e.isDeadOrDying())
                 continue; // another mod cancelled it
+            if (d.faction() != 0) {
+                if (RtsimAttachments.campMember(e) == null)
+                    strayDeath(e, d.faction(), d.by(), d.killer(), now);
+                continue;
+            }
             if (RtsimAttachments.campMember(e) == null)
                 continue;
             death(e, d.by(), d.killer(), now);
@@ -2099,6 +2130,50 @@ public final class Camps {
         return true;
     }
 
+    /**
+     * CAMP_DEATH (aux = killer kind, a Java op id) of a body: its camp, kind, flags, slot and generation (0 and 0 for a
+     * stray), its killer and its own UUID (MZB-1014). The caller carries the record on a marker.
+     */
+    private static ByteBuffer journalDeath(RtsimSession s, long faction, int body, int flags, int slot, int generation, int by,
+                                           UUID killer, UUID self, long now) {
+        ByteBuffer r = s.boundary().beginJournaled(ConflictRecords.CAMP_DEATH, ConflictRecords.CampDeath.SIZE, by, now);
+        r.putLong(ConflictRecords.CampDeath.FACTION, faction);
+        r.putInt(ConflictRecords.CampDeath.BODY, body);
+        r.putInt(ConflictRecords.CampDeath.FLAGS, flags);
+        r.putInt(ConflictRecords.CampDeath.SLOT, slot);
+        r.putInt(ConflictRecords.CampDeath.GENERATION, generation);
+        if (killer != null) {
+            r.putLong(ConflictRecords.CampDeath.KILLER_MOST, killer.getMostSignificantBits());
+            r.putLong(ConflictRecords.CampDeath.KILLER_LEAST, killer.getLeastSignificantBits());
+        }
+        r.putLong(ConflictRecords.CampDeath.BODY_MOST, self.getMostSignificantBits());
+        r.putLong(ConflictRecords.CampDeath.BODY_LEAST, self.getLeastSignificantBits());
+        s.boundary().commitWithOpId(r, ConflictRecords.CampDeath.OP_ID);
+        return r;
+    }
+
+    /**
+     * CAMP_DEATH of an untagged stray the last census of {@code faction} listed (MZB-1014): FLAG_STRAY, slot and generation
+     * 0, its UUID. The engine books it only when the camp wrote that body off as missing (its death still costs the camp);
+     * any other stray's books nothing, as before. On a marker where it died, as a member's.
+     */
+    private void strayDeath(LivingEntity e, long faction, int by, UUID killer, long now) {
+        if (!(e.level() instanceof ServerLevel level) || !live())
+            return;
+        Site c = sites.get(faction);
+        CampKind kind = c != null ? c.kind : kindOf(e);
+        RtsimSession s = bridge.session();
+        int body = kind == null ? 0 : s.dictId(Obs.DICT_BODY, kind.bodyName(e));
+        int flags = ConflictRecords.CampDeath.FLAG_STRAY
+                | (kind != null && kind.isChief(e) ? ConflictRecords.CampDeath.FLAG_CHIEF : 0);
+        ByteBuffer r = journalDeath(s, faction, body, flags, 0, 0, by, killer, e.getUUID(), now);
+        Marker mk = marker(level, e.position());
+        List<PendingRecords.Entry> records = new ArrayList<>(1);
+        records.add(new PendingRecords.Entry(s.boundary().gen(), r.array()));
+        s.carryOnCampHolder(mk, records, r.getLong(Obs.OBS_SEQ));
+        strayDeaths++;
+    }
+
     /** CAMP_DEATH (a Java op id) on a marker where the body is, with the records it carried; its tag goes. */
     private void death(Entity e, int by, UUID killer, long now) {
         CampMember m = RtsimAttachments.campMember(e);
@@ -2116,17 +2191,8 @@ public final class Camps {
             retired.add(new Retired(m.faction(), m.generation())); // and a HAND_BACK of this generation in flight is stale (MZB-891)
         }
         List<PendingRecords.Entry> records = new ArrayList<>(takeRecords(e)); // journaled first if they were not yet
-        ByteBuffer r = s.boundary().beginJournaled(ConflictRecords.CAMP_DEATH, ConflictRecords.CampDeath.SIZE, by, now);
-        r.putLong(ConflictRecords.CampDeath.FACTION, m.faction());
-        r.putInt(ConflictRecords.CampDeath.BODY, body);
-        r.putInt(ConflictRecords.CampDeath.FLAGS, chief ? ConflictRecords.CampDeath.FLAG_CHIEF : 0);
-        r.putInt(ConflictRecords.CampDeath.SLOT, m.slot());
-        r.putInt(ConflictRecords.CampDeath.GENERATION, m.generation());
-        if (killer != null) {
-            r.putLong(ConflictRecords.CampDeath.KILLER_MOST, killer.getMostSignificantBits());
-            r.putLong(ConflictRecords.CampDeath.KILLER_LEAST, killer.getLeastSignificantBits());
-        }
-        s.boundary().commitWithOpId(r, ConflictRecords.CampDeath.OP_ID);
+        ByteBuffer r = journalDeath(s, m.faction(), body, chief ? ConflictRecords.CampDeath.FLAG_CHIEF : 0, m.slot(),
+                m.generation(), by, killer, e.getUUID(), now);
         Marker mk = marker(level, e.position());
         records.add(new PendingRecords.Entry(s.boundary().gen(), r.array()));
         untag(e);
@@ -2221,17 +2287,8 @@ public final class Camps {
         Site c = found.site();
         Line ln = found.line();
         RtsimSession s = bridge.session();
-        ByteBuffer r = s.boundary().beginJournaled(ConflictRecords.CAMP_DEATH, ConflictRecords.CampDeath.SIZE, by, now);
-        r.putLong(ConflictRecords.CampDeath.FACTION, c.faction);
-        r.putInt(ConflictRecords.CampDeath.BODY, s.dictId(Obs.DICT_BODY, ln.body()));
-        r.putInt(ConflictRecords.CampDeath.FLAGS, ConflictRecords.CampDeath.FLAG_CHIEF);
-        r.putInt(ConflictRecords.CampDeath.SLOT, ln.slot());
-        r.putInt(ConflictRecords.CampDeath.GENERATION, ln.generation());
-        if (killer != null) {
-            r.putLong(ConflictRecords.CampDeath.KILLER_MOST, killer.getMostSignificantBits());
-            r.putLong(ConflictRecords.CampDeath.KILLER_LEAST, killer.getLeastSignificantBits());
-        }
-        s.boundary().commitWithOpId(r, ConflictRecords.CampDeath.OP_ID);
+        ByteBuffer r = journalDeath(s, c.faction, s.dictId(Obs.DICT_BODY, ln.body()), ConflictRecords.CampDeath.FLAG_CHIEF,
+                ln.slot(), ln.generation(), by, killer, e.getUUID(), now);
         Marker mk = marker(level, e.position());
         List<PendingRecords.Entry> records = new ArrayList<>(1);
         records.add(new PendingRecords.Entry(s.boundary().gen(), r.array()));

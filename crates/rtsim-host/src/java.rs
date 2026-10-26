@@ -264,9 +264,11 @@ impl FakeLedger {
     /// or none (EXISTED when `existed`).
     pub fn tail(&self, kind: SiteKind, key: u64, now: i64, existed: bool) -> FoundRow {
         match self.rows.get(&(kind.code(), key)) {
-            Some((s, stamp, seen)) => {
-                FoundRow::from_state(s, now.saturating_sub(*stamp).max(0) as u64, *seen != self.gaps)
-            }
+            Some((s, stamp, seen)) => FoundRow::from_state(
+                s,
+                now.saturating_sub(*stamp).max(0) as u64,
+                *seen != self.gaps,
+            ),
             None => FoundRow {
                 flags: if existed {
                     rtsim_kernel::sites::tail_flags::EXISTED
@@ -1424,13 +1426,17 @@ impl Java {
         let o = match o {
             Obs::LairFound(l) if l.row == FoundRow::none() => {
                 let mut l = l.clone();
-                l.row = self.sites.tail(SiteKind::Lair, l.lair, self.game_time, false);
+                l.row = self
+                    .sites
+                    .tail(SiteKind::Lair, l.lair, self.game_time, false);
                 filled = Obs::LairFound(l);
                 &filled
             }
             Obs::NestFound(n) if n.row == FoundRow::none() => {
                 let mut n = n.clone();
-                n.row = self.sites.tail(SiteKind::Nest, n.nest, self.game_time, false);
+                n.row = self
+                    .sites
+                    .tail(SiteKind::Nest, n.nest, self.game_time, false);
                 filled = Obs::NestFound(n);
                 &filled
             }
@@ -1696,6 +1702,21 @@ impl Java {
     /// sequence, at the current game time) for kinds 0x0800 to 0x08FF, otherwise into the open
     /// buffer (latest-wins). Returns the sequence (0 for latest-wins).
     pub fn conflict_obs(&mut self, o: &rtsim_conflict::boundary::Obs) -> u64 {
+        use rtsim_conflict::boundary::Obs;
+        // The found tail is the ledger's (docs/boundary.md §2.5): a row the test wrote stands,
+        // else the fake ledger's for the camp, as ConflictBridge.journalFound writes it.
+        let filled;
+        let o = match o {
+            Obs::FactionFound(f) if f.row == FoundRow::none() => {
+                let mut f = f.clone();
+                f.row = self
+                    .sites
+                    .tail(SiteKind::Camp, f.faction, self.game_time, false);
+                filled = Obs::FactionFound(f);
+                &filled
+            }
+            _ => o,
+        };
         let mut b = Vec::new();
         rtsim_conflict::boundary::encode_obs(0, self.game_time, o, &mut b);
         let kind = wire::u16_at(&b, wire::R_KIND);

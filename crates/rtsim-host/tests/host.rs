@@ -133,6 +133,7 @@ fn populate(j: &mut Java) {
         pos: (750, 64, 250),
         home_bodies: 0,
         census: 0,
+        row: Default::default(),
     }));
     j.idle();
     j.idle();

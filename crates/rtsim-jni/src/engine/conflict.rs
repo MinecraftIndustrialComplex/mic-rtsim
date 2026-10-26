@@ -996,6 +996,12 @@ pub(super) fn take_commands(st: &mut State) {
     st.conflict
         .queue
         .extend(cmds.into_iter().map(|cmd| Queued { cmd, names: None }));
+    // The camps' rows for core's site ledger (MZB-1014): none while the replay runs (the engine
+    // keeps the marks), so the replay end's take sends each camp it touched once. Core commands,
+    // not the conflict's: no gate verdict (docs/replay-gate.md).
+    for s in st.conflict.engine.take_site_states() {
+        st.queue_site_state(s);
+    }
 }
 
 // ---- orders (TEST) ------------------------------------------------------------------------------

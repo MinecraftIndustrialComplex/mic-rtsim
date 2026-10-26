@@ -363,6 +363,14 @@ and NEST_FOUND at 48 (§6.3). Always 40 bytes, plus 16 a UUID (`SiteLedger.write
   census, and GAP is §2.2's "whether rtsim ran since the last census".
 - The engine applies a tail only to a site new to this engine life; a site it knows already is
   marked changed instead, so its row is refreshed by a SITE_STATE.
+- **Camps** (MZB-1014): the row's home bodies are expected at home, and the census finds each by its
+  UUID whatever its tags say (a former life's, or none), retagging it with an ADOPT. Its bodies left
+  behind (members away or dead then, with their bodies in the camp) are removed when a census sees
+  them. Its missing are written-off members: one back while the camp is short is home again, one
+  back at a full camp is a stray left standing, and its death (CAMP_DEATH names the body's UUID)
+  costs the camp as a player's loss. Members away were lost with the old engine: no one's loss, the
+  next wait the cap's. Under GAP a member the row expected and no census finds is no one's loss
+  too.
 
 **Kill credit** (MZB-1006, MZB-1008): every record that reports a sim member's death names its
 killer with one table, filled by core's `KillCredit`: 0 none, 1 player (a real player, a player's
@@ -1702,7 +1710,7 @@ are untouched.
 | 0x0091 | CHIEF_STATE (latest-wins) | flags: 1 crystal held | 8 u64 faction, 16 f32 health, 20 reserved | 24 |
 | 0x0092 | retired (HAVEN_CHEST's until MZB-446 journaled it as 0x0817; never reuse) | | | |
 | 0x0093 | retired (DIFFICULTY's until MZB-17 journaled it as 0x0815; never reuse) | | | |
-| 0x0800 | FACTION_FOUND | flags: 1 LATE | 24 u64 faction (the camp's key), 32 u32 dimension, 36 u32 structure (dictionary 4), 40 i32 x, 44 y, 48 z, 52 u16 home bodies (the camp's bodies found at discovery), 54 u8 census (1 chief present, 2 crystal held), 55 reserved | 56 |
+| 0x0800 | FACTION_FOUND | flags: 1 LATE | 24 u64 faction (the camp's key), 32 u32 dimension, 36 u32 structure (dictionary 4), 40 i32 x, 44 y, 48 z, 52 u16 home bodies (the camp's bodies found at discovery), 54 u8 census (1 chief present, 2 crystal held), 55 reserved, 56 the found tail (§2.5, MZB-1014) | 96 + 16 a UUID |
 | 0x0801 | TERRITORY_SIGNAL | signal: 0 smog, 1 radiation, 2 logging, 3 mining, 4 killing, 5 building | 24 u64 faction (0: by position), 32 u32 dimension, 36 u32 count, 40 u64 playerMost, 48 u64 playerLeast ((0, 0): unowned, the settlers), 56 i32 x, 60 y, 64 z, 68 reserved | 72 |
 | 0x0802 | POLLUTION | 0 | 24 u64 source (the district's id, or 0 and the engine keys the chunk), 32 u32 dimension, 36 u32 type (dictionary 0x20), 40 i32 x, 44 i32 z, 48 i64 amount over the window (Destroy's units; 0: the source stopped), 56 u32 windowTicks, 60 reserved | 64 |
 | 0x0803 | BAND_MATERIALIZED | members spawned | 24 u64 agent, 32 u32 epoch, 36 u32 dimension, 40 u32 wave, 44 u32 flags (the BAND_MATERIALIZE's flags, echoed: 8 a fight's wave; without 8 a sighting's; 0 an envoy's; a replay tells a held fight from a sighting by them, docs/replay-gate.md §6.1, RP-56) | 48 |
@@ -1716,7 +1724,7 @@ are untouched.
 | 0x080B | BAND_LOOTED | n | 24 u64 agent, 32 u32 epoch, 36 reserved, 40 u64 opId, 48 n × (u32 item, i32 count, u64 reserved) | 48 + 16n |
 | 0x080C | RAIL_PASS | 0 | 24 u64 faction, 32 u64 train, 40 u64 ownerMost, 48 u64 ownerLeast ((0, 0): none), 56 u32 dimension, 60 reserved, 64 f64 x, 72 y, 80 z (the train's own sample nearest the camp's centre: a point on the track), 88 i64 entryTick, 96 i64 exitTick (both game time) | 104 |
 | 0x080D | TRAIN_PASSED | flags: 1 watched | 24 u64 agent, 32 u32 epoch, 36 u32 carriage (the nearest the track point, from 0), 40 u64 train | 48 |
-| 0x080E | CAMP_DEATH | killer kind: 0 none, 1 player, 2 mob, 3 other, 4 taken (carried off, Carry On) | 24 u64 faction, 32 u32 body (dictionary 3), 36 u32 flags (1 the chief, 2 a stray), 40 u32 slot, 44 u32 generation, 48 u64 killerMost, 56 u64 killerLeast, 64 u64 opId | 72 |
+| 0x080E | CAMP_DEATH | killer kind: 0 none, 1 player, 2 mob, 3 other, 4 taken (carried off, Carry On) | 24 u64 faction, 32 u32 body (dictionary 3), 36 u32 flags (1 the chief, 2 a stray: an untagged body the camp's last census listed, slot and generation 0), 40 u32 slot, 44 u32 generation, 48 u64 killerMost, 56 u64 killerLeast, 64 u64 opId, 72 u64 bodyMost, 80 u64 bodyLeast (the body's own UUID, MZB-1014) | 88 |
 | 0x080F | CAMP_CENSUS | bodies n | 24 u64 faction, 32 u64 epoch (new), 40 u32 flags (1 chief present, 2 crystal held, 4 the throne spot is given), 44 f32 the chief's health, 48 f64 throneX, 56 throneY, 64 throneZ, 72 f32 direction, 76 u32 traded t, 80 u32 traded slot, 84 u32 traded generation (the body whose trade memory follows), 88 n × (u32 body, u32 flags: 1 stray, 2 loaded elsewhere, 4 the chief, 8 the crystal is on this body (a chief body only); u32 slot, u32 generation, u64 uuidMost, u64 uuidLeast), then t × (u64 playerMost, u64 playerLeast) | 88 + 32n + 16t |
 | 0x0810 | TRADED | 0 | 24 u64 faction, 32 u64 playerMost, 40 u64 playerLeast, 48 u32 gold nuggets that changed hands, 52 reserved, 56 u64 opId | 64 |
 | 0x0811 | NOTICE_SHOWN | the notice's serial (FACTION_NOTICE's 60) | 24 u64 faction, 32 u64 playerMost, 40 u64 playerLeast (the notice's; (0, 0) the settlers) | 48 |

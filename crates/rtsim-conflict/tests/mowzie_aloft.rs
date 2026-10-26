@@ -1041,6 +1041,7 @@ fn chief_death(r: &CampRun, generation: u32) -> Obs {
         generation,
         killer: synth::PLAYER,
         op: 0x6001,
+        uuid: (0, 0),
     })
 }
 

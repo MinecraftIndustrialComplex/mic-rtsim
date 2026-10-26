@@ -14577,6 +14577,12 @@ DRAGON_DIED):
   report carrying the LossCause itself (§2.6 item 9). NEST_LOSS keeps its LossCause, as before.
 - CAMP_DEATH grows by the dead body's UUID, 72 to 88 bytes, so a stray's death can be matched against the missing
   list (MZB-1030); §2.6 does not name it.
+- An untagged camp body a census listed as a stray now gets a CAMP_DEATH (the stray flag, slot and generation 0,
+  its UUID) when it dies, so a member gone missing whose tags were stripped still counts (MZB-1014); before, such a
+  death sent nothing.
+- The design's GameTest 8 (a lured body) asserts the death "carries the stray flag": a lured body keeps its tags,
+  so its CAMP_DEATH carries its UUID with its old slot and generation, and the engine finds that generation
+  retired; the test asserts the UUID, and the stray flag only for a stripped body (MZB-1014).
 - A tame's DRAGON_DIED names the tamer with killer kind 4 (taken) in its aux, in the existing killer fields.
 - SITE_CENSUS's "whether rtsim ran through the time since the last census" rides the found tail's GAP flag (every
   gap resets the engine, so the first census after one is the found census); the census records are unchanged,
@@ -14809,6 +14815,67 @@ DRAGON_DIED):
     again that changes nothing else; note 2: a restart that loses the marks decides the same for 200 days and
     the found refresh sends the same rows), and the codec's `all_obs` (a waiting row, and EXISTED on a failed
     answer).
+- **MZB-1014** (Camps hand over and send their rows): FACTION_FOUND carries the camp's found tail at 56
+  (`ConflictRecords.FactionFound.TAIL`; `ConflictBridge.journalFound`, so `factionFound` and `reportCamp` both
+  write it from `SiteLedger.writeTail`), and CAMP_DEATH carries the dead body's UUID at 72 (88 bytes, fork F11).
+  - **A slot knows its body's UUID** (`Slot.uuid`, (0, 0) while unknown): CAMP_BODIES carries none, so it is
+    learned when a census finds the body by its tags or the slot adopts one (ADOPT), and handed over as the row's
+    home bodies.
+  - **A camp new to the engine with a row** (`camp_found`, then `camp_restore`): its cap is the row's K (under the
+    culture's pool cap) and its pool the row's count, not what the found census saw; the pressure is the row's,
+    aged by the ticks elapsed (`Pressure::handed_over`); the first owed slots become bodies with the row's home
+    UUIDs; its bodies left behind and missing are the camp's again and its GAP is kept; members away (puppets and
+    parties the old engine had) set the next wait to the cap's, whatever GAP says (no one's loss, and the books
+    cannot place them); a wait it had booked runs on less the ticks elapsed. No row: as before. A culture with no
+    home bodies keeps only the count and regrows from the found time (fork F14). The chief and an heir's wait are
+    not in the row (fork F13). A camp the engine already knows only marks its row (the refresh).
+  - **The census matches by UUID:** a member body not found by its tags but standing with the slot's UUID (a
+    former life's tags, or stripped ones) is home and is retagged (ADOPT); only a body no slot holds by its own
+    tags and not removed this census, each claimed once.
+  - **Missing** (`Camp.missing`, at most K, the oldest dropped): a member the 3-miss write-off retires goes missing
+    by its UUID. Under a row's GAP the write-off is Other and the next wait the cap's (fork F5); the gap ends with
+    that write-off or with the first census that misses no member. A missing body seen again while the camp is
+    short fills a slot as any stray does and is missing no longer; at a full camp it is left standing, not removed
+    (fork F3).
+  - **Left behind** (`Camp.left_behind`): bodies a former life no longer counted (members away or dead whose
+    bodies may still stand) are removed on sight, and a body seen stays listed until a census no longer sees it,
+    so a REMOVE lost with a crash is sent again; one a census does not see is dropped. Left and Dead slots' UUIDs
+    are written to the row's left behind as well.
+  - **A stray's death** (`stray_death`): CAMP_DEATH with the stray flag, generation 0, or a generation the books
+    retired, books a player's loss (1/K) when its UUID is missing, whatever killed it (fork F4), and takes it out
+    of missing; any other stray's books nothing, as before, and a second record of the same death finds it gone.
+    `stats.camp_deaths` counts members only, so it does not move.
+  - **Java's stray deaths** (`Camps.strayDeath`, `strayDeaths`): a written-off member that kept its tags dies with
+    its old slot and generation, and the engine's lookup sends it to `stray_death`. One whose tags were stripped
+    (an uninstall's strip, then a reinstall) had no CAMP_DEATH; now an untagged camp body the last census of a
+    camp listed as a stray (`strayBodies`) journals CAMP_DEATH with the stray flag, slot and generation 0, its UUID
+    and its credit, on a marker where it died, as a member's.
+  - **`cap_next`:** set by a row's members away and by a write-off under GAP; `plan_arrival` takes it for the
+    cap's wait instead of the pressure's, and it clears when the camp is no longer short.
+  - **The rows sent:** `Conflict::site_dirty` (not saved, never read by a decision), marked at each change of a
+    camp's count, cap, members away, pressure, wait, slots or bodies, and at a known camp's FACTION_FOUND.
+    `take_site_states` is empty while the replay runs and keeps the marks for the take after its end, as the lairs'
+    and nests'; rtsim-jni's `take_commands` queues each row as a core SITE_STATE (no gate verdict). A row
+    (`camp_site_state`): K the cap; count the whole members at home; away; P now; SHORT, EMPTY, and WAITING with
+    the wait left in ticks while a renewal culture's arrival is booked; home bodies, left behind and missing, the
+    chief's slot excluded.
+  - **Save:** RTCD, META 12: a slot ends with its UUID; a camp with its missing, its left behind and a flags byte
+    (bit 0 GAP, bit 1 `cap_next`; others refused).
+  - **Known limits:** a no-body pool's row count can lag its regrowth, since regrowth by time marks nothing; the
+    next mark or found refresh sends it. CAMP_DEATH markers carried in a world from before this slice (72 bytes)
+    no longer decode: no compatibility before a release.
+  - `synth::CampRun::reborn` stands up a fresh engine that finds the camp with a row, the plugin's world and its
+    old tags kept, for the reset tests; the host's fake Java fills FACTION_FOUND's tail from its ledger when a test
+    gave none.
+  - Tests: `tests/camp.rs` (a row's pressure and wait handed over and aged; home bodies found by UUID under a
+    former life's tags, and retagged; a home body not found written off as a player's loss without GAP and as
+    Other at the cap with it, and the gap's end; members away waiting the cap; left behind removed and kept until
+    unseen; a lured member written off and missing; one home again at a short camp; one back at a full camp left
+    standing whose death counts, tags kept or stripped; missing at most K; the marks, held through a replay, and
+    a run that loses them deciding the same), rtsim-conflict's codec
+    tests (the tail at 56, a tail above K refused, an old-size record refused; the UUID at 72), and rtsim-jni
+    `a_reset_hands_a_dens_wait_to_the_new_engine` (a player kill, a reset 3 days later, and the new engine waits
+    the rest with the pressure aged and spawns nothing early).
 - **MZB-1020** (F1, the credit rides the death reports): taken. Each death report carries the credit code and
   the credited player; the engine maps to a LossCause with `from_credit`, since the boss rule needs each kind's
   tunables, which only the engine has. Not taken: a LossCause byte computed in Java per record.

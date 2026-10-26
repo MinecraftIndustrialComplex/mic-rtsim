@@ -533,6 +533,7 @@ fn a_death_for_a_generation_the_slot_does_not_hold_books_nothing() {
         generation: b.generation ^ 0x5555,
         killer: (1, 2),
         op: 77,
+        uuid: b.uuid,
     };
     let at = r.c.now();
     r.c.ingest(
@@ -667,6 +668,7 @@ fn a_body_killed_between_a_musters_end_and_its_answer_is_a_death_and_the_answer_
         generation: victim.1,
         killer: (9, 9),
         op: 1 << 62,
+        uuid: (0, 0),
     };
     let at = r.c.now();
     r.c.ingest(
@@ -2091,6 +2093,7 @@ fn camp_records_of_a_camp_this_engine_never_founded_book_nothing() {
             generation: 1,
             killer: (3, 4),
             op: 0xD1ED,
+            uuid: (0, 0),
         }),
     );
     ingest(
@@ -2601,6 +2604,7 @@ fn rich_ledger(r: &mut CampRun) {
                 op: 0xAB00 + i as u64,
             }),
             chief: rtsim_kernel::handle::Handle::from_bits(0x1_0000_0000 + i as u64),
+            uuid: (0xC0DE, i as u64),
         });
     }
     camp.retired = vec![
@@ -3217,4 +3221,492 @@ fn saving_and_loading_at_random_points_changes_nothing() {
         };
         assert_eq!(end(true), end(false), "seed {seed}");
     }
+}
+
+// ---- the site ledger: a camp across a reset, and its members gone missing (MZB-1014) ----------
+
+/// The Frostmaw's den on its renewal as shipped (M6), found with its one body.
+fn renewal_den(seed: u64) -> CampRun {
+    CampRun::new(seed, "frostmaw", 1)
+}
+
+/// The site ledger's row for the camp as the engine has it now, handed back `elapsed` ticks later
+/// (`FoundRow::from_state`, as core's ledger and rtsim-host's fake one hand it back).
+fn row_of(r: &CampRun, elapsed: u64, gap: bool) -> rtsim_kernel::sites::FoundRow {
+    let s = r.c.camp_site_state(r.f, r.c.now()).expect("a row");
+    rtsim_kernel::sites::FoundRow::from_state(&s, elapsed, gap)
+}
+
+fn half_life(r: &CampRun) -> f32 {
+    r.c.cultures
+        .get(r.c.factions[r.f as usize].culture)
+        .renewal
+        .expect("a renewal")
+        .rule
+        .half_life_days
+}
+
+fn cap_ticks(r: &CampRun) -> u64 {
+    r.c.cultures
+        .get(r.c.factions[r.f as usize].culture)
+        .renewal
+        .expect("a renewal")
+        .rule
+        .cap_ticks()
+}
+
+/// The camp's pressure read at `at`.
+fn pressure_at(r: &CampRun, at: Tick) -> f32 {
+    let day = (at.0 / TICKS_PER_DAY) as u32;
+    r.c.camp(r.f).unwrap().pressure.now(day, half_life(r))
+}
+
+/// A census now: the camp goes out and comes in again, its lines answered. The census's tick.
+fn census(r: &mut CampRun) -> Tick {
+    r.camp_out();
+    let to = r.c.now() + 3;
+    r.run(to);
+    let at = r.c.now() + 1;
+    come_in(r);
+    at
+}
+
+/// Censuses 0.8 days apart until one writes a member off (MOWZIE.md §4.9: three misses over two
+/// days): that census's tick.
+fn write_off(r: &mut CampRun) -> Tick {
+    let before = r.c.stats.camp_written_off;
+    for _ in 0..8 {
+        let at = census(r);
+        if r.c.stats.camp_written_off > before {
+            return at;
+        }
+        let to = r.c.now() + days(0.8);
+        r.run(to);
+    }
+    panic!("no write-off in eight censuses");
+}
+
+/// A body walks off and unloads far away: gone from the camp's world, kept for the test.
+fn lure(r: &mut CampRun, i: usize) -> synth::CampBody {
+    r.plugin.camp_world(r.key).bodies.remove(i)
+}
+
+fn missing(r: &CampRun) -> Vec<boundary::Uuid> {
+    r.c.camp(r.f).unwrap().missing.clone()
+}
+
+/// EQUILIBRIUM.md §2.3, S3 (MZB-1014): a den reset mid-wait goes on where its row left it. A
+/// player killed the Frostmaw (P 1, a 12-day wait), and 3 days on the row is taken; a day later the
+/// sim is reset. The fresh engine has the pressure the old one would have had and its arrival on
+/// the same tick, and spawns nothing before it: the den owes no body.
+#[test]
+fn a_den_found_with_its_row_keeps_the_pressure_and_the_wait() {
+    let mut r = renewal_den(71);
+    come_in(&mut r);
+    let b = r.plugin.camps[&r.key].bodies[0];
+    let died = r.c.now() + 1;
+    assert!(r.plugin.camp_kill(r.key, b.uuid, boundary::BY_PLAYER, died));
+    r.run(died + 5);
+    let due = r.c.camp(r.f).unwrap().arrival_at.expect("a wait");
+    assert_eq!(due, died + days(12.0));
+    r.run(died + days(3.0));
+    let row = row_of(&r, days(1.0), false);
+    assert!(row.waiting() && !row.gap());
+    assert_eq!((row.k, row.count, row.away), (1, 0, 0));
+    let at = r.c.now() + days(1.0);
+    let want = pressure_at(&r, at);
+    assert!(want > 0.8 && want < 1.0, "aged a little: {want}");
+    let spawns = applied(&r, boundary::ACTION_SPAWN);
+    r.reborn(row, at);
+    assert_eq!(
+        r.c.camp(r.f).unwrap().arrival_at,
+        Some(due),
+        "the wait runs on to the same end"
+    );
+    let got = pressure_at(&r, at);
+    assert!((got - want).abs() < 1e-5, "{got} against {want}");
+    assert_eq!(counts(&r), [0, 0, 0, 0, 0]);
+    come_in(&mut r);
+    assert_eq!(applied(&r, boundary::ACTION_SPAWN), spawns, "owed nothing");
+    r.run(Tick(due.0 - 1));
+    assert_eq!(r.c.stats.arrivals, 0);
+    r.run(due + 10);
+    assert_eq!(r.c.stats.arrivals, 1, "the arrival came on the tick");
+    assert_eq!(applied(&r, boundary::ACTION_SPAWN), spawns + 1);
+    assert_eq!(counts(&r), [1, 0, 0, 0, 0]);
+    ok(&mut r);
+}
+
+/// MZB-1014: a reset while the Frostmaw was out on a raid loses the raid with the old engine. The
+/// row counts it away; the fresh engine cannot place the loss, so it is no one's (no pressure) and
+/// the den waits the cap for its next Frostmaw, where the row's pressure alone would wait 6 days.
+#[test]
+fn a_den_found_with_its_frostmaw_away_books_no_loss_and_waits_the_cap() {
+    let mut r = renewal_den(72);
+    come_in(&mut r);
+    r.raid().expect("a raid goes");
+    assert_eq!(r.c.factions[r.f as usize].away, 1);
+    let to = r.c.now() + days(1.0);
+    r.run(to);
+    let row = row_of(&r, 0, true);
+    assert_eq!((row.k, row.count, row.away), (1, 0, 1));
+    assert_eq!(row.p, 0.0);
+    let at = r.c.now() + 100;
+    r.reborn(row, at);
+    assert_eq!(world_bodies(&r), 0, "the raid's body went with it");
+    assert_eq!(
+        r.c.camp(r.f).unwrap().arrival_at,
+        Some(at + cap_ticks(&r)),
+        "the cap's wait"
+    );
+    assert_eq!(pressure_at(&r, at), 0.0, "no one's loss");
+    assert_eq!(r.c.stats.renewal_losses, 0);
+    assert!(!r.c.camp(r.f).unwrap().cap_next, "taken by the wait");
+}
+
+/// MOWZIE.md §4.9 with EQUILIBRIUM.md §2.3 (MZB-1014, MZB-1011): a Frostmaw lured off and unloaded
+/// far away is written off by the camp's censuses as any missing member is, a player's loss (the
+/// den was farmed of it), and its UUID goes missing; the row hands that on.
+#[test]
+fn a_lured_member_written_off_is_a_players_loss_and_goes_missing() {
+    let mut r = renewal_den(73);
+    come_in(&mut r);
+    let lured = lure(&mut r, 0);
+    let at = write_off(&mut r);
+    assert_eq!(r.c.stats.renewal_losses, 1);
+    assert_eq!(pressure_at(&r, at), 1.0);
+    assert_eq!(missing(&r), vec![lured.uuid]);
+    assert_eq!(
+        r.c.camp(r.f).unwrap().arrival_at,
+        Some(at + days(12.0)),
+        "the wait from the census that wrote it off"
+    );
+    let s = r.c.camp_site_state(r.f, r.c.now()).unwrap();
+    assert_eq!(s.bodies.missing, vec![lured.uuid]);
+    assert!(s.bodies.home.is_empty());
+    ok(&mut r);
+}
+
+/// MZB-1014: a member gone missing that comes home while the camp is still short of it is home
+/// again: adopted into the camp, and the replacement's wait is cancelled. The loss stays booked.
+#[test]
+fn a_missing_member_back_while_the_camp_is_short_cancels_the_wait() {
+    let mut r = renewal_den(74);
+    come_in(&mut r);
+    let lured = lure(&mut r, 0);
+    let at = write_off(&mut r);
+    assert!(r.c.camp(r.f).unwrap().arrival_at.is_some());
+    r.run(at + days(2.0));
+    r.plugin.camp_world(r.key).bodies.push(lured);
+    let (spawns, removes) = (
+        applied(&r, boundary::ACTION_SPAWN),
+        applied(&r, boundary::ACTION_REMOVE),
+    );
+    census(&mut r);
+    assert_eq!(counts(&r), [1, 0, 0, 0, 0], "home again");
+    assert_eq!(
+        r.c.camp(r.f).unwrap().arrival_at,
+        None,
+        "the wait is cancelled"
+    );
+    assert!(missing(&r).is_empty());
+    assert_eq!(applied(&r, boundary::ACTION_SPAWN), spawns);
+    assert_eq!(applied(&r, boundary::ACTION_REMOVE), removes);
+    let s = &r.c.camp(r.f).unwrap().slots[0];
+    assert_eq!(s.uuid, lured.uuid);
+    assert_eq!(r.c.stats.renewal_losses, 1, "the loss stays booked");
+    r.run(at + days(30.0));
+    assert_eq!(r.c.stats.arrivals, 0, "no second Frostmaw");
+    ok(&mut r);
+}
+
+/// MZB-1014, fork F3: a member gone missing that comes home after its replacement arrived is a
+/// stray at a full camp, left standing (not removed), and its death, whatever killed it, is a
+/// player's loss (fork F4): a lured body cannot be farmed away from its den. It keeps its former
+/// tags (its death names its old slot and generation) or has lost them (an uninstall stripped
+/// them: Java's census lists it a stray and its death carries the stray flag); either way the
+/// death names its UUID.
+#[test]
+fn a_missing_member_back_at_a_full_camp_is_left_standing_and_its_death_counts() {
+    for stripped in [false, true] {
+        let mut r = renewal_den(75);
+        come_in(&mut r);
+        let mut lured = lure(&mut r, 0);
+        write_off(&mut r);
+        let due = r.c.camp(r.f).unwrap().arrival_at.expect("a wait");
+        r.run(due + 10);
+        assert_eq!(r.c.stats.arrivals, 1);
+        assert_eq!(counts(&r), [1, 0, 0, 0, 0], "the replacement");
+        if stripped {
+            lured.slot = 0;
+            lured.generation = 0;
+        }
+        r.plugin.camp_world(r.key).bodies.push(lured);
+        let removes = applied(&r, boundary::ACTION_REMOVE);
+        census(&mut r);
+        assert_eq!(
+            applied(&r, boundary::ACTION_REMOVE),
+            removes,
+            "left standing (stripped {stripped})"
+        );
+        assert_eq!(world_bodies(&r), 2);
+        assert_eq!(counts(&r), [1, 0, 0, 0, 0]);
+        assert_eq!(missing(&r), vec![lured.uuid]);
+        ok(&mut r);
+        let losses = r.c.stats.renewal_losses;
+        let t = r.c.now() + 1;
+        let before = pressure_at(&r, t);
+        assert!(r.plugin.camp_kill(r.key, lured.uuid, boundary::BY_MOB, t));
+        r.run(t + 5);
+        assert_eq!(
+            r.c.stats.renewal_losses,
+            losses + 1,
+            "a player's loss (stripped {stripped})"
+        );
+        assert!((pressure_at(&r, t) - before - 1.0).abs() < 1e-5);
+        assert!(missing(&r).is_empty());
+        assert_eq!(r.c.camp(r.f).unwrap().arrival_at, None, "the den is full");
+        assert_eq!(counts(&r), [1, 0, 0, 0, 0]);
+        ok(&mut r);
+        // A second record of its death books nothing more.
+        let d = boundary::CampDeath {
+            faction: r.key,
+            by: boundary::BY_PLAYER,
+            body: lured.body,
+            flags: if stripped { boundary::DEATH_STRAY } else { 0 },
+            slot: lured.slot,
+            generation: lured.generation,
+            killer: (0, 0),
+            op: 0x7E57_0001,
+            uuid: lured.uuid,
+        };
+        let t = r.c.now() + 1;
+        r.plugin.push(t, Obs::CampDeath(d));
+        r.run(t + 5);
+        assert_eq!(r.c.stats.renewal_losses, losses + 1);
+    }
+}
+
+/// MZB-1014: the missing are at most K, the camp's cap, the oldest dropped; a dropped member's
+/// death counts nothing. The den (K 1) loses its Frostmaw A, then A's replacement B: B is missing,
+/// A no longer is.
+#[test]
+fn the_missing_are_at_most_the_cap_and_the_oldest_is_dropped() {
+    let mut r = renewal_den(76);
+    come_in(&mut r);
+    let a = lure(&mut r, 0);
+    write_off(&mut r);
+    assert_eq!(missing(&r), vec![a.uuid]);
+    let due = r.c.camp(r.f).unwrap().arrival_at.expect("a wait");
+    r.run(due + 10);
+    assert_eq!(counts(&r), [1, 0, 0, 0, 0], "B");
+    // A census finds B by its tags and learns its UUID.
+    census(&mut r);
+    let b = r.plugin.camps[&r.key].bodies[0];
+    assert_eq!(r.c.camp(r.f).unwrap().slots[0].uuid, b.uuid);
+    let b = lure(&mut r, 0);
+    write_off(&mut r);
+    assert_eq!(missing(&r), vec![b.uuid], "A dropped");
+    // A comes back and is killed: a stray no one misses.
+    r.plugin.camp_world(r.key).bodies.push(a);
+    let losses = r.c.stats.renewal_losses;
+    let t = r.c.now() + 1;
+    assert!(r.plugin.camp_kill(r.key, a.uuid, boundary::BY_PLAYER, t));
+    r.run(t + 5);
+    assert_eq!(r.c.stats.renewal_losses, losses);
+    assert_eq!(missing(&r), vec![b.uuid]);
+    ok(&mut r);
+}
+
+/// MZB-1014: a grove reset while a raid of 4 was out, their bodies left in the grove. The row
+/// hands over the members at home by UUID and the 4 bodies left behind. The fresh engine's first
+/// census finds the members by their UUIDs, whatever their former life's tags say, and retags them
+/// (an adopt each, no spawn), and removes the 4: their members were lost with the raid. The next
+/// census no longer sees them and forgets them.
+#[test]
+fn a_grove_reset_with_a_raid_out_keeps_its_members_and_removes_the_bodies_left_behind() {
+    let mut r = grove(77, 9);
+    come_in(&mut r);
+    let p = r.raid().unwrap();
+    r.camp_out();
+    let end = r.c.parties[p].until;
+    r.run(end + 100);
+    assert_eq!(counts(&r)[2], 4, "left in the camp while it was out");
+    let row = row_of(&r, 0, false);
+    assert_eq!(row.bodies.left_behind.len(), 4);
+    assert_eq!(row.away, 4);
+    let home = row.bodies.home.clone();
+    let left = row.bodies.left_behind.clone();
+    assert_eq!(usize::from(row.count), home.len());
+    let at = r.c.now() + 100;
+    r.reborn(row, at);
+    let camp = r.c.camp(r.f).unwrap();
+    let expected: Vec<boundary::Uuid> = camp
+        .slots
+        .iter()
+        .filter(|s| s.uuid != (0, 0) && s.state == SlotState::Body)
+        .map(|s| s.uuid)
+        .collect();
+    assert_eq!(expected, home, "the members at home are expected by UUID");
+    let (adopts, spawns, removes) = (
+        applied(&r, boundary::ACTION_ADOPT),
+        applied(&r, boundary::ACTION_SPAWN),
+        applied(&r, boundary::ACTION_REMOVE),
+    );
+    let chief = r.plugin.camps[&r.key]
+        .bodies
+        .iter()
+        .filter(|b| b.chief)
+        .count();
+    come_in(&mut r);
+    assert_eq!(
+        applied(&r, boundary::ACTION_ADOPT) - adopts,
+        home.len() + chief
+    );
+    assert_eq!(applied(&r, boundary::ACTION_REMOVE) - removes, 4);
+    assert_eq!(applied(&r, boundary::ACTION_SPAWN), spawns);
+    let world: Vec<boundary::Uuid> = r.plugin.camps[&r.key]
+        .bodies
+        .iter()
+        .filter(|b| !b.chief)
+        .map(|b| b.uuid)
+        .collect();
+    assert_eq!(world.len(), home.len());
+    assert!(world.iter().all(|u| home.contains(u)));
+    assert!(left.iter().all(|u| !world.contains(u)));
+    // Each stays listed until a census no longer sees it, so a removal whose line was lost is sent
+    // again.
+    assert_eq!(r.c.camp(r.f).unwrap().left_behind, left);
+    census(&mut r);
+    assert!(r.c.camp(r.f).unwrap().left_behind.is_empty());
+    assert_eq!(applied(&r, boundary::ACTION_REMOVE) - removes, 4);
+    assert!(r.c.camp(r.f).unwrap().slots.iter().all(|s| s.misses == 0));
+    ok(&mut r);
+}
+
+/// MZB-1014, fork F5: a member the row expects at home that a reset lost (GAP: the sim was reset
+/// since the row) is written off by the censuses as any missing member is, but as no one's loss:
+/// no pressure, and the wait is the cap's. Without the gap the same write-off is a player's.
+#[test]
+fn a_write_off_under_the_ledgers_gap_is_no_ones_loss_and_waits_the_cap() {
+    for gap in [true, false] {
+        let mut r = renewal_den(78);
+        come_in(&mut r);
+        let row = row_of(&r, days(2.0), gap);
+        assert_eq!(row.bodies.home.len(), 1);
+        let lost = lure(&mut r, 0);
+        let at = r.c.now() + days(2.0);
+        r.reborn(row, at);
+        assert_eq!(r.c.camp(r.f).unwrap().gap, gap);
+        assert_eq!(counts(&r), [1, 0, 0, 0, 0], "expected at home");
+        assert_eq!(r.c.camp(r.f).unwrap().arrival_at, None);
+        let t = write_off(&mut r);
+        let camp = r.c.camp(r.f).unwrap();
+        assert!(!camp.gap, "the gap ends with its write-off");
+        assert_eq!(missing(&r), vec![lost.uuid]);
+        if gap {
+            assert_eq!(r.c.stats.renewal_losses, 0, "no one's loss");
+            assert_eq!(pressure_at(&r, t), 0.0);
+            assert_eq!(camp.arrival_at, Some(t + cap_ticks(&r)));
+        } else {
+            assert_eq!(r.c.stats.renewal_losses, 1, "a player's loss");
+            assert_eq!(camp.arrival_at, Some(t + days(12.0)));
+        }
+        ok(&mut r);
+    }
+}
+
+/// MZB-1014: the gap ends at the first census that misses no member, so a later write-off is a
+/// player's loss again.
+#[test]
+fn the_ledgers_gap_ends_at_a_census_that_misses_no_member() {
+    let mut r = renewal_den(79);
+    come_in(&mut r);
+    let row = row_of(&r, 0, true);
+    let at = r.c.now() + 100;
+    r.reborn(row, at);
+    assert!(r.c.camp(r.f).unwrap().gap);
+    come_in(&mut r);
+    assert!(!r.c.camp(r.f).unwrap().gap, "the member is home");
+    assert_eq!(counts(&r), [1, 0, 0, 0, 0]);
+    let to = r.c.now() + days(1.0);
+    r.run(to);
+    lure(&mut r, 0);
+    let t = write_off(&mut r);
+    assert_eq!(r.c.stats.renewal_losses, 1);
+    assert_eq!(r.c.camp(r.f).unwrap().arrival_at, Some(t + days(12.0)));
+    ok(&mut r);
+}
+
+/// MZB-1014: a camp's row is marked behind at each change of what it holds, and taken once; a
+/// quiet day marks nothing; nothing is taken while a replay runs (the marks wait for its end).
+#[test]
+fn the_camps_row_is_marked_at_each_change_and_taken_once() {
+    let mut r = renewal_den(80);
+    assert!(r.c.camp_site_dirty(r.f), "found");
+    let st = r.c.take_site_states();
+    assert_eq!(st.len(), 1);
+    assert_eq!(st[0].key, r.key);
+    assert!(r.c.take_site_states().is_empty(), "taken once");
+    come_in(&mut r);
+    let st = r.c.take_site_states();
+    assert_eq!(st.len(), 1, "a census");
+    let b = r.plugin.camps[&r.key].bodies[0];
+    assert_eq!(st[0].bodies.home, vec![b.uuid], "learned at the adopt");
+    let to = r.c.now() + days(1.0);
+    r.run(to);
+    assert!(r.c.take_site_states().is_empty(), "a quiet day");
+    let died = r.c.now() + 1;
+    assert!(r.plugin.camp_kill(r.key, b.uuid, boundary::BY_PLAYER, died));
+    r.run(died + 5);
+    // While replaying, nothing: the marks wait for the replay's end.
+    r.restart_to_replay();
+    assert!(r.c.take_site_states().is_empty(), "held while replaying");
+    r.c.replay_done();
+    let present = r.c.now();
+    r.c.replay_present(present);
+    let st = r.c.take_site_states();
+    assert_eq!(st.len(), 1, "a death, sent after the replay");
+    let s = &st[0];
+    use rtsim_kernel::sites::state_flags;
+    assert_eq!(
+        s.flags,
+        state_flags::SHORT | state_flags::EMPTY | state_flags::WAITING
+    );
+    assert_eq!(s.p, 1.0);
+    assert_eq!(s.wait_left, days(12.0) - 5);
+    assert!(s.bodies.home.is_empty());
+}
+
+/// MZB-1014, note 2: the marks are not in the books. A run whose rows are never taken, and one
+/// that loses them at saves, decide exactly as one that takes them after every step.
+#[test]
+fn the_marks_change_no_decision() {
+    let end = |mode: u8| {
+        let mut r = renewal_den(81);
+        come_in(&mut r);
+        let lured = lure(&mut r, 0);
+        let mut taken = 0;
+        for _ in 0..8 {
+            census(&mut r);
+            match mode {
+                0 => taken += r.c.take_site_states().len(),
+                1 => r.round_trip(),
+                _ => {}
+            }
+            let to = r.c.now() + days(0.8);
+            r.run(to);
+        }
+        let to = r.c.now() + days(14.0);
+        r.run(to);
+        r.plugin.camp_world(r.key).bodies.push(lured);
+        census(&mut r);
+        assert!(r.failures.is_empty(), "{:#?}", r.failures);
+        assert!(mode != 0 || taken > 0);
+        (r.c.state_hash(), orders(&r).len(), r.c.stats.arrivals)
+    };
+    let a = end(0);
+    assert_eq!(a, end(1));
+    assert_eq!(a, end(2));
+    assert_eq!(a.2, 1);
 }

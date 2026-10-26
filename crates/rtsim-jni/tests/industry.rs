@@ -1117,6 +1117,7 @@ fn a_war_band_raids_a_district_while_away_and_lands_once_across_a_crash() {
         pos: (150, 64, 80),
         home_bodies: 0,
         census: 0,
+        row: Default::default(),
     }));
     j.mc_run_until(Tick(day(1.0).0 - 1));
     let phase = industry(&j.e, |ie| ie.district(MILL).map(|d| d.phase));
