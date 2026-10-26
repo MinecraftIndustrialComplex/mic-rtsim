@@ -178,26 +178,60 @@ shared phase 1 world. The ships keep U10 (see *Left*), phase 1 is slice U-d, and
     at every save while there are any, whether or not the save writes the module (a switched-off
     module's other pages stay as they were, U10). It is read at load whatever the switch. A module
     switched off before its first save may hold that page alone (`holds_pages_besides_kept`).
-  - **Applied at the switch-on,** in the module's reset: after its engine's `begin_replay` and before
-    its replay end, where a restart's replay would apply the same records.
-    - Oldest first, each as it came. A copy goes in as a copy, so a generation-0 casualty copy is
-      still refused.
-    - Each after its own catch-up (`shared::catch_up`), so the module's events due before the record
-      fire first.
+  - **Applied at the switch-on,** in the resets of every module that shares the phase 1 world, in
+    one function (`shared::resets`; U-c's review, P2). MODULES reaches the four in two passes
+    (`shared::switch`): first every module's flag, with a switch-off's own work; then the resets due,
+    in one order (dragons, ships, herds, conflict) and in three steps:
+    1. each module's engine begins its replay (`begin_replay`);
+    2. the records kept by every module that began are applied as one list, merged by the observation
+       number each came under (the order `Replay` admitted them, and the order a restart's replay
+       sends them; a copy's is its REASSERT's), each module's own in the order it came;
+    3. with no replay running, each module's replay end.
+
+    That is where a restart's replay would apply the same records: every module in its replay, the
+    records in the journal's order, the replay ends after the last.
+    - Each as it came. A copy goes in as a copy, so a generation-0 casualty copy is still refused.
+    - Each after its own catch-up (`shared::catch_up`), so the events due before the record fire
+      first, those of every module that came on with it: the dragons' kept records run the window
+      with the herds as their prey.
     - Kept records make the reset due with no dragon, herd or camp too.
-  - **At a session start.** Records an earlier session kept and saved are applied at the reset after
+    - The session start uses the same function once every module's flag is set, and so does the
+      first record after its DICTs. A module's own reset in the middle of a session (a first herd
+      or camp) is the same function for that module alone (`shared::reset_these`); it holds no kept
+      record.
+    - Phase 1's drain (slice U-d) goes into `shared::resets`, after the viewers.
+    - *Before* (P2), each module's reset ran as its switch came. ECOLOGY is the dragons' and the
+      herds' one bit and MODULES reached the dragons first, so the dragons applied their kept
+      records with the herds still off: each record's catch-up ran the window with no prey, and the
+      herds' reset then ran it with no predator.
+  - **At a session start.** Records an earlier session kept and saved are applied at the resets after
     Java's DICTs, since they name Java's ids. `State::dict_wait` is set at SESSION_START and cleared by
     the first record that is not a DICT, and the module does not run meanwhile (`kept_waiting`).
   - **Epochs.** The dragons (RP-57, RP-75) and the herds (RP-81) still fold a kept record's epoch at
     once while off. The conflict folds it when the record is applied (RP-293).
-- *The own tick, and the deviation.* The herds book a kept record at its own tick on their clock:
-  `ingest` books it no earlier than their own present (`max(at, engine.now())`), not the world's,
-  and their clock froze at the switch-off, before every kept record. The dragons and the conflict cannot always do that. They share
-  the phase 1 world, which ran on while they were off if phase 1 or another viewer ran, and their
-  `ingest` books no earlier than the world's present (`max(at, engine.now(), world.now())`). So a kept
-  record is booked at the later of its own tick and the world's present, in the order it came. Their
-  own events due before it still fire first. It lands at its own tick when the world did not run
-  ahead, and never at the frozen clock.
+- *The own tick* (U-c's review, P1). Every kept record is booked at its own tick on its module's
+  clock, which froze at the switch-off, before every kept record. While the records are applied
+  (`State::applying_kept`), the floor a module that shares the phase 1 world books at and runs its
+  events to is its own present, not the world's (`shared::floor`). It holds for every module the
+  catch-up runs, not only the one whose record it is: the dragons run inside a herds' record's
+  catch-up, and the herds as their prey inside the conflict's. So the floor is State-wide, not a
+  flag per module: the conflict's ingest, `run_engine` and rail call, the dragons' ingest and
+  `run_engine`, and the ships' `run_engine_at` all take it. The herds' ingest always booked at their
+  own present.
+  - *Before* (P1), the dragons and the conflict booked no earlier than the world's present
+    (`max(at, engine.now(), world.now())`), and the world runs on while they are off if phase 1 or
+    another viewer runs. The first kept record's catch-up then ran the whole off window. A band wiped
+    out in the switch's tick, with the switch on two days later, was booked after its demand's
+    deadline: the demand expired, the envoy went home with its units, and nothing was withdrawn. A
+    dragon a player killed in the switch's tick died at the switch-on, its lair vacant from then.
+  - *The cost.* From the switch-off to the last kept record, the modules decide at old ticks against
+    the world as it is now: its markets, knowledge and legs at its present, so what they read may be
+    newer than the tick they decide at. That is safe: `World::run_until` to a tick before its present
+    does nothing, so the world never goes back and nothing in it runs twice.
+  - *J3* (docs/replay-gate.md 9.7, on U-a). The divergence J3 records goes away for the kept
+    records: a switch-on books each at its own tick, as a restart's replay with the module on books
+    it, so the op ids derived from that tick (`ops.derive(world_seed, at, ..)`) are the same both
+    ways. A late booking at the world's present derived them from another tick.
 - *The replay gate during the reset.* The kept records, and the catch-ups between them, run inside the
   module's replay, so its outbox gate (docs/replay-gate.md §4) holds what those catch-ups decide.
   - The conflict drops Notice, Steer, Recall, Settled and AmbushSpot, sends Territory and March, and
@@ -220,10 +254,16 @@ shared phase 1 world. The ships keep U10 (see *Left*), phase 1 is slice U-d, and
   tick was picked for the next group. A band wiped out in the switch's tick kept its units and came
   into view again. Applied in the reset before the replay end, a death is booked before the end makes
   the bodies abstract, as a restart's replay would book it.
-- *Cost.* One page per module while it holds kept records, rewritten at each save. The kept list is
-  bounded by what Java still reports while the module is off. The conflict's and herds' bridges stop
-  at the switch-off, once the tick's deaths are settled. The dragons' bodies report until Java captures
-  them.
+- *Cost.* One page per module while it holds kept records. It is written when the list changed since a
+  save last wrote it, or that save failed (`Kept`'s dirty flag, set again by `drain` on every failed
+  save; D1). PF14 makes any save the IO lane commits one built after the step saw every failure, so
+  after the flag was set again. The kept list is bounded by what Java still reports while the module is
+  off. The conflict's and herds' bridges stop at the switch-off, once the tick's deaths are settled.
+  The dragons' bodies report until Java captures them. Past `paging::KEPT_WARN_AT` (4,096) records a
+  module's list counts each one more (`Kept::over`) and warns at the first and at each power of two of
+  the count, as phase 1's `kept_over` does (U-d). None is dropped: each is a death, a taming or a
+  robbery that would come back undone. A list that long is a dragon body Java never captures, or a
+  bridge that did not stop.
 - *Tests.* rtsim-jni `tests/protocol.rs`.
   - Each case runs in the session, and again after a save and a clean restart while off, which
     carries the kept page across the restart:
@@ -246,10 +286,32 @@ shared phase 1 world. The ships keep U10 (see *Left*), phase 1 is slice U-d, and
     - Both were written against the fix: before it the wipe was never heard.
   - `on_peaceful_no_war_party_leaves_and_on_normal_the_raid_follows` (`conflict`) now expects the
     DIFFICULTY heard while off to apply at the switch-on.
+  - The own tick after a late switch-on (P1), failing first at 56c82bfb (the tests are ce26df60),
+    passing at 9660474b:
+    - `a_wipe_in_the_switchs_tick_is_booked_at_its_tick_after_a_late_switch_on` (`conflict`): a band
+      wiped out in the switch's tick, the switch on two days after the demand's deadline d0. It wants
+      nothing expired, the band withdrawn and booked, no units home, the withdrawal logged before d0
+      and no "home" before it. Before: 1 expired, 0 withdrawn, nothing booked. Its control
+      `a_wipe_in_the_switchs_tick_with_the_switch_on_at_once` passes both ways.
+    - `a_dragon_killed_in_the_switchs_tick_stays_dead_after_a_late_switch_on` (`dragons`): killed by
+      a player in the switch's tick, on three days later with the player at the lair. Neither alive
+      nor materialized again, and the lair vacant from a tick between the death and the switch-on.
+      Before: vacant from 73149, the death at 1004.
+  - The shared resets (P2): `the_dragons_hunt_the_herds_in_the_window_a_kept_record_reaches`
+    (`dragons`). A hungry captured dragon 360 blocks from a flock of 5,000 sheep hunts it within six
+    days with everything on (the control). With ECOLOGY off for the six days and a stale hurt kept,
+    the switch-on's catch-up to the hurt must hunt it too. Failing first at 9660474b (the test is
+    1fe93454): no herd hunt. Passes at 4b859dc6.
+  - The bound and the dirty flag (P3), unit tests in `src/engine/paging.rs`:
+    `a_kept_list_past_its_bound_warns_at_powers_of_two_and_drops_nothing` and
+    `the_kept_page_is_written_only_when_the_list_changed` (1718f4df).
 - *Left.*
   - No order test for the dragons or the herds. Neither has an event log a test can read (the herds'
     `log_enabled` is false and has no accessor). Their order rests on the same `shared::catch_up`
     before each kept record that the conflict's tests exercise.
+  - No test of the merge across modules: two modules' kept records interleaved in one switch-on. It
+    rests on the same catch-up per record, and P2's test covers the step order (every module begun
+    before any kept record).
   - The ships (`Module.SHIPS`) still ignore their records while off (U10).
   - No GameTest: no Java changed.
   - A restart still replays an off window as if the module had been on (RP-290, U-e).
@@ -261,6 +323,11 @@ shared phase 1 world. The ships keep U10 (see *Left*), phase 1 is slice U-d, and
   floor to the epoch a record names, live or replayed (RP-57). That happens in the reset, before the
   replay end, so before the conflict decides anything. The residual that docs/boundary.md recorded
   under the conflict's switch (fixes6 item 6) is closed.
+  - With the shared resets (RP-292, U-c's review P2) another module's kept record can come first in
+    the merged list, and its catch-up runs the conflict before the conflict's own records raise the
+    floors. That still issues no epoch: the conflict runs inside its replay until every kept record
+    is in, and both places that take one (`next_epoch`, in `start_fight` and in `seen`, which
+    materializes a party) return at `outbox.defer()` first.
 - *Why.* The residual's sequence ran like this. (1) A session crashes with the conflict on, after Java
   journaled records of epochs issued since the last save. (2) The next start has the conflict off: its
   replay ignored those records and saved past the window, so the journal was trimmed of them. (3) A
