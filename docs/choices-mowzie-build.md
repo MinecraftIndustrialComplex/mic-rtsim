@@ -9618,6 +9618,20 @@ conservative option at its fork.
   `a_copy_of_a_rail_pass_counts_nothing` (the copy counts and holds nothing; the control, the same
   pass live, is counted and held; without the arm the copy counts 1).
 
+### A held line waited for, not five ticks (MZB-920)
+
+- **MZB-920** (a flake the SEC-1 lead found in U-b's mowziesmobs round on d59f00a4, carried by M10):
+  `UmvuthiGameTests.aChiefSpawnWaitsForThePlayerToLeaveOrSixThousandTicks` failed "two more held
+  spawns (0)". The check ran a fixed `thenIdle(5)` after the two reconciles, and that second the
+  server logged "Can't keep up! Running 51754ms or 1035 ticks behind" under outside load. The
+  reconcile's lines come back through the engine in wall time, so a server catching up runs its five
+  ticks before they arrive. The four places in the file that checked a held count five ticks after a
+  reconcile now wait for it (`ChunkWait.logic`, bounded by the test's tick budget): the chief SPAWN
+  hold, the held TAKE and REMOVE (`stillHeld`), the epoch's end and the REMOVE of a second body. The
+  SPAWN test's 6,000-tick clock starts at the tick both lines show held, not at the reconcile, since
+  `Camps.HOLD_MAX` counts from the hold: a late arrival would otherwise push D's answer past the
+  window. No source change.
+
 ### The M9 merge (RP-130 to RP-132)
 
 M9 (feat/mowzie-m9 at 2f3941d0) merged M6 at 1290d0b7 (788820c9), M7 at 39c819f1 (56c55d8d) and main;
