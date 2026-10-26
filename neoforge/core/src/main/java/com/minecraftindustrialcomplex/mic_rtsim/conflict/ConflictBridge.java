@@ -576,6 +576,15 @@ public final class ConflictBridge implements SessionPlugin {
     private final List<Slot> travelling = new ArrayList<>();
     /** The one {@link Traveller.Way} the pass fills for each body (server thread only). */
     private final Traveller.Way way = new Traveller.Way();
+    /**
+     * A chief puppet in its death animation that its band has forgotten (M11, MZB-817): the jar drops its loot when the
+     * animation ends, long after {@code settleDeaths} journaled CHIEF_KILLED. Its body, that record and the record's sequence.
+     */
+    private record Dying(Mob body, byte[] record, long seq) {}
+    /** Named apart from {@code Camps}' own dying list. Empty but while a chief puppet is in its animation (D1). */
+    private final List<Dying> dying = new ArrayList<>();
+    /** What {@code deathTime} is set to for the jar's own end of the animation (MZB-817): past any duration. */
+    private static final int DEATH_TIME_DONE = 1_000_000;
     private final Territories territories = new Territories();
     /**
      * The camp kin whose killing signal was counted in the tick {@link #killedAt}, by UUID (P2-6): the jar's Umvuthi
@@ -626,6 +635,8 @@ public final class ConflictBridge implements SessionPlugin {
     public long chiefBodiesUnmatched, travellerErrors;
     /** M11's (this session): pushes of a floating puppet zeroed and portal trips of a puppet cancelled (MZB-810, MZB-815). */
     public long knockbacksZeroed, portalsCancelled;
+    /** M11's (this session): a dying chief's loot lost to a removal before its drops (MZB-817). */
+    public long deathLootLost;
     /** The last DEMAND_SETTLED's outcome (GameTests). */
     public int lastSettled;
 
@@ -681,6 +692,9 @@ public final class ConflictBridge implements SessionPlugin {
         extraOf.clear();
         chiefAway.clear();
         travelling.clear();
+        if (!dying.isEmpty())
+            MicRtsim.LOGGER.warn("[mic_rtsim] {} dying chief bodies were left by the last session; their loot carries no record", dying.size());
+        dying.clear(); // every end of a session finishes them first (MZB-817); one left is lost
         territories.clear();
         notices.clear();
         signals.clear();
@@ -693,7 +707,7 @@ public final class ConflictBridge implements SessionPlugin {
         lurksKept = lurksRemoved = trainPasses = lurkStrikes = roarsTold = roarsPlayed = roarHearers = lurksRefused = 0;
         marchRecords = marchStale = marchEnds = trimmed = walkIns = clamps = unbookedHomeDeaths = 0;
         repairs = repairsSkipped = 0;
-        chiefBodiesUnmatched = travellerErrors = knockbacksZeroed = portalsCancelled = 0;
+        chiefBodiesUnmatched = travellerErrors = knockbacksZeroed = portalsCancelled = deathLootLost = 0;
         lastSettled = 0;
         owedHunts.clear();
         clearLurks();
@@ -709,6 +723,7 @@ public final class ConflictBridge implements SessionPlugin {
             return;
         long now = s.gameTime();
         settleDeaths(now);
+        finishDying(); // each dying chief ends its animation now and drops its loot with the record, before the save (MZB-817)
         reconciler.sessionStopping(now);
         flushSignals(now, true);
         for (Party p : List.copyOf(byAgent.values()))
@@ -723,6 +738,12 @@ public final class ConflictBridge implements SessionPlugin {
     public void sessionFailed(RtsimSession s) {
         if (s != session)
             return;
+        try {
+            finishDying(); // the loot is not lost with the session (MZB-817); a failed session carries no record
+        } catch (RuntimeException ex) {
+            MicRtsim.LOGGER.error("[mic_rtsim] a dying chief could not be finished at the session's failure", ex);
+            dying.clear();
+        }
         for (Party p : List.copyOf(byAgent.values()))
             discardAll(p);
         byAgent.clear();
@@ -752,6 +773,7 @@ public final class ConflictBridge implements SessionPlugin {
         extraOf.clear();
         chiefAway.clear();
         travelling.clear();
+        dying.clear();
         territories.clear();
         notices.clear();
         signals.clear();
@@ -1654,7 +1676,7 @@ public final class ConflictBridge implements SessionPlugin {
             sl.removing = true;
             if (sl.goal != null)
                 m.goalSelector.removeGoal(sl.goal);
-            if (!m.isRemoved()) {
+            if (!m.isRemoved() && !isDying(m)) { // a dying chief finishes its animation and drops its loot (MZB-817)
                 m.ejectPassengers();
                 m.discard();
             }
@@ -1783,6 +1805,8 @@ public final class ConflictBridge implements SessionPlugin {
     public void endOfTick(RtsimSession s, long now) {
         if (s != session || s.failed())
             return;
+        if (!dying.isEmpty())
+            tickDying(); // first, and with the module off: a body in its animation does not wait for a party (MZB-817)
         if (!RtsimConfig.on(Module.CONFLICT)) {
             if (held)
                 switchedOff(now);
@@ -2467,6 +2491,8 @@ public final class ConflictBridge implements SessionPlugin {
         Entity killer = source.getEntity();
         if (sl != null) {
             // a chief's death goes by the kill credit (CHIEF_KILLED renews the den, MZB-261); the rest by the hit
+            if (sl.traveller != null && sl.pendingDeath == null)
+                died(sl, dead); // the first death: a floating body falls during its animation (MZB-817)
             if (sl.chief) {
                 Credit c = credit(dead, source);
                 sl.pendingDeath = new Death(c.by(), c.killer());
@@ -2498,6 +2524,19 @@ public final class ConflictBridge implements SessionPlugin {
 
     /** LivingDropsEvent: a dying member's drops carry its record until the engine has it (§3.1). */
     void onDrops(LivingEntity dead, Collection<ItemEntity> drops) {
+        if (!dying.isEmpty()) {
+            // A dying chief's drops, 115 ticks after its death: the slot is long forgotten, so the list carries its record (MZB-817)
+            for (int i = 0; i < dying.size(); i++) {
+                Dying d = dying.get(i);
+                if (d.body() == dead) {
+                    dying.remove(i);
+                    for (ItemEntity drop : drops)
+                        if (!drop.isRemoved())
+                            session.carryOnEntity(drop, List.of(d.record()), d.seq());
+                    return;
+                }
+            }
+        }
         Slot sl = live(dead);
         if (sl != null && sl.pendingDeath != null)
             sl.drops = new ArrayList<>(drops);
@@ -2524,12 +2563,92 @@ public final class ConflictBridge implements SessionPlugin {
                 sl.pendingDeath = null;
                 ByteBuffer r = journalLoss(sl, d.by(), d.killer(), now);
                 long seq = r.getLong(Obs.OBS_SEQ);
-                if (sl.drops != null)
+                if (sl.drops != null) {
                     for (ItemEntity drop : sl.drops)
                         if (!drop.isRemoved())
                             session.carryOnEntity(drop, List.of(r.array()), seq);
+                } else if (sl.chief && e != null && !e.isRemoved()) {
+                    dying.add(new Dying(e, r.array(), seq)); // its drops are yet to come, at the animation's end (MZB-817)
+                }
                 sl.drops = null;
                 forget(sl);
+            }
+        }
+    }
+
+    /** The Traveller's word that the body died (MZB-817), its failure counted as a step's is. */
+    private void died(Slot sl, LivingEntity dead) {
+        try {
+            if (dead instanceof Mob m)
+                sl.traveller.died(m, sl.travelMemo);
+        } catch (RuntimeException ex) {
+            if (travellerErrors++ < 3)
+                MicRtsim.LOGGER.error("[mic_rtsim] a traveller's death hook failed for {}", sl.body, ex);
+        }
+    }
+
+    /** Whether a body is a chief puppet in its death animation, kept for its loot (MZB-817). */
+    private boolean isDying(Entity e) {
+        if (dying.isEmpty())
+            return false;
+        for (Dying d : dying)
+            if (d.body() == e)
+                return true;
+        return false;
+    }
+
+    /** The number of chief puppets in their death animations (GameTests). */
+    public int dyingBodies() {
+        return dying.size();
+    }
+
+    /**
+     * Ends the death animation of a dying chief whose chunk no longer ticks entities (M11, MZB-817): the jar's own end
+     * runs from the body's tick, which a chunk past the ticking edge never gives, and the body is not saved (UR-1), so
+     * its loot would go with its unload. One {@code isPositionEntityTicking} read per entry per tick.
+     */
+    private void tickDying() {
+        endDying(false);
+    }
+
+    /** Ends every dying chief's animation (the session's stop or failure, MZB-817), so no loot waits on a body. */
+    private void finishDying() {
+        endDying(true);
+        dying.clear();
+    }
+
+    private void endDying(boolean all) {
+        for (int i = dying.size() - 1; i >= 0; i--) {
+            if (i >= dying.size())
+                continue; // a finish's drops took entries off the list
+            Dying d = dying.get(i);
+            Mob b = d.body();
+            if (b.isRemoved()) {
+                dying.remove(i);
+                // The jar's own end removes it as KILLED (its drops, if any, were met by onDrops); any other removal
+                // (its chunk unloading, a command, another dimension) took the body before its loot.
+                if (b.getRemovalReason() != Entity.RemovalReason.KILLED) {
+                    deathLootLost++;
+                    MicRtsim.LOGGER.warn("[mic_rtsim] a dying chief {} was removed ({}) before its drops", b, b.getRemovalReason());
+                }
+                continue;
+            }
+            if (!b.isDeadOrDying()) {
+                dying.remove(i); // alive again (another mod): no loot is coming
+                continue;
+            }
+            if (!all && b.level() instanceof ServerLevel level && RtsimSession.entitiesTickAt(level, b.blockPosition()))
+                continue; // its own tick ends the animation
+            b.deathTime = DEATH_TIME_DONE;
+            try {
+                b.baseTick(); // the jar's tickDeath: the killer from its kill data, dropAllDeathLoot, event 60, removal
+            } catch (RuntimeException ex) {
+                MicRtsim.LOGGER.error("[mic_rtsim] a dying chief {} could not end its animation", b, ex);
+            }
+            if (b.isRemoved() || all) {
+                if (!b.isRemoved())
+                    deathLootLost++;
+                dying.remove(d); // its drops, if any, took it off the list already
             }
         }
     }
