@@ -2016,16 +2016,23 @@ memory by `setTradedPlayersCompound`) before its stack, spawn line or hand-back 
   kept: the gift is every stack answered since the last save (not one stack), the journal ahead of the
   world, and nothing is ever lost (MZB-446, amended at the re-check). APPLIED or
   DUPLICATE_OP lowers what is owed and sends the next stack; FAILED returns the goods and forgets the
-  chest. NOT_LOADED (the chest's chunk was not loaded, so Java did not look for the op in it) parks the
+  chest, if it is still the stack's own (a chest named since, elsewhere, is kept and the next stack goes
+  to it at once, MZB-762). NOT_LOADED (the chest's chunk was not loaded, so Java did not look for the op in it) parks the
   stack under its op id, as the dragons' (RP-210, MZB-760): the chunk may hold the stack already,
   written ahead of the journal and carrying its APPLIED record, which it copies when it loads, so the
   goods stay out of the stock, what is owed does not change, and the stack is not sent again every
-  step. The set of parked stacks is not saved: a new session sends them again. The grove's chest is
+  step. The set of parked stacks is not saved, and a session begins with none, so a stack the pages
+  hold is sent again once at the session start, except that a NOT_LOADED answer in the replayed part
+  of the journal (journaled after the pages' last save) parks it again before anything is written
+  (MZB-761). The grove's chest is
   forgotten only if it is still the stack's own (the same dimension and place; a chest named since,
   elsewhere, is kept for the next stack), and a parked stack holds the next back. The grove's next
   HAVEN_CHEST, or a CAMP_OUT, which forgets the chest too, sends the stack again under its op id,
   to the chest it went to first and not the one named now: a DUPLICATE_OP answer (or the chunk's
-  REASSERT) books it placed, and the chunk without the stack gets it. A replayed NOT_LOADED for a
+  REASSERT) books it placed, and the chunk without the stack gets it. Not a HAVEN_CHEST that names
+  the stack's own chest with no free slot: the plugin reports a chest full when it looks at it again
+  after any answer and the chunk is gone, and the stack waits for the chest to be reported with room
+  or for the camp to go out (MZB-764). A replayed NOT_LOADED for a
   stack no placing holds (decided after the last save) books nothing, and the camp's count does not
   pass it, so the census after the replay decides it again as the same op. A raid on an unwatched district leaves a hunt owed (`Faction.hunts`, MZB-424): OWED_HUNT for
   each district, a new raid on the same district replacing it with the counts added and capped, and

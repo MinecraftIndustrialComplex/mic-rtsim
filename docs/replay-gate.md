@@ -957,7 +957,12 @@ OwedHunt, with its row above, and new push sites for two kinds that had rows:
   places the next stack. A stack the session that went on decided and had answered after the
   pages' save is booked from its replayed COMMAND_RESULT: no placing holds it, so `tribute_placed`
   (or `tribute_failed`) looks the op up among the camps that owe tribute in the replay, at the
-  indexes from the camp's count, and books it as that session did (RP-134). The census then
+  indexes from the camp's count, and books it as that session did (RP-134). A NOT_LOADED answer
+  (Java did not look in the chest's chunk) parks the stack and books nothing (MZB-760, as the
+  dragons', RP-210): it stays in flight under its op id, its goods out of the stock, and is not
+  written again until the grove's chest is named (a HAVEN_CHEST with room) or the camp goes out.
+  A replayed NOT_LOADED parks the stack the pages hold again, so the session start sends nothing
+  for it; one for a stack no placing holds books nothing (MZB-761). The census then
   decides the next index, not that stack again from a stock that has moved. A stack in flight at
   the crash, whose answer the journal does not hold, is decided again at its index: the same op
   when the stock and what is owed have not moved, which Java answers DUPLICATE_OP if it put it
@@ -2018,7 +2023,7 @@ its files on disk, the rest from the save before. Two directions:
 
 | Row | Op, effect | A | B | After a give-up | Owner of what is left |
 |---|---|---|---|---|---|
-| C1 | TRANSFER_TO_CONTAINER (dragon tribute), chest | exact (noted) | exact (RP-210): an unloaded chest answers NOT_LOADED and the dragons park the stack under its op id, so the chunk's REASSERTed APPLIED books it placed and a resend under the same op answers DUPLICATE. The Umvuthana grove's tribute takes NOT_LOADED as FAILED and goes again under a new op: dupe, as before RP-210 | loss | the Mowzie lead (MZB-760, the grove parks its stack as the dragons do) |
+| C1 | TRANSFER_TO_CONTAINER (dragon and grove tribute), chest | exact (noted) | exact (RP-210, MZB-760): an unloaded chest answers NOT_LOADED and the dragons and the Umvuthana grove park the stack under its op id, so the chunk's REASSERTed APPLIED books it placed and a resend under the same op answers DUPLICATE. The grove's parking is the dragons' (U-b took its NOT_LOADED as FAILED and went again under a new op: dupe) | loss | none (MZB-760 gave the grove the dragons' parking) |
 | C2 | WRITE_GOSSIP, villagers | exact | exact (the villager's ring; a minor loss past its 64 entries) | n/a | none |
 | C3 | PLACE_HOUSE, house box | exact (RP-211: every loaded box chunk carries the result and is noted) | the half house in the newer chunks stands, the villages without it: loss (was a second house, RP-211: a searching build looks for its op on every candidate plot, the unloaded ones as saved); a candidate chunk not read within 10 s is searched past, a second house possible there, logged and counted | loss | none (RP-211) |
 | C4 | SPAWN_RESIDENT, resident | exact (RP-212: the resident carries its result as a noted holder) | exact (RP-212: entities around the spot loaded first, the op checked every tick, the result carried, the UUID from the op); a resident that walked out of reach before it was stored and its second: one lost when both load, loss | loss | none (RP-212) |
