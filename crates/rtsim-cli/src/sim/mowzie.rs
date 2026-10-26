@@ -1593,8 +1593,16 @@ fn reconcile_in_flight(slice: &'static str) -> RunOut {
         }),
         ("a spawn in flight", |seed, save| {
             let mut r = den_run(seed, 0);
-            r.plugin.answer_ticks = 3 * TICKS_PER_DAY;
             r.camp_in();
+            r.run(Tick(100));
+            // The arrival asks for a recount (MZB-1015), answered at once; the spawn that census
+            // orders is answered three days later.
+            let due =
+                r.c.camp(r.f)
+                    .and_then(|c| c.arrival_at)
+                    .expect("an arrival booked");
+            r.run(due);
+            r.plugin.answer_ticks = 3 * TICKS_PER_DAY;
             r.run(at_day(DEN_WAIT + 0.5));
             assert_eq!(r.c.camp(r.f).map_or(0, |c| c.in_flight()), 1);
             if save {

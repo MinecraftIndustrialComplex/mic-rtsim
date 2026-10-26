@@ -2623,6 +2623,12 @@ fn rich_ledger(r: &mut CampRun) {
         spot: (1.5, 64.0, -3.25),
         direction: 0.75,
     });
+    camp.missing = vec![(0xD00D, 1), (0xD00D, 2)];
+    camp.left_behind = vec![(0xBE11, 3)];
+    camp.gap = true;
+    camp.cap_next = true;
+    camp.recount = 6;
+    camp.recount_at = Some(Tick(234_567));
     k.cap = 9;
     k.away = 2;
 }
@@ -3709,4 +3715,193 @@ fn the_marks_change_no_decision() {
     assert_eq!(a, end(1));
     assert_eq!(a, end(2));
     assert_eq!(a.2, 1);
+}
+
+/// MZB-1015, fork F10: a camp that is in when its wait runs out counts first. The arrival sends a
+/// RECOUNT with no lines (and nothing else); the census it brings orders the new member's SPAWN.
+#[test]
+fn an_arrival_at_a_camp_that_is_in_counts_first_and_its_census_spawns() {
+    let mut r = renewal_den(76);
+    come_in(&mut r);
+    let frostmaw = r.plugin.camp_world(r.key).bodies[0].uuid;
+    let t = r.c.now() + 1;
+    assert!(r.plugin.camp_kill(r.key, frostmaw, boundary::BY_PLAYER, t));
+    r.run(t + 5);
+    let due = r.c.camp(r.f).unwrap().arrival_at.expect("a wait");
+    let (censuses, sent) = (r.c.stats.camp_censuses, orders(&r).len());
+    r.run(due + 10);
+    assert_eq!(r.c.stats.arrivals, 1);
+    assert_eq!((r.c.stats.camp_recounts, r.plugin.recounts), (1, 1));
+    assert_eq!(
+        r.c.stats.camp_censuses,
+        censuses + 1,
+        "the recount's census"
+    );
+    let new = &orders(&r)[sent..];
+    assert_eq!(new.len(), 2, "{new:#?}");
+    assert_ne!(new[0].1.flags & boundary::RECONCILE_RECOUNT, 0);
+    assert!(new[0].1.lines.is_empty(), "a recount has no lines");
+    assert_eq!(new[1].1.flags & boundary::RECONCILE_RECOUNT, 0);
+    assert_ne!(
+        new[1].1.epoch, new[0].1.epoch,
+        "ordered in the census's epoch"
+    );
+    assert!(
+        new[1]
+            .1
+            .lines
+            .iter()
+            .any(|l| l.action == boundary::ACTION_SPAWN)
+    );
+    assert_eq!(world_bodies(&r), 1);
+    assert_eq!(counts(&r), [1, 0, 0, 0, 0]);
+    ok(&mut r);
+}
+
+/// MZB-1015, fork F10: a member gone missing that walked home while its den stayed in is seen by
+/// the arrival's recount before any body is spawned: it fills the new member's slot (an adopt),
+/// and no second Frostmaw stands beside it. Without the recount the arrival spawned at once.
+#[test]
+fn a_member_home_unseen_before_the_arrival_is_counted_and_no_second_body_spawns() {
+    let mut r = renewal_den(77);
+    come_in(&mut r);
+    let lured = lure(&mut r, 0);
+    write_off(&mut r);
+    assert_eq!(missing(&r), vec![lured.uuid]);
+    assert_eq!(r.c.camp(r.f).unwrap().recount_at, None, "nothing missed");
+    let due = r.c.camp(r.f).unwrap().arrival_at.expect("a wait");
+    // It walks home; the den stays in, so no census sees it until the arrival.
+    r.plugin.camp_world(r.key).bodies.push(lured);
+    let (spawns, recounts) = (applied(&r, boundary::ACTION_SPAWN), r.c.stats.camp_recounts);
+    r.run(due + 10);
+    assert_eq!(r.c.stats.arrivals, 1);
+    assert_eq!(r.c.stats.camp_recounts, recounts + 1);
+    assert_eq!(applied(&r, boundary::ACTION_SPAWN), spawns, "no spawn");
+    assert_eq!(world_bodies(&r), 1);
+    assert_eq!(counts(&r), [1, 0, 0, 0, 0]);
+    assert!(missing(&r).is_empty());
+    assert!(
+        r.c.camp(r.f)
+            .unwrap()
+            .slots
+            .iter()
+            .any(|s| s.state == SlotState::Body && s.uuid == lured.uuid)
+    );
+    ok(&mut r);
+}
+
+/// MZB-1015: a den that never unloads takes no census of its own. One census that misses its
+/// Frostmaw (lured off and unloaded far away: Java's `Camps.onLeave` asks for that census) books a
+/// recount a game day later, and each recount's census books the next, so the Frostmaw is written
+/// off after three misses over two days, a player's loss, as at a den that unloads. The recounts
+/// stop with the write-off, and none is booked while nothing is missed.
+#[test]
+fn a_den_that_never_unloads_recounts_daily_while_its_member_is_missed() {
+    let mut r = renewal_den(78);
+    come_in(&mut r);
+    let t0 = r.c.now();
+    r.run(t0 + days(3.0));
+    assert_eq!(r.c.stats.camp_recounts, 0, "nothing missed, no recount");
+    assert_eq!(r.c.camp(r.f).unwrap().recount_at, None);
+    let lured = lure(&mut r, 0);
+    let at = r.c.now() + 1;
+    r.camp_in();
+    r.run(at + 10);
+    let misses = |r: &CampRun| {
+        r.c.camp(r.f)
+            .unwrap()
+            .slots
+            .iter()
+            .find(|s| s.uuid == lured.uuid)
+            .map(|s| s.misses)
+    };
+    assert_eq!(misses(&r), Some(1));
+    assert_eq!(
+        r.c.camp(r.f).unwrap().recount_at,
+        Some(at + TICKS_PER_DAY),
+        "a day after the census"
+    );
+    r.run(at + TICKS_PER_DAY + 10);
+    assert_eq!(r.c.stats.camp_recounts, 1);
+    assert_eq!(misses(&r), Some(2));
+    r.run(at + days(2.0) + 100);
+    assert_eq!(r.c.stats.camp_recounts, 2);
+    assert_eq!(r.c.stats.camp_written_off, 1, "three misses over two days");
+    assert_eq!(missing(&r), vec![lured.uuid]);
+    assert_eq!(r.c.stats.renewal_losses, 1, "a player's loss");
+    assert_eq!(r.c.camp(r.f).unwrap().recount_at, None, "the recounts stop");
+    r.run(at + days(5.0));
+    assert_eq!(r.c.stats.camp_recounts, 2);
+    assert_eq!(r.c.stats.arrivals, 0);
+    ok(&mut r);
+}
+
+/// MZB-1015: a recount's booking moves with each census that still misses a body and ends with
+/// one that misses none; a camp that goes out cancels it (its next census counts anyway).
+#[test]
+fn a_recount_follows_the_last_census_and_ends_when_nothing_is_missed_or_the_camp_goes_out() {
+    let mut r = renewal_den(80);
+    come_in(&mut r);
+    let lured = lure(&mut r, 0);
+    let at = r.c.now() + 1;
+    r.camp_in();
+    r.run(at + 10);
+    assert_eq!(r.c.camp(r.f).unwrap().recount_at, Some(at + TICKS_PER_DAY));
+    // Home again before the recount: the next census misses nothing, and nothing is booked.
+    r.plugin.camp_world(r.key).bodies.push(lured);
+    let at = r.c.now() + 1;
+    r.camp_in();
+    r.run(at + 10);
+    assert_eq!(r.c.camp(r.f).unwrap().recount_at, None);
+    r.run(at + days(2.0));
+    assert_eq!(r.c.stats.camp_recounts, 0, "the first booking is stale");
+    // Missed again, then the den goes out: nothing is asked of a camp that is out.
+    let lured = lure(&mut r, 0);
+    let at = r.c.now() + 1;
+    r.camp_in();
+    r.run(at + 10);
+    assert!(r.c.camp(r.f).unwrap().recount_at.is_some());
+    r.camp_out();
+    let to = r.c.now() + 5;
+    r.run(to);
+    assert_eq!(r.c.camp(r.f).unwrap().recount_at, None);
+    r.run(at + days(2.0));
+    assert_eq!(r.c.stats.camp_recounts, 0);
+    r.plugin.camp_world(r.key).bodies.push(lured);
+    come_in(&mut r);
+    assert_eq!(counts(&r), [1, 0, 0, 0, 0]);
+    ok(&mut r);
+}
+
+/// MZB-1015: a recount booked on the wheel survives a save: the loaded engine goes on as the one
+/// that kept going, to the state hash.
+#[test]
+fn a_recount_booked_on_the_wheel_survives_a_save_and_a_load() {
+    let end = |save: bool| {
+        let mut r = renewal_den(79);
+        come_in(&mut r);
+        lure(&mut r, 0);
+        r.camp_in();
+        let to = r.c.now() + 10;
+        r.run(to);
+        assert!(
+            r.c.camp(r.f).unwrap().recount_at.is_some(),
+            "a recount is booked"
+        );
+        if save {
+            let to = r.c.now() + days(0.5);
+            r.run(to);
+            r.round_trip();
+            assert!(r.failures.is_empty(), "{:#?}", r.failures);
+        }
+        r.run(day(4.0));
+        (
+            r.c.state_hash(),
+            r.c.stats.camp_recounts,
+            r.c.stats.camp_written_off,
+        )
+    };
+    let kept = end(false);
+    assert_eq!(end(true), kept);
+    assert_eq!((kept.1, kept.2), (2, 1));
 }

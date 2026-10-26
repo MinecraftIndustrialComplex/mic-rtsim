@@ -215,10 +215,11 @@ fn the_arrival_is_owed_and_spawned_at_the_next_census() {
     ok(&mut r);
 }
 
-/// An arrival at a den that is in sends its spawn in the tick the wait ends (MZB-256, EQUILIBRIUM
-/// item 8: a camp that never unloads gets its arrival when the wait ends).
+/// An arrival at a den that is in counts first and its census sends the spawn (MZB-256, EQUILIBRIUM
+/// item 8: a camp that never unloads gets its arrival when the wait ends; MZB-1015: the arrival
+/// asks for a RECOUNT in its own tick, so a body home unseen is found before a second is made).
 #[test]
-fn the_arrival_at_a_den_that_is_in_sends_its_spawn() {
+fn the_arrival_at_a_den_that_is_in_recounts_and_its_census_sends_the_spawn() {
     let mut r = den(37, 1);
     come_in(&mut r);
     let died = kill_the_frostmaw(&mut r, boundary::BY_MOB);
@@ -235,10 +236,22 @@ fn the_arrival_at_a_den_that_is_in_sends_its_spawn() {
         .collect();
     assert_eq!(new.len(), 1, "one order, in the arrival's own tick");
     assert_eq!(new[0].0, due);
-    assert_eq!(new[0].1.lines.len(), 1);
-    assert_eq!(new[0].1.lines[0].action, boundary::ACTION_SPAWN);
-    assert_ne!(new[0].1.lines[0].flags & boundary::LINE_CRYSTAL, 0);
+    assert!(new[0].1.lines.is_empty(), "a recount has no lines");
+    assert_ne!(new[0].1.flags & boundary::RECONCILE_RECOUNT, 0);
+    let sent = r.cmds.len();
     r.run(due + 10);
+    let spawns: Vec<_> = r.cmds[sent..]
+        .iter()
+        .filter_map(|(_, c)| match c {
+            boundary::Cmd::Reconcile(x) => Some(x.clone()),
+            _ => None,
+        })
+        .filter(|x| !x.lines.is_empty())
+        .collect();
+    assert_eq!(spawns.len(), 1, "the recount's census orders the spawn");
+    assert_eq!(spawns[0].lines.len(), 1);
+    assert_eq!(spawns[0].lines[0].action, boundary::ACTION_SPAWN);
+    assert_ne!(spawns[0].lines[0].flags & boundary::LINE_CRYSTAL, 0);
     assert_eq!(counts(&r), [1, 0, 0, 0, 0]);
     assert_eq!(r.plugin.camps[&r.key].bodies.len(), 1);
     let s = &r.c.camp(r.f).unwrap().slots[0];
