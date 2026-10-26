@@ -119,10 +119,14 @@ record applied while off goes in at its own tick, never at the frozen clock.
   and the modules sharing its clock to its tick (so the dragons, ships, herds and conflict meet it
   in order, S13). It runs at the switch-on (`set_enabled`), at the top of `simulate`, at the top of
   `shared::run_to` (a viewer module running the clock while phase 1 is off must not run it past a
-  kept input) and in the ships' `ingest` before it runs its engine. Each input is removed before it
-  is applied, because applying runs the clock again, which comes back to the drain. Off with no
-  viewer running nothing moves the clock, so nothing drains; while the session's replay runs with a
-  viewer the drain stops at the replay clock (`clock_target`).
+  kept input) and in the dragons' and the ships' `ingest` before they run their engines
+  (`drain_before_run`: a DRAGON_STATE or SHIP_STATE applies at the hand-over's time, and an engine's
+  `run_until` ends with the world's, so the inputs before that time go in first, review P3). Each
+  input is removed before it is applied, because applying runs the clock again, which comes back
+  to the drain. Off with no viewer running nothing moves the clock, so nothing drains (the guard
+  of `drain_kept`); the two `ingest`s have no guard, because a module that is on and has no lair,
+  dock or oil yet is no viewer and its engine runs the world all the same. While the session's
+  replay runs with a viewer the drain stops at the replay clock (`clock_target`).
 - The list is saved in the meta page (`META_VERSION` 4 to 5, after the queue), in the same atomic
   commit as the pages of the save that acknowledged its records, so a crash while off brings back
   exactly the inputs whose records Java dropped. Before release a version 4 save is read as
@@ -144,18 +148,30 @@ record applied while off goes in at its own tick, never at the frozen clock.
   not journaled, so a replay never brings it back at another tick. It is still taken while off, at
   the frozen clock.
 - **The cap.** The list is bounded by count: `KEPT_CAP` is 24,576 inputs (`Link::kept_cap`, which
-  a test lowers). Over it, `Link::keep` drops the oldest drop-eligible input, repeatedly, until the
-  list fits or none is left. Drop-eligible are the inputs whose loss costs a sentiment or
-  reputation nudge and nothing else: a caravan or resident hurt, killed (the village report) or
-  rescued, and a talk (`CaravanReport`, `VillageReport`, `Talked`). A new report over a list of
-  loss records is the oldest there is and goes itself. Never dropped: trade, caravan trade, robbery
-  and goods in, a taken or killed member (goods that left the sim's row), an adoption (a village for
-  good, with its type), a base mark or unmark, a house placed, a work's answer (a resident or a work
-  for good). `UnmarkBase` is in the kept class although it only removes a base: a base unmarked and
-  never heard stays in the world for good. If loss records and structure alone pass the cap, all are
-  kept over it. Each drop adds to `kept_dropped`, each insert that leaves the list over the cap adds
-  to `kept_over` (both this session's, not saved), and a WARN line is logged at the first and then at
-  each power of two of the counter, so a day of overflow is a dozen lines.
+  a test lowers). Over it, `Link::keep` drops one report at a time until the list fits or none is
+  left. Droppable are the inputs whose loss costs a sentiment or reputation nudge and nothing else,
+  in three classes dropped in this order (`drop_rank`, review P3): **talks** first (`Talked`), then
+  **hurts and rescues** (`CaravanReport`, and a `VillageReport` that is not a kill), then
+  **residents killed** (`VillageReport` of kind 8), the dearest of the three (a killing moves a
+  village's sentiment by -125 for 30 days, an assault by -25 and a rescue by +25 for 10:
+  `rtsim-knowledge` tunables). Within a class the
+  oldest goes first, whatever the age of the others: a kill older than a talk outlives it. A new
+  report over a list with none of an earlier class is the oldest of its class and may go itself (a
+  new talk over hurts and kills). Never dropped: trade, caravan trade, robbery and goods in, a
+  taken or killed member (goods that left the sim's row), an adoption (a village for good, with its
+  type), a base mark or unmark, a house placed, a work's answer (a resident or a work for good).
+  `UnmarkBase` is in the kept class although it only removes a base: a base unmarked and never
+  heard stays in the world for good. If loss records and structure alone pass the cap, all are kept
+  over it. Each drop adds to `kept_dropped`, each insert that leaves the list over the cap adds to
+  `kept_over` (both this session's, not saved), and a WARN line is logged at the first and then at
+  each power of two of the counter (naming the class dropped), so a day of overflow is a dozen
+  lines.
+- **The switch-on says what it did.** `switch_on_drain` (`engine/phase1.rs`) wraps the switch-on's
+  drain and logs one INFO line when anything was kept: how many of the kept inputs it applied, how
+  many of them were base marks, and how long it took. Bases are never dropped, so a long window
+  grows the drain, and the step that runs it, linearly with its marks: each is a node built into
+  the world, about 25 ms apiece in the bench below. Inputs a replay's clock has not reached stay
+  kept and the line says how many wait.
 
 **Why.** The engine acknowledges every journaled record it admits, whatever a module's switch
 (`Replay`), and Java drops what it saw acknowledged and does not send it again. Phase 1 used to
@@ -245,9 +261,11 @@ to now.
 every entry):
 
 - `an_overflowing_kept_list_drops_the_oldest_report_and_never_a_loss_record`: with a cap of 5 and a
-  robbery, a hurt, a trade, a talk and a join kept, a sixth input drops the hurt at 20 (printed on
-  the uncapped list: ticks [10, 20, 30, 40, 50, 60], wanted [10, 30, 40, 50, 60]), a seventh the
-  talk; over a list of loss records one more is kept over the cap and a new report goes itself.
+  robbery, a hurt, a trade, a talk and a join kept, a sixth input drops the talk at 40 (the hurt at
+  20 is older, but talks go first; the first version of the cap, oldest report of any class, printed
+  ticks [10, 30, 40, 50, 60] where [10, 20, 30, 50, 60] is wanted, and on the uncapped list [10,
+  20, 30, 40, 50, 60]), a seventh the hurt; over a list of loss records one more is kept over the
+  cap and a new report goes itself.
 - `the_cap_counts_and_warns_on_the_first_drop_and_at_powers_of_two`: nine drops count 9 (printed
   on the uncapped list: 0) and warn at the 1st, 2nd, 4th and 8th; five loss records over the cap
   count 5 and warn at the 1st, 2nd and 4th.
@@ -257,6 +275,40 @@ every entry):
 - `a_capped_list_survives_a_save_and_load`: a list over its cap of 6 with 7 loss records (14 on the
   uncapped list) reads back equal, and after the load a further report is the one that goes.
 - `a_list_filled_to_the_cap_saves_loads_and_drains`: the size bench above.
+
+**Tests of the review's three P3s** (`engine/phase1.rs`). Each failed first on `89bcdc61`, what it
+printed:
+
+- Drop order, `the_cap_drops_talks_first_then_hurts_and_rescues_then_kills` (a cap of 6, the oldest
+  entry a kill, then a hurt, a talk, a trade, a resident hurt, a talk): the first drop took the
+  kill at 10 (kept ticks [20, 30, 40, 50, 60, 70]; wanted the talk at 30, [10, 20, 40, 50, 60,
+  70]). Then each class in its order, a new talk over hurts and kills going itself, the kill last,
+  and the per-class counts coming back right from a save (`soft_len`).
+- Drop order at the real cap, `a_mix_past_the_real_cap_keeps_what_the_drop_order_keeps`: the list
+  filled to exactly 24,576 (18,000 trades, 3,000 talks, 2,000 hurts or rescues, 1,576 kills, the
+  oldest entry a kill) drops nothing; 3,500 more trades heard drop all 3,000 talks and the 500
+  oldest hurts (talks, hurts, kills left on `89bcdc61`: 1,251, 833, 992; wanted 0, 1,500, 1,576);
+  2,000 more drop the other 1,500 hurts and the 500 oldest kills (the head of the list among them);
+  1,000 more leave 76 kills, the newest; then the 76 go for loss records, and the 77th over the
+  cap is kept over it. Throughout the list is in time order and `kept_over` is 0 until no report
+  is left.
+- DRAGON_STATE, `a_dragon_state_applies_the_kept_inputs_before_it_runs_the_world_to_the_hand_over`
+  (phase 1 off, a lair, a Join kept at 2,000, the hand-over at 9,000): the record ran the world to
+  9,000 with the Join still kept, and it was booked at 9,000 once on (`Some(9000)`, wanted
+  `Some(2000)`). The same hole for dragons that are on with nothing in the world yet
+  (`a_dragon_state_of_dragons_with_nothing_yet_applies_the_kept_inputs_first`, which is also the
+  first LAIR_FOUND of a session, the same `ingest`) and for ships on with no dock
+  (`a_ship_state_of_ships_with_nothing_yet_applies_the_kept_inputs_first`, which the ships' own
+  drain missed through the viewer guard); all three pass with `drain_before_run`. The herds'
+  `ingest` runs only the legs (`w.legs`), not the world, so it needs no drain. The conflict's
+  `ingest` runs the world only to its own events, and the wheel of a conflict with no faction is
+  empty; the ChiefState arm ingests at the engine's own `now()`. Both read, not probed.
+- The switch-on's line, `the_switch_on_says_how_many_inputs_it_applied_and_how_long_it_took`: 45
+  inputs kept (3 adoptions, 2 base marks, 40 trades) give "applied 45 of the 45 inputs ... (base
+  marks among them: 2) in ...", nothing kept gives nothing, and a replay clock at 5,000 with
+  inputs at 2,000 and 9,000 gives "applied 1 of the 2 inputs" and "1 wait for the replay clock".
+  The call from `set_enabled` is seen in the output of `modules()` in the other tests (the line
+  prints once per switch-on that had something kept), not asserted.
 
 **Left.**
 
@@ -269,3 +321,6 @@ every entry):
   the synthetic busy load) are kept over it, with a WARN. A report dropped for the cap is a
   sentiment or reputation nudge lost for good; the engine acknowledged it and Java will not send it
   again.
+- The switch-on's drain grows with the window's base marks (see Chosen), which the cap never
+  drops: a long switch-off with many bases is a long step at the switch-on, logged. Paging the
+  list, and applying it across steps, is the answer if a log line ever shows it.

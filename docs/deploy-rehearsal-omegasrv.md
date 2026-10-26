@@ -674,9 +674,10 @@ found by the first reset and checked by the second (6.7).
    The engine hears phase 1's journaled records while it is off: an adoption, a trade, a robbery and
    the rest are kept at their own ticks in the meta page, so a crash keeps them too, and applied in
    time order when phase 1 comes back; only censuses are ignored. The list has a cap (`KEPT_CAP`): over
-   it the oldest hurt, rescue and talk reports are dropped (a sentiment nudge lost) with a WARN, and
-   adoptions and every loss record are never dropped, so a very long switch-off can pass the cap with
-   those alone. From the code; the rehearsal never switched a module.
+   it reports are dropped, talks first, then hurts and rescues, then residents killed, oldest first
+   (a sentiment nudge lost) with a WARN, and adoptions and every loss record are never dropped, so a
+   very long switch-off can pass the cap with those alone. The switch-on logs how many inputs it
+   applied and how long that took. From the code; the rehearsal never switched a module.
 
 ## 7. What a migration would need
 

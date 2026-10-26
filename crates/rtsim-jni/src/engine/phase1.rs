@@ -93,25 +93,38 @@ pub const META_MAGIC: u32 = u32::from_le_bytes(*b"RTP1");
 /// this build does not read is dropped (S5, [`when_pages_unreadable`]); there is no migration.
 pub const META_VERSION: u16 = 5;
 
-/// The most inputs the list of those heard while phase 1 is off ([`Link::kept`]) holds before the
-/// oldest reports are dropped (RP-300, docs/choices-journal-barrier.md). A busy synthetic day of
+/// The most inputs the list of those heard while phase 1 is off ([`Link::kept`]) holds before
+/// reports are dropped, talks first, then hurts and rescues, then residents killed, each the
+/// oldest first ([`drop_rank`]; RP-300, docs/choices-journal-barrier.md). A busy synthetic day of
 /// switch-off (40 players on average for 24 hours) is about 19,850 inputs, 11,930 of them loss
 /// records and structure the list never drops; the cap holds that day with a quarter to spare. The
 /// meta page, rewritten at every save, is then about 0.77 MB (under 1 MiB, the budget chosen: the
 /// page store itself limits a page to 4 GiB).
 pub const KEPT_CAP: usize = 24_576;
 
-/// Whether losing this input costs a nudge to a village's sentiment or a player's reputation and
-/// nothing else: a caravan or resident hurt or rescued, a talk. Only these are dropped when the
-/// list is over its cap, the oldest first. Never dropped: a trade, a robbery, a taken or killed
-/// member (goods that left the sim's row), an adoption or base (a village or base for good), a
-/// house placed or a work's answer (a resident or a work for good).
-fn drop_eligible(input: &Input) -> bool {
-    matches!(
-        input,
-        Input::CaravanReport { .. } | Input::VillageReport { .. } | Input::Talked { .. }
-    )
+/// The classes of report the cap may drop, in the order it drops them ([`drop_rank`]).
+const DROP_RANKS: usize = 3;
+
+/// Where an input stands in the order the cap drops reports, or `None` when it is never dropped.
+/// Every one of these costs a nudge to a village's sentiment or a player's reputation and nothing
+/// else. In order: **0** a talk (a ribbit credited); **1** a caravan or resident hurt or rescued;
+/// **2** a resident killed, the dearest of the three (a killing moves a village's sentiment by
+/// -125 for 30 days, an assault by -25 and a rescue by +25 for 10). Within
+/// a class the oldest goes first, whatever the age of the others. Never dropped: a trade, a
+/// robbery, a taken or killed member (goods that left the sim's row), an adoption or base (a
+/// village or base for good), a house placed or a work's answer (a resident or a work for good).
+fn drop_rank(input: &Input) -> Option<usize> {
+    match input {
+        Input::Talked { .. } => Some(0),
+        Input::CaravanReport { .. } => Some(1),
+        Input::VillageReport { kind: 8, .. } => Some(2),
+        Input::VillageReport { .. } => Some(1),
+        _ => None,
+    }
 }
+
+/// What the warning line calls each class of [`drop_rank`].
+const DROP_NAMES: [&str; DROP_RANKS] = ["talk", "hurt or rescue", "resident-killed"];
 pub const SNAP_MAGIC: u32 = u32::from_le_bytes(*b"RTPS");
 
 fn chunk_key(k: usize) -> PageKey {
@@ -337,13 +350,13 @@ pub(super) struct Link {
     /// after the shared modules' catch-up to its tick, at the switch-on, at the next `simulate`
     /// when on, and before a viewer module runs the shared clock past them ([`shared::run_to`]).
     kept: VecDeque<Logged>,
-    /// How many of [`Link::kept`] are drop-eligible ([`drop_eligible`]): the scan for the oldest
-    /// one is skipped when there is none.
-    kept_soft: usize,
+    /// How many of [`Link::kept`] are in each class the cap may drop ([`drop_rank`]): the scan for
+    /// the oldest of a class is skipped when there is none.
+    kept_soft: [usize; DROP_RANKS],
     /// The most inputs [`Link::kept`] holds before [`Link::keep`] drops reports ([`KEPT_CAP`]; a
     /// test lowers it). Not saved.
     kept_cap: usize,
-    /// Reports ([`drop_eligible`]) dropped to stay within the cap, this session.
+    /// Reports ([`drop_rank`]) dropped to stay within the cap, this session.
     pub(super) kept_dropped: u64,
     /// Inputs kept that left the list over the cap because no report was left to drop (loss
     /// records alone passed the cap), this session.
@@ -430,7 +443,7 @@ impl Link {
             spawn_near: Vec::new(),
             enabled: true,
             kept: VecDeque::new(),
-            kept_soft: 0,
+            kept_soft: [0; DROP_RANKS],
             kept_cap: KEPT_CAP,
             kept_dropped: 0,
             kept_over: 0,
@@ -601,7 +614,12 @@ impl Link {
         // identity: one Java already applied is answered DUPLICATE).
         link.queue = m.queued.into();
         link.kept = m.kept.into();
-        link.kept_soft = link.kept.iter().filter(|k| drop_eligible(&k.input)).count();
+        link.kept_soft = [0; DROP_RANKS];
+        for k in &link.kept {
+            if let Some(r) = drop_rank(&k.input) {
+                link.kept_soft[r] += 1;
+            }
+        }
         link.stats[stat::INPUTS] = link.base_inputs + link.log.len() as u64;
         link.stats[stat::VILLAGES] = link.nodes.len() as u64;
         Ok(link)
@@ -613,33 +631,38 @@ impl Link {
     }
 
     /// Keeps an input heard while phase 1 is off, in time order (equal ticks in the order heard).
-    /// Over the cap the oldest drop-eligible input goes ([`drop_eligible`]; the new one if it is
-    /// the oldest there is) until the list fits or none is left: loss records and structure are
-    /// never dropped, so a list of those alone stays over the cap. Returns a warning line when a
-    /// report was dropped or the list stayed over, for the caller to log; rate limited, the first
-    /// time and then at each power of two of its counter.
+    /// Over the cap a report goes ([`drop_rank`]: the oldest talk, else the oldest hurt or rescue,
+    /// else the oldest resident killed; the new one if it is the oldest of its class) until the
+    /// list fits or none is left: loss records and structure are never dropped, so a list of
+    /// those alone stays over the cap. Returns a warning line when a report was dropped or the
+    /// list stayed over, for the caller to log; rate limited, the first time and then at each
+    /// power of two of its counter.
     fn keep(&mut self, entry: Logged) -> Option<String> {
         let pos = self.kept.partition_point(|k| k.at <= entry.at);
-        if drop_eligible(&entry.input) {
-            self.kept_soft += 1;
+        if let Some(r) = drop_rank(&entry.input) {
+            self.kept_soft[r] += 1;
         }
         self.kept.insert(pos, entry);
         let mut warning = None;
-        while self.kept.len() > self.kept_cap && self.kept_soft > 0 {
+        while self.kept.len() > self.kept_cap {
+            let Some(rank) = self.kept_soft.iter().position(|&n| n > 0) else {
+                break;
+            };
             let oldest = self
                 .kept
                 .iter()
-                .position(|k| drop_eligible(&k.input))
+                .position(|k| drop_rank(&k.input) == Some(rank))
                 .expect("kept_soft counts them");
             self.kept.remove(oldest);
-            self.kept_soft -= 1;
+            self.kept_soft[rank] -= 1;
             self.kept_dropped += 1;
             if self.kept_dropped.is_power_of_two() {
                 warning = Some(format!(
                     "phase 1 is over the cap on inputs heard while switched off (cap {}): dropped the \
-                     oldest hurt, rescue or talk report, {} so far; trades, robberies, taken members, \
-                     adoptions, bases, houses and work answers are never dropped",
-                    self.kept_cap, self.kept_dropped
+                     oldest {} report (talks go first, then hurts and rescues, then residents \
+                     killed), {} so far; trades, robberies, taken members, adoptions, bases, houses \
+                     and work answers are never dropped",
+                    self.kept_cap, DROP_NAMES[rank], self.kept_dropped
                 ));
             }
         }
@@ -658,11 +681,17 @@ impl Link {
         warning
     }
 
+    /// How many of the kept inputs are reports the cap may drop ([`drop_rank`]).
+    #[cfg(test)]
+    fn soft_len(&self) -> usize {
+        self.kept_soft.iter().sum()
+    }
+
     /// The oldest kept input, taken out to be applied.
     fn take_kept(&mut self) -> Option<Logged> {
         let k = self.kept.pop_front()?;
-        if drop_eligible(&k.input) {
-            self.kept_soft -= 1;
+        if let Some(r) = drop_rank(&k.input) {
+            self.kept_soft[r] -= 1;
         }
         Some(k)
     }
@@ -1103,8 +1132,44 @@ fn set_enabled(st: &mut State, on: bool) {
         l.last_interest = i64::MIN;
         l.last_market = i64::MIN;
         l.markets_sent.clear();
-        drain_kept(st, None);
+        if let Some(line) = switch_on_drain(st) {
+            log_info(&line);
+        }
     }
+}
+
+/// The switch-on's drain ([`drain_kept`] of everything kept) and the line that says what it did,
+/// for the caller to log: how many of the kept inputs it applied, how many of the kept ones were
+/// base marks, and how long it took; `None` when nothing was kept. The window is not bounded
+/// beyond the cap on reports: bases, like every loss record, are never dropped, and each base mark
+/// is a node built into the world's graph (about 25 ms apiece in the bench of RP-300, where the
+/// other inputs together took 7 ms), so a long switch-off grows the drain, and the step that runs
+/// it, linearly with its marks. Inputs a replay's clock has not reached yet stay kept and are
+/// counted as waiting ([`shared::clock_target`]).
+fn switch_on_drain(st: &mut State) -> Option<String> {
+    let before = st.phase1.kept_len();
+    if before == 0 {
+        return None;
+    }
+    let marks = st
+        .phase1
+        .kept
+        .iter()
+        .filter(|k| matches!(k.input, Input::MarkBase { .. }))
+        .count();
+    let started = std::time::Instant::now();
+    drain_kept(st, None);
+    let took = started.elapsed();
+    let left = st.phase1.kept_len();
+    let mut line = format!(
+        "phase 1 is on again: applied {} of the {before} inputs heard while it was off (base marks \
+         among them: {marks}) in {took:.1?}",
+        before - left
+    );
+    if left > 0 {
+        line.push_str(&format!("; {left} wait for the replay clock"));
+    }
+    Some(line)
 }
 
 pub(super) fn observe_state(st: &mut State, rec: &Rec<'_>) {
@@ -1547,12 +1612,27 @@ fn apply_booked(st: &mut State, input: Input, at: u64) {
 /// booked at the frozen clock (RP-300, hazard J3). Called at the switch-on, at the top of
 /// `simulate`, and at the top of `shared::run_to` (a viewer module running the clock while phase 1
 /// is off). Does nothing while phase 1 is off and no viewer module runs the world (nothing moves
-/// it). While the session's replay runs with a module that shares the world, no further than the
-/// replay clock ([`shared::clock_target`]). Each input is removed before it is applied: applying
-/// runs the clock again, which comes back here.
+/// it); a module about to run the world itself calls [`drain_before_run`] instead. While the
+/// session's replay runs with a module that shares the world, no further than the replay clock
+/// ([`shared::clock_target`]). Each input is removed before it is applied: applying runs the clock
+/// again, which comes back here.
 pub(super) fn drain_kept(st: &mut State, bound: Option<Tick>) {
+    drain(st, bound, false);
+}
+
+/// [`drain_kept`] up to `at` for a module whose engine is about to run the shared world to `at`
+/// itself: the dragons' and the ships' `ingest` (their `run_until` ends with the world's, whether
+/// or not they have anything in the world yet). A module that is switched on with no lair, dock or
+/// oil yet is no viewer ([`shared::any_viewer`]), so the guard of [`drain_kept`] would let its
+/// first record run the world past inputs it has not heard, and they would be booked at `at`
+/// instead of their own ticks (RP-300).
+pub(super) fn drain_before_run(st: &mut State, at: Tick) {
+    drain(st, Some(at), true);
+}
+
+fn drain(st: &mut State, bound: Option<Tick>, running_the_world: bool) {
     while !st.phase1.kept.is_empty() {
-        if !st.phase1.enabled && !shared::any_viewer(st) {
+        if !running_the_world && !st.phase1.enabled && !shared::any_viewer(st) {
             return;
         }
         let limit = shared::clock_target(st, bound.unwrap_or(Tick(u64::MAX)));
@@ -3766,8 +3846,8 @@ mod tests {
         Logged { at, input }
     }
 
-    /// RP-300, the cap: over it the oldest drop-eligible input goes (a hurt, a rescue, a talk) and
-    /// never a loss record or structure, whatever its age.
+    /// RP-300, the cap: over it a report goes (a talk first, then a hurt or rescue, then a resident
+    /// killed, each the oldest first) and never a loss record or structure, whatever its age.
     #[test]
     fn an_overflowing_kept_list_drops_the_oldest_report_and_never_a_loss_record() {
         let mut l = Link::empty();
@@ -3783,25 +3863,25 @@ mod tests {
         }
         assert_eq!(l.kept.len(), 5);
         assert_eq!(l.kept_dropped, 0, "at the cap, nothing yet");
-        // One more: the oldest report goes, not the older robbery.
+        // One more: the talk goes, though the hurt is older, and not the older robbery.
         l.keep(at_(60, rob_of(8, 2)));
         let ats: Vec<u64> = l.kept.iter().map(|k| k.at).collect();
-        assert_eq!(ats, [10, 30, 40, 50, 60], "the hurt at 20 went");
+        assert_eq!(ats, [10, 20, 30, 50, 60], "the talk at 40 went");
         assert_eq!(l.kept_dropped, 1);
-        // And again: the talk at 40.
+        // And again: no talk is left, the hurt at 20.
         l.keep(at_(70, trade_of(2, 5)));
         let ats: Vec<u64> = l.kept.iter().map(|k| k.at).collect();
-        assert_eq!(ats, [10, 30, 50, 60, 70], "the talk at 40 went");
+        assert_eq!(ats, [10, 30, 50, 60, 70], "the hurt at 20 went");
         assert_eq!(l.kept_dropped, 2);
         // No report is left: a loss record goes over the cap rather than push one out.
         l.keep(at_(80, trade_of(3, 6)));
         assert_eq!(l.kept.len(), 6, "over the cap, nothing dropped");
         assert_eq!(l.kept_dropped, 2);
         assert_eq!(l.kept_over, 1);
-        // A new report over a list of loss records is the oldest report there is: it goes itself.
+        // A new report over a list of loss records is the only report there is: it goes itself.
         l.keep(at_(90, hurt_of(9)));
         assert_eq!(l.kept.len(), 6);
-        assert!(l.kept.iter().all(|k| !drop_eligible(&k.input)));
+        assert!(l.kept.iter().all(|k| drop_rank(&k.input).is_none()));
         assert_eq!(l.kept_dropped, 3);
         // The trade and robbery at the front of the list are all still there.
         assert!(matches!(l.kept[0].input, Input::Rob { caravan: 7, .. }));
@@ -3811,6 +3891,222 @@ mod tests {
                 .filter(|k| matches!(k.input, Input::Trade { .. } | Input::Rob { .. }))
                 .count(),
             5
+        );
+    }
+
+    fn resident_report(key: u64, kind: u8) -> Input {
+        Input::VillageReport {
+            key,
+            player: (1, 2),
+            kind,
+        }
+    }
+
+    fn rescue_of(caravan: u64) -> Input {
+        Input::CaravanReport {
+            caravan,
+            player: (1, 2),
+            rescue: true,
+        }
+    }
+
+    /// The class of a kept input for the drop-order tests: 0 a talk, 1 a hurt or rescue, 2 a
+    /// resident killed, 3 anything the cap never drops.
+    fn class_of(input: &Input) -> usize {
+        match input {
+            Input::Talked { .. } => 0,
+            Input::CaravanReport { .. } => 1,
+            Input::VillageReport { kind: 8, .. } => 2,
+            Input::VillageReport { .. } => 1,
+            _ => 3,
+        }
+    }
+
+    /// RP-300, the order of the drops (review P3): over the cap the talks go first, then the hurts
+    /// and rescues, then the residents killed: a kill is the dearest of the reports, it moves a
+    /// village's sentiment most. Each class is dropped oldest first, whatever the age of the
+    /// others: a talk dropped before a hurt that is older, a hurt before an older kill.
+    #[test]
+    fn the_cap_drops_talks_first_then_hurts_and_rescues_then_kills() {
+        let mut l = Link::empty();
+        l.kept_cap = 6;
+        // The oldest entry is a kill, then a hurt, a talk, three loss records.
+        for e in [
+            at_(10, resident_report(1, 8)),
+            at_(20, hurt_of(7)),
+            at_(30, talked_of(1)),
+            at_(40, trade_of(1, 4)),
+            at_(50, resident_report(2, 7)),
+            at_(60, talked_of(2)),
+        ] {
+            assert!(l.keep(e).is_none());
+        }
+        let left = |l: &Link| -> Vec<u64> { l.kept.iter().map(|k| k.at).collect() };
+        l.keep(at_(70, trade_of(1, 6)));
+        assert_eq!(left(&l), [10, 20, 40, 50, 60, 70], "the oldest talk (30)");
+        l.keep(at_(80, trade_of(1, 8)));
+        assert_eq!(left(&l), [10, 20, 40, 50, 70, 80], "the last talk (60)");
+        l.keep(at_(90, rescue_of(7)));
+        assert_eq!(left(&l), [10, 40, 50, 70, 80, 90], "the oldest hurt (20)");
+        // A new talk over a list of hurts and kills is dropped at once, whatever its age.
+        l.keep(at_(100, talked_of(3)));
+        assert_eq!(left(&l), [10, 40, 50, 70, 80, 90], "the new talk itself");
+        // Hurts and rescues next, oldest first (the resident hurt at 50, then the rescue at 90).
+        l.keep(at_(110, trade_of(1, 10)));
+        assert_eq!(left(&l), [10, 40, 70, 80, 90, 110]);
+        l.keep(at_(120, trade_of(1, 12)));
+        assert_eq!(left(&l), [10, 40, 70, 80, 110, 120]);
+        // Only the kill is left of the reports: now it goes.
+        l.keep(at_(130, trade_of(1, 14)));
+        assert_eq!(left(&l), [40, 70, 80, 110, 120, 130], "the kill (10) last");
+        assert_eq!(l.kept_dropped, 7);
+        assert!(l.kept.iter().all(|k| class_of(&k.input) == 3));
+        // The list counts what is left of each class by itself: a load finds the same.
+        l.kept_cap = 100;
+        for (at, e) in [
+            (200, resident_report(1, 8)),
+            (210, hurt_of(7)),
+            (220, talked_of(1)),
+        ] {
+            l.keep(at_(at, e));
+        }
+        let back = reload(&l, "kept-ranks");
+        assert_eq!(back.kept, l.kept);
+        assert_eq!(back.soft_len(), 3);
+    }
+
+    /// RP-300, the order at the real cap (review P3): a list filled to `KEPT_CAP` with a mix of
+    /// loss records and reports, the oldest entry a kill, then loss records heard until each class
+    /// of report has gone in its order: the survivors are what the order says.
+    #[test]
+    fn a_mix_past_the_real_cap_keeps_what_the_drop_order_keeps() {
+        let mut l = Link::empty();
+        assert_eq!(l.kept_cap, KEPT_CAP);
+        let mut at = 0u64;
+        let mut next = || {
+            at += 10;
+            at
+        };
+        // 24,576 entries: 18,000 trades, 3,000 talks, 2,000 hurts or rescues, 1,576 kills, in the
+        // cycle of a busy day (the oldest a kill), nothing over the cap yet.
+        let (mut trades, mut talks, mut hurts, mut kills) = (18_000, 3_000, 2_000, 1_576);
+        let first = next();
+        assert!(l.keep(at_(first, resident_report(1, 8))).is_none());
+        kills -= 1;
+        let mut i = 0u64;
+        while trades + talks + hurts + kills > 0 {
+            i += 1;
+            let at = next();
+            let input = match i % 12 {
+                0 | 4 | 7 if talks > 0 => {
+                    talks -= 1;
+                    talked_of(i)
+                }
+                1 | 5 if hurts > 0 => {
+                    hurts -= 1;
+                    if i.is_multiple_of(3) {
+                        rescue_of(i)
+                    } else {
+                        resident_report(i, 7)
+                    }
+                }
+                2 if kills > 0 => {
+                    kills -= 1;
+                    resident_report(i, 8)
+                }
+                _ if trades > 0 => {
+                    trades -= 1;
+                    trade_of(1 + i % 7, 4 + 2 * (i % 13) as i64)
+                }
+                _ if talks > 0 => {
+                    talks -= 1;
+                    talked_of(i)
+                }
+                _ if hurts > 0 => {
+                    hurts -= 1;
+                    hurt_of(i)
+                }
+                _ => {
+                    kills -= 1;
+                    resident_report(i, 8)
+                }
+            };
+            assert!(l.keep(at_(at, input)).is_none(), "not over at entry {i}");
+        }
+        let count = |l: &Link, c: usize| l.kept.iter().filter(|k| class_of(&k.input) == c).count();
+        assert_eq!(l.kept.len(), KEPT_CAP);
+        assert_eq!(l.kept_dropped, 0);
+        assert_eq!(
+            [count(&l, 0), count(&l, 1), count(&l, 2), count(&l, 3)],
+            [3_000, 2_000, 1_576, 18_000]
+        );
+        let oldest_kill = l.kept.iter().find(|k| class_of(&k.input) == 2).unwrap().at;
+        assert_eq!(oldest_kill, 10, "the oldest entry is a kill");
+        // 3,500 loss records heard on: the 3,000 talks go, then the 500 oldest hurts.
+        let hurts_before: Vec<u64> = l
+            .kept
+            .iter()
+            .filter(|k| class_of(&k.input) == 1)
+            .map(|k| k.at)
+            .collect();
+        for _ in 0..3_500 {
+            let at = next();
+            l.keep(at_(at, trade_of(1, 4)));
+        }
+        assert_eq!(l.kept.len(), KEPT_CAP);
+        assert_eq!(l.kept_dropped, 3_500);
+        assert_eq!(
+            [count(&l, 0), count(&l, 1), count(&l, 2), count(&l, 3)],
+            [0, 1_500, 1_576, 21_500]
+        );
+        let hurts_now: Vec<u64> = l
+            .kept
+            .iter()
+            .filter(|k| class_of(&k.input) == 1)
+            .map(|k| k.at)
+            .collect();
+        assert_eq!(hurts_now, hurts_before[500..], "the 500 oldest hurts went");
+        // 2,000 more: the 1,500 hurts go, then the 500 oldest kills (the oldest entry of the list).
+        for _ in 0..2_000 {
+            let at = next();
+            l.keep(at_(at, trade_of(1, 4)));
+        }
+        assert_eq!(l.kept.len(), KEPT_CAP);
+        assert_eq!(
+            [count(&l, 0), count(&l, 1), count(&l, 2), count(&l, 3)],
+            [0, 0, 1_076, 23_500]
+        );
+        let oldest_kill = l.kept.iter().find(|k| class_of(&k.input) == 2).unwrap().at;
+        assert!(oldest_kill > 10, "the kill at the head of the list went");
+        // 1,000 more: all but the 76 newest kills go; and nothing but a report ever went.
+        for _ in 0..1_000 {
+            let at = next();
+            l.keep(at_(at, trade_of(1, 4)));
+        }
+        assert_eq!(l.kept.len(), KEPT_CAP);
+        assert_eq!(
+            [count(&l, 0), count(&l, 1), count(&l, 2), count(&l, 3)],
+            [0, 0, 76, 24_500]
+        );
+        assert_eq!(l.kept_dropped, 6_500);
+        assert_eq!(l.kept_over, 0, "reports paid for every loss record");
+        // The loss records past the cap are all kept, and the list is in time order.
+        l.keep(at_(next(), trade_of(1, 6)));
+        assert_eq!(l.kept.len(), KEPT_CAP, "a kill went for it");
+        for _ in 0..76 {
+            l.keep(at_(next(), trade_of(1, 6)));
+        }
+        assert_eq!(
+            l.kept.len(),
+            KEPT_CAP + 1,
+            "no report is left: over the cap"
+        );
+        assert_eq!(l.kept_over, 1);
+        assert!(
+            l.kept
+                .iter()
+                .zip(l.kept.iter().skip(1))
+                .all(|(a, b)| a.at <= b.at)
         );
     }
 
@@ -3901,7 +4197,7 @@ mod tests {
         assert!(l.kept_dropped > 0);
         let mut back = reload(&l, "kept-capped");
         assert_eq!(back.kept, l.kept, "the same inputs at the same ticks");
-        assert_eq!(back.kept_soft, 0);
+        assert_eq!(back.soft_len(), 0);
         back.kept_cap = 6;
         // The load knows which entries are reports: a report arriving is the one that goes.
         back.keep(at_(500, talked_of(99)));
@@ -3911,7 +4207,7 @@ mod tests {
         back.kept_cap = 9;
         back.keep(at_(510, talked_of(100)));
         assert_eq!(back.kept.len(), 8);
-        assert_eq!(back.kept_soft, 1);
+        assert_eq!(back.soft_len(), 1);
     }
 
     /// RP-300, the size of the cap: a list filled to `KEPT_CAP` with the mix of the synthetic busy
@@ -4012,7 +4308,7 @@ mod tests {
         // marks, about 25 ms each, which is the world adding a node (as it does live).
         eprintln!("drain at the switch-on: {:?}", t.elapsed());
         assert!(st.phase1.kept.is_empty());
-        assert_eq!(st.phase1.kept_soft, 0);
+        assert_eq!(st.phase1.soft_len(), 0);
     }
 
     /// RP-300: kept inputs are applied in time order (equal ticks in the order heard), each at its
@@ -4099,6 +4395,202 @@ mod tests {
         shared::run_to(&mut st, Tick(10_000));
         assert!(st.phase1.kept.is_empty());
         assert_eq!(st.phase1.nodes.len(), 2);
+    }
+
+    /// RP-300, review P3: the switch-on says how many of the kept inputs it applied (the base marks
+    /// among them, the dearest to apply) and how long it took, so a long switch-off whose drain
+    /// stalls a step is a line in the log, and says nothing when nothing was kept.
+    #[test]
+    fn the_switch_on_says_how_many_inputs_it_applied_and_how_long_it_took() {
+        let mut st = state();
+        modules(&mut st, 0b0111);
+        assert!(
+            switch_on_drain(&mut st).is_none(),
+            "nothing kept, nothing said"
+        );
+        for k in 1..=3u64 {
+            book(&mut st, join_of(k, 300 * k as i32), 100 * k);
+        }
+        for k in 0..2u64 {
+            let mark = Input::MarkBase {
+                key: 0xB000 + k,
+                frame: 1,
+                x: 600 + 100 * k as i32,
+                z: 100,
+                player: (5, 6),
+            };
+            book(&mut st, mark, 2_000 + k);
+        }
+        for i in 0..40u64 {
+            book(
+                &mut st,
+                trade_of(1 + i % 3, 4 + 2 * i as i64),
+                1_000 + 10 * i,
+            );
+        }
+        assert_eq!(st.phase1.kept_len(), 45);
+        st.phase1.enabled = true;
+        let line = switch_on_drain(&mut st).expect("45 inputs were kept");
+        assert!(st.phase1.kept.is_empty());
+        assert!(line.contains("applied 45 of the 45 inputs"), "{line}");
+        assert!(line.contains("base marks among them: 2"), "{line}");
+        assert!(line.contains(" in "), "the duration: {line}");
+        assert!(!line.contains("wait"), "none left: {line}");
+        assert!(
+            switch_on_drain(&mut st).is_none(),
+            "and nothing the next time"
+        );
+        // While the replay runs with a module that shares the world, the drain stops at the replay
+        // clock: the line says how many wait.
+        let mut st = state();
+        modules(&mut st, 0b0111);
+        st.herds.enabled = true;
+        st.herds.engine.add_herd(
+            rtsim_ecology::herds::NewHerd {
+                name: "flock".into(),
+                species: rtsim_ecology::herds::HerdSpecies::Sheep,
+                frame: 1,
+                pos: (0, 0),
+                count: 12,
+                seed: Some(1),
+            },
+            Tick(0),
+        );
+        book(&mut st, join_of(1, 0), 2_000);
+        book(&mut st, join_of(2, 300), 9_000);
+        st.phase1.enabled = true;
+        st.replaying = true;
+        st.replay_clock = Tick(5_000);
+        let line = switch_on_drain(&mut st).expect("two were kept");
+        assert!(line.contains("applied 1 of the 2 inputs"), "{line}");
+        assert!(line.contains("1 wait for the replay clock"), "{line}");
+        assert_eq!(st.phase1.kept_len(), 1);
+    }
+
+    /// A state with phase 1 off and a village adopted at tick 2,000 that is kept, not applied: the
+    /// switch-off window of the module-record tests. `lair` gives the dragons a lair, so they run
+    /// the shared clock (a viewer); without one they are switched on and have nothing in the world.
+    fn off_with_a_kept_join(lair: bool) -> State {
+        let mut st = state();
+        modules(&mut st, 0b0111);
+        st.dragons.enabled = true;
+        st.ships.enabled = true;
+        if lair {
+            st.dragons.engine.add_lair(
+                &mut st.phase1.world,
+                0x1234,
+                "Cinder Roost",
+                rtsim_ecology::species::Species::Fire,
+                rtsim_ecology::dragon::LairKind::Roost,
+                Pos::new(0, 1_500, 1_200),
+                70,
+                Tick(0),
+            );
+        }
+        assert_eq!(shared::any_viewer(&st), lair);
+        book(&mut st, join_of(1, 0), 2_000);
+        assert_eq!(st.phase1.kept_len(), 1);
+        st.game_time = 9_000;
+        st
+    }
+
+    /// The Join kept at 2,000 must have gone in at 2,000, with the shared world already at the
+    /// hand-over's 9,000: the record ran it there only after the kept input was applied.
+    fn assert_the_kept_join_went_in_first(st: &mut State) {
+        assert!(
+            st.phase1.world.now().0 >= 9_000,
+            "the record ran the shared world to the hand-over"
+        );
+        assert!(
+            st.phase1.kept.is_empty(),
+            "the kept input was applied first"
+        );
+        let at = st
+            .phase1
+            .log
+            .iter()
+            .find(|l| matches!(l.input, Input::Join { key: 1, .. }))
+            .map(|l| l.at);
+        assert_eq!(at, Some(2_000), "at its own tick, not the hand-over's");
+        modules(st, 0b1111);
+        let at = st
+            .phase1
+            .log
+            .iter()
+            .find(|l| matches!(l.input, Input::Join { key: 1, .. }))
+            .map(|l| l.at);
+        assert_eq!(at, Some(2_000), "and still, once on again");
+    }
+
+    fn dragon_state() -> Vec<u8> {
+        record(rtsim_ecology::boundary::DRAGON_STATE, 64, 0, |b| {
+            wire::put_u64(b, 8, 0xD0D0);
+            wire::put_u32(b, 16, 1);
+            wire::put_f32(b, 24, 100.0);
+            wire::put_f32(b, 28, 100.0);
+        })
+    }
+
+    /// RP-300, review P3: DRAGON_STATE is applied at the hand-over's time and the dragons' engine
+    /// runs the shared world there first. With phase 1 off, the kept inputs before that time must
+    /// be applied first, each at its own tick, as the ships' `ingest` does: otherwise the world is
+    /// already at the hand-over when the drain applies them, and they are booked there, up to one
+    /// hand-over late.
+    #[test]
+    fn a_dragon_state_applies_the_kept_inputs_before_it_runs_the_world_to_the_hand_over() {
+        let mut st = off_with_a_kept_join(true);
+        let state = dragon_state();
+        super::super::dragons::observe_state(
+            &mut st,
+            &Rec {
+                kind: rtsim_ecology::boundary::DRAGON_STATE,
+                aux: 0,
+                bytes: &state,
+            },
+        );
+        assert_the_kept_join_went_in_first(&mut st);
+    }
+
+    /// The same with dragons that are switched on and have nothing in the world yet (no lair, no
+    /// dragon, no oil): no viewer runs the shared clock, so the drain of `run_to` has no reason to
+    /// run, but the engine's `run_until` ends with the world's all the same. A record of theirs
+    /// (here a state, the same `ingest` as a first LAIR_FOUND) must not run it past the kept
+    /// inputs.
+    #[test]
+    fn a_dragon_state_of_dragons_with_nothing_yet_applies_the_kept_inputs_first() {
+        let mut st = off_with_a_kept_join(false);
+        let state = dragon_state();
+        super::super::dragons::observe_state(
+            &mut st,
+            &Rec {
+                kind: rtsim_ecology::boundary::DRAGON_STATE,
+                aux: 0,
+                bytes: &state,
+            },
+        );
+        assert_the_kept_join_went_in_first(&mut st);
+    }
+
+    /// The ships' `ingest` drains before it runs its engine, but through the guard of `run_to`:
+    /// ships that are switched on with no dock or ship yet are no viewer, and their engine runs the
+    /// world to the hand-over all the same.
+    #[test]
+    fn a_ship_state_of_ships_with_nothing_yet_applies_the_kept_inputs_first() {
+        let mut st = off_with_a_kept_join(false);
+        let state = record(rtsim_ships::boundary::SHIP_STATE, 56, 0, |b| {
+            wire::put_u64(b, 8, 0x5101);
+            wire::put_u32(b, 16, 1);
+            wire::put_u32(b, 24, 1_000);
+        });
+        super::super::ships::observe_state(
+            &mut st,
+            &Rec {
+                kind: rtsim_ships::boundary::SHIP_STATE,
+                aux: 0,
+                bytes: &state,
+            },
+        );
+        assert_the_kept_join_went_in_first(&mut st);
     }
 
     /// RP-300: a base marked while phase 1 is off is kept at its own tick and is a node (a place the
