@@ -7148,6 +7148,21 @@ the docs). Rust and docs only; no GameTest, no Java. One record per fix, MZB-762
     `answered_again` and the kept-answer test in crates/rtsim-jni/src/engine/industry.rs (comparisons
     with DUPLICATE_OP, FAILED and APPLIED). A status added to the wire must be read at each of them by
     hand until they take a `CommandStatus`.
+- **MZB-766** (P3-5: U-c's NOT_LOADED test counts transfers):
+  - **The gap.** The renamed U-c test (`a_grove_stack_answered_with_the_conflict_off`, its NotLoaded arm,
+    crates/rtsim-jni/tests/protocol.rs) checked "a parked stack is not sent before its chest is named"
+    with `tribute_ops(&j) == first` in the non-crash variant: a set of op ids, which does not change when
+    the same stack is sent again under its own op.
+  - **The fix.** The test counts the transfers Java was given (`tribute_sends`, the TRANSFER_TO_CONTAINER
+    commands) before the switch-on and after the census, and asserts the count is the same, first, ahead
+    of the old assertions, which stay. Not `j.commands.len()` as the live parking test counts: the
+    switch-on writes territory and census commands too, so only the transfers are stable.
+  - **Mutation.** `tribute_not_loaded` not parking while the outbox replays (the kept NOT_LOADED then is not
+    parked at the switch-on, and the stack is sent again): the new assertion fails in both NotLoaded
+    variants, at "a parked stack is not sent before its chest is named again, under any op" (2
+    transfers for 1 without a crash, 1 for 0 with one). The op set is the same in the non-crash run
+    (the same op, sent twice), so only the old `owed_tribute` check, which sees Java's APPLIED
+    answer to the resend, caught it before.
 
 ## M11 Aloft
 
