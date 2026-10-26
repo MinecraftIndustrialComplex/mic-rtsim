@@ -23,8 +23,8 @@
 //!
 //! And the chief's own stack (M11, MZB-838): an away CHIEF_BODY is followed at once by its
 //! MATERIALIZE with the chief's stack, and that stack never goes without it, twice in an epoch, for
-//! a party its chief does not lead, or while replaying; a band its chief leads in bodies had the
-//! stack in its epoch.
+//! a party its chief does not lead, or while replaying; a band its chief leads in bodies, of an
+//! epoch a MATERIALIZE went for, had the stack in that epoch.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -156,6 +156,9 @@ struct State {
     /// Each (agent, epoch) the chief's own stack went for. Kept across a session: an epoch is the
     /// party's for good (RP-57).
     stacks: BTreeSet<(u64, u32)>,
+    /// Each (agent, epoch) a MATERIALIZE went for, kept as `stacks` is: the bodies Java was told
+    /// of. A band a run puts in bodies by hand (run 11's, as a watched fight leaves it) had none.
+    materialized: BTreeSet<(u64, u32)>,
     /// The tick the last step ended at: an engine that begins before it is a new one (a sim run
     /// builds many), and Java's map starts empty for it.
     last: Tick,
@@ -175,6 +178,7 @@ impl State {
             self.before.clear();
             self.taken.clear();
             self.stacks.clear();
+            self.materialized.clear();
         }
         self.last = c.now();
     }
@@ -285,6 +289,7 @@ impl State {
             );
             self.totals.chief_fail(Tick::ZERO, what);
         }
+        self.materialized.insert((m.agent, m.epoch));
         let n = chief_stacks(m);
         if n == 0 || !c.faction_of_key(m.faction).is_some_and(|f| own_stack(c, f)) {
             return;
@@ -393,12 +398,13 @@ pub fn end(c: &Conflict, from: Tick, to: Tick) {
                 s.totals.shells += 1;
                 continue;
             }
-            // A band its chief leads in bodies had the chief's stack in its epoch (MZB-801): a
-            // walk-in keeps the epoch of the meeting that sent it.
+            // A band its chief leads in bodies Java was told of had the chief's stack in its
+            // epoch (MZB-801): a walk-in keeps the epoch of the meeting that sent it.
             if !replaying
                 && x.chief
                 && !x.spawned.is_empty()
                 && own_stack(c, x.faction)
+                && s.materialized.contains(&(agent, x.epoch))
                 && !s.stacks.contains(&(agent, x.epoch))
             {
                 s.totals.chief_fail(
