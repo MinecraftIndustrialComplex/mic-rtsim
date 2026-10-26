@@ -175,9 +175,10 @@ shared phase 1 world. The ships keep U10 (see *Left*), phase 1 is slice U-d, and
     the next one replaces them.
   - **Saved.** The kept records are a page of their own, two past the module's meta page, after the
     TEST hash (`paging::kept_key`: 0x4400, 0x4800 and 0x4300, id 2), magic RTKP. The page is written
-    at every save while there are any, whether or not the save writes the module (a switched-off
-    module's other pages stay as they were, U10). It is read at load whatever the switch. A module
-    switched off before its first save may hold that page alone (`holds_pages_besides_kept`).
+    at a save while there are any and the list is dirty (see *Cost*), whether or not the save writes
+    the module (a switched-off module's other pages stay as they were, U10). It is read at load
+    whatever the switch. A module switched off before its first save may hold that page alone
+    (`holds_pages_besides_kept`).
   - **Applied at the switch-on,** in the resets of every module that shares the phase 1 world, in
     one function (`shared::resets`; U-c's review, P2). MODULES reaches the four in two passes
     (`shared::switch`): first every module's flag, with a switch-off's own work; then the resets due,
@@ -185,7 +186,10 @@ shared phase 1 world. The ships keep U10 (see *Left*), phase 1 is slice U-d, and
     1. each module's engine begins its replay (`begin_replay`);
     2. the records kept by every module that began are applied as one list, merged by the observation
        number each came under (the order `Replay` admitted them, and the order a restart's replay
-       sends them; a copy's is its REASSERT's), each module's own in the order it came;
+       sends them; a copy's is its REASSERT's), each module's own in the order it came. No two share
+       a number, so the merge meets no tie and module order never overrides the journal's:
+       `dispatch` gives each admitted record to one module, and a REASSERT holds one record, whose
+       copy comes under the REASSERT's own number (a `debug_assert` checks the numbers rise);
     3. with no replay running, each module's replay end.
 
     That is where a restart's replay would apply the same records: every module in its replay, the
@@ -230,8 +234,10 @@ shared phase 1 world. The ships keep U10 (see *Left*), phase 1 is slice U-d, and
     does nothing, so the world never goes back and nothing in it runs twice.
   - *J3* (docs/replay-gate.md 9.7, on U-a). The divergence J3 records goes away for the kept
     records: a switch-on books each at its own tick, as a restart's replay with the module on books
-    it, so the op ids derived from that tick (`ops.derive(world_seed, at, ..)`) are the same both
-    ways. A late booking at the world's present derived them from another tick.
+    it, so the ids the conflict derives from a tick are the same both ways: a slot's generation,
+    from the camp, the slot and the tick its member was recruited or adopted (`derive_gen`,
+    crates/rtsim-conflict/src/engine/camp.rs). A late booking at the world's present derived them
+    from another tick. The dragons derive no id from a tick.
 - *The replay gate during the reset.* The kept records, and the catch-ups between them, run inside the
   module's replay, so its outbox gate (docs/replay-gate.md §4) holds what those catch-ups decide.
   - The conflict drops Notice, Steer, Recall, Settled and AmbushSpot, sends Territory and March, and
@@ -305,13 +311,22 @@ shared phase 1 world. The ships keep U10 (see *Left*), phase 1 is slice U-d, and
   - The bound and the dirty flag (P3), unit tests in `src/engine/paging.rs`:
     `a_kept_list_past_its_bound_warns_at_powers_of_two_and_drops_nothing` and
     `the_kept_page_is_written_only_when_the_list_changed` (1718f4df).
+  - The review's probes (63131797), each failing first by mutation:
+    - Probe A, the merge across modules:
+      `a_kept_wipe_goes_in_before_a_later_kept_dragon_record_of_another_module` (`conflict`, with
+      ECOLOGY on in the camp). The conflict and ECOLOGY go off together; a mob wipes the band out
+      before d0 (kept by the conflict), a dragon is hurt a day past d0 (kept by the dragons), and both
+      come on two days past d0. It wants nothing expired, the demand withdrawn and the casualties
+      booked. With the merge in module order (the selector `(i as u64 + 0 * seq_of(b), i)`), the
+      hurt's catch-up runs the conflict past d0 first: (1, 0, false) against (0, 1, true).
+    - Probe C, a failed save's kept page: `a_dragon_killed_while_off_stays_dead_after_a_failed_save_and_a_restart`
+      (`dragons`). The first save after the death while off fails (a torn log), the next writes the
+      kept page again, and after a clean restart the dragon stays dead. With `drain`'s three
+      `save_failed()` calls removed: (alive, materialized again) is (1, 1) against (0, 0).
 - *Left.*
   - No order test for the dragons or the herds. Neither has an event log a test can read (the herds'
     `log_enabled` is false and has no accessor). Their order rests on the same `shared::catch_up`
     before each kept record that the conflict's tests exercise.
-  - No test of the merge across modules: two modules' kept records interleaved in one switch-on. It
-    rests on the same catch-up per record, and P2's test covers the step order (every module begun
-    before any kept record).
   - The ships (`Module.SHIPS`) still ignore their records while off (U10).
   - No GameTest: no Java changed.
   - A restart still replays an off window as if the module had been on (RP-290, U-e).
