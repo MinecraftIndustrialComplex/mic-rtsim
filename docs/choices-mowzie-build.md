@@ -10321,6 +10321,66 @@ M11a's implementer appends its records under this heading only (the Rust side).
     - Runs 1 to 6 and 8 differ only in the state hashes their save checks print, as RTC12 (MZB-853) changes
       every save. Their pass marks and other details are unchanged.
     - Run 11 gains its four parts. Run 13's counts grow with run 11 (2,968 records to 2,988).
+- **MZB-859** (step 8, the protocol tests P1 to P4; MZB-801, MZB-804, MZB-819, MZB-821, MZB-824, MZB-853 through the
+  link): in `tests/protocol.rs`'s `conflict` module, under "M11a: the grove's chief aloft, through the link". A grove
+  of 12 strays, the first an Umvuthi the first census adopts as its chief (`seated_grove`), sends an Invasion its
+  chief leads toward a target 600 blocks off, ordered with the player away (`led_invasion`). The road is 30,000
+  ticks at the culture's 0.02 blocks a tick, so following it home takes a limit of what is left of the road, not a
+  day. Each test was failed first by a mutation of the rule it names (`/tmp/mzbuild/m11a-mut/s8.sh`, each reverted):
+  - **P1** `an_away_chief_body_leads_its_materialize_on_the_wire`: met on its road, the away CHIEF_BODY (the camp's
+    key, the band's agent, health 0, no flags, no memory) is Java's command directly before the MATERIALIZE of the
+    same agent and epoch (BAND_CHIEF, the chief's own stack last), in one command buffer. Met again after a recall
+    with 8,190 fillers (a TRAIN_ROBBED of a faction nobody has, 32 bytes each) ordered ahead, the 48-byte
+    CHIEF_BODY ends a 262,144-byte buffer: that buffer holds the fillers and the CHIEF_BODY only, is marked
+    CMD_FLAG_MORE, and the MATERIALIZE leads the next buffer at a new epoch. The fake matches both stacks (2 matched,
+    0 missing) and holds one puppet. The control: the band comes home unseen, and the chief's SPAWN (its
+    generation) goes directly behind a home CHIEF_BODY (agent 0, the reconcile's epoch, no memory) in one buffer.
+    The planted bug (the CHIEF_BODY pushed after its MATERIALIZE) fails the first meeting with "the CHIEF_BODY is
+    not directly before a MATERIALIZE"; M1 (no chief stack) with "the band's CHIEF_BODY never reached Java".
+  - **P2** `a_payment_to_the_puppet_survives_a_restart`: the pages are saved with the band on its road and unmet,
+    then it is met, and the puppet is paid 9 gold nuggets by PAID_PUPPET (the record written twice under one op)
+    and a stray 5 by a second player (PAID_STRAY, the control). Tribute is 14, each once, and the camp remembers
+    the puppet's payer only. After the band leaves, the server dies: the replay books 14, each payment once, the
+    payer is remembered, the band is still Out, and met again its CHIEF_BODY carries the payer. M3 (the payment
+    reading `index(slot, generation)`) fails with "the puppet's payer, not the stray's": `[]`.
+  - **P3** `the_payer_reaches_the_throne_body_at_home` and its control
+    `with_no_payment_the_throne_body_carries_the_camps_memory`: met, paid (or not), left, and followed home with the
+    grove in. The chief's line is a HAND_BACK of the band's agent and the chief's generation with LINE_CHIEF, and
+    the home CHIEF_BODY directly ahead of it in one buffer carries the payer (the control: empty). Answered, the
+    chief's slot is Body at the next census. M3 fails P3 at the memory (`[]`) and passes the control; M2
+    (`camp_home`'s `chief_puppet` false) fails both with no chief line at the homecoming.
+  - **P4** `a_camp_death_after_the_end_books_once_across_a_replay` (death first) and
+    `a_stale_hand_back_then_a_camp_death_across_a_replay_books_one_end` (STALE first): `chief_float` 10 days, the
+    band followed home, its HAND_BACK in flight and `Camp.ended` holding (agent, epoch, generation); the pages are
+    saved. Then the CAMP_DEATH (BY_PLAYER, DEATH_CHIEF, the chief's slot and generation) and the line's STALE in
+    that order, a crash and restart between them and another after both, never saved again. The books (falls,
+    player losses, an heir due, the slot holds the generation), from (0, 0, false, true):
+    - death first: (1, 1, true, false) after the death, after each restart and after the STALE;
+    - STALE first: unchanged after the STALE (STALE releases nothing); (0, 0, true, false) after the first
+      restart, as release 5 (`chief_ends_lost`) loses the chief to no one at the replay's end; the same after the
+      live CAMP_DEATH, which finds no index and books nothing; (1, 1, true, false) after the second restart;
+    - no end is left after the last restart, and the heir is due from the first booking on.
+
+    The control (death first): a CHIEF_KILLED of the ended band after the death books nothing and counts one
+    `unbooked_home_death` (MZB-466). M2 fails both at "the chief's line at home". With release 5 off (the call in
+    `replay_done` removed, M4) the STALE-first test fails at the first restart, (0, 0, false, true), want
+    (0, 0, true, false); death first passes, as the death releases the end itself.
+  - Forks, each the conservative option:
+    - P2's payment is after the last save, as the design's "a crash before any save" means for the payment: the
+      pages hold the band on its road, unmet. Saving before the meeting is what lets the band be met again after
+      the replay.
+    - P4's control is moved after the death. The design's, a CHIEF_KILLED for the ended party with no death before
+      it, is now the chief's death by MZB-853 release 3 (`chief_killed_home`), so it would book, not be counted.
+    - The STALE-first case books differently at the last stage than it did live, and the test asserts both as
+      they are. Live, the first replay's end loses the chief (no fall, no loss) and the CAMP_DEATH books nothing.
+      The replay after the second crash runs both sessions' records over the same pages with no replay end between
+      them, so the CAMP_DEATH finds the end still holding and books the death (1, 1). One end and one heir either
+      way, never two. Making the replay lose the chief at the replayed session boundary would need a conflict hook
+      at the journal's generation switches, a change to the replay's driver outside this slice; recorded as a
+      residual for the lead.
+  - Mutation M4's `pt.sh` revert cannot find an empty string, so its revert was by hand (the line put back, the
+    tree checked clean); its line is in the record, not in `s8.sh`.
+  - Checks: rtsim-jni's protocol tests 177 passed; clippy on rtsim-jni `--all-targets -D warnings` clean.
 
 ### M11b build records (MZB-870 to MZB-889)
 

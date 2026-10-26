@@ -12757,8 +12757,8 @@ mod conflict {
     /// HAND_BACK (LINE_CHIEF, the band's agent, the chief's generation), and the home CHIEF_BODY
     /// directly ahead of that reconcile carries the payer, so the throne body made from the
     /// puppet knows them. Without the payment (the control) the memory is the camp's, empty. With
-    /// `camp_home`'s HAND_BACK off (step 7's M2) the line is a SPAWN; with the payer forgotten
-    /// (M3) the memory is empty.
+    /// `camp_home`'s HAND_BACK off (step 7's M2) no chief line goes with the homecoming; with the
+    /// payer forgotten (M3) the memory is empty.
     fn payer_home(name: &str, pay: bool) {
         let (_dir, e, mut j, generation) = seated_grove(name);
         let p = led_invasion(&e, &mut j, 4_000);
@@ -12829,7 +12829,8 @@ mod conflict {
     /// The control: a CHIEF_KILLED of the ended band after the death books nothing and is counted
     /// (MZB-466). The design's control, a CHIEF_KILLED with no death before it, is now the chief's
     /// death (MZB-853 release 3). With `camp_home`'s HAND_BACK off (step 7's M2) no line is in
-    /// flight.
+    /// flight; with no loss at the replay's end (release 5 off) the STALE-first case still holds
+    /// the end after the first restart.
     fn death_after_end(name: &str, death_first: bool) {
         let (dir, e, mut j, generation) = seated_grove(name);
         let p = led_invasion(&e, &mut j, 4_000);
