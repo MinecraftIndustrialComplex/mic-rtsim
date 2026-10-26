@@ -350,11 +350,12 @@ pub(super) struct Link {
     /// after the shared modules' catch-up to its tick, at the switch-on, at the next `simulate`
     /// when on, and before a viewer module runs the shared clock past them ([`shared::run_to`]).
     kept: VecDeque<Logged>,
-    /// Phase 1 came on in a MODULES record whose switch-on drain has not run yet: set by
-    /// [`set_enabled`], taken by `shared::resets` ([`drain_when_due`]), after the viewer
-    /// modules that came on in the same record have applied the records they kept (RP-300, the
-    /// joint switch-on). Not saved.
-    pub(super) switch_on_due: bool,
+    /// Phase 1 came on in a MODULES record whose switch-on drain has not run yet, with what the
+    /// window held when it came on ([`SwitchOn`]): set by [`set_enabled`] (none when nothing was
+    /// kept), taken by `shared::resets` ([`drain_when_due`]), after the viewer modules that came
+    /// on in the same record have applied the records they kept (RP-300, the joint switch-on).
+    /// Not saved.
+    pub(super) switch_on_due: Option<SwitchOn>,
     /// How many of [`Link::kept`] are in each class the cap may drop ([`drop_rank`]): the scan for
     /// the oldest of a class is skipped when there is none.
     kept_soft: [usize; DROP_RANKS],
@@ -448,7 +449,7 @@ impl Link {
             spawn_near: Vec::new(),
             enabled: true,
             kept: VecDeque::new(),
-            switch_on_due: false,
+            switch_on_due: None,
             kept_soft: [0; DROP_RANKS],
             kept_cap: KEPT_CAP,
             kept_dropped: 0,
@@ -1142,13 +1143,45 @@ fn set_enabled(st: &mut State, on: bool) {
         }
         l.spawn_near.clear();
         l.market_dirty.clear();
-        l.switch_on_due = false;
+        l.switch_on_due = None;
     }
     if on && !was {
         l.last_interest = i64::MIN;
         l.last_market = i64::MIN;
         l.markets_sent.clear();
-        l.switch_on_due = true;
+        l.switch_on_due = SwitchOn::heard(l);
+    }
+}
+
+/// What phase 1's window held when it came on, for the line of its switch-on drain
+/// ([`switch_on_drain`]): taken when the MODULES record is heard, because on a joint switch-on the
+/// viewers' kept records drain part of the window (each one's catch-up applies the inputs up to
+/// its own tick) before the drain itself runs, and a line counted at the drain would cover only
+/// the rest, or none of it.
+pub(super) struct SwitchOn {
+    /// The inputs kept when phase 1 came on.
+    kept: usize,
+    /// How many of them were base marks, the dearest to apply.
+    marks: usize,
+    /// When it came on.
+    started: std::time::Instant,
+}
+
+impl SwitchOn {
+    /// The window as it is now; `None` when nothing was kept (no drain, no line).
+    fn heard(l: &Link) -> Option<SwitchOn> {
+        if l.kept.is_empty() {
+            return None;
+        }
+        Some(SwitchOn {
+            kept: l.kept.len(),
+            marks: l
+                .kept
+                .iter()
+                .filter(|k| matches!(k.input, Input::MarkBase { .. }))
+                .count(),
+            started: std::time::Instant::now(),
+        })
     }
 }
 
@@ -1156,45 +1189,38 @@ fn set_enabled(st: &mut State, on: bool) {
 /// `shared::resets` runs for a MODULES record, after the viewer modules that came on with
 /// phase 1 have applied the records they kept (each after the catch-up that already applied
 /// phase 1's inputs up to its own tick, `shared::run_to`) and before their replay ends. What is
-/// left is the rest of the window: phase 1's inputs after the viewers' last kept record. It runs
-/// at that MODULES record also when no viewer came on with it. Logs what it did
-/// ([`switch_on_drain`]).
+/// left is the rest of the window: phase 1's inputs after the viewers' last kept record (none, if
+/// a viewer's record was the later). It runs at that MODULES record also when no viewer came on
+/// with it. Logs the line of [`switch_on_drain`], which covers the whole window, once.
 pub(super) fn drain_when_due(st: &mut State) {
-    if !std::mem::take(&mut st.phase1.switch_on_due) {
-        return;
-    }
     if let Some(line) = switch_on_drain(st) {
         log_info(&line);
+        #[cfg(test)]
+        st.switch_on_lines.push(line);
     }
 }
 
-/// The switch-on's drain ([`drain_kept`] of everything kept) and the line that says what it did,
-/// for the caller to log: how many of the kept inputs it applied, how many of the kept ones were
-/// base marks, and how long it took; `None` when nothing was kept. The window is not bounded
+/// The switch-on's drain ([`drain_kept`] of everything kept) and the line that says what the
+/// switch-on did, for the caller to log: how many of the inputs kept when phase 1 came on were
+/// applied by the time it ended (the viewers' catch-ups among them, [`SwitchOn`]), how many of
+/// them were base marks, and how long it took from the record that switched phase 1 on; `None`
+/// when nothing was due (nothing kept, or the line already given). The window is not bounded
 /// beyond the cap on reports: bases, like every loss record, are never dropped, and each base mark
 /// is a node built into the world's graph (about 25 ms apiece in the bench of RP-300, where the
 /// other inputs together took 7 ms), so a long switch-off grows the drain, and the step that runs
 /// it, linearly with its marks. Inputs a replay's clock has not reached yet stay kept and are
 /// counted as waiting ([`shared::clock_target`]).
 fn switch_on_drain(st: &mut State) -> Option<String> {
-    let before = st.phase1.kept_len();
-    if before == 0 {
-        return None;
-    }
-    let marks = st
-        .phase1
-        .kept
-        .iter()
-        .filter(|k| matches!(k.input, Input::MarkBase { .. }))
-        .count();
-    let started = std::time::Instant::now();
+    let on = st.phase1.switch_on_due.take()?;
     drain_kept(st, None);
-    let took = started.elapsed();
+    let took = on.started.elapsed();
     let left = st.phase1.kept_len();
+    let before = on.kept;
+    let marks = on.marks;
     let mut line = format!(
         "phase 1 is on again: applied {} of the {before} inputs heard while it was off (base marks \
          among them: {marks}) in {took:.1?}",
-        before - left
+        before.saturating_sub(left)
     );
     if left > 0 {
         line.push_str(&format!("; {left} wait for the replay clock"));
@@ -4472,6 +4498,7 @@ mod tests {
         }
         assert_eq!(st.phase1.kept_len(), 45);
         st.phase1.enabled = true;
+        st.phase1.switch_on_due = SwitchOn::heard(&st.phase1);
         let line = switch_on_drain(&mut st).expect("45 inputs were kept");
         assert!(st.phase1.kept.is_empty());
         assert!(line.contains("applied 45 of the 45 inputs"), "{line}");
@@ -4503,6 +4530,7 @@ mod tests {
         st.phase1.enabled = true;
         st.replaying = true;
         st.replay_clock = Tick(5_000);
+        st.phase1.switch_on_due = SwitchOn::heard(&st.phase1);
         let line = switch_on_drain(&mut st).expect("two were kept");
         assert!(line.contains("applied 1 of the 2 inputs"), "{line}");
         assert!(line.contains("1 wait for the replay clock"), "{line}");
@@ -4604,6 +4632,72 @@ mod tests {
             vec![(2_000, 2_000, 1)],
             "(its tick, the world's present, phase 1 inputs still waiting) once the death was in"
         );
+        // The line covers the whole window, the one input the death's catch-up drew in included.
+        assert_eq!(st.switch_on_lines.len(), 1, "{:?}", st.switch_on_lines);
+        assert!(
+            st.switch_on_lines[0].contains("applied 2 of the 2 inputs"),
+            "{}",
+            st.switch_on_lines[0]
+        );
+    }
+
+    /// RP-300, review P3 of the joint switch-on: the line of the switch-on counts the window as
+    /// phase 1 found it when it came on, not what is left when the drain runs. A viewer's record
+    /// later than phase 1's last input (here a dragon's death at 3,000, after a village at 1,000,
+    /// a base mark at 1,500 and a village at 2,000) has its catch-up draw in the whole window, and
+    /// the drain finds nothing: counted at the drain the line said nothing at all, and with the
+    /// record in the middle it said "applied 1 of the 1". Once, with the full count and the base
+    /// mark.
+    #[test]
+    fn the_joint_switch_ons_line_covers_the_whole_window_when_a_viewer_record_is_the_last() {
+        const OFF: u32 = 0b0_0111;
+        const ON: u32 = 0b1_1111;
+        let mut st = state();
+        st.dragons.engine.add_lair(
+            &mut st.phase1.world,
+            0x1234,
+            "Cinder Roost",
+            rtsim_ecology::species::Species::Fire,
+            rtsim_ecology::dragon::LairKind::Roost,
+            Pos::new(0, 1_500, 1_200),
+            70,
+            Tick(0),
+        );
+        switch_all(&mut st, OFF);
+        book(&mut st, join_of(1, 0), 1_000);
+        let mark = Input::MarkBase {
+            key: 0xB000,
+            frame: 1,
+            x: 600,
+            z: 100,
+            player: (5, 6),
+        };
+        book(&mut st, mark, 1_500);
+        book(&mut st, join_of(2, 300), 2_000);
+        let died = dragon_died(5, 3_000);
+        super::super::dragons::journaled(
+            &mut st,
+            &Rec {
+                kind: rtsim_ecology::boundary::DRAGON_DIED,
+                aux: 0,
+                bytes: &died,
+            },
+        );
+        assert_eq!(st.phase1.kept_len(), 3);
+        st.game_time = 4_000;
+
+        switch_all(&mut st, ON);
+        assert_eq!(
+            st.kept_probe.iter().map(|p| (p.0, p.2)).collect::<Vec<_>>(),
+            vec![(3_000, 0)],
+            "(its tick, phase 1 inputs still waiting): the death's catch-up drew in all three"
+        );
+        assert!(st.phase1.kept.is_empty());
+        assert_eq!(st.switch_on_lines.len(), 1, "{:?}", st.switch_on_lines);
+        let line = &st.switch_on_lines[0];
+        assert!(line.contains("applied 3 of the 3 inputs"), "{line}");
+        assert!(line.contains("base marks among them: 1"), "{line}");
+        assert!(!line.contains("wait"), "none left: {line}");
     }
 
     /// The same with the conflict as the viewer (its bit is not ECOLOGY's): a record of its own
@@ -4653,10 +4747,10 @@ mod tests {
         hear_modules(&mut st, 0b1_1111);
         assert!(st.phase1.enabled);
         assert_eq!(st.phase1.kept_len(), 2, "heard, not drained yet");
-        assert!(st.phase1.switch_on_due);
+        assert!(st.phase1.switch_on_due.is_some());
         shared::switch(&mut st, 0b1_1111);
         assert!(st.phase1.kept.is_empty(), "the resets drained it");
-        assert!(!st.phase1.switch_on_due, "once");
+        assert!(st.phase1.switch_on_due.is_none(), "once");
         let joins: Vec<(u64, u64)> = st
             .phase1
             .log
@@ -4678,10 +4772,13 @@ mod tests {
         switch_all(&mut st, 0b0_0111);
         book(&mut st, join_of(1, 0), 1_000);
         hear_modules(&mut st, 0b1_1111);
-        assert!(st.phase1.switch_on_due);
+        assert!(st.phase1.switch_on_due.is_some());
         shared::reset_these(&mut st, &[shared::Module::Dragons]);
         shared::end_resets(&mut st, &[]);
-        assert!(st.phase1.switch_on_due, "still due: not this reset's");
+        assert!(
+            st.phase1.switch_on_due.is_some(),
+            "still due: not this reset's"
+        );
         assert_eq!(st.phase1.kept_len(), 1);
         shared::switch(&mut st, 0b1_1111);
         assert!(st.phase1.kept.is_empty());

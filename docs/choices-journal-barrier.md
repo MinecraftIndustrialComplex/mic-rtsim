@@ -1055,6 +1055,12 @@ record applied while off goes in at its own tick, never at the frozen clock.
   before the records that follow. The first version of the move took the flag in `end_resets`
   itself and that is what the probe showed: the dragon's record leaves `reset_if_due` behind it,
   whose `end_resets` with nothing begun drained the window from inside `apply_kept`.
+  The line counts the window as phase 1 found it when the record came: `Link::switch_on_due` is
+  an `Option<SwitchOn>`, a snapshot (the inputs kept, the base marks among them, the instant) taken
+  in `set_enabled`, none when nothing was kept. Counted at the drain it covered only what the
+  viewers' catch-ups left (an "applied 1 of the 1" over a window of two), and nothing at all when
+  a viewer's record was later than phase 1's last input. The duration runs from the record, so it
+  includes the viewers' catch-ups too.
 
 **Why.** The engine acknowledges every journaled record it admits, whatever a module's switch
 (`Replay`), and Java drops what it saw acknowledged and does not send it again. Phase 1 used to
@@ -1212,6 +1218,13 @@ Failing first on `879c5367` (the drain in `set_enabled`), what each printed:
   `[(2000, 3000, 0)]` again, for the reason in the bullet above (the nested `end_resets`);
   `a_modules_own_reset_inside_a_kept_record_does_not_take_phase_1s_drain` keeps that: a
   `reset_these` and an `end_resets` with nothing begun leave the drain due.
+- The line of the switch-on (review P3 of the joint switch-on), failing first on `ce97ce26`:
+  `the_joint_switch_ons_line_covers_the_whole_window_when_a_viewer_record_is_the_last` (a village at
+  1,000, a base mark at 1,500, a village at 2,000, a dragon's death at 3,000): the death's catch-up
+  drew in all three and the drain found none, so the line fired 0 times (wanted once, "applied 3
+  of the 3 inputs", "base marks among them: 1"). The dragons' test above also asserts the line
+  (a record between two inputs): it said "applied 1 of the 1", wanted "applied 2 of the 2". The
+  lib's `State::switch_on_lines` (test builds only) holds what `drain_when_due` logged.
 - `a_switch_on_of_phase_1_alone_drains_in_the_resets_of_its_record` (nothing begun): phase 1
   hearing the record leaves both kept inputs kept and the flag due; `shared::switch` drains them
   in time order and takes the flag, once.
