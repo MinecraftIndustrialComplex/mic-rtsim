@@ -11406,6 +11406,50 @@ said "All pass" (corrected above). Lines here are at the fix's commit.
   before), rtsim-jni 369, of them tests/industry.rs 67 (RP-313's three and RP-314's one among
   them). `cargo clippy -p rtsim-industry -p rtsim-jni --all-targets -- -D warnings` clean. The
   new test lines are rustfmt's own output for them (tests/industry.rs is not rustfmt-clean at
-  its base, so it was not formatted);
-  engine/industry.rs was rustfmt-clean at its base and is after each commit. The workspace test
-  and the GameTests were not run.
+  its base, so it was not formatted); engine/industry.rs was rustfmt-clean at its base and is
+  after each commit. The workspace test and the GameTests were not run.
+- **RP-317** (the build lead's question on trap 4 of the RP-313 report, "J4's outbox copy can be
+  trimmed by lastAppliedCmdSeq"): a loss, not a double. Not fixed: reported to the build lead
+  first.
+  - *The sequence.* Station exchange X is decided and written (cmdSeq c) before the pages are
+    taken, and answered after them (S: its COMMAND_RESULT APPLIED and IND_CARRIAGE_RESULT). A world
+    save W0 while a step's commands are in flight does that: W0's pages are taken right before the
+    first record past W0's journal end (engine.rs `journaled`), after the step that wrote X, and
+    Java reads X only in the next tick. A later world save W1, after S, writes the journal's file
+    and fails the tracks write (J4; since RP-200 only a failed tracks write: vanilla's
+    `SavedData.save` logs the IOException and clears the dirty flag, and the journal's task still
+    runs at the chain's end), and the crash comes before W1's pages are durable (or the engine
+    lagged the save, RP-49). The copy is the outbox's: the pages hold X's decision, so the replay
+    decides nothing again.
+  - *What `lastAppliedCmdSeq` covers.* It is the journal's (`JournalSavedData`,
+    mic_rtsim_journal.dat), so in J4 it is W1's, past c, and `Link::resume`
+    (engine/industry.rs:379) trims X's copy by it at the start. The trim is not the cause. Scratch
+    mutations on the written test, each still 224 short: with the trim off, the replayed S takes
+    the copy (its IND_CARRIAGE_RESULT's `complete`, industry.rs:710, and its APPLIED's, RP-310's
+    gate); with those off too, the copy goes under c and Java skips it as stale
+    (BoundarySession.java:358; the fake world counts one stale command).
+  - *Found* (ace33cd7). `a_station_exchange_written_before_the_pages_is_lost_with_its_trains_save`
+    (tests/industry.rs:2527): the iron line, seed 11, X 0x49823c0440e26b17 under cmdSeq 36, the
+    pages through 382, S at 384, W1 100 ticks later with `lastAppliedCmdSeq` 36, the crash at
+    73,500. The control restarts the same pages with W1 whole (J1), J4 with train 1's cargo and
+    ring from the tick before S. Neither sends a carriage delta; the control holds what it held,
+    J4's train 1 lacks X's 224 crushed raw iron, and the books are the same in both (J4's world
+    against the control's books is its own result), so the world against its books is crushed raw
+    iron -96 against the control's +128. `a_station_exchange_answered_before_the_pages_is_lost_with_its_trains_save`
+    (2533) takes the pages at W1 instead (through 384, X answered inside them): no copy at all,
+    the same loss. So trap 4 is J4's direction A for every train op the restored pages decided, not
+    the trim's: RP-311's re-application covers only an op decided past the pages, and RP-196's J4
+    row was for a raider's pages older than the raid. Inferred, not tested: the same for the other
+    op whose effect is in the tracks file, the offline buffer's IND_WRITE_PACKAGE (K2).
+  - *Options for the build lead.* (a) Accept it as a residual of a failed tracks write: name it in
+    docs/replay-gate.md's residual list, and K1's and K2's A column ("cannot happen") reads "only
+    after a failed tracks write". (b) Java: the journal's task holds its write, as the barrier's
+    hold does (RP-205), when a SavedData write of its save failed, which makes J4 a J2 or J3, both
+    exact by the train ring. Vanilla's `SavedData.save` swallows the IOException, so this needs a
+    hook at its catch. The engine cannot repair it alone: only the train's ring knows the train
+    lost X.
+
+  **Checks** (at ace33cd7): `cargo test -p rtsim-jni --test industry` 69 passed;
+  `cargo clippy -p rtsim-jni --all-targets -- -D warnings` clean. The new test lines are
+  rustfmt's own output for them. No source changed; the mutations were reverted (engine/industry.rs
+  is at its base). The workspace test and the GameTests were not run.
