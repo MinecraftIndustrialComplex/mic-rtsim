@@ -1281,6 +1281,7 @@ pub(super) fn march_record(seed: u64, slice: &'static str) -> RunOut {
     let mut out = Vec::new();
     let mut all = audit::Totals::default();
     let mut lines = Vec::new();
+    let mut chiefs = Vec::new();
     // The stepped runs' own checks are not read: a step of 20 ticks moves the plugin's and the
     // watching player's clocks, so their figures differ. The audit's verdict is what counts.
     type Stepped<'a> = Box<dyn FnOnce() + 'a>;
@@ -1319,6 +1320,10 @@ pub(super) fn march_record(seed: u64, slice: &'static str) -> RunOut {
              ({} ending), {} shell-steps",
             t.steps, t.still, t.ticks, t.changed, t.records, t.ended, t.shells
         ));
+        chiefs.push(format!(
+            "run {name}: {} away CHIEF_BODYs, {} chief stacks",
+            t.chief_bodies_away, t.chief_stacks
+        ));
         all.add(&t);
     }
     check(
@@ -1336,6 +1341,21 @@ pub(super) fn march_record(seed: u64, slice: &'static str) -> RunOut {
         format!(
             "{} changes seen, {} with no record in their step",
             all.changes, all.unrecorded
+        ),
+    );
+    check(
+        &mut out,
+        "the chief's own stack (MZB-838): each away CHIEF_BODY is followed at once by its \
+         MATERIALIZE with the chief alone, and no chief stack goes without one, twice in an epoch, \
+         for a band its chief does not lead or while replaying; a band its chief leads in bodies \
+         had its stack, in runs 1, 5, 10 and 11 stepped 20 ticks at a time",
+        all.chief_failed == 0
+            && all.chief_bodies_away > 0
+            && all.chief_bodies_away == all.chief_stacks,
+        format!(
+            "{}; {} failures of the chief's stack",
+            chiefs.join("; "),
+            all.chief_failed
         ),
     );
     no_census_ends_a_party(&mut out);
