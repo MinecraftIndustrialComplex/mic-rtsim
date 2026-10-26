@@ -425,6 +425,61 @@ fn an_unloaded_stack_forgets_only_its_own_chest() {
     d.check(&w, None).unwrap();
 }
 
+/// MZB-762 (review P2-1): a FAILED stack forgets the lair's chest only when that chest is the
+/// stack's own, as NOT_LOADED does. A stack parked at chest X, a chest Y reported (X broken or
+/// full): the stack goes again to X and finds no room (FAILED), and Y is kept, which the plugin
+/// reports again only on a change. The failed coin goes as a new stack to Y.
+#[test]
+fn a_failed_stack_forgets_only_its_own_chest() {
+    let (mut w, mut d) = start(7, &[spec(ASHPEAK)]);
+    let l = lair(&d, ASHPEAK);
+    let t0 = Tick::from_days(1);
+    assert!(tributary(&mut w, &mut d, ASHBY, ASHPEAK, 1_000, t0));
+    d.ingest(&mut w, &mut NoInfrastructure, &chest_of(ASHPEAK), t0);
+    let first = d.chest(l).expect("reported");
+    let mut ops: Vec<(u64, i64)> = d.placing().map(|(op, p)| (op, p.count)).collect();
+    ops.sort_by_key(|s| s.0);
+    assert_eq!(ops.len(), 4);
+    let (op, count) = ops[0];
+    // The chunk was not loaded: parked. Then another chest is reported (the first is full or
+    // broken): the parked stack goes again, to the first chest.
+    assert!(d.tribute_unloaded(op));
+    let s = spec(ASHPEAK);
+    let moved = Obs::LairChest(LairChest {
+        lair: ASHPEAK,
+        dimension: 0,
+        pos: (s.x - 3, s.y, s.z + 2),
+    });
+    d.ingest(&mut w, &mut NoInfrastructure, &moved, Tick(t0.0 + 10));
+    let other = d.chest(l).expect("reported again");
+    assert_ne!(other, first);
+    assert!(
+        d.placing_to_send()
+            .any(|(o, p)| o == op && p.chest == first)
+    );
+    // The chunk is loaded now, and the chest has no room: FAILED.
+    assert!(d.tribute_failed(op));
+    assert_eq!(
+        d.chest(l),
+        Some(other),
+        "only the stack's own chest is forgotten"
+    );
+    // The failed coin goes as a new stack, under a new op, to the chest reported since.
+    let again: Vec<_> = d
+        .placing()
+        .filter(|(o, p)| ops.iter().all(|s| s.0 != *o) && p.chest == other)
+        .collect();
+    assert_eq!(again.len(), 1, "the failed coin goes again");
+    assert_eq!(again[0].1.count, count);
+    assert!(d.lairs.get(l).unwrap().unplaced.is_empty());
+    d.check(&w, None).unwrap();
+    // A failed stack of the chest the lair still holds forgets it, as before.
+    let new_op = again[0].0;
+    assert!(d.tribute_failed(new_op));
+    assert_eq!(d.chest(l), None, "its own chest is forgotten");
+    d.check(&w, None).unwrap();
+}
+
 // ---- a long run: conservation, restarts, paging ---------------------------------------------
 
 const META: PageKey = PageKey::new(0x4400, 0);
