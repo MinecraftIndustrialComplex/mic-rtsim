@@ -126,7 +126,7 @@ public final class NativeEngine implements ScriptedEngine {
     private static native ByteBuffer nBuffer(long handle, int which);
 
     /** out[0] = pagesObsSeq, out[1] = nextCmdSeq. 0 or a negative status (message: nLastError). */
-    private static native int nStart(long handle, long lastAppliedCmdSeq, long[] out);
+    private static native int nStart(long handle, long lastAppliedCmdSeq, long worldNextObsSeq, long[] out);
 
     /** Queues step {@code handover} on the background pool; returns at once. 0 or negative. */
     private static native int nSubmit(long handle, long handover);
@@ -358,7 +358,7 @@ public final class NativeEngine implements ScriptedEngine {
     @Override
     public synchronized SessionStart start(long lastAppliedCmdSeq, long worldNextObsSeq) {
         long[] out = new long[2];
-        check(nStart(live(), lastAppliedCmdSeq, out), "start");
+        check(nStart(live(), lastAppliedCmdSeq, worldNextObsSeq, out), "start");
         return new SessionStart(out[0], out[1]);
     }
 
