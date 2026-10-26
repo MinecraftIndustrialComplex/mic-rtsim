@@ -10955,11 +10955,21 @@ mod conflict {
         j.idle();
         assert_eq!(tribute_ops(&j), unloaded, "the forgotten chest is sent nothing");
 
+        // Reported again with the chunk loaded: the stacks go one after another until all is paid.
         j.unloaded_transfers = false;
         chest_report(&mut j, chest);
-        j.idle();
-        j.idle();
-        assert_eq!(j.containers.get(&chest).copied(), Some(64), "a new stack lands");
+        for _ in 0..40 {
+            j.idle();
+            if owed_tribute(&e).0 == 0 && owed_tribute(&e).1 == 0 {
+                break;
+            }
+        }
+        assert_eq!(owed_tribute(&e).0, 0, "all paid: {:?}", owed_tribute(&e));
+        assert_eq!(
+            j.containers.get(&chest).copied(),
+            Some(567),
+            "every nugget in the chest, once"
+        );
         assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
         e.close(true, Duration::from_secs(5)).unwrap();
     }
