@@ -6,6 +6,8 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** Which member the trim cuts (MZB-473). */
 class MarchTrimTest {
@@ -55,5 +57,15 @@ class MarchTrimTest {
         assertEquals(1, MarchTrim.pick(c));
         List<Candidate> d = List.of(placed(5, 0, 6.0, true), placed(5, 1, 6.0, true));
         assertEquals(1, MarchTrim.pick(d));
+    }
+
+    @Test
+    void sightIsMeasuredOnTheGroundPlaneNotInThreeDimensions() {
+        // A player 150 blocks up and 50 out sees a band at a range of 128: the horizontal distance is 50.
+        assertTrue(MarchTrim.withinSight(50.0, 0.0, 128.0));
+        assertTrue(MarchTrim.withinSight(30.0, 40.0, 50.0), "the edge is in");
+        // One far out at ground level does not: 150 blocks off.
+        assertFalse(MarchTrim.withinSight(150.0, 0.0, 128.0));
+        assertFalse(MarchTrim.withinSight(100.0, 100.0, 128.0));
     }
 }
