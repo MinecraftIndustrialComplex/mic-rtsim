@@ -7115,6 +7115,20 @@ the docs). Rust and docs only; no GameTest, no Java. One record per fix, MZB-762
     2), and no other link test does. Transfers are counted with `tribute_sends` (the
     TRANSFER_TO_CONTAINER commands Java was given), not `j.commands.len()`: a switch-on writes
     territory commands as well.
+- **MZB-764** (P3-1: a parked stack's own chest reported full does not send it again):
+  - **The loop.** After any answer for its chest, NOT_LOADED included, GroveChests looks at the chest
+    again; with the chunk gone it reports `HAVEN_CHEST(X, 0)`. `haven_chest` unparked the stack on it, the
+    stack was written again, answered NOT_LOADED again, and the plugin reported again: one send a step
+    until Camps' 20-tick poll sent CAMP_OUT.
+  - **The fix.** `haven_chest` does not unpark on a HAVEN_CHEST with free 0 that names the stack's own
+    chest (the same dimension and place as its placing). The chest is still recorded (full, so
+    `place_tribute` sends nothing). The stack goes again at a HAVEN_CHEST for its chest with room, or at
+    CAMP_OUT and back in (CAMP_OUT forgets the chest and unparks). Engine test
+    `a_parked_stack_waits_for_its_own_chest_reported_with_room` (crates/rtsim-conflict/tests/grove.rs),
+    failed first on the fix's parent at "still parked" (1 stack to send for 0). A full chest that is not
+    the stack's own still unparks it, as before (named in the test): it is news, and the stack goes to its
+    own chest once.
+  - **The dragons** have no equivalent: `LairChest` carries no free count, so a report never says "full".
 
 ## M11 Aloft
 

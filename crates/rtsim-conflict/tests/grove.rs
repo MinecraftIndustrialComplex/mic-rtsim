@@ -1777,6 +1777,57 @@ fn a_failed_stack_forgets_only_its_own_chest() {
     ok(&mut r);
 }
 
+/// MZB-764 (review P3-1): a HAVEN_CHEST that names the parked stack's own chest as full (free 0)
+/// does not let the stack go again. After any answer the plugin looks at its chest once more, and
+/// a chunk that is gone reports the chest full: the stack was resent at each such report, answered
+/// NOT_LOADED again, and the plugin reported again, once a step until the camp went out. The
+/// stack goes again when its chest is reported with room, or at CAMP_OUT (where the chest is
+/// forgotten) and back in. A full chest that is not the stack's own is news, and lets it go as before.
+#[test]
+fn a_parked_stack_waits_for_its_own_chest_reported_with_room() {
+    let first = (synth::CAMP_POS.x + 3, 64, synth::CAMP_POS.z + 2);
+    let other = (synth::CAMP_POS.x - 5, 64, synth::CAMP_POS.z + 7);
+    // The chest reported full, again and again, sends nothing; reported with room, it goes.
+    let (mut r, _) = tribute_run(47);
+    chest_named_at(&mut r, first, 27);
+    let (op, p) = r.c.placings().next().expect("a stack");
+    assert!(r.c.tribute_not_loaded(op));
+    for _ in 0..3 {
+        chest_named_at(&mut r, first, 0);
+        assert_eq!(r.c.placings_to_send().count(), 0, "still parked");
+        r.run(r.c.now() + 10);
+    }
+    assert_eq!(r.c.placings().count(), 1, "still in flight, under its op");
+    assert_eq!(r.c.camp(r.f).unwrap().stacks, 1, "no new stack was decided");
+    chest_named_at(&mut r, first, 5);
+    let sent: Vec<_> = r.c.placings_to_send().collect();
+    assert_eq!(sent, [(op, p)], "its chest has room: it goes again");
+    ok(&mut r);
+
+    // CAMP_OUT, and back in: it goes again with no chest named.
+    let (mut r, _) = tribute_run(48);
+    chest_named_at(&mut r, first, 27);
+    let (op, p) = r.c.placings().next().expect("a stack");
+    assert!(r.c.tribute_not_loaded(op));
+    chest_named_at(&mut r, first, 0);
+    assert_eq!(r.c.placings_to_send().count(), 0, "still parked");
+    r.camp_out();
+    r.run(r.c.now() + 5);
+    let sent: Vec<_> = r.c.placings_to_send().collect();
+    assert_eq!(sent, [(op, p)], "the camp went out: the same stack, again");
+    ok(&mut r);
+
+    // Another chest reported full is news: the parked stack goes again, to its own chest.
+    let (mut r, _) = tribute_run(49);
+    chest_named_at(&mut r, first, 27);
+    let (op, p) = r.c.placings().next().expect("a stack");
+    assert!(r.c.tribute_not_loaded(op));
+    chest_named_at(&mut r, other, 0);
+    let sent: Vec<_> = r.c.placings_to_send().collect();
+    assert_eq!(sent, [(op, p)], "a chest the stack was not sent to");
+    ok(&mut r);
+}
+
 /// MZB-760: a parked stack is answered like any stack in flight. FAILED (the chunk loaded, and no
 /// chest there) takes it out and puts its goods back; APPLIED takes it out and lowers what is
 /// owed. CAMP_OUT, where the grove's chest is forgotten, and a session's start let it go again,
