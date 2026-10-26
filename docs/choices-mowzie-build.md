@@ -10196,6 +10196,30 @@ M11a's implementer appends its records under this heading only (the Rust side).
     `every_gametest_save_carries_and_matches_each_modules_hash`, `a_hash_that_differs_is_flagged` (hashes), and
     rtsim-host's `gametest_worlds_open_in_the_host_with_their_saved_state`. Their saves carry the conflict's META 7
     ("this build reads 11"), so RTC12 makes no other test fail; the lead regenerates them from fresh worlds.
+- **MZB-854** (step 4, a payment to the puppet; MZB-819 built): `chief_paid` with PAID_PUPPET (and not PAID_STRAY)
+  for the chief slot finds the faction's chief slot by its id (`Camp::chief`, since `index` fails for generation 0)
+  and remembers the payer unless that slot is Dead; with neither flag it reads `index(slot, generation)` and a Body
+  slot, as before. The tribute is booked either way through `pay_tribute`, and a copy (the same op) books nothing
+  by the ingest's op dedupe. Test A5 `a_payment_to_the_puppet_is_remembered` (`tests/mowzie_aloft.rs`): the
+  payment on the road books tribute once and the payer is remembered; the band met again sends an away CHIEF_BODY
+  with the payer, and home with the grove in the CHIEF_BODY ahead of the HAND_BACK carries it. The controls: the
+  chief killed away (`chief_died_away`) with its slot Left (Dead) and Gone (freed), then a puppet's payment is
+  tribute and the heir's memory stays empty; flags 0 and generation 0 is a stray's tribute with no memory. On the
+  base rule (the PAID_PUPPET branch mutated to false) A5 fails at the memory: `[(24301, 2827)]`, want the payer
+  `(42405, 23130)` beside the player. The controls pass on both.
+- **MZB-855** (found by A5's control; a fix outside the design): `chief_died_away` took the chief slot's index
+  before `camp_sync`, which inserts the slots for a pool's unfollowed gain in id order, below the chief's
+  (`CHIEF_SLOT` is `u32::MAX`). With such a gain the chief moved up one place and the stale index named the new
+  warrior's Owed slot: that slot was freed (its generation retired) in the chief's place, and the chief's slot
+  stayed Left (or Gone) with its party routed. CHIEF_KILLED reaches it through `chief_killed_by` whenever the
+  grove's chief leads a band, so this is a live path since M9, not a test-only one. The fix checks the chief slot
+  is away, syncs, then takes the index. The other index-after-sync sites (`camp_death`, the MZB-853 releases) were
+  already in that order. Test `a_chief_killed_away_after_the_pool_grew_dies_in_its_own_slot`: the band leaves with
+  the grove out (a whole warrior in the pool with no slot yet), two days on CHIEF_KILLED through `chief_killed_by`:
+  the ledger gains the slot, every warrior slot is unchanged, and the chief's is Dead in its generation; the
+  control (the slot Gone, the ledger up to date) frees the chief's slot. With the index taken before the sync the
+  test fails at "the ledger followed a gain" (the new slot freed at once) and A5's control at `Some(Left)`, want
+  `Some(Dead)`.
 
 ### M11b build records (MZB-870 to MZB-889)
 
