@@ -236,7 +236,8 @@ captured member before it), TAKEN or DIED.
 - TRANSFER kinds: 1 generic (the only one so far).
 - COMMAND_RESULT status: 1 applied, 2 duplicate op id (already applied, skipped), 3 failed; phase 1
   adds 4 not free (PLACE_HOUSE found no free plot) and 5 vanilla knows (WRITE_GOSSIP refused: vanilla
-  already records that act first-hand).
+  already records that act first-hand); 6 not loaded (TRANSFER_TO_CONTAINER: the container's chunk is
+  not loaded, so Java could not look for the op in it; the op may already be there).
 
 **SESSION_START and the kernel's `Replay::reconcile`.** `journalFirstObsSeq` and `worldNextObsSeq`
 are the two numbers `reconcile(journal_first, world_next)` takes. `worldNextObsSeq` is the world
@@ -318,7 +319,10 @@ health (0 = full), 12 i32 bodyA (-1 = let the body roll it), 16 i32 bodyB (-1 = 
 - **Steering** points the group's leader at the target; members follow it.
 - **TRANSFER_TO_CONTAINER** is one stack (count up to the item's stack size; split bigger ones). It
   is all or nothing, through the block's NeoForge item handler. An op id whose COMMAND_RESULT(applied)
-  is still in Java's journal is answered DUPLICATE and not applied again.
+  is still in Java's journal is answered DUPLICATE and not applied again. A container whose chunk is
+  not loaded is answered NOT_LOADED, never FAILED: the chunk may have been written ahead of the
+  journal holding the op (§3.1), so the engine must send it again under the same op id and never
+  the items under a new one (RP-210).
 
 ## 3. The journal (A9, PLAN.md §4.9)
 
@@ -380,7 +384,9 @@ committed; at the journal's write those still unsaved are saved, the levels' chu
 chunks ahead of its queue, and the journal's write waits on the IO chain for them. If they are not on disk
 in time (or one is still being unloaded), the file is held to the next world save, never written ahead of
 them (`ChunkWriteBarrier`, docs/choices-journal-barrier.md JB1 to JB5; first built as docs/choices-repair.md
-R21 to R24). Entities that carry records are not covered.
+R21 to R24). An entity that carries records is noted by holder, at the chunk it stands in at the
+journal's write (camp bodies and markers, MOWZIE.md ledger 22; residents, docs/choices-journal-barrier.md
+RP-212), and a reconcile's drops join the level only once the chunks its breaks changed are on disk (RP-213).
 
 **Still open:** a crash that leaves the engine's pages ahead of the world save (Proposal P29). A held or
 failed journal write widens that window to the next world save; WORLD_SAVED no longer reports it, so P29's
@@ -748,7 +754,9 @@ its natives with `System.load`. Choices are in `docs/overnight-choices-jni.md` (
      the next step), through the core's outbox with `push_with_op` and the core's
      TRANSFER_TO_CONTAINER writer, the dimension and item names through the engine's dictionary. A
      stack whose dimension or item the engine cannot name is failed at once. The COMMAND_RESULT is
-     journaled: APPLIED and DUPLICATE_OP place the stack, FAILED sends the coin back to wait; a
+     journaled: APPLIED and DUPLICATE_OP place the stack, FAILED sends the coin back to wait,
+     NOT_LOADED parks the stack under its op id (not saved: a new session sends it again) until its
+     lair's next LAIR_CHEST, which sends it again to the chest it went to first (RP-210); a
      replayed answer for an op the replay already admitted (its DuplicateOp verdict) still places
      the stack. While the module is off its COMMAND_RESULTs are not looked at: the stack is still in
      the outbox, goes again, and Java answers DUPLICATE_OP.
@@ -760,8 +768,19 @@ its natives with `System.load`. Choices are in `docs/overnight-choices-jni.md` (
      world they were saved with, or ones this build cannot read, are dropped loudly and deleted
      at start, and the dragons start afresh.
    - **The switch** (C25, `Module.ECOLOGY`, bit 4; choice U10 in
-     docs/overnight-choices-integrate2.md): off, the dragons ignore their records, run and write
-     nothing and keep the page they had; on again, their bodies of before are gone and they run on.
+     docs/overnight-choices-integrate2.md, as RP-292 in docs/choices-journal-barrier.md amends it):
+     off, the dragons run and write nothing and keep the page they had. The journaled records they
+     hear are kept, on a page beside the meta page (id 2), and applied at the switch-on in the resets
+     every module that shares the phase 1 world runs in one order (`shared::resets`): after every
+     engine's `begin_replay` and before any replay end, merged with the herds' and the conflict's
+     kept records in the order `Replay` admitted them, each after its own catch-up
+     (docs/replay-gate.md 9.7: the switch gates only new decisions). A kept record is booked at its
+     own tick on the dragons' clock, which froze at the switch-off, though the phase 1 world ran on
+     (`shared::floor`), never at the frozen clock; a dragon killed or tamed while they were off stays
+     dead from that tick. MODULES sets every module's flag before any reset, so with ECOLOGY on the
+     herds are the dragons' prey through the window. A tribute stack's answer is taken at once
+     whatever the switch (RP-291). On again, their bodies of before are gone and they run on. No
+     capture is sent at the switch-off: a body stays until Java's own capture (RP-290).
    - **Tests.** Order 25 (`DRAGON_COMMAND`, TEST mode only) queues a dragon command record with
      Java's species and dimension ids as the dragons' own: the Ice and Fire plugin's GameTests drive
      MATERIALIZE, STEER, DEPART, ADOPT and DISCARD with it on the native engine (choice Z2).
@@ -799,7 +818,9 @@ its natives with `System.load`. Choices are in `docs/overnight-choices-jni.md` (
      link snapshots at every save, in the same commit. Ship pages without the phase 1 world they
      were saved with, or ones this build cannot read, are dropped loudly and deleted at start, and
      the ships start afresh.
-   - **The switch** (C25, `Module.SHIPS`, bit 6; U10): as the dragons'.
+   - **The switch** (C25, `Module.SHIPS`, bit 6; U10): off, the ships ignore their records, run and
+     write nothing and keep the page they had; on again, their bodies of before are gone and they run
+     on. RP-292's keeping (the dragons', herds' and conflict's) does not cover them yet.
    - **Tests.** Order 26 (`SHIP_COMMAND`, TEST mode only) queues a ship command record with Java's
      body, item and dimension ids as the ships' own (U15), for a future plugin's GameTests. The
      Rust fake Java side (`tests/common`, `Java::ship_obs`, `ship_command`) plays the plugin in the
@@ -834,7 +855,10 @@ its natives with `System.load`. Choices are in `docs/overnight-choices-jni.md` (
      the rows, the wheel and the claims at 0x4810 and up). While there are herds the phase 1 link
      snapshots at every save, in the same commit. Herd pages without the phase 1 world they were
      saved with, or ones this build cannot read, are dropped loudly and deleted at start.
-   - **The switch** (C25, `Module.ECOLOGY`, bit 4, the dragons' bit; U10's rule).
+   - **The switch** (C25, `Module.ECOLOGY`, bit 4, the dragons' bit; U10's rule as RP-292 amends
+     it): as the dragons', the records heard while off kept (0x4800 id 2) and applied at the switch-on.
+     A kept record is booked at its own tick on the herds' clock, which froze at the switch-off; a
+     sheep killed or taken in the switch's tick is not picked again.
    - **Prey.** With the dragons running too, the dragons run with the herds as prey
      (`Dragons::run_until_with_herds`, Y7).
    - **Climate and founding** (item 16, §10). The climate is the world model's
@@ -872,18 +896,28 @@ its natives with `System.load`. Choices are in `docs/overnight-choices-jni.md` (
      the rows, the wheel and the indexes at 0x4310 and up). While the conflict is active the phase
      1 link snapshots at every save, in the same commit. Pages without the phase 1 world they were
      saved with, or ones this build cannot read, are dropped loudly and deleted at start.
-   - **The switch** (C25, `Module.CONFLICT`, bit 5; U10's rule).
-     - **A residual, not built** (the coordinator's ruling; fixes6 item 6; RP-57). Switched off,
-       the conflict ignores its journaled records without folding their epochs (rtsim-jni
-       `engine/conflict.rs:565`, `journaled`), so this sequence can issue an epoch twice (against
-       docs/replay-gate.md §5.3):
+   - **The switch** (C25, `Module.CONFLICT`, bit 5; U10's rule as RP-292 amends it): as the
+     dragons', the records heard while off kept (0x4300 id 2) and applied at the switch-on, each
+     booked at its own tick on the conflict's clock, not the phase 1 world's present
+     (`shared::floor`); a band member killed in the switch's tick is dead from that tick, before its
+     demand's deadline, and does not return. The kept records and the catch-ups between them run inside the
+     conflict's replay, so its outbox gate holds what they decide: a DEMAND_SETTLED that comes due in
+     the window before the last kept record is dropped, as at a restart (RP-12). A DIFFICULTY heard
+     while off is applied at the switch-on.
+     - **A residual, closed by RP-293** (the coordinator's ruling; fixes6 item 6; RP-57). Before
+       RP-292, switched off, the conflict ignored its journaled records without folding their
+       epochs, so this sequence could issue an epoch twice (against docs/replay-gate.md §5.3). It
+       still folds none while off, but it keeps the records with its pages, and the switch-on of
+       step 3 applies them, floors and all, before it decides anything:
        1. A session crashes with the conflict on, after Java journaled records of epochs it issued
           since its last save.
-       2. The next start has the conflict off: its replay ignores those records, and it saves past
-          the crashed session's window, so the journal is trimmed of them.
+       2. The next start has the conflict off: its replay ignored those records (now it keeps
+          them, and its saves write them), and it saves past the crashed session's window, so the
+          journal is trimmed of them.
        3. A later start turns the conflict on. Its pages never saw that window's epochs and its
-          journal no longer holds them, so no floor is raised (RP-57).
-       4. That session can issue the crashed window's epochs again.
+          journal no longer holds them, so no floor was raised (RP-57). Now the kept records are
+          applied at this switch-on and raise it.
+       4. That session could issue the crashed window's epochs again.
 
        Not the old-life case of RG5 and RG6: that life is Java's, covers the whole directory, and
        is drawn only when the pages include no observation. The option not taken, with no format
@@ -1045,8 +1079,12 @@ per command, the village's currency item (emerald for humans), the chest's dimen
 These are engine ops in the core's outbox, so they are resent after a restart until answered, and
 each stack's op id is drawn from the lair's key and a per-lair stack counter (a resent stack is the
 same op). The answer is COMMAND_RESULT: APPLIED or DUPLICATE_OP count the stack in the chest;
-FAILED (the chunk unloaded, the chest gone or full) puts the coin back to wait and makes the engine
-forget the chest until LAIR_CHEST names one again, and the stack then goes under a new op id.
+FAILED (the chest gone or full, its chunk loaded and not carrying the op) puts the coin back to wait
+and makes the engine forget the chest until LAIR_CHEST names one again, and the stack then goes under
+a new op id. NOT_LOADED (the chunk not loaded) also forgets the chest, but the stack stays under its
+op id: the chunk may hold it already, written ahead of the journal, and its REASSERT of the APPLIED
+record places it when it loads. The lair's next LAIR_CHEST sends it again, to its first chest
+(RP-210).
 Nothing goes out while the lair has no chest: the coin waits in the lair's books.
 
 ### 6.5 How Java applies them
@@ -1738,8 +1776,8 @@ refuses a count above the cap (`CodecError::TooMany`) and a record cut short of 
 - **DIFFICULTY** is sent at every session start and whenever the world's difficulty changes. It is
   journaled (MZB-17), so the engine applies it at its game time and its replay after a crash applies
   it again in the same order as the rest; one with the value the engine already has changes nothing.
-  Like every journaled record it is ignored while the module is off (U10); the session start's
-  sends it again (MZB-30).
+  Like every journaled record it is kept while the module is off and applied at the switch-on
+  (RP-292); every session start sends it again (MZB-30).
 - **NOTICE_SHOWN** says the plugin has played a FACTION_NOTICE in the world: its serial in aux and
   its faction and player as the notice's. One with a serial other than the kept notice's (an older
   notice) changes nothing (MZB-10, MZB-28).
