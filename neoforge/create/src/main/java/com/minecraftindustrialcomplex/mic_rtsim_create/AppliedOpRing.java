@@ -14,7 +14,8 @@ import java.util.Map;
  * is saved in a SavedData other than the journal's: kept in the same compound as the effect, it is saved by
  * the same write, so whichever save holds the effect holds the op (a crash keeps both or neither). It knows
  * nothing of its owner. A Create train's ring is {@link TrainRing} (capacity {@link TrainRing#CAPACITY}, key
- * {@link TrainRing#KEY}).
+ * {@link TrainRing#KEY}); a station port's two rings are {@link PortRing} (slice U,
+ * docs/choices-journal-barrier.md RP-206), beside its offline buffer, also in create_tracks.dat.
  *
  * <p>Each op carries the sequence of the answer (COMMAND_RESULT) its owner journaled for it last in this
  * session, or {@link #UNKNOWN}: an op whose answer the engine's pages may lack, so the engine may send it
