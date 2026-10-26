@@ -22,6 +22,7 @@ use rtsim_industry::obs::{BlockFlags, InvKind};
 use rtsim_industry::tunables::Tunables;
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 use rtsim_kernel::rng::{StreamKey, SystemId};
+use rtsim_kernel::sites::FoundRow;
 use rtsim_settle::Pos;
 use rtsim_trade::tunables::Ratio;
 use rtsim_trade::{GoodId, Price};
@@ -1179,6 +1180,8 @@ impl FakeConflict {
             generation: l.generation,
             killer: self.player,
             op,
+            // The puppet has no UUID here, and the engine reads none for a chief's slot.
+            uuid: (0, 0),
         };
         // The puppet leaves its marker with its death, as a camp body does.
         self.death_holders.push(death);
@@ -1419,6 +1422,7 @@ impl FakeConflict {
                 (0, 0)
             },
             op,
+            uuid: b.uuid,
         };
         if b.generation != 0 {
             // A member's body leaves a marker with its death (a stray's leaves none: nothing is
@@ -2002,6 +2006,8 @@ pub struct CampRun {
     /// What the chaos run did, with when: for a failure's report.
     pub events: Vec<(Tick, String)>,
     next_obs: Tick,
+    /// The seed the run was made with, for a fresh engine ([`CampRun::reborn`]).
+    seed: u64,
 }
 
 impl CampRun {
@@ -2078,6 +2084,7 @@ impl CampRun {
                 } else {
                     0
                 },
+                row: FoundRow::none(),
             }),
             Tick(1),
         );
@@ -2102,9 +2109,74 @@ impl CampRun {
             infra: Box::new(rtsim_ecology::infra::NoInfrastructure),
             events: Vec::new(),
             next_obs: Tick::ZERO,
+            seed,
         };
         r.flush(Tick(1));
         r
+    }
+
+    /// A sim reset (MZB-1014): a fresh engine, which knows nothing of this run, finds the camp
+    /// again at `at` (after the engine's now) with the site ledger's `row`, the found tail, and
+    /// every body standing in the camp counted, as Java's FACTION_FOUND counts them. The plugin's
+    /// world is kept, its bodies with their former life's tags; the session's memory is not: the
+    /// observations not yet delivered and what the plugin held are gone, and the camps are out.
+    pub fn reborn(&mut self, row: FoundRow, at: Tick) {
+        assert!(at > self.c.now(), "a reset goes forward");
+        self.plugin.drop_queued();
+        self.plugin.take_held(None, None);
+        self.plugin.pending_chief.clear();
+        self.plugin.forget_hunts();
+        for camp in self.plugin.camps.values_mut() {
+            camp.epoch = 0;
+        }
+        march::session();
+        let culture = self.c.factions[self.f as usize].culture;
+        let (mut w, _) = world(self.seed);
+        let mut c = conflict_with(self.seed, &w, self.c.cultures.clone());
+        let structure = c.cultures.get(culture).def.structures[0].clone();
+        c.define(4, CAMP_STRUCTURE, &structure);
+        let player = c.player(&mut w, PLAYER);
+        c.run_until(
+            &mut w,
+            &mut rtsim_ecology::infra::NoInfrastructure,
+            Tick(at.0 - 1),
+        );
+        let bodies = &self.plugin.camp_world(self.key).bodies;
+        let census = bodies.iter().find(|b| b.chief).map_or(0, |b| {
+            boundary::CENSUS_CHIEF
+                | if b.crystal {
+                    boundary::CENSUS_CRYSTAL
+                } else {
+                    0
+                }
+        }) as u8;
+        let home_bodies = u16::try_from(bodies.len()).expect("a camp's bodies");
+        c.ingest(
+            &mut w,
+            &mut rtsim_ecology::infra::NoInfrastructure,
+            &Obs::FactionFound(boundary::FactionFound {
+                faction: self.key,
+                flags: 0,
+                dimension: u32::from(CAMP_POS.frame),
+                structure: CAMP_STRUCTURE,
+                pos: (CAMP_POS.x, 64, CAMP_POS.z),
+                home_bodies,
+                census,
+                row,
+            }),
+            at,
+        );
+        self.f = c.faction_of_key(self.key).expect("found");
+        self.w = w;
+        self.c = c;
+        self.player = player;
+        self.ghosts.clear();
+        self.ghosts_gone = 0;
+        // The fresh engine's op ids are its own: the order keys start again.
+        self.applied_keys.clear();
+        self.applied_checked = self.plugin.applied.len();
+        self.next_obs = Tick::ZERO;
+        self.flush(at);
     }
 
     /// Looks at the books against the world for the ghosts (`ghosts`, `ghosts_gone`): a member
@@ -2437,8 +2509,19 @@ impl CampRun {
                     want.insert((s.id, s.generation));
                 }
             }
-            let held: std::collections::BTreeSet<(u32, u32)> =
-                seen.difference(&maybe).copied().collect();
+            // A member the camp wrote off as missing, back at a full camp, is a stray left
+            // standing with its old tags (MZB-1014, fork F3): no slot's body.
+            let standing: std::collections::BTreeSet<(u32, u32)> = world
+                .bodies
+                .iter()
+                .filter(|b| b.generation != 0 && camp.missing.contains(&b.uuid))
+                .map(|b| (b.slot, b.generation))
+                .collect();
+            let held: std::collections::BTreeSet<(u32, u32)> = seen
+                .difference(&maybe)
+                .filter(|k| !standing.contains(k))
+                .copied()
+                .collect();
             if want != held {
                 bad.push(format!(
                     "I3: slots with a body {want:?}, tagged bodies in the world {seen:?}"

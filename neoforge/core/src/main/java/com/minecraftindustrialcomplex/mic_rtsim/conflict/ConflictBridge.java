@@ -11,6 +11,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.config.Module;
 import com.minecraftindustrialcomplex.mic_rtsim.config.RtsimConfig;
 import com.minecraftindustrialcomplex.mic_rtsim.puppet.AgentTag;
 import com.minecraftindustrialcomplex.mic_rtsim.puppet.RtsimAttachments;
+import com.minecraftindustrialcomplex.mic_rtsim.sites.SiteLedger;
 import com.minecraftindustrialcomplex.mic_rtsim.talk.Talk;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import it.unimi.dsi.fastutil.longs.LongIterator;
@@ -3665,13 +3666,18 @@ public final class ConflictBridge implements SessionPlugin {
         return key;
     }
 
-    /** FACTION_FOUND for a camp at {@code pos} (a block in its start chunk). */
+    /**
+     * FACTION_FOUND for a camp at {@code pos} (a block in its start chunk), with the site ledger's row for the camp as its
+     * tail (EQUILIBRIUM.md §2.3, MZB-1014): the engine hands it over when the camp is new to it.
+     */
     private void journalFound(long key, ServerLevel level, String structure, BlockPos pos, boolean late, int homeBodies, int census,
                               long now) {
         RtsimSession s = session;
         int dim = s.dimId(level.dimension());
         int structureId = s.dictId(Obs.DICT_STRUCTURE, structure); // before beginJournaled: a define may journal
-        ByteBuffer r = s.boundary().beginJournaled(ConflictRecords.FACTION_FOUND, ConflictRecords.FactionFound.SIZE,
+        SiteLedger ledger = SiteLedger.get(s.server());
+        ByteBuffer r = s.boundary().beginJournaled(ConflictRecords.FACTION_FOUND,
+                ConflictRecords.FactionFound.TAIL + ledger.tailSize(SiteLedger.CAMP, key),
                 late ? ConflictRecords.FactionFound.FLAG_LATE : 0, now);
         r.putLong(ConflictRecords.FactionFound.FACTION, key);
         r.putInt(ConflictRecords.FactionFound.DIM, dim);
@@ -3681,6 +3687,7 @@ public final class ConflictBridge implements SessionPlugin {
         r.putInt(ConflictRecords.FactionFound.Z, pos.getZ());
         r.putShort(ConflictRecords.FactionFound.HOME_BODIES, (short) Mth.clamp(homeBodies, 0, 0xFFFF));
         r.put(ConflictRecords.FactionFound.CENSUS, (byte) census);
+        ledger.writeTail(r, ConflictRecords.FactionFound.TAIL, SiteLedger.CAMP, key, now);
         s.boundary().commit(r);
     }
 

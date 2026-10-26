@@ -833,6 +833,7 @@ fn a_chief_state_while_replaying_waits_for_the_replay_end() {
             pos: (CAMP_POS.x, 64, CAMP_POS.z),
             home_bodies: 1,
             census: (boundary::CENSUS_CHIEF | boundary::CENSUS_CRYSTAL) as u8,
+            row: Default::default(),
         }),
         Tick(5),
     );

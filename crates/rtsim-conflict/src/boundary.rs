@@ -17,6 +17,8 @@
 //! commands. **Agents** are `0x43 << 56 | handle` (namespace byte 0x43, "C"). **Dictionary kind
 //! 0x20** names Destroy pollution types (`destroy:smog`).
 
+use rtsim_kernel::sites::{FoundRow, SiteError};
+
 pub const BAND_STATE: u16 = 0x0090;
 pub const CHIEF_STATE: u16 = 0x0091;
 // 0x0092 is retired: HAVEN_CHEST was latest-wins there before it was journaled (MZB-446, review
@@ -214,7 +216,7 @@ pub struct BandState {
     pub pos: (f64, f64, f64),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct FactionFound {
     pub faction: u64,
     pub flags: u32,
@@ -225,6 +227,8 @@ pub struct FactionFound {
     /// present) and `CENSUS_CRYSTAL` (it holds its crystal).
     pub home_bodies: u16,
     pub census: u8,
+    /// The site ledger's row for the camp, the found tail at 56 (docs/boundary.md §2.5, MZB-1014).
+    pub row: FoundRow,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -409,6 +413,8 @@ pub struct CampDeath {
     pub generation: u32,
     pub killer: Uuid,
     pub op: u64,
+    /// The body's own UUID (MZB-1014): a body written off as missing still counts when it dies.
+    pub uuid: Uuid,
 }
 
 /// One body a census found.
@@ -970,6 +976,17 @@ pub enum CodecError {
     Unknown(u16),
     /// A list's count above [`MAX_ENTRIES`].
     TooMany,
+    /// A field out of range (a found tail's bodies above its K).
+    BadValue(&'static str),
+}
+
+/// The site found tail from `at` to the record's end (docs/boundary.md §2.5): `b` is the record.
+fn found_row(b: &[u8], at: usize) -> Result<FoundRow, CodecError> {
+    let tail = b.get(at..).ok_or(CodecError::Short)?;
+    FoundRow::decode(tail).map_err(|e| match e {
+        SiteError::BadSize => CodecError::BadSize,
+        SiteError::BadValue(_) => CodecError::BadValue("site found tail"),
+    })
 }
 
 /// The most entries any list of a variable-length record carries (docs/boundary.md §9.1). At it
@@ -1158,7 +1175,9 @@ pub fn encode_obs(seq: u64, game_time: i64, o: &Obs, buf: &mut Vec<u8>) {
             w.ipos(40, f.pos);
             w.u16(52, f.home_bodies);
             w.u8(54, f.census);
-            w.finish(FACTION_FOUND, f.flags, 56);
+            let tail = f.row.to_bytes();
+            w.at(56, &tail);
+            w.finish(FACTION_FOUND, f.flags, 56 + tail.len());
         }
         Obs::Signal(s) => {
             w.u64(24, s.faction);
@@ -1290,7 +1309,8 @@ pub fn encode_obs(seq: u64, game_time: i64, o: &Obs, buf: &mut Vec<u8>) {
             w.u32(44, d.generation);
             w.uuid(48, d.killer);
             w.u64(64, d.op);
-            w.finish(CAMP_DEATH, d.by, 72);
+            w.uuid(72, d.uuid);
+            w.finish(CAMP_DEATH, d.by, 88);
         }
         Obs::CampCensus(c) => {
             let (bodies, traded) = (capped(&c.bodies), capped(&c.traded));
@@ -1407,6 +1427,7 @@ pub fn decode_obs(b: &[u8]) -> Result<Decoded<Obs>, CodecError> {
             pos: r.ipos(40)?,
             home_bodies: r.u16(52)?,
             census: r.u8(54)?,
+            row: found_row(r.b, 56)?,
         }),
         TERRITORY_SIGNAL => Obs::Signal(TerritorySignal {
             faction: r.u64(24)?,
@@ -1530,6 +1551,7 @@ pub fn decode_obs(b: &[u8]) -> Result<Decoded<Obs>, CodecError> {
             generation: r.u32(44)?,
             killer: r.uuid(48)?,
             op: r.u64(64)?,
+            uuid: r.uuid(72)?,
         }),
         CAMP_CENSUS => {
             let n = count(aux)?;
@@ -1993,6 +2015,8 @@ pub fn decode_cmd(b: &[u8]) -> Result<(u64, Cmd, usize), CodecError> {
 pub(crate) mod tests {
     use std::collections::BTreeSet;
 
+    use rtsim_kernel::sites::{Bodies, tail, tail_flags};
+
     use super::*;
 
     fn obs() -> Vec<Obs> {
@@ -2014,6 +2038,20 @@ pub(crate) mod tests {
                 pos: (900, 70, 1000),
                 home_bodies: 7,
                 census: (CENSUS_CHIEF | CENSUS_CRYSTAL) as u8,
+                row: FoundRow {
+                    flags: tail_flags::ROW | tail_flags::WAITING,
+                    k: 6,
+                    count: 2,
+                    p: 1.5,
+                    away: 1,
+                    wait_left: 4_000,
+                    elapsed: 900,
+                    bodies: Bodies {
+                        home: vec![(1, 2), (3, 4)],
+                        left_behind: vec![(5, 6)],
+                        missing: vec![(7, 8)],
+                    },
+                },
             }),
             Obs::Signal(TerritorySignal {
                 faction: 77,
@@ -2134,6 +2172,7 @@ pub(crate) mod tests {
                 generation: 2,
                 killer: (11, 22),
                 op: 1 << 63 | 8,
+                uuid: (33, 44),
             }),
             Obs::CampCensus(CampCensus {
                 faction: 77,
@@ -2412,12 +2451,14 @@ pub(crate) mod tests {
     fn documented_size(kind: u16, aux: u32, b: &[u8]) -> usize {
         let n = aux as usize;
         let u32_at = |o: usize| u32::from_le_bytes(b[o..o + 4].try_into().unwrap()) as usize;
+        let u16_at = |o: usize| usize::from(u16::from_le_bytes([b[o], b[o + 1]]));
         match kind {
             BAND_STATE => 56,
             CHIEF_STATE => 24,
             HAVEN_CHEST => 56,
             DIFFICULTY => 32,
-            FACTION_FOUND => 56,
+            // The found tail (§2.5): 40 bytes and a UUID for each body its three lists name.
+            FACTION_FOUND => 96 + 16 * (u16_at(70) + u16_at(88) + u16_at(90)),
             TERRITORY_SIGNAL => 72,
             POLLUTION => 64,
             BAND_MATERIALIZED | BAND_SPAWN_REJECTED => 48,
@@ -2430,7 +2471,7 @@ pub(crate) mod tests {
             BAND_LOOTED => 48 + 16 * n,
             RAIL_PASS => 104,
             TRAIN_PASSED => 48,
-            CAMP_DEATH => 72,
+            CAMP_DEATH => 88,
             CAMP_CENSUS => 88 + 32 * n + 16 * u32_at(76),
             TRADED => 64,
             NOTICE_SHOWN => 48,
@@ -2506,6 +2547,43 @@ pub(crate) mod tests {
         assert_eq!(u16::from_le_bytes([b[52], b[53]]), 7, "home bodies at 52");
         assert_eq!(b[54], (CENSUS_CHIEF | CENSUS_CRYSTAL) as u8, "flags at 54");
         assert_eq!(b[55], 0, "55 reserved");
+    }
+
+    /// MZB-1014: the camp's ledger row rides at 56, and a tail that names more bodies than its K
+    /// does not decode (nor does a record cut at the old end, 56).
+    #[test]
+    fn faction_found_carries_the_site_row_at_56() {
+        let found = obs().swap_remove(1);
+        let mut b = Vec::new();
+        encode_obs(1, 2, &found, &mut b);
+        let Obs::FactionFound(f) = &found else {
+            unreachable!()
+        };
+        assert_eq!(&b[56..], &f.row.to_bytes()[..]);
+        assert_eq!(b.len(), 56 + 40 + 16 * 4);
+        let mut short = b.clone();
+        short[56 + tail::K..56 + tail::K + 2].copy_from_slice(&1u16.to_le_bytes());
+        assert_eq!(
+            decode_obs(&short),
+            Err(CodecError::BadValue("site found tail"))
+        );
+        let mut old = b[..56].to_vec();
+        old[2..4].copy_from_slice(&56u16.to_le_bytes());
+        assert_eq!(decode_obs(&old), Err(CodecError::BadSize));
+    }
+
+    /// MZB-1014: CAMP_DEATH carries the body's UUID at 72.
+    #[test]
+    fn camp_death_carries_the_body_uuid_at_72() {
+        let death = obs()
+            .into_iter()
+            .find(|o| matches!(o, Obs::CampDeath(_)))
+            .unwrap();
+        let mut b = Vec::new();
+        encode_obs(1, 2, &death, &mut b);
+        assert_eq!(b.len(), 88);
+        assert_eq!(u64::from_le_bytes(b[72..80].try_into().unwrap()), 33);
+        assert_eq!(u64::from_le_bytes(b[80..88].try_into().unwrap()), 44);
     }
 
     #[test]

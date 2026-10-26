@@ -81,7 +81,10 @@ use crate::tunables::ConflictTunables;
 /// list of the parties whose record is due is not saved, and a load builds it from the flags.
 /// RTC12, `RTCC`: a camp's ledger ends with the end of the band its chief came home with, and the
 /// resident state ends with those ends' index by agent, after the tribute stacks (M11, MZB-853).
-const MAGIC: u32 = u32::from_le_bytes(*b"RTCC");
+/// RTC13, `RTCD`: a camp's slot ends with its body's UUID, and the ledger with its members gone
+/// missing, the bodies a former engine life left behind and a flags byte (bit 0 the site ledger's
+/// gap, bit 1 the cap's wait next) (M12a, MZB-1014).
+const MAGIC: u32 = u32::from_le_bytes(*b"RTCD");
 /// The meta page of a paged save ([`Conflict::save_paged`]). 2: the indexes, parties and wheel
 /// are in pages of their own, their headers after the row counts (PF10). 3: the resident state
 /// ends with the Peaceful flag, its start and the last notice's serial. 4: the party pages' rows
@@ -91,9 +94,10 @@ const MAGIC: u32 = u32::from_le_bytes(*b"RTCC");
 /// resident state's stats end with the lurk's five (M8, MZB-690). 10: a party's row ends with its
 /// march revision, its due flag, its unseen tick and its unwatched epoch ranges (M10, MZB-453,
 /// MZB-706). 11: a camp ends with its chief's band's end, and the resident state with their index
-/// (M11, MZB-853).
+/// (M11, MZB-853). 12: a camp's slots carry their bodies' UUIDs, and the camp its missing, its
+/// bodies left behind and its gap and cap flags (M12a, MZB-1014).
 const META_MAGIC: u32 = u32::from_le_bytes(*b"RTCM");
-const META_VERSION: u16 = 11;
+const META_VERSION: u16 = 12;
 
 /// Every page table the conflict owns when it pages: a meta key in none of them.
 pub const TABLES: [u16; 9] = [
@@ -400,6 +404,8 @@ fn put_camp(w: &mut Writer, c: &Camp) {
             w.u64(l.op);
         });
         w.u64(s.chief.to_bits());
+        w.u64(s.uuid.0);
+        w.u64(s.uuid.1);
     }
     put_usize(w, c.retired.len());
     for t in &c.retired {
@@ -447,6 +453,14 @@ fn put_camp(w: &mut Writer, c: &Camp) {
         w.var_u64(u64::from(e.epoch));
         w.u32(e.generation);
     });
+    for list in [&c.missing, &c.left_behind] {
+        put_usize(w, list.len());
+        for u in list {
+            w.u64(u.0);
+            w.u64(u.1);
+        }
+    }
+    w.u8(u8::from(c.gap) | u8::from(c.cap_next) << 1);
 }
 
 /// A tribute stack in flight (MZB-423).
@@ -492,7 +506,7 @@ fn get_camp(r: &mut Reader<'_>) -> codec::Result<Camp> {
     let seq = get_u32(r)?;
     let refill = get_u32(r)?;
     let refill_at = get_opt(r, |r| Ok(Tick(r.u64()?)))?;
-    let n = r.len_prefix(33)?;
+    let n = r.len_prefix(49)?;
     let mut slots: Vec<Slot> = Vec::with_capacity(n);
     for _ in 0..n {
         let id = get_u32(r)?;
@@ -511,6 +525,7 @@ fn get_camp(r: &mut Reader<'_>) -> codec::Result<Camp> {
             })
         })?;
         let chief = handle(r)?;
+        let uuid = (r.u64()?, r.u64()?);
         if slots.last().is_some_and(|l| l.id >= id) || generation == 0 {
             return bad(format!("slot {id} out of order or with generation 0"));
         }
@@ -524,6 +539,7 @@ fn get_camp(r: &mut Reader<'_>) -> codec::Result<Camp> {
             missed_at,
             line,
             chief,
+            uuid,
         });
     }
     let n = r.len_prefix(6)?;
@@ -586,6 +602,19 @@ fn get_camp(r: &mut Reader<'_>) -> codec::Result<Camp> {
     if ended.is_some_and(|e| e.agent == 0 || e.generation == 0) {
         return bad("a band's end with no agent or generation".to_string());
     }
+    let mut lists: [Vec<boundary::Uuid>; 2] = Default::default();
+    for list in &mut lists {
+        let n = r.len_prefix(16)?;
+        list.reserve_exact(n);
+        for _ in 0..n {
+            list.push((r.u64()?, r.u64()?));
+        }
+    }
+    let [missing, left_behind] = lists;
+    let flags = r.u8()?;
+    if flags > 3 {
+        return bad(format!("camp flags {flags:#x}"));
+    }
     Ok(Camp {
         epoch,
         seen,
@@ -608,6 +637,10 @@ fn get_camp(r: &mut Reader<'_>) -> codec::Result<Camp> {
         mask,
         seat,
         ended,
+        missing,
+        left_behind,
+        gap: flags & 1 != 0,
+        cap_next: flags & 2 != 0,
     })
 }
 

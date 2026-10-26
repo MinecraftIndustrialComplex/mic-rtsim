@@ -35,6 +35,7 @@ use rtsim_kernel::handle::Handle;
 use rtsim_kernel::meta_pages::{PagedMap, PagedWheel, ResidentArena};
 use rtsim_kernel::renewal::LossCause;
 use rtsim_kernel::rng::{StreamKey, SystemId, fnv1a64};
+use rtsim_kernel::sites::{Bodies, SiteKind, SiteState, state_flags};
 use rtsim_knowledge::report::{fell, raid};
 use rtsim_knowledge::{
     ActorId, ActorKind, Place, Report, ReportKind, SEVERITY_UNIT, Temperament, Trait,
@@ -1077,6 +1078,12 @@ pub struct Conflict {
     /// (MZB-451). Derived: `take_commands` sorts it by handle and empties it, and a load rebuilds
     /// it from the flags. Not saved.
     pub(crate) march_due: Vec<Handle<Party>>,
+    /// The factions whose row in core's site ledger is behind (EQUILIBRIUM.md §2.3, S3,
+    /// MZB-1014): marked at each change of a camp's count, cap, members away, pressure, wait or
+    /// bodies, and at each FACTION_FOUND of a camp already known (the refresh that heals a lost
+    /// SITE_STATE). Not saved and never read by a decision: a restart that loses it changes
+    /// nothing but which rows are sent again (Note 2 of the M12a brief).
+    pub(crate) site_dirty: BTreeSet<u32>,
 }
 
 fn dist(a: (i64, i64), b: (i64, i64)) -> f64 {
@@ -1202,6 +1209,7 @@ impl Conflict {
             durable_held: 0,
             chief_states_held: BTreeMap::new(),
             march_due: Vec::new(),
+            site_dirty: BTreeSet::new(),
         }
     }
 
@@ -1265,6 +1273,98 @@ impl Conflict {
             c.site(pool, u64::from(self.factions[f as usize].cap), false, 0.0);
         }
         vec![c]
+    }
+
+    /// The camps' rows for core's site ledger (EQUILIBRIUM.md §2.3, S3, MZB-1014): one
+    /// [`SiteState`] per faction marked since the last take, as it stands now. Nothing while the
+    /// session's replay runs: the marks are kept and taken after its end, so a row is never one
+    /// the replay's state passes through.
+    pub fn take_site_states(&mut self) -> Vec<SiteState> {
+        if self.outbox.replaying() {
+            return Vec::new();
+        }
+        let dirty = std::mem::take(&mut self.site_dirty);
+        dirty
+            .into_iter()
+            .filter_map(|f| self.camp_site_state(f, self.now))
+            .collect()
+    }
+
+    /// Whether faction `f`'s ledger row is behind (tests).
+    pub fn camp_site_dirty(&self, f: u32) -> bool {
+        self.site_dirty.contains(&f)
+    }
+
+    /// Marks faction `f`'s ledger row as behind (MZB-1014).
+    pub(crate) fn site_touch(&mut self, f: u32) {
+        self.site_dirty.insert(f);
+    }
+
+    /// Faction `f`'s row for the site ledger at `at` (MZB-1014): K the camp's cap; its whole
+    /// members at home and its members away; the pressure now; while a renewal culture's arrival
+    /// is booked, the wait left (ticks); and the UUIDs of its member bodies at home, of the bodies
+    /// it no longer counts that may still stand in the camp (members away or dead with their
+    /// bodies there, and those a former engine life left behind), and of its members gone
+    /// missing. The chief and an heir's wait are not in the row (fork F13). A culture with no home
+    /// bodies has only its counts.
+    pub fn camp_site_state(&self, f: u32, at: Tick) -> Option<SiteState> {
+        if f as usize >= self.factions.len() {
+            return None;
+        }
+        let x = &self.factions[f as usize];
+        let c = self.culture(f);
+        let half_life = c
+            .renewal
+            .or(c.chief_renewal)
+            .map_or(0.0, |r| r.rule.half_life_days);
+        let day = (at.0 / TICKS_PER_DAY) as u32;
+        let count = self.pool_at(f, at).max(0.0).floor() as u32;
+        let mut flags = 0;
+        if count + x.away < x.cap {
+            flags |= state_flags::SHORT;
+        }
+        if count + x.away == 0 {
+            flags |= state_flags::EMPTY;
+        }
+        let mut p = 0.0;
+        let mut wait_left = 0;
+        let mut bodies = Bodies::default();
+        if let Some(camp) = x.camp.as_deref() {
+            p = camp.pressure.now(day, half_life);
+            if c.renewal.is_some()
+                && let Some(t) = camp.arrival_at
+            {
+                flags |= state_flags::WAITING;
+                wait_left = t.0.saturating_sub(at.0);
+            }
+            for s in camp
+                .slots
+                .iter()
+                .filter(|s| s.id != CHIEF_SLOT && s.uuid != (0, 0))
+            {
+                match s.state {
+                    SlotState::Body => bodies.home.push(s.uuid),
+                    SlotState::Left | SlotState::Dead => bodies.left_behind.push(s.uuid),
+                    SlotState::Owed | SlotState::Gone => {}
+                }
+            }
+            bodies.left_behind.extend(camp.left_behind.iter().copied());
+            bodies.missing = camp.missing.clone();
+        }
+        let u16_of = |n: u32| u16::try_from(n).unwrap_or(u16::MAX);
+        let mut s = SiteState {
+            key: x.key,
+            kind: SiteKind::Camp,
+            flags,
+            p,
+            k: u16_of(x.cap),
+            count: u16_of(count),
+            away: u16_of(x.away),
+            wait_left,
+            bodies,
+        };
+        s.bound();
+        Some(s)
     }
 
     pub fn next_due(&self) -> Option<Tick> {
@@ -1764,6 +1864,7 @@ impl Conflict {
     /// since it was last read (I2), so that every change of the pool moves a slot with it.
     fn pool_add(&mut self, f: u32, n: f64, at: Tick) {
         self.camp_sync(f, at);
+        self.site_touch(f);
         let v = self.pool_at(f, at);
         let x = &mut self.factions[f as usize];
         let room = f64::from(x.cap.saturating_sub(x.away));
@@ -3362,6 +3463,7 @@ impl Conflict {
         self.stats.parties[kind.index()] += 1;
         if kind.is_war() {
             self.factions[f as usize].away += start_units;
+            self.site_touch(f);
             self.camp_draw(f, p, start_units, at);
             if chief && chief_body {
                 self.camp_draw_chief(f, p);
@@ -6739,10 +6841,15 @@ impl Conflict {
                 let cname = self.cultures.get(ci).name().to_string();
                 let pos = self.canon(ff.dimension, ff.pos.0, ff.pos.2);
                 let known = self.by_key.contains_key(&ff.faction);
-                if let Some(f) = self.add_faction(w, ff.faction, &cname, pos, at)
-                    && !known
-                {
-                    self.camp_found(f, ff.home_bodies, ff.census, at);
+                if let Some(f) = self.add_faction(w, ff.faction, &cname, pos, at) {
+                    // The site ledger's row is the camp's only when the camp is new to this
+                    // engine life; a known camp's row is the one it sent, refreshed now
+                    // (MZB-1014).
+                    if known {
+                        self.site_touch(f);
+                    } else {
+                        self.camp_found(f, ff.home_bodies, ff.census, &ff.row, at);
+                    }
                 }
             }
             Obs::Signal(s) => {

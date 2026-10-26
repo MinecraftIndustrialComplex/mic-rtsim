@@ -133,9 +133,11 @@ public final class ConflictRecords {
 
     /** FACTION_FOUND (aux = flags). */
     public static final class FactionFound {
-        public static final int FACTION = 24, DIM = 32, STRUCTURE = 36, X = 40, Y = 44, Z = 48, SIZE = 56;
+        public static final int FACTION = 24, DIM = 32, STRUCTURE = 36, X = 40, Y = 44, Z = 48;
         /** M1: u16 bodies at home and u8 census flags at discovery (main's decoder ignores 52 to 55). */
         public static final int HOME_BODIES = 52, CENSUS = 54;
+        /** The site found tail (docs/boundary.md §2.5, {@code SiteLedger.writeTail}) runs from here to the end (MZB-1014). */
+        public static final int TAIL = 56;
         public static final int FLAG_LATE = 1;
         /** CENSUS flags: the chief is present; it holds its crystal. */
         public static final int CENSUS_CHIEF = 1, CENSUS_CRYSTAL = 2;
@@ -373,10 +375,13 @@ public final class ConflictRecords {
     /** CAMP_DEATH's killer kind (aux): BY_* above, and a body carried off (Carry On). */
     public static final int BY_TAKEN = 4;
 
-    /** CAMP_DEATH (aux = killer kind): once per body UUID, carried on a marker where it died. */
+    /**
+     * CAMP_DEATH (aux = killer kind): once per body UUID, carried on a marker where it died. The body's own UUID at 72
+     * (MZB-1014): a member the camp wrote off as missing is known by it whatever its tags say.
+     */
     public static final class CampDeath {
         public static final int FACTION = 24, BODY = 32, FLAGS = 36, SLOT = 40, GENERATION = 44, KILLER_MOST = 48,
-                KILLER_LEAST = 56, OP_ID = 64, SIZE = 72;
+                KILLER_LEAST = 56, OP_ID = 64, BODY_MOST = 72, BODY_LEAST = 80, SIZE = 88;
         public static final int FLAG_CHIEF = 1, FLAG_STRAY = 2;
     }
 

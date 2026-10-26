@@ -24,6 +24,7 @@
 //!   holds books nothing.
 
 use rtsim_kernel::renewal::{LossCause, Pressure};
+use rtsim_kernel::sites::FoundRow;
 
 use super::*;
 use crate::boundary::{
@@ -127,6 +128,10 @@ pub struct Slot {
     /// that one; a chief the books have since replaced (dead of age, succeeded by whatever asked
     /// for the chief first) is no one's death to answer for, whatever the order of the records.
     pub chief: ActorId,
+    /// The UUID of the slot's body, (0, 0) while unknown (MZB-1014): learned when a census finds
+    /// the body by its tags or the slot is ordered to adopt one, and handed over in the site
+    /// ledger's row, so a body whose tags are another engine life's is still this member's.
+    pub uuid: boundary::Uuid,
 }
 
 /// A generation a slot last retired, and whether at a death (its body, if found later, is
@@ -253,6 +258,22 @@ pub struct Camp {
     /// chief's death at its camp); pruned when the slot's generation is freed; booked a loss at the
     /// replay's end.
     pub ended: Option<Ended>,
+    /// Bodies gone missing (MZB-1014): written off by a census while the camp kept them, oldest
+    /// first, at most the camp's cap (the oldest dropped). One found again while the camp is short
+    /// is home again; at a full camp it is a stray left standing, and its death still counts.
+    pub missing: Vec<boundary::Uuid>,
+    /// Bodies of a former engine life the site ledger names as no longer the camp's (members that
+    /// were away or dead with their bodies still in the camp): removed when a census sees them,
+    /// dropped when one does not (MZB-1014).
+    pub left_behind: Vec<boundary::Uuid>,
+    /// The site ledger said the sim was reset since its row (GAP): a body the row expected and no
+    /// census finds is no one's loss (MZB-1014). Cleared by the first census that misses no member
+    /// and by the write-off it causes.
+    pub gap: bool,
+    /// The camp's next wait is the cap's: a loss no one caused and the books cannot place (a
+    /// reset's members away, a write-off under a gap; MZB-1014). Cleared by the wait it sets, and
+    /// when the camp is no longer short.
+    pub cap_next: bool,
 }
 
 impl Camp {
@@ -353,6 +374,7 @@ impl Camp {
             missed_at: Tick::ZERO,
             line: None,
             chief,
+            uuid: (0, 0),
         });
     }
 
@@ -450,6 +472,28 @@ impl Camp {
             + self.answered.capacity() * std::mem::size_of::<Answered>()
             + self.traded.capacity() * std::mem::size_of::<(u64, u64)>()
             + self.owed_tribute.capacity() * std::mem::size_of::<(u32, i64)>()
+            + (self.missing.capacity() + self.left_behind.capacity())
+                * std::mem::size_of::<boundary::Uuid>()
+    }
+
+    /// A body written off joins the missing, the oldest dropped above `cap` (MZB-1014).
+    fn go_missing(&mut self, uuid: boundary::Uuid, cap: u32) {
+        if uuid == (0, 0) {
+            return;
+        }
+        self.missing.retain(|u| *u != uuid);
+        self.missing.push(uuid);
+        let k = cap.max(1) as usize;
+        if self.missing.len() > k {
+            self.missing.drain(..self.missing.len() - k);
+        }
+    }
+
+    /// Takes `uuid` out of the missing; whether it was there.
+    fn found_missing(&mut self, uuid: boundary::Uuid) -> bool {
+        let before = self.missing.len();
+        self.missing.retain(|u| *u != uuid);
+        self.missing.len() != before
     }
 }
 
@@ -629,21 +673,41 @@ impl Conflict {
     /// sets the faction's crystal (MZB-257). A renewal culture's camp found with no bodies starts
     /// at the cap wait, as if farmed to it, since no site ledger says otherwise (EQUILIBRIUM item 6),
     /// and books its arrival; one found with its member books nothing.
-    pub(super) fn camp_found(&mut self, f: u32, bodies: u16, census: u8, at: Tick) {
+    ///
+    /// `row` is the site ledger's (the found tail, MZB-1014). With one, the camp goes on where the
+    /// row left it ([`Conflict::camp_restore`]): its cap is the row's K and its pool the row's
+    /// count, not what this census saw, so a member lost before a reset is not lost for good. A
+    /// culture with no home bodies keeps only the count (fork F14).
+    pub(super) fn camp_found(&mut self, f: u32, bodies: u16, census: u8, row: &FoundRow, at: Tick) {
+        self.site_touch(f);
+        let ceiling = self.culture(f).def.pool_cap;
         if !self.culture(f).def.camp_bodies {
+            // The row's count, regrowing from now: the gap is not backdated (fork F14).
+            if row.has_row() {
+                let x = &mut self.factions[f as usize];
+                x.pool = f64::from(row.count).min(f64::from(x.cap));
+                x.pool_at = at;
+            }
             return;
         }
-        let ceiling = self.culture(f).def.pool_cap;
-        let n = u32::from(bodies).min(ceiling);
+        let (cap, n) = if row.has_row() {
+            let cap = u32::from(row.k).max(1).min(ceiling);
+            (cap, u32::from(row.count).min(cap))
+        } else {
+            let n = u32::from(bodies).min(ceiling);
+            (n.max(1).min(ceiling), n)
+        };
         let x = &mut self.factions[f as usize];
-        x.cap = n.max(1).min(ceiling);
+        x.cap = cap;
         x.pool = f64::from(n);
         x.pool_at = at;
         if u32::from(census) & CENSUS_CHIEF != 0 {
             x.crystal = u32::from(census) & CENSUS_CRYSTAL != 0;
         }
         self.camp_create(f, at);
-        if let Some(r) = self.culture(f).renewal
+        if row.has_row() {
+            self.camp_restore(f, row, at);
+        } else if let Some(r) = self.culture(f).renewal
             && bodies == 0
         {
             let day = (at.0 / TICKS_PER_DAY) as u32;
@@ -665,6 +729,59 @@ impl Conflict {
         self.plan_arrival(f, at);
     }
 
+    /// The site ledger's row for a camp new to this engine life (EQUILIBRIUM.md §2.3, MZB-1014),
+    /// on the ledger `camp_create` made from the row's count:
+    ///
+    /// - the pressure is the row's, aged by the game ticks elapsed since its stamp;
+    /// - the row's home bodies are expected at home: the first owed slots become bodies with their
+    ///   UUIDs, which the census finds by UUID whatever their tags say (a former life's, or none);
+    /// - its bodies left behind and gone missing are the camp's again, and its GAP is kept;
+    /// - its members away were lost with the old engine (puppets, parties): no one's loss, so the
+    ///   next wait is the cap's;
+    /// - a wait it had booked runs on to the same end, less the ticks elapsed.
+    ///
+    /// The chief's slot and an heir's wait are not in the row (fork F13): `camp_found` treats the
+    /// chief as it does with no row.
+    fn camp_restore(&mut self, f: u32, row: &FoundRow, at: Tick) {
+        let c = self.culture(f);
+        let half_life = c.renewal.or(c.chief_renewal).map(|r| r.rule.half_life_days);
+        let renewal = c.renewal.is_some();
+        let x = &self.factions[f as usize];
+        let cap = x.cap;
+        let short = (self.pool_at(f, at).floor() as u32) + x.away < cap;
+        let day = (at.0 / TICKS_PER_DAY) as u32;
+        let camp = self.camp_mut(f).expect("created");
+        if let Some(h) = half_life {
+            camp.pressure = Pressure::handed_over(row.p, row.elapsed, day, h);
+        }
+        let mut home = row.bodies.home.iter().filter(|u| **u != (0, 0));
+        for s in camp
+            .slots
+            .iter_mut()
+            .filter(|s| s.id != CHIEF_SLOT && s.state == SlotState::Owed)
+        {
+            let Some(&u) = home.next() else {
+                break;
+            };
+            s.state = SlotState::Body;
+            s.uuid = u;
+            s.misses = 0;
+        }
+        camp.left_behind = row.bodies.left_behind.clone();
+        for u in &row.bodies.missing {
+            camp.go_missing(*u, cap);
+        }
+        camp.gap = row.gap();
+        camp.cap_next = row.away > 0;
+        if renewal && short && row.waiting() {
+            let t = at + row.wait_now_ticks().max(1);
+            camp.arrival = camp.arrival.wrapping_add(1);
+            camp.arrival_at = Some(t);
+            let stamp = camp.arrival;
+            self.schedule(t, Ev::Arrival { faction: f, stamp });
+        }
+    }
+
     /// A camp found without its chief waits for an heir as a camp farmed to the cap does
     /// (MZB-405; EQUILIBRIUM.md §2.3): the wait is the cap's, from now.
     fn found_empty_heir(&mut self, f: u32, at: Tick) {
@@ -675,6 +792,7 @@ impl Conflict {
         let pressure = Pressure::at_cap(&r.rule, day);
         let due = at + r.rule.delay_ticks(pressure, day).max(1);
         self.camp_mut(f).expect("a ledger").pressure = pressure;
+        self.site_touch(f);
         self.set_heir(f, due, true, at);
     }
 
@@ -770,6 +888,7 @@ impl Conflict {
                 missed_at: Tick::ZERO,
                 line: None,
                 chief,
+                uuid: (0, 0),
             },
         );
         id
@@ -797,6 +916,7 @@ impl Conflict {
         if whole <= have {
             return;
         }
+        self.site_touch(f);
         let body = self.home_body(f);
         for k in have + 1..=whole {
             let t = self.whole_at(f, k, at);
@@ -808,6 +928,7 @@ impl Conflict {
     /// room they came back to is theirs (MOWZIE.md ledger 6).
     pub(super) fn pool_return(&mut self, f: u32, n: u32, at: Tick) {
         self.camp_sync(f, at);
+        self.site_touch(f);
         let v = self.pool_at(f, at);
         let x = &mut self.factions[f as usize];
         x.away = x.away.saturating_sub(n);
@@ -818,6 +939,7 @@ impl Conflict {
 
     /// Moves the pool by `n` with no regard to the ledger (the caller moves its slots).
     fn pool_shift(&mut self, f: u32, n: f64, at: Tick) {
+        self.site_touch(f);
         let v = self.pool_at(f, at);
         let x = &mut self.factions[f as usize];
         let room = f64::from(x.cap.saturating_sub(x.away));
@@ -908,12 +1030,8 @@ impl Conflict {
     pub(super) fn renewal_cause(&self, f: u32, by: u32) -> LossCause {
         let c = self.culture(f);
         let boss = c.renewal.or(c.chief_renewal).is_some_and(|r| r.boss);
-        match by {
-            boundary::BY_PLAYER | boundary::BY_TAKEN => LossCause::Player,
-            boundary::BY_MOB => LossCause::Predator,
-            _ if boss => LossCause::Player,
-            _ => LossCause::Other,
-        }
+        // The kernel's one table of the credit codes (MZB-1006): the `BY_*` codes are its codes.
+        LossCause::from_credit(by, boss)
     }
 
     /// `n` members of a renewal culture's camp were lost at `at` from `cause`: only a player's loss
@@ -935,6 +1053,7 @@ impl Conflict {
         camp.pressure
             .bump(day, n as f32 / cap as f32, r.rule.half_life_days);
         self.stats.renewal_losses += u64::from(n);
+        self.site_touch(f);
     }
 
     /// Books the wait for a renewal culture's next member (MZB-255), whether the camp is in or
@@ -955,17 +1074,27 @@ impl Conflict {
         };
         match (short, camp.arrival_at) {
             (true, None) => {
-                let t = at + r.rule.delay_ticks(camp.pressure, day).max(1);
+                // A loss no one caused and the books cannot place waits the cap (MZB-1014).
+                let wait = if std::mem::take(&mut camp.cap_next) {
+                    r.rule.cap_ticks()
+                } else {
+                    r.rule.delay_ticks(camp.pressure, day)
+                };
+                let t = at + wait.max(1);
                 camp.arrival = camp.arrival.wrapping_add(1);
                 camp.arrival_at = Some(t);
                 let stamp = camp.arrival;
                 self.schedule(t, Ev::Arrival { faction: f, stamp });
+                self.site_touch(f);
             }
             (false, Some(_)) => {
                 camp.arrival = camp.arrival.wrapping_add(1);
                 camp.arrival_at = None;
+                camp.cap_next = false;
+                self.site_touch(f);
             }
-            _ => {}
+            (false, None) => camp.cap_next = false,
+            (true, Some(_)) => {}
         }
     }
 
@@ -1468,6 +1597,7 @@ impl Conflict {
         if self.camp(f).is_some_and(|k| k.epoch == c.epoch) {
             return;
         }
+        self.site_touch(f);
         self.stats.camp_censuses += 1;
         self.camp_sync(f, at);
         let mut camp = self.factions[f as usize].camp.take().expect("a ledger");
@@ -1541,6 +1671,7 @@ impl Conflict {
         // census names no distances), else the first; the others are removed by UUID.
         let mut held: BTreeMap<(u32, u32), &CensusBody> = BTreeMap::new();
         let mut unmatched: Vec<&CensusBody> = Vec::new();
+        let mut removed: BTreeSet<Uuid> = BTreeSet::new();
         for b in &c.bodies {
             if b.flags & BODY_STRAY != 0 || b.generation == 0 {
                 unmatched.push(b);
@@ -1553,14 +1684,37 @@ impl Conflict {
                 }
                 Some(k) if k.flags & BODY_ELSEWHERE != 0 && b.flags & BODY_ELSEWHERE == 0 => {
                     lines.push(by_uuid(k, ACTION_REMOVE));
+                    removed.insert(k.uuid);
                     held.insert(key, b);
                 }
-                Some(_) => lines.push(by_uuid(b, ACTION_REMOVE)),
+                Some(_) => {
+                    lines.push(by_uuid(b, ACTION_REMOVE));
+                    removed.insert(b.uuid);
+                }
             }
         }
         // Each slot against its body.
         let ids: Vec<(u32, u32)> = camp.slots.iter().map(|s| (s.id, s.generation)).collect();
         let mut matched: BTreeSet<(u32, u32)> = BTreeSet::new();
+        // A body the books expect by its UUID (MZB-1014): a home body the site ledger handed over,
+        // whose tags are a former engine life's or were stripped while rtsim was out. Only a body
+        // no slot holds by its tags, and not one removed above; each is claimed once.
+        let slot_keys: BTreeSet<(u32, u32)> = ids.iter().copied().collect();
+        let mut claimed: BTreeSet<Uuid> = BTreeSet::new();
+        let by_expected = |u: Uuid, claimed: &BTreeSet<Uuid>| {
+            c.bodies.iter().find(|b| {
+                b.uuid == u
+                    && !claimed.contains(&u)
+                    && !removed.contains(&u)
+                    && (b.flags & BODY_STRAY != 0
+                        || b.generation == 0
+                        || !slot_keys.contains(&(b.slot, b.generation)))
+            })
+        };
+        // The written-off members' UUIDs, and whether the site ledger's gap makes them no one's
+        // loss (MZB-1014).
+        let mut lost: Vec<Uuid> = Vec::new();
+        let gap = camp.gap;
         // Whether a chief body the books keep is among the bodies, and whether the crystal is on
         // it (MZB-269, amended at review C: the body's own bit, not the camp's byte).
         let mut kept_chief = false;
@@ -1577,6 +1731,25 @@ impl Conflict {
                 matched.insert((id, generation));
             }
             let s = &mut camp.slots[i];
+            if let Some(b) = held.get(&(id, generation)) {
+                s.uuid = b.uuid;
+                claimed.insert(b.uuid);
+            }
+            // Not found by its tags: a member body found by its UUID is home, and is tagged this
+            // slot's again (ADOPT, whose answer books nothing for a slot with its body).
+            let expected =
+                (!found && id != CHIEF_SLOT && s.state == SlotState::Body && s.uuid != (0, 0))
+                    .then(|| by_expected(s.uuid, &claimed))
+                    .flatten();
+            if let Some(b) = expected {
+                claimed.insert(b.uuid);
+                if b.body != 0 {
+                    s.body = b.body;
+                }
+                s.misses = 0;
+                lines.push(line(s, ACTION_ADOPT, b.uuid.0, b.uuid.1));
+                continue;
+            }
             match s.state {
                 SlotState::Body => {
                     if found {
@@ -1599,7 +1772,9 @@ impl Conflict {
                                 continue;
                             }
                             // The member died unseen: the pool loses it and its generation is
-                            // retired (not at a death: a body found later is a stray).
+                            // retired (not at a death: a body found later is a stray). Its UUID
+                            // goes missing, so its body is known if it turns up (MZB-1014).
+                            lost.push(s.uuid);
                             camp.free(i, false);
                             self.pool_shift(f, -1.0, at);
                             self.stats.camp_written_off += 1;
@@ -1662,14 +1837,40 @@ impl Conflict {
         // a death is removed; the rest fill slots owed, then new slots while the pool and the
         // members away are under the cap, and are removed above it (ledger 6). A chief body of a
         // culture that keeps one is the chief's alone (MZB-402), never a warrior's.
+        for u in lost {
+            camp.go_missing(u, cap);
+        }
+        // A gap's write-off is no one's loss and waits the cap; the gap ends with it, or with the
+        // first census that misses no member (MZB-1014, fork F5).
+        let loss = if gap && written_off > 0 {
+            camp.cap_next = true;
+            LossCause::Other
+        } else {
+            LossCause::Player
+        };
+        if gap && (written_off > 0 || camp.members().all(|s| s.misses == 0)) {
+            camp.gap = false;
+        }
         let mut rest: Vec<&CensusBody> = Vec::new();
         let mut chief_rest: Vec<&CensusBody> = Vec::new();
+        let mut left_seen: BTreeSet<Uuid> = BTreeSet::new();
         for b in &c.bodies {
             let key = (b.slot, b.generation);
             let is_stray = b.flags & BODY_STRAY != 0 || b.generation == 0;
+            if claimed.contains(&b.uuid) && !removed.contains(&b.uuid) {
+                continue;
+            }
             if !is_stray
                 && (matched.contains(&key) || held.get(&key).is_none_or(|k| k.uuid != b.uuid))
             {
+                continue;
+            }
+            // A body a former engine life left behind (its member away or dead then): removed on
+            // sight, as a dead slot's body is (MZB-1014).
+            if camp.left_behind.contains(&b.uuid) {
+                if left_seen.insert(b.uuid) {
+                    lines.push(by_uuid(b, ACTION_REMOVE));
+                }
                 continue;
             }
             if !is_stray
@@ -1734,6 +1935,7 @@ impl Conflict {
                 if b.body != 0 {
                     camp.slots[i].body = b.body;
                 }
+                camp.slots[i].uuid = b.uuid;
                 kept_chief |= b.flags & BODY_CHIEF != 0;
                 lines.push(line(&camp.slots[i], ACTION_ADOPT, b.uuid.0, b.uuid.1));
                 continue;
@@ -1786,6 +1988,9 @@ impl Conflict {
                 if b.body != 0 {
                     camp.slots[i].body = b.body;
                 }
+                camp.slots[i].uuid = b.uuid;
+                // A member gone missing is home again (MZB-1014).
+                camp.found_missing(b.uuid);
                 kept_chief |= b.flags & BODY_CHIEF != 0;
                 kept_crystal |= b.flags & (BODY_CHIEF | BODY_CRYSTAL) == BODY_CHIEF | BODY_CRYSTAL;
                 lines.push(line(&camp.slots[i], ACTION_ADOPT, b.uuid.0, b.uuid.1));
@@ -1803,11 +2008,18 @@ impl Conflict {
                 );
                 camp = self.factions[f as usize].camp.take().expect("put back");
                 let i = camp.slots.binary_search_by_key(&id, |s| s.id).expect("new");
+                camp.slots[i].uuid = b.uuid;
+                camp.found_missing(b.uuid);
                 lines.push(line(&camp.slots[i], ACTION_ADOPT, b.uuid.0, b.uuid.1));
+            } else if camp.missing.contains(&b.uuid) {
+                // A member gone missing, back at a full camp: a stray left standing, whose death
+                // still counts (MZB-1014, fork F3).
             } else {
                 lines.push(by_uuid(b, ACTION_REMOVE));
             }
         }
+        // A body left behind that this census did not see is no longer looked for.
+        camp.left_behind.retain(|u| left_seen.contains(u));
         // Slots still owed: a spawn line each. The chief's goes after its memory (MZB-421).
         for (id, generation) in owed.into_iter().chain(chief_owed) {
             let i = camp.index(id, generation).expect("owed");
@@ -1845,8 +2057,9 @@ impl Conflict {
             }
         }
         // A body missing from the camp is a player's loss (EQUILIBRIUM item 11; rtsim cannot tell
-        // an absence, MZB-260), booked once the camp is put back and before the wait is planned.
-        self.renewal_bump(f, written_off, LossCause::Player, at);
+        // an absence, MZB-260), booked once the camp is put back and before the wait is planned;
+        // under the site ledger's gap it is no one's, and the wait is the cap's (MZB-1014).
+        self.renewal_bump(f, written_off, loss, at);
         // The chief nobody saw die, and the camp found without its Umvuthi (MZB-411, MZB-405).
         if chief_written_off {
             self.chief_lost(f, LossCause::Player, at);
@@ -2231,6 +2444,7 @@ impl Conflict {
         // Every change of the slots follows a sync, as the lowest free number a new slot takes
         // would else depend on whether an audit (or any read) synced before a freed one.
         self.camp_sync(f, at);
+        self.site_touch(f);
         let mut camp = self.factions[f as usize].camp.take().expect("a ledger");
         // The answers a durable world save covers are forgotten as the camp next books one: a
         // camp that books many is the one that would grow (MZB-177).
@@ -2505,12 +2719,17 @@ impl Conflict {
     /// A camp body died or was carried off (MOWZIE.md §4.9): the death of a body whose slot and
     /// generation the books hold kills that member wherever the books have it. At home the pool
     /// loses one; away its party loses that unit in any phase (a party left with no units ends
-    /// through its own `home`); dead, left, the slot is freed. A stray's death books nothing.
+    /// through its own `home`); dead, left, the slot is freed. A stray's death books nothing,
+    /// unless it is a member the camp wrote off as missing ([`Conflict::stray_death`]).
     pub(super) fn camp_death(&mut self, w: &mut World, d: &CampDeath, at: Tick) {
         let Some(&f) = self.by_key.get(&d.faction) else {
             return;
         };
-        if d.flags & DEATH_STRAY != 0 || d.generation == 0 || self.camp(f).is_none() {
+        if self.camp(f).is_none() {
+            return;
+        }
+        if d.flags & DEATH_STRAY != 0 || d.generation == 0 {
+            self.stray_death(f, d, at);
             return;
         }
         self.camp_sync(f, at);
@@ -2518,8 +2737,11 @@ impl Conflict {
             self.seat_before_death(f, d.generation);
         }
         let Some(i) = self.camp(f).and_then(|c| c.index(d.slot, d.generation)) else {
+            // A generation the books retired: a member written off keeps its tags.
+            self.stray_death(f, d, at);
             return;
         };
+        self.site_touch(f);
         self.stats.camp_deaths += 1;
         let (state, party, body_of) = {
             let s = &self.camp(f).expect("a ledger").slots[i];
@@ -2564,6 +2786,17 @@ impl Conflict {
             }
         }
         self.unblock(f, at);
+    }
+
+    /// The death of a body no slot holds (MZB-1014): a member the camp wrote off as missing still
+    /// counts, a player's loss whatever killed it (§2.3, fork F4: so a lured body cannot be
+    /// farmed away from its camp), and is missing no longer. Any other stray's books nothing.
+    fn stray_death(&mut self, f: u32, d: &CampDeath, at: Tick) {
+        if d.uuid == (0, 0) || !self.camp_mut(f).is_some_and(|c| c.found_missing(d.uuid)) {
+            return;
+        }
+        self.site_touch(f);
+        self.renewal_bump(f, 1, LossCause::Player, at);
     }
 
     /// The body of a chief slot died or was carried off (CAMP_DEATH on `CHIEF_SLOT`, MZB-406): at
@@ -2943,6 +3176,7 @@ impl Conflict {
         }
         let x = &mut self.factions[f as usize];
         x.away = x.away.saturating_sub(1);
+        self.site_touch(f);
         self.stats.casualties += 1;
         let x = &self.parties[p];
         if x.alive() > 0 {
