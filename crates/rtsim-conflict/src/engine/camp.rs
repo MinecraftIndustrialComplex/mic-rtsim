@@ -1832,8 +1832,18 @@ impl Conflict {
         });
         // The grove's parked stack goes again (MZB-760): to the chest it went to first, which its
         // placing keeps, and not to the one named now. Only that chest's chunk carries the record
-        // that says it is already there.
-        self.unpark(f);
+        // that says it is already there. Not on its own chest reported full (MZB-764): the plugin
+        // looks at its chest again after every answer, and a chunk that is gone reports it full,
+        // so the stack would go at each report, answered NOT_LOADED each time. It goes when the
+        // chest is reported with room, or at CAMP_OUT.
+        let own_full = h.free == 0
+            && self
+                .placing
+                .iter()
+                .any(|(g, p)| *g == f && p.dimension == h.dimension && p.pos == h.pos);
+        if !own_full {
+            self.unpark(f);
+        }
         self.place_tribute(w, f, at);
     }
 
