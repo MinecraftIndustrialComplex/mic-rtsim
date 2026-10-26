@@ -18,6 +18,7 @@
     "PlayerListAccessor",
     "MerchantOfferAccessor",
     "MerchantResultSlotMixin",
+    "MinecraftServerSaveMixin",
     "MobAccessor",
     "RegionFileStorageAccessor",
     "ServerLevelAccessor",

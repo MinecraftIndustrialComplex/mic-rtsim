@@ -297,6 +297,16 @@ public final class RtsimSession {
     }
 
     /**
+     * As {@link #carryOnEntity}, and the journal's next file waits for the holder's entity chunk, found where it
+     * stands at the save (a resident, RP-212; camps use {@link #carryOnCampHolder}).
+     */
+    public void carryOnHolder(Entity holder, java.util.List<byte[]> records, long lastSeq) {
+        carry(holder, records, lastSeq);
+        if (holder.level() instanceof ServerLevel level)
+            journalData.chunks().dependsOnHolder(level, holder);
+    }
+
+    /**
      * The tag of a {@code minecraft:marker} that only holds records (MOWZIE.md §4.9): it is discarded once
      * the engine has acknowledged what it holds. Saved in the marker's vanilla {@code Tags}, so a world
      * without rtsim keeps an inert marker (no tick, never sent to a client).
@@ -1085,6 +1095,29 @@ public final class RtsimSession {
             if (pendingOp(r) == opId)
                 return true;
         return false;
+    }
+
+    /**
+     * The op ids the {@code mic_rtsim:pending} records in a chunk's saved data carry (the tag {@code ChunkStorage.read}
+     * gives for a chunk not loaded), when they are of this engine life; empty otherwise or when unreadable.
+     */
+    public static java.util.Set<Long> opsCarriedInChunkTag(net.minecraft.nbt.CompoundTag chunkTag, net.minecraft.core.HolderLookup.Provider registries) {
+        RtsimSession s = current();
+        if (s == null || chunkTag == null)
+            return java.util.Set.of();
+        net.minecraft.nbt.CompoundTag attachments = chunkTag.getCompound(net.neoforged.neoforge.attachment.AttachmentHolder.ATTACHMENTS_NBT_KEY);
+        net.minecraft.resources.ResourceLocation key = net.neoforged.neoforge.registries.NeoForgeRegistries.ATTACHMENT_TYPES.getKey(RtsimAttachments.PENDING.get());
+        if (key == null || !attachments.contains(key.toString()))
+            return java.util.Set.of();
+        com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords p = com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords.CODEC
+                .parse(registries.createSerializationContext(net.minecraft.nbt.NbtOps.INSTANCE), attachments.get(key.toString()))
+                .result().orElse(null);
+        if (p == null || p.isEmpty() || p.life() != s.engineLife)
+            return java.util.Set.of();
+        java.util.Set<Long> ops = new java.util.HashSet<>();
+        for (byte[] r : p.records())
+            ops.add(pendingOp(r));
+        return ops;
     }
 
     void carryInChunk(net.minecraft.world.level.chunk.LevelChunk chunk, ByteBuffer commandResult) {

@@ -469,6 +469,10 @@ pub struct Dragons {
     /// Lairs' chests the plugin reported this session (LAIR_CHEST): not saved, cleared at a
     /// session start, since a chest can be broken while nobody watches.
     pub(crate) chests: BTreeMap<LairId, Chest>,
+    /// Placing stacks whose chest's chunk was not loaded when Java read them (NOT_LOADED): kept
+    /// placing under their op ids and not sent again until their lair reports a chest (RP-210).
+    /// Not saved, cleared at a session start: a new session sends them again.
+    pub(crate) parked: BTreeSet<u64>,
     /// The far view's marks (`far.rs`): not saved, per session.
     pub(crate) far: crate::far::FarFeed,
     /// The oil nests (OG-9e): rows in pages of their own (0x4419), the rest in the meta page.
@@ -621,6 +625,7 @@ impl Dragons {
             tribute_stamp: 0,
             placing: BTreeMap::new(),
             chests: BTreeMap::new(),
+            parked: BTreeSet::new(),
             far: crate::far::FarFeed::default(),
             nests: Nests::default(),
         }
@@ -3332,6 +3337,7 @@ impl Dragons {
         }
         self.outbox.begin_replay();
         self.chests.clear();
+        self.parked.clear();
     }
 
     /// The session's replay has caught up (docs/replay-gate.md §5.6): puppets never outlive a
@@ -3568,6 +3574,11 @@ impl Dragons {
                         pos: [c.pos.0, c.pos.1, c.pos.2],
                     };
                     self.chests.insert(l, chest);
+                    // Its parked stacks go again, each to the chest it was sent to: only that
+                    // chest's chunk carries the record that says it is already there.
+                    let placing = &self.placing;
+                    self.parked
+                        .retain(|op| placing.get(op).is_some_and(|p| p.lair != l));
                     self.place_tribute(l);
                 }
             }
@@ -3822,6 +3833,14 @@ impl Dragons {
         self.placing.iter().map(|(&op, p)| (op, p))
     }
 
+    /// The placing stacks to send: every one but those parked until their lair reports a chest.
+    pub fn placing_to_send(&self) -> impl Iterator<Item = (u64, &Placing)> + '_ {
+        self.placing
+            .iter()
+            .filter(|(op, _)| !self.parked.contains(op))
+            .map(|(&op, p)| (op, p))
+    }
+
     /// Lair `l`'s chest, if the plugin reported one this session.
     pub fn chest(&self, l: LairId) -> Option<Chest> {
         self.chests.get(&l).copied()
@@ -3833,6 +3852,7 @@ impl Dragons {
         let Some(p) = self.placing.remove(&op) else {
             return false;
         };
+        self.parked.remove(&op);
         if let Some(l) = self.lairs.get_mut(p.lair) {
             l.placed += p.count;
         }
@@ -3841,15 +3861,36 @@ impl Dragons {
     }
 
     /// The plugin could not put a stack in its chest (FAILED): the coin waits as unplaced, and
-    /// the chest is forgotten until the plugin reports one again.
+    /// the chest is forgotten until the plugin reports one again. Java answers FAILED with
+    /// nothing placed: before it looks at the chest (no such level, an unknown item, a count
+    /// below 1), or with the chest's chunk loaded and not carrying the op (no chest there, or no
+    /// room). The stack was never put there, so the coin may go again under a new op id.
     pub fn tribute_failed(&mut self, op: u64) -> bool {
         let Some(p) = self.placing.remove(&op) else {
             return false;
         };
+        self.parked.remove(&op);
         if let Some(l) = self.lairs.get_mut(p.lair) {
             *l.unplaced.entry(p.item).or_default() += p.count;
         }
         self.chests.remove(&p.lair);
+        true
+    }
+
+    /// The chest's chunk was not loaded when Java read the stack (NOT_LOADED, RP-210). The stack
+    /// may already be in that chest (the chunk written ahead of the journal, its APPLIED record
+    /// carried in it and copied when it loads), so it stays placing under its op id, parked
+    /// until its lair reports a chest, and goes again only to the same chest. The lair's chest
+    /// is forgotten if it is still this stack's, so new coin waits for the next report; a chest
+    /// the lair reported since, elsewhere, is kept.
+    pub fn tribute_unloaded(&mut self, op: u64) -> bool {
+        let Some(p) = self.placing.get(&op) else {
+            return false;
+        };
+        if self.chests.get(&p.lair) == Some(&p.chest) {
+            self.chests.remove(&p.lair);
+        }
+        self.parked.insert(op);
         true
     }
 
