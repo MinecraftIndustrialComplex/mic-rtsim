@@ -12727,6 +12727,11 @@ mod conflict {
             (e, j)
         };
 
+        // The transfers Java has been given by now: the first stack, unless a crash made a new
+        // Java. Counted, not read off the set of ops, which does not show a stack sent again
+        // under its own op id (MZB-766).
+        let sends = tribute_sends(&j);
+        assert_eq!(sends, if crash { 0 } else { 1 });
         j.modules(MODULES);
         j.idle();
         j.idle();
@@ -12735,7 +12740,13 @@ mod conflict {
         camp_in(&mut j);
         if answer == Answer::NotLoaded {
             // Parked (RP-210, MZB-760), as a live NOT_LOADED is: still in flight under its op
-            // id, its goods not back in the stock, and nothing sent while no chest is named.
+            // id, its goods not back in the stock, and nothing sent while no chest is named, not
+            // even the same stack again under its op.
+            assert_eq!(
+                tribute_sends(&j),
+                sends,
+                "a parked stack is not sent before its chest is named again, under any op"
+            );
             assert_eq!(
                 owed_tribute(&e),
                 (567, 1, 1),
