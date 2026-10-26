@@ -960,7 +960,8 @@ OwedHunt, with its row above, and new push sites for two kinds that had rows:
   indexes from the camp's count, and books it as that session did (RP-134). A NOT_LOADED answer
   (Java did not look in the chest's chunk) parks the stack and books nothing (MZB-760, as the
   dragons', RP-210): it stays in flight under its op id, its goods out of the stock, and is not
-  written again until the grove's chest is named (a HAVEN_CHEST with room) or the camp goes out.
+  written again until a HAVEN_CHEST arrives (any, but one naming the stack's own chest with no
+  free slot: MZB-764) or the camp goes out.
   A replayed NOT_LOADED parks the stack the pages hold again, so the session start sends nothing
   for it; one for a stack no placing holds books nothing (MZB-761). The census then
   decides the next index, not that stack again from a stock that has moved. A stack in flight at

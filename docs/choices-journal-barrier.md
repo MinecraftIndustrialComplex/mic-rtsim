@@ -692,7 +692,10 @@ Ben's decision, through the SEC-1 lead, on the question U-c's brief opened: shou
   (`dragons::after_core`, `answered_again`).
   - APPLIED or DUPLICATE_OP: the stack leaves `placing` and its coin counts as placed
     (`tribute_placed`).
-  - FAILED: the coin goes back to its lair's unplaced coin (`tribute_failed`).
+  - FAILED: the coin goes back to its lair's unplaced coin (`tribute_failed`). The chest is
+    forgotten if it is the stack's own (MZB-762). Whether the coin goes again at once, as a new stack
+    to a chest the lair reported since, depends on the switch (MZB-767): the dragons running, it does;
+    off, no stack is made and no op id is drawn.
   - Off, the dragons' pager is marked `save_due`, so the pages hold the change at the next save.
   - MSC55 in docs/choices-money-sink.md is amended.
 - *Why.* The core takes the stack out of the outbox at its answer whatever the switch, and Java forgets
@@ -702,7 +705,11 @@ Ben's decision, through the SEC-1 lead, on the question U-c's brief opened: shou
   second time. MSC55's premise, that Java would answer DUPLICATE_OP, no longer held.
   - Applied at once, not kept for the switch-on (RP-292): neither `tribute_placed` nor
     `tribute_failed` reads the clock (a failed stack's next op comes from the lair's own counter,
-    MSC47), and no decision reads a lair's `placed`.
+    MSC47), and no decision reads a lair's `placed`. Since MZB-762 a FAILED that keeps a chest also
+    places the failed coin again, which is a decision (it draws op ids and makes stacks), so it runs
+    only while the dragons run (MZB-767): "no decision" holds for the answer taken off, and the
+    switch on, which forgets the chests (`begin_replay`), would otherwise find stacks made for a
+    chest it no longer holds.
   - A restart needs nothing at `begin_replay`. A stack in `placing` whose answer the journal holds is
     answered by the replay. One written again before that answer is replayed is refused DUPLICATE_OP
     by the journal it is still in.

@@ -2077,8 +2077,11 @@ impl Conflict {
     }
 
     /// A replayed FAILED for a stack no placing holds (RP-134): the camp's count passes the stack
-    /// and the chest is forgotten, as the session that went on did. The goods stay in the stock,
-    /// which the replay never took them from, and the tribute is still owed.
+    /// and the chest is forgotten, whatever chest it is. The live session forgets it only if it is
+    /// the stack's own (MZB-762), so a chest named since can differ here; harmless (MZB-768): the
+    /// replay decides nothing, and the plugin names its chest again after a restart or a
+    /// switch-on (`GroveChests` starts with nothing sent), before any stack goes. The goods stay in
+    /// the stock, which the replay never took them from, and the tribute is still owed.
     fn replayed_failed(&mut self, op: u64) -> bool {
         let Some((f, n, _, _)) = self.replayed_stack(op) else {
             return false;

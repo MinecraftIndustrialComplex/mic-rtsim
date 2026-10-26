@@ -12319,9 +12319,11 @@ mod conflict {
     /// MZB-763 (review P2-2): `begin_replay` clears `parked`, because parking is a session's: its
     /// answer, NOT_LOADED, was the chunk's state then. A stack parked live and a session begun in
     /// the same process (the conflict switched off and on: the reset runs `begin_replay`) goes
-    /// again at once, to its own chest, with no chest named: the plugin names one only on a change,
-    /// and a restart's new engine starts with nothing parked, so the clear is what makes a reset
-    /// like it. Without the clear the stack waits parked for a chest the plugin never names again.
+    /// again at once, to its own chest, with no chest named. A restart's new engine starts with
+    /// nothing parked, so the clear is what makes a reset like it. Without the clear the stack
+    /// waits parked until the plugin names a chest: it does at its first scan with the camp in
+    /// (`GroveChests.endOfTick` clears what it sent while the conflict is off), so later, and
+    /// never if no chest has room.
     #[test]
     fn a_groves_parked_stack_is_sent_again_when_the_conflict_is_switched_off_and_on() {
         let (_dir, e, mut j) = grove("grove-tribute-parked-switch", 3);

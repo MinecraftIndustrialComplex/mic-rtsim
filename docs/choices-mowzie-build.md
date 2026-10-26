@@ -7067,7 +7067,8 @@ under its op id, as the dragons' (RP-210). Rust only; no GameTest, no Java.
 ## MZB-762 Review fixes to MZB-760 (grove tribute parking)
 
 Review of fix/grove-tribute-park at 7e1183ef (the build lead's findings P2-1, P2-2, P3-1, P3-4, P3-5 and
-the docs). Rust and docs only; no GameTest, no Java. One record per fix, MZB-762 to MZB-766.
+the docs). Rust and docs only; no GameTest, no Java. One record per fix, MZB-762 to MZB-766. A second
+review, of 76f5ecb4 (one P2 and the doc slips), adds MZB-767 and MZB-768.
 
 - **MZB-762** (P2-1: a FAILED stack forgets the chest only if it is the stack's own):
   - **The stall.** `tribute_failed` set `camp.chest = None` whatever chest the grove held. A stack s to
@@ -7086,11 +7087,14 @@ the docs). Rust and docs only; no GameTest, no Java. One record per fix, MZB-762
     next payment or census (`place_tribute` runs at a payment, a census, a HAVEN_CHEST and an APPLIED),
     a stall of its own. So `tribute_failed` ends with `place_tribute`, as `tribute_placed` does. It sends
     nothing when the chest was forgotten (the usual FAILED, as before), and a chest that fails again is
-    its stack's own and is forgotten then, so it cannot loop.
+    its stack's own and is forgotten then, so it cannot loop. The dragons' call runs only while the
+    dragons run (MZB-767).
   - **The dragons have the same line** (`Dragons::tribute_failed` took `chests.remove` whatever the
     chest). The sequence reaches it: a stack parked at X, `LairChest` Y reported (it unparks the lair's
     stacks and sends them to their own chests), the stack answered FAILED forgot Y, and its coin sat
-    unplaced until the next season's payment. Same fix (forget only if `chests[lair] == p.chest`) and the
+    unplaced until Lairs reported a chest again (the plugin reports on a change only: a chest gone,
+    full, or its chunk unloaded). The next season's payment did not help: its `place_tribute` needs
+    a chest, and Y, the one it needed, was the one forgotten. Same fix (forget only if `chests[lair] == p.chest`) and the
     same `place_tribute(lair)` after it. Test `a_failed_stack_forgets_only_its_own_chest`
     (crates/rtsim-ecology/tests/tribute.rs), failed first the same way on 7e1183ef (None for Y).
 - **MZB-763** (P2-2: two link tests, no behaviour change):
@@ -7111,8 +7115,11 @@ the docs). Rust and docs only; no GameTest, no Java. One record per fix, MZB-762
     the same process: the conflict switched off and on (the reset runs `begin_replay`). A stack
     parked live (NOT_LOADED) goes again at once at the switch-on, with no chest named, to its own
     chest: one more transfer under the same op, answered, and booked placed ((503, 0, 1)). The
-    parking is the old session's: the plugin names a chest only on a change, so a stack kept parked
-    across the reset would wait for a report that never comes. With the clear removed only the engine
+    parking is the old session's. A stack kept parked across the reset would wait for the plugin to
+    name a chest: `GroveChests.endOfTick` clears what it sent while the conflict is off, so it names
+    its chest at its first scan with the camp in, and the stack would go then, later than the clear
+    sends it; only when no chest has room is none named, and the stack would wait for as long
+    (a full chest is told as free 0, which does not unpark it: MZB-764). With the clear removed only the engine
     test `a_parked_stack_is_answered_like_any_stack_and_goes_again_at_camp_out_and_a_session_start`
     failed; now this link test fails too, at "the new session sends the stack again" (1 transfer for
     2), and no other link test does. Transfers are counted with `tribute_sends` (the
@@ -7165,6 +7172,61 @@ the docs). Rust and docs only; no GameTest, no Java. One record per fix, MZB-762
     transfers for 1 without a crash, 1 for 0 with one). The op set is the same in the non-crash run
     (the same op, sent twice), so only the old `owed_tribute` check, which sees Java's APPLIED
     answer to the resend, caught it before.
+- **MZB-767** (re-check P2: a FAILED dragon stack answered with the dragons off makes no stack):
+  - **The hole.** MZB-762 ended `Dragons::tribute_failed` with `place_tribute(lair)`, so a FAILED that
+    kept a chest placed the failed coin again at once. The answer path (`dragons::after_core`) takes
+    tribute answers whatever the switch (RP-291), and the engine's `chests` map is cleared only in
+    `begin_replay`, not at a switch-off. Sequence: stack s to chest X; NOT_LOADED parks it;
+    `LAIR_CHEST` names Y (the lair's parked stacks go again, to X); ECOLOGY goes off; Java answers
+    FAILED. Y is kept, so `place_tribute` drew op ids and made stacks while the module was off; they
+    were saved, and at the switch-on, which had just forgotten Y, they went to Y. That broke the rule
+    that the switch gates only new decisions (docs/replay-gate.md 9.7) and RP-291's premise that the
+    answer decides nothing.
+  - **The fix.** `Dragons::tribute_failed(op, place)`. The books and the chest are as before (the coin
+    back to unplaced; the chest forgotten if it is the stack's own); `place` is whether the dragons run,
+    and only then does the coin go again at once. `after_core` passes `running(st)` (switched on, in
+    the world, not waiting for Java's dictionary), as does `write_tribute`'s never-written path. Off, no
+    stack is made and no op id is drawn (the lair's stack counter does not move); the next stack comes
+    with the lair's next `LAIR_CHEST` after the switch-on, as for any lair chest.
+  - **Conservative choice.** The coin waits for the report rather than the engine keeping the chest
+    across a switch-off: the switch-on forgets the chests on purpose (they are a session's, MSC48).
+  - **Tests.** `dragons::a_failed_tribute_stack_answered_with_the_dragons_off_makes_no_stack`
+    (crates/rtsim-jni/tests/protocol.rs): the sequence above, ECOLOGY off in the tick Java answers
+    FAILED. Off, `dragons_tribute` is `[1, 0, coins, 0]` and no new op was sent; back on, nothing is
+    sent; the chest reported again takes the coin once (`[1, coins, 0, 0]`, the chest holds 499), and
+    the ledger and the world's tribute hold every coin. With `after_core` passing `true` (the
+    behaviour before the fix) it failed at "off: the coin is booked back and no stack is made"
+    (`[1, 0, 0, 8]` for `[1, 0, 499, 0]`: 8 stacks made while off). Engine half,
+    `a_failed_stack_answered_with_the_dragons_off_makes_no_stack` (crates/rtsim-ecology/tests/tribute.rs):
+    `tribute_failed(op, false)` keeps the chest, books the coin back and moves no counter; with
+    `place` ignored it failed at its first look at the lair's unplaced coin (the coin had been placed
+    again, so the map held no entry).
+  - **The grove needs no gate.** Its answers heard off are not taken: `after_core` keeps them
+    (`keep_answer`, RP-292) and the switch-on applies them after `begin_replay`, at their own tick
+    (`apply_kept`, `answer_tribute`). By then every camp is out and its chest forgotten
+    (`camp_session_start`), and `place_tribute` needs a camp that is in with a chest, so a kept FAILED
+    books the goods back and places nothing. Its other `tribute_failed` call, `fail_tribute` in
+    `write_tribute`, runs only with the conflict on. Agreed with the re-check.
+- **MZB-768** (re-check P3: doc slips; one code comment):
+  - **`replayed_failed`** (rtsim-conflict, camp.rs) still forgets the chest whatever it is, while the
+    live `tribute_failed` forgets it only if it is the stack's own (MZB-762). Its doc said "as the
+    session that went on did", which no longer held. Only the doc changed. The difference is harmless:
+    the replay decides nothing, a chest the live session kept was named by a HAVEN_CHEST that is
+    replayed or sent again, and `GroveChests` names its chest again after a restart or a switch-on
+    (it starts with nothing sent), before any stack goes, because a stack needs a camp that is in with
+    a chest.
+  - **Corrected text.** MZB-762's dragons claim (the coin waited for Lairs' next report, not the next
+    payment: the payment's `place_tribute` needs the forgotten chest); MZB-763's "a report that never
+    comes" and the test doc's "never names again" (`GroveChests.endOfTick` clears `sent` while the
+    conflict is off, so the chest is named at the first scan with the camp in; never only with no room);
+    docs/replay-gate.md section 4.4 and the RP-57 HAVEN_CHEST row (any HAVEN_CHEST unparks except one
+    naming the stack's own chest with free 0; another chest reported full also unparks, as MZB-764's
+    test asserts); HAVEN_CHEST listed twice in the RP-57 table (the second removed); and the dragon
+    text that said a FAILED only returns the coin and forgets the chest (docs/boundary.md section 4 and
+    6.4, MSC48, MSC54, MSC55, RP-291 and the "Never written" comments in rtsim-jni dragons.rs and
+    conflict.rs), now: a kept chest takes the coin at once while the dragons run, and nothing is placed
+    while they are off. boundary.md section 4 also said a stack answered while the module is off "goes
+    again and Java answers DUPLICATE_OP", which RP-291 had made false; it now says the answer is taken.
 
 ## M11 Aloft
 
@@ -7752,9 +7814,9 @@ conservative option at its fork.
 | 0x080B BAND_LOOTED | the party's | `ingest`'s fold, before the op-id dedupe and the unheld fight's skip; a copy, `ingest_copy`'s |
 | 0x080D TRAIN_PASSED | the party's | A later kind: `ingest`'s fold comes before the `later` return; a copy goes to `ingest_copy` from rtsim-jni's later-kind branch (changed here: it called `ingest`) |
 | 0x080F CAMP_CENSUS, 0x0812 CAMP_BODIES, 0x0813 CAMP_OUT | a camp's (u64) | Java's op id for the census, never an epoch the engine allocates, so it cannot name one the engine would issue again; `party_epoch` is None. M6's census body bit BODY_CRYSTAL names none either |
-| 0x0817 HAVEN_CHEST (handling changed, MZB-764) | none | Nothing to fold. A grove's chest, free slots and place, latest wins. Changed: a HAVEN_CHEST with no free slot that names a parked stack's own chest no longer lets the stack go again (the plugin reports a chest full when it looks again after an answer and the chunk is gone); a report with room, or CAMP_OUT, does |
-| 0x0111 COMMAND_RESULT of a tribute stack (handling changed, MZB-762, MZB-765) | none | Nothing to fold: a status for an op, not a party. Changed: a FAILED answer forgets the grove's chest and the lair's only if it is still the stack's own, and places the next stack at once if a chest is kept (`tribute_failed`, grove and dragons); the grove's status match is over `wire::CommandStatus`, with no `_` arm, and a status it does not know takes nothing, as before. NOT_LOADED is unchanged (MZB-760, MZB-761) |
-| Every other conflict kind (FACTION_FOUND, TERRITORY_SIGNAL, POLLUTION, GIFT_GIVEN, CHIEF_STATE, HAVEN_CHEST, DIFFICULTY, RAIL_PASS, CAMP_DEATH, TRADED, NOTICE_SHOWN, CHIEF_PAID, HUNT_APPLIED) | none | Nothing to fold. `party_epoch` matches every `Obs` variant by name, so a new kind does not compile until it says. After the M6 merge: CHIEF_STATE is read and names a faction, held while replaying (RP-100); CAMP_DEATH's DEATH_CHIEF names a slot and generation, no epoch. After the M7 merge: RAIL_PASS is read (`rail_pass`, no longer a later kind) and names a faction, a train and an owner, no epoch; the industry's TRAIN_ARRIVED and TRAIN_UNWATCHED reach the conflict through `rail_call` with a train and a line only, so M7 adds nothing to fold (RP-102). After the M9 merge: HUNT_APPLIED (new, 0x0816) names a faction, a district and the hunt's op; HAVEN_CHEST (0x0817 now, journaled) a faction, a chest and its free slots; TRADED and CHIEF_PAID a faction and, for CHIEF_PAID, a camp slot and generation; none an epoch, and `party_epoch` names HUNT_APPLIED with the others. M9 changes no kind that names an epoch. A copy of any of them folds nothing; `ingest_copy` drops a HAVEN_CHEST copy (RP-130), and the others are skipped by op id (TRADED, CHIEF_PAID) or find no hunt (HUNT_APPLIED) |
+| 0x0817 HAVEN_CHEST (handling changed, MZB-764) | none | Nothing to fold. A grove's chest, free slots and place, latest wins. Changed: a HAVEN_CHEST with no free slot that names a parked stack's own chest no longer lets the stack go again (the plugin reports a chest full when it looks again after an answer and the chunk is gone). Every other HAVEN_CHEST lets a parked stack go again, to its own chest: a report with room, and a report of another chest, full or not (as the MZB-764 test asserts); so does CAMP_OUT |
+| 0x0111 COMMAND_RESULT of a tribute stack (handling changed, MZB-762, MZB-765, MZB-767) | none | Nothing to fold: a status for an op, not a party. Changed: a FAILED answer forgets the grove's chest and the lair's only if it is still the stack's own, and places the next stack at once if a chest is kept (`tribute_failed`, grove and dragons); the dragons place it only while they run, so a FAILED heard with ECOLOGY off books the coin back and makes no stack (RP-291, MZB-767), and the grove's answers heard off are kept and applied after the switch-on's reset (RP-292); the grove's status match is over `wire::CommandStatus`, with no `_` arm, and a status it does not know takes nothing, as before. NOT_LOADED is unchanged (MZB-760, MZB-761) |
+| Every other conflict kind (FACTION_FOUND, TERRITORY_SIGNAL, POLLUTION, GIFT_GIVEN, CHIEF_STATE, DIFFICULTY, RAIL_PASS, CAMP_DEATH, TRADED, NOTICE_SHOWN, CHIEF_PAID, HUNT_APPLIED) | none | Nothing to fold. `party_epoch` matches every `Obs` variant by name, so a new kind does not compile until it says. After the M6 merge: CHIEF_STATE is read and names a faction, held while replaying (RP-100); CAMP_DEATH's DEATH_CHIEF names a slot and generation, no epoch. After the M7 merge: RAIL_PASS is read (`rail_pass`, no longer a later kind) and names a faction, a train and an owner, no epoch; the industry's TRAIN_ARRIVED and TRAIN_UNWATCHED reach the conflict through `rail_call` with a train and a line only, so M7 adds nothing to fold (RP-102). After the M9 merge: HUNT_APPLIED (new, 0x0816) names a faction, a district and the hunt's op; HAVEN_CHEST (0x0817 now, journaled) a faction, a chest and its free slots; TRADED and CHIEF_PAID a faction and, for CHIEF_PAID, a camp slot and generation; none an epoch, and `party_epoch` names HUNT_APPLIED with the others. M9 changes no kind that names an epoch. A copy of any of them folds nothing; `ingest_copy` drops a HAVEN_CHEST copy (RP-130), and the others are skipped by op id (TRADED, CHIEF_PAID) or find no hunt (HUNT_APPLIED) |
 | A conflict record that does not decode | unknown | Skipped with a warning before any module code (rtsim-jni `journaled`), as before: its epoch cannot be read |
 | Any conflict record while the conflict is switched off (U10) | | Ignored whole, without its fold, as every journaled record is (MZB-30; rtsim-jni `engine/conflict.rs:565`). A residual, not built (the coordinator's ruling, fixes6 item 6; docs/boundary.md, the conflict's switch): a session crashes with the conflict on; the next start has it off and saves past the crashed window (the journal is trimmed); a later start turns it on, and that session can issue the crashed window's epochs again, from pages that never saw them. Not RG5 and RG6's old life (Java's, the whole directory, drawn only when the pages include no observation). The option not taken, no format change: the jni conflict module detects the gap at switch-on (its pages' `now` older than the journal's start) and raises every party's epoch past the window before it ingests |
 | Herds (HERD_*) | the herds' own | Built by slice H: RP-81 (every kind that names an epoch folds, `Obs::group_epoch`), RP-84 (the session's handle bound). |

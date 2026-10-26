@@ -755,12 +755,16 @@ its natives with `System.load`. Choices are in `docs/overnight-choices-jni.md` (
      the next step), through the core's outbox with `push_with_op` and the core's
      TRANSFER_TO_CONTAINER writer, the dimension and item names through the engine's dictionary. A
      stack whose dimension or item the engine cannot name is failed at once. The COMMAND_RESULT is
-     journaled: APPLIED and DUPLICATE_OP place the stack, FAILED sends the coin back to wait,
+     journaled: APPLIED and DUPLICATE_OP place the stack, FAILED sends the coin back to wait (the
+     lair's chest is forgotten if it is the stack's own, and a chest the lair reported since keeps
+     it and takes the coin at once, while the dragons run: MZB-762, MZB-767),
      NOT_LOADED parks the stack under its op id (not saved: a new session sends it again) until its
      lair's next LAIR_CHEST, which sends it again to the chest it went to first (RP-210); a
      replayed answer for an op the replay already admitted (its DuplicateOp verdict) still places
-     the stack. While the module is off its COMMAND_RESULTs are not looked at: the stack is still in
-     the outbox, goes again, and Java answers DUPLICATE_OP.
+     the stack. While the module is off its COMMAND_RESULTs are still taken (RP-291), as records
+     that decide nothing: the core took the stack out of the outbox at its answer and Java forgets
+     the op, so the stack would not go again. A FAILED heard off books the coin back and places
+     nothing; the next stack comes with the lair's next LAIR_CHEST after the switch on.
    - **Pages** (PF12 to PF21 in docs/choices-paging-followups.md). Table 0x4400: the meta page
      at id 0, and in TEST mode the state hash at id 1 (checked on load); the rows, the wheel and
      the indexes at 0x4410 and up, read as they are needed under `Config.row_budget`. A save writes
@@ -1081,11 +1085,14 @@ These are engine ops in the core's outbox, so they are resent after a restart un
 each stack's op id is drawn from the lair's key and a per-lair stack counter (a resent stack is the
 same op). The answer is COMMAND_RESULT: APPLIED or DUPLICATE_OP count the stack in the chest;
 FAILED (the chest gone or full, its chunk loaded and not carrying the op) puts the coin back to wait
-and makes the engine forget the chest until LAIR_CHEST names one again, and the stack then goes under
-a new op id. NOT_LOADED (the chunk not loaded) also forgets the chest, but the stack stays under its
-op id: the chunk may hold it already, written ahead of the journal, and its REASSERT of the APPLIED
-record places it when it loads. The lair's next LAIR_CHEST sends it again, to its first chest
-(RP-210).
+and makes the engine forget the chest until LAIR_CHEST names one again, if the chest is the
+stack's own: a chest the lair reported since, elsewhere, is kept and takes the coin at once, as a
+new stack under a new op id (MZB-762). While the dragons are off the answer only books the coin
+back, and the stack comes with the next LAIR_CHEST after the switch on (RP-291, MZB-767).
+NOT_LOADED (the chunk not loaded) also forgets the chest if it is the stack's own, but the stack
+stays under its op id: the chunk may hold it already, written ahead of the journal, and its
+REASSERT of the APPLIED record places it when it loads. The lair's next LAIR_CHEST sends it
+again, to its first chest (RP-210).
 Nothing goes out while the lair has no chest: the coin waits in the lair's books.
 
 ### 6.5 How Java applies them
