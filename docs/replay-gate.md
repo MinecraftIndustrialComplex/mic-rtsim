@@ -2014,8 +2014,11 @@ its files on disk, the rest from the save before. Two directions:
 4. A power loss. RP-201 syncs the directories so a rename cannot outlive an earlier one; region files
    are synced by DSYNC or the barrier's force. Not on Windows (residual 1).
 5. A held journal write (RP-205, or a failed SavedData write, U-g1). Every SavedData store is in B until
-   the next written save: exact, by the rings. A hold has no round limit. The engine's pages are not held
-   with it (P29, residual 11).
+   the next written save: exact, by the rings. A hold has no round limit. The engine's pages are held with
+   it since slice U-h (P29): its save for that world save is a pending generation that WORLD_SAVED never
+   confirms, so a restart from the older file rolls it back with the journal (docs/choices-journal-barrier.md
+   U-h1 to U-h3). Not for a stop: `close(save = true)` confirms its final save at once, so a stop with a
+   write outstanding leaves the pages ahead of the older file (residual 11, slice U-i's).
 6. A given-up note (RP-205): A for that chunk (residual 2).
 
 **The rows, after slice U** (the audit's row ids; "exact" means the dedup is saved with the effect):
@@ -2117,15 +2120,20 @@ its files on disk, the rest from the save before. Two directions:
     the restored pages had decided (RP-200's "always B" assumed every write succeeds). A failed write of a
     `JournalDependent` file (Create's tracks, our own SavedData) now holds the journal's file at the save
     before until the data has written: B, which the rings make exact. Left:
-    - **The engine's pages are ahead (P29).** They are requested at the save's start and written whatever
-      happens to the data. A station exchange in the pages' outbox when they were saved (written, not
-      answered): exact, resent once and applied once (rtsim-jni `held_journal`, the written test). One
-      answered inside the pages: lost with or without the hold, X's load (the answered test, named for
-      P29). Wiring P29's confirm on WORLD_SAVED (docs/choices-leg-purge.md LP12) mends it; Ben's, and slice U-h's to close.
+    - ~~**The engine's pages are ahead (P29).**~~ **Closed by slice U-h** (docs/choices-journal-barrier.md
+      U-h1 to U-h12; docs/choices-leg-purge.md LP12 option (a)). The pages were requested at the save's
+      start and written, and acknowledged, whatever happened to the data. Now the save is a pending
+      generation until WORLD_SAVED, which reports `min(through, writtenThrough)`: a held journal
+      leaves it pending, and the restart from the older file rolls it back. A station exchange in the
+      pages' outbox when they were saved (written, not answered) and one answered inside the pages are
+      now both applied once (rtsim-jni `held_journal`, the two tests; X is decided again from the
+      older pages under the same op). The case that stays open under it is the stop's, below.
     - **Files not marked:** Diesel's `cdg_oil_chunks` (I4) and NeoForge's `neoforge_data_attachments`
       (Destroy's level pollution, I5, and every plugin's rings): a failed write of one is still A.
-    - A stop with a write outstanding keeps the older journal file (U-g7); the data whose level was
-      dropped is abandoned and the journal goes on without it (U-g5): A for it, logged.
+    - A stop with a write outstanding keeps the older journal file (U-g7), and the pages the stop
+      saves are ahead of it: `close(save = true)` confirms its final save at once (U-h8). Slice U-i's:
+      `nClose` carries `writtenThrough` and the engine confirms only through it. The data whose level
+      was dropped is abandoned and the journal goes on without it (U-g5): A for it, logged.
 
 **Rings and the module switch (a rule for every ring).** Saving and loading a ring of applied ops never
 depends on a module switch: the train's, the station port's, the oil file's, level pollution's, the
@@ -2168,7 +2176,12 @@ chunk newer than the tracks file, the fallbacks, the module switch and the ackno
 Slice U-g: core `SavedDataWriteHoldGameTests` (3: a failed write of a marked data holds the journal's file
 byte for byte until the data writes; the industry data; no hold for another directory or an unmarked
 data), create `TracksWriteHoldGameTests` (a real `RailwaySavedData`), core `SavedDataWritesTest`, and
-rtsim-jni `held_journal` (the written exchange applied once with the journal held; the answered one, P29).
+rtsim-jni `held_journal` (the written exchange and, since slice U-h, the answered one, each applied once with the journal held).
+Slice U-h: rtsim-jni `confirm` (F1 to F8, F14: the confirm on WORLD_SAVED, the start's selection, the budget hold and
+its valve, the stop), the pressure tests in `archive` and `protocol`, `ack_never_resends`' held autosave, rtsim-host
+`the_viewer_and_the_fork_read_the_save_before_an_unconfirmed_one`, `BoundaryProtocolTest` (the trim clamp and the start's
+argument), core GameTests `SavedDataWriteHoldGameTests` and `JournalBarrierGameTests` (the acknowledgement never passes
+the marker).
 The crash GameTests hold the prunes (`holdPrunesForTest`): the scripted engine acknowledges an answer
 once its own save holds it and the emulated crash then sends the op again, which a real engine does not
 (RP-209).

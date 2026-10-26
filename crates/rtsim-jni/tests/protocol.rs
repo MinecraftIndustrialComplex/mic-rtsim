@@ -348,11 +348,27 @@ fn acknowledgements_name_only_pages_on_disk_and_stop_at_the_world_save() {
     for i in 0..10 {
         j.transfer(wire::JAVA_OP_BIT | (200 + i), 1, 2, 1);
     }
-    j.run_until("pages on disk", |j| j.e.durable_obs_seq() > 0);
+    j.run_until("pages on disk", |j| {
+        j.e.stats.saves_committed.load(std::sync::atomic::Ordering::Acquire) > 0
+    });
+    assert_eq!(
+        e.committed_obs_seq(),
+        through,
+        "the pages stop exactly at the world save's journal"
+    );
+    // On disk is not acknowledged: the generation is pending until WORLD_SAVED (P29, LP12).
+    for _ in 0..4 {
+        j.idle();
+    }
+    assert_eq!(e.durable_obs_seq(), 0, "no acknowledgement before WORLD_SAVED");
+    assert!(j.acks.is_empty(), "{:?}", j.acks);
+    j.written_through = Some(through);
+    j.world_saved(through);
+    j.run_until("the confirm", |j| j.e.durable_obs_seq() > 0);
     assert_eq!(
         e.durable_obs_seq(),
         through,
-        "the pages stop exactly at the world save's journal"
+        "the acknowledgement stops exactly at the world save's journal"
     );
     j.run_until("the acknowledgement", |j| j.acks.contains(&through));
     assert!(
@@ -405,21 +421,32 @@ fn a_save_asked_for_while_the_engine_lags_is_taken() {
          {first}, journal end {}",
         j.next_obs - 1
     );
+    // A save is committed pending: the world save's WORLD_SAVED confirms it (P29, LP12).
     let deadline = Instant::now() + DURABLE_WAIT;
-    while e.durable_obs_seq() == 0 {
+    while e.committed_obs_seq() == 0 {
         assert!(
             Instant::now() < deadline,
-            "no save taken: {} saves done, durable {}, applied {applied}, first request {first}",
-            e.stats_array()[SAVES_DONE] - saves,
+            "no save taken: {} saves committed, durable {}, applied {applied}, first request {first}",
+            e.stats.saves_committed.load(std::sync::atomic::Ordering::Acquire),
             e.durable_obs_seq()
         );
         std::thread::sleep(Duration::from_millis(5));
     }
     assert_eq!(
-        e.durable_obs_seq(),
+        e.committed_obs_seq(),
         first,
         "the pages stop at the first request's world save"
     );
+    assert_eq!(e.durable_obs_seq(), 0, "pending until its WORLD_SAVED");
+    j.world_saved(first);
+    j.written_through = Some(first);
+    j.flush();
+    while e.durable_obs_seq() == 0 {
+        assert!(Instant::now() < deadline, "no confirm");
+        j.flush();
+    }
+    assert_eq!(e.durable_obs_seq(), first, "confirmed through the first request");
+    assert_eq!(e.stats_array()[SAVES_DONE] - saves, 1);
     e.close(true, Duration::from_secs(5)).unwrap();
 }
 
@@ -579,9 +606,11 @@ fn a_transfer_applied_after_a_world_save_is_resent_after_a_crash() {
         s.last_applied_cmd
     );
     // Same tick, ServerTickEvent.Post: Java applies the transfer, journals COMMAND_RESULT, submits.
-    let saves_before = e.stats_array()[9];
+    // The engine's save for S is committed pending (no WORLD_SAVED came): the world's file S holds
+    // it, so the restart from S keeps and confirms it (P29, LP12).
+    let saves_before = e.stats.saves_committed.load(std::sync::atomic::Ordering::Acquire);
     j.run_until("the engine's save for S", |j| {
-        j.e.stats_array()[9] > saves_before
+        j.e.stats.saves_committed.load(std::sync::atomic::Ordering::Acquire) > saves_before
     });
     eprintln!(
         "engine pages durable through {}, Java lastApplied now {}",
@@ -733,6 +762,9 @@ fn a_save_failing_partway_costs_that_save_not_the_engine() {
         loop {
             let failed = e.stats_array()[15];
             e.request_save(through);
+            // The journal's file landed: WORLD_SAVED confirms the save once it is made.
+            j.written_through = Some(through);
+            j.world_saved(through);
             j.run_until("the next save, made or refused", |j| {
                 j.e.durable_obs_seq() >= through || j.e.stats_array()[15] != failed
             });
@@ -4306,8 +4338,11 @@ mod herds {
     /// Herds under a row budget a fraction of their rows (docs/choices-paging-followups.md
     /// PF15): saved pages leave at the step boundary, a step whose resident rows all changed
     /// since the last save takes a save of its own (a pending generation), and after a crash the
-    /// start rolls those back and reads the herds back at the last save's state hash, paging
-    /// their rows in from the store as they are needed.
+    /// start opens the generation the world's journal holds (slice U-h: the herds journal
+    /// nothing as they move, so the journal holds every budget save, which is kept and
+    /// confirmed) and reads the herds back at that save's state hash, paging their rows in from
+    /// the store as they are needed. The rollback of a budget save past the journal is
+    /// `a_budget_save_past_the_journal_file_is_rolled_back_at_start`.
     #[test]
     fn herds_over_their_row_budget_page_out_and_read_back_after_a_crash() {
         use std::sync::atomic::Ordering::Acquire;
@@ -4364,15 +4399,68 @@ mod herds {
         assert_eq!(
             store.current(),
             store.confirmed(),
-            "the start rolled the pending generations back"
+            "the start confirmed the generations the journal holds"
         );
+    }
+
+    /// The other half of `herds_over_their_row_budget_page_out_and_read_back_after_a_crash`: the
+    /// world's journal file is the one of the last save, and records journaled since (past it:
+    /// the world they belong to is lost with the crash) move the budget saves' observations past
+    /// it. The start rolls those generations back: the pages are the last save's, the herds read
+    /// back at its state hash, and the store holds no pending generation.
+    #[test]
+    fn a_budget_save_past_the_journal_file_is_rolled_back_at_start() {
+        use std::sync::atomic::Ordering::Acquire;
+        let dir = tmpdir("herds-budget-past");
+        let budget = 4 * 1024;
+        let e = engine_with(&dir, 256 * 1024, |c| c.row_budget = budget);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        j.module_mask = MODULES;
+        found_many(&e, &mut j, 128);
+        save_bytes(&e, &mut j);
+        let confirmed = e.durable_obs_seq();
+        let file = j.world_save();
+        assert!(confirmed <= file.next_obs - 1, "the file holds the save");
+        let herds = e.herd_agents();
+        // Records past the file, and the herds moving on: budget saves with observations past it.
+        for i in 0..80u64 {
+            j.transfer(wire::JAVA_OP_BIT | (i + 1), 1, 2, 1);
+            j.game_time += 1_200;
+            j.idle();
+        }
+        assert!(e.stats.pressure_saves.load(Acquire) > 0, "budget saves ran");
+        assert!(e.committed_obs_seq() > file.next_obs - 1, "past the file");
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        let _ = j.crash();
+        let e = engine_with(&dir, 256 * 1024, |c| c.row_budget = budget);
+        let mut j = Java::open(e.clone(), file);
+        j.module_mask = MODULES;
+        assert_eq!(j.pages_obs, confirmed, "the pages of the last save");
+        assert_eq!(
+            e.herds_restore_check(),
+            (None, false),
+            "the herds read back to the last save's state hash"
+        );
+        assert_eq!(e.herd_agents(), herds, "every herd paged back in");
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        let _ = j.crash();
+        let store = PageStore::open(&dir, rtsim_kernel::page::Durability::NoSync).unwrap();
+        assert_eq!(
+            store.current(),
+            store.confirmed(),
+            "the start rolled the budget generations back"
+        );
+        assert_eq!(store.current().obs_seq, confirmed);
     }
 
     /// RP-49 for the herds (fixes4 item 7), the largest paged module: 128 herds under a 4 KiB
     /// row budget, a save, then `steps` steps of 1,200 ticks with the herds moving on, 50
     /// transfers journaled a step, no save asked for, and a crash. Returns the live session's
     /// resident row peak, the same session's with a budget it never reaches (every herd row
-    /// resident: the unpaged footprint), and the replay's peak after the crash, under the budget.
+    /// resident: the unpaged footprint), and the replay's peak after the crash of that second
+    /// session, under the budget (a session with no budget save, so its pages are the save before
+    /// the window: slice U-h keeps a pending generation the journal holds).
     fn the_replays_herd_peak_against_the_live_sessions(name: &str, steps: u64) -> [usize; 3] {
         use std::sync::atomic::Ordering::Acquire;
         const BUDGET: usize = 4 * 1024;
@@ -4398,10 +4486,13 @@ mod herds {
             let gt = j.game_time;
             (peak, pressure, gt, j.crash())
         };
-        let (unpaged, pressure, _, _) = live(&tmpdir(&format!("{name}-unpaged")), 1 << 30);
+        // The replay's window is made by the arm that takes no budget save: since slice U-h a
+        // start keeps a budget generation the journal holds, so a crash after the budget arm
+        // would replay only from its last budget save. The budget arm gives the live peak.
+        let dir = tmpdir(&format!("{name}-unpaged"));
+        let (unpaged, pressure, gt, saved) = live(&dir, 1 << 30);
         assert_eq!(pressure, 0, "a budget the session never reaches");
-        let dir = tmpdir(name);
-        let (peak, pressure, gt, saved) = live(&dir, BUDGET);
+        let (peak, pressure, _, _) = live(&tmpdir(name), BUDGET);
         assert!(
             pressure > 0,
             "the live session's budget took saves of its own"
@@ -11012,9 +11103,11 @@ mod conflict {
         (paged, e, j)
     }
 
-    /// RP-42: the budget's own save waits for the replay end too. A conflict under a small row
-    /// budget, 200 camps found after its last save and 4,000 fillers behind them, then a crash;
-    /// the next session replays them over several hand-overs. The camps' rows are new, so every
+    /// RP-42: the budget's own save waits for the replay end too. A conflict with 200 camps found
+    /// after its last save and 4,000 fillers behind them (its live budget is one it never reaches:
+    /// since slice U-h a start keeps a budget generation the journal holds, which would shorten
+    /// the replay), then a crash; the next session, under a small row budget, replays them over
+    /// several hand-overs. The camps' rows are new, so every
     /// resident row page is dirty and over the budget from the first hand-over on: no save is
     /// taken until the replay end, and the resident peak passes the budget by the replay's rows
     /// until then; after it, a budget save comes and the rows go back under their budget.
@@ -11023,7 +11116,7 @@ mod conflict {
         use std::sync::atomic::Ordering::Acquire;
         let budget = 4 * 1024;
         let dir = tmpdir("conflict-rp42-budget");
-        let e = engine_with(&dir, 256 * 1024, |c| c.row_budget = budget);
+        let e = engine_with(&dir, 256 * 1024, |c| c.row_budget = 1 << 30);
         let mut j = Java::open(e.clone(), WorldSave::fresh());
         j.module_mask = MODULES;
         j.idle();
@@ -11125,9 +11218,10 @@ mod conflict {
 
     /// RP-49 (the re-review's item 2): a conflict under a 4 KiB row budget, a save, then `rounds`
     /// hand-overs of 20 camps found and 400 fillers each, no save asked for, and a crash. The
-    /// live session's budget takes saves of its own, pending generations that the crash rolls
-    /// back (PF15), so the replay starts from the save before the first round and, taking no
-    /// page until its end (RP-42), holds every row the replayed records touch.
+    /// live session's budget takes saves of its own, pending generations (PF15); the replay is
+    /// of the same run with no budget save (slice U-h: a start keeps a pending generation the
+    /// journal holds), so it starts from the save before the first round and, taking no page
+    /// until its end (RP-42), holds every row the replayed records touch.
     fn the_replays_peak_against_the_live_sessions(name: &str, rounds: u64) -> Peaks {
         use std::sync::atomic::Ordering::Acquire;
         const BUDGET: usize = 4 * 1024;
@@ -11165,10 +11259,14 @@ mod conflict {
             let gt = j.game_time;
             (peak, pressure, gt, j.crash())
         };
-        let (touched, pressure, _, _) = live(&tmpdir(&format!("{name}-touched")), 1 << 30);
+        // The replay's window is made by the arm that takes no budget save: since slice U-h a start
+        // keeps a budget generation the journal holds, so a crash after the budget arm would
+        // replay only from its last budget save (the crash-time journal holds them all). The
+        // budget arm gives the live peak.
+        let dir = tmpdir(&format!("{name}-touched"));
+        let (touched, pressure, gt, saved) = live(&dir, 1 << 30);
         assert_eq!(pressure, 0, "a budget the session never reaches");
-        let dir = tmpdir(name);
-        let (peak, pressure, gt, saved) = live(&dir, BUDGET);
+        let (peak, pressure, _, _) = live(&tmpdir(name), BUDGET);
         assert!(
             pressure > 0,
             "the live session's budget took saves of its own"
@@ -11426,7 +11524,6 @@ mod conflict {
     /// and not lost.
     #[test]
     fn a_save_due_at_a_reassert_takes_the_pages_before_the_copy() {
-        const SAVES_DONE: usize = 9;
         let Crashed {
             dir,
             p,
@@ -11450,20 +11547,26 @@ mod conflict {
             Some((first, obs::JOURNAL_GEN)),
             "the session's first record"
         );
-        let saves = e.stats_array()[SAVES_DONE];
+        // The save is committed pending (no WORLD_SAVED comes): the restart below is from a file
+        // that holds it, so it is kept and confirmed.
+        let saves = e.stats.saves_committed.load(std::sync::atomic::Ordering::Acquire);
         e.request_save(first);
         reassert_all(&mut j, &kept, kept.nonce);
         let deadline = Instant::now() + DURABLE_WAIT;
-        while e.durable_obs_seq() < first {
+        while e.committed_obs_seq() < first {
             assert!(Instant::now() < deadline, "the save never landed");
             std::thread::sleep(Duration::from_millis(5));
         }
         assert_eq!(
-            e.durable_obs_seq(),
+            e.committed_obs_seq(),
             first,
             "the pages end at the JOURNAL_GEN, before the copies"
         );
-        assert_eq!(e.stats_array()[SAVES_DONE], saves + 1, "one save");
+        assert_eq!(
+            e.stats.saves_committed.load(std::sync::atomic::Ordering::Acquire),
+            saves + 1,
+            "one save"
+        );
         assert_eq!(books(&e, p).0, n - lost, "the copies count once, live");
         assert_eq!(copies(&e), (k, 0));
         let gt = j.game_time;

@@ -215,13 +215,26 @@ fn a_crash_before_the_page_commit_cuts_the_saves_chunks_and_the_replay_records_t
     );
 }
 
-/// Item 3 of VIEWER.md §10.5: a save taken for the paged modules' budgets (a pending generation,
-/// PF15) tags its chunks with its own serial, and a restart that rolls those generations back cuts
-/// them. The herds journal nothing as they move, so the pressure saves share the confirmed
-/// generation's observations: only the serial tells their chunks apart.
-#[test]
-fn a_rolled_back_pressure_save_takes_its_chunks_with_it() {
-    let dir = tmpdir("archive-pressure");
+/// The live half of the pressure tests: 128 herds under a 4 KiB row budget, a save that is
+/// confirmed at once, then days of herds moving with no save asked for: the budget takes saves of
+/// its own, pending generations whose chunks carry their own serials (PF15). `journaled`: a record
+/// goes into the journal each step, so the budget saves' observations pass the journal file taken
+/// right after the save; without it the herds journal nothing as they move and the pressure saves
+/// share the confirmed generation's observations: only the serial tells their chunks apart.
+struct Pressure {
+    dir: std::path::PathBuf,
+    budget: usize,
+    /// The journal's file as of the confirmed save.
+    file: WorldSave,
+    /// The journal at the crash.
+    crashed: WorldSave,
+    confirmed: u64,
+    confirmed_obs: u64,
+    pressure: u64,
+}
+
+fn pressure_run(tag: &str, journaled: bool) -> Pressure {
+    let dir = tmpdir(tag);
     let budget = 4 * 1024;
     let e = engine_with(&dir, 256 * 1024, |c| c.row_budget = budget);
     let mut j = Java::open(e.clone(), WorldSave::fresh());
@@ -244,8 +257,12 @@ fn a_rolled_back_pressure_save_takes_its_chunks_with_it() {
     let confirmed_obs = e.durable_obs_seq();
     let confirmed = e.stats.archive_confirmed.load(Acquire);
     assert!(confirmed > 0);
+    let file = j.world_save();
     // The herds move on for days with no save asked for: the budget takes saves of its own.
-    for _ in 0..80 {
+    for i in 0..80u64 {
+        if journaled {
+            j.transfer(wire::JAVA_OP_BIT | (i + 1), 1, 2, 1);
+        }
         j.game_time += 1_200;
         j.idle();
     }
@@ -264,41 +281,87 @@ fn a_rolled_back_pressure_save_takes_its_chunks_with_it() {
     assert_eq!(
         e.stats.archive_confirmed.load(Acquire),
         confirmed,
-        "pressure saves do not confirm"
+        "no WORLD_SAVED came: pressure saves do not confirm"
     );
-    let saved = j.crash();
-    let above = events_tags(&dir)
-        .into_iter()
-        .filter(|&t| t > confirmed)
-        .count();
-    let same_obs = ArchiveReader::open(archive_dir(&dir), None)
-        .unwrap()
-        .unwrap()
-        .entries()
-        .iter()
-        .filter(|e| e.header.serial > confirmed && e.header.obs_seq == confirmed_obs)
-        .count();
+    let crashed = j.crash();
     {
         let store = PageStore::open(&dir, Durability::NoSync).unwrap();
         assert_ne!(store.current(), store.confirmed(), "pending generations");
         assert_eq!(store.confirmed().obs_seq, confirmed_obs);
     }
-    let e = engine_with(&dir, 256 * 1024, |c| c.row_budget = budget);
-    let j = Java::open(e.clone(), saved);
+    Pressure {
+        dir,
+        budget,
+        file,
+        crashed,
+        confirmed,
+        confirmed_obs,
+        pressure,
+    }
+}
+
+/// Item 3 of VIEWER.md §10.5: a save taken for the paged modules' budgets (a pending generation,
+/// PF15) tags its chunks with its own serial, and a restart that rolls those generations back cuts
+/// them. The records journaled since the confirmed save move the pressure saves' observations
+/// past the journal's file (the world they belong to died with the crash), so the start (slice
+/// U-h: it opens the generation that file holds) rolls them back.
+#[test]
+fn a_rolled_back_pressure_save_takes_its_chunks_with_it() {
+    let p = pressure_run("archive-pressure", true);
+    let above = events_tags(&p.dir)
+        .into_iter()
+        .filter(|&t| t > p.confirmed)
+        .count();
+    let e = engine_with(&p.dir, 256 * 1024, |c| c.row_budget = p.budget);
+    let j = Java::open(e.clone(), p.file);
     assert_eq!(
-        j.pages_obs, confirmed_obs,
+        j.pages_obs, p.confirmed_obs,
         "the start rolled the pending generations back"
     );
-    assert_eq!(e.stats.archive_confirmed.load(Acquire), confirmed);
-    let tags = events_tags(&dir);
+    assert_eq!(e.stats.archive_confirmed.load(Acquire), p.confirmed);
+    let tags = events_tags(&p.dir);
     eprintln!(
-        "archive pressure test: {pressure} pressure saves, {above} chunks past the confirmed save cut ({same_obs} of them at its observations), {} left",
+        "archive pressure test: {} pressure saves, {above} chunks past the confirmed save cut, {} left",
+        p.pressure,
         tags.len()
     );
+    assert!(above > 0);
     assert!(
-        tags.iter().all(|&t| t <= confirmed),
+        tags.iter().all(|&t| t <= p.confirmed),
         "every pressure save's chunk was cut: {tags:?}"
     );
+    let _ = j.crash();
+}
+
+/// The other half (slice U-h): the herds journal nothing as they move, so the pressure saves
+/// share the confirmed generation's observations and the crash-time journal holds them. The start
+/// keeps the newest and confirms it, and its chunks stay: the archive holds what the pages do.
+#[test]
+fn a_kept_pressure_save_keeps_its_chunks() {
+    let p = pressure_run("archive-pressure-kept", false);
+    let before = events_tags(&p.dir);
+    let newest = *before.iter().max().unwrap();
+    assert!(newest > p.confirmed);
+    let e = engine_with(&p.dir, 256 * 1024, |c| c.row_budget = p.budget);
+    let j = Java::open(e.clone(), p.crashed);
+    assert_eq!(j.pages_obs, p.confirmed_obs, "the pressure saves share its observations");
+    assert_eq!(
+        e.stats.archive_confirmed.load(Acquire),
+        e.stats.archive_serial.load(Acquire),
+        "the generation the start kept is the archive's confirmed one"
+    );
+    assert!(
+        e.stats.archive_confirmed.load(Acquire) > p.confirmed,
+        "a pressure save's serial"
+    );
+    let tags = events_tags(&p.dir);
+    assert!(
+        tags.iter().any(|&t| t > p.confirmed),
+        "the kept save's chunks stay: {tags:?}"
+    );
+    let store = PageStore::open_read_only(&p.dir).unwrap();
+    assert_eq!(store.current(), store.confirmed(), "confirmed by the start");
+    drop(store);
     let _ = j.crash();
 }
 
