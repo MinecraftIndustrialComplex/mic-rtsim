@@ -4,9 +4,9 @@
 //! copied without its `rtsim/archive` (the event timeline): `events.rs` needs a real save with no
 //! archive and writes its own archive onto a copy of this one. The create save keeps its archive.
 //!
-//! - `tests/data/core`: neoforge/core's GameTest world, a fresh one, run from commit ccfec56d
+//! - `tests/data/core`: neoforge/core's GameTest world, a fresh one, run from commit 9b1f8a4c
 //!   (replay-gate slice R, the industry op window, merged with slice T 5e832028, which carries
-//!   main's slice A; R's formats: the industry globals are IGB2, `decided` after `now`, and an
+//!   main's slice A, and with main 6be65f2c, which carries slice U-a; R's formats: the industry globals are IGB2, `decided` after `now`, and an
 //!   industry district page starts with IDS5, its reconcile epochs per chunk, each pending
 //!   reconcile's round and the packages written per postbox, RP-259); before that, c1bd6472
 //!   (Mowzie's Mobs M9, the chiefs' heirs, trade memory, tribute and hunts, merged with main
@@ -67,8 +67,8 @@
 //!   when the server stops: 6638edc's save had one, while both runs of 98d6d34 and main's 7e4042a
 //!   had every herd staying put. So the route layer is not required here; it still has to draw or
 //!   say why.
-//! - `tests/data/create`: neoforge/create's GameTest world, run from c1bd6472 (the core save's
-//!   formats, M9's); before that, c934042f (slice N's formats); before that, 32726818 (the core save's
+//! - `tests/data/create`: neoforge/create's GameTest world, run from 9b1f8a4c (the core save's
+//!   formats, R's); before that, c1bd6472 (M9's); before that, c934042f (slice N's formats); before that, 32726818 (the core save's
 //!   formats before slice N and before its merge with main 588b229c; before that, 1290d0b7, M6's, and fe87a92, S5-2
 //!   merged with main f66cb73, b643465, 37a34e40 as part of the plain `./gametest.sh core create
 //!   mowziesmobs` round, 8188cc0, cee946f, S4c1, edbb390, 5d648ce, ec57cd7, 21e57d2 and S3's arm
