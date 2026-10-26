@@ -10165,6 +10165,53 @@ and the reviews' fixes.
   - Test reads on the singleton: `raised(memo)`, `target(memo)`, `settled(memo)`; counters `heightColumnsSkipped` and
     `stuckMoves` are instance fields (the session does not reset them: a GameTest reads their deltas).
 
+- **MZB-876** (step 3: the away CHIEF_BODY's map in the bridge; MZB-805):
+  - `ConflictBridge.chiefBodyAway(agent, epoch, memory)` (package-private, for `Camps.chiefBody`, which step 6 makes
+    forward it) keeps the latest per agent in `chiefAway` (an `Away(epoch, memory)` record), in memory only (UR-1).
+    Nothing clears it between command buffers or ticks: rtsim-jni's `write_queue` can end a buffer between the
+    CHIEF_BODY and its BAND_MATERIALIZE, and the entry waits.
+  - The claim is at the slot's making, not at each spawn: `materialize` gives the entry to the chief stack's slot
+    (`Slot.chiefMemory`) and removes it from the map, so a stack taken back to pending and placed again makes its body
+    with the same memory (the design's "keep the memory on the slot"), and a map entry never outlives its materialize.
+    A materialize with no chief stack (a later wave) leaves it.
+  - An entry for another epoch than the materialize's is dropped and counted (`chiefBodiesUnmatched`), checked after
+    the already-embodied refusal and before `capture` of the old epoch's party. An entry whose epoch is the ending
+    party's own, still unclaimed when `unregister` runs, is dropped and counted too (a party whose chief stack never
+    came). `unregister` compares epochs: the next epoch's entry is already in the map when the old party is captured at
+    its materialize, and must survive it. Cleared at `sessionStarted`, `sessionStopping`, `sessionFailed` and
+    `serverStopped`.
+  - The memory is the engine's CHIEF_BODY as sent (health 0 for an away one, MZB-803: the body keeps its own, which
+    for a fresh puppet is full). Not updated from the body at a takeback: the engine keeps no chief health (MZB-803's
+    fork), so a requeued puppet is made full again, with the players the engine sent.
+- **MZB-877** (step 3: a traveller's slot and body; MZB-807, MZB-808):
+  - `Slot` gains `traveller` (looked up once, from the slot's type, by `Travellers.of`), `travelMemo` (the
+    Traveller's own `memo()`, kept on the slot so it dies with it), `chiefMemory`, and `homeSpot` and `homeDirection`
+    (MZB-822, set by step 6's `homeChief`; the pass already leaves a homing slot alone).
+  - `spawn`: the ground Y of a traveller's own place gets `lift(null)` added (2: it is made in the air, not set down to
+    be lifted, which a first tick's pull would turn into a fall); a hand-off or a lurk's point keeps the ground, as
+    a hand-off starts on the throne (MZB-806). `made(level, body, chiefMemory, memo)` runs after the hand-off's `copy`
+    in the same try as the Maker, so a throwing plugin fails the stack's placing as a failed Maker does (retry after
+    `RETRY_FAILED`), never half a stack. `UmvuthiAloft.made` empties the memo first: a slot made again must not
+    keep the last body's heights.
+  - A traveller's slot gets no `ConflictFollowGoal` and no navigation; `travelling` (a list of the slots in the world
+    with a Traveller) holds it, added with the bodies' joins and dropped in `despawn` after `Traveller.release`. So
+    the pass costs a `List.isEmpty` a tick for a pack with no traveller (D1).
+  - `checkPlaced`'s teleport of a displaced body adds `lift(memo)` to the ground: 2 while aloft, 0 once it has
+    settled.
+- **MZB-878** (step 3: the aloft pass; MZB-807, MZB-809):
+  - `endOfTick` calls `aloft(now)` after the parties' `pass` and before the trim loop (so before `trim`, MZB-827), once
+    every level ticked its entities and block entities. For each slot in `travelling`, from the end (so a slot whose
+    body went by a path that never called `despawn` is dropped as it is met): `Way.set(placeX, placeZ, target x and z,
+    party.attack, party.recalling, now)` and `Traveller.step`.
+  - The way's target is the stack's `ex`, `ez` (the point the party's walk is toward, which the attack flag is
+    about), its place is `placeX(f)`, `placeZ(f)` at the stack's walked fraction (no allocation).
+  - Not stepped: a body with a pending death or dying (`isDeadOrDying`, MZB-817 lets it fall), one held at a lurk's
+    point, one called home (`homeSpot`; the reconciler asks `Traveller.home`, MZB-822), and one whose block does not tick
+    entities (`RtsimSession.entitiesTickAt`, the test `checkPlaced` uses: a body there is the placing's to bring
+    back).
+  - A Traveller that throws is logged (the first 3 a session) and counted (`travellerErrors`), and the pass goes on
+    with the next body: one plugin bug must not fail the session and with it every party. Next tick it is tried again.
+
 ## M12 S9
 
 (none yet)
