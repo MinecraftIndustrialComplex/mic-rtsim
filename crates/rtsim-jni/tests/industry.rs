@@ -4467,6 +4467,121 @@ mod ack_never_resends {
         });
     }
 
+    /// Case 5, a replayed DUPLICATE that meets the copy the held replay decided again (RP-312).
+    /// J3 on the ring (RP-199): the world applies a station exchange X live in session 0 and
+    /// saves its goods and rings with X, its journal file from before X's answer S; the pages stop
+    /// before X's decision. Session 1's replay decides X again (it heard no answer for X: S went
+    /// with the journal), the engine sends it after the replay end, and the ring refuses it
+    /// DUPLICATE live at S2. The world saves again, S2 in its journal, and the pages still never
+    /// save. Session 2's replay decides X again, the copy waiting in the engine's commands (the
+    /// hold, RP-274), and then hears S2, X's first answer in that replay, so S2 reaches
+    /// `command_result` while replaying. S2 is not live in session 2: the settle kept X with its
+    /// answer unknown, and only the acknowledgement of a live answer prunes it, so the copy must
+    /// be sent (RP-310). Taken out there, as A's `take_out` would, X is never sent in session 2
+    /// and stays in Java's rings with its answer unknown for good (RP-250's leftovers).
+    #[test]
+    fn a_replayed_duplicate_leaves_the_copy_the_replay_decided_again_to_be_sent() {
+        let mut r = Rig::new("ack-c5-dup", false);
+        r.run_to(day(2.0));
+        r.every = 0;
+        let exchanges = |r: &Rig| -> Vec<u64> {
+            r.c.arrivals
+                .iter()
+                .filter(|a| a.session == 0 && a.kind == "exchange")
+                .map(|a| a.op)
+                .collect()
+        };
+        // The pages stop past the first simulated exchanges; then the next exchange, X.
+        let through = r.j.next_obs - 1;
+        r.j.e.request_save(through);
+        r.run("the pages", day(8.0), |r| {
+            r.j.e.durable_obs_seq() >= through
+        });
+        let through = r.j.e.durable_obs_seq();
+        let before = exchanges(&r).len();
+        r.run("a station exchange is written", day(8.0), |r| {
+            exchanges(r).len() > before
+        });
+        let x = exchanges(&r)[before];
+        // Java's journal file with the arrival, before the world applies X.
+        let journal = r.c.save(&r.j);
+        assert!(!r.j.mc().applied_ops().contains(&OpId(x)));
+        r.run("the world answers X", day(8.0), |r| {
+            r.c.lives_in(0).any(|l| l.op == x)
+        });
+        let s1 = *r.c.lives_in(0).find(|l| l.op == x).unwrap();
+        assert_eq!(s1.status, APPLIED);
+        // J3: the goods and the rings saved with X, the journal file from before S.
+        let j3 = Saved {
+            jsave: journal.jsave,
+            end: journal.end,
+            ..r.c.save(&r.j)
+        };
+        assert_eq!(r.j.e.durable_obs_seq(), through, "no later page save");
+        r.restart(&j3);
+        assert!(r.j.pages_obs < s1.seq, "the pages are behind S");
+        assert_eq!(r.c.ring.get(&x), Some(&None), "X stays, its answer unknown");
+        // Session 1's replay decides X again; the ring refuses the copy live.
+        let t1 = r.j.mc().t;
+        r.run("X sent again in session 1", t1 + 400, |r| {
+            !r.c.arrivals_of(x, 1).is_empty()
+        });
+        r.run("the ring refuses X", t1 + 400, |r| {
+            r.c.lives_in(1).any(|l| l.op == x)
+        });
+        let s2 = *r.c.lives_in(1).find(|l| l.op == x).unwrap();
+        assert_eq!(
+            s2.status, DUPLICATE,
+            "the ring refused X, live in session 1"
+        );
+        // The world saves with S2 in its journal; the pages never save past X's decision.
+        let w = r.c.save(&r.j);
+        assert_eq!(r.j.e.durable_obs_seq(), through, "no later page save");
+        assert!(
+            r.c.crash(&r.j) < s2.seq,
+            "no ack at or past S2 in session 1"
+        );
+        r.restart(&w);
+        assert!(r.j.pages_obs < s2.seq, "the pages are behind S2");
+        assert_eq!(r.c.ring.get(&x), Some(&None), "X stays, its answer unknown");
+        // Session 2's replay decides X again and hears S2; the copy goes after the replay end.
+        let t2 = r.j.mc().t;
+        r.run_to(t2 + 400);
+        let sent = r.c.arrivals_of(x, 2);
+        assert_eq!(
+            sent.len(),
+            1,
+            "X, decided again by the replay that heard its DUPLICATE, sent once in session 2: \
+             {sent:?}"
+        );
+        r.run("the ring refuses X again", t2 + 800, |r| {
+            r.c.lives_in(2).any(|l| l.op == x)
+        });
+        let s3 = *r.c.lives_in(2).find(|l| l.op == x).unwrap();
+        assert_eq!(
+            s3.status, DUPLICATE,
+            "the ring refused X, live in session 2"
+        );
+        assert!(
+            !industry(&r.j.e, |ie| ie.exchange_pending(OpId(x))),
+            "X's exchange is dropped"
+        );
+        eprintln!(
+            "case 5: X {x:#x} applied at S {} in session 0 (J3: the journal from before it), \
+             refused at S2 {} in session 1, replayed in session 2 and sent there as cmdSeq {}, \
+             refused at S3 {}",
+            s1.seq, s2.seq, sent[0].cmd_seq, s3.seq
+        );
+        // Java's autosave again: the ack past S3 prunes X.
+        r.every = 3_000;
+        r.until_read(s3.seq);
+        assert!(r.c.gone.contains_key(&x), "pruned on the ack past S3");
+        r.finish_with(|c, _| {
+            assert_eq!(c.arrivals_of(x, 2).len(), 1);
+            assert!(!c.ring.contains_key(&x), "no ring keeps X");
+        });
+    }
+
     /// An answer that reaches the engine while the industry module is off (RP-285). The server's
     /// config switches industry off in the tick Java applied a station exchange X and journaled
     /// its answer S, so MODULES goes ahead of S in that hand-over (BoundarySession.handOver writes
