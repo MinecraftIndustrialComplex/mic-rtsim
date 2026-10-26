@@ -5,6 +5,7 @@ import com.bobmowzie.mowziesmobs.server.entity.umvuthana.EntityUmvuthanaMinion;
 import com.bobmowzie.mowziesmobs.server.entity.umvuthana.EntityUmvuthi;
 import com.bobmowzie.mowziesmobs.server.potion.EffectHandler;
 import com.minecraftindustrialcomplex.mic_rtsim.api.RtsimApi;
+import com.minecraftindustrialcomplex.mic_rtsim.api.TakeReason;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs;
 import com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.AloftRules;
@@ -38,6 +39,7 @@ import net.minecraft.network.protocol.game.ClientboundSetEquipmentPacket;
 import net.minecraft.network.protocol.game.ClientboundSetPassengersPacket;
 import net.minecraft.network.protocol.game.ClientboundUpdateAttributesPacket;
 import net.minecraft.network.protocol.game.ClientboundUpdateMobEffectPacket;
+import net.minecraft.nbt.CompoundTag;
 import net.minecraft.network.syncher.SynchedEntityData;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestAssertException;
@@ -57,6 +59,7 @@ import net.minecraft.world.entity.animal.IronGolem;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.level.ExplosionDamageCalculator;
+import net.minecraft.world.level.GameType;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.SimpleExplosionDamageCalculator;
 import net.minecraft.world.level.block.Blocks;
@@ -199,6 +202,12 @@ public final class AloftMowzieGameTests {
      */
     private static ConflictKit.Band bandAt(GameTestHelper helper, long faction, long agent, double x, double y, double z, float health,
             List<UUID> traded, int warriors, boolean chief) {
+        return bandAt(helper, faction, agent, x, y, z, health, traded, warriors, chief, b -> {});
+    }
+
+    /** As above, and {@code tune} sets the band's bearing, target and speed before it is materialized (a band that marches, not one that stands). */
+    private static ConflictKit.Band bandAt(GameTestHelper helper, long faction, long agent, double x, double y, double z, float health,
+            List<UUID> traded, int warriors, boolean chief, Consumer<ConflictKit.Band> tune) {
         ConflictKit.Band b = ConflictKit.band(agent, faction, RtsimTests.dimension(helper));
         if (chief)
             b.flags |= ConflictRecords.Materialize.FLAG_CHIEF;
@@ -210,6 +219,7 @@ public final class AloftMowzieGameTests {
         b.targetY = y;
         b.targetZ = z;
         b.speed = 0f;
+        tune.accept(b);
         List<ConflictKit.StackSpec> stacks = new ArrayList<>();
         stacks.add(new ConflictKit.StackSpec(WARRIOR, warriors, false));
         if (chief)
@@ -2648,7 +2658,7 @@ public final class AloftMowzieGameTests {
             var players = level.getServer().getPlayerList();
             players.setViewDistance(s + 2);
             players.setSimulationDistance(s);
-            player = FakePlayers.addSeen(level, new Vec3(px, level.getMinBuildHeight() + 64, pz), "mowzie-aloft-watcher");
+            player = FakePlayers.addSeen(level, new Vec3(px, level.getMinBuildHeight() + 64, pz), "mowzie-aloft-watcher-" + s);
             player.setNoGravity(true);
         }
 
@@ -4418,5 +4428,250 @@ public final class AloftMowzieGameTests {
                     far.releaseAll();
                 })
                 .thenSucceed();
+    }
+
+    // ---- 33u: the Umvuthi appears beyond 128, and Carry On takes it (MZB-829) --------------------------------------
+
+    /**
+     * One column's march on a ticking area of simulation distance {@code s} (test 33u, a copy of core's {@code MarchGameTests.column} for
+     * a band that carries its chief): a masked player ({@link Watch}) stands on its chunk's west column, and a band of six warriors and
+     * its chief (a stack of its own, at the rear) comes from {@code start} blocks east, on the player's row, at 0.1 blocks a tick. The
+     * grove of its faction is declared and out, so that nothing but the band's own rules is under test. Every tick it notes when each stack
+     * is first placed and what it stood on then.
+     */
+    private static final class Column {
+        final GameTestHelper helper;
+        final ServerLevel level;
+        final String test;
+        final int s;
+        final double start;
+        final Watch w;
+        final Grove g;
+        final long agent = ConflictKit.newAgent();
+        final ConflictBridge.Stack[] st = new ConflictBridge.Stack[4];
+        final long[] firstSeen = new long[4];
+        final double[] anchor = new double[4], near = new double[4], farthest = new double[4];
+        final boolean[] ticking = {true, true, true, true};
+        boolean floats, watching;
+        long wasKilled;
+        double yAtTake;
+        EntityUmvuthi body, copy;
+        Player taker;
+        CompoundTag saved;
+
+        Column(GameTestHelper helper, Far far, String test, int s, int index) {
+            this.helper = helper;
+            this.level = far.level;
+            this.test = test;
+            this.s = s;
+            this.start = s == 8 ? 170 : 200;
+            this.w = new Watch(helper, far, s);
+            this.g = groveAt(far, index, 0); // declared, never forced: out
+        }
+
+        /** Declares the grove, sets the distances and joins the player. */
+        void join() {
+            g.declare();
+            w.start();
+        }
+
+        /** Fails until the square of chunks within {@code s} of the player ticks entities and the first chunk past it does not. */
+        void ready() {
+            w.check();
+        }
+
+        /** Stands the player on the ground, masks it, and sends the column in from {@code start} blocks east, heading west. */
+        void march() {
+            w.ground();
+            MowzieKit.mask(w.player);
+            int gy = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, (int) Math.floor(w.px), (int) Math.floor(w.pz));
+            record(test, "ticking area " + s, "simulation distance " + s + ", the player's chunk (" + w.pcx + ", " + w.pcz + "), the edge is "
+                    + (w.edge() - w.player.getX()) + " blocks east of the player; the column comes from " + start + " blocks");
+            bandAt(helper, g.faction, agent, w.px + start, gy, w.pz, 0f, List.of(), 6, true, b -> {
+                b.bearing = 180f;
+                b.targetX = w.px + 60;
+                b.targetZ = w.pz;
+                b.speed = 0.1f;
+            });
+            MowzieKit.everyTick(helper, this::sample);
+        }
+
+        void materialized() {
+            check("BAND_MATERIALIZED for the band", !ConflictKit.about(ConflictRecords.BAND_MATERIALIZED, agent).isEmpty());
+        }
+
+        /** The band is made and none of it stands: the column is outside the area; four stacks, all pending. */
+        void pending() {
+            List<ScriptedEngine.Received> m = ConflictKit.about(ConflictRecords.BAND_MATERIALIZED, agent);
+            check("one BAND_MATERIALIZED, none placed now (aux " + m.get(0).aux() + "): the column is outside the area", m.size() == 1 && m.get(0).aux() == 0);
+            check("never rejected (" + ConflictKit.about(ConflictRecords.BAND_SPAWN_REJECTED, agent).size() + ")", ConflictKit.about(ConflictRecords.BAND_SPAWN_REJECTED, agent).isEmpty());
+            ConflictBridge.Party p = ConflictKit.party(agent);
+            check("three rows and the chief make four stacks (" + p.stacks().size() + ")", p.stacks().size() == 4);
+            for (int i = 0; i < 4; i++) {
+                st[i] = p.stacks().get(i);
+                check("stack " + i + " is a row of " + (i < 3 ? 2 : 1) + " (" + st[i].slots().size() + "), pending, " + (1.5 * i) + " behind the head ("
+                        + st[i].back() + ")", st[i].slots().size() == (i < 3 ? 2 : 1) && st[i].state() == ConflictBridge.StackState.PENDING
+                        && Math.abs(st[i].back() - 1.5 * i) < 1e-9 && st[i].chief() == (i == 3));
+            }
+            check("no Umvuthi stands (the chief's body is made when its stack is placed)", level.getEntitiesOfClass(EntityUmvuthi.class, new AABB(w.px - 400, level.getMinBuildHeight(), w.pz - 400, w.px + 400, level.getMaxBuildHeight(), w.pz + 400)).isEmpty());
+            watching = true;
+        }
+
+        void sample() {
+            if (!watching)
+                return;
+            long now = level.getGameTime();
+            for (int i = 0; i < 4; i++) {
+                if (firstSeen[i] != 0 || st[i].state() != ConflictBridge.StackState.PLACED)
+                    continue;
+                firstSeen[i] = now;
+                anchor[i] = st[i].anchorAt(now)[0];
+                near[i] = Double.MAX_VALUE;
+                farthest[i] = -Double.MAX_VALUE;
+                for (Mob m : st[i].bodies()) {
+                    double d = Math.hypot(m.getX() - w.player.getX(), m.getZ() - w.player.getZ());
+                    near[i] = Math.min(near[i], d);
+                    farthest[i] = Math.max(farthest[i], d);
+                    ticking[i] &= RtsimSession.entitiesTickAt(level, m.blockPosition());
+                    if (i == 3)
+                        floats = m.isNoGravity();
+                }
+            }
+        }
+
+        void allPlaced() {
+            for (int i = 0; i < 4; i++)
+                check("stack " + i + " is placed (" + st[i].state() + ")", st[i].state() == ConflictBridge.StackState.PLACED);
+        }
+
+        /** Where each stack first stood: the chief's never nearer than 128 blocks, each at the edge of the ticking chunks. */
+        void appeared() {
+            watching = false;
+            double edge = w.edge();
+            double lo = 16.0 * s, hi = 16.0 * (s + 1);
+            for (int i = 0; i < 4; i++) {
+                record(test, "stack " + i + " appeared at " + s, "tick " + firstSeen[i] + ", anchor x " + String.format("%.2f", anchor[i]) + " is "
+                        + String.format("%.2f", edge - anchor[i]) + " inside the edge, bodies " + String.format("%.2f to %.2f", near[i], farthest[i])
+                        + " blocks from the player (the edge is " + String.format("%.1f", edge - w.player.getX()) + "; the warriors' range " + lo + " to " + hi
+                        + (i == 3 ? "; the Umvuthi, never under 128" : "") + ")");
+                check("stack " + i + " was placed (tick " + firstSeen[i] + ")", firstSeen[i] != 0);
+                check("stack " + i + " was placed with every body in an entity-ticking chunk", ticking[i]);
+                check("stack " + i + " was placed the tick its last member was inside: its place is " + (edge - anchor[i]) + " inside the edge " + edge
+                        + " (0 to 1 block)", anchor[i] < edge && edge - anchor[i] <= 1.0);
+                check("stack " + i + " is placed once (" + st[i].placings() + ")", st[i].placings() == 1);
+                if (i > 0)
+                    check("front first: stack " + (i - 1) + " at tick " + firstSeen[i - 1] + ", stack " + i + " at " + firstSeen[i], firstSeen[i - 1] < firstSeen[i]);
+                if (i < 3)
+                    check("the warriors' stack " + i + " appeared " + near[i] + " to " + farthest[i] + " blocks from the player, in " + lo + " to " + hi,
+                            near[i] >= lo && farthest[i] <= hi);
+            }
+            check("the Umvuthi appeared " + near[3] + " blocks from the player, never under 128", near[3] >= 128);
+            check("the Umvuthi appeared " + near[3] + " to " + farthest[3] + " blocks from the player, in " + lo + " to " + hi, near[3] >= lo && farthest[3] <= hi);
+            check("it floated from its first sight", floats);
+            check("still never rejected", ConflictKit.about(ConflictRecords.BAND_SPAWN_REJECTED, agent).isEmpty());
+        }
+
+        /** A creative player picks the puppet up, as Carry On's handler does: it is an ordinary Umvuthi at once, with its gravity on. */
+        void take() {
+            body = puppet(agent);
+            check("it floats until it is taken", body.isNoGravity());
+            yAtTake = body.getY();
+            wasKilled = ConflictKit.bridge().chiefsKilled;
+            taker = helper.makeMockPlayer(GameType.CREATIVE);
+            check("Carry On's pickup takes it", RtsimApi.takeFromSim(body, TakeReason.PICKUP, taker));
+            check("it is no puppet at once", !RtsimApi.isPuppet(body));
+            check("its gravity is on at once", !body.isNoGravity());
+            check("it is no member of the bridge's", ConflictKit.bridge().slotOf(body) == null);
+            check("it is alive in the world", body.isAlive() && !body.isRemoved());
+            CompoundTag nbt = new CompoundTag();
+            check("it saves", body.save(nbt));
+            check("its gravity is not off in its saved NBT", !nbt.getBoolean("NoGravity"));
+            saved = nbt;
+        }
+
+        /** The pickup is booked: one CHIEF_KILLED, by a player, naming the one who took it. */
+        void booked() {
+            List<ScriptedEngine.Received> k = ConflictKit.about(ConflictRecords.CHIEF_KILLED, agent);
+            check("one CHIEF_KILLED is journaled (" + k.size() + ")", k.size() == 1);
+            check("by a player (" + k.get(0).aux() + ")", k.get(0).aux() == ConflictRecords.BY_PLAYER);
+            check("naming the player who took it", taker.getUUID().equals(ConflictKit.uuidAt(k.get(0), ConflictRecords.ChiefKilled.KILLER_MOST)));
+        }
+
+        /** The player puts it down: a body made from the saved NBT joins the level, as Carry On's does. */
+        void putDown() {
+            Entity e = EntityType.create(saved, level).orElse(null);
+            check("a body made from the saved NBT is an Umvuthi", e instanceof EntityUmvuthi);
+            copy = (EntityUmvuthi) e;
+            copy.setUUID(UUID.randomUUID());
+            check("it joins the level", level.addFreshEntity(copy));
+        }
+
+        /** Put down, it is an ordinary Umvuthi, a stray: it falls, floats no more, and nothing of the bridge's holds it. */
+        void ordinary() {
+            for (EntityUmvuthi u : new EntityUmvuthi[] {body, copy}) {
+                String what = u == body ? "the taken body" : "the copy put down";
+                check(what + " is alive in the world", u.isAlive() && !u.isRemoved());
+                check(what + " floats no more (gravity " + !u.isNoGravity() + ")", !u.isNoGravity());
+                check(what + " is no puppet", !RtsimApi.isPuppet(u));
+                check(what + " is no member of the bridge's", ConflictKit.bridge().slotOf(u) == null);
+                check(what + " is no higher than where it was taken (" + u.getY() + " from " + yAtTake + ")", u.getY() <= yAtTake + 0.01);
+            }
+            check("one CHIEF_KILLED still (" + ConflictKit.about(ConflictRecords.CHIEF_KILLED, agent).size() + ")", ConflictKit.about(ConflictRecords.CHIEF_KILLED, agent).size() == 1);
+            record(test, "taken at " + s, "taken from " + String.format("%.2f", yAtTake) + " over, chiefsKilled " + wasKilled + " to " + ConflictKit.bridge().chiefsKilled
+                    + "; the body and a copy made from its NBT are ordinary Umvuthi that fell to " + String.format("%.2f and %.2f", body.getY(), copy.getY()));
+            copy.discard();
+            body.discard();
+            recallAll(agent);
+        }
+    }
+
+    /**
+     * The Umvuthi appears no nearer than the ticking area's edge, and a creative player's pickup lets it go (test 33u, test 33's Umvuthi
+     * clauses; MZB-829). A masked player ({@link Watch}) stands at the west of its ticking area, at simulation distance 8 and then 10 (view
+     * distance two more; each restored inside the sequence). A band of six warriors and its chief comes in from 170 (200) blocks east, on
+     * the player's row, at 0.1 blocks a tick: three rows of two and the chief's stack at the rear, four stacks, as M10's test 33 has them.
+     * <ul>
+     * <li>The band is made and none of it stands. The stacks appear one by one, front first, each in the tick its place is inside the
+     * ticking chunks (its anchor within a block of the edge), every body in an entity-ticking chunk. Each stack's distance from the
+     * player is logged; the Umvuthi's is never under 128 and, like the warriors' (the control), in 128 to 144 (160 to 176 at 10). It floats
+     * from its first sight.</li>
+     * <li>A creative mock player takes the puppet with {@code RtsimApi.takeFromSim(body, TakeReason.PICKUP, player)}, the call Carry On's
+     * handler makes (as FrostmawGameTests' pickup does): the body is no puppet at once, its gravity is on, it is no member of the
+     * bridge's, and its saved NBT does not say NoGravity. One CHIEF_KILLED names that player, by a player.</li>
+     * <li>Put down (a body made from that NBT joins the level), it is an ordinary Umvuthi, a stray: 40 ticks on it is alive, no puppet, no
+     * member, with its gravity on and no higher than it was taken. The taken body does the same.</li>
+     * </ul>
+     * Fails without the chief's stack's pending test (it appears nearer than 128 at distance 8, or not in a ticking chunk), and without
+     * {@code gone}'s release (put down, it floats).
+     */
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "aloft_beyond_128", skyAccess = true)
+    public static void theUmvuthiAppearsBeyond128AndCarryOnTakesIt(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 6000);
+        String test = "theUmvuthiAppearsBeyond128AndCarryOnTakesIt";
+        Far far = new Far(helper, test);
+        // Both watches take the server's distances now, before either sets its own, so each puts the original back.
+        Column[] cs = {new Column(helper, far, test, 8, 0), new Column(helper, far, test, 10, 1)};
+
+        MowzieKit.Seq seq = MowzieKit.seq(helper);
+        for (Column c : cs)
+            seq.thenExecute(c::join)
+                    .thenWaitUntil(waits.chunks(c::ready))
+                    .thenExecute(c::march)
+                    .thenWaitUntil(waits.logic(c::materialized))
+                    .thenExecute(c::pending)
+                    .thenWaitUntil(waits.logic(c::allPlaced))
+                    .thenIdle(60)
+                    .thenExecute(c::appeared)
+                    .thenExecute(c::take)
+                    .thenWaitUntil(waits.logic(c::booked))
+                    .thenExecute(c::putDown)
+                    .thenIdle(40)
+                    .thenExecute(c::ordinary)
+                    .thenWaitUntil(waits.logic(() -> check("the band went (" + dematerialized(c.agent).size() + ")", dematerialized(c.agent).size() >= 1)))
+                    .thenExecute(() -> {
+                        c.w.end();
+                        c.g.far.releaseAll();
+                    });
+        seq.thenSucceed();
     }
 }
