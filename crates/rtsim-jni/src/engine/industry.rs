@@ -939,7 +939,13 @@ fn take_answered(l: &mut Link, op: OpId, replayed: bool, applied: bool) -> Optio
 /// engine sends it again: T2's rule, RP-250, `DurableOpRing.settle`; only the acknowledgement of a
 /// live answer prunes, and no replayed answer is live), and a train's ring that came back without
 /// the op applies it to the restored goods (J4, RP-196), which the replayed IND_CARRIAGE_RESULT
-/// booked already: taken out, the restored train never gets them.
+/// booked already: taken out, the restored train never gets them. The copy goes at the first drain
+/// after the replay end, or later: a MODULES(off) in a later replay hand-over, a full buffer or a
+/// name wait (W21) can hold it past this session's first acknowledgement, which trims Java's
+/// journal op index. Then the second guards alone refuse it: the train ring, Diesel's oil ring,
+/// LEVEL_APPLIED_OPS, the port rings, the chunk carry and the reconcile epoch. Where the journal's
+/// index is the only guard (Create's train or port rings off, Diesel's oil without its ring
+/// holder), Java would apply it again; no supported configuration has one (RP-315).
 ///
 /// A FAILED answer takes a copy that is there at once (A's `take_out`): Java keeps only the ops it
 /// applied. A copy decided again after the answer (a chain write a store's wake decides past it,
