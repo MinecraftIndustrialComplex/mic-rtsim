@@ -8939,7 +8939,9 @@ TRAIN_PASSED test is written for the M8 merge (RP-187).
   NeoForge writes each file as its own task on one IO chain, one after the other. The journal's
   task first waits for the barrier's round (`ChunkWriteBarrier.await`, at most `WAIT_MILLIS` 10 s)
   and, if its chunks are not on disk, holds the file to the next world save, up to
-  `GIVE_UP_ROUNDS` (3) saves in a row; the tracks file is written at every save. Autosave is every
+  `GIVE_UP_ROUNDS` (3) saves in a row (*since slice U:* with no round limit, RP-205, and the journal's file
+  is written after every other SavedData of the save, RP-200, which leaves J3 and removes J4 but for a
+  failed tracks write); the tracks file is written at every save. Autosave is every
   6,000 ticks. So the two part, both ways: the goods on disk without the journal (J3) when the
   tracks file is first in the chain and the server dies before the journal's write (milliseconds,
   up to the 10 s wait), or when the barrier holds the journal (up to three autosaves); the journal
@@ -9091,7 +9093,9 @@ the engine's acknowledgement of each op's answer, not by a count.
   after a crash: the ones applied between the engine's last durable save and Create's last write of the
   tracks file. That window is one autosave interval normally (6,000 ticks; rtsim-jni `window_grows`:
   "Normally it is one vanilla autosave interval at most"), up to four while the chunk barrier holds the
-  journal, and with it the engine's ack, back (`GIVE_UP_ROUNDS` 3): 24,000 ticks. One train takes in
+  journal, and with it the engine's ack, back (`GIVE_UP_ROUNDS` 3): 24,000 ticks (*since slice U's RP-205,
+  docs/choices-journal-barrier.md:* a hold a later save can clear has no round limit, so the window is as
+  long as the hold; docs/replay-gate.md §6.1, "Slice U and the ring's bound"). One train takes in
   it at most one station exchange op per simulated arrival (`train_arrived` derives one exchange op per
   call at a station of an unloaded district; a loaded stop exchanges through Create's interfaces,
   no carriage delta) and one loot op per raid, which the per-train, per-class cooldown

@@ -40,6 +40,8 @@ public final class MicRtsim {
         com.minecraftindustrialcomplex.mic_rtsim.talk.TalkEvents.register();
         // The habitat sampler (docs/boundary.md §10): the engine's world model, built in as vanilla is.
         com.minecraftindustrialcomplex.mic_rtsim.habitat.HabitatEvents.register();
+        // The stores' op rings (slice U): the session's settle and the prunes on the engine's acknowledgement.
+        com.minecraftindustrialcomplex.mic_rtsim.api.RtsimApi.registerPlugin(new com.minecraftindustrialcomplex.mic_rtsim.journal.DurableOpRings.SessionHook());
         // Deep Time's world layout, glued north and south (TP19); Toroidal World's shape is read
         // without a registration, by reflection.
         if (net.neoforged.fml.ModList.get().isLoaded("deeptime"))

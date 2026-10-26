@@ -304,7 +304,7 @@ public final class CreatePlugin implements IndustryPlugin {
     @Override
     public String perfLine() {
         com.minecraftindustrialcomplex.mic_rtsim.industry.Industry ind = com.minecraftindustrialcomplex.mic_rtsim.industry.IndustryApi.current();
-        return (ind == null ? TrainWatch.perfLine() : TrainWatch.perfLine() + ", " + PackageStores.of(ind).perfLine()) + "; " + TrainRing.perfLine();
+        return (ind == null ? TrainWatch.perfLine() : TrainWatch.perfLine() + ", " + PackageStores.of(ind).perfLine()) + "; " + TrainRing.perfLine() + "; " + PortRing.perfLine();
     }
 
     /** The engine forgot what it was told: every package store is declared again (SECTIONS.md §2.5). */
@@ -312,6 +312,7 @@ public final class CreatePlugin implements IndustryPlugin {
     public void announce(com.minecraftindustrialcomplex.mic_rtsim.industry.Industry industry) {
         PackageStores.of(industry).announce();
         TrainRing.announce();
+        PortRing.announce();
     }
 
     @Override

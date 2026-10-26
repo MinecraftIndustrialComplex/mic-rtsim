@@ -1,10 +1,11 @@
-package com.minecraftindustrialcomplex.mic_rtsim_create;
+package com.minecraftindustrialcomplex.mic_rtsim.journal;
 
 /**
  * What a session settles the op rings another session answered against (docs/choices-mowzie-build.md RP-251):
  * this session's generation, the generation of the session whose journal file it loaded, the engine's pages
  * at its start, the end of that journal file, and this session's first sequence. Pure, so the unit tests
- * run it without a server; {@link TrainRing} fills it from the session.
+ * run it without a server; {@link DurableOpRings#view} fills it from the session, once for every ring (the
+ * train's and the station port's in create_tracks.dat, the stores' {@link DurableOpRing}s).
  *
  * <p>An op a ring holds with the sequence {@code at} of its answer leaves at the settle only when the engine's
  * pages hold that answer as the answering session sent it, live: the ring was settled last by the session
