@@ -10859,7 +10859,10 @@ the engine's globals IGB1 to IGB2 (`decided` after `now`), and the district IDS4
     the answer is heard. Both can act on one op, never on one copy, and each copy's booking is taken
     back once: `command_failed` finds nothing the second time (`exchanges.get` None for an exchange,
     `writing_at` None for a chain write). Different functions, so the merge is A's hunk plus this
-    one. RP-274's "applies the rest once" was wrong (amended there).
+    one. RP-274's "applies the rest once" was wrong (amended there). **Amended by RP-310:** A's
+    `take_out` acts on every answer, not on FAILED alone: merged as it was (7661ca04), a replayed
+    APPLIED took out the copy this record writes on purpose. Since RP-310 it takes a copy while
+    replaying only for a FAILED answer.
   - **P1-3, one epoch counter per chunk.** Java's guard is per chunk (Reconciler.java:265), the
     engine's counter was per district, so two chunks' rounds decided in another order by the replay
     could swap epochs, the second chunk's above what it applied live. Not driven: the hold path
@@ -11136,11 +11139,13 @@ cmd.rs, tests/industry.rs and this file only.
   of the snapshot a restart with the module on and one with it off, switched on in its second
   hand-over, each run a day and until every command is applied: X never sent, one FAILED booked
   (`results_failed`), the exchange not left waiting, and the world against the books and the
-  trains' cargo equal between the two. All pass. With both `Link::unqueue` and `unsent_answered`
-  disabled, the two before arms fail (the restart with the module on sends X once) and so does
-  `an_exchange_answered_failed_live_is_not_applied_after_a_crash`; with either one alone they pass,
-  so the two are redundant on one crash, and `take_out` is the one a second crash needs. The after
-  arm rests on A's keeping (its own failing-first tests).
+  trains' cargo equal between the two. The three arms pass. **Corrected by RP-310:** this said
+  "All pass", and the rtsim-jni industry suite did not: from this merge to fe4e80bf six of slice
+  R's op-id crash tests failed (6 of 61), each alone too. With both `Link::unqueue` and
+  `unsent_answered` disabled, the two before arms fail (the restart with the module on sends X
+  once) and so does `an_exchange_answered_failed_live_is_not_applied_after_a_crash`; with either
+  one alone they pass, so the two are redundant on one crash, and `take_out` is the one a second
+  crash needs. The after arm rests on A's keeping (its own failing-first tests).
   - **No catch-up copy.** The case this was written to probe, a switch on whose catch-up decides X
     again after the kept FAILED was booked against an op the engine had not decided, does not
     arise for a station exchange: the engine decides one only from Java's IND_TRAIN_ARRIVED
@@ -11148,3 +11153,82 @@ cmd.rs, tests/industry.rs and this file only.
     restart off never decides X again. `answered_unsent` stays 0 in these shapes.
 - **Worlds.** A bumps `LINK_VERSION` to 2: every neoforge project's `run-gametest/world` in this
   worktree is deleted before its GameTests.
+
+#### After the U-a merge (RP-310 onwards)
+
+The build lead's brief r-tmerge-diag.md: from 7661ca04 (the T merge) to fe4e80bf (the U-a merge),
+`cargo test -p rtsim-jni --test industry` failed 6 of 61, each alone too, and the merge's record
+said "All pass" (corrected above). Lines here are at the fix's commit.
+
+- **RP-310** (the six, broken by the merge, not stale; the fix):
+  - *The failures.* `a_one_hand_over_replay_rederives_the_same_op_ids`,
+    `a_replay_of_several_hand_overs_rederives_the_same_op_ids`,
+    `a_station_exchange_replayed_in_one_hand_over_is_applied_once`,
+    `a_station_exchange_taken_late_live_is_applied_once_after_a_crash`,
+    `a_station_exchange_replayed_over_several_hand_overs_is_applied_once` and
+    `pages_behind_the_world_save_rederive_the_same_reconcile`. Each failed on its one assertion
+    that the copies go out under the live ops: nothing was sent after the restart (`ind-ids-one: 1
+    replay hand-overs; first ops [..], sent after the restart []`), while nothing was applied
+    again, no reconcile was left pending and the trains held what they held.
+  - *The cause, a semantic conflict that merged without a textual one.* The link
+    (rtsim-jni engine/industry.rs) had no conflict: 7661ca04 over R (95dd787e) is exactly T's
+    change over the base bc669502, and over T (5e832028) exactly R's. T brought slice A's
+    `command_result`, `complete(op).or_else(|| unqueue(op))`, and `unqueue` falls back to the
+    engine's commands not drained yet (`Engine::take_out`, RP-285). R holds the engine while
+    replaying (RP-274), so every copy the replay decides again waits in the engine's `out` when
+    its replayed answer comes, and an APPLIED took it out: RP-259's rule (only a FAILED answer
+    drops a copy, the build lead's narrowing) was lost. RP-259 had read A's `take_out` as acting
+    on FAILED copies ("the merge is A's hunk plus this one", amended there).
+  - *Evidence.* A probe (an env-gated print in `journaled`, not committed) at fe4e80bf: in the
+    one-hand-over reconcile test the replayed APPLIED answers for 0x49613958dd7f73bf and
+    0x499289f0c9f63bea, the live ops, each found its copy in the engine's `out` (not in the outbox
+    or the queue); in the one-hand-over exchange test the replayed APPLIED for 0x49823c0440e26b17,
+    the live op, did too. So the engine re-derives the same op ids, and the merge's port of T's
+    keyed ids onto R's window (cmd.rs, the merge's one Rust conflict) is not the cause. A second
+    arm of the probe, the take skipped for a replayed APPLIED, passed all 61.
+  - *Why not stale.* The six are RP-259's controls ("the six op-id crash tests assert the copies
+    are still sent under the live ops"), and A does not make the rule wrong. Java's rings keep an
+    op another session answered, its answer unknown, until the engine sends it again
+    (`DurableOpRing.settle`; T2's rule, RP-250); only the acknowledgement of a live answer prunes,
+    and no replayed answer is live. A's own checker allows exactly this
+    (`ack_never_resends::a_replayed_answer_acknowledged_is_sent_again_and_its_refusal_never_after`,
+    case 4). And the reason for the rule holds: J4 (RP-196; since RP-200 only a failed tracks
+    write). RP-311's test at fe4e80bf: the copy never goes, the train restored without the op
+    stays empty, and the world against its books is crushed raw iron -96 against the control's
+    +128, the exchange's 224 short.
+  - *The fix.* `command_result` (engine/industry.rs:864) takes `replaying`, which `journaled`
+    passes (668): while replaying, only a FAILED answer takes a copy out of the queue or the
+    engine's commands (A's take, which RP-259's second crash needs); an APPLIED or DUPLICATE one
+    takes only the outbox's, as R did before the merge. Outside the replay (live answers, and
+    `book_kept_answers` at the switch on or a session start, 816) A's rule is unchanged, and so is
+    the module-off path (`keep_answer`, `answered_again` while off).
+  - *Mutations.* No gate (fe4e80bf): the six and RP-311's test fail. The gate on every status,
+    FAILED too: `a_second_crash_after_a_save_before_the_first_drain_writes_no_failed_copy` fails
+    (+352 against the control's +128, as the merge's record found with `take_out` disabled), and
+    `an_exchange_answered_failed_live_is_not_applied_after_a_crash` passes (`unsent_answered`
+    covers one crash).
+  - *Left.* No test drives a replayed DUPLICATE meeting a copy decided again inside the replay: a
+    mutation that takes the copy on a replayed DUPLICATE passes every test. Kept with APPLIED (the
+    copy is written; Java refuses it again and `answered_again` takes the answer, or J4 applies
+    it). The copy is written in the first drain after the replay end; the exposure of a durable
+    save's acknowledgement read by Java before it (the journal's op index forgets the op, the
+    rings do not) is the one RP-259 accepted before the merge, unchanged.
+- **RP-311** (the J4 test, the build lead's "show it with evidence"):
+  `a_station_exchange_whose_trains_save_was_lost_is_applied_again_after_the_replay`
+  (tests/industry.rs:2094). The iron line's exchange at 72,800 over a replay of several hand-overs,
+  as in `exchange_behind_the_save` (8,000 fillers, MIN_CAPACITY); the world restarts from its save
+  at 72,900 but for the exchange's train, whose cargo is from the tick before the world applied
+  it, and its op, dropped from the fake world's applied set (the ring, saved with the trains):
+  J4 built by hand on one train, so no other train's state moves (reverting every train to an
+  earlier tick moved train 2's cargo too). Its control is a restart from a copy of the pages with
+  the whole save (J1), which gives the restored world's own baseline (`books_delta`, as the merge's
+  second crash test compares). Asserts: the copy written under the live op, applied to the
+  restored train, its cargo as live at the crash, the world against its books as the control's,
+  the exchange settled. `copy_pages` moves from `ack_never_resends` to the top level for it.
+
+  **Checks** (at 33c79a65): `cargo test -p rtsim-industry -p rtsim-jni --no-fail-fast` all pass:
+  rtsim-industry 385 (3 ignored, as before), rtsim-jni 364, of them tests/industry.rs 62 (the
+  six and RP-311's test among them). `cargo clippy -p rtsim-industry -p rtsim-jni --all-targets
+  -- -D warnings` clean. engine/industry.rs was rustfmt-clean at its base and is after the fix;
+  tests/industry.rs was not clean at its base (`ack_never_resends`), so its new lines are wrapped
+  by hand. The workspace test and the GameTests were not run (the build lead runs them).
