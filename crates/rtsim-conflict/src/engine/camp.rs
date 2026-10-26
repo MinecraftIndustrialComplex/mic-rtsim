@@ -30,8 +30,8 @@ use crate::boundary::{
     ACTION_ADOPT, ACTION_HAND_BACK, ACTION_MASK, ACTION_REMOVE, ACTION_SEAT_HEIR, ACTION_SET_OUT,
     ACTION_SPAWN, ACTION_TAKE, BODY_CHIEF, BODY_CRYSTAL, BODY_ELSEWHERE, BODY_STRAY, CENSUS_CHIEF,
     CENSUS_CRYSTAL, CENSUS_THRONE, CHIEF_CRYSTAL, CampBodies, CampCensus, CampDeath, CampOut,
-    CampReconcile, CensusBody, ChiefBody, ChiefState, DEATH_CHIEF, DEATH_STRAY, LINE_CHIEF,
-    LINE_CRYSTAL, LINE_DONE, LINE_NOTHING, RECONCILE_THRONE, ReconcileLine,
+    CampReconcile, CensusBody, ChiefBody, ChiefKilled, ChiefState, DEATH_CHIEF, DEATH_STRAY,
+    LINE_CHIEF, LINE_CRYSTAL, LINE_DONE, LINE_NOTHING, RECONCILE_THRONE, ReconcileLine,
 };
 
 /// Whole days after a body's first miss before the third miss writes its member off
@@ -189,6 +189,16 @@ pub struct Chest {
     pub free: u32,
 }
 
+/// A grove chief's band that came home while its chief's puppet may still stand in Minecraft
+/// (MZB-824, MZB-853): the band was embodied, or a recall of it was not yet answered. The band's
+/// agent, its last epoch with bodies, and the generation the chief's slot held at home.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Ended {
+    pub agent: u64,
+    pub epoch: u32,
+    pub generation: u32,
+}
+
 /// A camp's ledger.
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct Camp {
@@ -236,6 +246,13 @@ pub struct Camp {
     pub mask: Option<(u64, u32)>,
     /// The SEAT_HEIR line in flight, the same way (the heir's slot is made when it is answered).
     pub seat: Option<(u64, u32)>,
+    /// The end of the band its chief came home with, while that chief's puppet may still stand in
+    /// Minecraft (MZB-853). While the chief's slot holds its generation ([`Camp::ended_holds`]) no
+    /// chief SPAWN goes and the chief leads no party. Released by the band's BAND_DEMATERIALIZED
+    /// of that epoch, the chief's HAND_BACK answered done or nothing, or its CHIEF_KILLED (the
+    /// chief's death at its camp); pruned when the slot's generation is freed; booked a loss at the
+    /// replay's end.
+    pub ended: Option<Ended>,
 }
 
 impl Camp {
@@ -259,6 +276,15 @@ impl Camp {
     /// The chief's slot.
     pub fn chief(&self) -> Option<&Slot> {
         self.chief_index().map(|i| &self.slots[i])
+    }
+
+    /// The band's end that holds the chief (MZB-853): [`Camp::ended`], while the chief's slot
+    /// still holds its generation.
+    pub fn ended_holds(&self) -> Option<Ended> {
+        let e = self.ended?;
+        self.chief()
+            .is_some_and(|s| s.generation == e.generation)
+            .then_some(e)
     }
 
     /// The slots of the pool's members: every slot but the chief's (MZB-401).
@@ -387,9 +413,13 @@ impl Camp {
             .map(|r| r.generation)
     }
 
-    /// Frees slot `i`, remembering the generation it retired and whether at a death.
+    /// Frees slot `i`, remembering the generation it retired and whether at a death. A band's end
+    /// that held the chief's slot at that generation goes with it (MZB-853).
     fn free(&mut self, i: usize, died: bool) {
         let s = self.slots.remove(i);
+        if s.id == CHIEF_SLOT {
+            self.ended.take_if(|e| e.generation == s.generation);
+        }
         match self.retired.iter_mut().find(|r| r.slot == s.id) {
             Some(r) => {
                 r.generation = s.generation;
@@ -1018,10 +1048,16 @@ impl Conflict {
             Some(t) => (RECONCILE_THRONE, t.spot, t.direction),
             None => (0, (0.0, 0.0, 0.0), 0.0),
         };
+        // A chief whose band's end may still have its puppet in Minecraft is not spawned beside it
+        // (MZB-853): the line is not sent, and the end's release sends it.
+        let held = camp.ended_holds().map(|e| e.generation);
         // At most one line in flight per slot (I4): a second for a slot is a bug, and not sent. The
         // heir's pair names no slot that stands for it, so each has a marker of its own.
         let lines: Vec<ReconcileLine> = lines
             .into_iter()
+            .filter(|l| {
+                !(l.slot == CHIEF_SLOT && l.action == ACTION_SPAWN && held == Some(l.generation))
+            })
             .filter(|l| {
                 let busy = match l.action {
                     ACTION_MASK => camp.mask.is_some(),
@@ -1135,10 +1171,12 @@ impl Conflict {
 
     /// Whether the camp's chief can lead a party now (MZB-413): its slot exists, at home (body or
     /// owed), with no line in flight, and no heir waits (a chief that has just been seated is the
-    /// heir's, and the pair is still being booked while one waits).
+    /// heir's, and the pair is still being booked while one waits). Nor while the end of the band
+    /// it came home with holds it (MZB-853): its puppet may still stand in Minecraft.
     pub(super) fn chief_can_lead(&self, f: u32) -> bool {
         self.camp(f).is_some_and(|c| {
             c.heir.is_none()
+                && c.ended_holds().is_none()
                 && c.chief()
                     .is_some_and(|s| s.state.home() && s.line.is_none())
         })
@@ -1244,6 +1282,16 @@ impl Conflict {
         // The chief's own puppet is in the world with its band: it comes home by a hand-back of
         // its own, whether its slot is gone or left with its throne body standing (MZB-821).
         let chief_puppet = embodied && x.chief && chief_own_stack(self.culture(f));
+        // The chief's puppet may still stand in Minecraft after the band's end (MZB-853): the band
+        // is embodied, or a recall of it is not yet answered. The latest such epoch is the one
+        // whose BAND_DEMATERIALIZED comes last (Java ends an old epoch before it places a new one).
+        let puppet_epoch = if embodied {
+            Some(epoch)
+        } else {
+            x.recalled.iter().map(|e| e.0).max()
+        }
+        .filter(|_| x.chief && chief_own_stack(self.culture(f)));
+        let mut chief_generation = None;
         let mut puppets: u32 = if embodied {
             x.spawned.iter().map(|s| s.1).sum()
         } else {
@@ -1255,6 +1303,9 @@ impl Conflict {
         let camp = self.camp_mut(f).expect("a ledger");
         for s in camp.slots.iter_mut().filter(|s| s.party == p) {
             s.party = Handle::NULL;
+            if s.id == CHIEF_SLOT {
+                chief_generation = Some(s.generation);
+            }
             match s.state {
                 SlotState::Left => {
                     s.state = SlotState::Body;
@@ -1294,6 +1345,20 @@ impl Conflict {
         }
         let more = self.spawn_lines(f, &lines);
         lines.extend(more);
+        // The chief's slot is home in the books (every slot away needs a live party), so the end
+        // holds it there until its puppet is accounted for (MZB-853): a spawn line of it now is
+        // held in `send_lines`.
+        if let (Some(epoch), Some(generation)) = (puppet_epoch, chief_generation) {
+            self.hold_end(
+                f,
+                Ended {
+                    agent,
+                    epoch,
+                    generation,
+                },
+                at,
+            );
+        }
         if is_in {
             let handed = lines.iter().any(|l| l.action == ACTION_HAND_BACK);
             if handed {
@@ -2206,6 +2271,15 @@ impl Conflict {
                 continue;
             }
             let flags = self.line_flags(f, a.slot);
+            // The chief's HAND_BACK done, or with nothing to do (case B): its puppet is consumed,
+            // so the end of its band holds the chief no longer (MZB-853).
+            if a.slot == CHIEF_SLOT
+                && a.action == ACTION_HAND_BACK
+                && matches!(a.outcome, LINE_DONE | LINE_NOTHING)
+                && let Some(e) = camp.ended.take_if(|e| e.generation == a.generation)
+            {
+                self.chief_ended.remove(&e.agent);
+            }
             let s = &mut camp.slots[i];
             if s.line.is_some_and(|l| l.op == b.op) {
                 s.line = None;
@@ -2561,6 +2635,173 @@ impl Conflict {
         true
     }
 
+    // ---- the end of a chief's band (MZB-853) -----------------------------------------------
+
+    /// A grove chief's band came home while its chief's puppet may still stand in Minecraft: the
+    /// camp keeps the end, and the index finds the camp by the band's agent. A camp keeps one end
+    /// at most, since its chief leads no party while one holds it: an older end still here is one
+    /// whose slot's generation was freed, and goes.
+    fn hold_end(&mut self, f: u32, e: Ended, at: Tick) {
+        let Some(camp) = self.camp_mut(f) else {
+            return;
+        };
+        if let Some(old) = camp.ended.replace(e) {
+            self.chief_ended.remove(&old.agent);
+        }
+        self.chief_ended.insert(e.agent, f);
+        self.note(
+            at,
+            Some(f),
+            "chief",
+            format!(
+                "band {:#x} ended with its chief's puppet maybe in the world (epoch {}): the chief is held",
+                e.agent, e.epoch
+            ),
+        );
+    }
+
+    /// The camp's end goes, with its index entry.
+    fn release_end(&mut self, f: u32) -> Option<Ended> {
+        let e = self.camp_mut(f)?.ended.take()?;
+        self.chief_ended.remove(&e.agent);
+        Some(e)
+    }
+
+    /// The end that holds a chief for `agent`'s band, with its faction. An index entry whose camp
+    /// holds no such end any more (its chief slot's generation was freed, which prunes the end)
+    /// goes here, and so does an end left whose generation the slot no longer holds.
+    fn ended_of(&mut self, agent: u64) -> Option<(u32, Ended)> {
+        let f = *self.chief_ended.get(&agent)?;
+        if let Some(e) = self
+            .camp(f)
+            .and_then(Camp::ended_holds)
+            .filter(|e| e.agent == agent)
+        {
+            return Some((f, e));
+        }
+        self.chief_ended.remove(&agent);
+        if let Some(camp) = self.camp_mut(f) {
+            camp.ended.take_if(|e| e.agent == agent);
+        }
+        None
+    }
+
+    /// The BAND_DEMATERIALIZED of the end's epoch (MZB-853): Java sends it only once the chief's
+    /// puppet is gone, despawned or its death journaled first, so the end holds the chief no
+    /// longer. An owed chief at a camp that is in is spawned now; at one that is out, its next
+    /// census spawns it. An older epoch's despawn releases nothing: the puppet may be in the
+    /// latest.
+    pub(super) fn chief_band_gone(&mut self, agent: u64, epoch: u32, at: Tick) {
+        let Some((f, e)) = self.ended_of(agent) else {
+            return;
+        };
+        if e.epoch != epoch {
+            return;
+        }
+        self.release_end(f);
+        self.camp_sync(f, at);
+        let spawn = self
+            .camp(f)
+            .filter(|c| c.is_in())
+            .and_then(Camp::chief)
+            .filter(|s| s.state == SlotState::Owed && s.line.is_none())
+            .map(|s| self.line(f, s, ACTION_SPAWN, 0, 0));
+        self.note(
+            at,
+            Some(f),
+            "chief",
+            format!(
+                "band {agent:#x} is gone from the world (epoch {epoch}): its chief is free{}",
+                if spawn.is_some() { ", spawned" } else { "" }
+            ),
+        );
+        if let Some(l) = spawn {
+            self.send_lines(f, vec![l], at);
+        }
+    }
+
+    /// A CHIEF_KILLED of a band `home` removed (MZB-853): while that band's end holds the chief,
+    /// the puppet killed was the chief, after its march ended, and it is the chief's death at its
+    /// camp as `chief_death` books one. An owed slot is freed, its generation retired at a death;
+    /// a body slot (its throne body standing) is dead, and the throne body removed, by a REMOVE now
+    /// at a camp that is in, else by the next census; then the fall at the camp and the loss (the
+    /// heir, the pressure step, the memory cleared). False when no end holds a chief for that
+    /// agent: the caller counts it as before (`unbooked_home_death`). A copy of the record is not
+    /// booked again: it has the op id (`first_time`), and the end is released.
+    pub(super) fn chief_killed_home(&mut self, w: &mut World, ck: &ChiefKilled, at: Tick) -> bool {
+        let Some((f, e)) = self.ended_of(ck.agent) else {
+            return false;
+        };
+        self.release_end(f);
+        self.camp_sync(f, at);
+        let Some(i) = self.camp(f).and_then(|c| c.index(CHIEF_SLOT, e.generation)) else {
+            return false;
+        };
+        let camp = self.camp_mut(f).expect("a ledger");
+        let body_of = camp.slots[i].chief;
+        match camp.slots[i].state {
+            SlotState::Owed => camp.free(i, true),
+            SlotState::Body => camp.slots[i].state = SlotState::Dead,
+            // Never while the end holds it: its chief has led no party since.
+            _ => return false,
+        }
+        let remove = self
+            .camp(f)
+            .filter(|c| c.is_in())
+            .and_then(Camp::chief)
+            .filter(|s| s.state == SlotState::Dead && s.line.is_none())
+            .map(|s| self.line(f, s, ACTION_REMOVE, 0, 0));
+        let killer = (ck.by == boundary::BY_PLAYER).then(|| self.player(w, ck.killer));
+        self.chief_killed_at_camp(w, f, body_of, killer, at);
+        self.chief_lost(f, self.renewal_cause(f, ck.by), at);
+        if let Some(l) = remove {
+            self.send_lines(f, vec![l], at);
+        }
+        self.unblock(f, at);
+        true
+    }
+
+    /// The replay's end with ends still standing (MZB-853): the last session's puppets are gone
+    /// with it (S11), and whether a chief's was killed is not known, since a clean stop journals
+    /// the band's BAND_DEMATERIALIZED and a crash or a failed session can lose its CHIEF_KILLED.
+    /// Each such chief is lost to no one: its slot as at a CHIEF_KILLED (every camp is out, so a
+    /// dead slot's throne body is removed by its next census), and the loss with no pressure step
+    /// and no fall. A loss and not a release: the CHIEF_KILLED may still come as a copy (on the
+    /// Sol Visage), and then finds no end and books nothing. Every index entry goes.
+    pub(super) fn chief_ends_lost(&mut self, at: Tick) {
+        for (agent, f) in std::mem::take(&mut self.chief_ended) {
+            let Some(e) = self
+                .camp(f)
+                .and_then(|c| c.ended)
+                .filter(|e| e.agent == agent)
+            else {
+                continue;
+            };
+            self.camp_mut(f).expect("a ledger").ended = None;
+            self.camp_sync(f, at);
+            let Some(i) = self.camp(f).and_then(|c| c.index(CHIEF_SLOT, e.generation)) else {
+                continue;
+            };
+            let camp = self.camp_mut(f).expect("a ledger");
+            match camp.slots[i].state {
+                SlotState::Owed => camp.free(i, true),
+                SlotState::Body => camp.slots[i].state = SlotState::Dead,
+                _ => continue,
+            }
+            self.note(
+                at,
+                Some(f),
+                "chief",
+                format!(
+                    "band {agent:#x} (epoch {}) ended with the session before its chief's puppet was accounted for: the chief is lost",
+                    e.epoch
+                ),
+            );
+            self.chief_lost(f, LossCause::Other, at);
+            self.unblock(f, at);
+        }
+    }
+
     // ---- the heir ---------------------------------------------------------------------------
 
     /// `Ev::CampHeir`: the chief to come is due (MZB-406). Its stamp is the booking's; a changed
@@ -2806,6 +3047,36 @@ impl Conflict {
                 bad.push("MZB-406: no chief slot and no heir waits".into());
             }
             None => {}
+        }
+        // The end of the chief's band (MZB-853): kept only while the chief's slot holds its
+        // generation, at home, found by the index, with no chief SPAWN in flight and no party led.
+        if let Some(e) = c.ended {
+            if self.chief_ended.get(&e.agent) != Some(&f) {
+                bad.push(format!(
+                    "MZB-853: the end of band {:#x} is not in the index",
+                    e.agent
+                ));
+            }
+            match c.chief().filter(|_| c.ended_holds().is_some()) {
+                None => bad.push(format!(
+                    "MZB-853: the end of band {:#x} holds generation {} that the chief slot does not",
+                    e.agent, e.generation
+                )),
+                Some(s) => {
+                    if !s.state.home() {
+                        bad.push(format!(
+                            "MZB-853: the chief is {:?} while its band's end holds it",
+                            s.state
+                        ));
+                    }
+                    if s.line.is_some_and(|l| l.action == ACTION_SPAWN) {
+                        bad.push("MZB-853: a chief SPAWN in flight while its band's end holds it".into());
+                    }
+                    if self.parties.iter().any(|(_, x)| x.faction == f && x.chief) {
+                        bad.push("MZB-853: the chief leads while its band's end holds it".into());
+                    }
+                }
+            }
         }
         if c.seat.is_some() && c.heir.is_none() {
             bad.push("MZB-409: the heir is seated in flight with no heir".into());

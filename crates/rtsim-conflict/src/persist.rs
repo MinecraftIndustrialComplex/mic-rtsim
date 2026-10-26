@@ -42,8 +42,8 @@ use rtsim_travel::legs::{Meeting, Stamp};
 use crate::boundary::{self, Cmd};
 use crate::culture::{Cultures, PartyKind, SignalKind, Step};
 use crate::engine::{
-    Answered, Camp, Conflict, ConflictLedger, ConflictStats, Demand, Ev, Faction, Feud, Focus,
-    Heir, HeldPass, Line, LineCount, Party, Phase, Pin, Placing, RailMeter, Retired, Slot,
+    Answered, Camp, Conflict, ConflictLedger, ConflictStats, Demand, Ended, Ev, Faction, Feud,
+    Focus, Heir, HeldPass, Line, LineCount, Party, Phase, Pin, Placing, RailMeter, Retired, Slot,
     SlotState, Source, TRADED_CAP, Target, Throne,
 };
 use crate::grievance::{Grievance, KB, RailTail};
@@ -79,7 +79,9 @@ use crate::tunables::ConflictTunables;
 /// revision, whether one is due, the tick its watcher's unseen check is booked for and the epoch
 /// ranges of the fights its held arrivals resolved unwatched (M10, MZB-453, MZB-458, MZB-706); the
 /// list of the parties whose record is due is not saved, and a load builds it from the flags.
-const MAGIC: u32 = u32::from_le_bytes(*b"RTCB");
+/// RTC12, `RTCC`: a camp's ledger ends with the end of the band its chief came home with, and the
+/// resident state ends with those ends' index by agent, after the tribute stacks (M11, MZB-853).
+const MAGIC: u32 = u32::from_le_bytes(*b"RTCC");
 /// The meta page of a paged save ([`Conflict::save_paged`]). 2: the indexes, parties and wheel
 /// are in pages of their own, their headers after the row counts (PF10). 3: the resident state
 /// ends with the Peaceful flag, its start and the last notice's serial. 4: the party pages' rows
@@ -88,9 +90,10 @@ const MAGIC: u32 = u32::from_le_bytes(*b"RTCB");
 /// camp carries its heir, memory and tribute, and a faction its hunts (M9, MZB-448). 9: the
 /// resident state's stats end with the lurk's five (M8, MZB-690). 10: a party's row ends with its
 /// march revision, its due flag, its unseen tick and its unwatched epoch ranges (M10, MZB-453,
-/// MZB-706).
+/// MZB-706). 11: a camp ends with its chief's band's end, and the resident state with their index
+/// (M11, MZB-853).
 const META_MAGIC: u32 = u32::from_le_bytes(*b"RTCM");
-const META_VERSION: u16 = 10;
+const META_VERSION: u16 = 11;
 
 /// Every page table the conflict owns when it pages: a meta key in none of them.
 const TABLES: [u16; 9] = [
@@ -439,6 +442,11 @@ fn put_camp(w: &mut Writer, c: &Camp) {
         w.u64(m.0);
         w.var_u64(u64::from(m.1));
     });
+    put_opt(w, &c.ended, |w, e| {
+        w.u64(e.agent);
+        w.var_u64(u64::from(e.epoch));
+        w.u32(e.generation);
+    });
 }
 
 /// A tribute stack in flight (MZB-423).
@@ -568,6 +576,16 @@ fn get_camp(r: &mut Reader<'_>) -> codec::Result<Camp> {
     let stacks = get_u32(r)?;
     let mask = get_opt(r, |r| Ok((r.u64()?, get_u32(r)?)))?;
     let seat = get_opt(r, |r| Ok((r.u64()?, get_u32(r)?)))?;
+    let ended = get_opt(r, |r| {
+        Ok(Ended {
+            agent: r.u64()?,
+            epoch: get_u32(r)?,
+            generation: r.u32()?,
+        })
+    })?;
+    if ended.is_some_and(|e| e.agent == 0 || e.generation == 0) {
+        return bad("a band's end with no agent or generation".to_string());
+    }
     Ok(Camp {
         epoch,
         seen,
@@ -589,6 +607,7 @@ fn get_camp(r: &mut Reader<'_>) -> codec::Result<Camp> {
         chest: None,
         mask,
         seat,
+        ended,
     })
 }
 
@@ -1591,6 +1610,11 @@ impl Conflict {
             w.var_u64(u64::from(*f));
             put_placing(w, p);
         }
+        put_usize(w, self.chief_ended.len());
+        for (agent, f) in &self.chief_ended {
+            w.u64(*agent);
+            w.var_u64(u64::from(*f));
+        }
     }
 
     /// An engine from what [`Conflict::put_resident`] wrote, its row tables empty and resident.
@@ -1669,6 +1693,18 @@ impl Conflict {
         for _ in 0..n {
             let f = get_u32(r)?;
             c.placing.push((f, get_placing(r)?));
+        }
+        // An agent and a faction (MZB-853).
+        for _ in 0..r.len_prefix(9)? {
+            let agent = r.u64()?;
+            let f = get_u32(r)?;
+            if c.chief_ended
+                .last_key_value()
+                .is_some_and(|l| *l.0 >= agent)
+            {
+                return bad("the band ends' index out of order".into());
+            }
+            c.chief_ended.insert(agent, f);
         }
         Ok(c)
     }
