@@ -1687,9 +1687,15 @@ public final class MowzieGameTests {
             MowzieKit.discardRecordMarkers(level, den.area());
             MowzieKit.discardRecordMarkers(level, grove.area());
         });
+        // The premise: no page save acknowledges the adopt answer before the marker is checked. A world save asks for
+        // one, and vanilla's autosave (every 6,000 ticks, a few seconds of an unthrottled GameTest server) can come
+        // in the middle; it is off until then, as /save-off does, and back to what it was however the test ends.
+        boolean saving = level.noSave;
+        ConflictKit.onEnd(helper, () -> level.noSave = saving);
 
         MowzieKit.seq(helper)
                 .thenExecute(() -> {
+                    level.noSave = true;
                     den.force();
                     grove.force();
                 })
@@ -1773,8 +1779,10 @@ public final class MowzieGameTests {
                     // was saved with one: the marker that takes over its records keeps each one's generation
                     // (MZB-652), since a copy is judged by the generation that journaled the record.
                     PendingRecords had = f[0].getExistingDataOrNull(RtsimAttachments.PENDING);
-                    check("the Frostmaw carries its adopt answer, journaled in this session", had != null && had.entries().size() == 1
-                            && had.entries().get(0).gen() == RtsimSession.current().boundary().gen());
+                    long gen = RtsimSession.current().boundary().gen();
+                    check("the Frostmaw carries its adopt answer, journaled in this session (" + (had == null ? "no records"
+                            : had.entries().size() + " of generations " + had.entries().stream().map(e -> Long.toHexString(e.gen())).toList())
+                            + ", this session's " + Long.toHexString(gen) + ")", had != null && had.entries().size() == 1 && had.entries().get(0).gen() == gen);
                     f[0].setData(RtsimAttachments.PENDING, had.plusEntries(had.life(),
                             List.of(new PendingRecords.Entry(EARLIER_GEN, had.entries().get(0).bytes().clone()))));
                     fell[1] = f[0].position();
@@ -1808,6 +1816,7 @@ public final class MowzieGameTests {
                     // the chunk leaves, so this leg was not run against it. The leg is for the reload path: the
                     // generation surviving the save and the load, the REASSERT naming it, and the engine
                     // applying the copy that names it (MZB-655).
+                    level.noSave = saving;
                     den.release();
                 })
                 .thenWaitUntil(waits.chunks(MowzieKit.unloadedWithout(level, den.cx, den.cz, () -> deathMarkerObject[0])))
