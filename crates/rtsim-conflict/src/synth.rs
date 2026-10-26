@@ -1212,6 +1212,36 @@ impl FakeConflict {
         op
     }
 
+    /// The chief's puppet of `faction` comes within 32 blocks of its throne while the census's TAKE
+    /// of the throne body is held on a player there: Java answers the held TAKE stale, and the
+    /// slot is the puppet's to settle by its own line (MZB-823). `false` when no such TAKE is held.
+    pub fn puppet_near_throne(&mut self, faction: u64, at: Tick) -> bool {
+        let mut found = false;
+        for mut h in self.take_held(Some(faction), Some(Hold::Removal)) {
+            let (take, rest): (Vec<_>, Vec<_>) = h.lines.iter().copied().partition(|(_, l)| {
+                l.action == boundary::ACTION_TAKE && l.slot == crate::engine::CHIEF_SLOT
+            });
+            let (epoch, op) = (h.epoch, h.op);
+            if !rest.is_empty() {
+                h.lines = rest;
+                self.held.push(h);
+            }
+            if !take.is_empty() {
+                found = true;
+                self.apply_lines(faction, epoch, op, false, take, at);
+            }
+        }
+        found
+    }
+
+    /// The chiefs standing in the world as puppets of `faction`'s bands (MZB-801).
+    pub fn band_chiefs(&self, faction: u64) -> usize {
+        self.bodies
+            .values()
+            .filter(|b| b.faction == faction && b.chief.is_some())
+            .count()
+    }
+
     /// What each of `lines` waits on, if it does (the camp being in at their epoch): the throne
     /// for a chief SPAWN or the pair of a plain seat (a player within 160 blocks of it); for the
     /// pair seated over the old chief's body, that body in a fight; for a TAKE, REMOVE or SET_OUT

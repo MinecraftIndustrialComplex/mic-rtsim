@@ -120,8 +120,10 @@ const RUNS: [(u32, &str, &str, &str); 13] = [
         "M10a, the grove's Invasion on the march record (in and out, 12.6), the chief killed away, \
          a camp that comes in while out, the held throne body and seat, the re-binds, the arrival \
          170 blocks from the only player, the fight that loses its watcher, the abstract dead \
-         counted once",
-        "the chief's travel M11",
+         counted once; M11a, the chief's own stack met on the road, at its fight and home, its \
+         hand-back home from Gone and Left, a payment to its puppet, its puppet killed as it \
+         floats home",
+        "",
     ),
     (
         12,
