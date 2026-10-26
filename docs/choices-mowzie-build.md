@@ -10371,6 +10371,28 @@ and the reviews' fixes.
     `AloftRulesTest`'s `recallKeeps`, `handBackDue`, `handBackLate` and `takeStale` tests, which failed against stubs first
     (6 failures on their own rules) and passed after (59 in the class). The order is M11c's GameTest, with the chief puppet dying
     aloft at a party's end and CHIEF_KILLED before BAND_DEMATERIALIZED asserted from the journal.
+- **MZB-887** (step 7: the chief puppet's summons; MZB-816; D3's second mixin):
+  - `UmvuthiSummonsMixin` (new, in the module's mixins json) is a `@WrapOperation` on `Level.addFreshEntity(Entity)` in
+    `EntityUmvuthi$SpawnFollowersAbility.beginSection` (the one such call, `allow = 1`; the jar's line 1050, a check against the
+    cfr extract of this session: `entity.level().addFreshEntity(umvuthana)`, the receiver's static type `Level`). The summoner
+    is `Ability.getUser()`. For a client level, a summoner that is not an Umvuthi, or a summons that is not a `Mob`, the call is
+    the original. Otherwise `RtsimApi.adoptSummons(user, mob)` runs first, the original joins it, and a refused join calls
+    `RtsimApi.dropSummons` (new API, two static methods over `ConflictBridge.INSTANCE`; the module has no other way into core).
+  - `ConflictBridge.adoptSummons(summoner, summons)`: one `byUuid` lookup (an empty map returns at once, D1); the summoner must be a
+    live, non-dying chief puppet with a Traveller (a body with none of the three, such as a grove's own Umvuthi at its throne or
+    the Frostmaw, is untouched: its summons stay strays). It prunes the slot's extras that are dead or removed (from `extraOf`
+    too), tags the summons with the party's `AgentTag(agent, epoch)`, holds it (`ConflictBodies.hold`, persistence required: it is
+    never saved, the tag sees to that), and puts it in a fresh `extras` list and in `extraOf`, all before the join, so
+    `admit` lets it in. `dropSummons` undoes the map entry, the list entry and the tag. Counters `summonsAdopted` and
+    `summonsRefused` (public, reset at `sessionStarted`) are for the GameTests.
+  - Fork (conservative): the extras list is replaced, not edited (`Slot.extras` may be the immutable `List.of()`), one small
+    list per summons, which is a few per Invasion's whole life.
+  - Their lifetime is a raptor's follower's (MZB-428): `despawn` and a party's end discard them, `isExtra` cancels their drops and
+    experience (MZB-643), their deaths book nothing, the portal listener refuses their trips (MZB-815). The summons come at the
+    summoner's y + 2.5 with an upward push, so aloft they fall about 4.5 blocks; only the step's `restrictTo` each tick keeps them
+    round the puppet (test 23's clause, as the design says). No change to what the jar does to them.
+  - No JUnit: it needs a live level and the jar's ability. Test 24 (M11c) is the check; the mixin applying at all is the lead's
+    first GameTest run (`defaultRequire` 1 makes a missed target fail at load, not silently).
 
 ## M12 S9
 
