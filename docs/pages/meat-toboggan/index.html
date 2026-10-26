@@ -138,6 +138,20 @@ table.keys td:first-child { width: 45%; font-weight: 600; }
 .chat { font-family: var(--mono); font-size: 14.5px; background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 10px 14px; margin: 10px 0 6px; max-width: 40em; }
 .chat div { padding: 2px 0; }
 
+/* trailer timeline */
+.tl-wrap { margin: 14px 0 8px; max-width: 46em; }
+.tl-row { display: flex; gap: 2px; margin-bottom: 4px; }
+.tl-row span { display: flex; align-items: center; justify-content: center; min-width: 0; height: 34px; font-size: 14px; font-weight: 650; font-variant-numeric: tabular-nums; border-radius: 2px; overflow: hidden; white-space: nowrap; }
+.tl-row.shots span { background: #e9e6df; color: var(--ink); }
+.tl-row.shots span:nth-child(even) { background: #d6d1c6; }
+.tl-row.music span { height: 26px; font-size: 13px; }
+.tl-row.music .m13 { background: #d6d1c6; color: var(--ink); }
+.tl-row.music .mpig { background: var(--accent); color: #fff; }
+.tl-axis { display: flex; gap: 2px; font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
+ol.shots { padding-left: 1.6em; font-size: 16.5px; }
+ol.shots li { margin-bottom: 4px; }
+ol.shots .t { font-variant-numeric: tabular-nums; font-weight: 650; margin-right: 6px; }
+
 /* bar chart */
 .bars { margin: 14px 0 6px; max-width: 40em; }
 .bar-row { display: grid; grid-template-columns: minmax(120px, 34%) 1fr; gap: 4px 12px; align-items: center; padding: 6px 0; }
@@ -155,10 +169,12 @@ table.keys td:first-child { width: 45%; font-weight: 600; }
   <a class="home" href="https://spacesheep.dev/@benmac/rtsim-hub">mic-rtsim for Ben</a>
   <a href="#use">Use it</a>
   <a href="#glide">Speed</a>
+  <a href="#design">Design</a>
   <a href="#art">Art</a>
   <a href="#config">Config</a>
   <a href="#tests">Tests</a>
   <a href="#review">Review</a>
+  <a href="#filming">Filming fixes</a>
   <a href="#choices">My choices</a>
   <a href="#limits">Limits</a>
   <a href="#decide">Your call</a>
@@ -173,14 +189,14 @@ table.keys td:first-child { width: 45%; font-weight: 600; }
   <p class="quote" data-ss-id="ask-quote"><em>"I need you to create a new addon for the ragdoll mod called `meat tobaggan` which allows for someones ragdoll to be carved out with a butchers knife and turned into a meat tobaggan. (Use blockbench to create custom models and shit for this mod.) Players should then be able to ride meat tobaggans, hook them up to hroses to drag behind, etc."</em></p>
   <p class="dek" data-ss-id="dek-answers">The reference was the SAO Abridged episode 5 meat toboggan: limbs off, intestines for reins, a bile and gore trail through the snow, the victim's eyes pleading with the rider, children fleeing. You answered "Local only" and the mod id <code>meat_toboggan</code>. After the first models you said <em>"not nearly realistic enough right now"</em>, which led to a realism pass.</p>
 
-  <p class="lead" data-ss-id="lead-done"><strong>Done and committed locally.</strong> The repo is <code>mods/meat-toboggan</code>, branch master, 16 commits. It has no remote and is not in the pack, as you chose.</p>
-  <p class="lead" data-ss-id="lead-tested"><strong>Tested and reviewed.</strong> 7 unit tests and 6 GameTests on a real server with Sable and the ragdoll mod passed on 4 fresh servers in a row. An independent review found 10 problems; all 10 are fixed.</p>
-  <p class="lead" data-ss-id="lead-trailer"><strong>The trailer is being made now.</strong> About 30 seconds of real in-game footage, saved on the laptop. It stays off this page because it shows server players' skins (<a href="#trailer">below</a>).</p>
+  <p class="lead" data-ss-id="lead-done"><strong>Done and committed locally.</strong> The repo is <code>mods/meat-toboggan</code>, branch master, 17 commits. It has no remote and is not in the pack, as you chose.</p>
+  <p class="lead" data-ss-id="lead-tested"><strong>Tested and reviewed.</strong> 8 unit tests and 9 GameTests pass; the GameTests run on a real server with Sable and the ragdoll mod, and passed on 3 fresh servers in a row. An independent review found 10 problems, and filming the trailer found 4 more bugs; all 14 are fixed.</p>
+  <p class="lead" data-ss-id="lead-trailer"><strong>The trailer is done.</strong> 29.2 seconds of real in-game footage at 1080p and 60 fps, with sound, saved on the laptop. It stays off this page because it shows server players' skins (<a href="#trailer">below</a>).</p>
 
   <div class="tiles" data-ss-id="kpi-tiles">
-    <div class="tile" data-ss-id="kpi-tests"><div class="n">13</div><div class="t">tests, 7 unit and 6 GameTests, passed on 4 fresh servers in a row</div></div>
-    <div class="tile" data-ss-id="kpi-review"><div class="n">10 <small>of 10</small></div><div class="t">review findings fixed, in <code>8f12abd</code></div></div>
-    <div class="tile" data-ss-id="kpi-cuts"><div class="n">5 <small>cuts</small></div><div class="t">from corpse to toboggan: four limbs, then the belly</div></div>
+    <div class="tile" data-ss-id="kpi-tests"><div class="n">17</div><div class="t">tests, 8 unit and 9 GameTests; the GameTests passed on 3 fresh servers in a row</div></div>
+    <div class="tile" data-ss-id="kpi-review"><div class="n">14</div><div class="t">bugs fixed: 10 from the review, 4 found while filming</div></div>
+    <div class="tile" data-ss-id="kpi-trailer"><div class="n">29.2 <small>s</small></div><div class="t">trailer, done, kept off this page</div></div>
     <div class="tile" data-ss-id="kpi-decide"><div class="n">2</div><div class="t">decisions wait on you: the pack, and carving the living</div></div>
   </div>
 
@@ -244,7 +260,7 @@ table.keys td:first-child { width: 45%; font-weight: 600; }
         <div class="tile" data-ss-id="speed-push-dirt"><div class="n">1.3</div><div class="t">blocks a second, pushing on dirt or stone</div></div>
         <div class="tile" data-ss-id="speed-top"><div class="n">28</div><div class="t">blocks a second top speed (1.4 a tick), from hills and drops</div></div>
       </div>
-      <p class="cap" data-ss-id="step-ride-cap">Worked out from the code's constants, not timed in game. Each landing off a drop on snow turns the fall into forward speed.</p>
+      <p class="cap" data-ss-id="step-ride-cap">Worked out from the code's constants, not timed in game. On snow, each landing off a drop adds forward speed to a toboggan that is already sliding.</p>
       <p data-ss-id="step-ride-p2">Hitting a wall fast hurts the rider; running something over hurts it. Baby villagers flee as it passes.</p>
     </li>
 
@@ -254,8 +270,8 @@ table.keys td:first-child { width: 45%; font-weight: 600; }
       <table class="keys" data-ss-id="step-tow-keys">
         <thead><tr><th>On the toboggan</th><th>The horse</th></tr></thead>
         <tbody>
-          <tr><td>Forward</td><td>walks</td></tr>
-          <tr><td>Jump</td><td>gallops</td></tr>
+          <tr><td>Forward</td><td>walks on, at 0.6 of a rider's push</td></tr>
+          <tr><td>Jump</td><td>gallops, as fast as a ridden horse</td></tr>
           <tr><td>Back</td><td>halts</td></tr>
           <tr><td>Left, right</td><td>turns</td></tr>
         </tbody>
@@ -287,6 +303,18 @@ table.keys td:first-child { width: 45%; font-weight: 600; }
   </div>
   <p class="cap" data-ss-id="glide-cap">From <code>SledMath</code>: speed kept per tick (0.993, 0.988, 0.982, 0.9, 0.7), over 20 ticks.</p>
   <p data-ss-id="glide-tags">Two empty block tags, <code>meat_toboggan:glides_like_snow</code> and <code>glides_like_ice</code>, let other mods' blocks join the fast rows.</p>
+</section>
+
+<section id="design" data-ss-id="design" data-ss-section>
+  <h2 data-ss-id="design-h">The toboggan is a vehicle like a boat, not a physics body</h2>
+  <p data-ss-id="design-p1">The ragdoll is a Sable sub-level of six physics bodies. The final cut removes them and spawns the toboggan in their place: an ordinary Minecraft vehicle entity, on <code>VehicleEntity</code>, the base class boats and minecarts share, with its own sled physics.</p>
+  <table class="stack" data-ss-id="design-table">
+    <thead><tr><th>What that gives</th><th>What it costs</th></tr></thead>
+    <tbody>
+      <tr><td>Vanilla riding, leads, saving and multiplayer sync, for free</td><td data-label="What it costs">It slides like a boat; it never tumbles like a physics body</td></tr>
+      <tr><td>Sled physics of its own: glide by surface, landing boosts, the tow rope</td><td data-label="What it costs">It does not physically collide with Sable ships or contraptions</td></tr>
+    </tbody>
+  </table>
 </section>
 
 <section id="art" data-ss-id="art" data-ss-section>
@@ -373,18 +401,21 @@ table.keys td:first-child { width: 45%; font-weight: 600; }
 </section>
 
 <section id="tests" data-ss-id="tests" data-ss-section>
-  <h2 data-ss-id="tests-h">13 tests, all passing on 4 fresh servers in a row</h2>
-  <p data-ss-id="tests-p">The GameTests run on a real server with Sable and the ragdoll mod loaded.</p>
+  <h2 data-ss-id="tests-h">17 tests pass, and the 9 GameTests passed on 3 fresh servers in a row</h2>
+  <p data-ss-id="tests-p">The GameTests run on a real server with Sable and the ragdoll mod loaded. The three marked new came from filming: each fails on the old code and passes now.</p>
   <table class="stack" data-ss-id="tests-table">
     <thead><tr><th>Test</th><th>Kind</th><th>What it checks</th></tr></thead>
     <tbody>
       <tr><td>Glides on ice, not dirt</td><td data-label="Kind">GameTest</td><td data-label="What it checks">Sent off at the same speed, it slides over 5 blocks on packed ice in 2 seconds, under 2 on dirt, and does not drift sideways</td></tr>
       <tr><td>Tows behind a horse</td><td data-label="Kind">GameTest</td><td data-label="What it checks">Rope length holds, and it swings in behind</td></tr>
+      <tr><td>Rider stays on through the yank <span class="tag">new</span></td><td data-label="Kind">GameTest</td><td data-label="What it checks">A ridden toboggan hitched from well back is yanked up behind the horse over snow layers, and the rider stays on</td></tr>
+      <tr><td>Drives the horse by the reins <span class="tag">new</span></td><td data-label="Kind">GameTest</td><td data-label="What it checks">At a gallop the horse covers over 8 blocks in 20 ticks, the rider stays on, and the children ahead scatter</td></tr>
+      <tr><td>Settles without sliding <span class="tag">new</span></td><td data-label="Kind">GameTest</td><td data-label="What it checks">A toboggan dropped onto snow at rest, as a fresh carve settles, lands where it is and stays</td></tr>
       <tr><td>Keeps the victim</td><td data-label="Kind">GameTest</td><td data-label="What it checks">Item round trip, save and load, and breaking drops exactly one item</td></tr>
       <tr><td>Carves a ragdoll</td><td data-label="Kind">GameTest</td><td data-label="What it checks">Four cuts drop four limbs, the saved parts shrink after each, the fifth makes the toboggan</td></tr>
       <tr><td>Holds one rider</td><td data-label="Kind">GameTest</td><td data-label="What it checks">Even against a forced mount</td></tr>
       <tr><td>Corpse expires on its own record</td><td data-label="Kind">GameTest</td><td data-label="What it checks">A corpse despawns from the addon's saved record, not the ragdoll mod's timer</td></tr>
-      <tr><td>Sled physics, 6</td><td data-label="Kind">Unit</td><td data-label="What it checks">Yaw follows Minecraft's; snow and ice outglide ground; landing on snow boosts and on dirt does not; a slack rope does nothing, a taut one holds the prow at rope length, and a towed sled swings in behind</td></tr>
+      <tr><td>Sled physics, 7</td><td data-label="Kind">Unit</td><td data-label="What it checks">Yaw follows Minecraft's; snow and ice outglide ground; landing on snow boosts and on dirt does not; dropping at rest just lands; a slack rope does nothing, a taut one holds the prow at rope length, and a towed sled swings in behind</td></tr>
       <tr><td>Shape matches the model</td><td data-label="Kind">Unit</td><td data-label="What it checks">The shape numbers the code uses match the generated model</td></tr>
     </tbody>
   </table>
@@ -408,6 +439,20 @@ table.keys td:first-child { width: 45%; font-weight: 600; }
       <tr><td>Corpse sessions were kept after their corpse was gone</td><td data-label="Fixed">Stale ones are pruned</td></tr>
     </tbody>
   </table>
+</section>
+
+<section id="filming" data-ss-id="filming" data-ss-section>
+  <h2 data-ss-id="filming-h">Filming the trailer found 4 more bugs, fixed in <code>17a00b6</code></h2>
+  <table class="stack" data-ss-id="filming-table">
+    <thead><tr><th>Found</th><th>Fixed</th></tr></thead>
+    <tbody>
+      <tr><td>Hitching a ridden toboggan from well back threw the rider off. The rope snaps the sled up behind the horse, and the crash check counted a snow layer ahead as a wall</td><td data-label="Fixed">A wall is only blocks too tall to step up, and running into a mob is a ram, not a crash</td></tr>
+      <tr><td>Driving a horse by the reins went at AI walking speed, about a third of a ridden horse's: 3.9 blocks in 20 ticks</td><td data-label="Fixed">The reins feed the horse the input a rider would: over 8 blocks in 20 ticks now</td></tr>
+      <tr><td>A freshly carved toboggan lurched 1.5 to 2.4 blocks forward. Settling a quarter block into the snow counted as a landing and boosted it</td><td data-label="Fixed">A landing only boosts a toboggan already sliding, and an unridden one stops dead below a tiny speed</td></tr>
+      <tr><td>Frightened baby villagers milled about, because villager panic only runs from a threat within 6 blocks</td><td data-label="Fixed">Each child runs to a spot 14 blocks away from the sled</td></tr>
+    </tbody>
+  </table>
+  <p data-ss-id="filming-notabug"><strong>Reported, but not a bug:</strong> "the head ignores creative players". The code stares at creative players and skips only spectators. On the filming rig the camera was detached from the player, and the head follows the player.</p>
 </section>
 
 <section id="choices" data-ss-id="choices" data-ss-section>
@@ -455,26 +500,70 @@ table.keys td:first-child { width: 45%; font-weight: 600; }
 </section>
 
 <section id="trailer" data-ss-id="trailer" data-ss-section>
-  <h2 data-ss-id="trailer-h">The trailer is in progress, and stays off this page</h2>
+  <h2 data-ss-id="trailer-h">The trailer is done, and stays off this page</h2>
   <p data-ss-id="trailer-ask">You asked before bed: <em>"Going to bed, after you are done making the mod make sure to make a trailer for it. Use skins from players on the [server] minecraft server for it. Should be ~30 secs long."</em></p>
-  <p data-ss-id="trailer-status"><strong>Being made now</strong> by another agent, from real in-game footage in a private headless session, about 30 seconds long. It is saved on the laptop, in a <code>meat-toboggan-trailer</code> folder beside your server files, not in the mod repo.</p>
-  <p data-ss-id="trailer-private"><strong>Not shown here</strong>, because it shows server players' skins. This page will say where it is once it is finished.</p>
+  <p data-ss-id="trailer-private"><strong>Not shown here</strong>, because it shows server players' skins: seven of them, as the carver, the riders and the victims. It is <code>meat-toboggan-trailer.mp4</code> in the <code>meat-toboggan-trailer</code> folder beside your server files, with 9 stills and a contact sheet.</p>
+  <div class="tiles" data-ss-id="trailer-tiles">
+    <div class="tile" data-ss-id="trailer-len"><div class="n">29.2 <small>s</small></div><div class="t">long; you asked for about 30</div></div>
+    <div class="tile" data-ss-id="trailer-res"><div class="n">1080p</div><div class="t">1920 by 1080 at 60 fps, no HUD</div></div>
+    <div class="tile" data-ss-id="trailer-codec"><div class="n">H.264</div><div class="t">with an AAC stereo mix</div></div>
+    <div class="tile" data-ss-id="trailer-skins"><div class="n">7</div><div class="t">server players' real skins</div></div>
+  </div>
+
+  <h3 data-ss-id="trailer-shots-h">Nine shots, carving first, then the ride</h3>
+  <div class="tl-wrap" data-ss-id="trailer-timeline" role="img" aria-label="Timeline of the 29.2 second trailer: nine shots, with disc 13 under the first four and Pigstep from the downhill shot at 11.2 seconds to the end">
+    <div class="tl-row shots" aria-hidden="true">
+      <span style="flex: 3.0">1</span><span style="flex: 3.2">2</span><span style="flex: 2.7">3</span><span style="flex: 2.3">4</span><span style="flex: 3.6">5</span><span style="flex: 2.9">6</span><span style="flex: 3.0">7</span><span style="flex: 3.5">8</span><span style="flex: 5.0">9</span>
+    </div>
+    <div class="tl-row music" aria-hidden="true">
+      <span class="m13" style="flex: 11.2">Disc 13</span><span class="mpig" style="flex: 18.0">Pigstep</span>
+    </div>
+    <div class="tl-axis" aria-hidden="true"><span style="flex: 11.2">0 s</span><span style="flex: 18.0; display: flex; justify-content: space-between"><span>11.2 s</span><span>29.2 s</span></span></div>
+  </div>
+  <ol class="shots" data-ss-id="trailer-shotlist">
+    <li><span class="t">0.0</span>Cold open: a corpse in the snow.</li>
+    <li><span class="t">3.0</span>First-person knife: four cuts, limbs fly.</li>
+    <li><span class="t">6.2</span>The final cut: the toboggan forms, the carver behind it.</li>
+    <li><span class="t">8.9</span>Close-up: the head turns to follow the player.</li>
+    <li><span class="t">11.2</span>Downhill, from the front: two sleds.</li>
+    <li><span class="t">14.8</span>Downhill at speed, from the side: the gore trail.</li>
+    <li><span class="t">17.7</span>Baby villagers scatter.</li>
+    <li><span class="t">20.7</span>A horse tow, side-on, a second team behind.</li>
+    <li><span class="t">24.2</span>End card: the logo, the quote and the credit, to 29.2.</li>
+  </ol>
+
+  <h3 data-ss-id="trailer-how-h">Real game footage, with the game's own sounds</h3>
+  <ul data-ss-id="trailer-how">
+    <li><strong>Pictures:</strong> filmed in a private headless session. Frames were read straight from the game's render target while it ran at tick rate 5, so the footage plays smooth at 60 fps.</li>
+    <li><strong>Sound:</strong> rebuilt from every game sound logged during each take, from the vanilla sound files, with their pitch, distance falloff and panning.</li>
+    <li><strong>Music:</strong> disc "13" under the open and the carving, then Pigstep from the first downhill shot.</li>
+  </ul>
+
+  <h3 data-ss-id="trailer-flaws-h">Its known flaws</h3>
+  <ul data-ss-id="trailer-flaws">
+    <li>A wild horse wanders through the shot of the children.</li>
+    <li>A cut leg props up beside the new toboggan for a moment.</li>
+    <li>The head close-up drifts slightly: the lurch bug, filmed before its fix.</li>
+    <li>Three of the players are small in frame.</li>
+    <li>The mix was checked by meters, not by ear.</li>
+  </ul>
 </section>
 
 <details data-ss-id="sources" data-ss-react="off">
   <summary>Sources</summary>
   <ul>
-    <li>The mod repo, <code>mods/meat-toboggan</code>, branch master at <code>8f12abd</code> (16 commits, no remote).</li>
+    <li>The mod repo, <code>mods/meat-toboggan</code>, branch master at <code>17a00b6</code> (17 commits, no remote).</li>
     <li>Config: <code>MeatTobogganConfig.java</code>. Recipe: <code>data/meat_toboggan/recipe/butchers_knife.json</code>. Tags: <code>carving_knives</code>, <code>can_tow</code>, <code>glides_like_snow</code>, <code>glides_like_ice</code>. Names and death messages: <code>lang/en_us.json</code>.</li>
     <li>Speeds: <code>SledMath.java</code> (glide per tick) and <code>MeatTobogganEntity.java</code> (push 0.012 on slippery ground and 0.02 elsewhere, up to 0.16 a tick), worked out, not timed.</li>
-    <li>Tests: <code>SledMathTest</code>, <code>TobogganShapeTest</code>, <code>MeatTobogganGameTests</code>. Review fixes: commit <code>8f12abd</code>.</li>
+    <li>Tests: <code>SledMathTest</code>, <code>TobogganShapeTest</code>, <code>MeatTobogganGameTests</code>. Review fixes: commit <code>8f12abd</code>. Filming fixes: commit <code>17a00b6</code>. The reins: <code>HitchDriveGoal.java</code>. The base class: <code>MeatTobogganEntity.java</code>.</li>
+    <li>The trailer: <code>meat-toboggan-trailer.mp4</code> and its stills, beside the server files; described here, not shown.</li>
     <li>Art: <code>tools/blockbench/</code> (<code>run.sh</code>, <code>run-knife.sh</code>) and <code>blockbench/previews/</code>; the knife's player is Blockbench's bundled reference skin.</li>
   </ul>
 </details>
 
 </main>
 
-<footer data-ss-react="off">Built for Ben from the meat-toboggan repo on 26 October 2026. Private page.</footer>
+<footer data-ss-react="off">Built for Ben from the meat-toboggan repo on 26 October 2026, and updated the same morning with the finished trailer and the filming fixes. Private page.</footer>
 
 </body>
 </html>
