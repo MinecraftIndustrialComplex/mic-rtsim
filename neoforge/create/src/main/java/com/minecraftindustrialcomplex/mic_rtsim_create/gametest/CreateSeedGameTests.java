@@ -358,6 +358,52 @@ public final class CreateSeedGameTests {
                 .thenSucceed();
     }
 
+    /**
+     * J6 and the build order (SECTIONS.md §2.1, SC184): a station placed first, at x = 15 of its chunk, is in no district;
+     * a vault placed after it at x = 0 of the next chunk touches it across the border. The station's touch joins nothing
+     * (J1), but the walk of the vault's chunk must look at the station's chunk, or nothing ever does (a periodic detection
+     * schedules only dirty and district chunks) and the station never joins, nor names the district.
+     */
+    @GameTest(template = YARD, batch = "create_seed_12", timeoutTicks = 600)
+    public static void aStationPlacedFirstJoinsTheDistrictThatTouchesItLater(GameTestHelper helper) {
+        fastConfig();
+        forget(helper);
+        BlockPos stationPos = at(helper, 0, 15, 6), vault = at(helper, 1, 0, 6);
+        check("the station is at x = 15 of its chunk and the vault at x = 0 of the next", (stationPos.getX() & 15) == 15 && vault.getX() == stationPos.getX() + 1);
+        helper.startSequence()
+                .thenExecute(() -> station(helper, stationPos, at(helper, 0, 2, 5).getX(), at(helper, 1, 14, 5).getX()))
+                .thenIdle(5)
+                .thenExecute(() -> placeStation(helper, stationPos))
+                .thenWaitUntil(() -> {
+                    var sbe = (com.simibubi.create.content.trains.station.StationBlockEntity) helper.getLevel().getBlockEntity(stationPos);
+                    check("the station joined the track graph", sbe != null && sbe.getStation() != null);
+                })
+                .thenExecute(() -> {
+                    var sbe = (com.simibubi.create.content.trains.station.StationBlockEntity) helper.getLevel().getBlockEntity(stationPos);
+                    sbe.getStation().name = "Harbor Gate";
+                })
+                .thenIdle(3) // the place event reaches the districts at the end of a tick
+                .thenExecute(() -> {
+                    ind().districts().rescanNow(helper.getLevel());
+                    check("a station alone is in no district", districtAt(helper, stationPos) == null);
+                    set(helper, vault, block("create:item_vault").defaultBlockState());
+                    playerPlaced(helper, vault);
+                })
+                .thenIdle(3)
+                .thenExecute(() -> ind().districts().rescanNow(helper.getLevel()))
+                .thenWaitUntil(() -> {
+                    District d = districtAt(helper, vault);
+                    check("the vault's district", d != null);
+                    check("the district holds the station's chunk: " + d.chunks.size() + " chunks", districtAt(helper, stationPos) == d);
+                    check("two chunks, one district: " + d.chunks.size(), d.chunks.size() == 2);
+                    check("the district lists the station", d.stations.size() == 1);
+                    check("named after its station: " + d.displayName(), d.displayName().equals("Harbor Gate"));
+                    check("the station is no seed, only the vault's marker: " + d.seeds(), d.seeds() == 1);
+                    record("aStationPlacedFirstJoinsTheDistrictThatTouchesItLater", "chunks", d.chunks.size());
+                })
+                .thenSucceed();
+    }
+
     /** A station with no machine anywhere near it makes no district: it is an anchor, never a seed. */
     @GameTest(template = YARD, batch = "create_seed_9", timeoutTicks = 400)
     public static void aLoneStationMakesNoDistrict(GameTestHelper helper) {
