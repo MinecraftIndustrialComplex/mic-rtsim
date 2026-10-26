@@ -1338,7 +1338,7 @@ public final class Districts {
                 if (!excluded.contains(n) && visited.add(n))
                     queue.enqueue(n);
             };
-            int cost = 1 + scanChunk(level, chunk, scan, excluded, reach);
+            int cost = 1 + scanChunk(level, chunk, scan, excluded, index, reach);
             // A block whose links are not known yet keeps its chunk's saved joins (SC4): what they join is walked too.
             District old = index.get(c);
             if (old != null && scan.keepJoins.contains(c))
@@ -1882,8 +1882,12 @@ public final class Districts {
         return false;
     }
 
-    /** Looks at every block entity of a loaded chunk and records what it holds in {@code scan}. Returns the block entities looked at. */
-    private int scanChunk(ServerLevel level, LevelChunk chunk, Scan scan, LongOpenHashSet excluded, java.util.function.LongConsumer reach) {
+    /**
+     * Looks at every block entity of a loaded chunk and records what it holds in {@code scan}. Returns the block entities looked at.
+     * {@code index} is the chunk-to-district index as the detection began.
+     */
+    private int scanChunk(ServerLevel level, LevelChunk chunk, Scan scan, LongOpenHashSet excluded, Long2ObjectOpenHashMap<District> index,
+            java.util.function.LongConsumer reach) {
         long c = chunk.getPos().toLong();
         List<Candidate> candidates = new ArrayList<>();
         IndustryPlugin.ScanNotes notes = new IndustryPlugin.ScanNotes() {
@@ -1966,8 +1970,16 @@ public final class Districts {
                     if (!joinsByTouch || !touchJoins(nbe)) {
                         if (station)
                             scan.stationTouches.add(new long[] {c, nc});
-                        else if (isStation(nbe))
+                        else if (isStation(nbe)) {
                             scan.stationTouches.add(new long[] {nc, c});
+                            // J6 only sees the chunks the walk looked at (SC184): a station placed before the machine
+                            // that touches it is in no district, and nothing else would walk its chunk again. The walk
+                            // reaches it with no join, so it is a group of its own with no seed and J6 alone attaches it.
+                            // One a district holds is walked with that district, and reaching it from here would pull
+                            // the district's whole walk into this edit.
+                            if (!excluded.contains(nc) && !index.containsKey(nc))
+                                reach.accept(nc);
+                        }
                         continue;
                     }
                     scan.touches.add(new Touch(c, nc, p, n));
