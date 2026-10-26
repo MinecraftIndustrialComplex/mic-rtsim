@@ -401,6 +401,21 @@ public final class AloftMowzieGameTests {
                 com.minecraftindustrialcomplex.mic_rtsim.gametest.FakePlayers.remove(p);
     }
 
+    /**
+     * Takes every hearer of the array out of the level when the test ends, passed or failed (a hearer left standing keeps its chunk
+     * tickets and tracks the next test's bodies, and a mod payload sent to it once crashed the server): the sequence's own removal is
+     * the happy path, this the failed one. Slots may be null; a hearer already removed is left alone.
+     */
+    private static void hearersOut(GameTestHelper helper, FakePlayers.Hearer[] hearers) {
+        ConflictKit.onEnd(helper, () -> {
+            for (int i = 0; i < hearers.length; i++)
+                if (hearers[i] != null && !hearers[i].isRemoved()) {
+                    FakePlayers.removeSeen(hearers[i]);
+                    hearers[i] = null;
+                }
+        });
+    }
+
     // ---- step 0: the M11b review's P2 and P3 (MZB-890, MZB-891) ---------------------------------------
 
     /**
@@ -562,6 +577,7 @@ public final class AloftMowzieGameTests {
         EntityUmvuthi[] puppet = new EntityUmvuthi[2];
         ServerPlayer[] player = new ServerPlayer[2];
         long[] op = new long[4];
+        int[] bandEpoch = new int[1]; // S's band's epoch, read while it lives: its puppet's death may end the party
 
         MowzieKit.seq(helper)
                 .thenExecute(() -> {
@@ -590,6 +606,7 @@ public final class AloftMowzieGameTests {
                     }
                 }))
                 .thenExecute(() -> {
+                    bandEpoch[0] = ConflictKit.party(agent[0]).epoch;
                     throne[0].setLastHurtByPlayer(player[0]);
                     MowzieKit.kill(throne[0], level.damageSources().playerAttack(player[0]));
                 })
@@ -604,7 +621,7 @@ public final class AloftMowzieGameTests {
                     check("the puppet is in its animation (dying " + puppet[0].isDeadOrDying() + ", removed " + puppet[0].isRemoved() + ")",
                             puppet[0].isDeadOrDying() && !puppet[0].isRemoved());
                     op[1] = MowzieKit.reconcile(g[0].faction, epochOf(g[0]), g[0].spot, 3f, List.of(
-                            CampLine.party(CHIEF_SLOT, 1, UMVUTHI, HAND_BACK, CHIEF, agent[0], ConflictKit.party(agent[0]).epoch)));
+                            CampLine.party(CHIEF_SLOT, 1, UMVUTHI, HAND_BACK, CHIEF, agent[0], bandEpoch[0])));
                 })
                 .thenWaitUntil(waits.logic(() -> check("the line in the animation is answered", ConflictKit.outcomes(g[0].faction, op[1]).size() == 1)))
                 .thenExecute(() -> {
@@ -613,7 +630,7 @@ public final class AloftMowzieGameTests {
                 })
                 .thenWaitUntil(waits.logic(() -> check("the puppet's animation has ended", puppet[0].isRemoved())))
                 .thenExecute(() -> op[2] = MowzieKit.reconcile(g[0].faction, epochOf(g[0]), g[0].spot, 3f, List.of(
-                        CampLine.party(CHIEF_SLOT, 1, UMVUTHI, HAND_BACK, CHIEF, agent[0], ConflictKit.party(agent[0]).epoch))))
+                        CampLine.party(CHIEF_SLOT, 1, UMVUTHI, HAND_BACK, CHIEF, agent[0], bandEpoch[0]))))
                 .thenWaitUntil(waits.logic(() -> check("the line after the puppet is answered", ConflictKit.outcomes(g[0].faction, op[2]).size() == 1)))
                 .thenIdle(20)
                 .thenExecute(() -> {
@@ -724,14 +741,15 @@ public final class AloftMowzieGameTests {
                     check("it appears at its place in the column (" + s.lag() + " blocks off)", s.lag() <= 1.0);
                     check("its foot is the floor's + 3 (" + (u.getY() - l.top) + ")", Math.abs(u.getY() - (l.top + 3)) <= 0.05);
                     check("its health is the memory's, kept to its maximum (" + u.getHealth() + " of " + u.getMaxHealth() + ")",
-                            u.getHealth() == Math.min(250f, u.getMaxHealth()));
+                            healthIs(u, 250f));
                     check("the player is in its memory", u.hasTradedWith(player[0]));
                     check("its synced direction is 4, the quarter of +x (" + u.getDirectionData() + ")", u.getDirectionData() == 4);
                     check("so is its private one (" + ((EntityUmvuthiAccessor) u).mic_rtsim_mowziesmobs$direction() + ")",
                             ((EntityUmvuthiAccessor) u).mic_rtsim_mowziesmobs$direction() == 4);
                     check("no Umvuthi stands in the control's lane", level.getEntitiesOfClass(EntityUmvuthi.class, lane[1].area()).isEmpty());
                     trace[0] = trace(helper, level, agent[0], l.x0 + wall, l.x0 + oak, l.x0 + roof, l.x0 + finish - 1);
-                    ConflictKit.steer(agent[0], ConflictKit.party(agent[0]).epoch, PACE, l.x0 + finish, l.z, 0, false);
+                    // the chief's stack walks at the column's rear, 1.5 blocks behind the steer's end: the end is steered 4 blocks on
+                    ConflictKit.steer(agent[0], ConflictKit.party(agent[0]).epoch, PACE, l.x0 + finish + 4, l.z, 0, false);
                 })
                 .thenWaitUntil(waits.logic(() -> check("it has come to the end of the lane (x " + puppet[0].getX() + ")",
                         puppet[0].getX() >= lane[0].x0 + finish - 1)))
@@ -1188,6 +1206,7 @@ public final class AloftMowzieGameTests {
         EntityUmvuthi[] puppet = new EntityUmvuthi[3];
         ServerPlayer[] player = new ServerPlayer[1];
         FakePlayers.Hearer[] hearer = new FakePlayers.Hearer[1];
+        hearersOut(helper, hearer);
         Trace[] trace = new Trace[3];
         long[][] raisedAt = new long[3][3];
         long[] movedAt = new long[3];
@@ -1308,7 +1327,8 @@ public final class AloftMowzieGameTests {
                 })
                 .thenIdle(30)
                 .thenExecute(() -> {
-                    FakePlayers.removeSeen(hearer[0]);
+                    if (!hearer[0].isRemoved())
+                        FakePlayers.removeSeen(hearer[0]);
                     drop(player);
                     far.releaseAll();
                 })
@@ -1779,7 +1799,10 @@ public final class AloftMowzieGameTests {
                     throne[0].sendAbilityMessage(EntityUmvuthi.SPAWN_ABILITY);
                 })
                 .thenWaitUntil(waits.logic(() -> {
-                    check("the puppet's warriors have come (" + joins.stream().filter(j -> j.tag() != null).count() + ")",
+                    check("the puppet's warriors have come (" + joins.stream().filter(j -> j.tag() != null).count() + " tagged of " + joins.size()
+                                    + " joins; adopted +" + (ConflictKit.summonsAdopted() - was[0]) + ", refused +" + (ConflictKit.summonsRefused() - was[1])
+                                    + "; the puppet's ability " + puppet[0].getActiveAbilityType() + ", alive " + puppet[0].isAlive() + ", removed " + puppet[0].isRemoved()
+                                    + ", gravity " + !puppet[0].isNoGravity() + ", slot " + chiefSlot(agent).alive() + ")",
                             joins.stream().filter(j -> j.tag() != null).count() >= 3);
                     check("and the throne body's (" + joins.stream().filter(j -> j.tag() == null).count() + ")",
                             joins.stream().filter(j -> j.tag() == null).count() >= 3);
@@ -2017,6 +2040,18 @@ public final class AloftMowzieGameTests {
         };
         ConflictKit.onEnd(helper, back);
         return back;
+    }
+
+    /** Health an Umvuthi out of battle heals in the ticks between a test's set and its read: 0.3 a tick (the jar's, once its timer ran out). */
+    private static final float HEAL_SLACK = 9f;
+
+    /**
+     * Whether an Umvuthi has the health it was given, to its maximum: the jar heals 0.3 a tick out of battle ({@code healsOutOfBattle}), so a read
+     * a few ticks after the set is up to {@link #HEAL_SLACK} over it (a tick's heal showed as 77.3 for 77). Never under it.
+     */
+    private static boolean healthIs(EntityUmvuthi u, float want) {
+        float h = u.getHealth(), max = u.getMaxHealth();
+        return h >= Math.min(want, max) - 1.0e-3f && h <= Math.min(want + HEAL_SLACK, max) + 1.0e-3f;
     }
 
     /** The living, embodied warriors of a party's stacks (the chief's slot is no warrior). */
@@ -2527,7 +2562,7 @@ public final class AloftMowzieGameTests {
                 .thenExecute(() -> {
                     for (int i = 0; i < 2; i++)
                         check("grove " + i + "'s puppet carries the health it was given (" + puppet[i].getHealth() + " of " + puppet[i].getMaxHealth() + ")",
-                                puppet[i].getHealth() == Math.min(180f, puppet[i].getMaxHealth()));
+                                healthIs(puppet[i], 180f));
                     player[1] = MowzieKit.player(helper, new Vec3(puppet[0].getX() + 6, g[0].spot.y + 1, puppet[0].getZ()), "mowzie-held-take-payer");
                     MowzieKit.mask(player[1]);
                     was[3] = ConflictKit.puppetPaid();
@@ -2572,7 +2607,7 @@ public final class AloftMowzieGameTests {
                     check("the puppet came within " + AloftRules.TAKE_STALE + " blocks at tick " + tick[0] + " and the take went at " + tick[1],
                             tick[0] >= 0 && tick[1] >= tick[0] && tick[1] - tick[0] <= 2);
                     check("H's throne body still stands, not second", throne[0].isAlive() && !MowzieKit.camps().secondBody(throne[0]));
-                    check("H's throne body has its own health still (" + throne[0].getHealth() + ")", throne[0].getHealth() == 40f);
+                    check("H's throne body has its own health still (" + throne[0].getHealth() + ")", healthIs(throne[0], 40f));
                     check("the held line is gone (" + (MowzieKit.camps().heldLines() - was[2]) + ")", MowzieKit.camps().heldLines() == was[2]);
                     // the engine's own home sends the chief's HAND_BACK, with its memory of a chief at home (no player named)
                     ConflictKit.chiefBody(g[0].faction, epochOf(g[0]), 180f, List.of());
@@ -2588,7 +2623,7 @@ public final class AloftMowzieGameTests {
                     List<EntityUmvuthi> stands = thrones(level, g[0]);
                     check("one Umvuthi stands on H's throne (" + stands.size() + ")", stands.size() == 1 && stands.get(0) == throne[0]);
                     check("it is the throne body, merged, with the puppet's health (" + throne[0].getHealth() + ")",
-                            throne[0].getHealth() == Math.min(180f, throne[0].getMaxHealth()));
+                            healthIs(throne[0], 180f));
                     check("it remembers the payer", throne[0].hasTradedWith(player[1]));
                     check("and no one else (" + throne[0].getTradedPlayers().size() + ")", throne[0].getTradedPlayers().size() == 1);
                     check("the puppet is gone", puppet[0].isRemoved());
@@ -2599,7 +2634,7 @@ public final class AloftMowzieGameTests {
                     List<net.minecraft.world.entity.Entity> made = MowzieKit.held(g[1].faction, CHIEF_SLOT, 1);
                     check("one Umvuthi stands on C's throne as the chief (" + made.size() + ")", made.size() == 1 && made.get(0) instanceof EntityUmvuthi);
                     check("made from the puppet, with its health (" + ((EntityUmvuthi) made.get(0)).getHealth() + ")",
-                            ((EntityUmvuthi) made.get(0)).getHealth() == Math.min(180f, ((EntityUmvuthi) made.get(0)).getMaxHealth()));
+                            healthIs((EntityUmvuthi) made.get(0), 180f));
                     check("C's puppet is gone", puppet[1].isRemoved());
                     record(test, "held take", "the take went stale at tick " + tick[1] + ", " + (tick[1] - tick[0]) + " after the puppet came within "
                             + AloftRules.TAKE_STALE + " blocks; the hand-back merged into the throne body (health " + throne[0].getHealth() + ", payer kept);"
@@ -3071,8 +3106,9 @@ public final class AloftMowzieGameTests {
                     check("the body is still in the world (removed " + puppet[2].isRemoved() + ")", !puppet[2].isRemoved());
                     for (int i = 0; i < 2; i++)
                         check("band " + i + "'s puppet stands (alive " + puppet[i].isAlive() + ")", puppet[i].isAlive() && !puppet[i].isRemoved());
-                    for (List<Mob> ws : warriors)
-                        check("a warrior stands", ws.get(0).isAlive() && !ws.get(0).isRemoved());
+                    // the dying chief's warrior is a devoted Umvuthana, which the jar's die takes with its Umvuthi: it may be dead already
+                    for (int i = 0; i < 2; i++)
+                        check("band " + i + "'s warrior stands", warriors.get(i).get(0).isAlive() && !warriors.get(i).get(0).isRemoved());
                     old[0] = RtsimTests.session();
                     oldEngine[0] = RtsimTests.engine();
                     check("the session runs before the failure", !old[0].failed());
@@ -3294,7 +3330,8 @@ public final class AloftMowzieGameTests {
      * <ul>
      * <li>one CHIEF_KILLED by the killer and one BAND_DEMATERIALIZED, and the CHIEF_KILLED has the lower observation sequence in the
      * journal (the engine's received log, by {@code obsSeq});</li>
-     * <li>no second CHIEF_KILLED, no casualty; {@code chiefsKilled} rose by two in all.</li>
+     * <li>no second CHIEF_KILLED, and at most one casualty (the band's one warrior, a devoted Umvuthana that dies with its Umvuthi, the
+     * jar's own {@code die}); {@code chiefsKilled} rose by two in all.</li>
      * </ul>
      * After the animations one Sol Visage lies at each body, nothing is dying and no loot record was lost: the band's end does not wait
      * for the animation, only for the death's journal. There is no engine command that makes BAND_DEMATERIALIZED (it is the bridge's own
@@ -3365,8 +3402,10 @@ public final class AloftMowzieGameTests {
                                 && player[i].getUUID().equals(ConflictKit.uuidAt(killed.get(0), ConflictRecords.ChiefKilled.KILLER_MOST)));
                         check(name[i] + ": the death is journaled before the band is (obsSeq " + killed.get(0).obsSeq() + " and " + over.get(0).obsSeq() + ")",
                                 killed.get(0).obsSeq() < over.get(0).obsSeq());
-                        check(name[i] + ": no casualty (" + ConflictKit.about(ConflictRecords.BAND_CASUALTIES, agent[i]).size() + ")",
-                                ConflictKit.about(ConflictRecords.BAND_CASUALTIES, agent[i]).isEmpty());
+                        // The jar's die takes the devoted Umvuthana within 30 blocks with their Umvuthi (MZB-432), so the band's one warrior
+                        // may be a casualty; the chief is never one (its death is the CHIEF_KILLED).
+                        check(name[i] + ": at most the warrior's casualty (" + ConflictKit.about(ConflictRecords.BAND_CASUALTIES, agent[i]).size() + ")",
+                                ConflictKit.about(ConflictRecords.BAND_CASUALTIES, agent[i]).size() <= 1);
                     }
                     check("chiefsKilled rose by two (" + was[0] + " to " + ConflictKit.bridge().chiefsKilled + ")", ConflictKit.bridge().chiefsKilled == was[0] + 2);
                     record(test, "invariant", "X (died 20 ticks before the recall): CHIEF_KILLED obsSeq " + ConflictKit.about(ConflictRecords.CHIEF_KILLED, agent[0]).get(0).obsSeq()
@@ -3553,7 +3592,7 @@ public final class AloftMowzieGameTests {
                     check("one Umvuthi stands on the throne as the chief (" + held.size() + ")", held.size() == 1 && held.get(0) instanceof EntityUmvuthi);
                     EntityUmvuthi body = (EntityUmvuthi) held.get(0);
                     check("within 0.5 blocks of the spot (" + Math.hypot(body.getX() - n.spot.x, body.getZ() - n.spot.z) + ")", Math.hypot(body.getX() - n.spot.x, body.getZ() - n.spot.z) < 0.5);
-                    check("with the puppet's health (" + body.getHealth() + ")", body.getHealth() == 120f);
+                    check("with the puppet's health (" + body.getHealth() + ")", healthIs(body, 120f));
                     check("its gravity is on", !body.isNoGravity());
                     check("facing direction 3 (" + body.getDirectionData() + ")", body.getDirectionData() == 3);
                     check("it remembers X and Y and no one else (" + body.getTradedPlayers() + ")", body.hasTradedWith(player[0])
@@ -3578,7 +3617,7 @@ public final class AloftMowzieGameTests {
                     double fromThrone = Math.hypot(held.get(0).getX() - l.spot.x, held.get(0).getZ() - l.spot.z);
                     check("where the puppet stood (" + off + " blocks off its last place)", off < 3);
                     check("and well off the throne (" + fromThrone + " blocks)", fromThrone > 30);
-                    check("with the puppet's health (" + ((EntityUmvuthi) held.get(0)).getHealth() + ")", ((EntityUmvuthi) held.get(0)).getHealth() == 120f);
+                    check("with the puppet's health (" + ((EntityUmvuthi) held.get(0)).getHealth() + ")", healthIs((EntityUmvuthi) held.get(0), 120f));
                     check("L's puppet is gone", puppet[1].isRemoved());
                     record(test, "late", "L's line played " + took + " ticks after it was sent, " + String.format("%.0f", fromThrone) + " blocks from the throne; chiefHandBacksLate +"
                             + (ConflictKit.chiefHandBacksLate() - was[1]));
@@ -3801,7 +3840,7 @@ public final class AloftMowzieGameTests {
                     check("five bodies handed off, none taken (" + (MowzieKit.camps().handedOff - was[0]) + ", " + (MowzieKit.camps().taken - was[1]) + ")",
                             MowzieKit.camps().handedOff - was[0] == 5 && MowzieKit.camps().taken == was[1]);
                     check("the throne body is gone and the puppet floats (" + throne[0].isRemoved() + ", " + puppet[0].isNoGravity() + ")", throne[0].isRemoved() && puppet[0].isNoGravity());
-                    check("the puppet has the throne body's health (" + puppet[0].getHealth() + ")", puppet[0].getHealth() == 77f);
+                    check("the puppet has the throne body's health (" + puppet[0].getHealth() + ")", healthIs(puppet[0], 77f));
                     check("and its memory of A (" + puppet[0].getTradedPlayers() + ")", puppet[0].getTradedPlayers().contains(a[0]) && puppet[0].getTradedPlayers().size() == 1);
                     pw.addAll(warriorsOf(agent));
                     ConflictKit.steer(agent, ConflictKit.party(agent).epoch, PACE, g.spot.x + 60, g.spot.z, 0, false);
@@ -3851,7 +3890,7 @@ public final class AloftMowzieGameTests {
                     check("one Umvuthi stands on the throne as the chief (" + held.size() + ")", held.size() == 1 && held.get(0) instanceof EntityUmvuthi);
                     EntityUmvuthi body = (EntityUmvuthi) held.get(0);
                     check("on the spot (" + Math.hypot(body.getX() - g.spot.x, body.getZ() - g.spot.z) + ")", Math.hypot(body.getX() - g.spot.x, body.getZ() - g.spot.z) < 0.5);
-                    check("with the health it had (" + body.getHealth() + ")", body.getHealth() == 77f);
+                    check("with the health it had (" + body.getHealth() + ")", healthIs(body, 77f));
                     check("remembering A and no one else (" + body.getTradedPlayers() + ")", body.getTradedPlayers().contains(a[0]) && body.getTradedPlayers().size() == 1);
                     check("five bodies handed back (" + (MowzieKit.camps().handedBack - was[2]) + ")", MowzieKit.camps().handedBack - was[2] == 5);
                     sampling[0] = false;
@@ -4218,6 +4257,7 @@ public final class AloftMowzieGameTests {
         int[] controlDirection = new int[1];
         Vec3[] controlAt = new Vec3[1];
         double[] anchor = new double[1]; // the anchor's z when the third turn began
+        hearersOut(helper, hearer);
 
         MowzieKit.seq(helper)
                 .thenExecute(() -> {
@@ -4422,7 +4462,8 @@ public final class AloftMowzieGameTests {
                 .thenExecute(() -> {
                     back[0].run();
                     for (int i = 0; i < hearer.length; i++) {
-                        FakePlayers.removeSeen(hearer[i]);
+                        if (hearer[i] != null && !hearer[i].isRemoved())
+                            FakePlayers.removeSeen(hearer[i]);
                         hearer[i] = null;
                     }
                     far.releaseAll();
