@@ -551,6 +551,82 @@ BAND_CASUALTIES, so MZB-589's 72 bytes change none of its hand-over counts. Noth
 reaches a conflict gate, epoch or replayed decision, and the two sims are the same as after the
 first merge under the filter.
 
+**The M9 merge** (feat/mowzie-m9 at 2f3941d0, M9 on M6's 58a5551a, merging M6 at 1290d0b7, then M7
+at 39c819f1, each its own merge commit, 788820c9 and 56c55d8d; RP-130 to RP-132, MZB-670 to
+MZB-672). Main at e75265e7 came in with M6, which had merged it (1290d0b7), so the third merge had
+nothing to bring. The first merge brings slice C, SEC-1 S5-2, slices H and S and M6's review fixes;
+thirteen files conflicted in it, and slice C's outbox.rs, new to M9, needed M9's row:
+
+1. **engine.rs:** `Conflict` keeps M9's `placing` beside slice C's replay fields; M9's `replaying`
+   field goes and M9 reads `outbox.replaying()`. `spawn_wave` takes M6's `wave_fill`, with M9's
+   `chief_stack` gating MEMBER_CHIEF and BAND_CHIEF beside M6's BAND_FIGHT. `begin_replay`
+   replaces `session_start`. In `resend_notices` the hunts held go with the kept notices, pushed one
+   by one through the gate (RP-131).
+2. **outbox.rs** (no conflict): OWED_HUNT's verdict row in the exhaustive `gate`; M9's two
+   TEMPORARY guards in `owe_hunt` and `hunt_applied` are deleted (§7.4).
+3. **engine/camp.rs:** M6's crystal off the kept chief body's BODY_CRYSTAL bit, with M9's
+   `chief_camp` guard and per-slot line flags; `chief_short`'s CHIEF_BODY through the gate.
+4. **boundary.rs:** HUNT_APPLIED is in `party_epoch`'s list of kinds that name none (RP-57).
+5. **persist.rs:** M9's numbers, with M6's casualty-op note on the party record; the second merge
+   bumps them.
+6. **rtsim-jni engine.rs and engine/conflict.rs:** the shared `answered_again` calls the
+   conflict's too; a CHIEF_STATE is held while the host replays (RP-100), else `give_latest`;
+   `journaled` sets `obs_seq` first, then counts M9's HAVEN_CHEST.
+7. **Camps.java:** M6's stray index, census hold and recount holds and its `PendingRecords.Entry`
+   records, on M9's heir pair and `removeBody`; a body loaded elsewhere counts in FACTION_FOUND's
+   `home` only when pooled (MZB-670).
+8. **CampKind.java, ConflictBridge.java, MicRtsimMowziesMobs.java, docs/boundary.md:** both
+   sides.
+9. **rtsim-jni tests/protocol.rs:** the filler BAND_CASUALTIES of `replayed_hunt` carry their op
+   (MZB-589; RP-132).
+10. **scenario/results/sim-mowzie.json:** regenerated on the merged head (below).
+
+The second merge brings M7's rail (RTC8 / META 7, RP-102 to RP-104). Eight files conflicted:
+engine.rs (both re-exports, wheel events `CampHeir` 9 and `Rail` 10, both sides' stats and their
+names; `later` is TRAIN_PASSED alone; `ingest` runs M7's `rail_pass` and M9's `haven_chest`,
+`trade_booked` and `chief_paid`), persist.rs (both imports, wheel tags, stats, resident tails),
+tables.rs (the faction row's heap counts M9's hunts and M7's meters), rtsim-jni engine/conflict.rs
+(the module doc names both; `translate` keeps M7's RAIL_PASS ticks and M9's `tribute_items`),
+protocol.rs (the later-kinds test uses a TRAIN_PASSED, since RAIL_PASS and CHIEF_PAID are both
+live), docs/boundary.md and docs/choices-mowzie-build.md (both sides) and sim-mowzie.json.
+
+- **Formats:** the merged M9 is RTC9 and META 8 (MZB-448, persist.rs's format history): M7 took
+  RTC8 and META 7 first and lands first. Wheel tags 0 to 10 each once (M9's 9, M7's 10); no page
+  table on either side; the faction row is M9's hunts and camp in `put_faction`, then M7's rail
+  meters; the resident state ends with M7's held passes, then M9's placing; the stats are M9's
+  three, then M7's seven. Save and load read the same fields in the same order. No migration.
+- **The eight points:** the gate covers every M9 push (§4.4's M9 paragraph; RP-131), RP-57's table
+  has M9's kinds (none names an epoch) and `ingest_copy` drops a HAVEN_CHEST copy (RP-130); M9's
+  decisions while replaying, RP-66, MZB-589's fillers, the arrive order and the chief kill paths
+  need no change (RP-132). M7's resident size pin takes M9's hunts list in the base (MZB-672).
+- **GameTests:** M9's four unload waits (two built a `List.of` of null UUIDs and threw at the
+  sequence's build, two passed at once on null ids) wait on the objects' own `isRemoved()` through
+  `MowzieKit.removed` (MZB-671), in a commit of their own.
+- **Sims** (wall_ms, fights_unheld and fight_record_gap_max filtered): sim-conflict is M7's but for
+  the conflict state hashes (the state carries M7's and M9's fields) and M9's three stats at 0;
+  against M9 it adds M7's seven rail stats at 0 and M6's own changes since 58a5551a (an invasion
+  home with 20 left and a raid with 8, from slice C through M6's merge of main, and wire bytes 3,104
+  for 3,080, MZB-589's op on three BAND_CASUALTIES); against main, M6's stats too. The world hash
+  is d450929438383fb2 in all five. sim-mowzie has M9's runs and checks (all ok) and M7's rail runs
+  and checks (all ok) together; against M7 its one changed line is M9's (the plunder at node 4
+  finds 0 items spare, not 1: plunder takes leather and wool only), against M9 nothing but M7's
+  runs, hashes, stats at 0 and slice labels; against M6 and main both sides' runs, and against main
+  M6's changes as on M6. No check of any parent changed its outcome.
+- **Fixtures:** main's, conflict meta page 5, so the five tests that read the conflict's pages fail
+  on META 8 as on M7's merge: rtsim-view's `the_core_gametest_save_draws_every_layer_and_writes_nothing`
+  and `the_create_gametest_save_draws_every_layer_and_writes_nothing` ("meta page version 5, this
+  build reads 8"), `every_gametest_save_carries_and_matches_each_modules_hash` and
+  `a_hash_that_differs_is_flagged` (no conflict hash), and rtsim-host's
+  `gametest_worlds_open_in_the_host_with_their_saved_state` ("conflict: pages dropped").
+- **The check's fixes** (RP-133, RP-134, MZB-672 amended, MZB-673; the re-check's RP-135 and
+  RP-136). A raid held while replaying
+  owes its hunt under the op the session that went on sent, and a replayed HUNT_APPLIED for its
+  district ends the hold first, so the hunt kills once (RP-133, §6.1, §7.4); the holds end in the
+  order they were decided and a decision after the replay end hashes the arrival (RP-135, RP-136). A tribute stack
+  answered after the pages' save is booked from its replayed answer, so the census does not put
+  it down again (RP-134, §4.4). The faction row boxes M9's hunts (216 bytes, MZB-672). No format
+  change: RTC9 / META 8.
+
 ## 3. The flag
 
 ### 3.1 Where it is set and cleared (rtsim-jni)
@@ -802,11 +878,13 @@ The counts live in the module's JNI stats, not saved.
 | TrainRobbed | keep | drop | a roar (RP-12) |
 | ChiefBody | keep | never | goes only ahead of a stack, a spawn line or a hand-back, none of which is made while replaying |
 | March | drop | send | latest wins per agent (MOWZIE.md §4.16): the abstract party's march |
-| OwedHunt (M9, not on main) | drop | drop | held hunts go again at the replay end (§7.4) |
+| OwedHunt (M9) | drop | drop | the faction's hunts are state: a raid replayed owes its hunt again, which the plugin had; every hunt still held goes at the replay end (`resend_notices`), after a journaled HUNT_APPLIED cleared its own (§7.4, MZB-449, RP-131) |
 
 The queued column is the old `session_start` filter exactly (agent kinds, Territory, Notice and
 Reconcile dropped); M5's `session_start` had the same filter, which the merge left to the gate
-(RP-64). After the M5 merge, Territory, Notice, Settled, Envoy, Materialize, Steer, Recall and
+(RP-64). OwedHunt is the one kind that filter would keep (it names no agent): M9's
+`session_start` kept it, and the gate drops it, since the replay end sends every hunt held
+(RP-131). After the M5 merge, Territory, Notice, Settled, Envoy, Materialize, Steer, Recall and
 Reconcile have push sites (engine.rs about 1152, 2137, 2368, 3081, 4059, 4375, 4830, 4880, 5065,
 5127; engine/camp.rs about 629, `send_lines`, which M5 wrote as a `Vec` extend around the gate and
 the merge routes through `push`). M5 adds no `Cmd` kind: CAMP_RECONCILE and CHIEF_BODY were in the
@@ -856,6 +934,43 @@ before the merge asked:
 - **Presence** (RP-103, a residual): an ownerless pass counts against the player with the most time
   near it (`presence.top_of`), which while replaying holds no position of the window; P14's
   `owner_of` reads it the same way.
+
+**M9's camp, hunts and tribute (the M9 merge, §2.7; RP-130 to RP-132).** M9 adds one `Cmd` kind,
+OwedHunt, with its row above, and new push sites for two kinds that had rows:
+
+- **OWED_HUNT** goes from `owe_hunt` (a raid on an unwatched district, in `resolve`) and from
+  `hunt_applied` (the rest of a hunt whose replaced op was answered). Both push through the gate,
+  which drops them while replaying; the books change as live. M9's two TEMPORARY guards (no push
+  while `replaying`, MZB-449 R1) are deleted with the merge, as §7.4 asked, and `resend_notices`
+  sends each hunt still held from the faction's state once the replay has caught up.
+- **CAMP_RECONCILE** gains M9's lines, the heir's pair among them (MASK of a warrior at home and
+  SEAT_HEIR, one order, `camp_heir`). engine/camp.rs builds a CAMP_RECONCILE in one place,
+  `send_lines`, which orders only a camp that is in, so the Reconcile row's "never" covers every
+  line M9 adds; `camp_heir` asks `is_in` itself too.
+- **CHIEF_BODY** goes ahead of a chief SPAWN line in `send_lines` and from a census that found the
+  chief short (`chief_body_cmd`, which asks `is_in`). Never while replaying: the ChiefBody row's
+  "never" holds.
+- **Tribute stacks** are no conflict `Cmd`: `place_tribute` books a TRANSFER_TO_CONTAINER that
+  rtsim-jni writes through the core outbox (`placings`, `push_with_op`) under a deterministic op
+  (`tribute_op`, of the camp, the stack's index, the good and the amount), only for a camp that is
+  in. So none is decided while replaying; the census that brings the camp in after the replay
+  places the next stack. A stack the session that went on decided and had answered after the
+  pages' save is booked from its replayed COMMAND_RESULT: no placing holds it, so `tribute_placed`
+  (or `tribute_failed`) looks the op up among the camps that owe tribute in the replay, at the
+  indexes from the camp's count, and books it as that session did (RP-134). The census then
+  decides the next index, not that stack again from a stock that has moved. A stack in flight at
+  the crash, whose answer the journal does not hold, is decided again at its index: the same op
+  when the stock and what is owed have not moved, which Java answers DUPLICATE_OP if it put it
+  down (MZB-446); another op when they have, which Java puts down, a gift of at most that one
+  stack per camp (RP-134's residual).
+- **Raptors and the envoy party** use main's BAND_MATERIALIZE and ENVOY_MATERIALIZE sites, with
+  §6's early returns; M9 adds no site of either.
+- **Observations, not commands:** HAVEN_CHEST, TRADED, CHIEF_PAID and HUNT_APPLIED come from Java.
+  TRADED and CHIEF_PAID carry Java op ids (`Obs::op`, read by the engine's `first_time` and by
+  rtsim-jni `op_of`), so a replayed or copied one is skipped by the op-id dedupe. HUNT_APPLIED's op is the engine's own and is booked by the state of
+  the faction's hunts: a second answer finds no hunt (MZB-449). HAVEN_CHEST has no op id and no
+  holder carries one (GroveChests journals it at once); it is the chest's state, latest wins, so
+  `ingest_copy` drops a copy, as it drops RAIL_PASS (RP-130).
 
 ### 4.5 Dragons and nests (rtsim-ecology boundary.rs `Cmd`)
 
@@ -1310,7 +1425,13 @@ resolve. The envoy, scout and Peaceful branches ask no watcher and are unchanged
 - **Moved inside the slack** (RP-59). A replayed record that would move a held party ends its hold
   first, before it is applied: a BAND_CASUALTIES or CHIEF_KILLED for it at its epoch or an older
   one (a wipe-out or a rout sends it home), a copy of a BAND_CASUALTIES at any epoch (it counts at
-  any), and a DIFFICULTY that makes the world Peaceful, for every held party (`stop_war_parties`).
+  any), a DIFFICULTY that makes the world Peaceful, for every held party (`stop_war_parties`), and
+  a HUNT_APPLIED for a district a held party of its faction raids (its target, or a district within
+  64 blocks of a position target), oldest hold first (RP-133): the held raid owes its hunt before
+  the answer that spends it. Whatever the record, the holds it ends go by `since`, and each takes
+  the faction's older holds bound for the same district with it (RP-135): the hunts' ops fold in
+  the one in flight, so a later raid's hold ended alone, or first (a casualty for the later band,
+  Peaceful's handle order), would owe an op chain the session never sent.
   The hold's end runs `party_event` at the record's tick with the hold bypassed inside the slack
   too (`hold_ending`), so the decision resolves unwatched as the session that went on resolved it
   at the hold's tick, and the record then applies to the band as it did there. Before, the record
@@ -1355,6 +1476,14 @@ resolve. The envoy, scout and Peaceful branches ask no watcher and are unchanged
   of a band embodied before the decision, journaled between the fight's command and its
   BAND_MATERIALIZED (normally 1 to 2 ticks), ends the hold as unwatched, and the fight's record
   then finds no hold and is lost as RP-56 says. The books hold, one resolution.
+- A HUNT_APPLIED in that window (RP-133), wider than RP-59's deaths and chief kills: any answer
+  of the band's faction for the district it raids ends the hold, an older hunt's answer too, and so
+  does one for any district within 64 blocks of a position target (the answer's district need not
+  be the one its raid lands on: `resolve` takes the first unwatched district near the position,
+  while the bound test ignores whether a district is watched). The held decision then resolves
+  unwatched, as above: the cost is an abstract raid on the district, and a hunt the session that
+  went on never owed (it fought), which the next session's plugin kills after the replay end. It
+  stays rare: the window is normally 1 to 2 ticks, and Java checks its hunts every 20.
 - Time: an unwatched decision while replaying is resolved at its slack, up to
   `REPLAY_HOLD_SLACK_TICKS` after its tick, so the band starts home that much later than in the
   session that went on (a siege's next round does not move).
@@ -1457,6 +1586,24 @@ mz9f's re-check (R1) adds two temporary guards: no OWED_HUNT is pushed while `re
 gate gives OwedHunt "drop" while replaying and "drop" queued. When feat/mowzie-m9 merges main after
 slice C, the merger deletes both guards (each carries a comment naming fix/replay-push), keeps the
 re-send, and deletes the `outbox.retain` filters for OwedHunt, which `Outbox` replaces.
+
+As built (the M9 merge, RP-131): both guards are deleted and both pushes go through the gate; the
+re-send in `resend_notices` is kept, behind main's NOTICE filter only. M9 had deleted its own two
+OwedHunt filters at its re-check (MZB-449 R1), so none was left to delete. The gate's queued "drop"
+differs from M9's `session_start`, which kept a queued OWED_HUNT: the replay end sends every hunt
+held, so a queued one would only have gone twice.
+
+A raid held while replaying (§6.1) owes its hunt when its hold ends, at the slack, before a record
+or at the replay end, later than the session that went on decided it. The hunt's op hashes the
+decision's tick, so `owe_hunt` takes the hold's tick (`hold_ending`), and a replayed HUNT_APPLIED for
+a held raid's district ends that hold first (RP-133): the hunt is owed under the op that session
+sent and its replayed answer spends it, where before the answer found no hunt and the hunt went
+again under a new op at the replay end, killing twice. Live ops are M9's. The tick hashed is the
+arrival's or the siege round's whoever decides it (RP-136): a poll after the replay end decides a
+held arrival live, and hashed from the poll's tick its op would not be the one a second crash's
+replay owes at the hold's, so the answer that session's plugin journaled would name no hunt and the
+hunt would go to a third plugin. The holds a record ends go by `since` with the older holds bound
+for the same district (RP-135).
 
 ## 8. Formats
 

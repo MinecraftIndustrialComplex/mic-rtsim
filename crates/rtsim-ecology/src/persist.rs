@@ -1155,7 +1155,7 @@ impl DragonsTickets {
 }
 
 /// Every page table the dragons own when they page: a meta key in none of them.
-const TABLES: [u16; 10] = [
+pub const TABLES: [u16; 10] = [
     DRAGON_TABLE,
     Lairs::TABLE,
     WHEEL_TABLE,
