@@ -1,8 +1,10 @@
 package com.minecraftindustrialcomplex.mic_rtsim_mowziesmobs.gametest;
 
+import com.bobmowzie.mowziesmobs.server.entity.umvuthana.EntityUmvuthanaCrane;
 import com.bobmowzie.mowziesmobs.server.entity.umvuthana.EntityUmvuthanaMinion;
 import com.bobmowzie.mowziesmobs.server.entity.umvuthana.EntityUmvuthi;
 import com.minecraftindustrialcomplex.mic_rtsim.api.RtsimApi;
+import com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.AloftRules;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictBridge;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictNews;
@@ -13,6 +15,9 @@ import com.minecraftindustrialcomplex.mic_rtsim.gametest.ConflictKit;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.ConflictKit.CampLine;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.FakePlayers;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests;
+import com.minecraftindustrialcomplex.mic_rtsim.puppet.AgentTag;
+import com.minecraftindustrialcomplex.mic_rtsim.puppet.RtsimAttachments;
+import com.minecraftindustrialcomplex.mic_rtsim_mowziesmobs.GroveKind;
 import com.minecraftindustrialcomplex.mic_rtsim_mowziesmobs.MicRtsimMowziesMobs;
 import com.minecraftindustrialcomplex.mic_rtsim_mowziesmobs.UmvuthiAloft;
 import com.minecraftindustrialcomplex.mic_rtsim_mowziesmobs.gametest.MowzieKit.Far;
@@ -29,8 +34,10 @@ import net.minecraft.gametest.framework.GameTestHelper;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.Mob;
+import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.entity.animal.IronGolem;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.entity.item.ItemEntity;
@@ -48,6 +55,7 @@ import net.minecraft.world.phys.Vec3;
 import net.neoforged.bus.api.Event;
 import net.neoforged.bus.api.EventPriority;
 import net.neoforged.neoforge.common.NeoForge;
+import net.neoforged.neoforge.event.entity.EntityJoinLevelEvent;
 import net.neoforged.neoforge.event.entity.EntityTravelToDimensionEvent;
 import net.neoforged.neoforge.event.entity.living.LivingDeathEvent;
 import net.neoforged.neoforge.event.tick.LevelTickEvent;
@@ -55,7 +63,9 @@ import net.neoforged.neoforge.gametest.GameTestHolder;
 import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.function.Consumer;
@@ -1564,6 +1574,631 @@ public final class AloftMowzieGameTests {
                     recallAll(agent);
                 })
                 .thenIdle(30)
+                .thenExecute(() -> {
+                    drop(player);
+                    far.releaseAll();
+                })
+                .thenSucceed();
+    }
+
+    // ---- 24: the chief's summons are its puppets (MZB-816) ---------------------------------------------
+
+    /** A warrior or crane at its join: the tag it carried then, and whether the chief's slot listed it as an extra then. */
+    private record Join(UUID id, EntityUmvuthanaMinion body, AgentTag tag, boolean extra) {
+        boolean crane() {
+            return body instanceof EntityUmvuthanaCrane;
+        }
+    }
+
+    /** The engine's march of a band that stands still: {@code units} (and the war chief when {@code chief}), on a route one block long. */
+    private static void marchOf(long agent, long faction, String dim, double x, double z, boolean chief, Map<String, Integer> units) {
+        long bx = (long) Math.floor(x), bz = (long) Math.floor(z);
+        ConflictKit.march(new ConflictKit.MarchSpec(agent, 1, dim, faction, ConflictRecords.PURPOSE_INVASION, ConflictRecords.March.OUT,
+                chief ? ConflictRecords.March.FLAG_CHIEF : 0, 0L, new LinkedHashMap<>(units),
+                List.of(new long[] {bx, bz, 0L}, new long[] {bx + 1, bz, 10_000L})));
+    }
+
+    /** Members in the party's stacks (the chief's slot too, no extras). */
+    private static int slotCount(long agent) {
+        int n = 0;
+        for (ConflictBridge.Stack st : ConflictKit.party(agent).stacks())
+            n += st.slots().size();
+        return n;
+    }
+
+    /**
+     * Inside {@code thenWaitUntil}: every entity of the list is removed, saved and unloaded with its chunk when it was saved
+     * ({@link MowzieKit#removed}). The list is read at the first poll, as the test's steps fill it after the sequence is built.
+     */
+    @SuppressWarnings("unchecked")
+    private static Runnable removedAll(ServerLevel level, Supplier<List<? extends Entity>> list) {
+        Runnable[] wait = new Runnable[1];
+        return () -> {
+            if (wait[0] == null) {
+                List<? extends Entity> es = list.get();
+                Supplier<? extends Entity>[] s = new Supplier[es.size()];
+                for (int i = 0; i < s.length; i++) {
+                    Entity e = es.get(i);
+                    s[i] = () -> e;
+                }
+                wait[0] = MowzieKit.removed(level, s);
+            }
+            wait[0].run();
+        };
+    }
+
+    /**
+     * An Umvuthi's summons are puppets of its party when it is a chief puppet, and strays when it stands on its throne (test 24;
+     * MZB-816). A puppet that has settled before a player (its target, set each tick: the jar's own AI is off, so the abilities are the test's)
+     * starts the jar's SPAWN and then its sunblockers; a throne Umvuthi in a declared grove starts the same.
+     * <ol>
+     * <li>Each of the puppet's warriors and cranes carries the party's AgentTag at its join and stands among the chief slot's extras then,
+     * is let in by {@code admit}, is a puppet and is never saved by vanilla; {@code summonsAdopted} rose by their number and
+     * {@code summonsRefused} did not.</li>
+     * <li>The engine's march of the band (two warriors, the chief) is unchanged, no member was cut by the trim, and the band has the
+     * members it had.</li>
+     * <li>A warrior killed by the player books nothing: no BAND_CASUALTIES, no CHIEF_KILLED, the same members.</li>
+     * <li>The lane's chunks are let go and forced again: none of the puppet's summons is in them (not one was saved).</li>
+     * </ol>
+     * The control, the throne Umvuthi's summons: untagged, in no extras, no puppets, saved by vanilla (made persistent so that only the
+     * chunk decides: after the unload each is read back with the same id). Fails without the wrap: the puppet's summons are untagged
+     * strays, saved and read back.
+     */
+    @SuppressWarnings("unchecked")
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "aloft_summons", skyAccess = true)
+    public static void theChiefsSummonsArePuppets(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 8000);
+        String test = "theChiefsSummonsArePuppets";
+        Far far = new Far(helper, test);
+        ServerLevel level = far.level;
+        String dim = RtsimTests.dimension(helper);
+        Lane lane = new Lane(far, 0, 4);
+        Grove g = groveAt(far, 1, 0);
+        long agent = ConflictKit.newAgent();
+        long faction = ConflictKit.newFaction();
+        int start = 20;
+        EntityUmvuthi[] puppet = new EntityUmvuthi[1], throne = new EntityUmvuthi[1];
+        ServerPlayer[] player = new ServerPlayer[2];
+        List<Join> joins = new ArrayList<>();
+        Runnable[] off = new Runnable[1];
+        long[] was = new long[5]; // summonsAdopted, summonsRefused, trimmed, casualties, chiefsKilled
+        int[] slots = new int[1];
+        List<Join>[] mine = new List[1], theirs = new List[1];
+        Map<String, Integer>[] units = new Map[1];
+        EntityUmvuthanaMinion[] killed = new EntityUmvuthanaMinion[1];
+        int[] epoch = new int[1];
+        Runnable gone = removedAll(level, () -> {
+            List<Entity> all = new ArrayList<>();
+            for (Join j : mine[0])
+                all.add(j.body());
+            for (Join j : theirs[0])
+                all.add(j.body());
+            return all;
+        });
+
+        MowzieKit.seq(helper)
+                .thenExecute(() -> {
+                    lane.force();
+                    g.force();
+                })
+                .thenWaitUntil(waits.chunks(far.ready()))
+                .thenExecute(() -> {
+                    lane.floor();
+                    g.lay().declare();
+                    throne[0] = MowzieKit.umvuthi(level, g.at(-10, 0));
+                    bandAt(helper, faction, agent, lane.x0 + start, lane.top + 1, lane.z, 0f, List.of(), 2, true);
+                    player[1] = MowzieKit.player(helper, off(g, 0, 20), "mowzie-summons-control");
+                })
+                .thenWaitUntil(waits.logic(() -> {
+                    check("the grove's census has come", MowzieKit.censusCount(g.faction) >= 1);
+                    puppet[0] = puppet(agent);
+                    check("the puppet floats", puppet[0].isNoGravity());
+                }))
+                .thenExecute(() -> {
+                    // the jar's own AI would summon when it likes: the test starts the abilities, and the target is set by hand
+                    puppet[0].setNoAi(true);
+                    player[0] = MowzieKit.player(helper, new Vec3(puppet[0].getX() + 10, lane.top + 1, puppet[0].getZ()), "mowzie-summons-target");
+                    MowzieKit.everyTick(helper, () -> {
+                        if (puppet[0].isAlive() && !puppet[0].isRemoved() && player[0].isAlive())
+                            puppet[0].setTarget(player[0]);
+                    });
+                })
+                .thenWaitUntil(waits.logic(() -> check("it has settled before the player (gravity " + !puppet[0].isNoGravity() + ")", !puppet[0].isNoGravity())))
+                .thenExecute(() -> {
+                    epoch[0] = ConflictKit.party(agent).epoch;
+                    units[0] = new LinkedHashMap<>(Map.of(WARRIOR, 2));
+                    marchOf(agent, faction, dim, lane.x0 + start, lane.z, true, units[0]);
+                })
+                .thenWaitUntil(waits.logic(() -> check("the engine's march is held", ConflictKit.bridge().march(agent) != null)))
+                .thenExecute(() -> {
+                    ConflictBridge b = ConflictKit.bridge();
+                    was[0] = ConflictKit.summonsAdopted();
+                    was[1] = ConflictKit.summonsRefused();
+                    was[2] = ConflictKit.trimmed();
+                    was[3] = ConflictKit.about(ConflictRecords.BAND_CASUALTIES, agent).size();
+                    was[4] = b.chiefsKilled;
+                    slots[0] = slotCount(agent);
+                    off[0] = listen(helper, EventPriority.HIGHEST, EntityJoinLevelEvent.class, e -> {
+                        if (!(e.getEntity() instanceof EntityUmvuthanaMinion m) || e.getLevel() != level)
+                            return;
+                        boolean extra = false;
+                        ConflictBridge.Party p = ConflictKit.bridge().party(agent);
+                        if (p != null)
+                            for (ConflictBridge.Stack st : p.stacks())
+                                for (ConflictBridge.Slot s : st.slots())
+                                    if (s.chief && s.extras().contains(m))
+                                        extra = true;
+                        joins.add(new Join(m.getUUID(), m, RtsimAttachments.tag(m), extra));
+                    });
+                    puppet[0].sendAbilityMessage(EntityUmvuthi.SPAWN_ABILITY);
+                    throne[0].sendAbilityMessage(EntityUmvuthi.SPAWN_ABILITY);
+                })
+                .thenWaitUntil(waits.logic(() -> {
+                    check("the puppet's warriors have come (" + joins.stream().filter(j -> j.tag() != null).count() + ")",
+                            joins.stream().filter(j -> j.tag() != null).count() >= 3);
+                    check("and the throne body's (" + joins.stream().filter(j -> j.tag() == null).count() + ")",
+                            joins.stream().filter(j -> j.tag() == null).count() >= 3);
+                    check("both abilities are over", puppet[0].getActiveAbility() == null && throne[0].getActiveAbility() == null);
+                }))
+                .thenExecute(() -> {
+                    puppet[0].sendAbilityMessage(EntityUmvuthi.SPAWN_SUNBLOCKERS_ABILITY);
+                    throne[0].sendAbilityMessage(EntityUmvuthi.SPAWN_SUNBLOCKERS_ABILITY);
+                })
+                .thenWaitUntil(waits.logic(() -> {
+                    check("the puppet's cranes have come (" + joins.stream().filter(j -> j.tag() != null && j.crane()).count() + ")",
+                            joins.stream().filter(j -> j.tag() != null && j.crane()).count() >= 3);
+                    check("and the throne body's (" + joins.stream().filter(j -> j.tag() == null && j.crane()).count() + ")",
+                            joins.stream().filter(j -> j.tag() == null && j.crane()).count() >= 3);
+                    check("both abilities are over", puppet[0].getActiveAbility() == null && throne[0].getActiveAbility() == null);
+                }))
+                .thenExecute(() -> {
+                    off[0].run();
+                    mine[0] = joins.stream().filter(j -> j.tag() != null).toList();
+                    theirs[0] = joins.stream().filter(j -> j.tag() == null).toList();
+                    int warriors = (int) mine[0].stream().filter(j -> !j.crane()).count(), cranes = mine[0].size() - warriors;
+                    ConflictBridge bridge = ConflictKit.bridge();
+                    for (Join j : mine[0]) {
+                        String what = (j.crane() ? "crane " : "warrior ") + j.id();
+                        check(what + " carried the party's tag (" + j.tag() + ")", j.tag().agent() == agent && j.tag().epoch() == epoch[0]);
+                        check(what + " stood among the chief slot's extras at its join", j.extra());
+                        check(what + " was let in (in the level " + (level.getEntity(j.id()) == j.body()) + ")",
+                                !j.body().isRemoved() && level.getEntity(j.id()) == j.body());
+                        check(what + " is admitted", bridge.admit(RtsimTests.session(), j.body(), j.tag(), level));
+                        check(what + " is a puppet and is never saved", RtsimApi.isPuppet(j.body()) && !j.body().shouldBeSaved());
+                        check(what + " is among the extras now", chiefSlot(agent).extras().contains(j.body()));
+                    }
+                    check("the adopted count rose by their number (" + (ConflictKit.summonsAdopted() - was[0]) + " for " + mine[0].size() + ")",
+                            ConflictKit.summonsAdopted() - was[0] == mine[0].size());
+                    check("none was refused (" + (ConflictKit.summonsRefused() - was[1]) + ")", ConflictKit.summonsRefused() == was[1]);
+                    check("the march is the engine's still (" + bridge.march(agent).count(WARRIOR) + " warriors, the chief "
+                            + bridge.march(agent).chief() + ")", bridge.march(agent).count(WARRIOR) == 2 && bridge.march(agent).chief());
+                    check("the band has the members it had (" + slotCount(agent) + ")", slotCount(agent) == slots[0]);
+                    check("the trim cut none (" + (ConflictKit.trimmed() - was[2]) + ")", ConflictKit.trimmed() == was[2]);
+                    for (Join j : theirs[0]) {
+                        String what = (j.crane() ? "the throne body's crane " : "the throne body's warrior ") + j.id();
+                        check(what + " is untagged", RtsimAttachments.tag(j.body()) == null);
+                        check(what + " is no extra of any slot", !j.extra());
+                        check(what + " is no puppet and vanilla saves it", !RtsimApi.isPuppet(j.body()) && j.body().shouldBeSaved());
+                        j.body().setPersistenceRequired();
+                    }
+                    check("and the adopted count did not move for them", ConflictKit.summonsAdopted() - was[0] == mine[0].size());
+                    record(test, "summons", warriors + " warriors and " + cranes + " cranes of the puppet tagged and listed before their joins; "
+                            + theirs[0].size() + " of the throne body's untagged strays");
+                    // a warrior killed by the player books nothing
+                    killed[0] = (EntityUmvuthanaMinion) mine[0].stream().filter(j -> !j.crane()).findFirst().orElseThrow().body();
+                    killed[0].setLastHurtByPlayer(player[0]);
+                    MowzieKit.kill(killed[0], level.damageSources().playerAttack(player[0]));
+                })
+                .thenWaitUntil(waits.logic(() -> check("the warrior's animation has ended", killed[0].isRemoved())))
+                .thenIdle(20)
+                .thenExecute(() -> {
+                    check("no BAND_CASUALTIES for the party (" + ConflictKit.about(ConflictRecords.BAND_CASUALTIES, agent).size() + ")",
+                            ConflictKit.about(ConflictRecords.BAND_CASUALTIES, agent).size() == was[3]);
+                    check("no CHIEF_KILLED (" + ConflictKit.about(ConflictRecords.CHIEF_KILLED, agent).size() + ")",
+                            ConflictKit.about(ConflictRecords.CHIEF_KILLED, agent).isEmpty() && ConflictKit.bridge().chiefsKilled == was[4]);
+                    check("the band has the members it had (" + slotCount(agent) + ")", slotCount(agent) == slots[0]);
+                    check("the puppet is still the chief's (alive " + puppet[0].isAlive() + ")", puppet(agent) == puppet[0]);
+                    // the lane and the grove are let go, with every summons alive: a saved one would come back
+                    far.releaseRect(lane.cx0, lane.cz, lane.cx1, lane.cz);
+                    far.releaseRect(g.cx - 2, g.cz - 2, g.cx + 2, g.cz + 2);
+                })
+                .thenWaitUntil(waits.chunks(() -> {
+                    gone.run();
+                    far.unloaded(lane.cx0, lane.cz).run();
+                    far.unloaded(g.cx, g.cz).run();
+                }))
+                .thenExecute(() -> {
+                    lane.force();
+                    g.force();
+                })
+                .thenWaitUntil(waits.chunks(far.ready()))
+                .thenExecute(() -> {
+                    int back = 0;
+                    for (Join j : mine[0])
+                        if (level.getEntity(j.id()) != null)
+                            back++;
+                    check("none of the puppet's summons was saved and read back (" + back + " of " + mine[0].size() + ")", back == 0);
+                    int kept = 0;
+                    for (Join j : theirs[0])
+                        if (level.getEntity(j.id()) != null)
+                            kept++;
+                    check("the throne body's were (" + kept + " of " + theirs[0].size() + ")", kept == theirs[0].size());
+                    record(test, "saved", "0 of " + mine[0].size() + " of the puppet's summons came back from the chunk; " + kept + " of "
+                            + theirs[0].size() + " of the throne body's did");
+                    recallAll(agent);
+                })
+                .thenWaitUntil(waits.logic(() -> check("the band went (" + dematerialized(agent).size() + ")", dematerialized(agent).size() >= 1)))
+                .thenExecute(() -> {
+                    drop(player);
+                    far.releaseAll();
+                })
+                .thenSucceed();
+    }
+
+    // ---- 25p: a payment to the puppet is remembered (MZB-819, MZB-820) -----------------------------------
+
+    /** The CHIEF_PAID records journaled for a faction. */
+    private static List<ScriptedEngine.Received> paidOf(long faction) {
+        return RtsimTests.recordsWith(RtsimTests.engine(), ConflictRecords.CHIEF_PAID, ConflictRecords.ChiefPaid.FACTION, faction);
+    }
+
+    /**
+     * A payment to a chief puppet is journaled and remembered (test 25's puppet clauses; MZB-819, MZB-820). Grove P's Invasion has its
+     * puppet 60 blocks from the throne, with no throne body at the grove; a masked player pays it. Then the band comes home: the
+     * engine's CHIEF_BODY for the chief at home names no player, and the chief's HAND_BACK follows.
+     * <ul>
+     * <li>One CHIEF_PAID is journaled with the faction, the chief's slot, generation 0, the flag PAID_PUPPET, the payer and the
+     * desires' item; the bridge counted one payment to a puppet; the puppet {@code hasTradedWith} the player.</li>
+     * <li>The hand-back answers DONE and one Umvuthi stands on the throne as the chief; it {@code hasTradedWith} the player, and the
+     * only player it knows is the payer, though CHIEF_BODY named none.</li>
+     * </ul>
+     * The control, grove T: a payment to a throne Umvuthi adopted as the chief journals one CHIEF_PAID with its own slot and generation and
+     * flags 0 (as M9's), and no payment to a puppet is counted for it. Fails without MZB-819 (no CHIEF_PAID for P) and without MZB-820
+     * (the throne body knows no player).
+     */
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "aloft_paid", skyAccess = true)
+    public static void aPaymentToThePuppetIsRemembered(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 9000);
+        String test = "aPaymentToThePuppetIsRemembered";
+        Far far = new Far(helper, test);
+        ServerLevel level = far.level;
+        Grove[] g = {groveAt(far, 0, 0), groveAt(far, 1, 0)}; // P: the puppet; T: the throne body
+        long agent = ConflictKit.newAgent();
+        EntityUmvuthi[] throne = new EntityUmvuthi[1], puppet = new EntityUmvuthi[1];
+        ServerPlayer[] payer = new ServerPlayer[2];
+        long[] op = new long[2];
+        long[] was = new long[1];
+        int[] generation = new int[1];
+
+        MowzieKit.seq(helper)
+                .thenExecute(() -> {
+                    for (Grove x : g)
+                        x.force();
+                })
+                .thenWaitUntil(waits.chunks(far.ready()))
+                .thenExecute(() -> {
+                    for (Grove x : g)
+                        x.lay().declare();
+                    throne[0] = MowzieKit.umvuthi(level, g[1].at(-10, 0));
+                })
+                .thenWaitUntil(waits.logic(censused(g)))
+                .thenExecute(() -> op[0] = adoptChief(g[1], throne[0], 1))
+                .thenWaitUntil(waits.logic(() -> MowzieKit.answered(g[1].faction, op[0], 1)))
+                .thenExecute(() -> {
+                    MowzieKit.allOutcomes("ADOPT", ConflictKit.outcomes(g[1].faction, op[0]), DONE);
+                    chiefBand(helper, g[0], agent, g[0].spot.x + 60, g[0].spot.z, 120f, List.of(), 1);
+                })
+                .thenWaitUntil(waits.logic(() -> {
+                    puppet[0] = puppet(agent);
+                    check("the puppet floats", puppet[0].isNoGravity());
+                }))
+                .thenExecute(() -> {
+                    generation[0] = MowzieKit.tag(throne[0]).generation();
+                    payer[0] = MowzieKit.player(helper, new Vec3(puppet[0].getX() + 6, g[0].spot.y + 1, puppet[0].getZ()), "mowzie-paid-puppet");
+                    payer[1] = MowzieKit.player(helper, off(g[1], 0, 8), "mowzie-paid-throne");
+                    MowzieKit.mask(payer[0]);
+                    MowzieKit.mask(payer[1]);
+                    was[0] = ConflictKit.puppetPaid();
+                    check("no CHIEF_PAID yet", paidOf(g[0].faction).isEmpty() && paidOf(g[1].faction).isEmpty());
+                    check("the jar remembers the payer of the puppet", MowzieKit.payUmvuthi(payer[0], puppet[0]));
+                    check("the jar remembers the payer of the throne body", MowzieKit.payUmvuthi(payer[1], throne[0]));
+                })
+                .thenWaitUntil(waits.logic(() -> {
+                    check("one CHIEF_PAID for the puppet's grove (" + paidOf(g[0].faction).size() + ")", paidOf(g[0].faction).size() == 1);
+                    check("one for the control's (" + paidOf(g[1].faction).size() + ")", paidOf(g[1].faction).size() == 1);
+                }))
+                .thenExecute(() -> {
+                    ScriptedEngine.Received r = paidOf(g[0].faction).get(0);
+                    var v = r.view();
+                    check("one item entry (aux " + r.aux() + ")", r.aux() == 1);
+                    check("the chief's slot (" + v.getInt(ConflictRecords.ChiefPaid.SLOT) + ")", v.getInt(ConflictRecords.ChiefPaid.SLOT) == CHIEF_SLOT);
+                    check("generation 0 (" + v.getInt(ConflictRecords.ChiefPaid.GENERATION) + ")", v.getInt(ConflictRecords.ChiefPaid.GENERATION) == 0);
+                    check("PAID_PUPPET (flags " + v.getInt(ConflictRecords.ChiefPaid.FLAGS) + ")",
+                            v.getInt(ConflictRecords.ChiefPaid.FLAGS) == ConflictRecords.ChiefPaid.PAID_PUPPET);
+                    check("the payer is the masked player",
+                            payer[0].getGameProfile().getId().equals(ConflictKit.uuidAt(r, ConflictRecords.ChiefPaid.PLAYER_MOST)));
+                    check("with a Java op id", (v.getLong(ConflictRecords.ChiefPaid.OP_ID) & Obs.JAVA_OP_BIT) != 0);
+                    check("the bridge counted one payment to a puppet (" + (ConflictKit.puppetPaid() - was[0]) + ")", ConflictKit.puppetPaid() == was[0] + 1);
+                    check("the puppet remembers the payer", puppet[0].hasTradedWith(payer[0]));
+                    ScriptedEngine.Received c = paidOf(g[1].faction).get(0);
+                    var w = c.view();
+                    check("the control's slot is the chief's (" + w.getInt(ConflictRecords.ChiefPaid.SLOT) + ")", w.getInt(ConflictRecords.ChiefPaid.SLOT) == CHIEF_SLOT);
+                    check("and its generation " + generation[0] + " (" + w.getInt(ConflictRecords.ChiefPaid.GENERATION) + ")",
+                            w.getInt(ConflictRecords.ChiefPaid.GENERATION) == generation[0]);
+                    check("flags 0 (" + w.getInt(ConflictRecords.ChiefPaid.FLAGS) + ")", w.getInt(ConflictRecords.ChiefPaid.FLAGS) == 0);
+                    check("the control's payer is its player",
+                            payer[1].getGameProfile().getId().equals(ConflictKit.uuidAt(c, ConflictRecords.ChiefPaid.PLAYER_MOST)));
+                    check("no payment to a puppet was counted for the control (" + (ConflictKit.puppetPaid() - was[0]) + ")", ConflictKit.puppetPaid() == was[0] + 1);
+                    // the band comes home: the engine's memory of its chief at home names nobody, then the hand-back
+                    payer[0].setPos(payer[0].getX(), payer[0].getY(), payer[0].getZ() + 300);
+                    ConflictKit.chiefBody(g[0].faction, epochOf(g[0]), 0f, List.of());
+                    op[1] = MowzieKit.reconcile(g[0].faction, epochOf(g[0]), g[0].spot, 0f, List.of(
+                            CampLine.party(CHIEF_SLOT, 1, UMVUTHI, HAND_BACK, CHIEF, agent, ConflictKit.party(agent).epoch)));
+                })
+                .thenWaitUntil(waits.logic(() -> check("the hand-back is answered", ConflictKit.outcomes(g[0].faction, op[1]).size() == 1)))
+                .thenExecute(() -> {
+                    check("answered DONE, not " + MowzieKit.outcomeName(answerOf(g[0], op[1])), answerOf(g[0], op[1]) == DONE);
+                    List<net.minecraft.world.entity.Entity> held = MowzieKit.held(g[0].faction, CHIEF_SLOT, 1);
+                    check("one Umvuthi stands on the throne as the chief (" + held.size() + ")", held.size() == 1 && held.get(0) instanceof EntityUmvuthi);
+                    EntityUmvuthi body = (EntityUmvuthi) held.get(0);
+                    check("the puppet is gone", puppet[0].isRemoved());
+                    check("the throne body remembers the payer", body.hasTradedWith(payer[0]));
+                    check("and no one else (" + body.getTradedPlayers().size() + ")", body.getTradedPlayers().size() == 1);
+                    record(test, "paid", "CHIEF_PAID with PAID_PUPPET once; the throne body after the hand-back knows " + body.getTradedPlayers().size()
+                            + " player though CHIEF_BODY named none");
+                    drop(payer);
+                    far.releaseAll();
+                })
+                .thenSucceed();
+    }
+
+    // ---- 26: killed away (MZB-817, MZB-826, MZB-827) -------------------------------------------------
+
+    private static final int REMOVE = ConflictRecords.CampReconcile.REMOVE;
+
+    /** Sets the server's view distance for the test; the Runnable it returns puts it back (it also runs when the test ends). */
+    private static Runnable viewDistance(GameTestHelper helper, ServerLevel level, int chunks) {
+        var players = level.getServer().getPlayerList();
+        int saved = players.getViewDistance();
+        players.setViewDistance(chunks);
+        boolean[] on = {true};
+        Runnable back = () -> {
+            if (on[0]) {
+                on[0] = false;
+                players.setViewDistance(saved);
+            }
+        };
+        ConflictKit.onEnd(helper, back);
+        return back;
+    }
+
+    /** The living, embodied warriors of a party's stacks (the chief's slot is no warrior). */
+    private static List<Mob> warriorsOf(long agent) {
+        List<Mob> out = new ArrayList<>();
+        for (ConflictBridge.Stack st : ConflictKit.party(agent).stacks())
+            for (ConflictBridge.Slot s : st.slots())
+                if (!s.chief && s.alive() && s.entity() != null && !s.entity().isRemoved())
+                    out.add(s.entity());
+        return out;
+    }
+
+    /**
+     * An Umvuthi killed away routs its Invasion, and its removal waits for a player (test 26; MZB-817, MZB-826, MZB-827).
+     * <ol>
+     * <li>Killed away (lane A). A puppet settled before a player, with six warriors: three within 30 blocks of it and three past
+     * 45, all with no AI, is killed by that player. One CHIEF_KILLED names the player and one Sol Visage lies where it fell at the
+     * animation's end. The jar's {@code die} takes the three near warriors, each by a hit with no entity: three BAND_CASUALTIES,
+     * each by a player and naming the player (the kill credit, MZB-826), and the three far warriors live and book nothing.</li>
+     * <li>The throne body (grove G, adopted as the chief) is a second body once the puppet's death is journaled. The grove's scripted
+     * REMOVE of it is held while a second player stands within 160 blocks of the throne (no answer, one more held line and removal,
+     * the body standing, no CAMP_DEATH), and played when that player is gone: DONE, the body removed, no Sol Visage.</li>
+     * <li>Rule U in the trim (lane B, view distance 8, so sight is 128). A second grove's puppet settles before a player, which then
+     * stands 170 blocks off with the puppet's target set again each tick. A BAND_MARCH without the war chief arrives: the books have
+     * lost the chief, and the trim, which cuts what no player sees, does not cut this one for 1,300 ticks (it stays due). With its
+     * target cleared, the next beat of the stop ({@link ConflictBridge#STOP_BEAT} ticks) cuts it: it books nothing.</li>
+     * </ol>
+     * Fails without MZB-826 (the casualties name no kind: the warriors' deaths carry no entity), and without MZB-827 (the trim cuts the
+     * puppet out of sight, at once).
+     */
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "aloft_killed_away", skyAccess = true)
+    public static void anUmvuthiKilledAwayRoutsItsInvasion(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 9000);
+        String test = "anUmvuthiKilledAwayRoutsItsInvasion";
+        Far far = new Far(helper, test);
+        ServerLevel level = far.level;
+        String dim = RtsimTests.dimension(helper);
+        Lane lane = new Lane(far, 0, 6), second = new Lane(far, 2, 3);
+        Grove g = groveAt(far, 0, 1), h = groveAt(far, 1, 2); // G: the throne body and the first band's faction; H: the second band's
+        long agent = ConflictKit.newAgent(), agent2 = ConflictKit.newAgent();
+        EntityUmvuthi[] throne = new EntityUmvuthi[1], puppet = new EntityUmvuthi[2];
+        ServerPlayer[] player = new ServerPlayer[3]; // the killer, the watcher by the throne, the target of the second puppet
+        Mob[] near = new Mob[3], away = new Mob[3];
+        long[] op = new long[2];
+        long[] was = new long[7]; // chiefsKilled, deathLootLost, held removals, held lines, trimmed, the game time of the clear, the cut
+        Vec3[] fell = new Vec3[2];
+        boolean[] fight = {false};
+        Runnable[] back = new Runnable[1];
+
+        MowzieKit.seq(helper)
+                .thenExecute(() -> {
+                    lane.force();
+                    second.force();
+                    g.force();
+                    h.force();
+                })
+                .thenWaitUntil(waits.chunks(far.ready()))
+                .thenExecute(() -> {
+                    lane.floor();
+                    second.floor();
+                    g.lay().declare();
+                    h.lay().declare();
+                    throne[0] = MowzieKit.umvuthi(level, g.at(-10, 0));
+                    player[1] = MowzieKit.player(helper, off(g, 0, 60), "mowzie-killed-away-watcher");
+                })
+                .thenWaitUntil(waits.logic(censused(g, h)))
+                .thenExecute(() -> op[0] = adoptChief(g, throne[0], 1))
+                .thenWaitUntil(waits.logic(() -> MowzieKit.answered(g.faction, op[0], 1)))
+                .thenExecute(() -> {
+                    MowzieKit.allOutcomes("ADOPT", ConflictKit.outcomes(g.faction, op[0]), DONE);
+                    check("the watcher is within 160 blocks of the throne body", player[1].distanceToSqr(throne[0]) < GroveKind.HOLD_RANGE * GroveKind.HOLD_RANGE);
+                    bandAt(helper, g.faction, agent, lane.x0 + 20, lane.top + 1, lane.z, 0f, List.of(), 6, true);
+                })
+                .thenWaitUntil(waits.logic(() -> {
+                    puppet[0] = puppet(agent);
+                    check("the puppet floats", puppet[0].isNoGravity());
+                    check("its six warriors are embodied (" + warriorsOf(agent).size() + ")", warriorsOf(agent).size() == 6);
+                }))
+                .thenExecute(() -> {
+                    // the jar's own AI would summon and fight as it likes: the abilities are not this test's, and the target is set by hand
+                    puppet[0].setNoAi(true);
+                    puppet[0].getAttribute(Attributes.FOLLOW_RANGE).setBaseValue(1000);
+                    player[0] = MowzieKit.player(helper, new Vec3(puppet[0].getX() + 10, lane.top + 1, puppet[0].getZ()), "mowzie-killed-away-killer");
+                    List<Mob> w = warriorsOf(agent);
+                    for (int i = 0; i < 3; i++) {
+                        near[i] = w.get(i);
+                        away[i] = w.get(3 + i);
+                        near[i].setNoAi(true);
+                        away[i].setNoAi(true);
+                        near[i].moveTo(puppet[0].getX() + 6 + 3 * i, lane.top + 1, puppet[0].getZ() + 3 * (i - 1));
+                        away[i].moveTo(puppet[0].getX() + 45 + 3 * i, lane.top + 1, puppet[0].getZ() + 3 * (i - 1));
+                    }
+                    MowzieKit.everyTick(helper, () -> {
+                        if (puppet[0].isAlive() && !puppet[0].isRemoved() && player[0].isAlive())
+                            puppet[0].setTarget(player[0]);
+                    });
+                })
+                .thenWaitUntil(waits.logic(() -> check("it has settled before the player (gravity " + !puppet[0].isNoGravity() + ")", !puppet[0].isNoGravity())))
+                .thenExecute(() -> {
+                    for (int i = 0; i < 3; i++) {
+                        check("warrior " + i + " is within 30 blocks of the puppet (" + near[i].distanceTo(puppet[0]) + ")", near[i].distanceTo(puppet[0]) < 30f);
+                        check("far warrior " + i + " is past 40 (" + away[i].distanceTo(puppet[0]) + ")", away[i].distanceTo(puppet[0]) > 40f);
+                    }
+                    was[0] = ConflictKit.bridge().chiefsKilled;
+                    was[1] = ConflictKit.deathLootLost();
+                    fell[0] = puppet[0].position();
+                    // the jar's `die` hurts each warrior with a source that names no entity: the credit is the hit of a player's lately
+                    for (Mob n : near)
+                        n.setLastHurtByPlayer(player[0]);
+                    puppet[0].setLastHurtByPlayer(player[0]);
+                    MowzieKit.kill(puppet[0], level.damageSources().playerAttack(player[0]));
+                })
+                .thenWaitUntil(waits.logic(() -> check("the three near warriors' deaths are booked ("
+                        + ConflictKit.about(ConflictRecords.BAND_CASUALTIES, agent).size() + ")", ConflictKit.about(ConflictRecords.BAND_CASUALTIES, agent).size() >= 3)))
+                .thenWaitUntil(waits.logic(() -> check("the puppet's animation has ended (removed " + puppet[0].isRemoved() + ")", puppet[0].isRemoved())))
+                .thenIdle(10)
+                .thenExecute(() -> {
+                    List<ScriptedEngine.Received> killed = ConflictKit.about(ConflictRecords.CHIEF_KILLED, agent);
+                    check("one CHIEF_KILLED (" + killed.size() + ")", killed.size() == 1);
+                    check("by a player", killed.get(0).aux() == ConflictRecords.BY_PLAYER);
+                    check("naming the killer", player[0].getUUID().equals(ConflictKit.uuidAt(killed.get(0), ConflictRecords.ChiefKilled.KILLER_MOST)));
+                    check("chiefsKilled rose by one (" + was[0] + " to " + ConflictKit.bridge().chiefsKilled + ")", ConflictKit.bridge().chiefsKilled == was[0] + 1);
+                    check("one Sol Visage where the puppet fell (" + visagesNear(level, fell[0], 6) + ")", visagesNear(level, fell[0], 6) == 1);
+                    check("no loot record was lost (" + was[1] + " to " + ConflictKit.deathLootLost() + ")", ConflictKit.deathLootLost() == was[1]);
+                    check("nothing is dying (" + ConflictKit.bridge().dyingBodies() + ")", ConflictKit.bridge().dyingBodies() == 0);
+                    List<ScriptedEngine.Received> cas = ConflictKit.about(ConflictRecords.BAND_CASUALTIES, agent);
+                    check("three casualties, no more (" + cas.size() + ")", cas.size() == 3);
+                    for (ScriptedEngine.Received r : cas) {
+                        check("a casualty is by a player (aux " + r.aux() + ")", r.aux() == ConflictRecords.BY_PLAYER);
+                        check("and names the killer", player[0].getUUID().equals(ConflictKit.uuidAt(r, ConflictRecords.Casualties.KILLER_MOST)));
+                        check("of one body (" + r.view().getInt(ConflictRecords.Casualties.COUNT) + ")", r.view().getInt(ConflictRecords.Casualties.COUNT) == 1);
+                    }
+                    for (int i = 0; i < 3; i++) {
+                        check("near warrior " + i + " is dead", near[i].isDeadOrDying() || near[i].isRemoved());
+                        check("far warrior " + i + " lives", away[i].isAlive() && !away[i].isRemoved());
+                    }
+                    check("the throne body is a second body now", MowzieKit.camps().secondBody(throne[0]));
+                    record(test, "killed away", "one CHIEF_KILLED and one Sol Visage; " + cas.size() + " casualties by the player of the 3 within 30 blocks, the 3 beyond 45 alive");
+                    // the throne body's removal waits for the watcher
+                    was[2] = MowzieKit.camps().heldRemovals;
+                    was[3] = MowzieKit.camps().heldLines();
+                    op[1] = MowzieKit.reconcile(g.faction, epochOf(g), List.of(CampLine.of(CHIEF_SLOT, 1, UMVUTHI, REMOVE, CHIEF)));
+                })
+                .thenIdle(40)
+                .thenExecute(() -> {
+                    check("the REMOVE has no answer while the watcher stands near", ConflictKit.outcomes(g.faction, op[1]).isEmpty());
+                    check("the throne body stands (alive " + throne[0].isAlive() + ", removed " + throne[0].isRemoved() + ")", throne[0].isAlive() && !throne[0].isRemoved());
+                    check("one more held removal (" + (MowzieKit.camps().heldRemovals - was[2]) + ")", MowzieKit.camps().heldRemovals == was[2] + 1);
+                    check("one more held line (" + (MowzieKit.camps().heldLines() - was[3]) + ")", MowzieKit.camps().heldLines() == was[3] + 1);
+                    check("no CAMP_DEATH for the grove (" + ConflictKit.campDeaths(g.faction).size() + ")", ConflictKit.campDeaths(g.faction).isEmpty());
+                    fell[1] = throne[0].position();
+                    player[1].moveTo(off(g, 300, 0).x, off(g, 300, 0).y, off(g, 300, 0).z);
+                })
+                .thenWaitUntil(waits.logic(() -> MowzieKit.answered(g.faction, op[1], 1)))
+                .thenExecute(() -> {
+                    check("the REMOVE is answered DONE, not " + MowzieKit.outcomeName(answerOf(g, op[1])), answerOf(g, op[1]) == DONE);
+                    check("the throne body is removed", throne[0].isRemoved());
+                    check("no Sol Visage at the throne (" + visagesNear(level, fell[1], 8) + ")", visagesNear(level, fell[1], 8) == 0);
+                    check("still no CAMP_DEATH (" + ConflictKit.campDeaths(g.faction).size() + ")", ConflictKit.campDeaths(g.faction).isEmpty());
+                    check("the held lines are back to the start (" + MowzieKit.camps().heldLines() + ")", MowzieKit.camps().heldLines() == was[3]);
+                    record(test, "removal", "REMOVE of the second body held 40 ticks while the watcher stood within 160 blocks, DONE once it stood 300 off");
+                    // Rule U in the trim: a second Invasion's puppet, its player 170 blocks off, out of sight at view distance 8
+                    back[0] = viewDistance(helper, level, 8);
+                    bandAt(helper, h.faction, agent2, second.x0 + 20, second.top + 1, second.z, 0f, List.of(), 2, true);
+                })
+                .thenWaitUntil(waits.logic(() -> {
+                    puppet[1] = puppet(agent2);
+                    check("the second puppet floats", puppet[1].isNoGravity());
+                    check("its warriors are embodied (" + warriorsOf(agent2).size() + ")", warriorsOf(agent2).size() == 2);
+                }))
+                .thenExecute(() -> {
+                    puppet[1].setNoAi(true);
+                    puppet[1].getAttribute(Attributes.FOLLOW_RANGE).setBaseValue(1000);
+                    for (Mob m : warriorsOf(agent2))
+                        m.setNoAi(true);
+                    player[2] = MowzieKit.player(helper, new Vec3(puppet[1].getX() + 10, second.top + 1, puppet[1].getZ()), "mowzie-killed-away-target");
+                    fight[0] = true;
+                    MowzieKit.everyTick(helper, () -> {
+                        if (fight[0] && puppet[1].isAlive() && !puppet[1].isRemoved())
+                            puppet[1].setTarget(player[2]);
+                    });
+                })
+                .thenWaitUntil(waits.logic(() -> check("it has settled before the player (gravity " + !puppet[1].isNoGravity() + ")", !puppet[1].isNoGravity())))
+                .thenExecute(() -> {
+                    player[2].moveTo(puppet[1].getX(), second.top + 1, puppet[1].getZ() + 170);
+                    double sight = ConflictBridge.sightRange(puppet[1], level);
+                    check("sight is 128 blocks at view distance 8 (" + sight + ")", sight == 128.0);
+                    check("the player is 170 blocks off, out of sight and past the hold's range", Math.abs(player[2].getZ() - puppet[1].getZ()) > 169.9);
+                    for (ServerPlayer p : level.players())
+                        if (p != player[2])
+                            check("no other player is within the hold's range of the second puppet (" + p.getGameProfile().getName() + ")",
+                                    Math.hypot(p.getX() - puppet[1].getX(), p.getZ() - puppet[1].getZ()) > GroveKind.HOLD_RANGE + 1);
+                    was[4] = ConflictKit.trimmed();
+                    marchOf(agent2, h.faction, dim, second.x0 + 20, second.z, false, Map.of(WARRIOR, 2));
+                })
+                .thenWaitUntil(waits.logic(() -> {
+                    check("the march is held", ConflictKit.bridge().march(agent2) != null);
+                    check("the trim found the chief it may not cut: it is due", ConflictKit.party(agent2).trimDue());
+                }))
+                .thenIdle(1300)
+                .thenExecute(() -> {
+                    check("the second puppet stands after 1,300 ticks (alive " + puppet[1].isAlive() + ", removed " + puppet[1].isRemoved() + ")",
+                            puppet[1].isAlive() && !puppet[1].isRemoved());
+                    check("the trim cut nothing (" + (ConflictKit.trimmed() - was[4]) + ")", ConflictKit.trimmed() == was[4]);
+                    check("the trim is still due", ConflictKit.party(agent2).trimDue());
+                    check("the chief's slot is alive", chiefSlot(agent2).alive());
+                    check("its warriors stand (" + warriorsOf(agent2).size() + ")", warriorsOf(agent2).size() == 2);
+                    fight[0] = false;
+                    puppet[1].setTarget(null);
+                    was[5] = level.getGameTime();
+                })
+                .thenWaitUntil(waits.logic(() -> check("the puppet is cut (removed " + puppet[1].isRemoved() + ")", puppet[1].isRemoved())))
+                .thenExecute(() -> {
+                    was[6] = level.getGameTime();
+                    long ticks = was[6] - was[5];
+                    check("cut at the next beat, within " + (ConflictBridge.STOP_BEAT + 2) + " ticks of the clear (" + ticks + ")", ticks <= ConflictBridge.STOP_BEAT + 2);
+                    check("the trim cut one member (" + (ConflictKit.trimmed() - was[4]) + ")", ConflictKit.trimmed() == was[4] + 1);
+                    check("a cut books nothing: no CHIEF_KILLED (" + ConflictKit.about(ConflictRecords.CHIEF_KILLED, agent2).size() + ")",
+                            ConflictKit.about(ConflictRecords.CHIEF_KILLED, agent2).isEmpty());
+                    check("and no casualty (" + ConflictKit.about(ConflictRecords.BAND_CASUALTIES, agent2).size() + ")",
+                            ConflictKit.about(ConflictRecords.BAND_CASUALTIES, agent2).isEmpty());
+                    check("its warriors stand (" + warriorsOf(agent2).size() + ")", warriorsOf(agent2).size() == 2);
+                    record(test, "rule U", "the second puppet, its target 170 blocks off out of sight at view distance 8, was not cut in 1300 ticks; cut "
+                            + (was[6] - was[5]) + " ticks after the target was cleared");
+                    back[0].run();
+                    recallAll(agent, agent2);
+                })
+                .thenWaitUntil(waits.logic(() -> check("both bands went (" + dematerialized(agent).size() + " and " + dematerialized(agent2).size() + ")",
+                        dematerialized(agent).size() >= 1 && dematerialized(agent2).size() >= 1)))
                 .thenExecute(() -> {
                     drop(player);
                     far.releaseAll();
