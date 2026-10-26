@@ -6967,6 +6967,80 @@ counter and a no-cascade test.
 - **The command count.** `take_commands` returns more commands now. Tests that count them, or index into
   them, need the march records filtered out.
 
+## MZB-760 Grove tribute parking
+
+Slice fix/grove-tribute-park, from fix/slice-u-b at a7616f51 (the U-b merge). RP-210's "Left" row
+(docs/choices-journal-barrier.md): the Umvuthana grove's tribute stack answered NOT_LOADED is parked
+under its op id, as the dragons' (RP-210). Rust only; no GameTest, no Java.
+
+- **MZB-760** (a grove's tribute stack answered NOT_LOADED stays in flight under its op id):
+  - **What was double.** U-b's merge took NOT_LOADED as FAILED for the grove (`tribute_failed`): the
+    stack's goods went back to the grove's stock, the chest was forgotten, and the next stack went under
+    a new op id (`tribute_op` of the camp's `stacks` counter). NOT_LOADED means Java did not look in the
+    chest's chunk, and that chunk may have been written ahead of the journal, holding the stack and its
+    APPLIED record (`PendingRecords`). Its REASSERT then found no placing to book, and the stack went
+    again under the new op: the nuggets were in the chest twice.
+  - **The failing numbers.** The test
+    `conflict::a_groves_tribute_stack_in_a_chunk_saved_ahead_of_the_journal_is_placed_once`
+    (crates/rtsim-jni/tests/protocol.rs, modelled on the dragons'), committed failing as 242f031a, on
+    a7616f51: seven gold blocks are 567 nuggets owed, the first stack of 64 is
+    sent and put in the chest, the chunk keeps it and the journal loses its APPLIED, and the restart
+    answers NOT_LOADED. It fails first at "still in flight under its op id": (owed, in flight, stacks)
+    is (567, 0, 1) for (567, 1, 1). With that check off, after the chunk's REASSERT it is (567, 0, 1)
+    for (503, 0, 1) (the REASSERT booked nothing), and at the end the chest holds 631 nuggets for 567
+    (the 64 twice) and the books read (0, 0, 10) for (0, 0, 9): a tenth stack, under a new op.
+  - **The fix** (rtsim-conflict `engine.rs` and `engine/camp.rs`; rtsim-jni `engine/conflict.rs`). The
+    `Conflict` has a per-session `parked` set of op ids beside `placing`. `tribute_not_loaded(op)` keeps the
+    stack in `placing` and parks it; the grove's chest is forgotten only if it is still the stack's own
+    (the same dimension and place), so a chest named since, elsewhere, is kept. `placings_to_send()` leaves
+    parked stacks out and `write_tribute` writes only those, so a parked stack is not written every step.
+    `place_tribute` sends nothing while the grove has a placing, parked or not, so a parked stack holds the
+    next back. HAVEN_CHEST (`haven_chest`) lets the grove's parked stack go again, to the chest its
+    placing keeps (the one it went to first), not the one just named. APPLIED, DUPLICATE_OP and a chunk's
+    REASSERT take it out like any placing (`tribute_placed`), and FAILED takes it out and puts the goods
+    back (`tribute_failed`): `unplace` clears its parking. `after_core` calls `tribute_not_loaded` for
+    NOT_LOADED and `tribute_failed` for FAILED only.
+  - **Outcomes.** A stack in the chest's chunk saved ahead of the journal (direction B): placed once,
+    EXACT (the same test, 567 in the chest and (0, 0, 9) in the books; it was DUPE). A give-up (the
+    chunk from before, with no coin): LOSS, as the dragons' (the engine took APPLIED, and the chunk has
+    nothing). A grove whose chest is never named again keeps its stack parked until the next session
+    start, which sends it again once (the dragons' too).
+  - **Nothing is saved**, as for the dragons: `parked` is in memory only. The pages' format is the same.
+- **MZB-761** (forks, each the dragons' unless said):
+  - **`placings()` is still every stack in flight.** The brief said `placings()` leaves parked stacks out.
+    It would make "in flight" read 0 for a parked stack in every test that counts them, and the dragons'
+    own `placing()` lists all of them with `placing_to_send()` leaving the parked out. So the grove has
+    `placings_to_send()` for the link and `placings()` is all.
+  - **A session start clears `parked`** in `begin_replay`, where the dragons clear theirs, before the
+    replay's own records park again what they answered NOT_LOADED. The stack in the pages is sent once at
+    the restart and parked again by its answer.
+  - **CAMP_OUT lets the grove's parked stack go again**, since it forgets the chest there. The chunk may
+    be loaded still, and if not the stack is answered NOT_LOADED again and parked again: one command, not
+    a loop. (The dragons have no CAMP_OUT.)
+  - **A replayed NOT_LOADED for a stack no placing holds books nothing** (RP-134, the stack the session
+    decided after the pages' save): `replayed_failed` is not taken for it, since it passes the camp's
+    count and forgets the chest, and the stack may be in its chest. The census after the replay decides
+    the stack again as the same op (the same index, good and amount), which Java answers DUPLICATE_OP if
+    the chunk holds it. Test: `a_replayed_not_loaded_for_a_stack_after_the_save_books_nothing`
+    (crates/rtsim-conflict/tests/grove.rs).
+  - **The status match keeps a last `_` arm.** A COMMAND_RESULT status is a `u32`, so the compiler
+    cannot check a match over it for exhaustiveness. `after_core` names APPLIED, DUPLICATE_OP, FAILED and
+    NOT_LOADED, and NOT_FREE and VANILLA_KNOWS (other commands' answers) as no tribute stack's, and a last
+    `_` covers a status it does not know.
+  - **NOT_LOADED taints nothing**: it changes no state the pages hold (the chest and the parking are not
+    saved), so `after_core` neither taints the world nor takes commands for it.
+  - **Tests.** Engine: `an_unloaded_stack_is_parked_under_its_op_until_the_chest_is_named_again`,
+    `an_unloaded_stack_forgets_only_its_own_chest` (the dragons' name),
+    `a_parked_stack_is_answered_like_any_stack_and_goes_again_at_camp_out_and_a_session_start` and the
+    replay test above (crates/rtsim-conflict/tests/grove.rs). Link (crates/rtsim-jni/tests/protocol.rs):
+    U-b's `conflict::a_groves_tribute_stack_answered_not_loaded_goes_back_to_its_stock` is reworked into
+    `conflict::a_groves_tribute_stack_answered_not_loaded_is_parked_under_its_op_id_until_the_next_haven_chest`,
+    and `conflict::a_groves_parked_stack_goes_to_its_own_chest_and_the_chest_named_since_gets_the_rest`
+    is new. Mutation: NOT_LOADED back to FAILED fails the three
+    link tests that park (the parking test, the own-chest test and the ahead-of-the-journal test); writing
+    parked stacks again every step fails the parking test ("parked: not sent again every step", 11
+    commands for 7).
+
 ## M11 Aloft
 
 (none yet)
