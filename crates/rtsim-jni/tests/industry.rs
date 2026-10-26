@@ -1645,6 +1645,7 @@ mod ack_never_resends {
     /// - (b) a command carrying X arrives when nothing in Java knows X: in a later session whose
     ///   start settled X (pages >= S, provably G's), or after a restart from a world save whose
     ///   ring Java had already pruned of X on reading an ack.
+    ///
     /// At every restart the pages must be at or past every ack the engine sent before the crash,
     /// read or not.
     #[derive(Default)]
@@ -3472,10 +3473,8 @@ mod ack_never_resends {
 
     /// The pages of two outcomes that differ, by key.
     fn differing(a: &Outcome, b: &Outcome) -> Vec<u64> {
-        let (ma, mb): (BTreeMap<u64, &Vec<u8>>, BTreeMap<u64, &Vec<u8>>) = (
-            a.0.iter().map(|(k, v)| (*k, v)).collect(),
-            b.0.iter().map(|(k, v)| (*k, v)).collect(),
-        );
+        let ma: BTreeMap<u64, &Vec<u8>> = a.0.iter().map(|(k, v)| (*k, v)).collect();
+        let mb: BTreeMap<u64, &Vec<u8>> = b.0.iter().map(|(k, v)| (*k, v)).collect();
         let mut keys: Vec<u64> = ma.keys().chain(mb.keys()).copied().collect();
         keys.sort();
         keys.dedup();
