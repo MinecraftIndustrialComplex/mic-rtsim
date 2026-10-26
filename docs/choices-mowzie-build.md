@@ -9567,6 +9567,14 @@ the engine's acknowledgement of each op's answer, not by a count.
   reached 387, was acknowledged at 387, and the restart found 387 and never sent the op; in the reuse
   case the restart journaled from 386, a record of kind 0x407 took 387 and was acknowledged at 388,
   and the ring keyed by sequence alone left the world 22 crushed raw iron short of the books.
+- **RP-280** (the sampler GameTest saves off while its synthetic trains run): T's create round after the
+  merge with A crashed the GameTest server in `theSamplerReportsPassesOnTheRealTrack`: a vanilla autosave (every
+  6,000 ticks) came while its synthetic trains were in `Create.RAILWAYS`, and `RailwaySavedData.save` threw
+  "MountedStorageManager is uninitialized" writing a carriage with no contraption (the far-train bench met the same,
+  docs/choices-dh-feed.md). Whether an autosave lands in the test depends on how long the earlier batches took, so
+  it is a latent flake on main too. It is the only GameTest that adds trains to Create's list (the others' trains
+  are detached). The test turns the overworld's `noSave` on, as /save-off does, and puts it back in a listener
+  added after the cleanup's, so the trains are gone first. Not a T change: it rides with T's landing.
 
 ### Slice D (dragons)
 
