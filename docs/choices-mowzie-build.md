@@ -9018,6 +9018,11 @@ gives the changes, tests and work split.
     Java logs and counts it (`chiefDeathsAfterEnd`). Fork, and Ben question 4: an engine map of ended
     parties' chiefs would need saving; the window is a recall at a grove that is out with a player near the
     puppet, rare (§4.5's fourth exception). Recommended answer: accept it, counted.
+  - Outcome (amended at M11a step 3b, MZB-853): not accepted. The puppet is a real EntityUmvuthi whose loot
+    table drops the Sol Visage when a player kills it, so a chief the census spawned back would be farmable. The
+    engine keeps the band's end on its camp (`Camp.ended`, RTC12), which holds the chief (no SPAWN, no lead) until
+    the band's BAND_DEMATERIALIZED or the chief's HAND_BACK answer; a CHIEF_KILLED of the band while it stands is
+    the chief's death at its camp, booked once. Java's `chiefDeathsAfterEnd` stays Java's own counter.
 - **MZB-825** (second bodies both ways; MZB-431):
   - The puppet killed first: `Camps.chiefDiedAway(faction)`, called from the bridge's CHIEF_KILLED, marks the
     faction's standing chief body (`standingChief`, 2000 (1995)) a second body (`markSecond`, 1790 (1785)).
@@ -9223,7 +9228,7 @@ Camps line is given as "1395 (1390)", the second at 1c2644af. Paths:
 
 **Gaps the plan leaves** (not contradictions):
 - With the grove out at home, a chief killed after its march ended comes back free at the next census (MZB-824,
-  question 4).
+  question 4). Closed at M11a by MZB-853.
 - The Frostmaw's later wave lacks MEMBER_CHIEF after a rejected first wave (MZB-840, not M11's).
 - rtsim-jni's `write_queue` (rtsim-jni `engine/conflict.rs` 1160 to 1210) can end a command buffer between a
   CHIEF_BODY and its MATERIALIZE. Java's match waits across buffers and ticks (MZB-805).
@@ -10099,6 +10104,92 @@ M11a's implementer appends its records under this heading only (the Rust side).
   in flight" (the same); the Left arm's push mutated away fails A4 at (2) (no chief line at home); `send_lines`
   mutated back to SPAWN only fails A4 at "no CHIEF_BODY ahead of the hand-back" (and A3, whose home record is now
   the hand-back's). The control passes on all three.
+
+- **MZB-853** (step 3b, the end of a chief's band; MZB-824's outcome amended; a format change, RTC12 `RTCC`, META
+  11, approved by the lead and the coordinator):
+  - The record. `Camp.ended: Option<Ended { agent, epoch, generation }>`, saved with the camp (agent and
+    generation never 0), and the engine's index `chief_ended` (agent to faction), saved in the resident section
+    with strictly increasing keys. `camp_home` sets it (`hold_end`) for a band with `x.chief` and
+    `chief_own_stack` whose puppet may still stand: embodied (its epoch) or with a recall not yet answered (the
+    latest recalled epoch), naming the chief slot's generation at home. A faction keeps one at most: its chief
+    leads no party while one holds it, and an older one still kept is one whose generation was freed.
+  - While it holds (`Camp::ended_holds`: the chief slot still has that generation), `send_lines` drops a chief
+    SPAWN of that generation and `chief_can_lead` is false. `camp_home` still turns Gone into Owed and Left into
+    Body (the audit wants every away slot in a live party), so the end holds the slot, not its state.
+  - The releases, as built:
+    1. `chief_band_gone`, from the BAND_DEMATERIALIZED handler: that agent and exactly that epoch. An owed chief
+       with no line at a camp that is in gets its SPAWN now (behind the home CHIEF_BODY, by `send_lines`); at
+       one that is out, its next census spawns it.
+    2. `camp_bodies`: the chief's HAND_BACK of that generation answered DONE or NOTHING (the puppet consumed).
+       STALE releases nothing.
+    3. `chief_killed_home`, from CHIEF_KILLED's no-party branch before `unbooked_home_death`: an Owed slot is
+       freed (`free(i, true)`), a Body slot made Dead; then `chief_killed_at_camp` (the killer for BY_PLAYER
+       only) and `chief_lost(renewal_cause(by))`. At a camp that is in, a Dead slot with no line gets its REMOVE
+       now; otherwise the next census's Dead branch removes the throne body it finds. A copy of the record is
+       not booked again (`first_time`), and finds no end anyway.
+    4. `Camp::free` of the chief slot takes the end of that generation (a CAMP_DEATH through `chief_death`, a
+       MASK, anything). Its index entry is left and dropped when next looked up (`ended_of`) or at the replay end.
+    5. `chief_ends_lost`, at `replay_done` after the held chief states: each end still standing is a chief lost
+       to no one, the slot changed as in 3, `chief_lost(LossCause::Other)` (no pressure step, no fall, as
+       `chief_died_away`), every index entry dropped. A CHIEF_KILLED copy after it finds no end and books
+       nothing.
+  - The audit (`camp_audit`, MZB-853): an end has its index entry, its generation is the chief slot's, the slot is
+    home, no chief SPAWN of it is in flight, and no party of the faction is led by its chief.
+  - Forks, each the conservative option:
+    - The index is saved. The records that release an end (BAND_DEMATERIALIZED, CHIEF_KILLED) name no faction,
+      `Party::agent` encodes none and the party is gone; a scan of every camp at each record would page the
+      faction table in (the paging budget), and a map rebuilt at load would need the same scan (the host, and
+      `round_trip`, load with no replay). The audit checks the end-to-index direction only.
+    - Release 1 takes the exact epoch: an older epoch's despawn says nothing of the latest one's puppet.
+    - Release 5 is a loss with no pressure step: whether the puppet was killed is unknown, and a player's kill
+      that the journal kept is booked by 3 during the replay.
+    - No new stats fields; the steps write notes ("chief").
+  - The replay-push rules. No new command kind: the SPAWN and REMOVE go through `send_lines` (the gate's
+    Reconcile and ChiefBody arms, as before) and only at a camp that is in, and every camp is out from
+    `begin_replay` to its next census, so nothing is pushed while replaying (the crash and ending-epoch tests
+    take the commands while replaying and find none). No new record kind: BAND_DEMATERIALIZED and CHIEF_KILLED
+    already raise their party's floor (`fold_epoch` through `party_epoch`, RP-57), and the end's band is gone,
+    so its next band is a new party with a new agent and no epoch an end named is used again.
+  - Tests in `tests/mowzie_aloft.rs`, each shown failing by a mutation first:
+    - Release 1 `the_end_holds_the_chief_until_its_band_is_gone`: the grove out at home, the despawn held back;
+      the grove comes in, no chief line for 50 ticks, the slot Owed; the despawn releases the end and the SPAWN
+      goes at once behind the camp's memory, answered DONE, one throne body; a straggler CHIEF_KILLED then books
+      nothing and the chief leads again; with the end standing, an Invasion goes without its chief. Mutations:
+      the `send_lines` hold off fails "no chief line while the end holds it" (the SPAWN goes with the puppet
+      standing); `chief_can_lead`'s check off fails the hold half (the chief leads).
+    - Release 2 `a_hand_back_answered_releases_the_end`: DONE and NOTHING release before the despawn, which then
+      changes nothing; the control STALE releases nothing, nothing is spawned, and the despawn then releases
+      and spawns. Mutation: the release off leaves the end after DONE.
+    - Release 3 `a_puppet_killed_after_its_end_is_the_chiefs_death`: Owed (one fall, one loss, the heir, the
+      memory cleared, the slot freed; the copy and the despawn book nothing; no SPAWN at the next census) and
+      Body with the grove in (Dead, the REMOVE now, DONE frees the slot). Mutation: release 3 off gives (0, 0,
+      false, 1), want (1, 1, true, 0).
+    - Release 3 with the HAND_BACK in flight (M11b's ordering) `a_puppet_killed_while_its_hand_back_is_in_flight_dies_once`:
+      Owed then the answer DONE, and NOTHING; Body (A4 case 2's Left path) then NOTHING, which leaves the slot
+      Dead with no line, and the next census removes the throne body. Each books once and strands nothing. The
+      same mutation fails it.
+    - Release 4 `a_camp_death_prunes_the_end`: Body, CAMP_DEATH of the chief slot; the end goes with the
+      generation, the despawn then empties the index and spawns nothing, a later CHIEF_KILLED books no second
+      fall. Mutation: the prune in `free` off leaves the end.
+    - Release 5 `an_end_standing_at_the_replay_end_is_a_loss`: Owed and Body, the despawn never journaled; the
+      heir due and the memory cleared with no fall and no loss; the copy books nothing; no body of the old
+      generation after the next census. The control, a clean stop (the despawn in first), keeps the chief.
+      Mutation: `chief_ends_lost` off leaves the end after the replay.
+    - Crash `a_crash_at_any_record_after_home_books_the_chief_once`: four journals (the puppet killed with the
+      slot Owed, and with it Body; the band despawned; the HAND_BACK applied, then the despawn), each cut before
+      every record, through a save and load and a replay, then the holder's copy. One fall and one player's loss
+      exactly when the cut kept the CHIEF_KILLED; the chief kept (Body, one throne body) exactly when a release
+      came first and no death, else lost (an heir due, no body of its generation); nothing pushed while
+      replaying (`never` unchanged); no end or index left; the audit and the world checks clean. Release 3 off
+      fails "killed, owed, cut 1" ((0, 0), want (1, 1)); release 5 off fails at the end left.
+    - The ending epoch `only_the_ending_epochs_despawn_releases_the_end`: replayed, the ending epoch's despawn
+      releases while replaying and pushes nothing, and the census after spawns the chief, which leads a new
+      agent's band; a later epoch's, or another agent's, releases nothing, and the end is lost at the replay
+      end. Mutation: the epoch check off fails "a later epoch: released while replaying".
+    - A4's control now also asserts that an unmet band holds nothing.
+  - M11b's notes. A CAMP_DEATH of the chief slot with its HAND_BACK in flight is accepted (A6, in both orders
+    with the STALE): nothing changes. A CHIEF_KILLED of an ended party is release 3 and books the death, not
+    nothing (MZB-824's outcome above).
 
 ### M11b build records (MZB-870 to MZB-889)
 
