@@ -3,6 +3,7 @@ package com.minecraftindustrialcomplex.mic_rtsim_mowziesmobs.gametest;
 import com.bobmowzie.mowziesmobs.server.entity.umvuthana.EntityUmvuthanaCrane;
 import com.bobmowzie.mowziesmobs.server.entity.umvuthana.EntityUmvuthanaMinion;
 import com.bobmowzie.mowziesmobs.server.entity.umvuthana.EntityUmvuthi;
+import com.bobmowzie.mowziesmobs.server.potion.EffectHandler;
 import com.minecraftindustrialcomplex.mic_rtsim.api.RtsimApi;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs;
 import com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession;
@@ -29,12 +30,25 @@ import net.minecraft.core.Direction;
 import net.minecraft.core.particles.ParticleTypes;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.protocol.game.ClientboundLevelParticlesPacket;
+import net.minecraft.network.protocol.game.ClientboundAddEntityPacket;
+import net.minecraft.network.protocol.game.ClientboundSetEntityDataPacket;
+import net.minecraft.network.protocol.game.ClientboundSetEntityLinkPacket;
+import net.minecraft.network.protocol.game.ClientboundSetEntityMotionPacket;
+import net.minecraft.network.protocol.game.ClientboundSetEquipmentPacket;
+import net.minecraft.network.protocol.game.ClientboundSetPassengersPacket;
+import net.minecraft.network.protocol.game.ClientboundUpdateAttributesPacket;
+import net.minecraft.network.protocol.game.ClientboundUpdateMobEffectPacket;
+import net.minecraft.network.syncher.SynchedEntityData;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestAssertException;
 import net.minecraft.gametest.framework.GameTestHelper;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.server.level.ChunkMap;
+import net.minecraft.server.level.ServerEntity;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.effect.MobEffectInstance;
+import net.minecraft.world.effect.MobEffects;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.Mob;
@@ -57,8 +71,10 @@ import net.neoforged.bus.api.Event;
 import net.neoforged.bus.api.EventPriority;
 import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.event.entity.EntityJoinLevelEvent;
+import net.neoforged.neoforge.event.entity.EntityLeaveLevelEvent;
 import net.neoforged.neoforge.event.entity.EntityTravelToDimensionEvent;
 import net.neoforged.neoforge.event.entity.living.LivingDeathEvent;
+import net.neoforged.neoforge.event.entity.player.PlayerEvent;
 import net.neoforged.neoforge.event.tick.LevelTickEvent;
 import net.neoforged.neoforge.gametest.GameTestHolder;
 import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
@@ -3838,6 +3854,567 @@ public final class AloftMowzieGameTests {
                 .thenExecute(() -> {
                     back[0].run();
                     drop(viewer);
+                    far.releaseAll();
+                })
+                .thenSucceed();
+    }
+
+    // ---- 31s: the re-pair and the trail, as a watching player is sent them (MZB-813, MZB-814, MZB-889) ----------------
+
+    /**
+     * Vanilla's tracker, private to {@code ChunkMap}, read by reflection (D3: no new mixin): which players a body is paired with, the
+     * position base its adds start from, and how many trackers the map holds for it.
+     */
+    private static final class Tracked {
+        private static java.lang.reflect.Field map, seen, server, body;
+
+        private static void open() {
+            if (map != null)
+                return;
+            try {
+                Class<?> t = Class.forName("net.minecraft.server.level.ChunkMap$TrackedEntity", false, ChunkMap.class.getClassLoader());
+                java.lang.reflect.Field m = ChunkMap.class.getDeclaredField("entityMap");
+                java.lang.reflect.Field s = t.getDeclaredField("seenBy");
+                java.lang.reflect.Field v = t.getDeclaredField("serverEntity");
+                java.lang.reflect.Field b = t.getDeclaredField("entity");
+                m.setAccessible(true);
+                s.setAccessible(true);
+                v.setAccessible(true);
+                b.setAccessible(true);
+                seen = s;
+                server = v;
+                body = b;
+                map = m;
+            } catch (ReflectiveOperationException | RuntimeException e) {
+                throw new GameTestAssertException("cannot read the chunk map's trackers: " + e);
+            }
+        }
+
+        private static Object get(java.lang.reflect.Field f, Object of) {
+            try {
+                return f.get(of);
+            } catch (ReflectiveOperationException e) {
+                throw new GameTestAssertException("cannot read " + f + ": " + e);
+            }
+        }
+
+        private static java.util.Map<?, ?> trackers(ServerLevel level) {
+            open();
+            return (java.util.Map<?, ?>) get(map, level.getChunkSource().chunkMap);
+        }
+
+        /** The tracker of a body, or null. */
+        static Object of(ServerLevel level, Entity e) {
+            return trackers(level).get(e.getId());
+        }
+
+        /** Whether the body is paired with the player: its connection is in the tracker's {@code seenBy}. */
+        static boolean sees(ServerLevel level, Entity e, ServerPlayer p) {
+            Object t = of(level, e);
+            return t != null && ((java.util.Set<?>) get(seen, t)).contains(p.connection);
+        }
+
+        /** The base the live tracker's deltas run from. */
+        static Vec3 base(ServerLevel level, Entity e) {
+            Object t = of(level, e);
+            if (t == null)
+                throw new GameTestAssertException("no tracker for " + e);
+            return ((ServerEntity) get(server, t)).getPositionBase();
+        }
+
+        /** How many trackers in the map follow this entity (one: the map is keyed by id, and the re-pair adds none). */
+        static int count(ServerLevel level, Entity e) {
+            open();
+            int n = 0;
+            for (Object t : trackers(level).values())
+                if (get(body, t) == e)
+                    n++;
+            return n;
+        }
+    }
+
+    /**
+     * 31s's reading of one watched puppet, at the end of every tick (the test's own sample, so a violation is noted here and asserted by
+     * the sequence: a throw in a per-tick hook is only logged). A re-pair is an add packet that two hearers are sent at once, after the
+     * test armed it; each one is read for what the design says it carries, and the server's body is compared across its tick.
+     */
+    private static final class Reading {
+        /** What a pairing bundle holds after its add packet (vanilla's, the plugin's re-pair sends no other kind). */
+        private static final java.util.Set<Class<?>> BUNDLED = java.util.Set.of(ClientboundSetEntityDataPacket.class,
+                ClientboundUpdateAttributesPacket.class, ClientboundSetEquipmentPacket.class, ClientboundUpdateMobEffectPacket.class,
+                ClientboundSetPassengersPacket.class, ClientboundSetEntityLinkPacket.class, ClientboundSetEntityMotionPacket.class);
+
+        final ServerLevel level;
+        final EntityUmvuthi body;
+        final int id;
+        final ServerPlayer credit;
+        final FakePlayers.Hearer[] hearers;
+        final int directionId;
+        final java.lang.reflect.Field boss;
+        final List<String> broke = new ArrayList<>();
+        final List<Long> repairs = new ArrayList<>();
+        /** Per re-pair, the way (the body's move that tick) and the yaw the add packet carried. */
+        final List<String> facts = new ArrayList<>();
+        final long[] adds;
+        /** The last tick each of join, leave, start tracking, stop tracking and death fired for the body. */
+        final long[] fired = new long[5];
+        /** The first tick after the n-th re-pair that the body's way was more than the turn's limit off its facing. */
+        final long[] dueAfter = new long[8];
+        boolean armed;
+        Vec3 prev;
+        String before;
+        boolean wasAbility;
+        int prevDirection;
+        double still1 = -1, still2 = -1;
+        /** The ROAR: when the test sent it, the ticks the ability was active, the first tick it was not. */
+        long roarAt, roarEnd;
+        int roarTicks;
+        int removedBefore = -1;
+
+        Reading(ServerLevel level, EntityUmvuthi body, ServerPlayer credit, FakePlayers.Hearer... hearers) {
+            this.level = level;
+            this.body = body;
+            this.id = body.getId();
+            this.credit = credit;
+            this.hearers = hearers;
+            adds = new long[hearers.length];
+            try {
+                java.lang.reflect.Field d = EntityUmvuthi.class.getDeclaredField("DIRECTION");
+                d.setAccessible(true);
+                directionId = ((net.minecraft.network.syncher.EntityDataAccessor<?>) d.get(null)).id();
+                java.lang.reflect.Field b = com.bobmowzie.mowziesmobs.server.entity.MowzieEntity.class.getDeclaredField("bossInfo");
+                b.setAccessible(true);
+                boss = b;
+            } catch (ReflectiveOperationException e) {
+                throw new GameTestAssertException("cannot read the jar's direction or boss bar: " + e);
+            }
+        }
+
+        void arm() {
+            for (int i = 0; i < hearers.length; i++)
+                adds[i] = hearers[i].added(id);
+            prev = body.position();
+            before = state();
+            wasAbility = body.getActiveAbility() != null;
+            prevDirection = body.getDirectionData();
+            armed = true;
+        }
+
+        private void note(String s) {
+            if (broke.size() < 14)
+                broke.add(s);
+        }
+
+        private String bossPlayers() {
+            try {
+                java.util.TreeSet<String> names = new java.util.TreeSet<>();
+                for (ServerPlayer p : ((net.minecraft.server.level.ServerBossEvent) boss.get(body)).getPlayers())
+                    names.add(p.getName().getString());
+                return names.toString();
+            } catch (ReflectiveOperationException e) {
+                return "unreadable " + e;
+            }
+        }
+
+        /** What a re-pair must leave as it was: every fact of the server's body but its facing and its position. */
+        private String state() {
+            StringBuilder s = new StringBuilder();
+            s.append(body.getId()).append(' ').append(body.getUUID()).append(" removed ").append(body.isRemoved());
+            s.append(" health ").append(body.getHealth()).append(" lost ").append(body.getHealthLost());
+            java.util.TreeSet<String> fx = new java.util.TreeSet<>();
+            for (MobEffectInstance e : body.getActiveEffects())
+                fx.add(e.getEffect().getRegisteredName() + "/" + e.getAmplifier());
+            s.append(" effects ").append(fx).append(" glowing ").append(body.hasGlowingTag());
+            net.minecraft.world.entity.LivingEntity k = body.getKillCredit();
+            s.append(" credit ").append(k == null ? "none" : k.getUUID());
+            s.append(" target ").append(body.getTarget() == null ? "none" : body.getTarget().getUUID());
+            s.append(" boss ").append(bossPlayers());
+            s.append(" trackers ").append(Tracked.count(level, body));
+            return s.toString();
+        }
+
+        void tick() {
+            if (!armed || body.isRemoved())
+                return;
+            long now = level.getGameTime();
+            Vec3 at = body.position();
+            boolean ability = body.getActiveAbility() != null;
+            int rose = 0;
+            for (int i = 0; i < hearers.length; i++) {
+                long n = hearers[i].added(id);
+                if (n != adds[i]) {
+                    if (n != adds[i] + 1)
+                        note("tick " + now + ": hearer " + i + " was sent " + (n - adds[i]) + " adds in one tick");
+                    adds[i] = n;
+                    rose++;
+                }
+            }
+            String state = state();
+            double moved = at.distanceTo(prev);
+            if (roarAt != 0 && roarEnd == 0) {
+                if (ability)
+                    roarTicks++;
+                else if (roarTicks > 0)
+                    roarEnd = now;
+            }
+            if (rose > 0) {
+                if (rose != hearers.length)
+                    note("tick " + now + ": only " + rose + " of " + hearers.length + " hearers were sent an add");
+                repaired(now, at, moved, state);
+            }
+            if (!repairs.isEmpty() && dueAfter[repairs.size()] == 0 && moved > 0.05
+                    && AloftRules.turn(body.getYRot(), AloftRules.wayYaw(at.x - prev.x, at.z - prev.z)) > AloftRules.TURN)
+                dueAfter[repairs.size()] = now;
+            still2 = still1;
+            still1 = moved;
+            prev = at;
+            before = state;
+            wasAbility = ability;
+            prevDirection = body.getDirectionData();
+            if (!body.isDeadOrDying())
+                body.setLastHurtByPlayer(credit); // after the sample: the jar forgets its attacker 100 ticks on, and the test hits it once
+        }
+
+        private void repaired(long now, Vec3 at, double moved, String state) {
+            repairs.add(now);
+            if (repairs.size() > 1 && now - repairs.get(repairs.size() - 2) < AloftRules.REPAIR_COOLDOWN)
+                note("tick " + now + ": a re-pair " + (now - repairs.get(repairs.size() - 2)) + " ticks after the last");
+            if (wasAbility)
+                note("tick " + now + ": a re-pair with an ability active");
+            if (body.isDeadOrDying())
+                note("tick " + now + ": a re-pair of a dying body");
+            if (still1 != 0.0 || still2 != 0.0)
+                note("tick " + now + ": it moved in the two ticks before (" + still2 + ", " + still1 + "): no hold");
+            if (moved < 1.0e-6)
+                note("tick " + now + ": it did not move in the re-pair's tick");
+            if (!state.equals(before))
+                note("tick " + now + ": the body changed across its re-pair: [" + before + "] became [" + state + "]");
+            String[] kinds = {"join", "leave", "start tracking", "stop tracking", "death"};
+            for (int k = 0; k < fired.length; k++)
+                if (fired[k] == now)
+                    note("tick " + now + ": " + kinds[k] + " fired for the body in the re-pair's tick");
+            float way = moved < 1.0e-6 ? Float.NaN : AloftRules.wayYaw(at.x - prev.x, at.z - prev.z);
+            for (int i = 0; i < hearers.length; i++)
+                packets(now, i, way);
+        }
+
+        private void packets(long now, int hearer, float way) {
+            List<net.minecraft.network.protocol.Packet<?>> ps = hearers[hearer].packets;
+            int k = -1;
+            for (int i = ps.size() - 1; i >= 0 && k < 0; i--)
+                if (ps.get(i) instanceof ClientboundAddEntityPacket p && p.getId() == id)
+                    k = i;
+            if (k < 0) {
+                note("tick " + now + ": hearer " + hearer + " has no add packet for the body");
+                return;
+            }
+            ClientboundAddEntityPacket add = (ClientboundAddEntityPacket) ps.get(k);
+            if (!add.getUUID().equals(body.getUUID()))
+                note("tick " + now + ": the add packet names " + add.getUUID() + ", not " + body.getUUID());
+            Vec3 packet = new Vec3(add.getX(), add.getY(), add.getZ());
+            Vec3 live = Tracked.base(level, body);
+            if (packet.distanceTo(prev) > 1.0e-9)
+                note("tick " + now + ": the add is at " + packet + ", the body stood at " + prev + " the tick before");
+            if (packet.distanceTo(live) > 1.0e-9)
+                note("tick " + now + ": the add is at " + packet + ", the live tracker's base is " + live);
+            float yaw = add.getYRot();
+            float want = AloftRules.quarterYaw(body.getDirectionData());
+            float old = AloftRules.quarterYaw(prevDirection);
+            if (AloftRules.turn(yaw, want) > 2.5f)
+                note("tick " + now + ": the add's yaw is " + yaw + ", the jar's direction " + body.getDirectionData() + " is " + want);
+            if (AloftRules.turn(yaw, old) < 80f)
+                note("tick " + now + ": the add's yaw " + yaw + " is within 80 degrees of the old facing " + old);
+            if (!Float.isNaN(way) && AloftRules.turn(yaw, way) > 47f)
+                note("tick " + now + ": the add's yaw " + yaw + " is more than 45 degrees off the way " + way);
+            Integer direction = null;
+            Byte flags = null;
+            java.util.TreeSet<String> sent = new java.util.TreeSet<>();
+            int run = 0;
+            for (int i = k + 1; i < ps.size() && BUNDLED.contains(ps.get(i).getClass()); i++) {
+                run++;
+                net.minecraft.network.protocol.Packet<?> q = ps.get(i);
+                if (q instanceof ClientboundSetEntityDataPacket d && d.id() == id) {
+                    for (SynchedEntityData.DataValue<?> v : d.packedItems()) {
+                        if (v.id() == directionId && v.value() instanceof Integer n)
+                            direction = n;
+                        if (v.id() == 0 && v.value() instanceof Byte b)
+                            flags = b;
+                    }
+                } else if (q instanceof ClientboundUpdateMobEffectPacket e && e.getEntityId() == id) {
+                    sent.add(e.getEffect().getRegisteredName() + "/" + e.getEffectAmplifier());
+                }
+            }
+            if (direction == null || direction != body.getDirectionData())
+                note("tick " + now + ": the bundle carries direction " + direction + ", the body's is " + body.getDirectionData());
+            if (flags == null || (flags & 0x40) == 0)
+                note("tick " + now + ": the bundle's flag byte is " + flags + ": no glowing bit");
+            java.util.TreeSet<String> have = new java.util.TreeSet<>();
+            for (MobEffectInstance e : body.getActiveEffects())
+                have.add(e.getEffect().getRegisteredName() + "/" + e.getAmplifier());
+            if (!sent.equals(have))
+                note("tick " + now + ": the bundle's effects are " + sent + ", the body's " + have);
+            if (hearer == 0)
+                facts.add(String.format("tick %d: yaw %.1f (old %.1f, way %.1f), %d packets after the add", now, yaw, old, way, run));
+        }
+    }
+
+    /** Counts the particle packets of a kind a hearer was sent between two marks of its packet list. */
+    private static long flames(FakePlayers.Hearer h, int from, int to) {
+        return h.packets.subList(from, Math.min(to, h.packets.size())).stream()
+                .filter(q -> q instanceof ClientboundLevelParticlesPacket p && p.getParticle().getType() == ParticleTypes.SMALL_FLAME && p.isOverrideLimiter())
+                .count();
+    }
+
+    /**
+     * An aloft Umvuthi reads and turns, as the server sees it (test 31s; MZB-813, MZB-814). Lane A's puppet floats with its Invasion;
+     * three watching hearers (a near one, a far one 70 to 95 blocks off, and an away one 180 blocks off) are pumped every tick
+     * ({@link FakePlayers#pump}, MZB-889: the first test that runs it), the first two paired with it (read from the tracker's
+     * {@code seenBy}). The body carries Sunblock, Fire Resistance and a glowing flag, a health loss and a last attacker.
+     * <ol>
+     * <li>The trail: over its first 100 ticks east, each of the near and the far hearer is sent about 10 small_flame packets with the
+     * long-distance flag, and the away one none, for the whole test.</li>
+     * <li>A ROAR starts and the band turns 90 degrees (south at 0.2 a tick, the puppet's cap being 0.1). No add packet is sent while
+     * the ability is active; the first re-pair comes two or three ticks after it, after two ticks without a move.</li>
+     * <li>Each re-pair, read in the tick it happens, for both hearers: one add packet with the body's id and UUID, at the position the
+     * body stood at the tick before and the live tracker's base, a yaw within 45 degrees of the way and 80 or more off the old facing;
+     * the bundle's data carries the new direction, the glowing bit and every effect.</li>
+     * <li>The server's body is the same across the tick (id, UUID, health, health lost, effects, glowing, kill credit, target, the boss
+     * bar's players), the map holds one tracker for it, and none of join, leave, start or stop tracking, or death fired in it.</li>
+     * <li>A second turn 100 ticks later (west at 0.3) is due before 200 ticks have passed, and the second re-pair comes 200 or more ticks
+     * after the first. A third turn is due when the body is killed 198 ticks after the second re-pair: nothing is sent for the dying body.</li>
+     * </ol>
+     * The control, lane C, turns 40 degrees at 0.2 a tick, so the puppet lags and its way is 40 degrees off its facing for 400 ticks and
+     * longer: no add packet beyond its pairing. Fails without MZB-813 (no add packet), without the hold (the body moved in the two ticks
+     * before), and without the cooldown, the ability check or the dying check of the gate (a second, early, mid-ROAR or dying add).
+     */
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "aloft_repair", skyAccess = true)
+    public static void anAloftUmvuthiReadsAndTurns(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 9000);
+        String test = "anAloftUmvuthiReadsAndTurns";
+        Far far = new Far(helper, test);
+        ServerLevel level = far.level;
+        Lane a = new Lane(far, 0, 8), c = new Lane(far, 1, 8);
+        long[] agent = {ConflictKit.newAgent(), ConflictKit.newAgent()};
+        long faction = ConflictKit.newFaction();
+        EntityUmvuthi[] puppet = new EntityUmvuthi[2];
+        FakePlayers.Hearer[] hearer = new FakePlayers.Hearer[4]; // near, far, away (A's), and the control's
+        Reading[] reading = new Reading[1];
+        Runnable[] back = new Runnable[1];
+        long[] at = new long[8]; // first steer, ROAR and the second, third steer, fourth steer
+        int[] mark = new int[4]; // the near and far hearers' packet counts at the window's start and end
+        long[] counted = new long[4]; // ConflictBridge's repairs and repairsSkipped at the start, and at the kill
+        long[] control = new long[3]; // the control's ticks, its adds, the tick it was read at
+        double[] turned = new double[2]; // the control's biggest way off its facing, and its lag at 400 ticks
+        int[] controlDirection = new int[1];
+        Vec3[] controlAt = new Vec3[1];
+        double[] anchor = new double[1]; // the anchor's z when the third turn began
+
+        MowzieKit.seq(helper)
+                .thenExecute(() -> {
+                    back[0] = viewDistance(helper, level, 7);
+                    for (Lane l : new Lane[] {a, c})
+                        far.forceRect(l.cx0, l.cz - 1, l.cx1, l.cz + 4);
+                })
+                .thenWaitUntil(waits.chunks(far.ready()))
+                .thenExecute(() -> {
+                    for (Lane l : new Lane[] {a, c})
+                        l.top = MowzieKit.platform(level, l.x0, l.x1, (l.cz - 1) * 16, (l.cz + 4) * 16 + 15);
+                    bandAt(helper, faction, agent[0], a.x0 + 48, a.top + 1, a.z, 0f, List.of(), 1, true);
+                    bandAt(helper, faction, agent[1], c.x0 + 36, c.top + 1, c.z, 0f, List.of(), 1, true);
+                    hearer[0] = FakePlayers.watching(level, new Vec3(a.x0 + 20, a.top + 1, a.z + 16), "mowzie-repair-near");
+                    hearer[1] = FakePlayers.watching(level, new Vec3(a.x0 + 126, a.top + 1, a.z + 16), "mowzie-repair-far", 7);
+                    hearer[2] = FakePlayers.watching(level, new Vec3(a.x0 - 147, a.top + 1, a.z + 16), "mowzie-repair-away", 2);
+                    hearer[3] = FakePlayers.watching(level, new Vec3(c.x0 + 75, c.top + 1, c.z + 25), "mowzie-repair-control");
+                    for (FakePlayers.Hearer h : hearer)
+                        MowzieKit.mask(h);
+                    // every tick, as a connection's own turn would be: the chunk batches acknowledged, the chunks sent, the tracking re-read
+                    MowzieKit.everyTick(helper, () -> {
+                        for (FakePlayers.Hearer h : hearer)
+                            if (h != null && !h.isRemoved())
+                                FakePlayers.pump(h);
+                    });
+                })
+                .thenWaitUntil(waits.logic(() -> {
+                    puppet[0] = puppet(agent[0]);
+                    puppet[1] = puppet(agent[1]);
+                }))
+                .thenWaitUntil(waits.chunks(() -> {
+                    String range = "its tracking range is " + puppet[0].getType().clientTrackingRange() + " chunks";
+                    check("the near hearer is paired with the puppet (" + range + ", " + hearer[0].added(puppet[0].getId()) + " adds)",
+                            Tracked.sees(level, puppet[0], hearer[0]) && hearer[0].added(puppet[0].getId()) == 1);
+                    check("the far hearer is too (" + hearer[1].added(puppet[0].getId()) + " adds)",
+                            Tracked.sees(level, puppet[0], hearer[1]) && hearer[1].added(puppet[0].getId()) == 1);
+                    check("the control's hearer is paired with the control's puppet (" + hearer[3].added(puppet[1].getId()) + " adds)",
+                            Tracked.sees(level, puppet[1], hearer[3]) && hearer[3].added(puppet[1].getId()) == 1);
+                }))
+                .thenIdle(5)
+                .thenExecute(() -> {
+                    EntityUmvuthi u = puppet[0];
+                    check("the away hearer is not paired with it and the tracker is one (" + Tracked.count(level, u) + ")",
+                            !Tracked.sees(level, u, hearer[2]) && Tracked.count(level, u) == 1);
+                    check("the far hearer is more than 64 blocks off (" + Math.hypot(u.getX() - hearer[1].getX(), u.getZ() - hearer[1].getZ()) + ")",
+                            Math.hypot(u.getX() - hearer[1].getX(), u.getZ() - hearer[1].getZ()) > 64);
+                    check("the away hearer is more than the sight rule's 160 off (" + Math.hypot(u.getX() - hearer[2].getX(), u.getZ() - hearer[2].getZ()) + ")",
+                            Math.hypot(u.getX() - hearer[2].getX(), u.getZ() - hearer[2].getZ()) > AloftRules.SIGHT + 10);
+                    check("it faces east (" + u.getDirectionData() + ")", u.getDirectionData() == 4);
+                    u.addEffect(new MobEffectInstance(EffectHandler.SUNBLOCK, 6000, 0));
+                    u.addEffect(new MobEffectInstance(MobEffects.FIRE_RESISTANCE, 6000, 0));
+                    u.setGlowingTag(true);
+                    u.setHealth(u.getMaxHealth() - 20f);
+                    u.setHealthLost(20f);
+                    check("it has Sunblock and Fire Resistance (" + u.getActiveEffects() + ")",
+                            u.hasEffect(EffectHandler.SUNBLOCK) && u.hasEffect(MobEffects.FIRE_RESISTANCE));
+                    Reading r = new Reading(level, u, hearer[0], hearer[0], hearer[1]);
+                    reading[0] = r;
+                    for (int k = 0; k < r.fired.length; k++) {
+                        int kind = k;
+                        switch (kind) {
+                            case 0 -> listen(helper, EventPriority.LOWEST, EntityJoinLevelEvent.class,
+                                    e -> r.fired[kind] = e.getEntity() == u ? level.getGameTime() : r.fired[kind]);
+                            case 1 -> listen(helper, EventPriority.LOWEST, EntityLeaveLevelEvent.class,
+                                    e -> r.fired[kind] = e.getEntity() == u ? level.getGameTime() : r.fired[kind]);
+                            case 2 -> listen(helper, EventPriority.LOWEST, PlayerEvent.StartTracking.class,
+                                    e -> r.fired[kind] = e.getTarget() == u ? level.getGameTime() : r.fired[kind]);
+                            case 3 -> listen(helper, EventPriority.LOWEST, PlayerEvent.StopTracking.class,
+                                    e -> r.fired[kind] = e.getTarget() == u ? level.getGameTime() : r.fired[kind]);
+                            default -> listen(helper, EventPriority.LOWEST, LivingDeathEvent.class,
+                                    e -> r.fired[kind] = e.getEntity() == u ? level.getGameTime() : r.fired[kind]);
+                        }
+                    }
+                    controlDirection[0] = puppet[1].getDirectionData();
+                    r.arm();
+                    mark[0] = hearer[0].packets.size();
+                    mark[1] = hearer[1].packets.size();
+                    counted[0] = ConflictKit.bridge().repairs;
+                    counted[1] = ConflictKit.bridge().repairsSkipped;
+                    MowzieKit.everyTick(helper, () -> {
+                        r.tick();
+                        EntityUmvuthi k = puppet[1];
+                        if (k.isRemoved() || !k.isAlive())
+                            return;
+                        control[0]++;
+                        long n = hearer[3].added(k.getId());
+                        if (n != control[1]) {
+                            control[1] = n;
+                            if (n > 1 && r.broke.size() < 14)
+                                r.broke.add("tick " + level.getGameTime() + ": the control was sent " + n + " adds");
+                        }
+                        if (controlAt[0] != null && k.position().distanceTo(controlAt[0]) > 0.05)
+                            turned[0] = Math.max(turned[0], AloftRules.turn(k.getYRot(), AloftRules.wayYaw(k.getX() - controlAt[0].x, k.getZ() - controlAt[0].z)));
+                        controlAt[0] = k.position();
+                        if (control[0] == 400) {
+                            turned[1] = chiefSlot(agent[1]).lag();
+                            control[2] = level.getGameTime();
+                        }
+                    });
+                    at[0] = level.getGameTime();
+                    ConflictKit.steer(agent[0], ConflictKit.party(agent[0]).epoch, PACE, a.x0 + 56, a.z, 0, false);
+                    // the control: 40 degrees off east, 100 blocks at 0.2 a tick (500 ticks), so the puppet lags the anchor all the while
+                    ConflictKit.steer(agent[1], ConflictKit.party(agent[1]).epoch, 0.2f, c.x0 + 36 + 76.6, c.z + 64.3, 0, false);
+                })
+                .thenIdle(100)
+                .thenExecute(() -> {
+                    Reading r = reading[0];
+                    EntityUmvuthi u = puppet[0];
+                    mark[2] = hearer[0].packets.size();
+                    mark[3] = hearer[1].packets.size();
+                    long near = flames(hearer[0], mark[0], mark[2]), far1 = flames(hearer[1], mark[1], mark[3]);
+                    check("the near hearer was sent 9 to 11 small_flame packets with the long-distance flag in 100 ticks (" + near + ")", near >= 9 && near <= 11);
+                    check("so was the far one (" + far1 + ")", far1 >= 9 && far1 <= 11);
+                    check("no re-pair yet, the body still east (" + r.repairs + ", " + u.getDirectionData() + ")", r.repairs.isEmpty() && u.getDirectionData() == 4);
+                    record(test, "trail", "near " + near + ", far " + far1 + " small_flame packets in 100 ticks, away "
+                            + hearer[2].count(ClientboundLevelParticlesPacket.class));
+                    u.sendAbilityMessage(EntityUmvuthi.ROAR_ABILITY);
+                    check("the ROAR started (" + u.getActiveAbility() + ")", u.getActiveAbility() != null);
+                    r.roarAt = level.getGameTime();
+                    at[1] = r.roarAt;
+                    // south, 60 blocks at 0.2: the anchor outruns the puppet, so its way is 90 degrees off its facing at once
+                    ConflictKit.steer(agent[0], ConflictKit.party(agent[0]).epoch, 0.2f, a.x0 + 56, a.z + 60, 0, false);
+                })
+                .thenWaitUntil(waits.logic(() -> check("the first re-pair (the ROAR has lasted " + reading[0].roarTicks + " ticks)", !reading[0].repairs.isEmpty())))
+                .thenExecute(() -> {
+                    Reading r = reading[0];
+                    long r1 = r.repairs.get(0);
+                    check("the ROAR was active for at least 20 ticks (" + r.roarTicks + ")", r.roarTicks >= 20);
+                    check("it ended (" + r.roarEnd + ")", r.roarEnd != 0);
+                    long held = r1 - r.roarEnd;
+                    check("the re-pair came 2 to 12 ticks after the ability ended, after two ticks held (" + held + ")", held >= 2 && held <= 12);
+                    check("it is facing south now (" + puppet[0].getDirectionData() + ")", puppet[0].getDirectionData() == 1);
+                    at[2] = r1;
+                })
+                .thenWaitUntil(waits.logic(() -> check("100 ticks after the re-pair", level.getGameTime() >= at[2] + 100)))
+                .thenExecute(() -> {
+                    long now = level.getGameTime();
+                    double z = Math.min(a.z + 0.2 * (now - at[1]), a.z + 60); // where the anchor is on its way south
+                    at[3] = now;
+                    anchor[0] = z;
+                    // west, at 0.3: the puppet faces south, so its way is soon 90 degrees off
+                    ConflictKit.steer(agent[0], ConflictKit.party(agent[0]).epoch, 0.3f, a.x0 + 4, z, 0, false);
+                })
+                .thenWaitUntil(waits.logic(() -> check("the second re-pair (" + reading[0].repairs + ")", reading[0].repairs.size() >= 2)))
+                .thenExecute(() -> {
+                    Reading r = reading[0];
+                    long r1 = r.repairs.get(0), r2 = r.repairs.get(1);
+                    check("the second turn was due before the cooldown ran out (due " + (r.dueAfter[1] - r1) + " ticks after the first re-pair)",
+                            r.dueAfter[1] != 0 && r.dueAfter[1] - r1 < AloftRules.REPAIR_COOLDOWN);
+                    check("the second re-pair came 200 to 260 ticks after the first (" + (r2 - r1) + ")", r2 - r1 >= AloftRules.REPAIR_COOLDOWN && r2 - r1 <= 260);
+                    check("it is facing west now (" + puppet[0].getDirectionData() + ")", puppet[0].getDirectionData() == 2);
+                    long now = level.getGameTime();
+                    double z = anchor[0];
+                    double x = a.x0 + 56 - 0.3 * (now - at[3]);
+                    at[5] = r2;
+                    // north, at 0.3: the third turn, due again before the cooldown ends
+                    ConflictKit.steer(agent[0], ConflictKit.party(agent[0]).epoch, 0.3f, x, z - 60, 0, false);
+                })
+                .thenWaitUntil(waits.logic(() -> check("198 ticks after the second re-pair", level.getGameTime() >= at[5] + 198)))
+                .thenExecute(() -> {
+                    Reading r = reading[0];
+                    EntityUmvuthi u = puppet[0];
+                    check("only two re-pairs so far (" + r.repairs + ")", r.repairs.size() == 2);
+                    check("the third turn is due: its way has been 55 degrees off its facing since " + (level.getGameTime() - r.dueAfter[2]) + " ticks ago",
+                            r.dueAfter[2] != 0 && level.getGameTime() - r.dueAfter[2] >= 10);
+                    check("the body is alive, with no ability (" + u.isDeadOrDying() + ", " + u.getActiveAbility() + ")", !u.isDeadOrDying() && u.getActiveAbility() == null);
+                    r.removedBefore = (int) (hearer[0].removed(u.getId()) + hearer[1].removed(u.getId()));
+                    counted[2] = ConflictKit.bridge().repairs - counted[0];
+                    counted[3] = ConflictKit.bridge().repairsSkipped - counted[1];
+                    at[6] = level.getGameTime();
+                    MowzieKit.kill(u, level.damageSources().playerAttack(hearer[0]));
+                    check("it is dying (" + u.isDeadOrDying() + ")", u.isDeadOrDying());
+                })
+                .thenWaitUntil(waits.logic(() -> check("the puppet's animation ended (" + (level.getGameTime() - at[6]) + " ticks)", puppet[0].isRemoved())))
+                .thenExecute(() -> {
+                    Reading r = reading[0];
+                    int id = puppet[0].getId();
+                    check("no re-pair came for the dying body (" + r.repairs + ", the kill at " + at[6] + ")", r.repairs.size() == 2);
+                    check("each of A's hearers was sent the puppet three times as added: once paired, two re-pairs (" + hearer[0].added(id) + ", " + hearer[1].added(id) + ")",
+                            hearer[0].added(id) == 3 && hearer[1].added(id) == 3);
+                    check("and never as removed before the kill (" + r.removedBefore + ")", r.removedBefore == 0);
+                    check("the bridge counted two re-pairs and none skipped (" + counted[2] + ", " + counted[3] + ")", counted[2] == 2 && counted[3] == 0);
+                    check("the away hearer was sent no particle in the whole test (" + hearer[2].count(ClientboundLevelParticlesPacket.class) + ") and no add ("
+                            + hearer[2].added(id) + ")", hearer[2].count(ClientboundLevelParticlesPacket.class) == 0 && hearer[2].added(id) == 0);
+                    check("the near hearer was sent more flames than the window's (" + flames(hearer[0], 0, Integer.MAX_VALUE) + ")",
+                            flames(hearer[0], 0, Integer.MAX_VALUE) > flames(hearer[0], mark[0], mark[2]));
+                    check("the server's body and the packets agreed in every re-pair: " + r.broke, r.broke.isEmpty());
+                    // the control
+                    EntityUmvuthi k = puppet[1];
+                    check("the control was read at 400 ticks (" + control[2] + ")", control[2] != 0);
+                    check("the control's puppet lagged its anchor at 400 ticks (" + turned[1] + " blocks)", turned[1] > 5);
+                    check("its way was 30 to 55 degrees off its facing (" + turned[0] + ")", turned[0] > 30 && turned[0] < AloftRules.TURN);
+                    check("it was sent its pairing and no more (" + hearer[3].added(k.getId()) + ")", hearer[3].added(k.getId()) == 1);
+                    check("it still faces east (" + k.getDirectionData() + ", was " + controlDirection[0] + ")", k.getDirectionData() == controlDirection[0]);
+                    check("no traveller step failed (" + ConflictKit.travellerErrors() + ")", ConflictKit.travellerErrors() == 0);
+                    record(test, "repair", "re-pairs at " + r.repairs + " (the ROAR " + r.roarTicks + " ticks); " + String.join("; ", r.facts)
+                            + "; the control turned " + String.format("%.1f", turned[0]) + " degrees, lagged " + String.format("%.1f", turned[1]) + " blocks, one add");
+                    record(test, "l2hostility", net.neoforged.fml.ModList.get().isLoaded("l2hostility") ? "in the run: its moving traits are not asserted here" : "not in the run");
+                    recallAll(agent);
+                })
+                .thenIdle(40)
+                .thenExecute(() -> {
+                    back[0].run();
+                    for (int i = 0; i < hearer.length; i++) {
+                        FakePlayers.removeSeen(hearer[i]);
+                        hearer[i] = null;
+                    }
                     far.releaseAll();
                 })
                 .thenSucceed();
