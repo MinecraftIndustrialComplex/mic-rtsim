@@ -50,7 +50,8 @@ use rtsim_ships::{ShipStats, ShipTickets, ShipTunables, Ships};
 use rtsim_world::NodeData;
 
 use super::paging::{self, Live, Pager};
-use super::{State, log_error, log_info, log_warn, phase1, shared};
+use super::shared::{self, Module};
+use super::{State, log_error, log_info, log_warn, phase1};
 use crate::wire::{self, Rec, RecordWriter, obs};
 
 /// The ships' pages: table 0x5300 ('S'), next to the dragons' 0x4400 and phase 1's 0x5000.
@@ -304,8 +305,9 @@ pub(super) fn replay_end(st: &mut State) {
 }
 
 /// SESSION_START: Java forgot the engine's dictionary; the ships' bodies are gone at the replay
-/// end (their reset runs as soon as the ships run, now or when switched on; it keeps the bodies
-/// the pages hold, which the replayed records count against: docs/replay-gate.md §5.1).
+/// end (their reset runs as soon as the ships run, now once every module's flag is set,
+/// `shared::resets`, or when switched on; it keeps the bodies the pages hold, which the replayed
+/// records count against: docs/replay-gate.md §5.1).
 pub(super) fn session_start(st: &mut State, module_mask: u32) {
     st.ships.queue.clear();
     st.ships.java_items.clear();
@@ -323,13 +325,13 @@ pub(super) fn session_start(st: &mut State, module_mask: u32) {
         lift_closures(st);
     }
     st.ships.reset_due = true;
-    reset_if_due(st);
 }
 
-/// The switch changed (MODULES, U10). Off: every port closure is lifted (PC101); what the ships
-/// hold is then written once more as it is and kept; queued commands are dropped (all per
-/// session). On: the reset is due.
-fn set_enabled(st: &mut State, on: bool) {
+/// MODULES (U10), the first pass (`shared::switch`): the switch, if it changed. Off: every port
+/// closure is lifted (PC101); what the ships hold is then written once more as it is and kept;
+/// queued commands are dropped (all per session). On: the reset is due, and runs in the second
+/// pass with every module's (`shared::resets`). Returns whether the ships came on.
+pub(super) fn switched(st: &mut State, on: bool) -> bool {
     let was = st.ships.enabled;
     st.ships.enabled = on;
     if was && !on {
@@ -343,7 +345,7 @@ fn set_enabled(st: &mut State, on: bool) {
     if on && !was {
         st.ships.reset_due = true;
     }
-    reset_if_due(st);
+    on && !was
 }
 
 /// The ships stop running (PC101): a switched-off module keeps no port of the world closed. Every
@@ -367,33 +369,37 @@ fn lift_closures(st: &mut State) {
     ));
 }
 
-/// The session's reset, once the ships run (docs/replay-gate.md §3.2): their engine's replay
-/// begins (`begin_replay`, told whether it came back from its pages, RP-31), and its end is due.
-/// The bodies of an earlier session (or of before a switch-off) are gone at that end. With no
-/// replay running (a switch-on mid-session) the end runs at once.
+/// The ships' reset alone, if due (`shared::reset_these`): a first dock or haven in the middle
+/// of a session.
 fn reset_if_due(st: &mut State) {
-    if st.ships.reset_due && running(st) {
-        st.ships.reset_due = false;
-        let from_pages = st.ships.from_pages;
-        st.ships.engine.begin_replay(from_pages);
-        st.ships.replay_end_due = true;
-        st.phase1.taint();
-        take_commands(st);
-        if !st.replaying {
-            replay_end(st);
-        }
-    }
+    shared::reset_these(st, &[Module::Ships]);
 }
 
-/// A record that is not journaled: Java's DICT entries, MODULES and SHIP_STATE.
+/// The session's reset, once the ships run (docs/replay-gate.md §3.2), its first step
+/// (`shared::resets`): their engine's replay begins (`begin_replay`, told whether it came back
+/// from its pages, RP-31), and its end is due. The bodies of an earlier session (or of before a
+/// switch-off) are gone at that end. With no replay running (a switch-on mid-session) the end
+/// runs in the reset's last step ([`replay_end`]). The ships keep no record while off. Returns
+/// whether it began.
+pub(super) fn begin_reset(st: &mut State) -> bool {
+    if !(st.ships.reset_due && running(st)) {
+        return false;
+    }
+    st.ships.reset_due = false;
+    let from_pages = st.ships.from_pages;
+    st.ships.engine.begin_replay(from_pages);
+    st.ships.replay_end_due = true;
+    st.phase1.taint();
+    take_commands(st);
+    true
+}
+
+/// A record that is not journaled: Java's DICT entries and SHIP_STATE. MODULES goes to
+/// `shared::switch`.
 pub(super) fn observe_state(st: &mut State, rec: &Rec<'_>) {
     let b = rec.bytes;
     match rec.kind {
         obs::DICT => st.ships.java_items.clear(),
-        obs::MODULES if rec.size() >= obs::modules::SIZE => {
-            let on = wire::u32_at(b, obs::modules::MASK) & MODULE_SHIPS != 0;
-            set_enabled(st, on);
-        }
         k if STATE_KINDS.contains(&k) => {
             let decoded = boundary::decode_obs(b).ok().map(|(_, _, _, o)| o);
             if let Some(o) = &decoded {

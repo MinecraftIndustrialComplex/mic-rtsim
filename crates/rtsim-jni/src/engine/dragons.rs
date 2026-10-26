@@ -27,9 +27,9 @@
 //!   snapshot at every save (S4), and both are written in one commit.
 //! - **The switch** (C25, U10 as RP-292 amends it): `Module.ECOLOGY` (bit 4). Off, the dragons
 //!   run nothing, write nothing and keep the page they had; the journaled records they hear are
-//!   kept (a page beside the meta page, `paging::Kept`) and applied at the switch-on, in their
-//!   session reset before its replay end, each after its own catch-up (docs/replay-gate.md 9.7:
-//!   the switch gates only new decisions). A tribute stack's answer is taken at once whatever the
+//!   kept (a page beside the meta page, `paging::Kept`) and applied at the switch-on, in the
+//!   resets every module's run in (`shared::resets`) before the replay ends, each after its own
+//!   catch-up and at its own tick (docs/replay-gate.md 9.7: the switch gates only new decisions). A tribute stack's answer is taken at once whatever the
 //!   switch (RP-291). On again, the bodies of before are gone and they run on from where they
 //!   stopped.
 //!
@@ -54,7 +54,8 @@ use rtsim_kernel::page::{PageKey, SaveBatch};
 use rtsim_kernel::rows::PageSource;
 
 use super::paging::{self, Kept, Live, Pager};
-use super::{State, TransferCmd, log_error, log_info, shared};
+use super::shared::{self, Module};
+use super::{State, TransferCmd, log_error, log_info};
 use crate::wire::{self, Rec, RecordWriter, cmd, obs};
 
 /// The dragons' pages: table 0x4400 ('D'), next to the industry engine's 0x4900 and phase 1's
@@ -337,6 +338,7 @@ pub(super) fn gate_counts(st: &State) -> rtsim_ecology::GateCounts {
 /// SESSION_START: the dragons' reset is due (their engine's replay begins as soon as they run or
 /// a record reaches them; every dragon the engine thought embodied is abstract again at the
 /// replay end, since puppets never outlive a session), and Java forgot the engine's dictionary.
+/// The reset runs once every module's flag is set (`shared::resets`).
 pub(super) fn session_start(st: &mut State, module_mask: u32) {
     st.dragons.queue.clear();
     st.dragons.far.clear();
@@ -346,12 +348,13 @@ pub(super) fn session_start(st: &mut State, module_mask: u32) {
     // switch that is off from the start keeps exactly those (no save writes them).
     st.dragons.enabled = module_mask & MODULE_ECOLOGY != 0;
     st.dragons.reset_due = true;
-    reset_if_due(st);
 }
 
-/// The switch changed (MODULES, U10). Off: what the dragons hold is written once more as it is now and then kept;
-/// queued commands are dropped (all per session, S11). On: the reset is due.
-fn set_enabled(st: &mut State, on: bool) {
+/// MODULES (U10), the first pass (`shared::switch`): the switch, if it changed. Off: what the
+/// dragons hold is written once more as it is now and then kept; queued commands are dropped (all
+/// per session, S11). On: the reset is due, and runs in the second pass with every module's
+/// (`shared::resets`). Returns whether the dragons came on.
+pub(super) fn switched(st: &mut State, on: bool) -> bool {
     let was = st.dragons.enabled;
     st.dragons.enabled = on;
     if was && !on {
@@ -366,71 +369,61 @@ fn set_enabled(st: &mut State, on: bool) {
     if on && !was {
         st.dragons.reset_due = true;
     }
-    reset_if_due(st);
+    on && !was
 }
 
-/// The session's reset, once the dragons run (docs/replay-gate.md §3.2): their engine's replay
-/// begins (`begin_replay`, told whether it came back from its pages, RP-31) and its end is due.
-/// With no replay running (a switch-on) that end runs at once, at the hand-over's time. Records
-/// kept while off make it due with no dragon or lair too: they are applied in it (RP-292).
+/// The dragons' reset alone, if due (`shared::reset_these`): a first lair or dragon in the
+/// middle of a session.
 fn reset_if_due(st: &mut State) {
+    shared::reset_these(st, &[Module::Dragons]);
+}
+
+/// The session's reset, once the dragons run (docs/replay-gate.md §3.2), its first step
+/// (`shared::resets`): their engine's replay begins (`begin_replay`, told whether it came back
+/// from its pages, RP-31) and its end is due. With no replay running (a switch-on) that end runs
+/// in the reset's last step, at the hand-over's time ([`end_reset`]). Records kept while off make
+/// it due with no dragon or lair too: they are applied between the two (RP-292, [`apply_kept`]).
+/// Returns whether it began.
+pub(super) fn begin_reset(st: &mut State) -> bool {
     let l = &st.dragons;
-    if l.reset_due && l.enabled && (l.active() || !l.kept.is_empty()) && !kept_waiting(st) {
-        reset(st);
+    if !(l.reset_due && l.enabled && (l.active() || !l.kept.is_empty()) && !kept_waiting(st)) {
+        return false;
     }
+    begin(st);
+    true
 }
 
-/// A session start's first record after Java's DICTs (`State::dict_wait`): a reset that waited
-/// with kept records runs now.
-pub(super) fn dict_ready(st: &mut State) {
-    reset_if_due(st);
-}
-
-/// [`reset_if_due`] for the dragons as they are: a record reaches an engine nothing has made
-/// active yet, and the gate must hold from the record that does (docs/replay-gate.md §4.1).
-fn reset(st: &mut State) {
+fn begin(st: &mut State) {
     st.dragons.reset_due = false;
     let from_pages = st.dragons.from_pages;
     st.dragons.engine.begin_replay(from_pages);
     st.dragons.replay_end_due = true;
     st.phase1.taint();
     take_commands(st);
-    apply_kept(st);
-    if !st.replaying {
-        let at = shared::hand_over_target(st);
-        end_replay(st, at);
-    }
 }
 
-/// The records heard while switched off (RP-292, docs/replay-gate.md 9.7), applied in the reset,
-/// after `begin_replay` and before the replay end, where a restart's replay of the same records
-/// applies them: oldest first, each as it came (a copy as a copy), each after its own catch-up
-/// (`shared::catch_up`), so the dragons' events due before it fire first. Each goes in at its own
-/// tick as far as the world allows: the dragons share the phase 1 world, which ran on while they
-/// were off, and a record is booked no earlier than the world's present (`ingest`); a dragon a
-/// player killed or tamed in the window is dead before the replay end could resume it.
-fn apply_kept(st: &mut State) {
-    let kept = st.dragons.kept.take();
-    if kept.is_empty() {
-        return;
-    }
-    let outer = st.applying_copy;
-    st.applying_kept = true;
-    for (copy, bytes) in &kept {
-        let rec = Rec {
-            kind: wire::u16_at(bytes, wire::R_KIND),
-            aux: wire::u32_at(bytes, wire::R_AUX),
-            bytes,
-        };
-        st.applying_copy = *copy;
-        apply(st, &rec);
-    }
-    st.applying_kept = false;
-    st.applying_copy = outer;
-    log_info(&format!(
-        "the dragons applied {} records heard while they were switched off",
-        kept.len()
-    ));
+/// The reset's last step with no replay running: the replay end at the hand-over's time.
+pub(super) fn end_reset(st: &mut State) {
+    let at = shared::hand_over_target(st);
+    end_replay(st, at);
+}
+
+/// [`reset_if_due`] for the dragons as they are: a record reaches an engine nothing has made
+/// active yet, and the gate must hold from the record that does (docs/replay-gate.md §4.1).
+fn reset(st: &mut State) {
+    begin(st);
+    shared::end_resets(st, &[Module::Dragons]);
+}
+
+/// One record the dragons heard while switched off (RP-292, docs/replay-gate.md 9.7), applied in
+/// the reset after `begin_replay` and before the replay end, where a restart's replay of the same
+/// record applies it, in the order `shared::resets` merges every module's kept records: as it
+/// came (a copy as a copy), after its own catch-up (`shared::catch_up`), so the events due before
+/// it fire first, the herds' among them as the dragons' prey, and at its own tick
+/// (`shared::floor`): a dragon a player killed or tamed in the switch's tick is dead from that
+/// tick, before the replay end could resume it.
+pub(super) fn apply_kept(st: &mut State, rec: &Rec<'_>) {
+    apply(st, rec);
 }
 
 /// The dragons' replay end at `clock`: bodies of an earlier session (or of before a switch-off)
@@ -449,8 +442,8 @@ fn end_replay(st: &mut State, clock: Tick) {
     take_commands(st);
 }
 
-/// A record that is not journaled: Java's DICT entries (they may rename species and lairs),
-/// MODULES and DRAGON_STATE. PLAYER positions go to the shared interest areas
+/// A record that is not journaled: Java's DICT entries (they may rename species and lairs) and
+/// DRAGON_STATE. MODULES goes to `shared::switch`, PLAYER positions to the shared interest areas
 /// (`engine/shared.rs`).
 pub(super) fn observe_state(st: &mut State, rec: &Rec<'_>) {
     let b = rec.bytes;
@@ -458,10 +451,6 @@ pub(super) fn observe_state(st: &mut State, rec: &Rec<'_>) {
         obs::DICT => {
             st.dragons.java_species = None;
             st.dragons.items_defined.clear();
-        }
-        obs::MODULES if rec.size() >= obs::modules::SIZE => {
-            let on = wire::u32_at(b, obs::modules::MASK) & MODULE_ECOLOGY != 0;
-            set_enabled(st, on);
         }
         k if STATE_KINDS.contains(&k) => {
             if !st.dragons.enabled {

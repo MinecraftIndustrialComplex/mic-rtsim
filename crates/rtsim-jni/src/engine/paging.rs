@@ -196,9 +196,12 @@ pub fn kept_key(meta: PageKey) -> PageKey {
 /// journal never loses them.
 #[derive(Default)]
 pub(super) struct Kept {
-    /// (the copy's generation nonce, `st.applying_copy`; the record's bytes), oldest first.
-    recs: Vec<(Option<u64>, Vec<u8>)>,
+    /// Oldest first.
+    recs: Vec<KeptRec>,
 }
+
+/// One kept record: the copy's generation nonce (`st.applying_copy`) and the record's bytes.
+pub(super) type KeptRec = (Option<u64>, Vec<u8>);
 
 impl Kept {
     pub(super) fn is_empty(&self) -> bool {
@@ -211,7 +214,7 @@ impl Kept {
     }
 
     /// Every record kept, oldest first; none left.
-    pub(super) fn take(&mut self) -> Vec<(Option<u64>, Vec<u8>)> {
+    pub(super) fn take(&mut self) -> Vec<KeptRec> {
         std::mem::take(&mut self.recs)
     }
 
