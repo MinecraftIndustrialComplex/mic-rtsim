@@ -2079,6 +2079,128 @@ fn a_station_exchange_replayed_over_several_hand_overs_is_applied_once() {
     assert_eq!(b.unsent, 0, "an op answered APPLIED is written again");
 }
 
+/// Why the replay writes again a copy whose op it heard answered APPLIED (RP-259, the lead's
+/// narrowing; RP-310): J4 (RP-196), Java's journal saved after the exchange and its tracks file
+/// not (since RP-200 only a failed tracks write). The iron line's train 1 loads ore at the ore
+/// coast at 72,800 as in [`exchange_behind_the_save`], over a replay of several hand-overs; the
+/// world restarts from its save at 72,900 but for train 1's cargo and the op in its ring (the fake
+/// world's applied set, saved with its trains), which are from the tick before it applied the
+/// exchange. The replay re-derives the exchange under the live op, and the replayed
+/// IND_CARRIAGE_RESULT books it. Written again, the ring that came back without the op applies it
+/// to the restored train, once. Taken out at the replayed APPLIED (A's `take_out` acting on the
+/// held replay, 7661ca04 to fe4e80bf), it never goes: the train holds nothing while the books say
+/// it holds 224 ore.
+#[test]
+fn a_station_exchange_whose_trains_save_was_lost_is_applied_again_after_the_replay() {
+    use rtsim_industry::ids::TrainId;
+    use rtsim_kernel::journal::OpId;
+    let cfg = IronLine {
+        seed: 11,
+        days: 10,
+        threats: false,
+        control: false,
+        tick_first: true,
+        approach: true,
+    };
+    let dir = tmpdir("ind-exch-j4");
+    let mut j = iron_java(&dir, cfg);
+    j.mc_run_until(day(3.0));
+    let through = j.next_obs - 1;
+    j.e.request_save(through);
+    mc_tick_until_durable(&mut j, through);
+    let paged = j.ind_commands.len();
+    let exchanges = |j: &Java, from: usize| -> Vec<(u64, TrainId)> {
+        j.ind_commands[from..]
+            .iter()
+            .filter_map(|c| match &c.2 {
+                Cmd::CarriageDelta(d) => Some((d.op.0, d.train)),
+                _ => None,
+            })
+            .collect()
+    };
+    j.mc_run_until(Tick(72_100));
+    fillers(&mut j, 8_000);
+    // The trains as the tracks file holds them when its write after the exchange fails: as they
+    // were in the tick before the world applied it.
+    let mut cargo_before = None;
+    while j.mc().t < Tick(72_900) {
+        let was = cargo(&j);
+        j.mc_tick();
+        let applied = exchanges(&j, paged)
+            .iter()
+            .any(|(op, _)| j.mc().applied_ops().contains(&OpId(*op)));
+        if applied && cargo_before.is_none() {
+            cargo_before = Some(was);
+        }
+    }
+    let cargo_before = cargo_before.expect("the exchange applied before the save");
+    let before = exchanges(&j, paged);
+    assert_eq!(before.len(), 1, "one exchange before the save");
+    let (x, train) = (OpId(before[0].0), before[0].1);
+    let cargo_live = cargo(&j);
+    assert_ne!(cargo_live, cargo_before, "the exchange loaded its train");
+    let jsave = j.world_save();
+    let msave = j.mc().saved();
+    j.mc_run_until(Tick(73_500));
+    assert_eq!(cargo(&j), cargo_live, "no other exchange before the crash");
+    let mut mc = j.mc.take().unwrap();
+    j.e.close(false, Duration::from_secs(5)).unwrap();
+    // The control, from a copy of the pages: both of Java's files saved (J1), the restored world's
+    // own baseline against the books.
+    let control_dir = copy_pages(&dir, "ind-exch-j4-control");
+    mc.restore(&msave);
+    let e = engine_with(&control_dir, rtsim_jni::wire::MIN_CAPACITY, |c| {
+        c.industry_seed = Some(cfg.seed)
+    });
+    let mut c = restart(e, jsave.clone(), mc, MODULE_INDUSTRY);
+    c.mc_run_until(Tick(73_500));
+    let control = books_delta(&c);
+    assert_eq!(cargo(&c), cargo_live, "the control holds what it held");
+    let mut mc = c.mc.take().unwrap();
+    c.e.close(true, Duration::from_secs(5)).unwrap();
+    mc.restore(&msave);
+    // J4: the exchange's train from before it, the rest from the world save after it.
+    let (t, was) = mc
+        .trains
+        .iter_mut()
+        .zip(&cargo_before)
+        .find(|(t, _)| t.id == train)
+        .expect("the exchange's train");
+    for (c, was) in t.carriages.iter_mut().zip(was) {
+        c.cargo = was.clone();
+    }
+    assert!(mc.forget_applied(x), "the ring held the op");
+    let e = engine_with(&dir, rtsim_jni::wire::MIN_CAPACITY, |c| {
+        c.industry_seed = Some(cfg.seed)
+    });
+    let mut j = restart(e, jsave, mc, MODULE_INDUSTRY);
+    j.mc_run_until(Tick(73_500));
+    replayed_over_several(&j);
+    let after = exchanges(&j, 0);
+    let unsent = j.e.with_industry(|_, s| s.answered_unsent);
+    let j4 = books_delta(&j);
+    eprintln!(
+        "ind-exch-j4: exchange {:#x}; sent after the restart {after:x?} ({unsent} known failed, \
+         not sent); cargo live {cargo_live:?}, after the restart {:?}; the world against its \
+         books {j4:?}, the control's {control:?}",
+        x.0,
+        cargo(&j)
+    );
+    assert_eq!(after, before, "re-derived under its op id and written");
+    assert!(
+        j.mc().applied_ops().contains(&x),
+        "applied to the restored train"
+    );
+    assert_eq!(cargo(&j), cargo_live, "train 1 holds the ore once");
+    assert_eq!(j4, control, "the world against its books, as the control's");
+    assert!(
+        !industry(&j.e, |ie| ie.exchange_pending(x)),
+        "the exchange is settled"
+    );
+    assert!(j.e.protocol_error().is_none(), "{:?}", j.e.protocol_error());
+    j.e.close(true, Duration::from_secs(5)).unwrap();
+}
+
 /// Iron in the fake world: (in its stores, on its trains, minted, burned).
 fn world_iron(j: &Java) -> (i64, i64, i64, i64) {
     let g = rtsim_industry::ids::Good(1);
@@ -2191,6 +2313,25 @@ fn an_exchange_answered_failed_live_is_not_applied_after_a_crash() {
     );
     assert_eq!(cargo_again, cargo_live, "the trains hold what they held");
     assert_eq!(iron_again, iron_live, "no iron made or lost");
+}
+
+/// A copy of the page directory `from` (the engine closed) in a new one.
+fn copy_pages(from: &std::path::Path, tag: &str) -> std::path::PathBuf {
+    fn copy(from: &std::path::Path, to: &std::path::Path) {
+        std::fs::create_dir_all(to).unwrap();
+        for e in std::fs::read_dir(from).unwrap() {
+            let e = e.unwrap();
+            let dest = to.join(e.file_name());
+            if e.file_type().unwrap().is_dir() {
+                copy(&e.path(), &dest);
+            } else {
+                std::fs::copy(e.path(), dest).unwrap();
+            }
+        }
+    }
+    let to = tmpdir(tag);
+    copy(from, &to);
+    to
 }
 
 /// The world against the engine's books ([`FakeWorld::conservation_with`]): Ok, or what is off.
@@ -5124,25 +5265,6 @@ mod ack_never_resends {
             1,
             move |c| matches!(c, Cmd::WriteChain(w) if w.pos == pos),
         );
-    }
-
-    /// A copy of the page directory `from` (the engine closed) in a new one.
-    fn copy_pages(from: &std::path::Path, tag: &str) -> PathBuf {
-        fn copy(from: &std::path::Path, to: &std::path::Path) {
-            std::fs::create_dir_all(to).unwrap();
-            for e in std::fs::read_dir(from).unwrap() {
-                let e = e.unwrap();
-                let dest = to.join(e.file_name());
-                if e.file_type().unwrap().is_dir() {
-                    copy(&e.path(), &dest);
-                } else {
-                    std::fs::copy(e.path(), dest).unwrap();
-                }
-            }
-        }
-        let to = tmpdir(tag);
-        copy(from, &to);
-        to
     }
 
     /// A restart from a copy of the crash snapshot (`pages`, `saved`), on a fresh copy of the iron
