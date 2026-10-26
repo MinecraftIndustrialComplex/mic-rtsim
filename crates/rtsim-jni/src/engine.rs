@@ -399,6 +399,11 @@ struct State {
     /// applied (RP-292): the shared clock runs to each one's own tick, below the world's present
     /// (`shared::floor`). Not saved.
     applying_kept: bool,
+    /// What each kept record of a viewer module met when it went in, for the tests of the joint
+    /// switch-on (RP-300): its own tick, the phase 1 world's present and the phase 1 inputs still
+    /// kept, once it was applied (`shared::apply_kept`). Not saved.
+    #[cfg(test)]
+    kept_probe: Vec<(u64, u64, usize)>,
     /// How far the shared clock may run while replaying (§3.6, RP-24): the world's present at
     /// SESSION_START, raised by each replayed record's world tick (`shared::catch_up`). Not saved.
     replay_clock: Tick,
@@ -475,6 +480,8 @@ impl State {
             replaying: false,
             applying_copy: None,
             applying_kept: false,
+            #[cfg(test)]
+            kept_probe: Vec::new(),
             dict_wait: false,
             replay_clock: Tick::ZERO,
             replay_handovers: 0,
