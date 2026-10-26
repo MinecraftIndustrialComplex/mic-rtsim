@@ -10974,6 +10974,117 @@ mod conflict {
         e.close(true, Duration::from_secs(5)).unwrap();
     }
 
+    /// MZB-760 (RP-210's Left, the grove's half): a crash in direction B, the engine's pages newer
+    /// than Java's journal, with the grove chest's chunk saved ahead of the journal. The stack
+    /// was sent and put in the chest after the save; the chunk holds the nuggets and carries the
+    /// stack's COMMAND_RESULT(APPLIED); the journal lost both. At the restart the outbox sends the
+    /// stack again while the chunk is not loaded, and Java answers NOT_LOADED. The chunk loads
+    /// later and REASSERTs the APPLIED record. The stack was put once: the chest holds the
+    /// tribute once, the stack is booked placed under its op id (the engine never sends the same
+    /// items again under a new one), and the books owe nothing.
+    #[test]
+    fn a_groves_tribute_stack_in_a_chunk_saved_ahead_of_the_journal_is_placed_once() {
+        let (dir, e, mut j) = grove("grove-tribute-chunk-ahead", 3);
+        camp_in(&mut j);
+        let block = j.dict_id(wire::DICT_ITEM, "minecraft:gold_block");
+        j.conflict_obs(&O::ChiefPaid(cb::ChiefPaid {
+            faction: CAMP,
+            slot: 0,
+            generation: 0,
+            flags: cb::PAID_STRAY,
+            player: PLAYER,
+            op: (1 << 63) | 0x6004,
+            items: vec![cb::Item {
+                item: block,
+                count: 7,
+            }],
+        }));
+        j.idle();
+        j.idle();
+        assert_eq!(owed_tribute(&e), (567, 0, 0), "owed, no chest yet");
+
+        // The chest is reported and the first stack written; Minecraft has not applied it yet when
+        // the engine's pages are saved, and the journal is saved at the same point.
+        let chest = [CAMP_AT.0 + 3, 64, CAMP_AT.1 + 2];
+        j.hold_commands = true;
+        chest_report(&mut j, chest);
+        j.idle();
+        j.idle();
+        let sent: BTreeSet<u64> = j.held_ops.iter().copied().collect();
+        assert_eq!(sent.len(), 1, "one stack at a time");
+        assert_eq!(owed_tribute(&e), (567, 1, 1));
+        save(&e, &mut j);
+        let saved = j.world_save();
+        let gen1 = j.nonce;
+        let gt = j.game_time;
+        // Then Minecraft applies it: 64 nuggets go into the chest, and the chest's chunk carries
+        // the stack's APPLIED record. That chunk is written on unload; the journal is not saved
+        // again before the crash.
+        j.hold_commands = false;
+        let carried = j.apply_held_transfers();
+        assert_eq!(j.containers.get(&chest).copied(), Some(64));
+        let _ = j.crash();
+
+        // The restart: the journal from the save, the chunk from after it.
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), saved);
+        j.module_mask = MODULES;
+        j.game_time = gt;
+        j.containers.insert(chest, 64);
+        assert_eq!(e.conflict_restore_check(), (None, false));
+        assert_eq!(owed_tribute(&e), (567, 1, 1), "the pages hold it in flight");
+        // The outbox sends it again at once, while the chest's chunk is not loaded.
+        j.unloaded_transfers = true;
+        for _ in 0..4 {
+            j.idle();
+        }
+        assert_eq!(tribute_ops(&j), sent, "the stack sent again under its op id");
+        assert_eq!(
+            j.containers.get(&chest).copied(),
+            Some(64),
+            "nothing put while the chunk is not loaded"
+        );
+        assert_eq!(
+            owed_tribute(&e),
+            (567, 1, 1),
+            "NOT_LOADED: still in flight under its op id, its goods not back in the stock"
+        );
+
+        // The chunk loads: its carried record comes back as a copy of the first session's. The
+        // camp comes in and the plugin's next chest scan reports the chest in it.
+        j.unloaded_transfers = false;
+        for r in &carried {
+            j.reassert(gen1, r);
+        }
+        j.idle();
+        j.idle();
+        assert_eq!(
+            owed_tribute(&e),
+            (503, 0, 1),
+            "the carried APPLIED books the stack placed, once"
+        );
+        camp_in(&mut j);
+        chest_report(&mut j, chest);
+        for _ in 0..40 {
+            j.idle();
+            if owed_tribute(&e).0 == 0 && owed_tribute(&e).1 == 0 {
+                break;
+            }
+        }
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        assert_eq!(
+            j.containers.get(&chest).copied(),
+            Some(567),
+            "the tribute is in the chest once"
+        );
+        assert_eq!(
+            owed_tribute(&e),
+            (0, 0, 9),
+            "every stack of the 567 nuggets sent once: 8 full stacks and one of 55"
+        );
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
     /// M9 (MZB-446, review P3-3): HAVEN_CHEST is journaled, at 0x0817 (0x0092 is retired). A payment
     /// and the chest named after the last save are in Java's journal when the server dies: the
     /// replay brings both back, so the chest the session knew is known again, and once the camp
