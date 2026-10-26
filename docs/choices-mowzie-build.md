@@ -10030,6 +10030,15 @@ MATERIALIZE) to see the audit fail, and removes it.
   - NeoForge's events are in its sources jar, not the NeoForm decompile;
   - zsh's `echo =====` fails.
 
+### M11a build records (MZB-850 to MZB-869)
+
+M11a's implementer appends its records under this heading only (the Rust side).
+
+### M11b build records (MZB-870 to MZB-889)
+
+M11b's implementer appends its records under this heading only (the Java side). MZB-890 to MZB-899 are left for M11c
+and the reviews' fixes.
+
 ## M12 S9
 
 (none yet)
