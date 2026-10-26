@@ -1815,11 +1815,7 @@ mod dragons {
                 _ => None,
             })
             .collect();
-        assert_eq!(
-            answers,
-            vec![("discard", 1)],
-            "the natural dragon is discarded"
-        );
+        assert_eq!(answers, vec![("discard", 1)], "the natural dragon is discarded");
         assert_eq!(summary(&e).0, 1, "and never joins the sim");
 
         // A save: pages with all of that.
@@ -2224,38 +2220,21 @@ mod dragons {
         let first = adoptions(&j);
         assert_eq!(first.len(), 1, "the lair's own dragon is adopted");
         let (agent, epoch) = (first[0].agent, first[0].epoch);
-        let last = |j: &Java| {
-            *j.far
-                .iter()
-                .rev()
-                .find(|r| r.agent == agent)
-                .expect("a far leg")
-        };
+        let last = |j: &Java| *j.far.iter().rev().find(|r| r.agent == agent).expect("a far leg");
         let body = last(&j);
-        assert_eq!(
-            body.state,
-            FarState::Body,
-            "an adopted dragon is a body in the game"
-        );
+        assert_eq!(body.state, FarState::Body, "an adopted dragon is a body in the game");
         assert_eq!(body.kind, FAR_KIND_DRAGON);
         assert_eq!(
-            j.cmd_dict
-                .get(&(wire::DICT_BODY, body.body))
-                .map(String::as_str),
+            j.cmd_dict.get(&(wire::DICT_BODY, body.body)).map(String::as_str),
             Some("iceandfire:fire_dragon"),
             "its species in the engine's dictionary"
         );
         assert_eq!(
-            j.cmd_dict
-                .get(&(wire::DICT_DIMENSION, body.dimension))
-                .map(String::as_str),
+            j.cmd_dict.get(&(wire::DICT_DIMENSION, body.dimension)).map(String::as_str),
             Some(OVERWORLD)
         );
         assert!((1..=5).contains(&body.stage));
-        assert_eq!(
-            body.age_days, 110,
-            "its age in whole days, as the body reported it (DH-7)"
-        );
+        assert_eq!(body.age_days, 110, "its age in whole days, as the body reported it (DH-7)");
 
         // Captured, it is abstract again: at its lair, or on a leg in game time.
         let seen = j.far.len();
@@ -2272,11 +2251,7 @@ mod dragons {
             j.game_time
         );
         if after.state == FarState::Roost {
-            assert_eq!(
-                (after.x0, after.z0),
-                (HOME.0, HOME.2),
-                "it rests at its lair"
-            );
+            assert_eq!((after.x0, after.z0), (HOME.0, HOME.2), "it rests at its lair");
         }
 
         // Quiet steps send nothing.
@@ -2475,11 +2450,7 @@ mod dragons {
         let (unknown, left, cap) = e.with_dragons(|d, _| {
             let l = d.lair_of_key(LAIR).expect("found");
             let lair = &d.lairs[l as usize];
-            (
-                lair.found_unknown,
-                lair.due.0 - d.now().0,
-                d.tun.renewal().cap_ticks(),
-            )
+            (lair.found_unknown, lair.due.0 - d.now().0, d.tun.renewal().cap_ticks())
         });
         assert!(unknown && cap - left <= 4, "{left} against the cap {cap}");
         j.dragon_obs(&untagged((0xD1, 0x1), SpawnKind::Structure, LAIR, dim));
@@ -2487,16 +2458,8 @@ mod dragons {
         j.idle();
         let first = adoptions(&j);
         assert_eq!(first.len(), 1, "the lair's own dragon is adopted");
-        let home = j
-            .sites
-            .row(SiteKind::Lair, LAIR)
-            .expect("the lair's row")
-            .clone();
-        assert_eq!(
-            (home.count, home.flags, home.p),
-            (1, 0, 0.0),
-            "home, no pressure"
-        );
+        let home = j.sites.row(SiteKind::Lair, LAIR).expect("the lair's row").clone();
+        assert_eq!((home.count, home.flags, home.p), (1, 0, 0.0), "home, no pressure");
 
         j.dragon_obs(&O::Died(db::Died {
             agent: first[0].agent,
@@ -2509,31 +2472,17 @@ mod dragons {
         j.idle();
         j.idle();
         assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
-        let row = j
-            .sites
-            .row(SiteKind::Lair, LAIR)
-            .expect("the lair's row")
-            .clone();
+        let row = j.sites.row(SiteKind::Lair, LAIR).expect("the lair's row").clone();
         let waiting = state_flags::SHORT | state_flags::EMPTY | state_flags::WAITING;
         assert_eq!((row.count, row.flags), (0, waiting), "{row:?}");
         assert!((row.p - 1.0).abs() < 1e-3, "a player's kill: {row:?}");
         let (left, fresh) = e.with_dragons(|d, _| {
             let l = d.lair_of_key(LAIR).expect("found");
             let r = d.tun.renewal();
-            (
-                d.lairs[l as usize].due.0 - d.now().0,
-                r.delay_ticks(Pressure::default(), 0),
-            )
+            (d.lairs[l as usize].due.0 - d.now().0, r.delay_ticks(Pressure::default(), 0))
         });
-        assert!(
-            row.wait_left > fresh,
-            "longer than a fresh lair's {fresh}: {row:?}"
-        );
-        assert!(
-            row.wait_left.abs_diff(left) <= 200,
-            "{} against {left}",
-            row.wait_left
-        );
+        assert!(row.wait_left > fresh, "longer than a fresh lair's {fresh}: {row:?}");
+        assert!(row.wait_left.abs_diff(left) <= 200, "{} against {left}", row.wait_left);
 
         // The reinstall guard's reset: a new engine that knows nothing, the world's ledger kept.
         let left_at = j.game_time;
@@ -2559,28 +2508,14 @@ mod dragons {
             let lair = &d.lairs[l as usize];
             let h = d.tun.renewal().half_life_days;
             let day = (d.now().0 / 24_000) as u32;
-            (
-                lair.found_unknown,
-                lair.due.0 - d.now().0,
-                lair.pressure.now(day, h),
-                h,
-            )
+            (lair.found_unknown, lair.due.0 - d.now().0, lair.pressure.now(day, h), h)
         });
         assert!(!unknown, "the row is its history");
         let want = row.wait_left - gone;
-        assert!(
-            now_left.abs_diff(want) <= 400,
-            "the wait left: {now_left} against {want}"
-        );
+        assert!(now_left.abs_diff(want) <= 400, "the wait left: {now_left} against {want}");
         let aged = (-3.0 / h).exp2();
-        assert!(
-            (p - aged).abs() < 0.01,
-            "the pressure aged three days: {p} against {aged}"
-        );
-        let again = j
-            .sites
-            .row(SiteKind::Lair, LAIR)
-            .expect("the new engine's row");
+        assert!((p - aged).abs() < 0.01, "the pressure aged three days: {p} against {aged}");
+        let again = j.sites.row(SiteKind::Lair, LAIR).expect("the new engine's row");
         assert_eq!(again.flags, waiting);
         assert!(again.wait_left.abs_diff(want) <= 400, "{again:?}");
         let (s, _, _) = e.dragon_stats();
@@ -4426,13 +4361,7 @@ mod herds {
     /// §9.4 test 2: the epoch of a group decided after the pages and answered in the journal is
     /// not decided again after a crash. Returns (the old epoch, the next session's first).
     fn the_epoch_after_a_crash(name: &str, group: Group) -> (u32, u32) {
-        let old = the_old_session(
-            name,
-            Script {
-                group,
-                ..Script::QUIET
-            },
-        );
+        let old = the_old_session(name, Script { group, ..Script::QUIET });
         let before = old.group.as_ref().expect("a group").epoch;
         let (e, mut j) = next_session(&old, ONE_HAND_OVER, true);
         replay_quietly(&e, &mut j);
@@ -4494,13 +4423,12 @@ mod herds {
                 "only the shorn sheep is shorn"
             );
         }
-        let lasts: std::collections::BTreeSet<u64> =
-            g.members.iter().map(|b| seen[&b.member].last.0).collect();
-        assert_eq!(
-            lasts.len(),
-            1,
-            "every member captured at one time: {lasts:?}"
-        );
+        let lasts: std::collections::BTreeSet<u64> = g
+            .members
+            .iter()
+            .map(|b| seen[&b.member].last.0)
+            .collect();
+        assert_eq!(lasts.len(), 1, "every member captured at one time: {lasts:?}");
         drop(j);
         e.close(true, Duration::from_secs(5)).unwrap();
     }
@@ -5343,9 +5271,9 @@ mod conflict {
         // home. With every member placed the director has no body to send, only the walk-in's empty
         // fight record (MZB-461, MZB-700).
         advance_until(&mut j, 1_000, 6 * DAY, "a war band at the base", |j| {
-            cmds(j).any(
-                |c| matches!(c, C::Steer(s) if s.flags & cb::STEER_ATTACK != 0 && s.arrive == 0),
-            )
+            cmds(j).any(|c| {
+                matches!(c, C::Steer(s) if s.flags & cb::STEER_ATTACK != 0 && s.arrive == 0)
+            })
         });
         let raid = cmds(&j)
             .find_map(|c| match c {
@@ -5417,11 +5345,7 @@ mod conflict {
                 _ => None,
             })
             .collect();
-        assert_eq!(
-            walk_ins.len(),
-            1,
-            "the walk-in's empty fight record: {walk_ins:?}"
-        );
+        assert_eq!(walk_ins.len(), 1, "the walk-in's empty fight record: {walk_ins:?}");
         assert!(walk_ins[0].epoch == inv.epoch && walk_ins[0].arc_radius > 0);
         assert!(
             waves[0].wave >= 1 && waves[0].epoch == inv.epoch,
@@ -7096,10 +7020,7 @@ mod conflict {
             "the carry binds under a tenth of 1,280: {}",
             with.carry
         );
-        assert_eq!(
-            with.told as u64, with.robberies,
-            "one TRAIN_ROBBED per robbery"
-        );
+        assert_eq!(with.told as u64, with.robberies, "one TRAIN_ROBBED per robbery");
         assert_eq!(
             with.stolen,
             with.carry * with.robberies as i64,
@@ -7117,13 +7038,7 @@ mod conflict {
         let bare = lurk_and_trains("conflict-train-robbed-bare", false);
         assert_eq!(bare.passes, TRAINS, "the passes are counted all the same");
         assert_eq!(
-            (
-                bare.robberies,
-                bare.told,
-                bare.stolen,
-                bare.cooled,
-                bare.items
-            ),
+            (bare.robberies, bare.told, bare.stolen, bare.cooled, bare.items),
             (0, 0, 0, 0, 0),
             "with no industry module a hit finds no train to rob"
         );
@@ -8914,10 +8829,7 @@ mod conflict {
         advance_until(&mut j, 100, 3 * DAY, "the raid out and in view", |j| {
             party(&j.e, p) == Some((Phase::Out, true))
         });
-        assert!(
-            !marches(&j, p).is_empty(),
-            "the live session sent its march"
-        );
+        assert!(!marches(&j, p).is_empty(), "the live session sent its march");
         save(&e, &mut j);
         let rev = e.with_conflict(|c, _| c.parties[p].march_rev);
         fillers(&mut j, 4_000);
@@ -8932,11 +8844,7 @@ mod conflict {
 
         let (e, j, behind) = reopen_watching(&dir, saved, gt, wire::MIN_CAPACITY);
         assert!(behind >= 3, "the replay took several hand-overs: {behind}");
-        assert_eq!(
-            books(&e, p).0,
-            n - lost,
-            "the replay counts each death once"
-        );
+        assert_eq!(books(&e, p).0, n - lost, "the replay counts each death once");
         let got = marches(&j, p);
         assert_eq!(got.len(), 1, "one record for the party: {got:?}");
         let m = &got[0];
@@ -9003,11 +8911,7 @@ mod conflict {
         let (alive, _, embodied, ..) = books(&e, p);
         assert_eq!(alive, home - 1, "the replay counts the casualty once");
         assert!(!embodied, "abstract at the replay's end");
-        assert_eq!(
-            party(&e, p).map(|x| x.0),
-            Some(Phase::Home),
-            "still walking home"
-        );
+        assert_eq!(party(&e, p).map(|x| x.0), Some(Phase::Home), "still walking home");
         let got = marches(&j, p);
         assert_eq!(got.len(), 1, "one record at the session start: {got:?}");
         let m = &got[0];
@@ -9045,19 +8949,13 @@ mod conflict {
         on_step(&e, p, Step::Invasion);
         let within_cap = |e: &Engine, what: &str| {
             let (pool, away, cap) = pool_away_cap(e);
-            assert!(
-                pool + away <= cap + 1e-9,
-                "{what}: pool {pool}, {away} away, cap {cap}"
-            );
+            assert!(pool + away <= cap + 1e-9, "{what}: pool {pool}, {away} away, cap {cap}");
         };
         within_cap(&e, "ordered");
         advance_until(&mut j, 20, 3 * DAY, "the muster's end", |j| {
             party(&j.e, p).is_some_and(|x| x.0 == Phase::Out)
         });
-        assert!(
-            !marches(&j, p).is_empty(),
-            "the muster's end sent its record"
-        );
+        assert!(!marches(&j, p).is_empty(), "the muster's end sent its record");
         let (sent, rev) = (
             marches(&j, p).len(),
             e.with_conflict(|c, _| c.parties[p].march_rev),
@@ -9087,11 +8985,7 @@ mod conflict {
         advance_until(&mut j, 100, 6 * DAY, "the invasion at its target", |j| {
             within_cap(&j.e, "on the road");
             if party(&j.e, p).is_some_and(|x| x.0 == Phase::Out) {
-                assert_eq!(
-                    marches(j, p).len(),
-                    sent,
-                    "no record while the road goes on"
-                );
+                assert_eq!(marches(j, p).len(), sent, "no record while the road goes on");
                 assert_eq!(j.e.with_conflict(|c, _| c.parties[p].march_rev), rev);
                 false
             } else {
@@ -9110,17 +9004,11 @@ mod conflict {
         );
         // The survivors come home, the pool refills, and a raid goes: still within the cap.
         let mut raid = None;
-        advance_until(
-            &mut j,
-            100,
-            8 * DAY,
-            "a raid ordered from the refilled pool",
-            |j| {
-                within_cap(&j.e, "after the arrival");
-                raid = raid.or_else(|| order_raid(&j.e));
-                raid.is_some()
-            },
-        );
+        advance_until(&mut j, 100, 8 * DAY, "a raid ordered from the refilled pool", |j| {
+            within_cap(&j.e, "after the arrival");
+            raid = raid.or_else(|| order_raid(&j.e));
+            raid.is_some()
+        });
         within_cap(&e, "the raid ordered");
         let end = j.game_time + DAY;
         advance_until(&mut j, 100, 2 * DAY, "a day of the raid out", |j| {
@@ -12820,10 +12708,7 @@ mod conflict {
                 (k, kind, c)
             })
             .collect();
-        assert!(
-            conflict.next().is_none(),
-            "each decoded command on the wire"
-        );
+        assert!(conflict.next().is_none(), "each decoded command on the wire");
         out
     }
 
@@ -12873,9 +12758,9 @@ mod conflict {
                 order_fillers(&j.e, fill);
             }
             j.flush();
-            let found = on_wire(j)[from..]
-                .iter()
-                .position(|(_, _, c)| matches!(c, Some(C::ChiefBody(b)) if b.agent == agent));
+            let found = on_wire(j)[from..].iter().position(
+                |(_, _, c)| matches!(c, Some(C::ChiefBody(b)) if b.agent == agent),
+            );
             if let Some(n) = found {
                 let i = from + n;
                 let k = j.commands[i].0;
@@ -12894,17 +12779,12 @@ mod conflict {
     /// epoch, BAND_CHIEF, and the chief's own stack last. The command buffers they came in.
     fn assert_pair(j: &Java, i: usize, agent: u64, traded: &[(u64, u64)]) -> (u64, u64) {
         let w = on_wire(j);
-        let umvuthi = j
-            .java_id(wire::DICT_BODY, UMVUTHI)
-            .expect("Java names the Umvuthi");
+        let umvuthi = j.java_id(wire::DICT_BODY, UMVUTHI).expect("Java names the Umvuthi");
         let (k, kind, Some(C::ChiefBody(b))) = w[i] else {
             panic!("not a CHIEF_BODY: {:?}", w[i]);
         };
         assert_eq!(kind, cb::CHIEF_BODY);
-        assert_eq!(
-            (b.faction, b.agent, b.health, b.flags),
-            (CAMP, agent, 0.0, 0)
-        );
+        assert_eq!((b.faction, b.agent, b.health, b.flags), (CAMP, agent, 0.0, 0));
         assert_eq!(b.traded, traded, "the camp's memory");
         let Some(&(next, kind, Some(C::Materialize(m)))) = w.get(i + 1) else {
             panic!(
@@ -12989,9 +12869,7 @@ mod conflict {
             home.0 as i64 - c.now().0 as i64
         });
         let end = j.game_time + left - 300;
-        advance_until(j, 100, left, "300 ticks short of home", |j| {
-            j.game_time >= end
-        });
+        advance_until(j, 100, left, "300 ticks short of home", |j| j.game_time >= end);
         advance_until(j, 50, 1_000, "home, followed", |j| {
             if party(&j.e, p).is_none() {
                 return true;
@@ -13061,16 +12939,9 @@ mod conflict {
             .take_while(|c| c.0 == k)
             .filter(|c| c.1 == cb::TRAIN_ROBBED)
             .count();
-        assert_eq!(
-            ahead, fill,
-            "the fillers fill buffer {k} ahead of the CHIEF_BODY"
-        );
+        assert_eq!(ahead, fill, "the fillers fill buffer {k} ahead of the CHIEF_BODY");
         assert!(
-            w[..i]
-                .iter()
-                .rev()
-                .take_while(|c| c.0 == k)
-                .all(|c| c.1 == cb::TRAIN_ROBBED),
+            w[..i].iter().rev().take_while(|c| c.0 == k).all(|c| c.1 == cb::TRAIN_ROBBED),
             "nothing else in buffer {k}"
         );
         assert!(more, "buffer {k} goes with CMD_FLAG_MORE");
@@ -13093,11 +12964,7 @@ mod conflict {
         j.conflict_flush();
         j.idle();
         let (at, r, n) = chief_line_on_wire(&j, mark).expect("the chief's line at home");
-        assert_eq!(
-            r.lines[n].action,
-            cb::ACTION_SPAWN,
-            "an unseen chief spawns"
-        );
+        assert_eq!(r.lines[n].action, cb::ACTION_SPAWN, "an unseen chief spawns");
         assert_eq!(r.lines[n].generation, generation);
         assert_home_body(&j, at, r.epoch, &[]);
         assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
@@ -13126,11 +12993,7 @@ mod conflict {
         j.conflict_obs(&stray);
         j.idle();
         assert_eq!(owed_tribute(&e).0, 14, "9 and 5 nuggets, each once");
-        assert_eq!(
-            traded(&e),
-            vec![PLAYER],
-            "the puppet's payer, not the stray's"
-        );
+        assert_eq!(traded(&e), vec![PLAYER], "the puppet's payer, not the stray's");
         leave(&mut j, p);
 
         // The server dies with no save since the band was unmet.
@@ -13177,16 +13040,8 @@ mod conflict {
         follow_home(&mut j, p);
         let (at, r, n) = chief_line_on_wire(&j, mark).expect("the chief's line at home");
         let l = r.lines[n];
-        assert_eq!(
-            l.action,
-            cb::ACTION_HAND_BACK,
-            "the chief comes home by its puppet"
-        );
-        assert_eq!(
-            (l.a, l.generation),
-            (agent, generation),
-            "its band, its generation"
-        );
+        assert_eq!(l.action, cb::ACTION_HAND_BACK, "the chief comes home by its puppet");
+        assert_eq!((l.a, l.generation), (agent, generation), "its band, its generation");
         assert_ne!(l.flags & cb::LINE_CHIEF, 0, "LINE_CHIEF");
         assert_home_body(&j, at, r.epoch, &payers);
         camp_until(&mut j, "the chief on its throne", |j| {
@@ -13211,9 +13066,7 @@ mod conflict {
     /// holds `generation`).
     fn death_books(e: &Engine, generation: u32) -> (u64, u64, bool, bool) {
         e.with_conflict(|c, _| {
-            let camp = c
-                .camp(c.faction_of_key(CAMP).expect("the camp"))
-                .expect("a ledger");
+            let camp = c.camp(c.faction_of_key(CAMP).expect("the camp")).expect("a ledger");
             (
                 c.stats.chiefs_killed,
                 c.stats.renewal_losses,
@@ -13261,11 +13114,7 @@ mod conflict {
                     .map(|x| (x.agent, x.epoch, x.generation))
             })
         };
-        assert_eq!(
-            held(&e),
-            Some((agent, epoch, generation)),
-            "the end holds the chief"
-        );
+        assert_eq!(held(&e), Some((agent, epoch, generation)), "the end holds the chief");
         assert_eq!(
             e.with_conflict(|c, _| {
                 c.camp(c.faction_of_key(CAMP).unwrap())
@@ -13307,11 +13156,7 @@ mod conflict {
         let (first, second, stages) = if death_first {
             (death, stale, [dead, dead, dead, dead])
         } else {
-            (
-                stale,
-                death,
-                [(falls, losses, false, true), lost, lost, dead],
-            )
+            (stale, death, [(falls, losses, false, true), lost, lost, dead])
         };
         let restart = |j: Java| {
             let gt = j.game_time;
