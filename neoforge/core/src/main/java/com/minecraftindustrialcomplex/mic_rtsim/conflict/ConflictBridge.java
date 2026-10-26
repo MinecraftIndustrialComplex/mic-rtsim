@@ -643,6 +643,8 @@ public final class ConflictBridge implements SessionPlugin {
      * (MZB-824); chief puppets called home (MZB-822).
      */
     public long chiefMergesMissed, chiefDeathsAfterEnd, chiefsCalledHome;
+    /** M11's (this session): a chief puppet's summons adopted as the slot's extras, and ones whose join failed (MZB-816). */
+    public long summonsAdopted, summonsRefused;
     /** The last DEMAND_SETTLED's outcome (GameTests). */
     public int lastSettled;
 
@@ -714,7 +716,7 @@ public final class ConflictBridge implements SessionPlugin {
         marchRecords = marchStale = marchEnds = trimmed = walkIns = clamps = unbookedHomeDeaths = 0;
         repairs = repairsSkipped = 0;
         chiefBodiesUnmatched = travellerErrors = knockbacksZeroed = portalsCancelled = deathLootLost = 0;
-        chiefMergesMissed = chiefDeathsAfterEnd = chiefsCalledHome = 0;
+        chiefMergesMissed = chiefDeathsAfterEnd = chiefsCalledHome = summonsAdopted = summonsRefused = 0;
         lastSettled = 0;
         owedHunts.clear();
         clearLurks();
@@ -3756,6 +3758,47 @@ public final class ConflictBridge implements SessionPlugin {
                 if (sl.chief && sl.alive && sl.pendingDeath != null && sl.body.equals(body))
                     return sl;
         return null;
+    }
+
+    /**
+     * A chief puppet's summons (M11, MZB-816): the summoner is a live chief puppet of a party, so the warriors and cranes it calls
+     * are puppets of that party's slot, in the way of a raptor's followers (MZB-428): tagged with the party's AgentTag, held,
+     * and listed in the slot's extras and in {@link #extraOf} before the join, which {@link #admit} lets through. They go with the
+     * slot's despawn or the party's end, are never saved, and book nothing when they die. Each adoption first prunes the extras
+     * that are dead or removed, so a long Invasion does not keep every one it ever summoned. False for any other summoner (a
+     * grove's own Umvuthi at its throne: its summons stay strays), and one lookup in the map of live puppets is all it costs (D1).
+     */
+    public boolean adoptSummons(Entity summoner, Mob summons) {
+        if (byUuid.isEmpty())
+            return false;
+        Slot sl = byUuid.get(summoner.getUUID());
+        if (sl == null || sl.entity != summoner || !sl.alive || !sl.chief || sl.traveller == null || sl.pendingDeath != null
+                || summoner.isRemoved() || !summoner.isAlive())
+            return false;
+        Party p = sl.stack.party;
+        List<Mob> next = new ArrayList<>(sl.extras.size() + 1);
+        for (Mob x : sl.extras) {
+            if (x.isRemoved() || !x.isAlive())
+                extraOf.remove(x.getUUID(), sl);
+            else
+                next.add(x);
+        }
+        summons.setData(RtsimAttachments.AGENT, new AgentTag(p.agent, p.epoch));
+        ConflictBodies.hold(summons);
+        next.add(summons);
+        sl.extras = next;
+        extraOf.put(summons.getUUID(), sl);
+        summonsAdopted++;
+        return true;
+    }
+
+    /** The join of an adopted summons failed (another mod cancelled it): it is no extra, and no longer tagged. */
+    public void dropSummons(Mob summons) {
+        Slot sl = extraOf.remove(summons.getUUID());
+        if (sl != null)
+            sl.extras = sl.extras.stream().filter(x -> x != summons).collect(java.util.stream.Collectors.toCollection(ArrayList::new));
+        summons.removeData(RtsimAttachments.AGENT);
+        summonsRefused++;
     }
 
     /** A party's live puppet of {@code body}, for a hand-back; null with none. */
