@@ -1259,4 +1259,315 @@ public final class AloftMowzieGameTests {
                 })
                 .thenSucceed();
     }
+
+    // ---- 23e: killed aloft (MZB-817) -------------------------------------------------------------------
+
+    /**
+     * An Umvuthi killed aloft falls, journals once and drops once (test 23e; MZB-817). A puppet floats 12 blocks over the floor with
+     * its band, and a masked player stands 20 blocks off; beside it, on another lane, an untagged Umvuthi stands on the floor with its own
+     * player (the control). Both are killed by their player in one tick.
+     * <ol>
+     * <li>The jar posts two {@code LivingDeathEvent}s for each body (counted, the same for both).</li>
+     * <li>From the puppet's death its gravity is on and it falls to the floor.</li>
+     * <li>One CHIEF_KILLED names the player (by a player), and {@code chiefsKilled} rises by one; one body is dying until the animation ends.</li>
+     * <li>At the animation's end one Sol Visage lies where it fell, the same number of ticks after the death as the control's;
+     * {@code deathLootLost} did not rise; nothing is dying.</li>
+     * <li>No Umvuthi with its gravity off is left in the lane, and its chunks, let go, saved and forced again, hold no Umvuthi.</li>
+     * </ol>
+     * Fails without {@code died} (the body hangs aloft through its death), and without the Dying list (the drop carries no record).
+     */
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "aloft_killed", skyAccess = true)
+    public static void anUmvuthiKilledAloftFallsAndDropsOnce(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 4000);
+        String test = "anUmvuthiKilledAloftFallsAndDropsOnce";
+        Far far = new Far(helper, test);
+        ServerLevel level = far.level;
+        Lane lane = new Lane(far, 0, 2), plain = new Lane(far, 1, 2);
+        long agent = ConflictKit.newAgent();
+        long faction = ConflictKit.newFaction();
+        int start = 8;
+        EntityUmvuthi[] puppet = new EntityUmvuthi[1], control = new EntityUmvuthi[1];
+        ServerPlayer[] player = new ServerPlayer[2];
+        int[] deaths = new int[2];
+        long[] diedAt = new long[2], dropAt = new long[2];
+        Vec3[] fell = new Vec3[2];
+        double[] height = new double[2];
+        long[] before = new long[3];
+        Runnable[] off = new Runnable[1];
+
+        MowzieKit.seq(helper)
+                .thenExecute(() -> {
+                    lane.force();
+                    plain.force();
+                })
+                .thenWaitUntil(waits.chunks(far.ready()))
+                .thenExecute(() -> {
+                    lane.floor();
+                    plain.floor();
+                    bandAt(helper, faction, agent, lane.x0 + start, lane.top + 1, lane.z, 0f, List.of(), 1, true);
+                    player[0] = MowzieKit.player(helper, lane.at(start + 20), "mowzie-aloft-killer");
+                    MowzieKit.mask(player[0]);
+                    control[0] = MowzieKit.umvuthi(level, plain.at(start));
+                    player[1] = MowzieKit.player(helper, plain.at(start + 20), "mowzie-aloft-killer-control");
+                    MowzieKit.mask(player[1]);
+                })
+                .thenWaitUntil(waits.logic(() -> puppet[0] = puppet(agent)))
+                .thenExecute(() -> {
+                    EntityUmvuthi u = puppet[0];
+                    check("it floats", u.isNoGravity());
+                    // 12 blocks over the floor: the step brings it down at 0.05 a tick, so it is killed the tick after
+                    u.setPos(u.getX(), lane.top + 13.0, u.getZ());
+                    off[0] = listen(helper, EventPriority.NORMAL, LivingDeathEvent.class, e -> {
+                        if (e.getEntity() == puppet[0])
+                            deaths[0]++;
+                        else if (e.getEntity() == control[0])
+                            deaths[1]++;
+                    });
+                })
+                .thenIdle(1)
+                .thenExecute(() -> {
+                    EntityUmvuthi u = puppet[0];
+                    height[0] = u.getY() - lane.top;
+                    check("it is about 12 blocks over the floor (" + height[0] + ")", height[0] > 11.5 && height[0] < 13.1);
+                    before[0] = ConflictKit.bridge().chiefsKilled;
+                    before[1] = ConflictKit.deathLootLost();
+                    fell[0] = u.position();
+                    fell[1] = control[0].position();
+                    long now = level.getGameTime();
+                    diedAt[0] = diedAt[1] = now;
+                    u.setLastHurtByPlayer(player[0]);
+                    control[0].setLastHurtByPlayer(player[1]);
+                    MowzieKit.kill(u, level.damageSources().playerAttack(player[0]));
+                    MowzieKit.kill(control[0], level.damageSources().playerAttack(player[1]));
+                    check("its gravity is on from its death (" + u.isNoGravity() + ")", !u.isNoGravity());
+                    MowzieKit.everyTick(helper, () -> {
+                        long t = level.getGameTime();
+                        for (int i = 0; i < 2; i++)
+                            if (dropAt[i] == 0 && visagesNear(level, fell[i], 6) > 0)
+                                dropAt[i] = t;
+                    });
+                })
+                .thenIdle(40)
+                .thenExecute(() -> {
+                    EntityUmvuthi u = puppet[0];
+                    check("it has fallen (" + (u.getY() - lane.top) + " over the floor)", u.getY() - lane.top < 2.0 || u.isRemoved());
+                    check("on to the floor", u.onGround() || u.isRemoved());
+                    List<ScriptedEngine.Received> killed = ConflictKit.about(ConflictRecords.CHIEF_KILLED, agent);
+                    check("one CHIEF_KILLED is journaled (" + killed.size() + ")", killed.size() == 1);
+                    check("by a player", killed.get(0).aux() == ConflictRecords.BY_PLAYER);
+                    check("naming the player", player[0].getUUID().equals(ConflictKit.uuidAt(killed.get(0), ConflictRecords.ChiefKilled.KILLER_MOST)));
+                    check("chiefsKilled rose by one (" + before[0] + " to " + ConflictKit.bridge().chiefsKilled + ")",
+                            ConflictKit.bridge().chiefsKilled == before[0] + 1);
+                    check("its body is waiting for its animation's end (" + ConflictKit.bridge().dyingBodies() + ")", ConflictKit.bridge().dyingBodies() == 1);
+                    check("no Sol Visage yet (" + visagesNear(level, fell[0], 6) + " and " + visagesNear(level, fell[1], 6) + ")",
+                            visagesNear(level, fell[0], 6) == 0 && visagesNear(level, fell[1], 6) == 0);
+                })
+                .thenWaitUntil(waits.logic(() -> check("both drops are on the floor (" + dropAt[0] + " and " + dropAt[1] + ")", dropAt[0] != 0 && dropAt[1] != 0)))
+                .thenExecute(() -> {
+                    off[0].run();
+                    check("two LivingDeathEvents for the puppet (" + deaths[0] + ")", deaths[0] == 2);
+                    check("and for the control (" + deaths[1] + ")", deaths[1] == deaths[0]);
+                    long mine = dropAt[0] - diedAt[0], theirs = dropAt[1] - diedAt[1];
+                    check("the puppet's drop came as many ticks after its death as the control's (" + mine + " and " + theirs + ")", Math.abs(mine - theirs) <= 1);
+                    check("one Sol Visage where the puppet fell (" + visagesNear(level, fell[0], 6) + ")", visagesNear(level, fell[0], 6) == 1);
+                    check("one where the control fell (" + visagesNear(level, fell[1], 6) + ")", visagesNear(level, fell[1], 6) == 1);
+                    check("no loot record was lost (" + before[1] + " to " + ConflictKit.deathLootLost() + ")", ConflictKit.deathLootLost() == before[1]);
+                    check("nothing is dying (" + ConflictKit.bridge().dyingBodies() + ")", ConflictKit.bridge().dyingBodies() == 0);
+                    check("no second CHIEF_KILLED (" + ConflictKit.about(ConflictRecords.CHIEF_KILLED, agent).size() + ")",
+                            ConflictKit.about(ConflictRecords.CHIEF_KILLED, agent).size() == 1);
+                    int floating = 0;
+                    for (EntityUmvuthi u : level.getEntitiesOfClass(EntityUmvuthi.class, lane.area().minmax(plain.area())))
+                        if (u.isNoGravity())
+                            floating++;
+                    check("no Umvuthi floats in the level (" + floating + ")", floating == 0);
+                    record(test, "killed aloft", "fell from " + String.format("%.1f", height[0]) + ", dropped " + (dropAt[0] - diedAt[0]) + " ticks after its death (the control's "
+                            + (dropAt[1] - diedAt[1]) + "), " + deaths[0] + " death events");
+                    recallAll(agent);
+                    far.releaseRect(lane.cx0, lane.cz, lane.cx1, lane.cz);
+                })
+                .thenWaitUntil(waits.chunks(() -> {
+                    far.unloaded(lane.cx0, lane.cz).run();
+                    far.unloaded(lane.cx1, lane.cz).run();
+                }))
+                .thenExecute(() -> lane.force())
+                .thenWaitUntil(waits.chunks(far.ready()))
+                .thenExecute(() -> {
+                    check("the chunks read back hold no Umvuthi (" + level.getEntitiesOfClass(EntityUmvuthi.class, lane.area()).size() + ")",
+                            level.getEntitiesOfClass(EntityUmvuthi.class, lane.area()).isEmpty());
+                    drop(player);
+                    far.releaseAll();
+                })
+                .thenSucceed();
+    }
+
+    // ---- 35: over water (MZB-812) ---------------------------------------------------------------------
+
+    /**
+     * An aloft puppet crosses water and does not come down in it (test 35; MZB-812). Three lanes, each with a flagged or targeted
+     * puppet.
+     * <ol>
+     * <li>The river (lane A): 20 blocks wide, 3 deep, walled at its sides. The puppet carries the attack flag, with its steer's end 14
+     * blocks past the far bank: it settles once within 32 of the end, which is over the river, and it floats on over the water (its gravity
+     * off the whole way, its foot the floor's + 3, never in the water, never a block of liquid in its box) and sinks only on the far bank.</li>
+     * <li>The lake (lane B): 56 wide, with a 5 by 5 raft of planks 40 blocks out. A player stands on the raft once the puppet is over the lake:
+     * it is the puppet's target in plain view, so it settles, but over water it hovers within 8 blocks of its steer's end, not down in
+     * it: still aloft 300 ticks later, restricted where it floats, never wet.</li>
+     * <li>Killed there (by that player) its body falls into the lake, one CHIEF_KILLED is journaled and one Sol Visage drops.</li>
+     * <li>The control (lane C, no water): the same flag settles it on the floor within 8 blocks of where it first came within 32.</li>
+     * </ol>
+     * Fails without the fluid rule in the landing (the puppet sinks into the river as soon as the flag settles it).
+     */
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "aloft_water", skyAccess = true)
+    public static void anAloftUmvuthiCrossesARiver(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 9000);
+        String test = "anAloftUmvuthiCrossesARiver";
+        Far far = new Far(helper, test);
+        ServerLevel level = far.level;
+        Lane[] lane = {new Lane(far, 0, 6), new Lane(far, 1, 6), new Lane(far, 2, 6)}; // the river; the lake; the control
+        long[] agent = {ConflictKit.newAgent(), ConflictKit.newAgent(), ConflictKit.newAgent()};
+        long faction = ConflictKit.newFaction();
+        int start = 8, end = 74, riverFrom = 40, riverTo = 59, lakeFrom = 24, lakeTo = 79, raftAt = 60;
+        EntityUmvuthi[] puppet = new EntityUmvuthi[3];
+        ServerPlayer[] player = new ServerPlayer[1];
+        // over the river: ticks, ticks with gravity on, ticks wet, ticks with liquid in the box; over the lake: the same
+        int[] over = new int[2], grav = new int[2], wet = new int[2], liquid = new int[2];
+        double[] firstSettle = {Double.NaN, Double.NaN};
+        double[] y0 = new double[1];
+        double[] fell = new double[2];
+        long[] before = new long[1];
+        boolean[] landed = new boolean[3];
+        double[] landedX = new double[3];
+
+        MowzieKit.seq(helper)
+                .thenExecute(() -> {
+                    for (Lane l : lane)
+                        l.force();
+                })
+                .thenWaitUntil(waits.chunks(far.ready()))
+                .thenExecute(() -> {
+                    for (Lane l : lane)
+                        l.floor();
+                    BlockState water = Blocks.WATER.defaultBlockState(), stone = Blocks.STONE.defaultBlockState();
+                    int[][] spans = {{riverFrom, riverTo}, {lakeFrom, lakeTo}};
+                    for (int i = 0; i < 2; i++)
+                        for (int dx = spans[i][0]; dx <= spans[i][1]; dx++)
+                            for (int dz = -8; dz <= 7; dz++)
+                                for (int dy = -2; dy <= 1; dy++) {
+                                    boolean wall = dz == -8 || dz == 7;
+                                    lane[i].set(dx, dy, dz, wall ? stone : dy <= 0 ? water : Blocks.AIR.defaultBlockState());
+                                }
+                    // the raft: planks on the lake's surface
+                    for (int dx = raftAt; dx < raftAt + 5; dx++)
+                        for (int dz = -2; dz <= 2; dz++)
+                            lane[1].set(dx, 0, dz, Blocks.OAK_PLANKS.defaultBlockState());
+                    for (int i = 0; i < 3; i++)
+                        bandAt(helper, faction, agent[i], lane[i].x0 + start, lane[i].top + 1, lane[i].z, 0f, List.of(), 1, true);
+                })
+                .thenWaitUntil(waits.logic(() -> {
+                    for (int i = 0; i < 3; i++)
+                        puppet[i] = puppet(agent[i]);
+                }))
+                .thenExecute(() -> {
+                    MowzieKit.everyTick(helper, () -> {
+                        double xa = puppet[0].getX() - lane[0].x0, xb = puppet[1].getX() - lane[1].x0;
+                        if (xa >= riverFrom + 1 && xa <= riverTo && !puppet[0].isRemoved()) {
+                            over[0]++;
+                            if (!puppet[0].isNoGravity())
+                                grav[0]++;
+                            if (puppet[0].isInWater())
+                                wet[0]++;
+                            if (level.containsAnyLiquid(puppet[0].getBoundingBox()))
+                                liquid[0]++;
+                        }
+                        if (xb >= lakeFrom + 1 && xb <= lakeTo && !puppet[1].isRemoved() && !puppet[1].isDeadOrDying()) {
+                            over[1]++;
+                            if (!puppet[1].isNoGravity())
+                                grav[1]++;
+                            if (puppet[1].isInWater())
+                                wet[1]++;
+                            if (level.containsAnyLiquid(puppet[1].getBoundingBox()))
+                                liquid[1]++;
+                        }
+                        for (int i = 0; i < 3; i++)
+                            if (!landed[i] && !puppet[i].isRemoved() && !puppet[i].isNoGravity()) {
+                                landed[i] = true;
+                                landedX[i] = puppet[i].getX() - lane[i].x0;
+                            }
+                    });
+                    ConflictKit.steer(agent[0], ConflictKit.party(agent[0]).epoch, PACE, lane[0].x0 + end, lane[0].z, 0, true);
+                    ConflictKit.steer(agent[2], ConflictKit.party(agent[2]).epoch, PACE, lane[2].x0 + end, lane[2].z, 0, true);
+                    // the lake's puppet goes for the raft, with no flag
+                    ConflictKit.steer(agent[1], ConflictKit.party(agent[1]).epoch, PACE, lane[1].x0 + raftAt + 2, lane[1].z, 0, false);
+                })
+                .thenWaitUntil(waits.logic(() -> check("the lake's puppet is over the water (" + (puppet[1].getX() - lane[1].x0) + ")",
+                        puppet[1].getX() - lane[1].x0 >= lakeFrom + 8)))
+                .thenExecute(() -> {
+                    // a player on the raft, in plain view, within its sight
+                    player[0] = MowzieKit.player(helper, new Vec3(lane[1].x0 + raftAt + 2.5, lane[1].top + 1, lane[1].z), "mowzie-aloft-raft");
+                })
+                .thenWaitUntil(waits.logic(() -> check("the river's puppet has crossed and landed (" + landed[0] + ")", landed[0])))
+                .thenExecute(() -> {
+                    check("it floated across: gravity was never on over the river (" + grav[0] + " of " + over[0] + " ticks)", over[0] > 100 && grav[0] == 0);
+                    check("it was never wet (" + wet[0] + ") and its box never held liquid (" + liquid[0] + ")", wet[0] == 0 && liquid[0] == 0);
+                    check("it came down on the far bank (x " + landedX[0] + ")", landedX[0] > riverTo + 0.5);
+                    check("and not by the river's edge (" + landedX[0] + " of " + (riverTo + 1) + ")", landedX[0] <= end);
+                    check("it stands on the floor (" + (puppet[0].getY() - lane[0].top) + " over it)", Math.abs(puppet[0].getY() - (lane[0].top + 1)) < 0.06);
+                    // the control, with no river, was down within 32 of its end: its landing x is about 42 plus the 40 ticks of the sink
+                    check("the control settled where the flag first took it (" + landedX[2] + ")", landedX[2] > 0 && landedX[2] < riverFrom + 12);
+                    check("the river's puppet landed farther on than the control (" + landedX[0] + " and " + landedX[2] + ")", landedX[0] > landedX[2] + 8);
+                })
+                .thenWaitUntil(waits.logic(() -> {
+                    ConflictBridge.Slot sl = chiefSlot(agent[1]);
+                    check("the lake's puppet is hovering (" + UmvuthiAloft.INSTANCE.settled(sl.travelMemo()) + ")", UmvuthiAloft.INSTANCE.settled(sl.travelMemo()));
+                }))
+                .thenExecute(() -> {
+                    EntityUmvuthi u = puppet[1];
+                    double[] t = chiefSlot(agent[1]).stack.target();
+                    double d = Math.hypot(t[0] - u.getX(), t[1] - u.getZ());
+                    check("it hovers within 8 blocks of its end (" + d + ")", d <= 8.0 + 0.2);
+                    check("it is aloft (gravity off)", u.isNoGravity());
+                    check("its target is the player (" + u.getTarget() + ")", u.getTarget() == player[0]);
+                    check("it is restricted where it floats (" + u.getRestrictCenter() + ")", u.getRestrictCenter().equals(u.blockPosition()) && !u.hasRestriction());
+                    y0[0] = u.getY();
+                    check("its foot is the water's + 3 (" + (u.getY() - lane[1].top) + ")", Math.abs(u.getY() - (lane[1].top + 3)) <= 0.06);
+                })
+                .thenIdle(300)
+                .thenExecute(() -> {
+                    EntityUmvuthi u = puppet[1];
+                    check("300 ticks on it is still aloft and in the same place (" + (u.getY() - y0[0]) + ")", u.isNoGravity() && Math.abs(u.getY() - y0[0]) < 0.06);
+                    check("never wet (" + wet[1] + ") and never with liquid in its box (" + liquid[1] + ")", wet[1] == 0 && liquid[1] == 0);
+                    check("and gravity was on for none of its ticks over the lake (" + grav[1] + " of " + over[1] + ")", grav[1] == 0 && over[1] > 100);
+                    before[0] = ConflictKit.bridge().chiefsKilled;
+                    fell[0] = u.getX();
+                    fell[1] = u.getZ();
+                    u.setLastHurtByPlayer(player[0]);
+                    MowzieKit.kill(u, level.damageSources().playerAttack(player[0]));
+                    check("its gravity is on from its death", !u.isNoGravity());
+                })
+                .thenIdle(60)
+                .thenExecute(() -> {
+                    EntityUmvuthi u = puppet[1];
+                    check("its body is down in the lake (in water " + u.isInWater() + ", " + (u.getY() - lane[1].top) + " over the floor)",
+                            u.isInWater() || u.getY() - lane[1].top < 2.0);
+                    List<ScriptedEngine.Received> killed = ConflictKit.about(ConflictRecords.CHIEF_KILLED, agent[1]);
+                    check("one CHIEF_KILLED (" + killed.size() + ")", killed.size() == 1);
+                    check("naming the player", player[0].getUUID().equals(ConflictKit.uuidAt(killed.get(0), ConflictRecords.ChiefKilled.KILLER_MOST)));
+                    check("chiefsKilled rose by one (" + before[0] + " to " + ConflictKit.bridge().chiefsKilled + ")", ConflictKit.bridge().chiefsKilled == before[0] + 1);
+                })
+                .thenWaitUntil(waits.logic(() -> check("one Sol Visage in the lake (" + visagesNear(level, new Vec3(fell[0], lane[1].top, fell[1]), 8) + ")",
+                        visagesNear(level, new Vec3(fell[0], lane[1].top, fell[1]), 8) == 1)))
+                .thenExecute(() -> {
+                    check("nothing is dying (" + ConflictKit.bridge().dyingBodies() + ")", ConflictKit.bridge().dyingBodies() == 0);
+                    check("no traveller step failed (" + ConflictKit.travellerErrors() + ")", ConflictKit.travellerErrors() == 0);
+                    record(test, "water", "crossed " + over[0] + " ticks of river aloft, landed at " + String.format("%.1f", landedX[0]) + " (control " + String.format("%.1f", landedX[2])
+                            + "), hovered over the lake " + over[1] + " ticks, killed there and dropped once");
+                    recallAll(agent);
+                })
+                .thenIdle(30)
+                .thenExecute(() -> {
+                    drop(player);
+                    far.releaseAll();
+                })
+                .thenSucceed();
+    }
 }
