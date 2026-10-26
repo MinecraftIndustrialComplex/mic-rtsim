@@ -388,6 +388,10 @@ struct State {
     /// reset applies them, since they name Java's ids. Cleared by the first record that is not a
     /// DICT (`observe`). Not saved.
     dict_wait: bool,
+    /// The records the dragons, the herds and the conflict kept while switched off are being
+    /// applied (RP-292): the shared clock runs to each one's own tick, below the world's present
+    /// (`shared::floor`). Not saved.
+    applying_kept: bool,
     /// How far the shared clock may run while replaying (§3.6, RP-24): the world's present at
     /// SESSION_START, raised by each replayed record's world tick (`shared::catch_up`). Not saved.
     replay_clock: Tick,
@@ -463,6 +467,7 @@ impl State {
             session_first: 1,
             replaying: false,
             applying_copy: None,
+            applying_kept: false,
             dict_wait: false,
             replay_clock: Tick::ZERO,
             replay_handovers: 0,

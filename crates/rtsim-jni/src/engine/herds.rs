@@ -419,6 +419,7 @@ fn apply_kept(st: &mut State) {
         return;
     }
     let outer = st.applying_copy;
+    st.applying_kept = true;
     for (copy, bytes) in &kept {
         let rec = Rec {
             kind: wire::u16_at(bytes, wire::R_KIND),
@@ -428,6 +429,7 @@ fn apply_kept(st: &mut State) {
         st.applying_copy = *copy;
         apply(st, &rec);
     }
+    st.applying_kept = false;
     st.applying_copy = outer;
     log_info(&format!(
         "the herds applied {} records heard while they were switched off",

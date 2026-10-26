@@ -566,7 +566,7 @@ pub(super) fn run_engine(st: &mut State, t: Tick) {
 }
 
 fn run_engine_at(st: &mut State, t: Tick) {
-    let t = t.max(st.phase1.world.now());
+    let t = t.max(shared::floor(st, st.ships.engine.now()));
     with_infra(st, |s, w, infra| s.run_until(w, infra, t));
     st.phase1.taint();
     take_commands(st);

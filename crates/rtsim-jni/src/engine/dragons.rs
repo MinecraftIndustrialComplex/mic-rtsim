@@ -415,6 +415,7 @@ fn apply_kept(st: &mut State) {
         return;
     }
     let outer = st.applying_copy;
+    st.applying_kept = true;
     for (copy, bytes) in &kept {
         let rec = Rec {
             kind: wire::u16_at(bytes, wire::R_KIND),
@@ -424,6 +425,7 @@ fn apply_kept(st: &mut State) {
         st.applying_copy = *copy;
         apply(st, &rec);
     }
+    st.applying_kept = false;
     st.applying_copy = outer;
     log_info(&format!(
         "the dragons applied {} records heard while they were switched off",
@@ -614,7 +616,7 @@ fn ingest(st: &mut State, o: &Obs, at: Tick) {
     if st.dragons.reset_due && st.dragons.enabled {
         reset(st);
     }
-    let at = at.max(st.dragons.engine.now()).max(st.phase1.world.now());
+    let at = at.max(shared::floor(st, st.dragons.engine.now()));
     // A copy (REASSERT) of an ended session's record is applied by identity, never against a
     // body (docs/replay-gate.md §2.3, §5.7, RP-8, RP-9).
     let copy = st.applying_copy.is_some();
@@ -663,7 +665,7 @@ pub(super) fn run_engine(st: &mut State, t: Tick) {
     if !running(st) || t < st.dragons.engine.now() {
         return;
     }
-    let t = t.max(st.phase1.world.now());
+    let t = t.max(shared::floor(st, st.dragons.engine.now()));
     if super::herds::running(st) && t >= st.herds.engine.now() {
         // The herds are prey (PLAN.md §10.2): their events run in the dragons' time order, and
         // hungry dragons weigh and hunt them (`Dragons::run_until_with_herds`, Y7).

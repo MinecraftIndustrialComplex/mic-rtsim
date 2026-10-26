@@ -336,6 +336,31 @@ pub(super) fn run_to(st: &mut State, at: Tick) {
     }
 }
 
+/// The earliest world tick a module that shares the phase 1 world, whose own present is `own`,
+/// books a record at or runs its events to: `own`, and the world's present, except while the
+/// records the modules kept while switched off are applied (`State::applying_kept`, RP-292).
+///
+/// Those go in at their own ticks (docs/replay-gate.md 9.7: "a record applied while off goes in
+/// at its own tick, never at the frozen clock"). The world ran on while the modules were off,
+/// and a floor at its present would run the whole off window in the first one's catch-up: a
+/// band wiped out in the switch's tick would be booked after its demand's deadline passed and
+/// its envoy went home with its units, and a dragon killed in that tick would die at the
+/// switch-on, its lair empty from then. So the floor is each module's own present, for every
+/// module the catch-up runs (the dragons run inside a herds' record's catch-up, the herds as
+/// their prey inside the conflict's), not only for the one whose record it is.
+///
+/// The cost: from the switch-off to the last kept record, the modules decide at old ticks
+/// against the world as it is now (its markets, knowledge and legs at its present), so what they
+/// read may be newer than the tick they decide at. That is safe: `World::run_until` to a tick
+/// before its present does nothing, so the world never goes back and nothing in it runs twice.
+pub(super) fn floor(st: &State, own: Tick) -> Tick {
+    if st.applying_kept {
+        own
+    } else {
+        own.max(st.phase1.world.now())
+    }
+}
+
 /// Before a phase 1 input or a module's record at its game time: the modules' events up to it
 /// happen first (S13), so the input meets the world they left.
 pub(super) fn catch_up(st: &mut State, rec: &Rec<'_>) {
