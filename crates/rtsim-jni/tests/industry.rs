@@ -2201,6 +2201,166 @@ fn a_station_exchange_whose_trains_save_was_lost_is_applied_again_after_the_repl
     j.e.close(true, Duration::from_secs(5)).unwrap();
 }
 
+/// [`a_station_exchange_whose_trains_save_was_lost_is_applied_again_after_the_replay`] with the
+/// restart's industry off, switched on after the replay (RP-313, the build lead's P2-1 on RP-310
+/// to RP-312). The copy can only be the pages' there: the replay with the module off ignores the
+/// arrivals (U10), so it decides no exchange again. Session 0 writes train 1's exchange X at the
+/// ore coast and crashes before the world applies it, its save holding the arrival. Session 1's
+/// replay decides X again under its op, and its pages are taken at once, inside the replay end's
+/// hand-over before the first drain: they hold X's copy unsent, as a command waiting for a Java
+/// name or a full buffer would. X goes after that drain, and the world applies it at S. The world
+/// saves (J4: its journal with S, train 1's cargo and the op in its ring from the tick before S),
+/// and the engine crashes with no page save past those pages. Session 2 restarts from them with
+/// industry off: the replay brings S, and the off path keeps the IND_CARRIAGE_RESULT for the
+/// switch. Before RP-313 S also took X's copy out of the engine's commands (`unqueue`), so X was
+/// never sent and the switch booked a delivery onto the empty restored train. The control is the
+/// same restart from a copy of the pages and J1 (both of Java's files saved).
+#[test]
+fn a_station_exchange_whose_trains_save_was_lost_is_applied_again_after_a_restart_with_industry_off()
+ {
+    use rtsim_industry::ids::TrainId;
+    use rtsim_kernel::journal::OpId;
+    use std::sync::atomic::Ordering::Acquire;
+    let cfg = IronLine {
+        seed: 11,
+        days: 10,
+        threats: false,
+        control: false,
+        tick_first: true,
+        approach: true,
+    };
+    let dir = tmpdir("ind-exch-j4-off");
+    let mut j = iron_java(&dir, cfg);
+    j.mc_run_until(day(3.0));
+    let through = j.next_obs - 1;
+    j.e.request_save(through);
+    mc_tick_until_durable(&mut j, through);
+    let paged = j.ind_commands.len();
+    let exchanges = |j: &Java, from: usize| -> Vec<(u64, TrainId)> {
+        j.ind_commands[from..]
+            .iter()
+            .filter_map(|c| match &c.2 {
+                Cmd::CarriageDelta(d) => Some((d.op.0, d.train)),
+                _ => None,
+            })
+            .collect()
+    };
+    j.mc_run_until(Tick(72_100));
+    fillers(&mut j, 8_000);
+    // Session 0: X is written, and the world saves before it applies X.
+    while exchanges(&j, paged).is_empty() {
+        assert!(j.mc().t < Tick(72_900), "the exchange at the ore coast");
+        j.mc_tick();
+    }
+    let before = exchanges(&j, paged);
+    assert_eq!(before.len(), 1, "one exchange");
+    let (x, train) = (OpId(before[0].0), before[0].1);
+    assert!(!j.mc().applied_ops().contains(&x), "not applied yet");
+    let jsave0 = j.world_save();
+    let msave0 = j.mc().saved();
+    let mut mc = j.mc.take().unwrap();
+    j.e.close(false, Duration::from_secs(5)).unwrap();
+    mc.restore(&msave0);
+    let e = engine_with(&dir, wire::MIN_CAPACITY, |c| {
+        c.industry_seed = Some(cfg.seed)
+    });
+    let mut j = restart(e, jsave0, mc, MODULE_INDUSTRY);
+    // Session 1: the pages P1 through the journal's end at once, records right behind them.
+    let p1 = j.next_obs - 1;
+    j.e.request_save(p1);
+    fillers(&mut j, 40);
+    let mut cargo_before = None;
+    while cargo_before.is_none() || j.e.durable_obs_seq() < p1 {
+        assert!(j.mc().t < Tick(73_500), "P1 lands and the world applies X");
+        let was = cargo(&j);
+        j.mc_tick();
+        if cargo_before.is_none() && j.mc().applied_ops().contains(&x) {
+            cargo_before = Some(was);
+        }
+    }
+    let cargo_before = cargo_before.unwrap();
+    assert_eq!(j.e.durable_obs_seq(), p1);
+    replayed_over_several(&j);
+    let again: Vec<u64> = exchanges(&j, 0).iter().map(|e| e.0).collect();
+    assert_eq!(again, vec![x.0], "decided again under its op and written");
+    let t = j.mc().t;
+    j.mc_run_until(t + 100);
+    let jsave1 = j.world_save();
+    let msave1 = j.mc().saved();
+    let saved_at = j.mc().t;
+    j.mc_run_until(saved_at + 600);
+    assert_eq!(j.e.durable_obs_seq(), p1, "no page save past P1");
+    let mut mc = j.mc.take().unwrap();
+    j.e.close(false, Duration::from_secs(5)).unwrap();
+    let (on_at, end) = (saved_at + 300, saved_at + 1_500);
+    let off_then_on = |dir: &std::path::PathBuf, jsave: WorldSave, mc: FakeWorld| -> Java {
+        let e = engine_with(dir, wire::MIN_CAPACITY, |c| {
+            c.industry_seed = Some(cfg.seed)
+        });
+        let mut j = restart(e, jsave, mc, 0);
+        j.mc_run_until(on_at);
+        assert!(
+            j.e.stats.replays_ended.load(Acquire) > 0,
+            "the replay ended while off"
+        );
+        assert!(
+            industry(&j.e, |ie| ie.exchange_pending(x)),
+            "off, the replayed IND_CARRIAGE_RESULT waits for the switch"
+        );
+        j.modules(MODULE_INDUSTRY);
+        j.mc_tick();
+        j.mc_mut().announce();
+        j.mc_run_until(end);
+        j
+    };
+    let control_dir = copy_pages(&dir, "ind-exch-j4-off-control");
+    mc.restore(&msave1);
+    let mut c = off_then_on(&control_dir, jsave1.clone(), mc);
+    let control = books_delta(&c);
+    let cargo_control = cargo(&c);
+    let mut mc = c.mc.take().unwrap();
+    c.e.close(true, Duration::from_secs(5)).unwrap();
+    // J4: X's train from the tick before S, the rest from the world save after it.
+    mc.restore(&msave1);
+    let (t, was) = mc
+        .trains
+        .iter_mut()
+        .zip(&cargo_before)
+        .find(|(t, _)| t.id == train)
+        .expect("the exchange's train");
+    for (c, was) in t.carriages.iter_mut().zip(was) {
+        c.cargo = was.clone();
+    }
+    assert!(mc.forget_applied(x), "the ring held the op");
+    let j = off_then_on(&dir, jsave1, mc);
+    let sent = exchanges(&j, 0).iter().filter(|e| e.0 == x.0).count();
+    let j4 = books_delta(&j);
+    eprintln!(
+        "ind-exch-j4-off: exchange {:#x}, sent {sent} time(s) after the switch; cargo {:?}, the \
+         control's {cargo_control:?}; the world against its books {j4:?}, the control's \
+         {control:?}",
+        x.0,
+        cargo(&j)
+    );
+    assert_eq!(sent, 1, "X sent once after the switch");
+    assert!(
+        j.mc().applied_ops().contains(&x),
+        "applied to the restored train"
+    );
+    assert_eq!(
+        cargo(&j),
+        cargo_control,
+        "the trains hold what the control's hold"
+    );
+    assert_eq!(j4, control, "the world against its books, as the control's");
+    assert!(
+        !industry(&j.e, |ie| ie.exchange_pending(x)),
+        "the exchange is settled"
+    );
+    assert!(j.e.protocol_error().is_none(), "{:?}", j.e.protocol_error());
+    j.e.close(true, Duration::from_secs(5)).unwrap();
+}
+
 /// Iron in the fake world: (in its stores, on its trains, minted, burned).
 fn world_iron(j: &Java) -> (i64, i64, i64, i64) {
     let g = rtsim_industry::ids::Good(1);
@@ -4580,6 +4740,184 @@ mod ack_never_resends {
             assert_eq!(c.arrivals_of(x, 2).len(), 1);
             assert!(!c.ring.contains_key(&x), "no ring keeps X");
         });
+    }
+
+    /// Case 5 with the pages holding the copy, restarted with industry off (RP-313, the build
+    /// lead's P2-1 on RP-310 to RP-312). The copy can only be the pages' there: the replay with the
+    /// module off ignores the arrivals (U10), so it decides no exchange again. Session 0 is case
+    /// 5's J3: the world applies a station exchange X live and saves its goods and rings with X,
+    /// its journal file from before X's answer; the pages stop before X's decision. Session 1 asks
+    /// for its pages at once after its restart, with records right behind the journal's end, so
+    /// they are taken inside the replay end's hand-over before the first drain: they hold the copy
+    /// of X the replay decided again, unsent, as a command waiting for a Java name or a full buffer
+    /// would. The copy goes after that drain and the ring refuses it DUPLICATE live at S2; with
+    /// `pad`, a long run of records the industry ignores follows S2. The world saves, and the
+    /// engine crashes with no page save past those pages and no ack at or past S2. Session 2
+    /// restarts from them with industry off, on `capacity`. Returns the rig, X and S2.
+    fn a_duplicate_restarted_off(tag: &str, pad: bool, capacity: usize) -> (Rig, u64, Live) {
+        let mut r = Rig::new(tag, false);
+        r.run_to(day(2.0));
+        r.every = 0;
+        let exchanges = |r: &Rig| -> Vec<u64> {
+            r.c.arrivals
+                .iter()
+                .filter(|a| a.session == 0 && a.kind == "exchange")
+                .map(|a| a.op)
+                .collect()
+        };
+        let through = r.j.next_obs - 1;
+        r.j.e.request_save(through);
+        r.run("the pages", day(8.0), |r| {
+            r.j.e.durable_obs_seq() >= through
+        });
+        let before = exchanges(&r).len();
+        r.run("a station exchange is written", day(8.0), |r| {
+            exchanges(r).len() > before
+        });
+        let x = exchanges(&r)[before];
+        let journal = r.c.save(&r.j);
+        assert!(!r.j.mc().applied_ops().contains(&OpId(x)));
+        r.run("the world answers X", day(8.0), |r| {
+            r.c.lives_in(0).any(|l| l.op == x)
+        });
+        let s1 = *r.c.lives_in(0).find(|l| l.op == x).unwrap();
+        assert_eq!(s1.status, APPLIED);
+        let j3 = Saved {
+            jsave: journal.jsave,
+            end: journal.end,
+            ..r.c.save(&r.j)
+        };
+        r.restart(&j3);
+        assert!(r.j.pages_obs < s1.seq, "the pages are behind S");
+        // Session 1's pages P1, inside the replay end's hand-over.
+        let p1 = r.j.next_obs - 1;
+        r.j.e.request_save(p1);
+        pad_journal(&mut r.j, 40);
+        let t1 = r.j.mc().t;
+        r.run("the pages P1", t1 + 400, |r| r.j.e.durable_obs_seq() >= p1);
+        assert_eq!(r.j.e.durable_obs_seq(), p1);
+        r.run("X sent again in session 1", t1 + 400, |r| {
+            !r.c.arrivals_of(x, 1).is_empty()
+        });
+        r.run("the ring refuses X", t1 + 400, |r| {
+            r.c.lives_in(1).any(|l| l.op == x)
+        });
+        let s2 = *r.c.lives_in(1).find(|l| l.op == x).unwrap();
+        assert_eq!(
+            s2.status, DUPLICATE,
+            "the ring refused X, live in session 1"
+        );
+        if pad {
+            pad_journal(&mut r.j, PAD);
+        }
+        let w = r.c.save(&r.j);
+        assert_eq!(r.j.e.durable_obs_seq(), p1, "no page save past P1");
+        assert!(
+            r.c.crash(&r.j) < s2.seq,
+            "no ack at or past S2 in session 1"
+        );
+        r.capacity = capacity;
+        r.modules = 0;
+        r.restart(&w);
+        assert_eq!(r.j.pages_obs, p1, "session 2 restarts from P1");
+        assert_eq!(r.c.ring.get(&x), Some(&None), "X stays, its answer unknown");
+        (r, x, s2)
+    }
+
+    /// After the switch in [`a_duplicate_restarted_off`]: X sent once in session 2 and refused
+    /// DUPLICATE live, its exchange dropped; the ack past that answer prunes it, and the line runs
+    /// to its end with no ring keeping X.
+    fn the_copy_goes_once_after_the_switch(mut r: Rig, x: u64) {
+        let t = r.j.mc().t;
+        r.run("X sent in session 2", t + 400, |r| {
+            !r.c.arrivals_of(x, 2).is_empty()
+        });
+        r.run("the ring refuses X again", t + 800, |r| {
+            r.c.lives_in(2).any(|l| l.op == x)
+        });
+        let s3 = *r.c.lives_in(2).find(|l| l.op == x).unwrap();
+        assert_eq!(
+            s3.status, DUPLICATE,
+            "the ring refused X, live in session 2"
+        );
+        assert!(
+            !industry(&r.j.e, |ie| ie.exchange_pending(OpId(x))),
+            "X's exchange is dropped"
+        );
+        r.every = 3_000;
+        r.until_read(s3.seq);
+        assert!(r.c.gone.contains_key(&x), "pruned on the ack past S3");
+        r.finish_with(|c, _| {
+            assert_eq!(c.arrivals_of(x, 2).len(), 1);
+            assert!(!c.ring.contains_key(&x), "no ring keeps X");
+        });
+    }
+
+    /// [`a_duplicate_restarted_off`], switched on after the replay. Off, the replay brings S2 (X's
+    /// first answer in it, so `keep_answer`), which waits for the switch. Before RP-313 S2 also
+    /// took the copy out of the engine's commands (`unqueue`), so after the switch X was never sent
+    /// and Java's rings kept X with its answer unknown for good; and the switch booked the kept S2
+    /// with `false` for the replay, which takes it too.
+    #[test]
+    fn a_replayed_duplicate_heard_with_industry_off_leaves_the_copy_for_the_switch() {
+        let (mut r, x, _) = a_duplicate_restarted_off("ack-c5-off", false, 256 * 1024);
+        let t2 = r.j.mc().t;
+        r.run("the replay ends", t2 + 100, |r| {
+            r.j.e.stats.replays_ended.load(Ordering::Acquire) > 0
+        });
+        assert!(
+            industry(&r.j.e, |ie| ie.exchange_pending(OpId(x))),
+            "off, S2 waits for the switch"
+        );
+        assert!(r.c.arrivals_of(x, 2).is_empty(), "nothing goes while off");
+        switch_on(&mut r);
+        the_copy_goes_once_after_the_switch(r, x);
+    }
+
+    /// [`a_duplicate_restarted_off`] on a minimum-size buffer, a long run of records behind S2, and
+    /// the switch on at the front of a later hand-over of the same replay: MODULES(on) comes after
+    /// the hand-over that carried S2 and ahead of more of the replay, so the switch books S2 while
+    /// the engine still replays (`set_enabled` while `replaying`). The kept S2 was replayed and is
+    /// booked as replayed: its copy stays. Booked with `false` for the replay, it took the copy.
+    #[test]
+    fn a_switch_on_inside_a_later_replay_hand_over_leaves_the_replayed_duplicates_copy() {
+        let (mut r, x, s2) = a_duplicate_restarted_off("ack-c5-off-mid", true, wire::MIN_CAPACITY);
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while r.j.sent_obs < s2.seq {
+            assert!(Instant::now() < deadline, "60 s of wall clock");
+            hand_over_only(&mut r);
+        }
+        assert!(
+            r.j.sent_obs < r.j.replay_up_to,
+            "S2's hand-over is not the replay's last"
+        );
+        assert!(
+            industry(&r.j.e, |ie| ie.exchange_pending(OpId(x))),
+            "off, S2 waits for the switch"
+        );
+        r.modules = MODULE_INDUSTRY;
+        r.j.modules(MODULE_INDUSTRY);
+        hand_over_only(&mut r);
+        assert!(
+            r.j.sent_obs < r.j.replay_up_to,
+            "the switch came inside the replay, more of it behind"
+        );
+        assert_eq!(
+            r.j.e.stats.replays_ended.load(Ordering::Acquire),
+            0,
+            "still replaying"
+        );
+        assert!(
+            !industry(&r.j.e, |ie| ie.exchange_pending(OpId(x))),
+            "the switch booked S2"
+        );
+        r.j.mc_mut().announce();
+        let n = replayed_over_several(&mut r);
+        eprintln!(
+            "the switch on came inside the replay ({n} hand-overs), after S2 {}",
+            s2.seq
+        );
+        the_copy_goes_once_after_the_switch(r, x);
     }
 
     /// An answer that reaches the engine while the industry module is off (RP-285). The server's
