@@ -233,6 +233,52 @@ public interface IndustryPlugin {
         return null;
     }
 
+    /**
+     * The engine op a deposit write belongs to (docs/choices-journal-barrier.md RP-207): an IND_DEPOSIT_DELTA's, or
+     * the IND_CHUNK_RECONCILE's whose deposits these are. For a plugin whose write also changes a store in a file of
+     * its own (Destroy's pollution ledger): it asks that store's ring whether this op already changed it
+     * ({@code ring.contains(key)}, after a crash that kept the store and lost the rest), and keeps the op in it
+     * ({@link #keepIn}) whether it changed it now or found it changed.
+     */
+    interface DepositOp {
+        /** The op id. */
+        long id();
+
+        /**
+         * Stamps {@code key} in {@code ring} with the op's answer once it is journaled, in this tick. {@code key} is
+         * {@code DurableOpRing.keyOf(id(), good)} when the store is written once per good (a reconcile's).
+         */
+        void keepIn(com.minecraftindustrialcomplex.mic_rtsim.journal.DurableOpRing ring, long key);
+    }
+
+    /**
+     * {@link #applyDeposit(ServerLevel, int, int, String, long)} with the op it belongs to (RP-207); the core calls
+     * this one. The default ignores the op.
+     */
+    default Long applyDeposit(ServerLevel level, int chunkX, int chunkZ, String good, long delta, DepositOp op) {
+        return applyDeposit(level, chunkX, chunkZ, good, delta);
+    }
+
+    /**
+     * The applied ops kept in the same file as the deposit {@code good} in chunk (chunkX, chunkZ), or null when the
+     * good is not this plugin's (docs/choices-journal-barrier.md RP-204). IND_DEPOSIT_DELTA's dedup is this ring or
+     * the journal: the store's file can be newer on disk than the journal's after a crash, and its ring then still
+     * refuses the op's resend. A plugin whose {@link #applyDeposit} writes a store outside the chunk returns its
+     * ring here, saved in that store's file and read back with it ({@code DurableOpRings}).
+     */
+    default com.minecraftindustrialcomplex.mic_rtsim.journal.DurableOpRing depositRing(ServerLevel level, int chunkX, int chunkZ, String good) {
+        return null;
+    }
+
+    /**
+     * An IND_DEPOSIT_DELTA resend of {@code op} that the deposit's ring ({@link #depositRing}) refused, with nothing
+     * written. A plugin whose first write of the op also changed a store in a file of its own keeps the op there again
+     * ({@link DepositOp#keepIn}) when that store's ring holds it, so it is stamped with the refusal's answer like the
+     * deposit's ring. Left with its first answer, the entry would be dropped once the journal passes that sequence,
+     * which after the crash is another record's. Every plugin is asked; the default does nothing.
+     */
+    default void depositRefused(ServerLevel level, int chunkX, int chunkZ, String good, DepositOp op) {}
+
     // ---- damage (C18, I23) and repair (I1) -----------------------------------------------------
 
     /**

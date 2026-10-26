@@ -11,20 +11,28 @@
 //! mirrors:
 //!
 //! - **Observations** ([`observe_state`], [`journaled`]): the latest-wins kinds 0x0090 to 0x009F
-//!   are BAND_STATE (counted), CHIEF_STATE (given to the engine at its own time, M6) and
-//!   HAVEN_CHEST (counted as deferred; 0x0093 is retired); the journaled kinds 0x0800 to 0x08FF go through the kernel's `Replay`
-//!   (CHIEF_KILLED, TRIBUTE_PAID, GIFT_GIVEN, BAND_LOOTED, CAMP_DEATH, TRADED and CHIEF_PAID by
-//!   their op ids too) into `Conflict::ingest`, at their own time with the other modules and the
-//!   world run to it first (the shared clock, `engine/shared.rs`); DIFFICULTY among them (no war
-//!   party leaves on Peaceful, MZB-17). The Mowzie kinds whose engine half comes with a later
-//!   slice (`Conflict::later`) are decoded, counted as deferred and given to the conflict at its
-//!   present, before the clock runs, so that it spends their op ids as `Replay` does (MZB-23).
-//!   RAIL_PASS is live (M7): its times are translated to world ticks and the conflict holds it
-//!   until its train's arrival; the industry module's journaled TRAIN_ARRIVED and TRAIN_UNWATCHED
-//!   then call [`rail_call`] with the line the train ran (MZB-312).
+//!   are BAND_STATE (counted) and CHIEF_STATE (given to the engine at its own time, M6); 0x0092
+//!   and 0x0093 are retired. The journaled kinds 0x0800 to 0x08FF go through the kernel's `Replay`
+//!   (CHIEF_KILLED, TRIBUTE_PAID, GIFT_GIVEN, BAND_LOOTED, TRADED and CHIEF_PAID by their op ids
+//!   too; CAMP_DEATH and HUNT_APPLIED by the engine's own books, which a copy finds spent) into
+//!   `Conflict::ingest`, at their own time with the other
+//!   modules and the world run to it first (the shared clock, `engine/shared.rs`); DIFFICULTY
+//!   among them (no war party leaves on Peaceful, MZB-17), and HAVEN_CHEST (M9, MZB-446: a replay
+//!   after a crash knows the chest the session knew; it names the chest's state, latest wins,
+//!   and has no op id, so `Conflict::ingest_copy` drops a copy, RP-130). The Mowzie kinds whose
+//!   engine half comes with a later
+//!   slice (`Conflict::later`: TRAIN_PASSED) are decoded, counted as deferred and given to the
+//!   conflict at its present, before the clock runs, so that it spends their op ids as `Replay`
+//!   does (MZB-23). RAIL_PASS is live (M7): its times are translated to world ticks and the
+//!   conflict holds it until its train's arrival; the industry module's journaled TRAIN_ARRIVED
+//!   and TRAIN_UNWATCHED then call [`rail_call`] with the line the train ran (MZB-312).
 //!   Java's ids are translated to the conflict's own first (C2-4): items to
-//!   the phase 1 catalogue's goods, bodies to the culture data's, structures and pollution types
+//!   the phase 1 catalogue's goods (a CHIEF_PAID's gold blocks and ingots as the nuggets they are
+//!   worth, MZB-419), bodies to the culture data's, structures and pollution types
 //!   to the conflict's own dictionary; dimensions are Java's ids (the conflict's frames).
+//!   The tribute stacks a grove sends its chest ([`write_tribute`], MZB-423) are written into the
+//!   core's outbox as the dragons' are, and their COMMAND_RESULTs reach the conflict through
+//!   [`after_core`] and [`answered_again`].
 //! - **Signals inside the engine** ([`simulate`], C2-7 to C2-9): each district's learned pollution
 //!   (the Destroy plugin's attribution, I14, written as deposit goods) and, while unloaded, the
 //!   deposits it drains, become continuous sources counted against the player who spent the most
@@ -39,7 +47,7 @@
 //!   view materialize.
 //! - **Commands** ([`write_queue`]): TERRITORY, FACTION_NOTICE, ENVOY_MATERIALIZE,
 //!   BAND_MATERIALIZE, BAND_STEER, BAND_RECALL, DEMAND_SETTLED and the Mowzie kinds (AMBUSH_SPOT,
-//!   CAMP_RECONCILE, TRAIN_ROBBED, CHIEF_BODY, BAND_MARCH), with sequences from the core's
+//!   CAMP_RECONCILE, TRAIN_ROBBED, CHIEF_BODY, BAND_MARCH, OWED_HUNT), with sequences from the core's
 //!   counter after every other module's: all per session (K2-27, as the dragons' S11), so the
 //!   link keeps nothing and none but CAMP_RECONCILE carries an op id; TERRITORY goes again for
 //!   every faction at a session start, and every feud's notice not played yet (NOTICE_SHOWN),
@@ -53,9 +61,12 @@
 //!   mode its state hash beside the meta page, checked on load. The conflict lives in the phase 1 world (havens are its
 //!   nodes, marches its legs), so while it is active the phase 1 link snapshots at every save, in
 //!   the same commit; a page without the world it was saved with is dropped loudly.
-//! - **The switch** (C25, U10): `Module.CONFLICT` (bit 5). Off, the conflict ignores its records,
-//!   runs nothing, writes nothing and keeps the page it had; on again, its bodies of before are
-//!   gone (its session reset) and it runs on from where it stopped.
+//! - **The switch** (C25, U10 as RP-292 amends it): `Module.CONFLICT` (bit 5). Off, the conflict
+//!   runs nothing, writes nothing and keeps the page it had; the journaled records it hears are
+//!   kept (a page beside the meta page, `paging::Kept`) and applied at the switch-on, in the
+//!   resets every module's run in (`shared::resets`) before the replay ends, each after its own
+//!   catch-up and at its own tick (docs/replay-gate.md 9.7), their epochs with them (RP-293). On again, its bodies of before are gone and it runs on from
+//!   where it stopped.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
@@ -78,8 +89,9 @@ use rtsim_kernel::rows::PageSource;
 use rtsim_settle::Pos;
 use rtsim_trade::GoodId;
 
-use super::paging::{self, Live, Pager};
-use super::{State, log_error, log_info, log_warn, phase1, shared};
+use super::paging::{self, Kept, Live, Pager};
+use super::shared::{self, Module};
+use super::{State, log_error, log_info, log_warn, phase1};
 use crate::wire::{self, Rec, RecordWriter, obs};
 
 /// The conflict's pages: table 0x4300 ('C', docs/boundary.md §9.1), next to the dragons' 0x4400.
@@ -149,13 +161,19 @@ pub(super) struct Link {
     /// The last load read back a conflict whose state hash is not the one saved: (saved, read).
     pub(super) restore_diverged: Option<(u64, u64)>,
     pub(super) records: u64,
-    /// Records ignored: the conflict was switched off.
+    /// Records heard while the conflict was switched off: not applied then, kept for the
+    /// switch-on ([`Link::kept`]).
     pub(super) ignored: u64,
+    /// The records heard while switched off, applied at the switch-on (RP-292, docs/replay-gate.md
+    /// 9.7): saved beside the meta page (`paging::kept_key`).
+    pub(super) kept: Kept,
     pub(super) commands_written: u64,
     /// Latest-wins BAND_STATE records seen (read for nothing yet).
     pub(super) band_states: u64,
     /// Latest-wins CHIEF_STATE records given to the engine (M6, MZB-270).
     pub(super) chief_states: u64,
+    /// Journaled HAVEN_CHEST records given to the engine (M9, MZB-422, MZB-446).
+    pub(super) haven_chests: u64,
     /// Records whose engine half comes with a later slice (`Conflict::later`): decoded and
     /// dropped.
     pub(super) deferred: u64,
@@ -278,9 +296,11 @@ impl Link {
             restore_diverged: None,
             records: 0,
             ignored: 0,
+            kept: Kept::default(),
             commands_written: 0,
             band_states: 0,
             chief_states: 0,
+            haven_chests: 0,
             deferred: 0,
             from_pages: false,
             replay_end_due: false,
@@ -319,10 +339,18 @@ impl Link {
         );
         let engine = match opened {
             Err(e) => return unreadable(&format!("the conflict's meta page: {e}")),
-            Ok(None) if paging::holds_pages(&**source, paging::tables(TABLE)) => {
+            Ok(None) if paging::holds_pages_besides_kept(&**source, KEY_CONFLICT) => {
                 return unreadable("conflict pages without their meta page");
             }
-            Ok(None) => return Ok(Link::fresh(source, budget)),
+            Ok(None) => {
+                // Switched off before its first save, it may have kept records all the same.
+                let mut l = Link::fresh(source, budget);
+                l.kept = match Kept::load(&**source, KEY_CONFLICT) {
+                    Ok(k) => k,
+                    Err(e) => return unreadable(&e),
+                };
+                return Ok(l);
+            }
             Ok(Some(_)) if !world_restored => {
                 return unreadable(
                     "the phase 1 world it lives in did not come back from its pages",
@@ -348,10 +376,15 @@ impl Link {
             engine.pending_events(),
             hash.map_or(String::new(), |h| format!(", state {h:016x}"))
         ));
+        let kept = match Kept::load(&**source, KEY_CONFLICT) {
+            Ok(k) => k,
+            Err(e) => return unreadable(&e),
+        };
         let (structures, pollution) = own_names(&engine.cultures, &engine.tun);
         let mut l = Link::with_engine(engine, structures, pollution);
         l.restore_diverged = diverged;
         l.from_pages = true;
+        l.kept = kept;
         Ok(l)
     }
 
@@ -364,16 +397,26 @@ impl Link {
     }
 }
 
-/// Whether the conflict runs: switched on and in the world.
+/// Whether the conflict runs: switched on and in the world, and not waiting with kept records for
+/// Java's dictionary ([`kept_waiting`]).
 pub(super) fn running(st: &State) -> bool {
-    st.conflict.enabled && st.conflict.active()
+    st.conflict.enabled && st.conflict.active() && !kept_waiting(st)
+}
+
+/// The conflict holds records kept while switched off, and a session start has not had Java's
+/// dictionary yet (`State::dict_wait`): the records name its ids (a camp's structure, a body, a
+/// pollution type, items), so the reset that applies them waits for the first record after the
+/// DICTs ([`dict_ready`]), and the conflict does not run meanwhile.
+fn kept_waiting(st: &State) -> bool {
+    st.dict_wait && !st.conflict.kept.is_empty()
 }
 
 // ---- hooks: session and latest-wins records -----------------------------------------------------
 
 /// SESSION_START: every party the conflict thought embodied is abstract again and the plugin
-/// hears every territory again (the reset runs as soon as the conflict runs, now or when switched
-/// on), and Java forgot the engine's dictionary.
+/// hears every territory again (the reset runs as soon as the conflict runs, now once every
+/// module's flag is set, `shared::resets`, or when switched on), and Java forgot the engine's
+/// dictionary.
 pub(super) fn session_start(st: &mut State, module_mask: u32) {
     st.conflict.queue.clear();
     st.conflict.reported.clear();
@@ -381,13 +424,14 @@ pub(super) fn session_start(st: &mut State, module_mask: u32) {
     // switch that is off from the start keeps exactly those (no save writes them).
     st.conflict.enabled = module_mask & MODULE_CONFLICT != 0;
     st.conflict.reset_due = true;
-    reset_if_due(st);
 }
 
-/// The switch changed (MODULES, U10). Off: what the conflict holds is written once more as it is
-/// now and then kept; queued commands are dropped (all per session). On: the reset is due, and
-/// the areas booked meanwhile are introduced to it.
-fn set_enabled(st: &mut State, on: bool) {
+/// MODULES (U10), the first pass (`shared::switch`): the switch, if it changed. Off: what the
+/// conflict holds is written once more as it is now and then kept; queued commands are dropped
+/// (all per session). On: the reset is due, and runs in the second pass with every module's
+/// (`shared::resets`); the areas booked meanwhile are introduced to it after it. Returns whether
+/// the conflict came on.
+pub(super) fn switched(st: &mut State, on: bool) -> bool {
     let was = st.conflict.enabled;
     st.conflict.enabled = on;
     if was && !on {
@@ -398,28 +442,48 @@ fn set_enabled(st: &mut State, on: bool) {
     if on && !was {
         st.conflict.reset_due = true;
     }
-    reset_if_due(st);
-    if on && !was && running(st) {
-        shared::introduce_conflict(st);
-    }
+    on && !was
 }
 
-/// The session's reset, once the conflict runs (docs/replay-gate.md §3.2): its engine's replay
-/// begins (`begin_replay`, told whether it came back from its pages, RP-31), TERRITORY goes out
-/// again for every faction, and its replay end is due. With no replay running (a switch-on, or a
-/// first camp in the middle of a session) that end runs at once.
+/// The conflict's reset alone, if due (`shared::reset_these`): a first camp in the middle of a
+/// session.
 fn reset_if_due(st: &mut State) {
-    if st.conflict.reset_due && running(st) {
-        st.conflict.reset_due = false;
-        let from_pages = st.conflict.from_pages;
-        st.conflict.engine.begin_replay(from_pages);
-        st.conflict.replay_end_due = true;
-        st.phase1.taint();
-        take_commands(st);
-        if !st.replaying {
-            replay_end(st);
-        }
+    shared::reset_these(st, &[Module::Conflict]);
+}
+
+/// The session's reset, once the conflict runs (docs/replay-gate.md §3.2), its first step
+/// (`shared::resets`): its engine's replay begins (`begin_replay`, told whether it came back from
+/// its pages, RP-31), TERRITORY goes out again for every faction, and its replay end is due. With
+/// no replay running (a switch-on, or a first camp in the middle of a session) that end runs in
+/// the reset's last step ([`replay_end`]).
+///
+/// Records kept while off (RP-292) make it due with no camp too, and are applied between the two
+/// ([`apply_kept`]). Returns whether it began.
+pub(super) fn begin_reset(st: &mut State) -> bool {
+    let l = &st.conflict;
+    if !(l.reset_due && l.enabled && (l.active() || !l.kept.is_empty()) && !kept_waiting(st)) {
+        return false;
     }
+    st.conflict.reset_due = false;
+    let from_pages = st.conflict.from_pages;
+    st.conflict.engine.begin_replay(from_pages);
+    st.conflict.replay_end_due = true;
+    st.phase1.taint();
+    take_commands(st);
+    true
+}
+
+/// One record the conflict heard while switched off (RP-292, docs/replay-gate.md 9.7), applied
+/// in the reset after `begin_replay` and before the replay end, where a restart's replay of the
+/// same record applies it, in the order `shared::resets` merges every module's kept records: as
+/// it came (a copy as a copy, so a generation-0 casualty copy is still refused), after its own
+/// catch-up (`shared::catch_up`), so the events due before it fire first, and at its own tick
+/// (`shared::floor`). A band member a player killed in the switch's tick is dead from that tick,
+/// before the replay end makes its band abstract and before the band's demand's deadline; the
+/// epoch every record names reaches the floor here, before the conflict decides anything (RP-57:
+/// nothing is decided while off).
+pub(super) fn apply_kept(st: &mut State, rec: &Rec<'_>) {
+    apply(st, rec);
 }
 
 /// The conflict's replay end (docs/replay-gate.md §3.2), when due and the conflict runs: the
@@ -428,11 +492,12 @@ fn reset_if_due(st: &mut State) {
 /// cleared its notice by now. A notice a replayed record made again is dropped from the queue
 /// first: what is kept is what goes. Switched off, it stays due; the reset on switch-on runs it.
 pub(super) fn replay_end(st: &mut State) {
-    if !running(st) {
+    if !running(st) && !kept_waiting(st) {
         // The host's replay is over and no camp came back: nothing the held chiefs' states name.
         st.conflict.engine.discard_held_chief_states();
     }
-    if !st.conflict.replay_end_due || !running(st) {
+    // Switched on is enough: a reset that applied kept records runs with no camp too.
+    if !st.conflict.replay_end_due || !st.conflict.enabled || kept_waiting(st) {
         return;
     }
     st.conflict.replay_end_due = false;
@@ -456,15 +521,11 @@ pub(super) fn gate_counts(st: &State) -> rtsim_conflict::GateCounts {
     st.conflict.engine.replay_gate_counts()
 }
 
-/// A record that is not journaled: MODULES and the conflict's latest-wins kinds. PLAYER
-/// positions go to the shared interest areas (`engine/shared.rs`).
+/// A record that is not journaled: the conflict's latest-wins kinds. MODULES goes to
+/// `shared::switch`, PLAYER positions to the shared interest areas (`engine/shared.rs`).
 pub(super) fn observe_state(st: &mut State, rec: &Rec<'_>) {
     let b = rec.bytes;
     match rec.kind {
-        obs::MODULES if rec.size() >= obs::modules::SIZE => {
-            let on = wire::u32_at(b, obs::modules::MASK) & MODULE_CONFLICT != 0;
-            set_enabled(st, on);
-        }
         k if STATE_KINDS.contains(&k) => {
             let Ok((_, o, _)) = boundary::decode_obs(b) else {
                 return;
@@ -491,18 +552,23 @@ pub(super) fn observe_state(st: &mut State, rec: &Rec<'_>) {
                         st.conflict.engine.hold_chief_state(&c);
                         return;
                     }
-                    with_infra(st, |c, w, infra| {
-                        let now = c.now();
-                        c.ingest(w, infra, &o, now);
-                    });
-                    st.phase1.taint();
-                    take_commands(st);
+                    give_latest(st, &o);
                 }
                 _ => st.conflict.deferred += 1,
             }
         }
         _ => {}
     }
+}
+
+/// A latest-wins record given to the engine at its own time (no module catches up for it).
+fn give_latest(st: &mut State, o: &Obs) {
+    with_infra(st, |c, w, infra| {
+        let now = c.now();
+        c.ingest(w, infra, o, now);
+    });
+    st.phase1.taint();
+    take_commands(st);
 }
 
 // ---- hooks: journaled records -------------------------------------------------------------------
@@ -553,6 +619,40 @@ fn own_items(st: &State, items: &[Item]) -> Vec<Item> {
         .collect()
 }
 
+/// What an Umvuthi's gold is worth in gold nuggets, the only gold the catalogue trades (MZB-419).
+const TRIBUTE_EQUIVALENTS: [(&str, i32); 3] = [
+    ("minecraft:gold_block", 81),
+    ("minecraft:gold_ingot", 9),
+    ("minecraft:gold_nugget", 1),
+];
+
+/// The items of a CHIEF_PAID as the conflict's goods, gold blocks and ingots counted as the nuggets
+/// they are worth and the entries merged (MZB-419). M3's TRIBUTE_PAID is not translated this way.
+fn tribute_items(st: &State, items: &[Item]) -> Vec<Item> {
+    let nugget = phase1::catalog_good(st, "minecraft:gold_nugget").map(item_of);
+    let mut out: Vec<Item> = Vec::new();
+    for it in items {
+        let name = st.world.java_dict.get(&(wire::DICT_ITEM, it.item));
+        let worth = name.and_then(|n| TRIBUTE_EQUIVALENTS.iter().find(|e| e.0 == n.as_str()));
+        let entry = match (worth, nugget) {
+            (Some(&(_, k)), Some(item)) => Item {
+                item,
+                count: it.count.saturating_mul(k),
+            },
+            (Some(_), None) => continue,
+            (None, _) => match own_item(st, it.item) {
+                Some(item) => Item { item, ..*it },
+                None => continue,
+            },
+        };
+        match out.iter_mut().find(|e| e.item == entry.item) {
+            Some(e) => e.count = e.count.saturating_add(entry.count),
+            None => out.push(entry),
+        }
+    }
+    out
+}
+
 /// Java's ids in an observation as the conflict's own (C2-4). Dimensions stay Java's (frames).
 fn translate(st: &State, o: &mut Obs) {
     match o {
@@ -591,7 +691,7 @@ fn translate(st: &State, o: &mut Obs) {
             p.entry = phase1::world_tick(st, p.entry) as i64;
             p.exit = phase1::world_tick(st, p.exit) as i64;
         }
-        Obs::ChiefPaid(p) => p.items = own_items(st, &p.items),
+        Obs::ChiefPaid(p) => p.items = tribute_items(st, &p.items),
         Obs::TributePaid(t) => t.items = own_items(st, &t.items),
         Obs::GiftGiven(g) => g.items = own_items(st, &g.items),
         Obs::Looted(l) => l.items = own_items(st, &l.items),
@@ -599,12 +699,29 @@ fn translate(st: &State, o: &mut Obs) {
     }
 }
 
-/// A conflict record `Replay` admitted. Switched off, the conflict ignores it (U10).
+/// A conflict record `Replay` admitted. Switched off, the conflict keeps it for the switch-on
+/// (RP-292, docs/replay-gate.md 9.7: the switch gates only new decisions; every record of what
+/// already happened is heard), saved with its pages. It folds no epoch while off: the switch-on
+/// applies it, epoch and all, before the conflict decides anything (RP-57's hole is closed by the
+/// keeping, RP-293).
 pub(super) fn journaled(st: &mut State, rec: &Rec<'_>) {
     if !st.conflict.enabled {
         st.conflict.ignored += 1;
+        if let Some(w) = st
+            .conflict
+            .kept
+            .push(st.applying_copy, rec.bytes, "the conflict")
+        {
+            log_warn(&w);
+        }
         return;
     }
+    apply(st, rec);
+}
+
+/// A conflict record applied: as it comes with the conflict on, or kept while off
+/// ([`apply_kept`]).
+fn apply(st: &mut State, rec: &Rec<'_>) {
     let mut o = match boundary::decode_obs(rec.bytes) {
         Ok((_, o, _)) => o,
         Err(e) => {
@@ -629,6 +746,9 @@ pub(super) fn journaled(st: &mut State, rec: &Rec<'_>) {
         st.conflict.copies_refused += 1;
         st.conflict.engine.fold_epoch(&o);
         return;
+    }
+    if matches!(o, Obs::HavenChest(_)) {
+        st.conflict.haven_chests += 1;
     }
     if Conflict::later(&o) {
         // Its engine half comes with a later slice (MOWZIE.md §9): counted, and given to the
@@ -674,9 +794,7 @@ pub(super) fn rail_call(
     // escalate (MZB-375, since the M7 merge).
     shared::catch_up(st, rec);
     let gt = wire::i64_at(rec.bytes, obs::GAME_TIME);
-    let at = Tick(phase1::world_tick(st, gt))
-        .max(st.conflict.engine.now())
-        .max(st.phase1.world.now());
+    let at = Tick(phase1::world_tick(st, gt)).max(shared::floor(st, st.conflict.engine.now()));
     let call = RailCall { train, line };
     with_infra(st, |c, w, _| c.rail_call(w, &call, at));
     st.phase1.taint();
@@ -689,7 +807,7 @@ pub(super) fn rail_call(
 fn ingest(st: &mut State, o: &Obs, at: Tick) {
     st.conflict.records += 1;
     let was_running = running(st);
-    let at = at.max(st.conflict.engine.now()).max(st.phase1.world.now());
+    let at = at.max(shared::floor(st, st.conflict.engine.now()));
     // A copy (REASSERT) of an ended session's record is applied by identity, never against a
     // body (docs/replay-gate.md §2.3, §5.7, RP-8, RP-9).
     let copy = st.applying_copy.is_some();
@@ -705,7 +823,9 @@ fn ingest(st: &mut State, o: &Obs, at: Tick) {
     log_fights_unheld(st);
     reset_if_due(st);
     take_commands(st);
-    if !was_running && running(st) {
+    // A first camp among the records kept while off introduces no area inside the reset: the
+    // switch-on introduces them after its replay end.
+    if !was_running && running(st) && !st.applying_kept {
         shared::introduce_conflict(st);
     }
 }
@@ -781,7 +901,7 @@ pub(super) fn run_engine(st: &mut State, t: Tick) {
     }
     // Never behind its own present: an event due before it (none should be) runs now rather than
     // holding the shared clock's rounds at its time.
-    let t = t.max(st.conflict.engine.now()).max(st.phase1.world.now());
+    let t = t.max(shared::floor(st, st.conflict.engine.now()));
     let before = st.conflict.engine.stats.events;
     with_infra(st, |c, w, infra| c.run_until(w, infra, t));
     if st.conflict.engine.stats.events != before {
@@ -1040,6 +1160,7 @@ fn names_needed(st: &State, q: &Queued) -> Result<Vec<Named>, (String, u32)> {
             }
         }
         Cmd::AmbushSpot(a) => need(wire::DICT_DIMENSION, a.dimension)?,
+        Cmd::OwedHunt(h) => need(wire::DICT_DIMENSION, h.dimension)?,
         Cmd::Reconcile(r) => {
             for l in r.lines.iter().filter(|l| l.body != 0) {
                 need(wire::DICT_BODY, l.body)?;
@@ -1099,7 +1220,10 @@ pub(super) fn write_queue(st: &mut State, w: &mut RecordWriter<'_>) -> (u64, boo
         st.conflict.queue.clear();
         return (0, false);
     }
-    let mut highest = 0;
+    let (mut highest, more) = write_tribute(st, w);
+    if more {
+        return (highest, true);
+    }
     while let Some(q) = st.conflict.queue.front().cloned() {
         let names = match names_needed(st, &q) {
             Ok(n) => n,
@@ -1171,6 +1295,7 @@ pub(super) fn write_queue(st: &mut State, w: &mut RecordWriter<'_>) -> (u64, boo
                 }
             }
             Cmd::AmbushSpot(a) => a.dimension = id(wire::DICT_DIMENSION, a.dimension),
+            Cmd::OwedHunt(h) => h.dimension = id(wire::DICT_DIMENSION, h.dimension),
             Cmd::Reconcile(r) => {
                 for l in r.lines.iter_mut().filter(|l| l.body != 0) {
                     l.body = id(wire::DICT_BODY, l.body);
@@ -1203,6 +1328,134 @@ pub(super) fn write_queue(st: &mut State, w: &mut RecordWriter<'_>) -> (u64, boo
     (highest, false)
 }
 
+/// Writes the tribute stacks the groves send to their chests (MZB-423) that are not in the core
+/// outbox yet, as the dragons' lairs' are. Each joins it under its own op id, derived from the
+/// grove and a saved counter, so a restart sends it again and Java answers a stack it already put
+/// DUPLICATE_OP. Returns the highest sequence written and whether some wait for the next buffer.
+fn write_tribute(st: &mut State, w: &mut RecordWriter<'_>) -> (u64, bool) {
+    if st.conflict.engine.placings().next().is_none() {
+        return (0, false);
+    }
+    let sent: BTreeSet<u64> = st.outbox.after(0).map(|(_, op, _)| op.0).collect();
+    let todo: Vec<(u64, rtsim_conflict::engine::Placing)> = st
+        .conflict
+        .engine
+        .placings()
+        .filter(|(op, _)| !sent.contains(op))
+        .collect();
+    let mut highest = 0;
+    for (op, p) in todo {
+        let dimension = st
+            .world
+            .java_dict
+            .get(&(wire::DICT_DIMENSION, p.dimension))
+            .cloned();
+        let item = phase1::catalog_item(st, GoodId(u16::try_from(p.good).unwrap_or(u16::MAX)));
+        let (Some(dimension), Some(item)) = (dimension, item) else {
+            // Never written: the goods go back to the grove's stock, and the chest waits to be
+            // reported again.
+            log_error(&format!(
+                "a tribute stack (op {op:#x}) to a chest in dimension {} Java never named, or of a good no item stands for; back to its grove",
+                p.dimension
+            ));
+            fail_tribute(st, op);
+            continue;
+        };
+        let t = super::TransferCmd {
+            dimension,
+            item: item.to_string(),
+            pos: [p.pos.0, p.pos.1, p.pos.2],
+            count: (p.amount / rtsim_trade::MILLI) as i32,
+        };
+        let need = st.dict_bytes(&[
+            (wire::DICT_DIMENSION, &t.dimension),
+            (wire::DICT_ITEM, &t.item),
+        ]) + wire::cmd::transfer_to_container::SIZE;
+        if need > w.remaining() {
+            return (highest, true);
+        }
+        // The DICT records go first, and the sequence is taken only now, so the buffer's
+        // sequences rise in buffer order.
+        st.dict_id(w, wire::DICT_DIMENSION, &t.dimension);
+        st.dict_id(w, wire::DICT_ITEM, &t.item);
+        let seq = st
+            .outbox
+            .push_with_op(t.clone(), rtsim_kernel::journal::OpId(op));
+        super::write_transfer(st, w, seq, rtsim_kernel::journal::OpId(op), &t);
+        highest = highest.max(seq);
+    }
+    (highest, false)
+}
+
+/// The tick an answer to a tribute stack is booked at: the conflict's and the world's present, or
+/// the record's if later.
+fn tribute_tick(st: &State, gt: i64) -> Tick {
+    Tick(phase1::world_tick(st, gt))
+        .max(st.conflict.engine.now())
+        .max(st.phase1.world.now())
+}
+
+fn fail_tribute(st: &mut State, op: u64) {
+    let at = tribute_tick(st, st.game_time);
+    let (c, w) = (&mut st.conflict.engine, &mut st.phase1.world);
+    c.tribute_failed(w, op, at);
+    st.phase1.taint();
+}
+
+/// A COMMAND_RESULT `Replay` admitted (the core's records, after phase 1's): the answer to a stack
+/// of tribute sent to a grove's chest (MZB-423). Applied or a duplicate, the stack is in the
+/// chest and the next goes; failed, the goods go back to the grove's stock and the chest is
+/// forgotten until the plugin reports one again. NOT_LOADED (the chest's chunk was not loaded,
+/// RP-210) is taken as FAILED, as Java answered it before RP-210: the answer takes the op out of
+/// the core outbox, so a stack left in flight would have nothing to answer it. Unlike the
+/// dragons, the grove does not park it under its op id (RP-210's Left).
+pub(super) fn after_core(st: &mut State, rec: &Rec<'_>) {
+    if rec.kind != obs::COMMAND_RESULT || rec.size() < obs::command_result::SIZE {
+        return;
+    }
+    if !st.conflict.enabled {
+        // U10: ignored. The stack stays in the core outbox until it is answered again, and Java
+        // answers DUPLICATE_OP if it is already in the chest (`answered_again`).
+        return;
+    }
+    let op = wire::u64_at(rec.bytes, obs::command_result::OP_ID);
+    let at = tribute_tick(st, wire::i64_at(rec.bytes, obs::GAME_TIME));
+    let (c, w) = (&mut st.conflict.engine, &mut st.phase1.world);
+    let known = match rec.aux {
+        obs::command_result::APPLIED | obs::command_result::DUPLICATE_OP => {
+            c.tribute_placed(w, op, at)
+        }
+        obs::command_result::FAILED | obs::command_result::NOT_LOADED => {
+            c.tribute_failed(w, op, at)
+        }
+        _ => false,
+    };
+    if known {
+        st.phase1.taint();
+        take_commands(st);
+    }
+}
+
+/// A COMMAND_RESULT for an op `Replay` already admitted: a tribute stack sent again after the
+/// pages lost its first answer (the conflict was off, or a crash came before a save). Java
+/// answered it DUPLICATE_OP: it is in the chest.
+pub(super) fn answered_again(st: &mut State, rec: &Rec<'_>) {
+    if rec.kind != obs::COMMAND_RESULT
+        || rec.size() < obs::command_result::SIZE
+        || !st.conflict.enabled
+    {
+        return;
+    }
+    let op = wire::u64_at(rec.bytes, obs::command_result::OP_ID);
+    let at = tribute_tick(st, wire::i64_at(rec.bytes, obs::GAME_TIME));
+    let (c, w) = (&mut st.conflict.engine, &mut st.phase1.world);
+    if c.tribute_placed(w, op, at) {
+        st.outbox.complete(rtsim_kernel::journal::OpId(op));
+        st.phase1.taint();
+        take_commands(st);
+    }
+}
+
 // ---- saves --------------------------------------------------------------------------------------
 
 /// The conflict's part of a save at this step boundary, with the phase 1 world's snapshot
@@ -1218,7 +1471,7 @@ pub(super) fn save(
         take_commands(st);
     }
     let l = &mut st.conflict;
-    let out = paging::save(
+    let mut out = paging::save(
         &mut l.engine,
         &mut l.pager,
         l.enabled,
@@ -1229,6 +1482,7 @@ pub(super) fn save(
     if out.0.is_some() {
         l.dropped_pages = false;
     }
+    l.kept.save(KEY_CONFLICT, batch, &mut out.1);
     out
 }
 
@@ -1238,11 +1492,15 @@ pub(super) fn save(
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ConflictLinkStats {
     pub records: u64,
+    /// Records heard while switched off: not applied then, the journaled ones kept for the
+    /// switch-on (RP-292).
     pub ignored: u64,
     pub commands_written: u64,
     pub band_states: u64,
     /// CHIEF_STATE records given to the engine.
     pub chief_states: u64,
+    /// HAVEN_CHEST records (journaled) given to the engine.
+    pub haven_chests: u64,
     /// Records whose engine half comes with a later slice, dropped.
     pub deferred: u64,
     /// Sources the industry engine's districts set or changed.
@@ -1309,6 +1567,7 @@ impl super::Engine {
                 commands_written: l.commands_written,
                 band_states: l.band_states,
                 chief_states: l.chief_states,
+                haven_chests: l.haven_chests,
                 deferred: l.deferred,
                 fed: l.fed,
                 replay_dropped: g.dropped,

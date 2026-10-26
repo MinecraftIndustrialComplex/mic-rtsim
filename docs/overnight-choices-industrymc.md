@@ -156,7 +156,13 @@ so a single-threaded read costs about the same there.
   train stood there, discards the window instead (IND_DISCARD 5). IND_TRAIN_DEPARTED waits until `navigation.destination` is set (Create sets it after
   `leaveStation`), at most 40 ticks; ETA = `distanceToDestination / maxSpeed()` in ticks.
 - **H17.** IND_CARRIAGE_DELTA is deduplicated by the journal's op index alone: train cargo
-  (`RailwaySavedData`) and the journal are both SavedData written by the same save. Removals go first,
+  (`RailwaySavedData`) and the journal are both SavedData written by the same save. *Corrected
+  2026-10-25 (slice U, docs/choices-journal-barrier.md RP-200):* one save writes them, but as two
+  files on NeoForge's IO chain, in the order of the overworld's SavedData map, so a crash between the
+  two parted them (the train's goods moved twice, or the journal knowing an op whose goods the train
+  on disk still has). Slice U writes the journal's file last in a world save, so only "the tracks
+  newer than the journal" is left, and slice T2 (docs/choices-mowzie-build.md RP-190 to RP-196) makes
+  that exact with a ring of applied ops in each train's own NBT. Removals go first,
   as in a reconcile. A train that is not found still gets an IND_CARRIAGE_RESULT (everything applied 0),
   since the engine corrects stock from the result and not from COMMAND_RESULT; a carriage storage that
   is not initialized (Create throws) counts as empty.

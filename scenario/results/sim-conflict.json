@@ -6,7 +6,7 @@
   "runs": [
     {
       "variant": "ignore",
-      "wall_ms": 214.965706,
+      "wall_ms": 186.453936,
       "checks": [
         {
           "name": "conservation",
@@ -327,6 +327,9 @@
         "camp_written_off": 0,
         "arrivals": 0,
         "renewal_losses": 0,
+        "tribute_stacks": 0,
+        "hunts_owed": 0,
+        "hunts_killed": 0,
         "rail_passes": 0,
         "rail_pushes": 0,
         "rail_wakes": 0,
@@ -720,7 +723,7 @@
       ],
       "wire_bytes": 3104,
       "state_hashes": [
-        "1cb6eb4c57e1715c",
+        "9c5cdd705037c2d4",
         "d450929438383fb2"
       ],
       "archive": {
@@ -768,7 +771,7 @@
     },
     {
       "variant": "tribute",
-      "wall_ms": 209.062105,
+      "wall_ms": 179.991706,
       "checks": [
         {
           "name": "conservation",
@@ -987,6 +990,9 @@
         "camp_written_off": 0,
         "arrivals": 0,
         "renewal_losses": 0,
+        "tribute_stacks": 0,
+        "hunts_owed": 0,
+        "hunts_killed": 0,
         "rail_passes": 0,
         "rail_pushes": 0,
         "rail_wakes": 0,
@@ -1295,7 +1301,7 @@
       ],
       "wire_bytes": 2480,
       "state_hashes": [
-        "b360d5080562882b",
+        "fbc3172af94da5e1",
         "a7cefff0accd3c46"
       ],
       "archive": {
@@ -1336,7 +1342,7 @@
     },
     {
       "variant": "converter",
-      "wall_ms": 221.071648,
+      "wall_ms": 174.01361500000002,
       "checks": [
         {
           "name": "conservation",
@@ -1533,6 +1539,9 @@
         "camp_written_off": 0,
         "arrivals": 0,
         "renewal_losses": 0,
+        "tribute_stacks": 0,
+        "hunts_owed": 0,
+        "hunts_killed": 0,
         "rail_passes": 0,
         "rail_pushes": 0,
         "rail_wakes": 0,
@@ -1746,7 +1755,7 @@
       ],
       "wire_bytes": 1344,
       "state_hashes": [
-        "b42ee1a0f30ab136",
+        "03ffce4aa6ad5aba",
         "2c2221234256e7c3"
       ],
       "archive": {
@@ -1791,7 +1800,7 @@
   "restore": {
     "name": "a restore continues with the same state",
     "ok": true,
-    "detail": "saved and loaded on day 9.3: conflict 1cb6eb4c57e1715c, world d450929438383fb2 (uninterrupted 1cb6eb4c57e1715c, d450929438383fb2)"
+    "detail": "saved and loaded on day 9.3: conflict 9c5cdd705037c2d4, world d450929438383fb2 (uninterrupted 9c5cdd705037c2d4, d450929438383fb2)"
   },
   "archive": {
     "rows_per_day": 8.75,

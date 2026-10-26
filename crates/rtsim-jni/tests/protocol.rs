@@ -2671,7 +2671,11 @@ mod dragons {
                 _ => None,
             })
             .collect();
-        assert_eq!(answers, vec![("discard", 1)], "the natural dragon is discarded");
+        assert_eq!(
+            answers,
+            vec![("discard", 1)],
+            "the natural dragon is discarded"
+        );
         assert_eq!(summary(&e).0, 1, "and never joins the sim");
 
         // A save: pages with all of that.
@@ -2822,7 +2826,8 @@ mod dragons {
             "the village's books: its tribute paid"
         );
 
-        // The plugin finds the chest, but the chunk is gone again: every stack fails and waits.
+        // The plugin finds the chest, but it is full when the stacks arrive: every stack fails
+        // and waits.
         let chest = [HOME.0 + 2, HOME.1 - 4, HOME.2 + 1];
         let lair_chest = O::LairChest(db::LairChest {
             lair: LAIR,
@@ -2891,6 +2896,322 @@ mod dragons {
         );
         assert_eq!(world, ledger, "the world's tribute is the dragons'");
         assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// RP-291: a tribute stack answered with the dragons switched off is placed once. The lair's
+    /// chest is reported and the dragons send their stacks; ECOLOGY goes off in the tick Java
+    /// applies them (MODULES ahead of their APPLIED in that hand-over, as BoundarySession's
+    /// preamble puts it). The core takes each APPLIED out of the outbox whatever the switch. Java
+    /// reads an ack past the answers: it trims its journal through them, and the journal's op
+    /// index (`Journal.commandOpApplied`, `forgetOp`) and the chest's chunk carry forget the ops
+    /// with it, so the test drops them from the fake's applied set as main's Java does. Back on,
+    /// the dragons must not send a stack again: before the fix `after_core` ignored the answers
+    /// while off, so the stacks stayed `placing`, `write_tribute` wrote them again under the same
+    /// ops at the switch on, and Java, which no longer knew them, put the coin in the chest a
+    /// second time.
+    #[test]
+    fn a_tribute_stack_answered_with_the_dragons_off_is_placed_once() {
+        use rtsim_jni::engine::MODULE_ECOLOGY;
+        let dir = tmpdir("tribute-off");
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        j.module_mask = MODULES;
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        let village = 0x0001_0000_0000_0001u64;
+        j.adopt(village, "minecraft:village_plains", "human", 90, 2900, 3000);
+        j.dragon_obs(&O::LairFound(db::LairFound {
+            lair: LAIR,
+            late: false,
+            dimension: dim,
+            species: Species::Fire,
+            kind: LairKind::Roost,
+            min: (HOME.0 - 30, 60, HOME.2 - 30),
+            max: (HOME.0 + 30, 140, HOME.2 + 30),
+            home: HOME,
+        }));
+        j.idle();
+        j.idle();
+        j.work_catalog(&test_works());
+        j.idle();
+        e.order(vec![
+            Order::WorksGrant {
+                village,
+                amount: 2_000_000,
+            },
+            Order::TributeStart {
+                village,
+                lair: LAIR,
+            },
+        ])
+        .unwrap();
+        j.idle();
+        j.idle();
+        let [paid, _, coins, _] = e.dragons_tribute();
+        assert_eq!(paid, 1);
+        assert!(coins > 64, "more than one stack: {coins}");
+        let stacks = (coins + 63) / 64;
+
+        // The chest: the stacks go out, and Java applies them at the end of the step that wrote
+        // them (`flush`), journaling their APPLIED. ECOLOGY goes off before the next hand-over.
+        let chest = [HOME.0 + 2, HOME.1 - 4, HOME.2 + 1];
+        j.dragon_obs(&O::LairChest(db::LairChest {
+            lair: LAIR,
+            dimension: dim,
+            pos: (chest[0], chest[1], chest[2]),
+        }));
+        for _ in 0..8 {
+            j.flush();
+            if !transfer_ops(&j).is_empty() {
+                break;
+            }
+        }
+        let ops = transfer_ops(&j);
+        assert_eq!(ops.len() as i64, stacks, "every stack sent at once");
+        assert_eq!(j.containers.get(&chest).copied(), Some(coins as i32));
+        j.modules(MODULES & !MODULE_ECOLOGY);
+        j.idle();
+        j.idle();
+        let placing_off = e.dragons_tribute()[3];
+
+        // Java reads an ack past the answers and forgets their ops.
+        save_durable(&e, &mut j);
+        j.idle();
+        let answered = |r: &[u8]| {
+            wire::u16_at(r, wire::R_KIND) == obs::COMMAND_RESULT
+                && ops.contains(&wire::u64_at(r, obs::command_result::OP_ID))
+        };
+        assert!(
+            !j.journal.iter().any(|(_, r)| answered(r)),
+            "the journal is trimmed past the answers"
+        );
+        for op in &ops {
+            j.applied_cmd_ops.remove(op);
+        }
+
+        j.modules(MODULES);
+        for _ in 0..4 {
+            j.idle();
+        }
+        let sent: Vec<u64> = j
+            .commands
+            .iter()
+            .filter(|(_, kind, op)| *kind == cmd::TRANSFER_TO_CONTAINER && ops.contains(op))
+            .map(|(_, _, op)| *op)
+            .collect();
+        assert_eq!(
+            sent.len() as i64,
+            stacks,
+            "each stack written once (the chest holds {:?} of {coins} coins)",
+            j.containers.get(&chest)
+        );
+        assert_eq!(
+            j.containers.get(&chest).copied(),
+            Some(coins as i32),
+            "no coin made"
+        );
+        assert_eq!(
+            placing_off, 0,
+            "the answers heard while off took their stacks out of `placing`"
+        );
+        assert_eq!(e.dragons_tribute(), [1, coins, 0, 0], "every coin placed");
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// C1 of slice U (docs/choices-journal-barrier.md, RP-210): a crash in direction B, the
+    /// engine's pages newer than Java's journal, with the lair chest's chunk saved ahead of the
+    /// journal. The stacks were sent and put in the chest after the save; the chunk holds the coin
+    /// and carries their COMMAND_RESULT(APPLIED); the journal lost both. At the restart the outbox
+    /// resends the stacks while the chunk is not loaded. When the chunk loads it REASSERTs the
+    /// APPLIED records, and the plugin reports its chest again. The coin is in the chest once.
+    #[test]
+    fn a_tribute_stack_in_a_chunk_saved_ahead_of_the_journal_is_placed_once() {
+        let dir = tmpdir("tribute-chunk-ahead");
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        j.module_mask = MODULES;
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        let village = 0x0001_0000_0000_0001u64;
+        j.adopt(village, "minecraft:village_plains", "human", 90, 2900, 3000);
+        j.dragon_obs(&O::LairFound(db::LairFound {
+            lair: LAIR,
+            late: false,
+            dimension: dim,
+            species: Species::Fire,
+            kind: LairKind::Roost,
+            min: (HOME.0 - 30, 60, HOME.2 - 30),
+            max: (HOME.0 + 30, 140, HOME.2 + 30),
+            home: HOME,
+        }));
+        j.idle();
+        j.idle();
+        j.work_catalog(&test_works());
+        j.idle();
+        e.order(vec![
+            Order::WorksGrant {
+                village,
+                amount: 2_000_000,
+            },
+            Order::TributeStart {
+                village,
+                lair: LAIR,
+            },
+        ])
+        .unwrap();
+        j.idle();
+        j.idle();
+        let [paid, _, coins, _] = e.dragons_tribute();
+        assert_eq!(paid, 1);
+        let stacks = (coins + 63) / 64;
+        let chest = [HOME.0 + 2, HOME.1 - 4, HOME.2 + 1];
+        let lair_chest = O::LairChest(db::LairChest {
+            lair: LAIR,
+            dimension: dim,
+            pos: (chest[0], chest[1], chest[2]),
+        });
+
+        // The chest is reported and the stacks are written; Minecraft has not applied them yet
+        // when the engine's pages are saved, and the journal is saved at the same point.
+        j.hold_commands = true;
+        j.dragon_obs(&lair_chest);
+        j.idle();
+        j.idle();
+        let sent: BTreeSet<u64> = j.held_ops.iter().copied().collect();
+        assert_eq!(sent.len() as i64, stacks);
+        assert_eq!(e.dragons_tribute(), [1, 0, 0, stacks]);
+        save_durable(&e, &mut j);
+        let saved = j.world_save();
+        let gen1 = j.nonce;
+        // Then Minecraft applies them: the coin goes into the chest, and the chest's chunk
+        // carries their APPLIED records. That chunk is written on unload; the journal is not
+        // saved again before the crash.
+        j.hold_commands = false;
+        let carried = j.apply_held_transfers();
+        assert_eq!(j.containers.get(&chest).copied(), Some(coins as i32));
+        let _ = j.crash();
+
+        // The restart: the journal from the save, the chunk from after it.
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), saved);
+        j.module_mask = MODULES;
+        j.containers.insert(chest, coins as i32);
+        assert_eq!(e.dragons_tribute(), [1, 0, 0, stacks], "the pages hold them placing");
+        // The outbox resends them at once, while the chest's chunk is not loaded.
+        j.unloaded_transfers = true;
+        j.idle();
+        j.idle();
+        assert_eq!(transfer_ops(&j), sent, "the stacks resent under their op ids");
+        assert_eq!(
+            j.containers.get(&chest).copied(),
+            Some(coins as i32),
+            "nothing put while the chunk is not loaded"
+        );
+
+        // The chunk loads: its carried records come back as copies of the first session's, and
+        // the plugin's next chest scan reports the chest in it again.
+        j.unloaded_transfers = false;
+        for r in &carried {
+            j.reassert(gen1, r);
+        }
+        j.dragon_obs(&lair_chest);
+        j.idle();
+        j.idle();
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        assert_eq!(
+            j.containers.get(&chest).copied(),
+            Some(coins as i32),
+            "the coin is in the chest once"
+        );
+        assert_eq!(e.dragons_tribute(), [1, coins, 0, 0], "every coin placed, once");
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// A tribute stack that finds its chest's chunk not loaded (NOT_LOADED, RP-210) stays placing
+    /// under its op id and is not sent again until its lair reports a chest. Then it goes to the
+    /// chest it went to first, whichever chest the report names: only that chest's chunk could
+    /// carry the record that it is already there. New coin goes to the reported chest.
+    #[test]
+    fn a_tribute_stack_whose_chunk_is_not_loaded_waits_under_its_op_id_for_its_own_chest() {
+        let dir = tmpdir("tribute-unloaded");
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        j.module_mask = MODULES;
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        let village = 0x0001_0000_0000_0001u64;
+        j.adopt(village, "minecraft:village_plains", "human", 90, 2900, 3000);
+        j.dragon_obs(&O::LairFound(db::LairFound {
+            lair: LAIR,
+            late: false,
+            dimension: dim,
+            species: Species::Fire,
+            kind: LairKind::Roost,
+            min: (HOME.0 - 30, 60, HOME.2 - 30),
+            max: (HOME.0 + 30, 140, HOME.2 + 30),
+            home: HOME,
+        }));
+        j.idle();
+        j.idle();
+        j.work_catalog(&test_works());
+        j.idle();
+        e.order(vec![
+            Order::WorksGrant {
+                village,
+                amount: 2_000_000,
+            },
+            Order::TributeStart {
+                village,
+                lair: LAIR,
+            },
+        ])
+        .unwrap();
+        j.idle();
+        j.idle();
+        let [_, _, coins, _] = e.dragons_tribute();
+        let stacks = (coins + 63) / 64;
+        let report = |pos: [i32; 3]| {
+            O::LairChest(db::LairChest {
+                lair: LAIR,
+                dimension: dim,
+                pos: (pos[0], pos[1], pos[2]),
+            })
+        };
+        let first = [HOME.0 + 2, HOME.1 - 4, HOME.2 + 1];
+        let other = [HOME.0 + 20, HOME.1 - 4, HOME.2 + 20];
+
+        j.unloaded_transfers = true;
+        j.dragon_obs(&report(first));
+        j.idle();
+        j.idle();
+        let sent = transfer_ops(&j);
+        assert_eq!(sent.len() as i64, stacks);
+        assert_eq!(
+            e.dragons_tribute(),
+            [1, 0, 0, stacks],
+            "not loaded: still placing, no coin back to wait"
+        );
+        let has_chest = |e: &Engine| {
+            e.with_dragons(|d, _| d.lair_of_key(LAIR).and_then(|l| d.chest(l)).is_some())
+        };
+        assert!(!has_chest(&e), "the chest is forgotten until reported again");
+        let commands = j.commands.len();
+        j.idle();
+        j.idle();
+        assert_eq!(j.commands.len(), commands, "parked: not sent again every step");
+
+        // The plugin reports another chest of the lair (the first one's chunk loaded meanwhile,
+        // carrying nothing): the parked stacks go again under their op ids, to the first chest.
+        j.unloaded_transfers = false;
+        j.dragon_obs(&report(other));
+        j.idle();
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        assert_eq!(transfer_ops(&j), sent, "the same op ids, no new ones");
+        assert_eq!(j.containers.get(&first).copied(), Some(coins as i32));
+        assert_eq!(j.containers.get(&other), None, "none into the other chest");
+        assert_eq!(e.dragons_tribute(), [1, coins, 0, 0]);
+        assert!(has_chest(&e), "the reported chest is kept for new coin");
         e.close(true, Duration::from_secs(5)).unwrap();
     }
 
@@ -3072,21 +3393,38 @@ mod dragons {
         let first = adoptions(&j);
         assert_eq!(first.len(), 1, "the lair's own dragon is adopted");
         let (agent, epoch) = (first[0].agent, first[0].epoch);
-        let last = |j: &Java| *j.far.iter().rev().find(|r| r.agent == agent).expect("a far leg");
+        let last = |j: &Java| {
+            *j.far
+                .iter()
+                .rev()
+                .find(|r| r.agent == agent)
+                .expect("a far leg")
+        };
         let body = last(&j);
-        assert_eq!(body.state, FarState::Body, "an adopted dragon is a body in the game");
+        assert_eq!(
+            body.state,
+            FarState::Body,
+            "an adopted dragon is a body in the game"
+        );
         assert_eq!(body.kind, FAR_KIND_DRAGON);
         assert_eq!(
-            j.cmd_dict.get(&(wire::DICT_BODY, body.body)).map(String::as_str),
+            j.cmd_dict
+                .get(&(wire::DICT_BODY, body.body))
+                .map(String::as_str),
             Some("iceandfire:fire_dragon"),
             "its species in the engine's dictionary"
         );
         assert_eq!(
-            j.cmd_dict.get(&(wire::DICT_DIMENSION, body.dimension)).map(String::as_str),
+            j.cmd_dict
+                .get(&(wire::DICT_DIMENSION, body.dimension))
+                .map(String::as_str),
             Some(OVERWORLD)
         );
         assert!((1..=5).contains(&body.stage));
-        assert_eq!(body.age_days, 110, "its age in whole days, as the body reported it (DH-7)");
+        assert_eq!(
+            body.age_days, 110,
+            "its age in whole days, as the body reported it (DH-7)"
+        );
 
         // Captured, it is abstract again: at its lair, or on a leg in game time.
         let seen = j.far.len();
@@ -3103,7 +3441,11 @@ mod dragons {
             j.game_time
         );
         if after.state == FarState::Roost {
-            assert_eq!((after.x0, after.z0), (HOME.0, HOME.2), "it rests at its lair");
+            assert_eq!(
+                (after.x0, after.z0),
+                (HOME.0, HOME.2),
+                "it rests at its lair"
+            );
         }
 
         // Quiet steps send nothing.
@@ -3351,6 +3693,379 @@ mod dragons {
     #[test]
     fn a_dragon_killed_after_a_save_stays_dead_after_a_clean_restart() {
         assert_eq!(dragons_after_a_death("dragon-died-clean", false), 0);
+    }
+
+    /// How the dragons come back on in [`a_dragon_after_a_death_while_off`].
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum BackOn {
+        /// Switched on in the session.
+        SwitchOn,
+        /// After a save that trimmed the death from Java's journal and a clean restart with them
+        /// on.
+        Restart,
+        /// The same, after a save that wrote the kept page failed first.
+        RestartAfterAFailedSave,
+    }
+
+    /// A lair's own dragon, well fed (it rests in its lair, so a player there sees it whenever
+    /// the dragons run), adopted and embodied. The dragons are switched off, and Java keeps the
+    /// body: it sends no capture at the switch-off. In that window the body dies (`killer_kind`:
+    /// a player's kill, or a taming, which Java reports with no attacker). Then the dragons come
+    /// back on ([`BackOn`]) with a player at the lair. Returns (dragons alive, materializations
+    /// of that dragon after the switch-on).
+    fn a_dragon_after_a_death_while_off(
+        tag: &str,
+        killer_kind: AttackerKind,
+        back_on: BackOn,
+    ) -> (usize, usize) {
+        let dir = tmpdir(tag);
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        j.module_mask = MODULES;
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        j.dragon_obs(&O::LairFound(db::LairFound {
+            lair: LAIR,
+            late: false,
+            dimension: dim,
+            species: Species::Fire,
+            kind: LairKind::Roost,
+            min: (HOME.0 - 30, 60, HOME.2 - 30),
+            max: (HOME.0 + 30, 140, HOME.2 + 30),
+            home: HOME,
+        }));
+        let mut fed = untagged((0xD3, 0x1), SpawnKind::Structure, LAIR, dim);
+        if let O::Untagged(u) = &mut fed {
+            u.hunger = 100;
+        }
+        j.dragon_obs(&fed);
+        j.idle();
+        j.idle();
+        let a = adoptions(&j)[0];
+        assert_eq!(summary(&e).0, 1, "one dragon, embodied");
+
+        // Off, and the body dies in the window.
+        j.modules(0b1111);
+        j.idle();
+        let killer = if killer_kind == AttackerKind::Player {
+            PLAYER
+        } else {
+            (0, 0)
+        };
+        j.dragon_obs(&O::Died(db::Died {
+            agent: a.agent,
+            epoch: a.epoch,
+            killer_kind,
+            killer,
+            dimension: dim,
+            pos: (f64::from(HOME.0), f64::from(HOME.1), f64::from(HOME.2)),
+        }));
+        j.idle();
+        j.idle();
+        assert!(
+            e.dragons_ignored() >= 1,
+            "the death was not applied while off"
+        );
+        assert_eq!(summary(&e).0, 1, "nothing changes while off");
+
+        let (e, mut j) = if back_on != BackOn::SwitchOn {
+            if back_on == BackOn::RestartAfterAFailedSave {
+                // The first save since the death writes the kept page, and fails (a torn log):
+                // the page is not on disk, though the list has not changed since.
+                let failed = e.stats_array()[15];
+                e.inject_store_fault(Some(rtsim_kernel::page::Fault::TornLog));
+                e.order(vec![Order::SaveAtNextStep]).unwrap();
+                j.run_until("the failed save", |j| j.e.stats_array()[15] > failed);
+                e.inject_store_fault(None);
+            }
+            save_durable(&e, &mut j);
+            j.idle();
+            let saved = j.world_save();
+            assert!(
+                !saved
+                    .journal
+                    .iter()
+                    .any(|(_, r)| wire::u16_at(r, wire::R_KIND) == db::DRAGON_DIED),
+                "the save trimmed the death from Java's journal: only the pages can hold it"
+            );
+            e.close(true, Duration::from_secs(5)).unwrap();
+            let e = engine(&dir, 256 * 1024);
+            let mut j = Java::open(e.clone(), saved);
+            j.module_mask = MODULES;
+            (e, j)
+        } else {
+            j.modules(MODULES);
+            (e, j)
+        };
+        let materialized = j.iaf.len();
+        j.players = vec![(PLAYER, dim, [3010.0, 70.0, 3005.0])];
+        for _ in 0..600 {
+            j.tick();
+        }
+        j.idle();
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        let again = j.iaf[materialized..]
+            .iter()
+            .filter(|(_, c)| matches!(c, D::Materialize(m) if m.agent == a.agent))
+            .count();
+        let alive = summary(&e).0;
+        e.close(true, Duration::from_secs(5)).unwrap();
+        (alive, again)
+    }
+
+    /// U-c (RP-292, docs/replay-gate.md 9.7): a dragon a player killed while the dragons were
+    /// switched off stays dead when they are switched on. Before: the death was ignored, the
+    /// switch-on's reset made the dragon abstract and alive, and the player at the lair saw it
+    /// materialize beside its corpse.
+    #[test]
+    fn a_dragon_killed_while_switched_off_stays_dead() {
+        assert_eq!(
+            a_dragon_after_a_death_while_off(
+                "dragon-died-off",
+                AttackerKind::Player,
+                BackOn::SwitchOn
+            ),
+            (0, 0),
+            "(alive, materialized again)"
+        );
+    }
+
+    /// The same across a save and a clean restart with the dragons on: the death the pages kept
+    /// is applied when they run again.
+    #[test]
+    fn a_dragon_killed_while_switched_off_stays_dead_after_a_restart() {
+        assert_eq!(
+            a_dragon_after_a_death_while_off(
+                "dragon-died-off-restart",
+                AttackerKind::Player,
+                BackOn::Restart
+            ),
+            (0, 0),
+            "(alive, materialized again)"
+        );
+    }
+
+    /// U-c's review, probe C (RP-292, `paging::Kept`'s dirty flag): the first save after a
+    /// death while off writes the kept page and fails; the next save, with the list unchanged,
+    /// writes it again, and trims the death from Java's journal. After a clean restart with the
+    /// dragons on, the death the page kept is applied: the dragon stays dead. Without the flag
+    /// set again on the failed save, the page never reached the disk, the death was lost, and the
+    /// dragon came back alive and materialized beside its corpse (alive 1, materialized again 1).
+    #[test]
+    fn a_dragon_killed_while_off_stays_dead_after_a_failed_save_and_a_restart() {
+        assert_eq!(
+            a_dragon_after_a_death_while_off(
+                "dragon-died-off-failed-save",
+                AttackerKind::Player,
+                BackOn::RestartAfterAFailedSave
+            ),
+            (0, 0),
+            "(alive, materialized again)"
+        );
+    }
+
+    /// U-c (RP-292): a dragon tamed while the dragons were switched off (DRAGON_DIED with no
+    /// attacker, `DragonBridge.onTame`) does not come back as a wild one.
+    #[test]
+    fn a_dragon_tamed_while_switched_off_does_not_come_back() {
+        assert_eq!(
+            a_dragon_after_a_death_while_off(
+                "dragon-tamed-off",
+                AttackerKind::None,
+                BackOn::SwitchOn
+            ),
+            (0, 0),
+            "(alive, materialized again)"
+        );
+    }
+
+    /// The same across a save and a clean restart with the dragons on.
+    #[test]
+    fn a_dragon_tamed_while_switched_off_does_not_come_back_after_a_restart() {
+        assert_eq!(
+            a_dragon_after_a_death_while_off(
+                "dragon-tamed-off-restart",
+                AttackerKind::None,
+                BackOn::Restart
+            ),
+            (0, 0),
+            "(alive, materialized again)"
+        );
+    }
+
+    /// U-c's review, P1 (RP-292, docs/replay-gate.md 9.7: "a record applied while off goes in at
+    /// its own tick"): the lair's own dragon, adopted and embodied, is killed by a player in the
+    /// switch-off's tick (journaled after the MODULES record), and the dragons are switched on
+    /// three days later with the player at the lair. The dragon stays dead, never materialized
+    /// again, and its lair stands empty from the death's own tick, not from the switch-on's.
+    /// Before: the record was booked no earlier than the world's present, so the switch-on ran
+    /// the three days first and then booked the death at the switch-on.
+    #[test]
+    fn a_dragon_killed_in_the_switchs_tick_stays_dead_after_a_late_switch_on() {
+        let dir = tmpdir("dragon-died-late-on");
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        j.module_mask = MODULES;
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        j.dragon_obs(&O::LairFound(db::LairFound {
+            lair: LAIR,
+            late: false,
+            dimension: dim,
+            species: Species::Fire,
+            kind: LairKind::Roost,
+            min: (HOME.0 - 30, 60, HOME.2 - 30),
+            max: (HOME.0 + 30, 140, HOME.2 + 30),
+            home: HOME,
+        }));
+        let mut fed = untagged((0xD3, 0x2), SpawnKind::Structure, LAIR, dim);
+        if let O::Untagged(u) = &mut fed {
+            u.hunger = 100;
+        }
+        j.dragon_obs(&fed);
+        j.idle();
+        j.idle();
+        let a = adoptions(&j)[0];
+        assert_eq!(summary(&e).0, 1, "one dragon, embodied");
+        assert_eq!(
+            e.with_dragons(|d, _| d.lairs[0].vacant_since),
+            None,
+            "the lair is lived in"
+        );
+
+        // Off, and the body dies in the switch's tick.
+        j.modules(0b1111);
+        let died_at = j.game_time;
+        j.dragon_obs(&O::Died(db::Died {
+            agent: a.agent,
+            epoch: a.epoch,
+            killer_kind: AttackerKind::Player,
+            killer: PLAYER,
+            dimension: dim,
+            pos: (f64::from(HOME.0), f64::from(HOME.1), f64::from(HOME.2)),
+        }));
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        assert_eq!(summary(&e).0, 1, "nothing changes while off");
+        let on_at = died_at + 3 * 24_000;
+        while j.game_time < on_at {
+            j.game_time += 1_000;
+            j.idle();
+        }
+
+        j.modules(MODULES);
+        let materialized = j.iaf.len();
+        j.players = vec![(PLAYER, dim, [3010.0, 70.0, 3005.0])];
+        for _ in 0..600 {
+            j.tick();
+        }
+        j.idle();
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        let again = j.iaf[materialized..]
+            .iter()
+            .filter(|(_, c)| matches!(c, D::Materialize(m) if m.agent == a.agent))
+            .count();
+        let alive = summary(&e).0;
+        let vacant = e.with_dragons(|d, _| d.lairs[0].vacant_since);
+        e.close(true, Duration::from_secs(5)).unwrap();
+        assert_eq!((alive, again), (0, 0), "(alive, materialized again)");
+        let vacant = vacant.expect("the lair stands empty").0 as i64;
+        assert!(
+            (died_at..on_at).contains(&vacant),
+            "empty from the death's own tick {died_at}, before the switch-on at {on_at}: {vacant}"
+        );
+    }
+
+    /// The lair's own dragon, hungry and abstract (captured), and a flock of 5,000 sheep 360
+    /// blocks from its lair: its only prey, since the test world has no settlement. With `off`,
+    /// ECOLOGY (the dragons' and the herds' one bit) goes off at once, a stale hurt of the
+    /// captured body comes six days later (a record the dragons keep), and ECOLOGY comes on in
+    /// the next tick: the switch-on's catch-up to the kept record runs the six days. Without
+    /// `off` the six days run with everything on. Returns the dragons' herd hunts by then.
+    fn herd_hunts_in_six_days(tag: &str, off: bool) -> u64 {
+        let dir = tmpdir(tag);
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        j.module_mask = MODULES;
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        e.order(vec![Order::HerdFound {
+            name: "Bait flock".into(),
+            species: "minecraft:sheep".into(),
+            dimension: dim,
+            x: HOME.0 + 300,
+            z: HOME.2 + 200,
+            count: 5_000,
+            seed: 5,
+        }])
+        .unwrap();
+        j.idle();
+        j.dragon_obs(&O::LairFound(db::LairFound {
+            lair: LAIR,
+            late: false,
+            dimension: dim,
+            species: Species::Fire,
+            kind: LairKind::Roost,
+            min: (HOME.0 - 30, 60, HOME.2 - 30),
+            max: (HOME.0 + 30, 140, HOME.2 + 30),
+            home: HOME,
+        }));
+        j.dragon_obs(&untagged((0xD3, 0x3), SpawnKind::Structure, LAIR, dim));
+        j.idle();
+        j.idle();
+        let a = adoptions(&j)[0];
+        j.dragon_obs(&captured(a.agent, a.epoch, dim, 400.0));
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        assert_eq!(e.dragon_stats().0.herd_hunts, 0, "no hunt yet");
+
+        if off {
+            j.modules(0b1111);
+            j.idle();
+        }
+        let until = j.game_time + 6 * 24_000;
+        while j.game_time < until {
+            j.game_time += 1_000;
+            j.idle();
+        }
+        if off {
+            assert_eq!(e.dragon_stats().0.herd_hunts, 0, "nothing runs while off");
+            j.dragon_obs(&O::Hurt(db::Hurt {
+                agent: a.agent,
+                epoch: a.epoch,
+                attacker_kind: AttackerKind::Player,
+                attacker: PLAYER,
+                hits: 1,
+                amount: 1.0,
+                health_after: 399.0,
+            }));
+            j.idle();
+            assert_eq!(e.dragons_ignored(), 1, "the hurt kept");
+            j.modules(MODULES);
+            j.idle();
+        }
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        let hunts = e.dragon_stats().0.herd_hunts;
+        e.close(true, Duration::from_secs(5)).unwrap();
+        hunts
+    }
+
+    /// U-c's review, P2: the dragons and the herds share ECOLOGY's bit, and the switch-on's
+    /// catch-up to a kept dragon record runs the window with the herds as the dragons' prey, as
+    /// it runs with both on: the hungry dragon hunts the flock. Before: MODULES reached the
+    /// dragons before the herds, so the dragons' reset applied their kept record with the herds
+    /// still off, ran the window with no prey (no hunt), and the herds then ran it with no
+    /// predator.
+    #[test]
+    fn the_dragons_hunt_the_herds_in_the_window_a_kept_record_reaches() {
+        assert!(
+            herd_hunts_in_six_days("dragons-hunt-on", false) > 0,
+            "the control: with both on the dragon hunts the flock"
+        );
+        let hunts = herd_hunts_in_six_days("dragons-hunt-kept-window", true);
+        assert!(
+            hunts > 0,
+            "no herd hunt in the window the kept record reached"
+        );
     }
 
     // ---- a test's order waits for the replay end (docs/replay-gate.md §4.5, RP-74) ------------
@@ -5094,7 +5809,13 @@ mod herds {
     /// §9.4 test 2: the epoch of a group decided after the pages and answered in the journal is
     /// not decided again after a crash. Returns (the old epoch, the next session's first).
     fn the_epoch_after_a_crash(name: &str, group: Group) -> (u32, u32) {
-        let old = the_old_session(name, Script { group, ..Script::QUIET });
+        let old = the_old_session(
+            name,
+            Script {
+                group,
+                ..Script::QUIET
+            },
+        );
         let before = old.group.as_ref().expect("a group").epoch;
         let (e, mut j) = next_session(&old, ONE_HAND_OVER, true);
         replay_quietly(&e, &mut j);
@@ -5156,12 +5877,13 @@ mod herds {
                 "only the shorn sheep is shorn"
             );
         }
-        let lasts: std::collections::BTreeSet<u64> = g
-            .members
-            .iter()
-            .map(|b| seen[&b.member].last.0)
-            .collect();
-        assert_eq!(lasts.len(), 1, "every member captured at one time: {lasts:?}");
+        let lasts: std::collections::BTreeSet<u64> =
+            g.members.iter().map(|b| seen[&b.member].last.0).collect();
+        assert_eq!(
+            lasts.len(),
+            1,
+            "every member captured at one time: {lasts:?}"
+        );
         drop(j);
         e.close(true, Duration::from_secs(5)).unwrap();
     }
@@ -5706,6 +6428,110 @@ mod herds {
             "running again, the page moves on"
         );
     }
+
+    /// A herd of 20 sheep (under the group cap, so every group holds every sheep) in a player's
+    /// view, its group embodied. The ecology module is switched off, and in the switch's tick, as
+    /// `HerdBridge.endOfTick` does, the plugin settles a player's kill and then captures the
+    /// group: both journaled after the MODULES record, which the preamble writes ahead of them.
+    /// Then the herds are switched on again: in this session (`restart` false), or after a save
+    /// that trimmed both from Java's journal and a clean restart with them on. Returns the
+    /// herd's (alive, killed) and whether a group materialized after the switch-on holds the
+    /// killed sheep.
+    fn a_herd_after_a_kill_in_the_switchs_tick(tag: &str, restart: bool) -> (u64, u64, bool) {
+        let dir = tmpdir(tag);
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        j.module_mask = MODULES;
+        let agent = found(&e, &mut j, 20);
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        let pos = [f64::from(AT.0) + 20.0, 64.0, f64::from(AT.1) - 10.0];
+        j.players = vec![(PLAYER, dim, pos)];
+        j.run_until("a herd group in view", |j| !materializations(j).is_empty());
+        j.idle();
+        let m = materializations(&j).remove(0);
+        assert_eq!(m.members.len(), 20, "every sheep in the group");
+
+        j.modules(0b1111);
+        let killed = j.herd_plugin.kill(agent, 1, PLAYER);
+        assert_eq!(killed.len(), 1);
+        let at = rtsim_kernel::clock::Tick(j.game_time.max(0) as u64);
+        j.herd_plugin.apply(
+            vec![H::Despawn(hb::Despawn {
+                agent,
+                epoch: m.epoch,
+                reason: 1,
+            })],
+            at,
+        );
+        j.herd_flush();
+        j.idle();
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        assert_eq!(summary(&e, agent).1, 0, "the kill not applied while off");
+
+        let (e, mut j) = if restart {
+            save(&e, &mut j);
+            j.idle();
+            let saved = j.world_save();
+            assert!(
+                !saved
+                    .journal
+                    .iter()
+                    .any(|(_, r)| wire::u16_at(r, wire::R_KIND) == hb::HERD_KILLED),
+                "the save trimmed the kill from Java's journal: only the pages can hold it"
+            );
+            e.close(true, Duration::from_secs(5)).unwrap();
+            let e = engine(&dir, 256 * 1024);
+            let mut j = Java::open(e.clone(), saved);
+            j.module_mask = MODULES;
+            j.players = vec![(PLAYER, dim, pos)];
+            (e, j)
+        } else {
+            j.modules(MODULES);
+            (e, j)
+        };
+        let shown = j.herds.len();
+        j.run_until("the herd in view again", |j| {
+            j.herds[shown.min(j.herds.len())..]
+                .iter()
+                .any(|(_, c)| matches!(c, H::Materialize(m) if m.agent == agent))
+        });
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        let again = j.herds[shown..]
+            .iter()
+            .filter_map(|(_, c)| match c {
+                H::Materialize(m) if m.agent == agent => Some(m),
+                _ => None,
+            })
+            .any(|m| m.members.iter().any(|b| b.member == killed[0]));
+        let (alive, k, _, _, _) = summary(&e, agent);
+        e.close(true, Duration::from_secs(5)).unwrap();
+        (alive, k, again)
+    }
+
+    /// U-c (RP-292, docs/replay-gate.md 9.7): a sheep a player killed in the switch-off's tick
+    /// is dead when the herds are switched on: booked once, never picked for a group again.
+    /// Before: the kill was ignored, and the next group in the player's view held the dead
+    /// sheep.
+    #[test]
+    fn a_herd_animal_killed_in_the_switchs_tick_is_not_picked_again() {
+        assert_eq!(
+            a_herd_after_a_kill_in_the_switchs_tick("herds-kill-off", false),
+            (19, 1, false),
+            "(alive, killed, the dead sheep in a later group)"
+        );
+    }
+
+    /// The same across a save and a clean restart with the herds on.
+    #[test]
+    fn a_herd_animal_killed_in_the_switchs_tick_is_not_picked_again_after_a_restart() {
+        assert_eq!(
+            a_herd_after_a_kill_in_the_switchs_tick("herds-kill-off-restart", true),
+            (19, 1, false),
+            "(alive, killed, the dead sheep in a later group)"
+        );
+    }
 }
 
 /// The conflict engine through the native link (docs/boundary.md §9, choices C2-1 to C2-17 in
@@ -5722,6 +6548,7 @@ mod conflict {
     use rtsim_kernel::handle::Handle;
     use rtsim_kernel::page::{PageKey, PageStore};
     use rtsim_settle::Pos;
+    use std::collections::BTreeSet;
 
     /// The core's four phase 1 modules and CONFLICT (bit 5).
     const MODULES: u32 = 0b1111 | MODULE_CONFLICT;
@@ -6256,6 +7083,381 @@ mod conflict {
         );
     }
 
+    /// The camp's envoy in a player's view. The conflict module is switched off, and in the
+    /// switch's tick, as `ConflictBridge.switchedOff` settles its deaths, the player's kills of
+    /// the whole band are journaled after the MODULES record, which the preamble writes ahead of
+    /// them. Then the conflict is switched on again: in this session (`restart` false), or after a
+    /// save that trimmed the kills from Java's journal and a clean restart with it on, and a day
+    /// passes with the player in the territory. Returns (casualties booked by the switch-on, the
+    /// envoy party's units left, 0 when it is gone, the envoy materialized again).
+    fn a_band_after_a_wipe_in_the_switchs_tick(tag: &str, restart: bool) -> (u64, u32, usize) {
+        let (dir, e, mut j) = camp(tag);
+        let envoy = envoy_in_view(&mut j);
+        let before = e.with_conflict(|c, _| c.stats.casualties);
+        j.modules(0b1111);
+        wipe(&mut j, &envoy, cb::BY_PLAYER, PLAYER);
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        assert_eq!(
+            e.with_conflict(|c, _| c.stats.casualties),
+            before,
+            "nothing applied while off"
+        );
+
+        let (e, mut j) = if restart {
+            save(&e, &mut j);
+            j.idle();
+            let saved = j.world_save();
+            assert!(
+                !saved
+                    .journal
+                    .iter()
+                    .any(|(_, r)| wire::u16_at(r, wire::R_KIND) == cb::BAND_CASUALTIES),
+                "the save trimmed the kills from Java's journal: only the pages can hold them"
+            );
+            e.close(true, Duration::from_secs(5)).unwrap();
+            let e = engine(&dir, 256 * 1024);
+            let mut j = Java::open(e.clone(), saved);
+            j.module_mask = MODULES;
+            let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+            let base = [f64::from(BASE.0) + 0.5, 64.0, f64::from(BASE.1) + 0.5];
+            j.players = vec![(PLAYER, dim, base)];
+            j.conflict_plugin = synth::FakeConflict::new(PLAYER);
+            (e, j)
+        } else {
+            j.modules(MODULES);
+            (e, j)
+        };
+        let shown = j.conflict.len();
+        let end = j.game_time + DAY;
+        advance_until(&mut j, 600, 2 * DAY, "a day on", |j| j.game_time >= end);
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        let booked = e.with_conflict(|c, _| c.stats.casualties) - before;
+        let units = e.with_conflict(|c, _| {
+            Party::of_agent(envoy.agent)
+                .and_then(|p| c.parties.get(p))
+                .map_or(0, |p| p.units.iter().map(|u| u.1).sum())
+        });
+        let again = j.conflict[shown..]
+            .iter()
+            .filter(|(_, c)| matches!(c, C::Envoy(x) if x.agent == envoy.agent))
+            .count();
+        e.close(true, Duration::from_secs(5)).unwrap();
+        (booked, units, again)
+    }
+
+    /// U-c (RP-292, docs/replay-gate.md 9.7): an envoy band a player wiped out in the
+    /// switch-off's tick stays dead when the conflict is switched on: its casualties booked, the
+    /// party gone, never in view again. Before: the kills were ignored, and the band came back
+    /// whole.
+    #[test]
+    fn a_band_wiped_out_in_the_switchs_tick_does_not_return() {
+        let (booked, units, again) =
+            a_band_after_a_wipe_in_the_switchs_tick("conflict-wipe-off", false);
+        assert_eq!(
+            (booked > 0, units, again),
+            (true, 0, 0),
+            "(casualties booked, units left, envoy in view again)"
+        );
+    }
+
+    /// The same across a save and a clean restart with the conflict on.
+    #[test]
+    fn a_band_wiped_out_in_the_switchs_tick_does_not_return_after_a_restart() {
+        let (booked, units, again) =
+            a_band_after_a_wipe_in_the_switchs_tick("conflict-wipe-off-restart", true);
+        assert_eq!(
+            (booked > 0, units, again),
+            (true, 0, 0),
+            "(casualties booked, units left, envoy in view again)"
+        );
+    }
+
+    /// U-c's order property (RP-292, docs/replay-gate.md 9.7: "a record applied while off goes in
+    /// at its own tick, never at the frozen clock"): the conflict's events due between the
+    /// switch-off and a record it kept come due before the record's effect. The camp's envoy is on
+    /// its road to the player, its demand's deadline d0 days ahead, and the killing goes on. The
+    /// conflict is switched off, and at game time `wipe_at` a mob wipes the band out: a record the
+    /// conflict keeps. Then it is switched on at once. Returns (demands expired, demands withdrawn,
+    /// casualties booked, the conflict's log from the switch-off on, the wipe's game time).
+    fn a_kept_wipe_after_the_switch_off(
+        tag: &str,
+        wipe_at: impl Fn(i64) -> i64,
+    ) -> (u64, u64, u64, Vec<rtsim_conflict::engine::LogEntry>, i64) {
+        let (_dir, e, mut j) = camp(tag);
+        let envoy = envoy_in_view(&mut j);
+        let d0 = envoy.deadline;
+        let demand = |e: &Engine| feud(e, PLAYER).and_then(|f| f.demand).map(|d| d.3 as i64);
+        assert_eq!(demand(&e), Some(d0));
+        // The killing goes on: a demand cut at its deadline would not be an expired one.
+        signal(&mut j, 2, 5, PLAYER);
+        j.idle();
+        let before = e.with_conflict(|c, _| c.stats.casualties);
+        let _ = e.conflict_log(true);
+
+        j.modules(0b1111);
+        j.idle();
+        let at = wipe_at(d0);
+        assert!(j.game_time < at, "switched off before the wipe");
+        let limit = at - j.game_time + DAY;
+        advance_until(&mut j, 1_000, limit, "the wipe's time", |j| {
+            j.game_time >= at
+        });
+        let at = j.game_time;
+        assert_eq!(demand(&e), Some(d0), "off: nothing comes due");
+        wipe(&mut j, &envoy, cb::BY_MOB, (0, 0));
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        assert_eq!(
+            e.with_conflict(|c, _| c.stats.casualties),
+            before,
+            "kept, not applied while off"
+        );
+
+        j.modules(MODULES);
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        let log = e.conflict_log(false);
+        let (st, _) = e.conflict_stats();
+        let booked = e.with_conflict(|c, _| c.stats.casualties) - before;
+        assert_eq!(demand(&e), None, "settled one way or the other");
+        e.close(true, Duration::from_secs(5)).unwrap();
+        (st.expired, st.withdrawn, booked, log, at)
+    }
+
+    /// The order property, the wipe before the deadline. In the window the envoy reached its
+    /// spot and waited there (an event due after the switch-off and before the wipe): it fires
+    /// first, and the wipe then meets the waiting band. Its casualties are booked and the demand
+    /// is withdrawn (no player's hand), at the wipe's tick or later, never at the frozen clock
+    /// (the switch-off's), so the deadline after it finds no demand. Before RP-292 the wipe was
+    /// never heard: nothing withdrawn, the demand expired at d0.
+    #[test]
+    fn a_kept_wipe_comes_after_the_envoys_arrival_in_the_switch_off_window() {
+        let (expired, withdrawn, booked, log, at) =
+            a_kept_wipe_after_the_switch_off("conflict-off-order-arrival", |d0| d0 - DAY);
+        assert_eq!(
+            (expired, withdrawn, booked > 0),
+            (0, 1, true),
+            "(expired, withdrawn, casualties booked)"
+        );
+        let waits = log.iter().position(|l| l.kind == "envoy");
+        let gone = log.iter().position(|l| l.kind == "withdrawn");
+        assert!(
+            matches!((waits, gone), (Some(a), Some(b)) if a < b),
+            "the envoy waits at its spot, then the wipe withdraws its demand: {waits:?} {gone:?}"
+        );
+        assert!(
+            !log[..gone.unwrap()].iter().any(|l| l.kind == "home"),
+            "the band was still out at the wipe"
+        );
+        let gone = &log[gone.unwrap()];
+        assert!(
+            gone.tick >= at as u64,
+            "the wipe at its own tick {at} or later, not the frozen clock: {}",
+            gone.tick
+        );
+    }
+
+    /// The order property, the wipe after the deadline. In the window the envoy, bored, went
+    /// home, and the deadline passed: both fire first, so the demand expires at d0 and the wipe
+    /// then finds the band home, a straggler and no death. Taken at the frozen clock, the wipe
+    /// would have killed the waiting band and withdrawn the demand before its deadline.
+    #[test]
+    fn a_deadline_in_the_switch_off_window_comes_due_before_a_kept_wipe() {
+        let (expired, withdrawn, booked, log, at) =
+            a_kept_wipe_after_the_switch_off("conflict-off-order-deadline", |d0| d0 + 1_000);
+        assert_eq!(
+            (expired, withdrawn, booked),
+            (1, 0, 0),
+            "(expired, withdrawn, casualties booked)"
+        );
+        let unmet: Vec<u64> = log
+            .iter()
+            .filter(|l| l.what.contains("goes unmet"))
+            .map(|l| l.tick)
+            .collect();
+        assert_eq!(unmet.len(), 1, "one demand unmet");
+        assert!(unmet[0] < at as u64, "at its deadline, before the wipe");
+        assert!(
+            !log.iter().any(|l| l.kind == "withdrawn"),
+            "nothing withdrawn"
+        );
+    }
+
+    /// The camp's envoy on its road to the player, its demand's deadline d0 days ahead, and the
+    /// killing goes on. The conflict is switched off, and in the switch's tick a mob wipes the band
+    /// out (`ConflictBridge.switchedOff` settles deaths in the switch's own tick): a record the
+    /// conflict keeps. Then it is switched on at game time `on_at(d0)` (at once when that is not
+    /// ahead), and a day passes. Returns (demands expired, demands withdrawn, casualties booked,
+    /// the envoy party's units left, the conflict's log from the switch-off on, d0).
+    #[allow(clippy::type_complexity)]
+    fn a_wipe_in_the_switchs_tick_then_a_switch_on_at(
+        tag: &str,
+        on_at: impl Fn(i64) -> i64,
+    ) -> (
+        u64,
+        u64,
+        u64,
+        u32,
+        Vec<rtsim_conflict::engine::LogEntry>,
+        i64,
+    ) {
+        let (_dir, e, mut j) = camp(tag);
+        let envoy = envoy_in_view(&mut j);
+        let d0 = envoy.deadline;
+        signal(&mut j, 2, 5, PLAYER);
+        j.idle();
+        let before = e.with_conflict(|c, _| c.stats.casualties);
+        let _ = e.conflict_log(true);
+
+        j.modules(0b1111);
+        wipe(&mut j, &envoy, cb::BY_MOB, (0, 0));
+        j.idle();
+        assert!(j.game_time < d0, "the wipe before the deadline");
+        let until = on_at(d0);
+        if until > j.game_time {
+            let limit = until - j.game_time + DAY;
+            advance_until(&mut j, 1_000, limit, "the switch-on's time", |j| {
+                j.game_time >= until
+            });
+        }
+        assert_eq!(
+            e.with_conflict(|c, _| c.stats.casualties),
+            before,
+            "kept, not applied while off"
+        );
+
+        j.modules(MODULES);
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        let end = j.game_time + DAY;
+        advance_until(&mut j, 600, 2 * DAY, "a day on", |j| j.game_time >= end);
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        let (st, _) = e.conflict_stats();
+        let booked = e.with_conflict(|c, _| c.stats.casualties) - before;
+        let units = e.with_conflict(|c, _| {
+            Party::of_agent(envoy.agent)
+                .and_then(|p| c.parties.get(p))
+                .map_or(0, |p| p.units.iter().map(|u| u.1).sum())
+        });
+        let log = e.conflict_log(false);
+        e.close(true, Duration::from_secs(5)).unwrap();
+        (st.expired, st.withdrawn, booked, units, log, d0)
+    }
+
+    /// U-c's review, P1 (RP-292, docs/replay-gate.md 9.7: "a record applied while off goes in at
+    /// its own tick"): a band wiped out in the switch-off's tick, the conflict switched on two days
+    /// past the demand's deadline. The wipe is booked at its own tick, before the deadline: the
+    /// demand is withdrawn, never expired, the band's casualties booked and the party gone.
+    /// Before: the record was booked no earlier than the world's present, so the switch-on ran the
+    /// whole window first; the deadline passed, the envoy went home with its units, and the wipe
+    /// found no one (expired 1, withdrawn 0, nothing booked).
+    #[test]
+    fn a_wipe_in_the_switchs_tick_is_booked_at_its_tick_after_a_late_switch_on() {
+        let (expired, withdrawn, booked, units, log, d0) =
+            a_wipe_in_the_switchs_tick_then_a_switch_on_at("conflict-wipe-late-on", |d0| {
+                d0 + 2 * DAY
+            });
+        assert_eq!(
+            (expired, withdrawn, booked > 0, units),
+            (0, 1, true, 0),
+            "(expired, withdrawn, casualties booked, units left)"
+        );
+        let gone = log
+            .iter()
+            .position(|l| l.kind == "withdrawn")
+            .expect("the demand withdrawn");
+        assert!(
+            (log[gone].tick as i64) < d0,
+            "withdrawn at the wipe's tick, before the deadline {d0}: {}",
+            log[gone].tick
+        );
+        assert!(
+            !log[..gone].iter().any(|l| l.kind == "home"),
+            "the band was still out at the wipe"
+        );
+    }
+
+    /// The control: the same wipe, the conflict switched on at once.
+    #[test]
+    fn a_wipe_in_the_switchs_tick_with_the_switch_on_at_once() {
+        let (expired, withdrawn, booked, units, _, _) =
+            a_wipe_in_the_switchs_tick_then_a_switch_on_at("conflict-wipe-on-at-once", |_| 0);
+        assert_eq!(
+            (expired, withdrawn, booked > 0, units),
+            (0, 1, true, 0),
+            "(expired, withdrawn, casualties booked, units left)"
+        );
+    }
+
+    /// U-c's review, probe A (RP-292, `shared::resets`): the kept records of two modules go in
+    /// as one list, in the order `Replay` admitted them, not module by module. The conflict and
+    /// ECOLOGY go off together; a mob wipes the envoy's band out in the switch's tick (kept by
+    /// the conflict), and a day past the demand's deadline d0 a dragon is hurt (kept by the
+    /// dragons, a later observation). Both come on two days past d0. The wipe goes in first, at
+    /// its own tick before d0: the demand is withdrawn, never expired, and the casualties are
+    /// booked. In module order (the dragons before the conflict) the hurt's catch-up would run
+    /// the conflict past d0 first: the demand expires and the wipe finds the band gone home
+    /// (expired 1, withdrawn 0, nothing booked).
+    ///
+    /// ECOLOGY must be on in the camp: the conflict tests' MODULES leaves it off, and the hurt
+    /// would be kept and never applied, so the test would pass in both orders.
+    #[test]
+    fn a_kept_wipe_goes_in_before_a_later_kept_dragon_record_of_another_module() {
+        use rtsim_ecology::boundary::{self as db, AttackerKind, Obs as DO};
+        let on = MODULES | rtsim_jni::engine::MODULE_ECOLOGY;
+        let (_dir, e, mut j) = camp_with("conflict-kept-merge", on);
+        let envoy = envoy_in_view(&mut j);
+        let d0 = envoy.deadline;
+        signal(&mut j, 2, 5, PLAYER);
+        j.idle();
+        let before = e.with_conflict(|c, _| c.stats.casualties);
+        let _ = e.conflict_log(true);
+
+        j.modules(0b1111);
+        wipe(&mut j, &envoy, cb::BY_MOB, (0, 0));
+        j.idle();
+        assert!(j.game_time < d0, "the wipe before the deadline");
+        let hurt_at = d0 + DAY;
+        let limit = hurt_at - j.game_time + DAY;
+        advance_until(&mut j, 1_000, limit, "past d0", |j| j.game_time >= hurt_at);
+        j.dragon_obs(&DO::Hurt(db::Hurt {
+            agent: 0xD00D,
+            epoch: 1,
+            attacker_kind: AttackerKind::Player,
+            attacker: PLAYER,
+            hits: 1,
+            amount: 1.0,
+            health_after: 99.0,
+        }));
+        j.idle();
+        assert!(e.dragons_ignored() >= 1, "the dragons kept the hurt");
+        assert_eq!(
+            e.with_conflict(|c, _| c.stats.casualties),
+            before,
+            "kept, not applied while off"
+        );
+
+        let until = d0 + 2 * DAY;
+        let limit = until - j.game_time + DAY;
+        advance_until(&mut j, 1_000, limit, "the switch-on", |j| {
+            j.game_time >= until
+        });
+        j.modules(on);
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        let end = j.game_time + DAY;
+        advance_until(&mut j, 600, 2 * DAY, "a day on", |j| j.game_time >= end);
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        let (st, _) = e.conflict_stats();
+        let booked = e.with_conflict(|c, _| c.stats.casualties) - before;
+        e.close(true, Duration::from_secs(5)).unwrap();
+        assert_eq!(
+            (st.expired, st.withdrawn, booked > 0),
+            (0, 1, true),
+            "(expired, withdrawn, casualties booked)"
+        );
+    }
+
     /// CONFLICT_COMMAND (order 29, TEST mode, C2-15): a command in Java's ids and game time goes
     /// out as the conflict's own, its body names in the engine's dictionary first; the conflict
     /// knows nothing of its agent, so Java's answer is ignored.
@@ -6723,8 +7925,10 @@ mod conflict {
         assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
         e.close(true, Duration::from_secs(5)).unwrap();
 
-        // With the module off, DIFFICULTY is ignored like every journaled record (U10): the
-        // plugin sends it again at the next session start. Switched on, the next one applies.
+        // With the module off, DIFFICULTY is heard like every journaled record and kept (RP-292,
+        // docs/replay-gate.md 9.7): not applied while off, applied at the switch-on, before the
+        // conflict decides anything. Before RP-292 it was ignored, and the conflict ran on the
+        // difficulty of before until the plugin's next session start sent it again.
         let dir = tmpdir("conflict-peaceful-off");
         let e = engine(&dir, 256 * 1024);
         let mut j = Java::open(e.clone(), WorldSave::fresh());
@@ -6733,13 +7937,16 @@ mod conflict {
         let (_, before) = e.conflict_stats();
         difficulty(&mut j, cb::DIFFICULTY_PEACEFUL);
         let (_, link) = e.conflict_stats();
-        assert_eq!(link.ignored, before.ignored + 1, "ignored while off");
+        assert_eq!(link.ignored, before.ignored + 1, "kept while off");
         assert!(!e.with_conflict(|c, _| c.peaceful), "not applied while off");
         j.modules(MODULES);
         j.idle();
-        assert!(!e.with_conflict(|c, _| c.peaceful), "nor when switched on");
-        difficulty(&mut j, cb::DIFFICULTY_PEACEFUL);
-        assert!(e.with_conflict(|c, _| c.peaceful), "the next one applies");
+        assert!(
+            e.with_conflict(|c, _| c.peaceful),
+            "applied at the switch-on"
+        );
+        difficulty(&mut j, cb::DIFFICULTY_NORMAL);
+        assert!(!e.with_conflict(|c, _| c.peaceful), "the next one applies");
         // The retired latest-wins id is read as nothing.
         let mut b = vec![0u8; 16];
         b[0..2].copy_from_slice(&0x0093u16.to_le_bytes());
@@ -6963,11 +8170,12 @@ mod conflict {
         e.close(true, Duration::from_secs(5)).unwrap();
     }
 
-    /// MOWZIE.md §9: a record whose engine half comes with a later slice (the tribute's; the
-    /// camp's came with M4, the chief's state with M6 and the rail's with M7) is decoded, counted
-    /// as deferred and dropped; one with an op id spends it, so the same record again is not counted
-    /// twice. CHIEF_STATE is counted as its own and given to the engine (a camp with no bodies
-    /// to count ignores it).
+    /// MOWZIE.md §9: a record whose engine half comes with a later slice (the lurking party's
+    /// TRAIN_PASSED; the camp's came with M4, the chief's state with M6, the rail's RAIL_PASS with
+    /// M7, the grove's with M9) is decoded, counted as deferred and dropped. CHIEF_STATE is counted
+    /// as its own and given to the engine (a camp with no bodies to count ignores it), and a
+    /// CHIEF_PAID is the grove's: it reaches the engine and spends its op id, so the same record
+    /// again changes nothing.
     #[test]
     fn later_slices_records_are_counted_and_dropped() {
         let (_dir, e, mut j) = camp("conflict-deferred");
@@ -6983,6 +8191,13 @@ mod conflict {
         });
         j.conflict_obs(&paid);
         j.conflict_obs(&paid);
+        j.conflict_obs(&O::TrainPassed(cb::TrainPassed {
+            agent: 0,
+            epoch: 0,
+            flags: 0,
+            carriage: 0,
+            train: 7,
+        }));
         j.conflict_obs(&O::ChiefState(cb::ChiefState {
             faction: CAMP,
             flags: 1,
@@ -11430,6 +12645,864 @@ mod conflict {
             "the market and the caravan in its first hand-over: {:?}",
             r.after
         );
+    }
+
+    /// The transfers Java applied (or held), by op id.
+    fn tribute_ops(j: &Java) -> BTreeSet<u64> {
+        j.commands
+            .iter()
+            .filter(|(_, kind, _)| *kind == cmd::TRANSFER_TO_CONTAINER)
+            .map(|(_, _, op)| *op)
+            .collect()
+    }
+
+    /// What the grove still owes its chest (items of its tribute good), the stacks in flight and
+    /// the stacks it has sent so far.
+    fn owed_tribute(e: &Engine) -> (i64, usize, u32) {
+        e.with_conflict(|c, _| {
+            let f = c.faction_of_key(CAMP).unwrap();
+            let camp = c.camp(f).unwrap();
+            (
+                camp.owed_tribute.iter().map(|e| e.1).sum::<i64>() / rtsim_trade::MILLI,
+                c.placings().count(),
+                camp.stacks,
+            )
+        })
+    }
+
+    fn chest_report(j: &mut Java, chest: [i32; 3]) {
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        j.conflict_obs(&O::HavenChest(cb::HavenChest {
+            faction: CAMP,
+            dimension: dim,
+            pos: (chest[0], chest[1], chest[2]),
+            free: 27,
+        }));
+    }
+
+    /// M9 (MZB-418, MZB-419, MZB-422, MZB-423): a player's seven gold blocks to a stray Umvuthi
+    /// (CHIEF_PAID) are 567 nuggets of tribute, owed to the grove's chest. With no chest reported
+    /// nothing is sent; a chest reported in a world whose chunk is gone fails its stack, which
+    /// goes back to the grove's stock and forgets the chest; reported again while Minecraft holds
+    /// the commands (a world save that is lost), the stack is in the outbox at the save, so after
+    /// a crash it is sent again under the same op id and lands once, and the rest wait for the
+    /// camp to come in again. The CHIEF_PAID's op id is spent by the replay too.
+    #[test]
+    fn a_groves_tribute_lands_in_its_chest_once_across_a_failure_and_a_crash() {
+        let (dir, e, mut j) = grove("grove-tribute", 3);
+        camp_in(&mut j);
+        let block = j.dict_id(wire::DICT_ITEM, "minecraft:gold_block");
+        let paid = O::ChiefPaid(cb::ChiefPaid {
+            faction: CAMP,
+            slot: 0,
+            generation: 0,
+            flags: cb::PAID_STRAY,
+            player: PLAYER,
+            op: (1 << 63) | 0x6001,
+            items: vec![cb::Item {
+                item: block,
+                count: 7,
+            }],
+        });
+        j.conflict_obs(&paid);
+        j.conflict_obs(&paid);
+        j.idle();
+        j.idle();
+        assert_eq!(
+            owed_tribute(&e),
+            (567, 0, 0),
+            "seven blocks are 567 nuggets, owed once; no chest yet, nothing sent"
+        );
+        assert!(tribute_ops(&j).is_empty());
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+
+        // The chest is named, but its chunk is gone: the stack fails, goes back and waits.
+        let chest = [CAMP_AT.0 + 3, 64, CAMP_AT.1 + 2];
+        j.fail_transfers = true;
+        chest_report(&mut j, chest);
+        j.idle();
+        j.idle();
+        let failed = tribute_ops(&j);
+        assert_eq!(failed.len(), 1, "one stack at a time");
+        assert_eq!(owed_tribute(&e), (567, 0, 1), "back in the grove's stock");
+        assert!(j.containers.is_empty());
+        let (_, link) = e.conflict_stats();
+        assert_eq!(link.haven_chests, 1, "{link:?}");
+        assert!(
+            j.cmd_dict
+                .iter()
+                .any(|((k, _), n)| *k == wire::DICT_ITEM && n == "minecraft:gold_nugget"),
+            "the tribute is the grove's gold nuggets"
+        );
+        // The forgotten chest sends nothing until it is reported again.
+        j.idle();
+        j.idle();
+        assert_eq!(tribute_ops(&j), failed);
+
+        // Reported again while the commands are held: a new op in the outbox, then a crash.
+        j.fail_transfers = false;
+        j.hold_commands = true;
+        chest_report(&mut j, chest);
+        j.idle();
+        j.idle();
+        let held: BTreeSet<u64> = j.held_ops.iter().copied().collect();
+        assert_eq!(held.len(), 1);
+        assert!(held.is_disjoint(&failed), "a failed stack goes as a new op");
+        assert_eq!(owed_tribute(&e), (567, 1, 2));
+        save(&e, &mut j);
+        let saved = j.world_save();
+        let _ = j.crash();
+
+        // After the crash the outbox sends it again under the same op id, and it lands once.
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), saved);
+        j.module_mask = MODULES;
+        assert_eq!(
+            owed_tribute(&e),
+            (567, 1, 2),
+            "the stack in flight is saved"
+        );
+        j.idle();
+        j.idle();
+        assert_eq!(tribute_ops(&j), held, "the held stack, by its op id");
+        assert_eq!(j.containers.get(&chest).copied(), Some(64), "one stack");
+        assert_eq!(
+            owed_tribute(&e),
+            (503, 0, 2),
+            "placed: 64 nuggets less owed; the camp is out, so no more is sent"
+        );
+        // The same answer again changes nothing.
+        let (_, link) = e.conflict_stats();
+        assert_eq!(link.deferred, 0, "{link:?}");
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// The U-b merge (RP-210 meets MZB-423): a grove's chest whose chunk is not loaded is answered
+    /// NOT_LOADED since U-b, where main answered FAILED. The COMMAND_RESULT takes the stack out of
+    /// the core outbox either way, so the grove must take it back too: the stack goes back to the
+    /// grove's stock, the chest is forgotten, and a chest reported again gets a new stack. Ignored,
+    /// the stack would stay in flight with nothing left to answer it, and the grove would send no
+    /// more.
+    #[test]
+    fn a_groves_tribute_stack_answered_not_loaded_goes_back_to_its_stock() {
+        let (_dir, e, mut j) = grove("grove-tribute-unloaded", 3);
+        camp_in(&mut j);
+        let block = j.dict_id(wire::DICT_ITEM, "minecraft:gold_block");
+        j.conflict_obs(&O::ChiefPaid(cb::ChiefPaid {
+            faction: CAMP,
+            slot: 0,
+            generation: 0,
+            flags: cb::PAID_STRAY,
+            player: PLAYER,
+            op: (1 << 63) | 0x6002,
+            items: vec![cb::Item {
+                item: block,
+                count: 7,
+            }],
+        }));
+        j.idle();
+        j.idle();
+        assert_eq!(owed_tribute(&e), (567, 0, 0), "owed, no chest yet");
+
+        let chest = [CAMP_AT.0 + 3, 64, CAMP_AT.1 + 2];
+        j.unloaded_transfers = true;
+        chest_report(&mut j, chest);
+        j.idle();
+        j.idle();
+        let unloaded = tribute_ops(&j);
+        assert_eq!(unloaded.len(), 1, "one stack at a time");
+        assert_eq!(
+            owed_tribute(&e),
+            (567, 0, 1),
+            "NOT_LOADED: back in the grove's stock, nothing in flight"
+        );
+        assert!(j.containers.is_empty());
+        j.idle();
+        j.idle();
+        assert_eq!(tribute_ops(&j), unloaded, "the forgotten chest is sent nothing");
+
+        // Reported again with the chunk loaded: the stacks go one after another until all is paid.
+        j.unloaded_transfers = false;
+        chest_report(&mut j, chest);
+        for _ in 0..40 {
+            j.idle();
+            if owed_tribute(&e).0 == 0 && owed_tribute(&e).1 == 0 {
+                break;
+            }
+        }
+        assert_eq!(owed_tribute(&e).0, 0, "all paid: {:?}", owed_tribute(&e));
+        assert_eq!(
+            j.containers.get(&chest).copied(),
+            Some(567),
+            "every nugget in the chest, once"
+        );
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// M9 (MZB-446, review P3-3): HAVEN_CHEST is journaled, at 0x0817 (0x0092 is retired). A payment
+    /// and the chest named after the last save are in Java's journal when the server dies: the
+    /// replay brings both back, so the chest the session knew is known again, and once the camp
+    /// is in, the stack the engine decides is the op and the amount it decided before the crash
+    /// (and so the plugin's DUPLICATE_OP answer books what it put down).
+    #[test]
+    fn a_haven_chest_journaled_after_a_save_is_replayed_and_its_stack_is_the_same() {
+        let (dir, e, mut j) = grove("grove-chest-replay", 3);
+        camp_in(&mut j);
+        save(&e, &mut j);
+        let block = j.dict_id(wire::DICT_ITEM, "minecraft:gold_block");
+        let chest = [CAMP_AT.0 + 3, 64, CAMP_AT.1 + 2];
+        // Minecraft holds the commands, so the first stack is the only one decided.
+        j.hold_commands = true;
+        j.conflict_obs(&O::ChiefPaid(cb::ChiefPaid {
+            faction: CAMP,
+            slot: 0,
+            generation: 0,
+            flags: cb::PAID_STRAY,
+            player: PLAYER,
+            op: (1 << 63) | 0x6003,
+            items: vec![cb::Item {
+                item: block,
+                count: 7,
+            }],
+        }));
+        chest_report(&mut j, chest);
+        j.idle();
+        j.idle();
+        let before: BTreeSet<u64> = j.held_ops.iter().copied().collect();
+        assert_eq!(before.len(), 1, "the stack went at the chest");
+        assert_eq!(owed_tribute(&e), (567, 1, 1));
+        let saved = j.world_save();
+        assert!(
+            saved
+                .journal
+                .iter()
+                .any(|(_, r)| wire::u16_at(r, wire::R_KIND) == 0x0817),
+            "the chest is in Java's journal, which the pages lack"
+        );
+        let gt = j.game_time;
+        let _ = j.crash();
+
+        let (e, mut j) = reopen(&dir, saved, gt);
+        let (_, link) = e.conflict_stats();
+        assert_eq!(link.haven_chests, 1, "the replay gave the chest: {link:?}");
+        e.with_conflict(|c, _| {
+            let camp = c.camp(c.faction_of_key(CAMP).unwrap()).unwrap();
+            assert_eq!(camp.chest.map(|k| k.free), Some(27), "the chest is known");
+        });
+        assert_eq!(
+            owed_tribute(&e),
+            (567, 0, 0),
+            "the payment is owed again; the camp is out in the replay, so nothing is placed"
+        );
+        // The camp comes in, and its census places the stack again (MZB-446, review P3-4).
+        camp_in(&mut j);
+        j.idle();
+        j.idle();
+        // The plugin applies each stack as it comes, so more than the first go in these hand-overs:
+        // the first is the stack of before the crash, its op and its 64 nuggets.
+        let first = j
+            .commands
+            .iter()
+            .find(|(_, kind, _)| *kind == cmd::TRANSFER_TO_CONTAINER)
+            .map(|(_, _, op)| *op);
+        assert_eq!(first, before.iter().next().copied(), "the same op");
+        let (owed, in_flight, sent) = owed_tribute(&e);
+        assert_eq!(
+            j.containers.get(&chest).copied(),
+            Some(64 * sent as i32),
+            "stacks of the same 64"
+        );
+        assert_eq!(
+            owed + 64 * (i64::from(sent) - in_flight as i64),
+            567,
+            "what is owed is what is not answered"
+        );
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// RP-134 (the M9 check, P3-1): stacks decided and answered after the last save are booked
+    /// from their replayed COMMAND_RESULTs. A gold block (81 nuggets) is paid and its two stacks
+    /// (64 and 17) land and are answered APPLIED, then a second block and its two; the pages are
+    /// not saved after them, and the server dies. The replay books the four answers by their ops,
+    /// so nothing is owed and the camp's count is 4; once the camp is in, its census sends no
+    /// stack: the 162 nuggets are in the chest once. Without the booking the replay owed 162 and
+    /// the census sent them again (its first stack of 64 the op of before, answered DUPLICATE_OP,
+    /// the rest new ops, put down a second time).
+    #[test]
+    fn stacks_answered_after_a_save_are_booked_from_their_replayed_answers() {
+        let (dir, e, mut j) = grove("grove-tribute-answered", 3);
+        camp_in(&mut j);
+        save(&e, &mut j);
+        let block = j.dict_id(wire::DICT_ITEM, "minecraft:gold_block");
+        let chest = [CAMP_AT.0 + 3, 64, CAMP_AT.1 + 2];
+        chest_report(&mut j, chest);
+        for (k, op) in [0x6011u64, 0x6012].into_iter().enumerate() {
+            j.conflict_obs(&O::ChiefPaid(cb::ChiefPaid {
+                faction: CAMP,
+                slot: 0,
+                generation: 0,
+                flags: cb::PAID_STRAY,
+                player: PLAYER,
+                op: (1 << 63) | op,
+                items: vec![cb::Item {
+                    item: block,
+                    count: 1,
+                }],
+            }));
+            let want = (0, 0, 2 * (k as u32 + 1));
+            for _ in 0..16 {
+                if owed_tribute(&e) == want {
+                    break;
+                }
+                j.idle();
+            }
+            assert_eq!(owed_tribute(&e), want, "both stacks of block {k} answered");
+        }
+        assert_eq!(j.containers.get(&chest).copied(), Some(162));
+        assert_eq!(tribute_ops(&j).len(), 4);
+        let saved = j.world_save();
+        let gt = j.game_time;
+        let _ = j.crash();
+
+        let (e, mut j) = reopen(&dir, saved, gt);
+        assert_eq!(
+            owed_tribute(&e),
+            (0, 0, 4),
+            "the four answers are booked by their ops"
+        );
+        camp_in(&mut j);
+        for _ in 0..4 {
+            j.idle();
+        }
+        assert!(
+            tribute_ops(&j).is_empty(),
+            "no stack goes again: {:?}",
+            tribute_ops(&j)
+        );
+        assert_eq!(owed_tribute(&e), (0, 0, 4));
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// M9 (review P3-6, and the rule that a HUNT_APPLIED clears a hunt by its op id alone): the
+    /// first hunt is answered and booked, a raid a day later makes another the held hunt, and a
+    /// late copy of the first's answer, live and again after a save and a reopen, leaves it with
+    /// its whole count; its OWED_HUNT goes again whole at the new session, and its own answer
+    /// spends it. No op set holds the first's id: the copy finds no hunt of that op.
+    #[test]
+    fn a_late_copy_of_a_booked_hunts_answer_leaves_the_hunt_now_held_alone_after_a_reopen() {
+        let (dir, e, mut j) = grove("grove-hunt-copy", 3);
+        camp_in(&mut j);
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        let at = (CAMP_AT.0 + 400, CAMP_AT.1);
+        let owe = |e: &Engine, n: u32| {
+            e.with_conflict_mut(|c, _| {
+                let f = c.faction_of_key(CAMP).unwrap();
+                let now = c.now();
+                c.owe_hunt(
+                    f,
+                    rtsim_industry::ids::DistrictId(77),
+                    Pos::new(dim as u16, at.0, at.1),
+                    n,
+                    now,
+                );
+            })
+        };
+        let hunts = |e: &Engine| {
+            e.with_conflict(|c, _| {
+                let f = c.faction_of_key(CAMP).unwrap();
+                c.factions[f as usize]
+                    .hunts()
+                    .iter()
+                    .map(|h| (h.district.0, h.count, h.op))
+                    .collect::<Vec<_>>()
+            })
+        };
+        let killed = |e: &Engine| e.with_conflict(|c, _| c.stats.hunts_killed);
+        let applied = |op: u64, killed: u32| {
+            O::HuntApplied(cb::HuntApplied {
+                faction: CAMP,
+                district: 77,
+                op,
+                killed,
+            })
+        };
+        owe(&e, 2);
+        j.idle();
+        let op1 = hunts(&e)[0].2;
+        j.conflict_obs(&applied(op1, 2));
+        j.idle();
+        assert_eq!(hunts(&e), vec![], "booked");
+        assert_eq!(killed(&e), 2);
+        j.game_time += 24_000;
+        j.idle();
+        owe(&e, 4);
+        j.idle();
+        let held = hunts(&e);
+        let [(77, 4, op2)] = held[..] else {
+            panic!("{held:?}");
+        };
+        assert_ne!(op1, op2);
+        // The copy, live.
+        j.conflict_obs(&applied(op1, 2));
+        j.idle();
+        assert_eq!(hunts(&e), held, "the whole count");
+        assert_eq!(killed(&e), 2, "booked once");
+        // Saved, the server dies, and the copy comes again in the new session.
+        save(&e, &mut j);
+        j.conflict_obs(&applied(op1, 2));
+        j.idle();
+        let saved = j.world_save();
+        let gt = j.game_time;
+        let _ = j.crash();
+        let (e, mut j) = reopen(&dir, saved, gt);
+        assert_eq!(
+            hunts(&e),
+            held,
+            "the replay's copy finds no hunt of that op"
+        );
+        assert_eq!(killed(&e), 2);
+        j.idle();
+        j.idle();
+        let sent: Vec<_> = cmds(&j)
+            .filter_map(|c| match c {
+                C::OwedHunt(h) => Some((h.op, h.count)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(sent, vec![(op2, 4)], "its spawn goes out, whole");
+        // The plugin applies it, killing 4, and its answer comes.
+        let now = rtsim_kernel::clock::Tick(j.game_time.max(0) as u64);
+        j.conflict_plugin.apply_hunts(4, now);
+        j.conflict_flush();
+        j.idle();
+        assert_eq!(hunts(&e), vec![], "its own answer spends it");
+        assert_eq!(killed(&e), 6);
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// M9 (MZB-423): with the camp in and the chest named, the stacks go one at a time, each after
+    /// the last one's answer, whole stacks of at most 64, and the chest ends with every nugget.
+    #[test]
+    fn a_groves_tribute_goes_in_stacks_one_after_another() {
+        let (_dir, e, mut j) = grove("grove-stacks", 3);
+        camp_in(&mut j);
+        let block = j.dict_id(wire::DICT_ITEM, "minecraft:gold_block");
+        let chest = [CAMP_AT.0 + 3, 64, CAMP_AT.1 + 2];
+        chest_report(&mut j, chest);
+        j.idle();
+        j.conflict_obs(&O::ChiefPaid(cb::ChiefPaid {
+            faction: CAMP,
+            slot: 0,
+            generation: 0,
+            flags: cb::PAID_STRAY,
+            player: PLAYER,
+            op: (1 << 63) | 0x6002,
+            items: vec![cb::Item {
+                item: block,
+                count: 7,
+            }],
+        }));
+        advance_until(&mut j, 10, 1_000, "all 567 nuggets in the chest", |j| {
+            j.containers.get(&chest).copied() == Some(567)
+        });
+        assert_eq!(tribute_ops(&j).len(), 9, "8 full stacks and one of 55");
+        assert_eq!(owed_tribute(&e), (0, 0, 9));
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// M9 (MZB-424 to MZB-426): a hunt owed after a raid on an unwatched district is written as
+    /// OWED_HUNT with the dimension's name; the plugin's HUNT_APPLIED (journaled, booked by the
+    /// state of the hunts, review P3-6) spends it; a hunt owed again before the answer replaces the
+    /// first with a new op, and the first one's late answer takes its count off the new one and
+    /// sends the rest again (review P3-8).
+    #[test]
+    fn an_owed_hunt_is_written_and_spent_by_its_answer_once() {
+        let (_dir, e, mut j) = grove("grove-hunt", 3);
+        camp_in(&mut j);
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        let at = (CAMP_AT.0 + 400, CAMP_AT.1);
+        let owe = |e: &Engine, n: u32| {
+            e.with_conflict_mut(|c, _| {
+                let f = c.faction_of_key(CAMP).unwrap();
+                let now = c.now();
+                c.owe_hunt(
+                    f,
+                    rtsim_industry::ids::DistrictId(77),
+                    Pos::new(dim as u16, at.0, at.1),
+                    n,
+                    now,
+                );
+            })
+        };
+        let hunts = |e: &Engine| {
+            e.with_conflict(|c, _| {
+                let f = c.faction_of_key(CAMP).unwrap();
+                c.factions[f as usize]
+                    .hunts()
+                    .iter()
+                    .map(|h| (h.district.0, h.count, h.op))
+                    .collect::<Vec<_>>()
+            })
+        };
+        let written = |j: &Java| {
+            cmds(j)
+                .filter_map(|c| match c {
+                    C::OwedHunt(h) => Some(*h),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        owe(&e, 2);
+        j.idle();
+        j.idle();
+        let first = written(&j);
+        assert_eq!(first.len(), 1, "{first:?}");
+        assert_eq!((first[0].district, first[0].count), (77, 2));
+        assert_eq!(first[0].centre, at);
+        assert_eq!(
+            java_name(&j, wire::DICT_DIMENSION, first[0].dimension).as_deref(),
+            Some(OVERWORLD),
+            "the dimension is written by name"
+        );
+        let op1 = first[0].op;
+        assert_eq!(hunts(&e), vec![(77, 2, op1)]);
+
+        // Owed again before the answer: the sum, a new op.
+        owe(&e, 3);
+        j.idle();
+        j.idle();
+        let both = written(&j);
+        assert_eq!(both.len(), 2, "{both:?}");
+        let op2 = both[1].op;
+        assert_ne!(op1, op2, "the replacement is a new hunt");
+        assert_eq!(both[1].count, 5);
+        assert_eq!(hunts(&e), vec![(77, 5, op2)]);
+
+        // The first one's answer is late: the 2 it owed are not owed again, and the hunt goes
+        // again with the 3 that are left.
+        let applied = |op: u64, killed: u32| {
+            O::HuntApplied(cb::HuntApplied {
+                faction: CAMP,
+                district: 77,
+                op,
+                killed,
+            })
+        };
+        let killed = |e: &Engine| e.with_conflict(|c, _| c.stats.hunts_killed);
+        j.conflict_obs(&applied(op1, 2));
+        j.idle();
+        j.idle();
+        assert_eq!(
+            hunts(&e),
+            vec![(77, 3, op2)],
+            "5 less the 2 that were killed"
+        );
+        assert_eq!(killed(&e), 2);
+        let again = written(&j);
+        assert_eq!(again.len(), 3, "{again:?}");
+        assert_eq!(
+            (again[2].op, again[2].count),
+            (op2, 3),
+            "the rest, sent again"
+        );
+        // The second's clears it, once: a repeat of the record finds no hunt.
+        let before = killed(&e);
+        j.conflict_obs(&applied(op2, 3));
+        j.conflict_obs(&applied(op2, 3));
+        j.idle();
+        assert_eq!(hunts(&e), vec![], "spent");
+        assert_eq!(killed(&e), before + 3, "booked once");
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    // ---- M9a re-check: replayed hunts and the hunt race ----------------------------------------
+
+    /// Stands in for a raid on district 77, 400 blocks from the camp.
+    fn hunt_owe(e: &Engine, dim: u32, at: (i32, i32), n: u32) {
+        e.with_conflict_mut(|c, _| {
+            let f = c.faction_of_key(CAMP).unwrap();
+            let now = c.now();
+            c.owe_hunt(
+                f,
+                rtsim_industry::ids::DistrictId(77),
+                Pos::new(dim as u16, at.0, at.1),
+                n,
+                now,
+            );
+        })
+    }
+
+    /// The hunts the camp owes: (district, count, op).
+    fn hunt_books(e: &Engine) -> Vec<(u64, u32, u64)> {
+        e.with_conflict(|c, _| {
+            let f = c.faction_of_key(CAMP).unwrap();
+            c.factions[f as usize]
+                .hunts()
+                .iter()
+                .map(|h| (h.district.0, h.count, h.op))
+                .collect::<Vec<_>>()
+        })
+    }
+
+    /// Every OWED_HUNT Java received: (op, count, replaced, rest).
+    fn hunt_written(j: &Java) -> Vec<(u64, u32, u64, u32)> {
+        cmds(j)
+            .filter_map(|c| match c {
+                C::OwedHunt(h) => Some((h.op, h.count, h.replaced, h.rest)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The plugin's answer to a hunt of district 77.
+    fn hunt_answer(op: u64, killed: u32) -> O {
+        O::HuntApplied(cb::HuntApplied {
+            faction: CAMP,
+            district: 77,
+            op,
+            killed,
+        })
+    }
+
+    fn game_tick(j: &Java) -> rtsim_kernel::clock::Tick {
+        rtsim_kernel::clock::Tick(j.game_time.max(0) as u64)
+    }
+
+    /// M9a re-check, R1: a late answer replayed after a crash. op1 (5) is replaced by op2 (8) and
+    /// both are in the saved pages. After the save: op1's late answer (the engine takes it as the
+    /// 3 the second raid owes alone and sends op2 with 3) and, if `second`, op2's answer (3
+    /// killed, the hunt spent). The server dies; the replay books the answers again. The engine
+    /// used to push OWED_HUNT while replaying; the host moves every command out of the engine's
+    /// outbox after each ingest and writes its queue at each hand-over, so the hunt reached the
+    /// next session's plugin, which had forgotten that it applied it: the animals died twice. Now
+    /// the replay sends nothing, and `resend_notices` sends the hunt still held, once.
+    /// `filler` records of a band the engine never had come before the answers in the journal: a
+    /// small observation buffer spreads the replay over several hand-overs, the answer in a later
+    /// one than the session start (the fake Java sends the players' positions only in the first
+    /// hand-over at each game time). `earlier` journals one answer for a district with no hunt.
+    fn replayed_hunt(name: &str, earlier: bool, filler: usize, second: bool) {
+        let (dir, e, mut j) = grove(name, 3);
+        camp_in(&mut j);
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        let at = (CAMP_AT.0 + 400, CAMP_AT.1);
+        hunt_owe(&e, dim, at, 5);
+        j.idle();
+        let op1 = hunt_books(&e)[0].2;
+        hunt_owe(&e, dim, at, 3);
+        j.idle();
+        let [(77, 8, op2)] = hunt_books(&e)[..] else {
+            panic!("{:?}", hunt_books(&e));
+        };
+        save(&e, &mut j);
+        let first = j.world_save().next_obs;
+        if earlier {
+            // Any journaled conflict record ahead of the late answer in the replay: an answer
+            // for a district with no hunt changes nothing.
+            j.conflict_obs(&O::HuntApplied(cb::HuntApplied {
+                faction: CAMP,
+                district: 78,
+                op: 1,
+                killed: 0,
+            }));
+            j.idle();
+        }
+        for _ in 0..filler {
+            j.conflict_obs(&O::Casualties(cb::BandCasualties {
+                agent: 0,
+                epoch: 0,
+                by: cb::BY_MOB,
+                body: 0,
+                count: 1,
+                killer: (0, 0),
+                op: next_casualty_op(),
+            }));
+        }
+        j.conflict_obs(&hunt_answer(op1, 5));
+        j.idle();
+        j.idle();
+        assert_eq!(
+            hunt_books(&e),
+            vec![(77, 3, op2)],
+            "the second raid's own 3"
+        );
+        assert_eq!(
+            hunt_written(&j).last(),
+            Some(&(op2, 3, 0, 0)),
+            "the rest, sent"
+        );
+        if second {
+            j.conflict_obs(&hunt_answer(op2, 3));
+            j.idle();
+            j.idle();
+            assert_eq!(hunt_books(&e), vec![], "spent: 5 + 3 = 8 animals killed");
+        }
+        let saved = j.world_save();
+        if filler > 0 {
+            let bytes = saved
+                .journal
+                .iter()
+                .filter(|(s, _)| *s >= first)
+                .map(|(_, r)| r.len())
+                .sum::<usize>();
+            assert!(
+                bytes > wire::MIN_CAPACITY,
+                "the replay needs several hand-overs: {bytes} bytes"
+            );
+        }
+        let gt = j.game_time;
+        let _ = j.crash();
+        let (e, mut j) = if filler > 0 {
+            reopen_with(&dir, saved, gt, wire::MIN_CAPACITY)
+        } else {
+            reopen(&dir, saved, gt)
+        };
+        let want = if second { vec![] } else { vec![(77, 3, op2)] };
+        assert_eq!(hunt_books(&e), want, "the replay books the answers again");
+        for _ in 0..4 {
+            j.idle();
+        }
+        let sent = hunt_written(&j);
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        if second {
+            assert_eq!(
+                sent,
+                vec![],
+                "a spent hunt goes to the plugin of the next session (its animals die twice)"
+            );
+        } else {
+            assert_eq!(
+                sent,
+                vec![(op2, 3, 0, 0)],
+                "the hunt still held goes once, when the replay is over"
+            );
+            // The new plugin kills them and answers; the hunt is spent.
+            j.conflict_plugin.apply_hunts(99, game_tick(&j));
+            j.conflict_flush();
+            j.idle();
+            j.idle();
+            assert_eq!(hunt_books(&e), vec![], "its own answer spends it");
+            assert_eq!(j.conflict_plugin.animals_killed, 3);
+        }
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    #[test]
+    fn a_replayed_late_answer_sends_no_spent_hunt_to_the_next_session() {
+        replayed_hunt("hunt-replay", false, 0, true);
+    }
+
+    #[test]
+    fn a_replayed_late_answer_after_another_record_sends_no_spent_hunt() {
+        replayed_hunt("hunt-replay-2", true, 0, true);
+    }
+
+    #[test]
+    fn a_replayed_late_answer_in_a_later_hand_over_sends_no_spent_hunt() {
+        replayed_hunt("hunt-replay-long", false, 1_500, true);
+    }
+
+    #[test]
+    fn a_hunt_left_owed_by_a_replayed_late_answer_goes_once_when_the_replay_is_over() {
+        replayed_hunt("hunt-replay-rest", false, 0, false);
+    }
+
+    #[test]
+    fn a_hunt_left_owed_by_a_replayed_late_answer_in_a_later_hand_over_goes_once() {
+        replayed_hunt("hunt-replay-rest-long", false, 1_500, false);
+    }
+
+    /// M9a re-check, R2: the hunt race. Raid 1 owes `n1`, the plugin applies it (its answer
+    /// journaled but not yet read) and raid 2 owes `n2` before the engine reads that answer. The
+    /// OWED_HUNT of raid 2 carries the op it replaced and `rest`, the `n2` it owes alone, so the
+    /// plugin, whose last applied op is the replaced one, kills `rest` and not the sum. With
+    /// `at_once` the plugin applies raid 2's hunt before the late answer is read (the common
+    /// ordering: the circle's chunks still tick), and the hunt the engine sends again is ignored,
+    /// that op being the last it applied; otherwise it applies the hunt sent again. Either way
+    /// each raid's animals die once: `n1` and `n2`, each capped at 8.
+    fn hunt_race(name: &str, n1: u32, n2: u32, at_once: bool) {
+        let (_dir, e, mut j) = grove(name, 3);
+        camp_in(&mut j);
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        let at = (CAMP_AT.0 + 400, CAMP_AT.1);
+        let owed = n1.min(8) + n2.min(8);
+        hunt_owe(&e, dim, at, n1);
+        j.idle();
+        let op1 = hunt_books(&e)[0].2;
+        // Applied: the animals die; the answer is journaled but not yet read.
+        j.conflict_plugin.apply_hunts(99, game_tick(&j));
+        assert_eq!(j.conflict_plugin.animals_killed, n1.min(8));
+        hunt_owe(&e, dim, at, n2);
+        j.idle();
+        let [(77, held, op2)] = hunt_books(&e)[..] else {
+            panic!("{:?}", hunt_books(&e));
+        };
+        assert_eq!(held, (n1 + n2).min(8));
+        assert_eq!(
+            hunt_written(&j).last(),
+            Some(&(op2, held, op1, n2.min(8))),
+            "the replacement names the op it replaced and what the second raid owes alone"
+        );
+        if at_once {
+            // The chunks still tick: op2 is applied as soon as it is read.
+            j.conflict_plugin.apply_hunts(99, game_tick(&j));
+            assert_eq!(j.conflict_plugin.animals_killed, owed, "rest, not the sum");
+        }
+        j.conflict_flush();
+        j.idle();
+        j.idle();
+        let resent = *hunt_written(&j).last().unwrap();
+        assert_eq!(resent, (op2, n2.min(8), 0, 0), "the rest, sent again");
+        if at_once {
+            assert!(
+                j.conflict_plugin.hunts.is_empty(),
+                "which the plugin ignores"
+            );
+        } else {
+            assert_eq!(j.conflict_plugin.hunts.len(), 1, "which the plugin keeps");
+            j.conflict_plugin.apply_hunts(99, game_tick(&j));
+            j.conflict_flush();
+            j.idle();
+            j.idle();
+        }
+        assert_eq!(hunt_books(&e), vec![], "spent");
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        let booked = e.with_conflict(|c, _| c.stats.hunts_killed);
+        e.close(true, Duration::from_secs(5)).unwrap();
+        assert_eq!(j.conflict_plugin.animals_killed, owed, "animals killed");
+        assert_eq!(
+            booked,
+            u64::from(owed),
+            "and the engine's books say the same"
+        );
+    }
+
+    #[test]
+    fn a_replacement_applied_before_the_late_answer_is_read_kills_only_its_own_raids_animals() {
+        hunt_race("hunt-race", 5, 3, true);
+    }
+
+    #[test]
+    fn a_replacement_applied_after_the_late_answer_is_read_kills_only_its_own_raids_animals() {
+        hunt_race("hunt-race-after", 5, 3, false);
+    }
+
+    #[test]
+    fn a_capped_race_owes_the_second_raid_its_own_animals() {
+        hunt_race("hunt-race-capped", 6, 6, true);
+    }
+
+    #[test]
+    fn a_capped_race_applied_after_the_late_answer_owes_the_second_raid_its_own_animals() {
+        hunt_race("hunt-race-capped-after", 6, 6, false);
     }
 }
 
