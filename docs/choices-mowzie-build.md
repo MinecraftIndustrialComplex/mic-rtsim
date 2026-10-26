@@ -10155,8 +10155,8 @@ TRAIN_PASSED test is written for the M8 merge (RP-187).
   fix, as the coordinator ruled.
   **Done** (feat/mowzie-m8, the M8 merge with slice T): the guard, its comment and the lurk.rs
   test are gone and the fn and `Stats` docs say what is true (258b9a14); tests/train_passed_replay.rs
-  is added (dae325da; MZB-699 says what was changed from the draft); the docs follow in the commit
-  after that (RP-154's amendment, RP-151, RP-152, the RP-57 row, replay-gate.md, boundary.md).
+  is added (dae325da; MZB-699 says what was changed from the draft); the docs are de2436bd (RP-154's
+  amendment, RP-151, RP-152, the RP-57 row, replay-gate.md, boundary.md).
   Without the guard the new tests pass; with it put back, two of the three fail on
   `lurk_robberies` (0, not 1: the pass is counted and does not roll).
 - **RP-188** (the pirates' `defer`; the brief's question 4): `Outbox::defer()` is true while the
