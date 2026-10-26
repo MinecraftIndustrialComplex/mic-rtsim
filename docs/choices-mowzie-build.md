@@ -10069,6 +10069,36 @@ M11a's implementer appends its records under this heading only (the Rust side).
   On the base: a mutation back to the base rule (`own_chief` false, BAND_CHIEF on `chief_stack` only) fails A1
   (no pair met on the road), A2's control ((1, 0), want (1, 1)) and A3 (no away CHIEF_BODY queued); the gate's
   away arm mutated to keep fails A3 at "the away CHIEF_BODY is dropped". The controls pass on both.
+- **MZB-852** (step 3, the chief's HAND_BACK; MZB-821 built): `camp_home` reads `chief_puppet = embodied && x.chief &&
+  chief_own_stack(culture)` before its slot loop. The chief slot joins `hand` from Left as from Gone when
+  `chief_puppet && is_in && s.line.is_none()` (Left still becomes Body), and the line loop gives it ACTION_HAND_BACK
+  without touching `puppets`; a chief with no puppet comes home as a SPAWN from Gone and with no line from Left, as
+  before. `send_lines` sends the home CHIEF_BODY ahead of a chunk with the chief's SPAWN or HAND_BACK. Tests in
+  `tests/mowzie_aloft.rs`:
+  - A4 `the_chief_is_handed_back_at_home`: the band is met 300 ticks short of home and followed there, so it is
+    embodied as it arrives. (1) The grove in, the slot Gone: CHIEF_BODY home (agent 0, the camp's epoch, the
+    payer) then the chunk with the chief's HAND_BACK (LINE_CHIEF, the band's agent and epoch); DONE, the slot
+    Body, one throne body. (2) The slot Left: the grove goes out before the muster's end, comes in while the band
+    is away with a player at the throne (`hold_chief`), so its census's TAKE of the throne body is held; the test
+    answers that TAKE STALE as Java's MZB-823 rule does when the puppet comes near (the fake has no such rule).
+    The same pair goes; NOTHING (case B), the slot Body, the slot count and `chiefs_killed` unchanged, one throne
+    body. (3) The grove out at home: BAND_RECALL with RECALL_DONE and no chief line, the slot Owed, and the next
+    census sends the SPAWN behind a home CHIEF_BODY. The control `an_unmet_chief_comes_home_as_a_spawn`: a band
+    never met gets a SPAWN as before.
+  - A6 `a_camp_death_after_home_books_once`: the hand-back decided and held back (`decide`), then CAMP_DEATH (the
+    chief slot and generation, BY_PLAYER, the payer) and the line's STALE ingested in both orders: one fall
+    (`chiefs_killed` + 1), one player's loss, the heir due, the memory cleared, the generation retired. Its
+    control, a throne death at home with no line, books the same.
+
+  Deviation from A6's text, recorded: the design says the slot is Dead afterwards. `chief_death` frees an Owed or
+  Body slot (`free(i, true)`, the generation retired), and only a chief that died away while its throne body stood
+  is left Dead (`chief_died_away`). The test asserts the generation is gone from the books, which is what keeps a
+  second copy of either record from booking anything.
+
+  On the base: `chief_puppet` mutated to false fails A4 at (1) (action 1, a SPAWN, want 5) and A6 at "a hand-back
+  in flight" (the same); the Left arm's push mutated away fails A4 at (2) (no chief line at home); `send_lines`
+  mutated back to SPAWN only fails A4 at "no CHIEF_BODY ahead of the hand-back" (and A3, whose home record is now
+  the hand-back's). The control passes on all three.
 
 ### M11b build records (MZB-870 to MZB-889)
 

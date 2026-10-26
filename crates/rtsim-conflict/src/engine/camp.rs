@@ -1060,12 +1060,11 @@ impl Conflict {
                     });
                 }
             }
-            // The chief's memory goes ahead of every chief spawn, so the body is made knowing whom
-            // it has traded with (MZB-421).
-            if chunk
-                .iter()
-                .any(|l| l.slot == CHIEF_SLOT && l.action == ACTION_SPAWN)
-            {
+            // The chief's memory goes ahead of every chief spawn and hand-back, so the body is made
+            // knowing whom it has traded with (MZB-421, MZB-821).
+            if chunk.iter().any(|l| {
+                l.slot == CHIEF_SLOT && matches!(l.action, ACTION_SPAWN | ACTION_HAND_BACK)
+            }) {
                 out.push(chief_body_record(key, camp));
             }
             out.push(Cmd::Reconcile(CampReconcile {
@@ -1230,9 +1229,10 @@ impl Conflict {
     /// A war party reaches home (`home`): a survivor whose body is still in the camp is home, body
     /// again; one whose body is gone is owed again, and at a camp that is in gets a hand-back line
     /// if its puppet is in the world, else a spawn line; at a camp that is out its puppets are
-    /// recalled as they always were and the next census spawns the bodies. Returns whether it
-    /// handled the band's bodies: a hand-back line sent, or a recall (MZB-463); `home` recalls a
-    /// band in Minecraft that nothing handled.
+    /// recalled as they always were and the next census spawns the bodies. The chief's own puppet
+    /// (a grove's Umvuthi in the world with its band) gets a hand-back at a camp that is in, from a
+    /// slot gone or left (MZB-821). Returns whether it handled the band's bodies: a hand-back line
+    /// sent, or a recall (MZB-463); `home` recalls a band in Minecraft that nothing handled.
     pub(super) fn camp_home(&mut self, p: Handle<Party>, at: Tick) -> bool {
         let f = self.parties[p].faction;
         if self.camp(f).is_none() {
@@ -1241,6 +1241,9 @@ impl Conflict {
         self.camp_sync(f, at);
         let x = &self.parties[p];
         let (embodied, epoch) = (x.embodied, x.epoch);
+        // The chief's own puppet is in the world with its band: it comes home by a hand-back of
+        // its own, whether its slot is gone or left with its throne body standing (MZB-821).
+        let chief_puppet = embodied && x.chief && chief_own_stack(self.culture(f));
         let mut puppets: u32 = if embodied {
             x.spawned.iter().map(|s| s.1).sum()
         } else {
@@ -1253,7 +1256,12 @@ impl Conflict {
         for s in camp.slots.iter_mut().filter(|s| s.party == p) {
             s.party = Handle::NULL;
             match s.state {
-                SlotState::Left => s.state = SlotState::Body,
+                SlotState::Left => {
+                    s.state = SlotState::Body;
+                    if s.id == CHIEF_SLOT && chief_puppet && is_in && s.line.is_none() {
+                        hand.push((s.id, s.generation));
+                    }
+                }
                 SlotState::Gone => {
                     s.state = SlotState::Owed;
                     if is_in && s.line.is_none() {
@@ -1271,8 +1279,12 @@ impl Conflict {
             let Some(s) = s else {
                 continue;
             };
-            // A chief body has no puppet before M11: it comes home as a spawn (MZB-415).
-            let l = if s.id != CHIEF_SLOT && puppets > 0 {
+            // The chief's puppet is in no `spawned`, so it takes none of the warriors' puppets; a
+            // chief that went with no puppet comes home as a spawn (MZB-415), and a left one, its
+            // throne body standing, is not handed here at all.
+            let l = if s.id == CHIEF_SLOT && chief_puppet {
+                self.line(f, s, ACTION_HAND_BACK, agent, epoch64)
+            } else if s.id != CHIEF_SLOT && puppets > 0 {
                 puppets -= 1;
                 self.line(f, s, ACTION_HAND_BACK, agent, epoch64)
             } else {
