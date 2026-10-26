@@ -1643,7 +1643,7 @@ are untouched.
 | 0x0811 | NOTICE_SHOWN | the notice's serial (FACTION_NOTICE's 60) | 24 u64 faction, 32 u64 playerMost, 40 u64 playerLeast (the notice's; (0, 0) the settlers) | 48 |
 | 0x0812 | CAMP_BODIES | lines n | 24 u64 faction, 32 u64 epoch, 40 u64 opId (the CAMP_RECONCILE's), 48 n × (u32 line (its index in the reconcile, from 0), u32 slot, u32 generation, u8 action (the answered line's, `ACTION_*`), u8 outcome: 1 done, 2 nothing to do, 3 stale, u16 reserved) | 48 + 16n |
 | 0x0813 | CAMP_OUT | 0 | 24 u64 faction, 32 u64 epoch (the one that ended) | 40 |
-| 0x0814 | CHIEF_PAID | items n | 24 u64 faction, 32 u32 slot, 36 u32 generation, 40 u32 flags (1 a stray), 44 reserved, 48 u64 playerMost, 56 u64 playerLeast, 64 u64 opId, 72 n × (u32 item, i32 count, u64 reserved) | 72 + 16n |
+| 0x0814 | CHIEF_PAID | items n | 24 u64 faction, 32 u32 slot, 36 u32 generation, 40 u32 flags (1 a stray, 2 a puppet (the chief slot, generation 0)), 44 reserved, 48 u64 playerMost, 56 u64 playerLeast, 64 u64 opId, 72 n × (u32 item, i32 count, u64 reserved) | 72 + 16n |
 | 0x0815 | DIFFICULTY | 0 | 24 u32 difficulty (§9.2), 28 reserved | 32 |
 | 0x0816 | HUNT_APPLIED | 0 | 24 u64 faction, 32 u64 district, 40 u64 opId (the OWED_HUNT's), 48 u32 killed, 52 reserved | 56 |
 | 0x0817 | HAVEN_CHEST | 0 | 24 u64 faction, 32 u32 dimension, 36 i32 x, 40 y, 44 z, 48 u32 free slots (as LAIR_CHEST), 52 reserved | 56 |
@@ -1774,7 +1774,9 @@ refuses a count above the cap (`CodecError::TooMany`) and a record cut short of 
   ignores one for a faction it does not know or a culture with no camp bodies, and notes only a change
   of the crystal. One that comes while the engine replays waits for the replay end, the latest for each
   faction (docs/replay-gate.md §5.6, RP-100). **CHIEF_PAID** a player's first payment to an Umvuthi
-  body (its `rememberTrade`), with that body's slot and generation; **TRADED** a masked trade with the
+  body (its `rememberTrade`), with that body's slot and generation, or to a band's chief puppet with
+  PAID_PUPPET, the chief slot and generation 0 (tribute either way, and the payer remembered unless the
+  chief's slot is Dead, MZB-819); **TRADED** a masked trade with the
   grove's minions; **HAVEN_CHEST** a grove chest tribute can go into (MZB-422): the chest's place and
   free slots as they are, journaled so that a replay after a crash knows the chest the session knew
   (MZB-446). It names a state, so a copy is idempotent (the latest record wins). Java sends it from
@@ -1824,7 +1826,7 @@ refuses a count above the cap (`CodecError::TooMany`) and a record cut short of 
 | 0x8807 | AMBUSH_SPOT | flags: 1 removed (the lurk ended) | 16 u64 agent, 24 u32 epoch, 28 u32 dimension, 32 u64 faction, 40 f64 trackX, 48 trackY, 56 trackZ (the sampled track point), 64 f64 spotX, 72 spotY, 80 spotZ (where the body stands; y is the track's and Java finds the floor), 88 f32 reach (blocks from the track point), 92 reserved | 96 | TRAIN_PASSED |
 | 0x8808 | CAMP_RECONCILE | lines n | 16 u64 faction, 24 u64 epoch, 32 u64 opId (the engine's, §9.2), 40 f64 throneX, 48 throneY, 56 throneZ, 64 f32 direction, 68 u32 flags (1 the throne spot is given), 72 n × (u32 slot, u32 generation, u32 body (dictionary 3; 0 none), u8 action: 1 spawn, 2 adopt a stray, 3 take, 4 set out, 5 hand back, 6 remove, 7 seat the heir, 8 mask (take a warrior at home for the heir: slot 0, generation 0, Java takes the one farthest from every player, and its CAMP_BODIES line names the slot and generation it took; always sent with a 7 in the same reconcile, MZB-408); u8 flags: 1 the chief, 2 crystal held; u16 reserved, u64 a, u64 b: a stray's UUID (adopt, remove a stray), a party's agent and epoch (set out, hand back), else 0) | 72 + 32n | CAMP_BODIES |
 | 0x8809 | TRAIN_ROBBED | 0 | 16 u64 faction, 24 u64 train | 32 | |
-| 0x880A | CHIEF_BODY | traded t | 16 u64 faction, 24 u64 agent (0 at home), 32 u64 epoch (the party's, or the camp's at home), 40 f32 health, 44 u32 flags (1 crystal held), 48 t × (u64 playerMost, u64 playerLeast) | 48 + 16t | |
+| 0x880A | CHIEF_BODY | traded t | 16 u64 faction, 24 u64 agent (0 at home; the party's away, just ahead of its BAND_MATERIALIZE with the chief's stack), 32 u64 epoch (the party's, or the camp's at home), 40 f32 health, 44 u32 flags (1 crystal held), 48 t × (u64 playerMost, u64 playerLeast) | 48 + 16t | |
 | 0x880B | BAND_MARCH | waypoints w | 16 u64 agent, 24 u32 revision, 28 u32 dimension, 32 u64 faction, 40 u32 culture (dictionary 5; 0 none), 44 u8 kind (BAND_MATERIALIZE's purposes, 1 envoy to 6 plunder), 45 u8 phase (1 mustering, 2 out, 3 waiting, 4 fighting, 5 home), 46 u8 flags (1 the chief leads, 2 ended, 4 joint), 47 reserved, 48 u64 partner (the joint attack's other contingent), 56 i64 musterEndTick, 64 u32 unit kinds k, 68 reserved, 72 k × (u32 body, u32 count), then w × (i32 x, i32 z, i64 tick) | 72 + 8k + 16w | |
 | 0x880C | OWED_HUNT | 0 | 16 u64 faction, 24 u64 district, 32 u64 opId (the engine's, allocator 0x43), 40 u64 replaced (the op of the hunt this one replaced while it was in flight, 0 none), 48 u32 dimension, 52 u32 count, 56 i32 centreX, 60 i32 centreZ, 64 u32 radius (blocks), 68 u32 rest (the animals to kill instead of `count` when the last op the plugin applied for this faction and district is `replaced`; 0 with no `replaced`) | 72 | HUNT_APPLIED |
 

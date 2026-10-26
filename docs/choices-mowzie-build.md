@@ -10381,6 +10381,20 @@ M11a's implementer appends its records under this heading only (the Rust side).
   - Mutation M4's `pt.sh` revert cannot find an empty string, so its revert was by hand (the line put back, the
     tree checked clean); its line is in the record, not in `s8.sh`.
   - Checks: rtsim-jni's protocol tests 177 passed; clippy on rtsim-jni `--all-targets -D warnings` clean.
+- **MZB-860** (step 9, the docs; the design's "Docs" list):
+  - docs/boundary.md: CHIEF_PAID's row gives the flags as "1 a stray, 2 a puppet (the chief slot, generation 0)",
+    and its §9.5 sentence adds the payment to a band's chief puppet (tribute either way, the payer remembered
+    unless the chief's slot is Dead, MZB-819). CHIEF_BODY's row gives the agent as "0 at home; the party's away,
+    just ahead of its BAND_MATERIALIZE with the chief's stack".
+  - docs/replay-gate.md §4.4: the ChiefBody row is two, as `outbox.rs`'s gate has them: home (agent 0; keep,
+    never), ahead of a chief's spawn line or hand-back and from a census that found the chief short; away (agent
+    not 0; drop, never), dropped from the queue with its MATERIALIZE and pushed only by `spawn_wave` after its
+    `defer`. The M6-merge note's CHIEF_BODY entry adds M11's two pushes (ahead of the HAND_BACK, and the away one
+    before the MATERIALIZE) and that the pair splits across command buffers only at a buffer's end (P1).
+  - MOWZIE.md ledger 24: the re-pair's accessor mixin is for `EntityUmvuthi`'s private `direction` (the design's
+    contradiction 1, MZB-813); the step's zeroing lifts no shell or fan, and an explosion's push (a wind charge's
+    too) is zeroed in its `ExplosionKnockbackEvent` (contradiction 3, MZB-810). The item is rewrapped to the
+    file's 104 columns; no other word changed.
 
 ### M11b build records (MZB-870 to MZB-889)
 
