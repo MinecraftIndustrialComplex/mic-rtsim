@@ -4674,4 +4674,337 @@ public final class AloftMowzieGameTests {
                     });
         seq.thenSucceed();
     }
+
+    // ---- 36: a dying chief's loot at a stop and at the edge (MZB-817, MZB-818) --------------------------------------
+
+    /** The Sol Visage item entities within {@code r} blocks (x and z) of {@code c}. */
+    private static List<ItemEntity> visageItems(ServerLevel level, Vec3 c, double r) {
+        ResourceLocation sol = ResourceLocation.fromNamespaceAndPath("mowziesmobs", "sol_visage");
+        List<ItemEntity> out = new ArrayList<>();
+        for (ItemEntity e : level.getEntitiesOfClass(ItemEntity.class, new AABB(c.x - r, c.y - 40, c.z - r, c.x + r, c.y + 40, c.z + r)))
+            if (sol.equals(BuiltInRegistries.ITEM.getKey(e.getItem().getItem())))
+                out.add(e);
+        return out;
+    }
+
+    /**
+     * Holds a puppet's target on a player, with the jar's own AI off, until {@code on[0]} is false: it floats to the player and settles
+     * before it (the jar's follow range is raised so that it does not drop a target it was not given). Sets the AI off.
+     */
+    private static void targeting(GameTestHelper helper, EntityUmvuthi u, Player p, boolean[] on) {
+        u.setNoAi(true);
+        u.getAttribute(Attributes.FOLLOW_RANGE).setBaseValue(1000);
+        MowzieKit.everyTick(helper, () -> {
+            if (on[0] && u.isAlive() && !u.isRemoved())
+                u.setTarget(p);
+        });
+    }
+
+    /** The player kills a settled puppet: the jar's AI back on, the player its last attacker, and the hit. */
+    private static void killedBy(EntityUmvuthi u, ServerPlayer p) {
+        u.setNoAi(false);
+        u.setLastHurtByPlayer(p);
+        MowzieKit.kill(u, u.level().damageSources().playerAttack(p));
+    }
+
+    /** The one CHIEF_KILLED of an agent in {@code engine}, by a player, naming {@code killer}. */
+    private static void bookedOnce(String what, ScriptedEngine engine, long agent, ServerPlayer killer) {
+        List<ScriptedEngine.Received> k = RtsimTests.recordsFor(engine, ConflictRecords.CHIEF_KILLED, agent);
+        check(what + ": one CHIEF_KILLED (" + k.size() + ")", k.size() == 1);
+        check(what + ": by a player (" + k.get(0).aux() + ")", k.get(0).aux() == ConflictRecords.BY_PLAYER);
+        check(what + ": naming the player", killer.getUUID().equals(ConflictKit.uuidAt(k.get(0), ConflictRecords.ChiefKilled.KILLER_MOST)));
+    }
+
+    /**
+     * A dying chief's loot is dropped at a session's stop, not lost with it (test 36a; MZB-817). Two bands on two lanes, each a puppet
+     * and a warrior, each puppet settled before a masked player 20 blocks off (the jar's AI off and the target set by hand, as test 29c's
+     * failed session does).
+     * <ul>
+     * <li>The control: the first player kills its puppet and stays. One CHIEF_KILLED names the player, its body is dying, and the
+     * animation ends on its own: one Sol Visage within 2 blocks of where it fell, 100 to 130 ticks after the death (logged), nothing
+     * dying, no loot lost.</li>
+     * <li>The second player kills the other puppet. 40 ticks into its animation the session is stopped and started again
+     * ({@code RtsimSession.restartGlobalForTest}: stopping, save, stop, start): the body is finished there and then, removed as
+     * KILLED, and one Sol Visage lies within 2 blocks of its x and z, with nothing dying. The one CHIEF_KILLED the first session booked
+     * names the player; a new session books at most that one again. 150 ticks on (past the animation's end) there is still one Sol
+     * Visage there, and the first one stands where it fell.</li>
+     * </ul>
+     * Fails without the Dying list (the stop takes the tagged body with no loot). {@code deathLootLost} is the bridge's and is reset at
+     * the restart, so the proof here is the loot and the body's removal reason: a body removed any other way than KILLED is a lost one.
+     */
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "aloft_dying_stop", skyAccess = true)
+    public static void aDyingChiefDropsItsLootAtAStop(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 4000);
+        String test = "aDyingChiefDropsItsLootAtAStop";
+        Far far = new Far(helper, test);
+        ServerLevel level = far.level;
+        Lane[] lane = {new Lane(far, 0, 2), new Lane(far, 1, 2)}; // the control, the subject
+        long[] agent = {ConflictKit.newAgent(), ConflictKit.newAgent()};
+        long[] faction = {ConflictKit.newFaction(), ConflictKit.newFaction()};
+        EntityUmvuthi[] puppet = new EntityUmvuthi[2];
+        ServerPlayer[] player = new ServerPlayer[2];
+        boolean[] target = {true};
+        Vec3[] fell = new Vec3[2];
+        long[] diedAt = new long[2], dropAt = new long[2];
+        long[] was = new long[2]; // chiefsKilled, deathLootLost
+        RtsimSession[] old = new RtsimSession[1];
+        ScriptedEngine[] oldEngine = new ScriptedEngine[1];
+
+        MowzieKit.seq(helper)
+                .thenExecute(() -> {
+                    for (Lane l : lane)
+                        l.force();
+                })
+                .thenWaitUntil(waits.chunks(far.ready()))
+                .thenExecute(() -> {
+                    for (int i = 0; i < 2; i++) {
+                        lane[i].floor();
+                        bandAt(helper, faction[i], agent[i], lane[i].x0 + 8, lane[i].top + 1, lane[i].z, 0f, List.of(), 1, true);
+                        player[i] = MowzieKit.player(helper, lane[i].at(28), "mowzie-dying-stop-" + i);
+                        MowzieKit.mask(player[i]);
+                    }
+                })
+                .thenWaitUntil(waits.logic(() -> {
+                    for (int i = 0; i < 2; i++) {
+                        puppet[i] = puppet(agent[i]);
+                        check("band " + i + "'s warrior is embodied (" + warriorsOf(agent[i]).size() + ")", warriorsOf(agent[i]).size() == 1);
+                    }
+                }))
+                .thenExecute(() -> {
+                    for (int i = 0; i < 2; i++)
+                        targeting(helper, puppet[i], player[i], target);
+                    MowzieKit.everyTick(helper, () -> {
+                        for (int i = 0; i < 2; i++)
+                            if (fell[i] != null && dropAt[i] == 0 && visagesNear(level, fell[i], 2) > 0)
+                                dropAt[i] = level.getGameTime();
+                    });
+                })
+                .thenWaitUntil(waits.logic(() -> {
+                    for (int i = 0; i < 2; i++)
+                        check("puppet " + i + " has settled before its player (gravity " + !puppet[i].isNoGravity() + ")", !puppet[i].isNoGravity());
+                }))
+                // The control: killed, and the player stays.
+                .thenExecute(() -> {
+                    was[0] = ConflictKit.bridge().chiefsKilled;
+                    was[1] = ConflictKit.deathLootLost();
+                    fell[0] = puppet[0].position();
+                    diedAt[0] = level.getGameTime();
+                    killedBy(puppet[0], player[0]);
+                })
+                .thenIdle(20)
+                .thenExecute(() -> {
+                    bookedOnce("the control", RtsimTests.engine(), agent[0], player[0]);
+                    check("chiefsKilled rose by one (" + was[0] + " to " + ConflictKit.bridge().chiefsKilled + ")", ConflictKit.bridge().chiefsKilled == was[0] + 1);
+                    check("its body is dying (" + ConflictKit.bridge().dyingBodies() + ")", ConflictKit.bridge().dyingBodies() == 1);
+                    check("no Sol Visage yet (" + visagesNear(level, fell[0], 2) + ")", visagesNear(level, fell[0], 2) == 0);
+                })
+                .thenWaitUntil(waits.logic(() -> check("the control's loot lies (" + dropAt[0] + ")", dropAt[0] != 0)))
+                .thenExecute(() -> {
+                    long took = dropAt[0] - diedAt[0];
+                    record(test, "control", "the player stayed: the animation ended " + took + " ticks after the death, one Sol Visage");
+                    check("the animation ended 100 to 130 ticks after the death (" + took + ")", took >= 100 && took <= 130);
+                    check("one Sol Visage within 2 blocks of where it fell (" + visagesNear(level, fell[0], 2) + ")", visagesNear(level, fell[0], 2) == 1);
+                    check("nothing is dying (" + ConflictKit.bridge().dyingBodies() + ")", ConflictKit.bridge().dyingBodies() == 0);
+                    check("no loot record was lost (" + was[1] + " to " + ConflictKit.deathLootLost() + ")", ConflictKit.deathLootLost() == was[1]);
+                    // The second player kills the other puppet.
+                    was[0] = ConflictKit.bridge().chiefsKilled;
+                    fell[1] = puppet[1].position();
+                    diedAt[1] = level.getGameTime();
+                    killedBy(puppet[1], player[1]);
+                })
+                .thenIdle(40)
+                .thenExecute(() -> {
+                    bookedOnce("the second", RtsimTests.engine(), agent[1], player[1]);
+                    check("chiefsKilled rose by one (" + was[0] + " to " + ConflictKit.bridge().chiefsKilled + ")", ConflictKit.bridge().chiefsKilled == was[0] + 1);
+                    check("its body is dying (" + ConflictKit.bridge().dyingBodies() + ")", ConflictKit.bridge().dyingBodies() == 1);
+                    check("no Sol Visage yet (" + visagesNear(level, fell[1], 2) + ")", visagesNear(level, fell[1], 2) == 0);
+                    check("its body is in the world, dying (removed " + puppet[1].isRemoved() + ", dying " + puppet[1].isDeadOrDying() + ")",
+                            !puppet[1].isRemoved() && puppet[1].isDeadOrDying());
+                    old[0] = RtsimTests.session();
+                    oldEngine[0] = RtsimTests.engine();
+                    check("the session runs before the restart", !old[0].failed());
+                    target[0] = false;
+                    // The stop and the start, in this tick.
+                    RtsimSession.restartGlobalForTest(level.getServer());
+                    check("a session runs after the restart: " + RtsimSession.startFailure(), RtsimSession.current() != null);
+                    check("it is a new session", RtsimSession.current() != old[0] && !RtsimSession.current().failed());
+                    check("the dying body was finished at the stop: removed (" + puppet[1].getRemovalReason() + ")", puppet[1].isRemoved());
+                    check("removed as KILLED, the jar's own end, not taken by the stop (" + puppet[1].getRemovalReason() + ")",
+                            puppet[1].getRemovalReason() == Entity.RemovalReason.KILLED);
+                    List<ItemEntity> drops = visageItems(level, fell[1], 2);
+                    check("one Sol Visage within 2 blocks of its x and z (" + drops.size() + ")", drops.size() == 1 && visagesNear(level, fell[1], 2) == 1);
+                    check("it lies where the body fell, within 2 blocks over the floor (" + (drops.get(0).getY() - fell[1].y) + ")", Math.abs(drops.get(0).getY() - fell[1].y) < 2.0);
+                    check("nothing is dying (" + ConflictKit.bridge().dyingBodies() + ")", ConflictKit.bridge().dyingBodies() == 0);
+                    bookedOnce("the first session", oldEngine[0], agent[1], player[1]);
+                    record(test, "stop", "the session was stopped 40 ticks into the animation: the body was finished and removed as KILLED there, one Sol Visage "
+                            + String.format("%.2f", drops.get(0).getY() - fell[1].y) + " over where it fell, the chief's death booked once by the first session");
+                })
+                .thenIdle(150)
+                .thenExecute(() -> {
+                    check("still one Sol Visage where it fell (" + visagesNear(level, fell[1], 2) + ")", visagesNear(level, fell[1], 2) == 1);
+                    check("and the control's where it fell (" + visagesNear(level, fell[0], 2) + ")", visagesNear(level, fell[0], 2) == 1);
+                    check("nothing is dying (" + ConflictKit.bridge().dyingBodies() + ")", ConflictKit.bridge().dyingBodies() == 0);
+                    check("no loot record was lost since the restart (" + ConflictKit.deathLootLost() + ")", ConflictKit.deathLootLost() == 0);
+                    check("the new session is the engine's own (" + (RtsimTests.engine() != oldEngine[0]) + ")", RtsimTests.engine() != oldEngine[0]);
+                    List<ScriptedEngine.Received> again = ConflictKit.about(ConflictRecords.CHIEF_KILLED, agent[1]);
+                    check("the new session books the chief's death at most once more (" + again.size() + ")", again.size() <= 1);
+                    for (ScriptedEngine.Received r : again)
+                        check("and it names the player", player[1].getUUID().equals(ConflictKit.uuidAt(r, ConflictRecords.ChiefKilled.KILLER_MOST)));
+                    for (int i = 0; i < 2; i++)
+                        check("band " + i + " is not held by the bridge", ConflictKit.bridge().party(agent[i]) == null);
+                    record(test, "after the restart", "the new session booked " + again.size() + " CHIEF_KILLED of the dead chief (the first session's one is its own), one Sol Visage"
+                            + " 190 ticks on, nothing dying");
+                    drop(player);
+                    far.releaseAll();
+                })
+                .thenSucceed();
+    }
+
+    /**
+     * A dying chief whose chunk stops ticking entities drops its loot there (test 36b; MZB-817, MZB-818). A masked player ({@link Watch}, simulation
+     * distance 8, view 10) stands at the west of its ticking area, and two bands stand 20 blocks east of it, 15 blocks apart on its z, each a
+     * puppet and a warrior, each puppet settled before the player (the jar's AI off, the target set by hand).
+     * <ul>
+     * <li>The control: the player kills the first puppet and stays. One CHIEF_KILLED names the player, and the animation ends on its own:
+     * one Sol Visage within 2 blocks of where it fell, 100 to 130 ticks after the death (logged).</li>
+     * <li>The player kills the second puppet and, 40 ticks into its animation, steps 128 blocks west: its chunk is no longer in the
+     * ticking area (it is within the view distance, so it stays loaded) and the body would never tick again. The body is finished
+     * within 3 ticks of its chunk's stopping: removed as KILLED, one Sol Visage within 2 blocks of its x and z, nothing dying,
+     * {@code deathLootLost} unchanged, the one CHIEF_KILLED naming the player.</li>
+     * <li>The player comes back (128 blocks east) and the chunk ticks again: 100 ticks on there is still one Sol Visage there, still one
+     * CHIEF_KILLED, nothing dying, no loot lost.</li>
+     * </ul>
+     * Fails without the Dying list (the body never ticks and the loot is not dropped, or lost with the chunk's unload,
+     * {@code deathLootLost} 1).
+     */
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "aloft_dying_edge", skyAccess = true)
+    public static void aDyingChiefTakenBackAtTheEdgeDropsItsLoot(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 4000);
+        String test = "aDyingChiefTakenBackAtTheEdgeDropsItsLoot";
+        Far far = new Far(helper, test);
+        ServerLevel level = far.level;
+        Watch w = new Watch(helper, far, 8);
+        long[] agent = {ConflictKit.newAgent(), ConflictKit.newAgent()};
+        long[] faction = {ConflictKit.newFaction(), ConflictKit.newFaction()};
+        EntityUmvuthi[] puppet = new EntityUmvuthi[2];
+        boolean[] target = {true};
+        Vec3[] fell = new Vec3[2];
+        long[] diedAt = new long[2], dropAt = new long[2];
+        long[] off = new long[1];
+        long[] was = new long[2]; // chiefsKilled, deathLootLost
+        boolean[] stepped = {false};
+
+        MowzieKit.seq(helper)
+                .thenExecute(w::start)
+                .thenWaitUntil(waits.chunks(w::check))
+                .thenExecute(() -> {
+                    w.ground();
+                    MowzieKit.mask(w.player);
+                    int gy = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, (int) Math.floor(w.px + 20), (int) Math.floor(w.pz));
+                    bandAt(helper, faction[0], agent[0], w.px + 20, gy, w.pz - 15, 0f, List.of(), 1, true);
+                    bandAt(helper, faction[1], agent[1], w.px + 20, gy, w.pz + 15, 0f, List.of(), 1, true);
+                })
+                .thenWaitUntil(waits.logic(() -> {
+                    for (int i = 0; i < 2; i++) {
+                        puppet[i] = puppet(agent[i]);
+                        check("band " + i + "'s warrior is embodied (" + warriorsOf(agent[i]).size() + ")", warriorsOf(agent[i]).size() == 1);
+                    }
+                }))
+                .thenExecute(() -> {
+                    for (int i = 0; i < 2; i++)
+                        targeting(helper, puppet[i], w.player, target);
+                    MowzieKit.everyTick(helper, () -> {
+                        long now = level.getGameTime();
+                        for (int i = 0; i < 2; i++)
+                            if (fell[i] != null && dropAt[i] == 0 && visagesNear(level, fell[i], 2) > 0)
+                                dropAt[i] = now;
+                        if (stepped[0] && off[0] == 0 && !RtsimSession.entitiesTickAt(level, BlockPos.containing(fell[1])))
+                            off[0] = now;
+                    });
+                })
+                .thenWaitUntil(waits.logic(() -> {
+                    for (int i = 0; i < 2; i++)
+                        check("puppet " + i + " has settled before the player (gravity " + !puppet[i].isNoGravity() + ")", !puppet[i].isNoGravity());
+                }))
+                // The control: killed, and the player stays.
+                .thenExecute(() -> {
+                    was[0] = ConflictKit.bridge().chiefsKilled;
+                    was[1] = ConflictKit.deathLootLost();
+                    fell[0] = puppet[0].position();
+                    diedAt[0] = level.getGameTime();
+                    killedBy(puppet[0], w.player);
+                })
+                .thenIdle(20)
+                .thenExecute(() -> {
+                    bookedOnce("the control", RtsimTests.engine(), agent[0], w.player);
+                    check("its body is dying (" + ConflictKit.bridge().dyingBodies() + ")", ConflictKit.bridge().dyingBodies() == 1);
+                    check("no Sol Visage yet (" + visagesNear(level, fell[0], 2) + ")", visagesNear(level, fell[0], 2) == 0);
+                })
+                .thenWaitUntil(waits.logic(() -> check("the control's loot lies (" + dropAt[0] + ")", dropAt[0] != 0)))
+                .thenExecute(() -> {
+                    long took = dropAt[0] - diedAt[0];
+                    record(test, "control", "the player stayed: the animation ended " + took + " ticks after the death, one Sol Visage");
+                    check("the animation ended 100 to 130 ticks after the death (" + took + ")", took >= 100 && took <= 130);
+                    check("one Sol Visage within 2 blocks of where it fell (" + visagesNear(level, fell[0], 2) + ")", visagesNear(level, fell[0], 2) == 1);
+                    check("nothing is dying (" + ConflictKit.bridge().dyingBodies() + ")", ConflictKit.bridge().dyingBodies() == 0);
+                    check("no loot record was lost (" + was[1] + " to " + ConflictKit.deathLootLost() + ")", ConflictKit.deathLootLost() == was[1]);
+                    // The same kill of the other puppet.
+                    was[0] = ConflictKit.bridge().chiefsKilled;
+                    fell[1] = puppet[1].position();
+                    diedAt[1] = level.getGameTime();
+                    killedBy(puppet[1], w.player);
+                })
+                .thenIdle(40)
+                .thenExecute(() -> {
+                    bookedOnce("the second", RtsimTests.engine(), agent[1], w.player);
+                    check("chiefsKilled rose by one (" + was[0] + " to " + ConflictKit.bridge().chiefsKilled + ")", ConflictKit.bridge().chiefsKilled == was[0] + 1);
+                    check("its body is dying (" + ConflictKit.bridge().dyingBodies() + ")", ConflictKit.bridge().dyingBodies() == 1);
+                    check("no Sol Visage yet (" + visagesNear(level, fell[1], 2) + ")", visagesNear(level, fell[1], 2) == 0);
+                    check("its chunk ticks entities", RtsimSession.entitiesTickAt(level, BlockPos.containing(fell[1])));
+                    check("its body is in the world, dying (removed " + puppet[1].isRemoved() + ")", !puppet[1].isRemoved() && puppet[1].isDeadOrDying());
+                    target[0] = false;
+                    stepped[0] = true;
+                    w.step(-128);
+                })
+                .thenWaitUntil(waits.chunks(() -> check("the loot lies (" + dropAt[1] + ", chunk stopped " + off[0] + ")", dropAt[1] != 0)))
+                .thenExecute(() -> {
+                    check("its chunk stopped ticking entities (" + off[0] + ")", off[0] != 0);
+                    long took = dropAt[1] - off[0];
+                    check("the loot came within 3 ticks of its chunk's stopping (" + took + ")", took >= 0 && took <= 3);
+                    check("removed as KILLED, the jar's own end (" + puppet[1].getRemovalReason() + ")", puppet[1].isRemoved()
+                            && puppet[1].getRemovalReason() == Entity.RemovalReason.KILLED);
+                    List<ItemEntity> drops = visageItems(level, fell[1], 2);
+                    check("one Sol Visage within 2 blocks of its x and z (" + drops.size() + ")", drops.size() == 1);
+                    check("it lies where the body fell (" + (drops.get(0).getY() - fell[1].y) + " over)", Math.abs(drops.get(0).getY() - fell[1].y) < 2.0);
+                    check("its chunk does not tick entities now", !RtsimSession.entitiesTickAt(level, BlockPos.containing(fell[1])));
+                    check("nothing is dying (" + ConflictKit.bridge().dyingBodies() + ")", ConflictKit.bridge().dyingBodies() == 0);
+                    check("no loot record was lost (" + was[1] + " to " + ConflictKit.deathLootLost() + ")", ConflictKit.deathLootLost() == was[1]);
+                    bookedOnce("the second, at the edge", RtsimTests.engine(), agent[1], w.player);
+                    record(test, "edge", "the chunk stopped ticking at tick " + off[0] + " (" + (off[0] - diedAt[1]) + " after the death), the loot lay " + took + " ticks later, one Sol Visage "
+                            + String.format("%.2f", drops.get(0).getY() - fell[1].y) + " over where it fell, removed as KILLED");
+                })
+                .thenIdle(100)
+                .thenExecute(() -> {
+                    check("still one Sol Visage there (" + visagesNear(level, fell[1], 2) + ")", visagesNear(level, fell[1], 2) == 1);
+                    stepped[0] = false;
+                    w.step(128);
+                })
+                .thenWaitUntil(waits.chunks(() -> check("its chunk ticks entities again", RtsimSession.entitiesTickAt(level, BlockPos.containing(fell[1])))))
+                .thenIdle(100)
+                .thenExecute(() -> {
+                    check("the player is back and one Sol Visage lies there still (" + visagesNear(level, fell[1], 2) + ")", visagesNear(level, fell[1], 2) == 1);
+                    check("and the control's (" + visagesNear(level, fell[0], 2) + ")", visagesNear(level, fell[0], 2) == 1);
+                    check("still one CHIEF_KILLED of the second (" + ConflictKit.about(ConflictRecords.CHIEF_KILLED, agent[1]).size() + ")", ConflictKit.about(ConflictRecords.CHIEF_KILLED, agent[1]).size() == 1);
+                    check("nothing is dying (" + ConflictKit.bridge().dyingBodies() + ")", ConflictKit.bridge().dyingBodies() == 0);
+                    check("no loot record was lost (" + was[1] + " to " + ConflictKit.deathLootLost() + ")", ConflictKit.deathLootLost() == was[1]);
+                    recallAll(agent);
+                })
+                .thenWaitUntil(waits.logic(() -> check("both bands went (" + dematerialized(agent[0]).size() + " and " + dematerialized(agent[1]).size() + ")",
+                        dematerialized(agent[0]).size() >= 1 && dematerialized(agent[1]).size() >= 1)))
+                .thenExecute(() -> {
+                    w.end();
+                    far.releaseAll();
+                })
+                .thenSucceed();
+    }
 }
