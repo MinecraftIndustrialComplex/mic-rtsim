@@ -505,6 +505,28 @@ impl PackageStore {
         }
     }
 
+    /// Whether `op` is a write of this store not answered yet.
+    pub fn awaits_write(&self, op: OpId) -> bool {
+        self.writing.values().flatten().any(|s| s.op == op)
+    }
+
+    /// Write `op` goes to Java again at `at`, the host's session start after it held it: its
+    /// answer is awaited from then (RP-294). True when this store sent it.
+    pub fn write_handed_on_again(&mut self, op: OpId, at: Tick) -> bool {
+        match self
+            .writing
+            .values_mut()
+            .flat_map(|w| w.iter_mut())
+            .find(|s| s.op == op)
+        {
+            Some(s) => {
+                s.at = Some(at);
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Whether a write toward `pos` still holds the next at `at`: one in the engine's outbox, or
     /// one handed on less than `lost` ticks ago and not answered.
     pub fn write_pending(&self, pos: BlockPos, at: Tick, lost: u64) -> bool {
