@@ -7090,6 +7090,31 @@ the docs). Rust and docs only; no GameTest, no Java. One record per fix, MZB-762
     unplaced until the next season's payment. Same fix (forget only if `chests[lair] == p.chest`) and the
     same `place_tribute(lair)` after it. Test `a_failed_stack_forgets_only_its_own_chest`
     (crates/rtsim-ecology/tests/tribute.rs), failed first the same way on 7e1183ef (None for Y).
+- **MZB-763** (P2-2: two link tests, no behaviour change):
+  - **A replayed NOT_LOADED parks the stack again**
+    (`conflict::a_groves_stack_answered_not_loaded_after_the_save_is_parked_again_by_the_replay`,
+    crates/rtsim-jni/tests/protocol.rs). The pages hold a stack in flight (saved while Minecraft held
+    it), Java's NOT_LOADED answer to it is journaled after the save, a crash, a restart: the replay
+    hears the answer and parks the stack, and the session start writes no transfer; its chest named
+    later, it goes once under its own op and the 567 nuggets land once (9 stacks). The answer took the
+    stack's op out of the core outbox, so a stack the replay did not park would be written again by
+    `write_tribute`. Mutation: `tribute_not_loaded` not parking while `outbox.replaying()` fails it
+    at "the replay parked it again, and the session start sends nothing" (1 transfer for 0), and fails
+    the two U-c NOT_LOADED tests that park at the switch-on as well (their kept answer is applied in
+    a replay).
+  - **What the clear in `begin_replay` is for**
+    (`conflict::a_groves_parked_stack_is_sent_again_when_the_conflict_is_switched_off_and_on`). A
+    restart makes a new engine, with nothing parked, so the clear matters only for a session begun in
+    the same process: the conflict switched off and on (the reset runs `begin_replay`). A stack
+    parked live (NOT_LOADED) goes again at once at the switch-on, with no chest named, to its own
+    chest: one more transfer under the same op, answered, and booked placed ((503, 0, 1)). The
+    parking is the old session's: the plugin names a chest only on a change, so a stack kept parked
+    across the reset would wait for a report that never comes. With the clear removed only the engine
+    test `a_parked_stack_is_answered_like_any_stack_and_goes_again_at_camp_out_and_a_session_start`
+    failed; now this link test fails too, at "the new session sends the stack again" (1 transfer for
+    2), and no other link test does. Transfers are counted with `tribute_sends` (the
+    TRANSFER_TO_CONTAINER commands Java was given), not `j.commands.len()`: a switch-on writes
+    territory commands as well.
 
 ## M11 Aloft
 
