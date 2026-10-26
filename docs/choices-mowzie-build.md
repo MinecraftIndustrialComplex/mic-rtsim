@@ -10238,6 +10238,89 @@ M11a's implementer appends its records under this heading only (the Rust side).
     `chief_body_away` push mutated away). The floor itself is RP-57's: with `fold_epoch` mutated to fold nothing,
     (1) and (2) on all three reach MATERIALIZE at 1, want 2 (and in (2) the CHIEF_BODY at 1 too); the control
     passes on both.
+- **MZB-857** (step 6, the fake's chief knobs and the march audit's chief checks; MZB-838 built):
+  - The fake (`synth::FakeConflict`), as Java is to behave in M11b:
+    - An away CHIEF_BODY waits in `pending_chief` (by agent) and is spent on that agent's next MATERIALIZE. A
+      MATERIALIZE with BAND_CHIEF and a count-0 MEMBER_CHIEF stack after the first stack is a chief's own stack;
+      it counts `chief_bodies_matched` when the pending one names its epoch, else `chief_bodies_missing`.
+      `restart_to_replay` clears `pending_chief`, since Java's is per session.
+    - `chief_float` (0 by default, so every earlier run is unchanged): a chief HAND_BACK (LINE_CHIEF) of a band
+      whose body still holds its chief puppet is held as `Hold::Homing` for that many ticks, as Java's homing
+      holds it (MZB-821). The band's members go at once and its body is kept with the chief alone; its
+      BAND_DEMATERIALIZED goes at `max(leave_ticks, chief_float + 1)`, after the puppet (MZB-853).
+      `deadline()` gives each hold kind its limit (Throne at HOLD_MAX, Homing at `chief_float`, the others none)
+      for `next_due` and `release_held`.
+    - Any answer to a chief HAND_BACK takes the puppet out of the world (DONE on the throne, NOTHING beside the
+      standing body, STALE gone).
+    - `kill_homing_chief`: the homing puppet killed, as a CAMP_DEATH of the line's slot and generation by the
+      player, with its marker, then the line answered STALE. `pay_puppet(faction, player, items, at)`:
+      CHIEF_PAID with PAID_PUPPET, the chief slot and generation 0. `puppet_near_throne`: the census's TAKE of
+      the chief, held as a Removal on a player at the throne, answered STALE once the puppet comes near (models
+      Java's MZB-823). `band_chiefs`: the chief puppets the bands hold, for "one Umvuthi at most".
+  - The audit (`synth/march.rs`, run 13's stepped runs): an away CHIEF_BODY is followed at once, in the same take,
+    by the MATERIALIZE of its agent and epoch with BAND_CHIEF and exactly one MEMBER_CHIEF stack of count 0. A
+    MATERIALIZE carrying a chief stack has its CHIEF_BODY just before it, one per (agent, epoch), and its party
+    is led by its chief. No CHIEF_BODY or MATERIALIZE is taken while replaying. At each step's end, a band its
+    chief leads in bodies had its stack in that epoch. Totals `chief_bodies_away`, `chief_stacks` and
+    `chief_failed` (counted among `failed` too).
+  - Forks, each the conservative option:
+    - The stack checks apply only where `chief_own_stack` holds (the grove's culture). A Frostmaw-style chief
+      rides in a unit stack and sends no away CHIEF_BODY.
+    - The end-of-step check covers only the epochs a MATERIALIZE went for (`materialized`). Run 11's
+      `abstract_dead` puts a band in bodies by hand, as a watched fight leaves it, with no MATERIALIZE. Without
+      the hold it gave 12 false failures ("no chief stack went"), and Java was never told of those bodies.
+    - The `stacks` and `materialized` sets are cleared only when the audit syncs to a new engine. An epoch is
+      the party's for good (RP-57), so a second stack in an epoch after a reload is a failure too.
+    - A refused spawn (SPAWN_REJECTED) sends the chief's pair again at the same epoch (A1 case 3), and the audit
+      would call that "two chief stacks". The fake never refuses a spawn, so no run reaches it. A fake that
+      refuses would need the set keyed by wave.
+    - "Led by its chief" reads the party's flag as the step began or as it is now. A chief killed later in the
+      same step is not the stack's fault.
+  - The planted bug (`spawn_wave` pushes the CHIEF_BODY after the MATERIALIZE) fails the audit in run 13:
+    - "the chief's own stack" fails with 52 failures;
+    - run 13's position line fails too, since the audit's failures are shared ("the chief's stack at epoch 1 with
+      no away CHIEF_BODY just before it");
+    - run 11's `aloft_chief_body` fails in each case with "0 pairs, 1 chief stacks, 0 matched, 1 missing".
+
+    Reverted, run 13 passes: run 10 17 away CHIEF_BODYs and 17 stacks, run 11 9 and 9, runs 1 and 5 none, 0
+    failures.
+- **MZB-858** (step 7, run 11's aloft parts and runs 11 and 13): `invasion_marches` gains four parts after
+  `abstract_dead`, on `quiet_grove(8)` (and `fast_grove(8)` for the last):
+  - `aloft_chief_body` (MZB-801, MZB-803, MZB-838): an Invasion its Umvuthi leads is met on the road, at its
+    fight and on its way home. Each meeting sends one pair and one chief stack, and the fake matches it with none
+    missing. Met on the road, the band walks into its fight in the bodies it has and sends neither.
+  - `aloft_home` (MZB-821, MZB-823): home in bodies, the chief's HAND_BACK of its agent, epoch and generation
+    (LINE_CHIEF) goes with the camp's memory just ahead of it:
+    - from Gone it is answered DONE;
+    - from Left (the grove out at the muster's end, then the census's TAKE held on a player at the throne and
+      answered STALE as the puppet comes near) it is answered NOTHING;
+    - either way the slot is Body in its generation, with one Umvuthi;
+    - to a grove that is out, the band is recalled RECALL_DONE with no line, the slot is Owed, and the next
+      census spawns the chief behind a home CHIEF_BODY.
+  - `aloft_paid` (MZB-819): 9 gold nuggets paid to the puppet on the road are 9000 of tribute, booked once (the
+    same after the settle), and the payer is remembered. The home CHIEF_BODY ahead of the HAND_BACK carries it.
+  - `aloft_killed_after_home` (MZB-824, MZB-853): `chief_float` 200 and the puppet killed as it floats home:
+    - one CAMP_DEATH and no CHIEF_KILLED, with the line stale;
+    - (falls, losses) (1, 1) and the slot freed;
+    - the heir due at 12 days (6 x 2^1) and seated;
+    - never more than one Umvuthi body.
+  - Run 11's row is built now (its slices list is empty), and its RUNS entry names the M11a parts. Run 13 gains
+    "the chief's own stack (MZB-838)": no chief failure, and away CHIEF_BODYs equal the chief stacks and are more
+    than 0.
+  - Each part was failed first by a mutation of the rule it names (`/tmp/mzbuild/m11a-mut/s7.sh`, run 11 only,
+    each reverted):
+    - M1, no chief stack in `spawn_wave`: `aloft_chief_body` gives "0 pairs, 0 chief stacks, 0 matched" in each
+      case. `aloft_killed_after_home` gives "held while it floats false; killed false", since the fake's band
+      holds no puppet.
+    - M2, `camp_home`'s `chief_puppet` false: `aloft_home` gives no HAND_BACK (Gone answered [], body false);
+      `aloft_paid` gives "carries the payer false"; `aloft_killed_after_home` gives "HAND_BACK sent false".
+    - M3, the PAID_PUPPET branch reading `index(slot, generation)`: `aloft_paid` gives "remembered false". The
+      tribute is still booked once.
+  - The whole `sim mowzie` (seed 7) passes: 151 checks, 0 failures, written to `scenario/results/sim-mowzie.json`.
+    - Runs 7, 9, 10 and 12 are unchanged.
+    - Runs 1 to 6 and 8 differ only in the state hashes their save checks print, as RTC12 (MZB-853) changes
+      every save. Their pass marks and other details are unchanged.
+    - Run 11 gains its four parts. Run 13's counts grow with run 11 (2,968 records to 2,988).
 
 ### M11b build records (MZB-870 to MZB-889)
 
