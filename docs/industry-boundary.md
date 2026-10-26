@@ -468,7 +468,10 @@ Written 2026-10-20 with `crates/rtsim-jni/src/engine/industry.rs` (choices W1 to
   again) takes its command out of the outbox or the queue and books its effect at once, at the
   engine's frozen time, since Java prunes its rings at the acknowledgement whatever the switch. Switched on in a session, its own session start runs at that game time, so it
   catches up over the time it was off; Java then announces its districts and load states again, as at
-  a session start (IR15; `Industry.endOfTick` and `IndustryPlugin.announce`).
+  a session start (IR15; `Industry.endOfTick` and `IndustryPlugin.announce`). A chain write the link
+  still holds at the engine's session start (queued, or in the outbox it sends again, after a switch-on
+  or a restart) is handed on again there, so its ten periods (SC113) run from then and the catch-up
+  never writes its frogport a second time (RP-294 in docs/choices-journal-barrier.md).
 - **Mode.** The native engine applies. Read-only (phase I-A, F25) is retired with the ledger (I18,
   IR14): the `nOpen` flag is read and ignored with a warning.
 - **Threats** from other systems arrive as an order (`IndustryThreat`, W12) until those systems run
