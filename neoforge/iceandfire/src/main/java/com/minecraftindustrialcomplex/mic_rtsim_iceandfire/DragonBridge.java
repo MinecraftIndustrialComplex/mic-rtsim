@@ -1,6 +1,7 @@
 package com.minecraftindustrialcomplex.mic_rtsim_iceandfire;
 
 import com.iafenvoy.iceandfire.entity.DragonBaseEntity;
+import com.minecraftindustrialcomplex.mic_rtsim.api.KillCredit;
 import com.minecraftindustrialcomplex.mic_rtsim.api.RtsimApi;
 import com.minecraftindustrialcomplex.mic_rtsim.api.SessionPlugin;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs;
@@ -856,7 +857,7 @@ public final class DragonBridge implements SessionPlugin {
             if (d == null || IafDragons.dead(d))
                 continue;
             if (d.isTame()) {
-                onTame(d, now); // tamed by a path that fired no AnimalTameEvent (another mod's tool)
+                onTame(d, null, now); // tamed by a path that fired no AnimalTameEvent (another mod's tool)
                 continue;
             }
             if (p.mode == Mode.DEPART && (now >= p.deadline || !inAnyPlayersRange(level, e))) {
@@ -1151,13 +1152,17 @@ public final class DragonBridge implements SessionPlugin {
 
     /**
      * LivingDeathEvent (lowest priority, not cancelled so far): a puppet's death is journaled at the end
-     * of the tick once it is certain (docs/boundary.md §2.3); a puppet's kill of prey is a meal.
+     * of the tick once it is certain (docs/boundary.md §2.3); a puppet's kill of prey is a meal. The
+     * killer kind is core's kill credit (MZB-1008, MZB-1010): a pet's kill, and a death soon after a
+     * player's hit, are the player's, and a FakePlayer's is a machine's. The UUID is the credited
+     * player's, else the damage's entity's, as before.
      */
     void onDeath(LivingEntity dead, DamageSource source) {
         Puppet p = live(dead);
         Entity killer = source.getEntity();
         if (p != null) {
-            p.pendingDeath = new Death(attackerKind(killer), killer == null ? null : killer.getUUID());
+            KillCredit.Credit c = KillCredit.of(dead, source);
+            p.pendingDeath = new Death(c.by(), c.player() != null ? c.player() : killer == null ? null : killer.getUUID());
             return;
         }
         Puppet by = killer == null ? null : live(killer);
@@ -1349,19 +1354,29 @@ public final class DragonBridge implements SessionPlugin {
 
     /**
      * A puppet a player tames leaves the sim (A10). The dragon records have no TAKEN, so it leaves as a
-     * death with no killer: the engine's dragon is gone (no grudge), the body is the player's (choice Z7).
+     * death: the engine's dragon is gone (no grudge), the body is the player's (choice Z7). It is TAKEN
+     * (aux 4) with the tamer in the killer fields (MZB-1010): {@code tamer} when the tame event named a
+     * real player, else the dragon's owner when that is a player's. A tame no player is credited with (a
+     * machine's) is OTHER with no one; a dragon is a boss kind, so either way the lair's pressure rises.
      */
-    void onTame(Entity e, long now) {
+    void onTame(Entity e, Player tamer, long now) {
         Puppet p = live(e);
         if (p == null)
             return;
         p.pendingDeath = null;
         flushBreaths(p, now);
         int dim = session.dimId(e.level().dimension());
-        ByteBuffer r = session.boundary().beginJournaled(DragonRecords.DRAGON_DIED, DragonRecords.Died.SIZE, DragonRecords.ATTACKER_NONE, now);
+        Player real = KillCredit.realPlayer(tamer);
+        UUID by = real != null ? real.getUUID() : KillCredit.ownerOf(e, e.getServer());
+        int kind = by != null ? DragonRecords.ATTACKER_TAKEN : DragonRecords.ATTACKER_OTHER;
+        ByteBuffer r = session.boundary().beginJournaled(DragonRecords.DRAGON_DIED, DragonRecords.Died.SIZE, kind, now);
         r.putLong(DragonRecords.Died.AGENT, p.agent);
         r.putInt(DragonRecords.Died.EPOCH, p.epoch);
         r.putInt(DragonRecords.Died.DIM, dim);
+        if (by != null) {
+            r.putLong(DragonRecords.Died.KILLER_MOST, by.getMostSignificantBits());
+            r.putLong(DragonRecords.Died.KILLER_LEAST, by.getLeastSignificantBits());
+        }
         r.putDouble(DragonRecords.Died.X, e.getX());
         r.putDouble(DragonRecords.Died.Y, e.getY());
         r.putDouble(DragonRecords.Died.Z, e.getZ());

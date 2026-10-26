@@ -321,6 +321,61 @@ fn grudges_are_inherited_down_to_the_lair_and_its_next_occupant() {
     grudge_line();
 }
 
+/// A lair dragon's death by each kill credit code (EQUILIBRIUM.md §2.2, slice S3, MZB-1010): a
+/// dragon is a boss kind, so every death no wild mob is credited with raises the lair's pressure:
+/// a player's or a pet's kill (core's KillCredit sends both as PLAYER), a tame (TAKEN, naming the
+/// tamer), a machine's (OTHER) and lava (NONE). A mob's kill does not. Only a kill is the player's
+/// killing: a tame leaves no grudge (choice Z7).
+#[test]
+fn the_kill_credit_decides_the_lairs_loss() {
+    for (kind, presses, grudge) in [
+        (AttackerKind::Player, true, true),
+        (AttackerKind::Taken, true, false),
+        (AttackerKind::Other, true, false),
+        (AttackerKind::None, true, false),
+        (AttackerKind::Mob, false, false),
+    ] {
+        let (mut w, mut d) = world(5);
+        let lp = Pos::new(0, 4000, 4000);
+        let l = d.add_lair(
+            &mut w,
+            9,
+            "Lair",
+            Species::Fire,
+            LairKind::Roost,
+            lp,
+            100,
+            Tick(0),
+        );
+        d.add_dragon(&mut w, adult("only", l, 100, Gender::Female), Tick(0));
+        let mats = embodied_at_home(&mut w, &mut d, lp, Tick(100));
+        assert_eq!(mats.len(), 1);
+        let player = d.player(&mut w, PLAYER);
+        let at = Tick(600);
+        let lair_actor = d.lairs[l as usize].actor;
+        d.ingest(
+            &mut w,
+            &mut NoInfrastructure,
+            &Obs::Died(boundary::Died {
+                agent: mats[0].agent,
+                epoch: mats[0].epoch,
+                killer_kind: kind,
+                killer: if kind == AttackerKind::None { (0, 0) } else { PLAYER },
+                dimension: 0,
+                pos: (f64::from(lp.x), 100.0, f64::from(lp.z)),
+            }),
+            at,
+        );
+        assert!(d.lairs[l as usize].occupants.is_empty(), "{kind:?}");
+        let half_life = d.tun.renewal().half_life_days;
+        let p = d.lairs[l as usize].pressure.now(0, half_life);
+        assert_eq!(d.stats.player_losses, u64::from(presses), "{kind:?}");
+        assert_eq!(p, if presses { 1.0 } else { 0.0 }, "{kind:?}");
+        let felt = w.knowledge.sentiment(lair_actor, player, at);
+        assert_eq!(felt <= d.tun.grudge_below, grudge, "{kind:?}: the lair feels {felt}");
+    }
+}
+
 /// The scenario of the test above, and the engine it ends with.
 fn grudge_line() -> Dragons {
     let (mut w, mut d) = world(5);
