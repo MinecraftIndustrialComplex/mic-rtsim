@@ -7557,7 +7557,9 @@ the slice's head.
   trims back to 256 at the next tick's first derivation; slice T's key tags are counted and forgotten
   apart. A deposit delta hashes its district. `a_collision_before_a_save_gives_the_same_ordinal_after_a_crash`
   passes on 2a975cc3 too: it is coverage, not a regression test. The "more than 256 derivations"
-  edge above is closed for decisions of one tick, the only ones an ordinal separates.
+  edge above is closed for decisions of one tick, the only ones an ordinal separates. Amended again
+  by RP-259's step 3 (the re-check): the window keeps every tick at or above the step's oldest, not
+  only the tick being derived, and trims at the next step.
 - **RP-276** (crash tests replay over several hand-overs; the default shape): crates/rtsim-jni/tests/industry.rs
   has `REPLAY_FILLERS` (2,000 filler records after the pages), `restart` (reopens on a minimum-size
   buffer with the world's present as game time) and `replayed_over_several` (asserts at least 2 replay
@@ -7772,7 +7774,8 @@ the engine's globals IGB1 to IGB2 (`decided` after `now`), and the district IDS4
     (cmd.rs unit test) on 2a975cc3 gave both 0x4989eddb2487a481. `IndustryOps::remember` (cmd.rs:246)
     never forgets an id of the tick being derived: the window holds at most 256 or the busiest tick's
     derivations, whichever is more (one tick's decisions, a round per chunk and a write per pool and
-    good, are finite), and the next tick's first derivation trims it back to 256. The pairs are the
+    good, are finite), and the next tick's first derivation trims it back to 256 (step 3: every
+    tick at or above the step's oldest, trimmed at the next step). The pairs are the
     same bytes (`the_window_keeps_its_page_bytes`): no format change. A deposit delta hashes its
     district after its key (`derive_with`, cmd.rs:201): two districts on one well in one
     `flush_dirty` are two keys (`two_districts_on_one_well_write_back_at_one_tick_and_both_apply`,
@@ -7832,3 +7835,55 @@ the engine's globals IGB1 to IGB2 (`decided` after `now`), and the district IDS4
   2a975cc3: clean. The six sims (industry, conflict, dragons, herds, ships, mowzie) against
   2a975cc3: only `wall_ms` differs; the sims make no crash and report the world and the books, not
   op ids or command counts.
+
+#### The re-check's points (RP-259, step 3)
+
+An Opus re-check of a9886680 (brief rp-slice-r3-fixes.md) said ready to land after T, onto A, on
+conditions. These are the points on R alone. Lines here are at 13ca1423; those of the sections
+above are at a9886680 (engine.rs has moved by 9 lines past 846 since).
+
+- **P2-b, the package numbers and chunk epochs across a restore.** Mutation M2b (`packages_decided`
+  read but not restored from the district page, district.rs:1087) passed every test at a9886680:
+  under it, only the two new tests fail. `a_district_page_keeps_its_chunk_epochs_and_package_numbers`
+  (district.rs:1150, the page round trip with each counter going on from its last; under M2b the
+  restored numbers are empty) and `the_package_numbers_go_on_from_pages_taken_mid_run`
+  (replay_ids.rs:1524: pages taken after 6 of 10 packages, the replay's other 4 the live run's op
+  for op; under M2b they took new ops, 0x49c299622d2c687b and three more against the live
+  0x4942ba5a7ee65777 and three more, because the window the pages hold knew the first 4's: 4
+  packages more in the world than the engine booked, a make). The same mutation on `chunk_epochs`
+  was already caught by five tests (three glass paging tests in rtsim-industry's lib, and
+  `a_restored_engine_continues_exactly` and `a_run_restored_from_its_changed_pages_continues_exactly`
+  in tests/persist.rs), and the round trip now catches it too.
+- **P3, the window rule.** `remember` kept only the tick being derived (`b != by`), so a derivation
+  at an older tick in the same step (a stale record, a cluster that decides behind another) forgot
+  the step's newer ids once the class passed 256, and a later identical decision at the newer tick
+  took ordinal 0 again: one op for two changes, the second answered DUPLICATE (a loss).
+  `an_older_ticks_decision_never_makes_the_step_forget_a_newer_ticks_ids` (cmd.rs:581) on
+  a9886680: both decisions at 100 took 0x4989eddb2487a481, and the two at 90 both took
+  0x49b0d7a65a5fdff4. Now `IndustryOps` keeps the oldest tick derived in the step (`floor`,
+  cmd.rs:188) and `remember` (264) never forgets an id at or above it. The step ends at
+  `Engine::advance_to` (engine.rs:849, `IndustryOps::end_step` at cmd.rs:288), which a live step
+  calls once its records are in; the session start and a raid that lands while industry is held
+  run the clock with `run_to` (856) and do not end it; a replay in rtsim-jni is one step, since its
+  steps are held, and ends at the held step after the replay end. **What bounds the growth:** the
+  next step's first derivation trims the window back to 256 plus the ids at or above its own tick,
+  so it holds at most 256 plus one step's derivations plus the earlier steps' ids at or above the
+  step's oldest tick, which trails the clock by a step's staleness (a record a stride late, a
+  cluster catching up); the replay's step is its whole journal span. The floor is not saved (a
+  restored engine starts a step; the page bytes do not change). Why a window that forgets
+  differently on two runs is safe: ordinals are taken lowest free first, so the ops of one tick's
+  identical decisions are a prefix on each run, and two prefixes give at most a loss, never a
+  double. Two of RP-275's tests (`identical_decisions_of_one_tick_never_share_an_op_however_far_apart`
+  and `a_burst_of_derived_ids_never_pushes_a_key_tag_out`) end a step where they moved to the next
+  tick: the window now trims at the next step, not the next tick. This amends RP-275 and the P2-3
+  bullet above ("the next tick's first derivation trims it back").
+- **P3, the records**, corrected in the bullets above: the held writer is `write_queue`; `heard` in
+  memory only is safe only onto A, so R lands only onto A; P1-1's latest-wins residual; P2-1's loss
+  size and RP-279 (2)'s standing.
+
+  **Checks** (at 13ca1423): the workspace tests, 1,853 passed, 8 failed, 26 ignored: the 7 IGB2
+  fixtures above, and rtsim-cli's `at_100000_districts_a_full_world_request_keeps_the_budget_and_the_sidecar_its_cap`
+  (a district card still reading its chunks, under load average 27), which passes alone. Clippy on
+  rtsim-industry and rtsim-jni (all targets, `-D warnings`): clean. Rustfmt (stdin) on the 4
+  touched Rust files, all clean at a9886680: clean. The six sims against 2a975cc3: only `wall_ms`
+  differs (within the load's noise), so the window rule moves no result.
