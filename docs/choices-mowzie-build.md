@@ -7651,7 +7651,12 @@ the engine's globals IGB1 to IGB2 (`decided` after `now`), and the district IDS4
     feed stamps IND_CONDITIONS at the hand-over's time, a stride late at the fast stride, and the
     page took that tick; it passes with the page canonicalized. The other way round (`now` always
     written) fails the P1-1 test (the live DepositDelta 0x493084c28fd26f77 against the replayed
-    0x497ebe941c4c243f).
+    0x497ebe941c4c243f). Residual, part of the latest-wins one (RP-279 (2), the re-check):
+    `decided` is in the page only while a mark is pending; a latest-wins record (never journaled,
+    so never replayed) that moves it in that state, before pages taken in the middle of a
+    hand-over, leaves a page no replay of the journal reproduces: a replay from earlier pages
+    settles those marks at a journaled record's tick instead, its round under another op, and its
+    page and state hash differ.
   - **P1-2, a command answered FAILED live is never written after the replay end.** Java keeps only
     the ops it applied (Journal.java:221), so a copy of an op it answered FAILED is applied.
     `an_exchange_answered_failed_live_is_not_applied_after_a_crash` (rtsim-jni tests/industry.rs, 3
@@ -7663,8 +7668,9 @@ the engine's globals IGB1 to IGB2 (`decided` after `now`), and the district IDS4
     by the core before `journaled` and `answered_again`, engine.rs:1926 and 1973), in memory only.
     The first drain after the replay end (`simulate` 828, `unsent_answered` 874, called at 849 right
     after `drain_commands`) drops every queued command under one of them unsent and takes it back
-    (`command_failed`, engine.rs:4031, idempotent), then empties the set. `write_resends` (1090) is
-    held while replaying, as `simulate` is. FAILED only, as the build lead narrowed it: a copy of an
+    (`command_failed`, engine.rs:4031, idempotent), then empties the set. `write_queue` (1085, its
+    hold at 1090) is held while replaying, as `simulate` is (the re-check: not `write_resends`, as
+    this said). FAILED only, as the build lead narrowed it: a copy of an
     op answered APPLIED is written on purpose, since Java's applied-op set answers it DUPLICATE and a
     train's ring (T2, RP-196) applies it when the restored train never had it (J4); dropping it would
     leave a restored train without an exchange the replayed carriage result booked. Controls: the six
@@ -7676,7 +7682,13 @@ the engine's globals IGB1 to IGB2 (`decided` after `now`), and the district IDS4
     number, not its tick (P1-4): one numbered as a package Java answered FAILED may be decided later
     and is written, which is no double, since the engine never takes a package back. Kept until the
     first drain with the module on (a module switched off at the end keeps it, and its drain, for
-    the step it comes on). **The FAILED WriteChain variant:** no crash fixture can reach it, since
+    the step it comes on). **In memory only is safe only onto A** (the re-check): on R alone, pages
+    saved inside the replay-end hand-over, before that first drain, hold the copy decided again and
+    the FAILED answer's take-back but not the set, and a second crash restores them with an empty
+    set and no FAILED answer left to replay, so the copy is written and applied (a make: +224 iron
+    in the re-check's repro, +352 against the control's +128). A's `take_out` removes the copy from
+    the queue or the engine's `out` when the answer is heard, so no page holds it. **R lands only
+    onto A**; the repro becomes a test at the merge. **The FAILED WriteChain variant:** no crash fixture can reach it, since
     the fake world answers a WriteChain APPLIED or DUPLICATE only (fake.rs:1427 to 1434); the link
     unit test `a_command_heard_answered_while_replaying_is_never_written` covers it (the answer heard
     before the replay's wake decides the write again, as a COMMAND_RESULT runs no `fire_until`), and
@@ -7712,7 +7724,18 @@ the engine's globals IGB1 to IGB2 (`decided` after `now`), and the district IDS4
     it meets the epoch the chunk holds (a loss, RP-272); a floor puts it past that, applied twice. So
     neither raises a floor (comments at engine.rs:1197 and 3561). The review's case (the engine
     below the world, the next new round refused and booked applied by the done path) is a loss,
-    never a double. **Rule 4's table** (each industry kind that names an epoch, and its answer):
+    never a double. Its size (the re-check): with the engine's epoch for a chunk at b and the
+    world's at c, the rounds it numbers in (b, c] are refused and their content lost, one round's
+    for each round the live run made on that chunk beyond the replay's; bounded, since the counter
+    passes c after them. No rule avoids both this loss and the floors' double without Java
+    reporting the span it applied (a wire change, not built). RP-279 (2) is the double the other
+    way round and stands narrowed: since P1-3, only a replay that makes more rounds on one chunk
+    than the live run did passes that chunk's epoch, and its rounds past the world's apply content
+    the live run's rounds already applied (bounded by those extra rounds' content). Its causes are
+    a state the replay does not share: RP-279 (1)'s stale records (Java's hand-over flag would
+    close it) and a latest-wins record the replay lacks (stays). Floors would not help it (they
+    raise from the epochs Java names, the live run's); closing it needs the same wire change.
+    **Rule 4's table** (each industry kind that names an epoch, and its answer):
     IND_CHUNK_RECONCILE names the chunk's next epoch, answered DUPLICATE by Java when the chunk's
     attachment holds it or above or the op is applied; IND_CHUNK_LOADED's applied epoch settles the
     pending reconciles at or below it as applied and raises no floor; IND_RECONCILE_RESULT's epoch
