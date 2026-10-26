@@ -55,9 +55,9 @@
 //!   the same commit; a page without the world it was saved with is dropped loudly.
 //! - **The switch** (C25, U10 as RP-292 amends it): `Module.CONFLICT` (bit 5). Off, the conflict
 //!   runs nothing, writes nothing and keeps the page it had; the journaled records it hears are
-//!   kept (a page beside the meta page, `paging::Kept`) and applied at the switch-on, in its
-//!   session reset before its replay end, each after its own catch-up (docs/replay-gate.md 9.7),
-//!   their epochs with them (RP-293). On again, its bodies of before are gone and it runs on from
+//!   kept (a page beside the meta page, `paging::Kept`) and applied at the switch-on, in the
+//!   resets every module's run in (`shared::resets`) before the replay ends, each after its own
+//!   catch-up and at its own tick (docs/replay-gate.md 9.7), their epochs with them (RP-293). On again, its bodies of before are gone and it runs on from
 //!   where it stopped.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -82,7 +82,8 @@ use rtsim_settle::Pos;
 use rtsim_trade::GoodId;
 
 use super::paging::{self, Kept, Live, Pager};
-use super::{State, log_error, log_info, log_warn, phase1, shared};
+use super::shared::{self, Module};
+use super::{State, log_error, log_info, log_warn, phase1};
 use crate::wire::{self, Rec, RecordWriter, obs};
 
 /// The conflict's pages: table 0x4300 ('C', docs/boundary.md §9.1), next to the dragons' 0x4400.
@@ -402,8 +403,9 @@ fn kept_waiting(st: &State) -> bool {
 // ---- hooks: session and latest-wins records -----------------------------------------------------
 
 /// SESSION_START: every party the conflict thought embodied is abstract again and the plugin
-/// hears every territory again (the reset runs as soon as the conflict runs, now or when switched
-/// on), and Java forgot the engine's dictionary.
+/// hears every territory again (the reset runs as soon as the conflict runs, now once every
+/// module's flag is set, `shared::resets`, or when switched on), and Java forgot the engine's
+/// dictionary.
 pub(super) fn session_start(st: &mut State, module_mask: u32) {
     st.conflict.queue.clear();
     st.conflict.reported.clear();
@@ -411,13 +413,14 @@ pub(super) fn session_start(st: &mut State, module_mask: u32) {
     // switch that is off from the start keeps exactly those (no save writes them).
     st.conflict.enabled = module_mask & MODULE_CONFLICT != 0;
     st.conflict.reset_due = true;
-    reset_if_due(st);
 }
 
-/// The switch changed (MODULES, U10). Off: what the conflict holds is written once more as it is
-/// now and then kept; queued commands are dropped (all per session). On: the reset is due, and
-/// the areas booked meanwhile are introduced to it.
-fn set_enabled(st: &mut State, on: bool) {
+/// MODULES (U10), the first pass (`shared::switch`): the switch, if it changed. Off: what the
+/// conflict holds is written once more as it is now and then kept; queued commands are dropped
+/// (all per session). On: the reset is due, and runs in the second pass with every module's
+/// (`shared::resets`); the areas booked meanwhile are introduced to it after it. Returns whether
+/// the conflict came on.
+pub(super) fn switched(st: &mut State, on: bool) -> bool {
     let was = st.conflict.enabled;
     st.conflict.enabled = on;
     if was && !on {
@@ -428,72 +431,48 @@ fn set_enabled(st: &mut State, on: bool) {
     if on && !was {
         st.conflict.reset_due = true;
     }
-    reset_if_due(st);
-    if on && !was && running(st) {
-        shared::introduce_conflict(st);
-    }
+    on && !was
 }
 
-/// The session's reset, once the conflict runs (docs/replay-gate.md §3.2): its engine's replay
-/// begins (`begin_replay`, told whether it came back from its pages, RP-31), TERRITORY goes out
-/// again for every faction, and its replay end is due. With no replay running (a switch-on, or a
-/// first camp in the middle of a session) that end runs at once.
-///
-/// Records kept while off (RP-292) make it due with no camp too, and are applied in it
-/// ([`apply_kept`]).
+/// The conflict's reset alone, if due (`shared::reset_these`): a first camp in the middle of a
+/// session.
 fn reset_if_due(st: &mut State) {
+    shared::reset_these(st, &[Module::Conflict]);
+}
+
+/// The session's reset, once the conflict runs (docs/replay-gate.md §3.2), its first step
+/// (`shared::resets`): its engine's replay begins (`begin_replay`, told whether it came back from
+/// its pages, RP-31), TERRITORY goes out again for every faction, and its replay end is due. With
+/// no replay running (a switch-on, or a first camp in the middle of a session) that end runs in
+/// the reset's last step ([`replay_end`]).
+///
+/// Records kept while off (RP-292) make it due with no camp too, and are applied between the two
+/// ([`apply_kept`]). Returns whether it began.
+pub(super) fn begin_reset(st: &mut State) -> bool {
     let l = &st.conflict;
-    if l.reset_due && l.enabled && (l.active() || !l.kept.is_empty()) && !kept_waiting(st) {
-        st.conflict.reset_due = false;
-        let from_pages = st.conflict.from_pages;
-        st.conflict.engine.begin_replay(from_pages);
-        st.conflict.replay_end_due = true;
-        st.phase1.taint();
-        take_commands(st);
-        apply_kept(st);
-        if !st.replaying {
-            replay_end(st);
-        }
+    if !(l.reset_due && l.enabled && (l.active() || !l.kept.is_empty()) && !kept_waiting(st)) {
+        return false;
     }
+    st.conflict.reset_due = false;
+    let from_pages = st.conflict.from_pages;
+    st.conflict.engine.begin_replay(from_pages);
+    st.conflict.replay_end_due = true;
+    st.phase1.taint();
+    take_commands(st);
+    true
 }
 
-/// A session start's first record after Java's DICTs (`State::dict_wait`): a reset that waited
-/// with kept records runs now.
-pub(super) fn dict_ready(st: &mut State) {
-    reset_if_due(st);
-}
-
-/// The records heard while switched off (RP-292, docs/replay-gate.md 9.7), applied in the reset,
-/// after `begin_replay` and before the replay end, where a restart's replay of the same records
-/// applies them: oldest first, each as it came (a copy as a copy, so a generation-0 casualty copy
-/// is still refused), each after its own catch-up (`shared::catch_up`), so the conflict's events
-/// due before it fire first. Each goes in at its own tick as far as the world allows: the conflict
-/// shares the phase 1 world, which ran on while it was off, and a record is booked no earlier
-/// than the world's present (`ingest`). A band member a player killed in the switch's tick is dead
-/// before the replay end makes its band abstract; the epoch every record names reaches the floor
-/// here, before the conflict decides anything (RP-57: nothing is decided while off).
-fn apply_kept(st: &mut State) {
-    let kept = st.conflict.kept.take();
-    if kept.is_empty() {
-        return;
-    }
-    let outer = st.applying_copy;
-    st.applying_kept = true;
-    for (copy, bytes) in &kept {
-        let rec = Rec {
-            kind: wire::u16_at(bytes, wire::R_KIND),
-            aux: wire::u32_at(bytes, wire::R_AUX),
-            bytes,
-        };
-        st.applying_copy = *copy;
-        apply(st, &rec);
-    }
-    st.applying_kept = false;
-    st.applying_copy = outer;
-    log_info(&format!(
-        "the conflict applied {} records heard while it was switched off",
-        kept.len()
-    ));
+/// One record the conflict heard while switched off (RP-292, docs/replay-gate.md 9.7), applied
+/// in the reset after `begin_replay` and before the replay end, where a restart's replay of the
+/// same record applies it, in the order `shared::resets` merges every module's kept records: as
+/// it came (a copy as a copy, so a generation-0 casualty copy is still refused), after its own
+/// catch-up (`shared::catch_up`), so the events due before it fire first, and at its own tick
+/// (`shared::floor`). A band member a player killed in the switch's tick is dead from that tick,
+/// before the replay end makes its band abstract and before the band's demand's deadline; the
+/// epoch every record names reaches the floor here, before the conflict decides anything (RP-57:
+/// nothing is decided while off).
+pub(super) fn apply_kept(st: &mut State, rec: &Rec<'_>) {
+    apply(st, rec);
 }
 
 /// The conflict's replay end (docs/replay-gate.md §3.2), when due and the conflict runs: the
@@ -531,15 +510,11 @@ pub(super) fn gate_counts(st: &State) -> rtsim_conflict::GateCounts {
     st.conflict.engine.replay_gate_counts()
 }
 
-/// A record that is not journaled: MODULES and the conflict's latest-wins kinds. PLAYER
-/// positions go to the shared interest areas (`engine/shared.rs`).
+/// A record that is not journaled: the conflict's latest-wins kinds. MODULES goes to
+/// `shared::switch`, PLAYER positions to the shared interest areas (`engine/shared.rs`).
 pub(super) fn observe_state(st: &mut State, rec: &Rec<'_>) {
     let b = rec.bytes;
     match rec.kind {
-        obs::MODULES if rec.size() >= obs::modules::SIZE => {
-            let on = wire::u32_at(b, obs::modules::MASK) & MODULE_CONFLICT != 0;
-            set_enabled(st, on);
-        }
         k if STATE_KINDS.contains(&k) => {
             let Ok((_, o, _)) = boundary::decode_obs(b) else {
                 return;

@@ -1654,9 +1654,7 @@ impl Engine {
             // The session's DICTs are in (the preamble writes them right after SESSION_START):
             // the modules' resets that waited with kept records run before this record (RP-292).
             st.dict_wait = false;
-            dragons::dict_ready(st);
-            herds::dict_ready(st);
-            conflict::dict_ready(st);
+            shared::resets(st);
         }
         match rec.kind {
             obs::SESSION_START if rec.size() >= obs::session_start::SIZE => {
@@ -1694,6 +1692,9 @@ impl Engine {
                 ships::session_start(st, mask);
                 herds::session_start(st, mask);
                 conflict::session_start(st, mask);
+                // Every flag first, then the resets in one order (U-c's review, P2); a module
+                // with kept records waits for the DICTs (`dict_wait`).
+                shared::resets(st);
                 worldmodel::session_start(st);
                 shared::session_start(st);
                 talk::session_start(st);
@@ -1749,6 +1750,11 @@ impl Engine {
                 topology::observe_state(st, rec);
                 industry::observe_state(st, rec);
                 phase1::observe_state(st, rec);
+                if rec.kind == obs::MODULES && rec.size() >= obs::modules::SIZE {
+                    // The four modules that share the world hear the switch in two passes: every
+                    // flag, then the resets (U-c's review, P2).
+                    shared::switch(st, wire::u32_at(b, obs::modules::MASK));
+                }
                 dragons::observe_state(st, rec);
                 ships::observe_state(st, rec);
                 herds::observe_state(st, rec);
