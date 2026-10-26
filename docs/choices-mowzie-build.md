@@ -11100,3 +11100,47 @@ and `run_to`, one step over the whole time off), a restart whose world is far pa
   fixtures above (rtsim-cli's glass and stores, rtsim-view's fixtures and unreadable). Clippy on
   rtsim-industry and rtsim-jni (all targets, `-D warnings`): clean. Rustfmt (stdin) on cmd.rs, clean
   at 2bd1d828: clean.
+
+#### At the merge with T and A (RP-259)
+
+7661ca04 merges slice T (5e832028, which carries main's slice A, SEC-1's option A). Conflicts in
+cmd.rs, tests/industry.rs and this file only.
+
+- **The op window.** R's window (derived ids by tick, key tags apart, the `lows` probe) keeps its
+  shape. T's keyed ids (RP-180) are ported onto it: `derive_keyed` finds its tag in `keys` and probes
+  `lows`, `knows_key` looks the tag up there, and `KEYED` (`u64::MAX`, where a derived id hashes its
+  tick) sits beside R's `NUMBERED` (`u64::MAX - 1`). T's `keyed_op_ids_come_from_the_key_alone`
+  changed in its last block only: a burst of 512 derived ids, each step ended, no longer pushes the
+  key out (RP-275's own budget); 256 later keys do, and the key is then decided anew under the same
+  op. T's copy of `the_window_keeps_its_page_bytes` is folded into R's (the keyed tag's round trip
+  and `knows_key` after the restore). `iron_java_with` takes both sides' arguments (a capacity and a
+  configuration closure).
+- **The re-check's repro as a test.**
+  `a_second_crash_after_a_save_before_the_first_drain_writes_no_failed_copy`: iron line seed 11,
+  carriage deltas failing from 72,100 to 72,850, the world saved at 72,900, a crash at 73,500, a
+  restart on MIN_CAPACITY whose world saves at once with its pages asked through the journal's end
+  and 40 fillers behind them (taken inside the replay end's hand-over, before the first drain), run
+  to 73,500; a second crash, that save restored, run to 73,500. The world against the engine's books
+  (`FakeWorld::conservation_with`, not `world_iron`: a restored world has its own baseline) equals
+  the first restart's at the same game time: crushed raw iron +128 and iron ingots +2,735 in both.
+  With `Link::unqueue` (A's `take_out`) disabled, R alone's protection, it fails as the re-check
+  found: +352 against +128.
+- **SEC-1's off path with a FAILED exchange.** `ack_never_resends::a_failed_exchange_restarted_with_industry_off`,
+  three arms: the pages after X's decision (right before the tick of its FAILED answer), before it
+  (the window is X's IND_TRAIN_ARRIVED, IND_TRAIN_DEPARTED and the answer), and before it with an
+  autosave and a second crash while still off. Industry goes off in the answer's tick. From copies
+  of the snapshot a restart with the module on and one with it off, switched on in its second
+  hand-over, each run a day and until every command is applied: X never sent, one FAILED booked
+  (`results_failed`), the exchange not left waiting, and the world against the books and the
+  trains' cargo equal between the two. All pass. With both `Link::unqueue` and `unsent_answered`
+  disabled, the two before arms fail (the restart with the module on sends X once) and so does
+  `an_exchange_answered_failed_live_is_not_applied_after_a_crash`; with either one alone they pass,
+  so the two are redundant on one crash, and `take_out` is the one a second crash needs. The after
+  arm rests on A's keeping (its own failing-first tests).
+  - **No catch-up copy.** The case this was written to probe, a switch on whose catch-up decides X
+    again after the kept FAILED was booked against an op the engine had not decided, does not
+    arise for a station exchange: the engine decides one only from Java's IND_TRAIN_ARRIVED
+    (`train_arrived`, engine.rs:3905), which the replay with the module off ignores (U10), so a
+    restart off never decides X again. `answered_unsent` stays 0 in these shapes.
+- **Worlds.** A bumps `LINK_VERSION` to 2: every neoforge project's `run-gametest/world` in this
+  worktree is deleted before its GameTests.

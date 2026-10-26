@@ -2188,6 +2188,87 @@ fn an_exchange_answered_failed_live_is_not_applied_after_a_crash() {
     assert_eq!(iron_again, iron_live, "no iron made or lost");
 }
 
+/// The world against the engine's books ([`FakeWorld::conservation_with`]): Ok, or what is off.
+fn books_delta(j: &Java) -> Result<(), String> {
+    let mc = j.mc();
+    j.e.with_industry(|ie, _| mc.conservation_with(ie))
+}
+
+/// The slice R re-check's case (RP-259, P1-2 there): Java's FAILED answers heard while the replay
+/// ran (`Link::heard`) are memory only, so pages saved inside the replay end's hand-over, before the
+/// first drain, hold the copy the replay decided again and its take-back but not the answers; a
+/// second crash before the next page save restores that page, and on R alone the copy was written:
+/// the world against its books +352 iron where one crash leaves +128 (the restored world's own
+/// baseline). With slice A merged, Java's answer takes the copy out of the engine's commands at once
+/// (`Engine::take_out`, RP-285), so the page holds no copy to write. The first restart, run to the
+/// same game time, is the control.
+#[test]
+fn a_second_crash_after_a_save_before_the_first_drain_writes_no_failed_copy() {
+    let cfg = IronLine {
+        seed: 11,
+        days: 10,
+        threats: false,
+        control: false,
+        tick_first: true,
+        approach: true,
+    };
+    let dir = tmpdir("ind-failed-twice");
+    let mut j = iron_java(&dir, cfg);
+    j.mc_run_until(day(3.0));
+    let through = j.next_obs - 1;
+    j.e.request_save(through);
+    mc_tick_until_durable(&mut j, through);
+    j.mc_run_until(Tick(72_100));
+    fillers(&mut j, REPLAY_FILLERS);
+    j.mc_mut().fail_carriage_deltas = true;
+    j.mc_run_until(Tick(72_850));
+    j.mc_mut().fail_carriage_deltas = false;
+    j.mc_run_until(Tick(72_900));
+    let jsave = j.world_save();
+    let msave = j.mc().saved();
+    j.mc_run_until(Tick(73_500));
+    let mut mc = j.mc.take().unwrap();
+    j.e.close(false, Duration::from_secs(5)).unwrap();
+    mc.restore(&msave);
+    let e = engine_with(&dir, wire::MIN_CAPACITY, |c| {
+        c.industry_seed = Some(cfg.seed)
+    });
+    let mut j = restart(e, jsave, mc, MODULE_INDUSTRY);
+    // The world saves at once, and the pages through its journal's end are asked for with records
+    // right behind them, so they are taken inside the replay end's hand-over, before the first
+    // drain.
+    let s0 = j.next_obs - 1;
+    j.e.request_save(s0);
+    let jsave2 = j.world_save();
+    let msave2 = j.mc().saved();
+    fillers(&mut j, 40);
+    mc_tick_until_durable(&mut j, s0);
+    j.mc_run_until(Tick(73_500));
+    let control = books_delta(&j);
+    let iron_once = world_iron(&j);
+    let mut mc = j.mc.take().unwrap();
+    j.e.close(false, Duration::from_secs(5)).unwrap();
+    mc.restore(&msave2);
+    let e = engine_with(&dir, wire::MIN_CAPACITY, |c| {
+        c.industry_seed = Some(cfg.seed)
+    });
+    let mut j = restart(e, jsave2, mc, MODULE_INDUSTRY);
+    j.mc_run_until(Tick(73_500));
+    let twice = books_delta(&j);
+    let iron_twice = world_iron(&j);
+    let unsent = j.e.with_industry(|_, l| l.answered_unsent);
+    eprintln!(
+        "the world against its books after one crash {control:?}, after the second {twice:?}; iron \
+         (stores, carried, minted, burned) {iron_once:?} and {iron_twice:?}; answered_unsent {unsent}"
+    );
+    j.e.close(true, Duration::from_secs(5)).unwrap();
+    assert_eq!(
+        twice, control,
+        "a second crash after a save before the first drain"
+    );
+    assert_eq!(iron_twice, iron_once, "no iron made or lost");
+}
+
 /// A raider whose pages are older than its train raid decides it again after a crash, against an
 /// industry engine that is not held (docs/replay-gate.md §3.6; docs/choices-mowzie-build.md
 /// RP-180 to RP-186). The raid's op is its identity, so the world answers DUPLICATE, the link
@@ -5235,6 +5316,196 @@ mod ack_never_resends {
             a.1.0.len(),
             a.1.2.len(),
             a.1.1
+        );
+    }
+
+    /// Where the crash snapshot's pages stop in [`a_failed_exchange_restarted_with_industry_off`].
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum Pages {
+        /// After X's decision, right before the tick of Java's FAILED answer.
+        AfterTheDecision,
+        /// Before X's decision: the switch's catch-up decides X again under the op Java failed.
+        BeforeTheDecision,
+        /// As [`Pages::BeforeTheDecision`], and the restart with the module off autosaves and
+        /// crashes again, still off, before the switch.
+        BeforeAndACrashWhileOff,
+    }
+
+    /// What a restart from the snapshot ends with: X's commands Java received in the session, the
+    /// FAILED answers the link booked, whether X's exchange still waits, the world against the
+    /// engine's books, and the trains' cargo.
+    type Ending = (usize, u64, bool, Result<(), String>, Vec<Vec<GoodVec>>);
+
+    /// The SEC-1 off path on slice R (RP-259, RP-285): a station exchange X the world answers
+    /// FAILED, and a crash with the pages at `pages`; the world saved after the answer, with
+    /// industry switched off in the answer's tick (MODULES ahead of it). From copies of the
+    /// snapshot, B restarts with the module on: the replay hears the FAILED answer (`Link::heard`),
+    /// and with the pages before X's decision decides X again from the replayed IND_TRAIN_ARRIVED
+    /// under the same op and leaves the copy unsent. A restarts with it off (the answer is kept,
+    /// RP-285) and switches on in its second hand-over, where the kept answer is booked at its tick
+    /// before the catch-up. A station exchange is decided only from Java's IND_TRAIN_ARRIVED, which
+    /// the replay with the module off ignores (U10), so with the pages before X's decision A never
+    /// decides X again: the catch-up cannot write a copy the booked answer failed to meet. Both
+    /// run a day and until every command is applied. In each, X is never sent, its FAILED is booked
+    /// once, the exchange is not left waiting, and the world against the engine's books (and the
+    /// trains' cargo) is B's.
+    fn a_failed_exchange_restarted_with_industry_off(pages: Pages, tag: &str) {
+        let before = pages != Pages::AfterTheDecision;
+        let mut r = Rig::new(tag, false);
+        r.run_to(day(3.0));
+        r.every = 0;
+        r.j.mc_mut().fail_carriage_deltas = true;
+        // X: the first station exchange decided from now (the world fails it). With the pages
+        // before X's decision, a page save is asked for at every step's end until X is decided,
+        // so the last is taken right before the step that decides it.
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let mut asked = 0;
+        let (x, decided_from) = loop {
+            assert!(Instant::now() < deadline, "60 s of wall clock");
+            assert!(r.j.mc().t < day(8.0), "a station exchange by day 8");
+            if before {
+                asked = r.j.next_obs - 1;
+                r.j.e.request_save(asked);
+            }
+            let seen = r.j.ind_commands.len();
+            let from = r.j.next_obs;
+            r.tick();
+            let found = r.j.ind_commands[seen..].iter().find_map(|c| match &c.2 {
+                Cmd::CarriageDelta(d) if d.reason == CarriageReason::Exchange => Some(d.op.0),
+                _ => None,
+            });
+            if let Some(op) = found {
+                break (op, from);
+            }
+        };
+        // The tick of X's FAILED answer: industry goes off ahead of it, and with the pages after
+        // X's decision, they are asked for right before the tick's records.
+        let mut hit: Option<u64> = None;
+        while hit.is_none() {
+            assert!(Instant::now() < deadline, "60 s of wall clock");
+            assert!(r.j.mc().t < day(8.0), "X answered by day 8");
+            let first = r.j.next_obs;
+            r.step(
+                |_, _, _| true,
+                |j, answers| {
+                    if answers.iter().any(|a| a.0 == x && a.2 == FAILED) {
+                        j.modules(0);
+                        j.mc_mut().fail_carriage_deltas = false;
+                        if !before {
+                            j.e.request_save(first - 1);
+                        }
+                        hit = Some(first);
+                    }
+                },
+            );
+            r.after_tick();
+        }
+        let first = hit.unwrap();
+        let through = if before { asked } else { first - 1 };
+        let until = Instant::now() + Duration::from_secs(20);
+        while r.j.e.durable_obs_seq() < through {
+            assert!(Instant::now() < until, "the pages asked for never landed");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(r.j.e.durable_obs_seq(), through, "the pages stop where asked");
+        if before {
+            assert!(through < decided_from, "the pages stop before X's decision");
+        }
+        let window: Vec<u16> = (through + 1..r.j.next_obs)
+            .filter_map(|q| r.j.journaled(q).map(|b| wire::u16_at(&b, wire::R_KIND)))
+            .collect();
+        let saved = r.c.save(&r.j);
+        r.j.e.close(false, Duration::from_secs(5)).unwrap();
+        eprintln!(
+            "{pages:?}: X {x:#x} decided in the step from seq {decided_from}, answered FAILED in \
+             the tick from seq {first}; pages through {through}; the window's kinds {window:?}"
+        );
+        let cfg = r.cfg;
+        let run = |modules: u32, tag: &str| -> Ending {
+            let mut a = from_snapshot(&r.dir, &saved, cfg, modules, tag);
+            hand_over_only(&mut a);
+            if modules == 0 && pages == Pages::BeforeAndACrashWhileOff {
+                // Still off: an autosave whose pages land, then a crash and a restart off again.
+                let w = a.c.save(&a.j);
+                a.j.e.request_save(w.end);
+                let until = Instant::now() + Duration::from_secs(20);
+                while a.j.e.durable_obs_seq() < w.end {
+                    assert!(Instant::now() < until, "the autosave while off never landed");
+                    hand_over_only(&mut a);
+                }
+                a.j.e.close(false, Duration::from_secs(5)).unwrap();
+                let again = from_snapshot(&a.dir, &w, cfg, 0, &format!("{tag}-again"));
+                a = again;
+                hand_over_only(&mut a);
+            }
+            if modules == 0 {
+                assert!(
+                    !industry(&a.j.e, |ie| ie.exchange_pending(OpId(x))) || !before,
+                    "off, the engine has not decided X again"
+                );
+                a.modules = MODULE_INDUSTRY;
+                a.j.modules(MODULE_INDUSTRY);
+            }
+            hand_over_only(&mut a);
+            let t = a.j.mc().t;
+            a.run_to(t + 24_000);
+            a.run("every command applied", t + 30_000, |r| {
+                r.j.mc().commands_in_flight() == 0
+            });
+            let sent = a
+                .j
+                .ind_commands
+                .iter()
+                .filter(|c| c.2.op() == Some(OpId(x)))
+                .count();
+            let failed = a.j.e.with_industry(|_, l| l.results_failed);
+            let pending = industry(&a.j.e, |ie| ie.exchange_pending(OpId(x)));
+            let ending = (sent, failed, pending, books_delta(&a.j), cargo(&a.j));
+            a.j.e.close(true, Duration::from_secs(5)).unwrap();
+            ending
+        };
+        let b = run(MODULE_INDUSTRY, &format!("{tag}-b"));
+        let a = run(0, &format!("{tag}-a"));
+        eprintln!(
+            "{pages:?}: on, X sent {} times, {} FAILED booked, pending {}, books {:?}; off then on, \
+             X sent {} times, {} FAILED booked, pending {}, books {:?}; the same cargo: {}",
+            b.0,
+            b.1,
+            b.2,
+            b.3,
+            a.0,
+            a.1,
+            a.2,
+            a.3,
+            a.4 == b.4
+        );
+        for (arm, e) in [("on", &b), ("off then on", &a)] {
+            assert_eq!(e.0, 0, "{arm}: X never sent after the restart");
+            assert_eq!(e.1, 1, "{arm}: X's FAILED booked once");
+            assert!(!e.2, "{arm}: X's exchange is not left waiting");
+        }
+        assert_eq!(a.3, b.3, "the world against the engine's books, off then on and on");
+        assert!(a.4 == b.4, "the trains' cargo, off then on and on");
+    }
+
+    #[test]
+    fn a_failed_exchange_with_pages_after_its_decision_restarted_off_is_booked_as_on() {
+        a_failed_exchange_restarted_with_industry_off(Pages::AfterTheDecision, "off-failed-after");
+    }
+
+    #[test]
+    fn a_failed_exchange_with_pages_before_its_decision_restarted_off_is_never_sent() {
+        a_failed_exchange_restarted_with_industry_off(
+            Pages::BeforeTheDecision,
+            "off-failed-before",
+        );
+    }
+
+    #[test]
+    fn a_failed_exchange_restarted_off_and_crashed_while_off_is_never_sent() {
+        a_failed_exchange_restarted_with_industry_off(
+            Pages::BeforeAndACrashWhileOff,
+            "off-failed-crash-off",
         );
     }
 }
