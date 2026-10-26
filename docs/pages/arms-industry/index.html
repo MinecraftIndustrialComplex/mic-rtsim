@@ -1,0 +1,1398 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Arms Industry Plan</title>
+<style>
+:root {
+  --bg: #ffffff;
+  --ink: #1a1a1f;
+  --muted: #52514a;
+  --line: #e5e5ea;
+  --card: #f7f7f8;
+  --accent: #8f620f;
+  --accent-line: #c9a25a;
+  --tune: #2a5f9e;
+  --tune-line: #9dbbe0;
+  --grey: #8a8a93;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 18px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  overflow-wrap: anywhere;
+}
+main, .top, footer {
+  max-width: 920px;
+  margin: 0 auto;
+  padding-left: clamp(16px, 4vw, 32px);
+  padding-right: clamp(16px, 4vw, 32px);
+}
+.top {
+  padding-top: 14px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 18px;
+  font-size: 15px;
+}
+.top a { color: var(--muted); text-decoration: none; min-height: 44px; display: inline-flex; align-items: center; }
+.top a:hover, .top a:focus { color: var(--accent); text-decoration: underline; }
+.top .home { color: var(--ink); font-weight: 600; margin-right: auto; }
+h1, h2, h3 { text-wrap: balance; line-height: 1.25; }
+h1 { font-size: clamp(28px, 4.6vw, 40px); margin: 36px 0 10px; letter-spacing: -0.01em; max-width: 22em; }
+h2 { font-size: clamp(22px, 3vw, 27px); margin: 0 0 12px; max-width: 30em; }
+h3 { font-size: 19px; margin: 28px 0 8px; }
+h4 { font-size: 16.5px; margin: 18px 0 6px; }
+p, li { max-width: 38em; }
+p { margin: 0 0 14px; }
+ul, ol { padding-left: 1.2em; margin: 0 0 14px; }
+li { margin-bottom: 6px; }
+a { color: var(--accent); }
+strong { font-weight: 600; }
+.dek { color: var(--muted); font-size: 16px; margin-bottom: 22px; }
+.lead { font-size: 19.5px; line-height: 1.55; }
+section { padding: 34px 0 10px; border-top: 1px solid var(--line); margin-top: 26px; }
+.sec-n { color: var(--muted); font-weight: 600; font-variant-numeric: tabular-nums; margin-right: 6px; }
+code { font-family: var(--mono); font-size: 0.86em; background: var(--card); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; }
+.cap { font-size: 15px; color: var(--muted); margin: 8px 0 16px; max-width: 46em; }
+.box { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 16px 18px 6px; margin: 16px 0; }
+.box p, .box li { max-width: none; }
+.box h3 { margin-top: 0; font-size: 17px; }
+.label { font-size: 15px; font-weight: 600; color: var(--muted); margin: 0 0 6px; }
+.two { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; margin: 14px 0; }
+.two .box { margin: 0; }
+.two .box ul { font-size: 16.5px; }
+.formula { font-family: var(--mono); font-size: 16px; background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 12px 14px; margin: 12px 0 14px; line-height: 1.7; max-width: 38em; }
+
+/* tags */
+.chip {
+  display: inline-block;
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  line-height: 1;
+  padding: 3px 5px 2px;
+  border: 1px solid;
+  border-radius: 4px;
+  vertical-align: 0.14em;
+  white-space: nowrap;
+  background: #ffffff;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+.chip.verify { color: var(--accent); border-color: var(--accent-line); }
+.chip.tune { color: var(--tune); border-color: var(--tune-line); }
+.chip.opt { color: var(--muted); border-color: #c9c9d1; }
+.tags { display: grid; gap: 8px; margin: 0 0 10px; }
+.tags div { font-size: 16px; max-width: 46em; }
+.tags .chip { margin-right: 6px; }
+.tags-box p { font-size: 16px; }
+
+/* tiles */
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 10px;
+  margin: 22px 0 6px;
+}
+.tile { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 14px 14px 12px; }
+.tile .k { font-size: 13px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.tile .n { font-size: 30px; font-weight: 650; font-variant-numeric: tabular-nums; line-height: 1.15; margin-top: 2px; }
+.tile .n small { font-size: 17px; font-weight: 600; }
+.tile .t { font-size: 15px; color: var(--muted); line-height: 1.4; margin-top: 6px; }
+
+/* tables */
+.scroll { overflow-x: auto; margin: 12px 0 8px; -webkit-overflow-scrolling: touch; }
+table { overflow-wrap: break-word; border-collapse: collapse; width: 100%; font-size: 15.5px; line-height: 1.45; font-variant-numeric: tabular-nums; }
+th, td { text-align: left; vertical-align: top; padding: 9px 12px 9px 0; border-bottom: 1px solid var(--line); }
+th { font-weight: 600; color: var(--muted); font-size: 14.5px; border-bottom-color: #c9c9d1; overflow-wrap: normal; }
+td.num, th.num { text-align: right; }
+td.nil { color: var(--muted); }
+table td:first-child { font-weight: 600; }
+@media (max-width: 600px) {
+  table.stack thead { display: none; }
+  table.stack, table.stack tbody, table.stack tr, table.stack td, table.stack th { display: block; width: 100%; }
+  table.stack tr { border-bottom: 1px solid var(--line); padding: 10px 0 6px; }
+  table.stack td, table.stack th { border-bottom: 0; padding: 2px 0 6px; text-align: left; }
+  table.stack td[data-label]::before { content: attr(data-label); display: block; font-size: 13.5px; font-weight: 600; color: var(--muted); }
+  table.stack td:first-child { font-size: 17px; }
+  table.stack code { overflow-wrap: anywhere; }
+  table.stack td:empty { display: none; }
+  .tiles.anchors { grid-template-columns: 1fr; }
+  table.phases td:first-child::before { content: "Phase "; }
+}
+
+/* big grids: scroll inside their own frame */
+.wide { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 12px 0 8px; border: 1px solid var(--line); border-radius: 6px; }
+.wide:focus { outline: 2px solid var(--accent-line); outline-offset: 2px; }
+@media (min-width: 1000px) {
+  .wide { width: min(1160px, calc(100vw - 64px)); margin-left: calc(50% - min(580px, 50vw - 32px)); }
+}
+table.grid { font-size: 15px; overflow-wrap: normal; word-break: normal; }
+table.grid th, table.grid td { padding: 8px 12px; white-space: nowrap; }
+table.grid th { vertical-align: bottom; background: #ffffff; white-space: normal; min-width: 3.6em; }
+table.grid td.wrapcol { white-space: normal; min-width: 13em; }
+table.grid td.id { font-family: var(--mono); font-size: 14px; }
+table.grid th:first-child, table.grid td:first-child { position: sticky; left: 0; background: #ffffff; box-shadow: 1px 0 0 var(--line); }
+table.grid tbody tr:hover td { background: var(--card); }
+table.grid code { white-space: nowrap; }
+@media (max-width: 600px) {
+  table.grid { font-size: 14px; }
+  table.grid th, table.grid td { padding: 8px; }
+  table.grid th { white-space: normal; min-width: 4.5em; }
+  table.grid td.id { font-size: 13px; }
+  table.grid td.wrapcol { min-width: 12em; }
+}
+.scroll-hint { font-size: 14px; color: var(--muted); margin: 4px 0 16px; }
+
+/* decisions */
+.decisions { display: grid; gap: 12px; margin: 16px 0 6px; }
+.decision { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 16px 18px 10px; }
+.decision h3 { margin: 0 0 10px; font-size: 18.5px; }
+.decision h3 .dn { color: var(--accent); font-variant-numeric: tabular-nums; margin-right: 8px; }
+.decision p, .decision li { max-width: none; }
+.pick { background: #ffffff; border: 1px solid var(--accent-line); border-radius: 6px; padding: 10px 12px; margin: 0 0 8px; display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 10px; }
+.badge { display: inline-block; font-size: 12px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; padding: 3px 9px 2px; border-radius: 999px; background: var(--accent); color: #ffffff; white-space: nowrap; }
+.pick .what { font-weight: 600; flex: 1 1 16em; }
+.alt-h { font-size: 14px; font-weight: 600; color: var(--muted); margin: 8px 0 2px; text-transform: uppercase; letter-spacing: 0.04em; }
+.decision ul.alts { font-size: 16.5px; margin: 2px 0 6px; }
+.decision .where { font-size: 15px; color: var(--muted); margin: 6px 0 4px; }
+
+/* tool heads */
+.heads { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr)); gap: 12px; margin: 16px 0 8px; }
+.head-card { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 14px 16px 12px; }
+.head-card h4 { margin: 0 0 8px; font-size: 18px; }
+.head-card dl { display: grid; grid-template-columns: 7em 1fr; gap: 6px 12px; font-size: 15.5px; line-height: 1.45; margin: 0; }
+.head-card dt { color: var(--muted); font-weight: 600; }
+.head-card dd { margin: 0; }
+.family { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin: 14px 0 4px; }
+.family figure { margin: 0; background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 8px 8px 10px; }
+.family figcaption { font-size: 14.5px; line-height: 1.4; color: var(--muted); }
+.family figcaption strong { display: block; color: var(--ink); font-size: 15.5px; }
+@media (max-width: 760px) { .family { grid-template-columns: repeat(2, 1fr); } }
+
+/* diagrams */
+figure { margin: 18px 0 8px; }
+svg.dg { display: block; width: 100%; height: auto; }
+svg.dg text { font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; font-size: 14px; fill: var(--ink); }
+svg.dg text.b { font-weight: 650; }
+svg.dg text.s { font-size: 12.5px; fill: var(--muted); }
+svg.dg text.m { font-family: var(--mono); font-size: 12px; fill: var(--ink); }
+svg.dg text.warn { font-size: 12.5px; fill: #a3271b; }
+.head-dg { max-width: 540px; margin: 0 auto; }
+svg.dg.flow-narrow { display: none; }
+@media (max-width: 700px) {
+  svg.dg.flow-wide { display: none; }
+  svg.dg.flow-narrow { display: block; }
+}
+.legend { display: flex; flex-wrap: wrap; gap: 4px 18px; font-size: 15px; color: var(--muted); margin: 8px 0 0; }
+.legend span { display: inline; }
+.legend code { white-space: nowrap; overflow-wrap: normal; }
+.sw { display: inline-block; width: 22px; height: 14px; border-radius: 3px; background: var(--card); vertical-align: -2px; margin-right: 7px; }
+.sw.new { border: 2px solid var(--accent); }
+.sw.old { border: 1.5px solid var(--grey); }
+
+/* steps */
+ol.steps { list-style: none; padding: 0; margin: 12px 0 16px; counter-reset: step; }
+ol.steps > li { counter-increment: step; display: grid; grid-template-columns: 2.2em 1fr; gap: 0 10px; padding: 10px 0; border-bottom: 1px solid var(--line); max-width: 46em; margin: 0; }
+ol.steps > li:last-child { border-bottom: 0; }
+ol.steps > li::before { content: counter(step); font-weight: 700; color: var(--accent); font-variant-numeric: tabular-nums; font-size: 17px; text-align: right; padding-top: 1px; }
+ol.steps > li > div > ul { margin: 4px 0 2px; font-size: 16.5px; }
+ol.steps > li > div > ul li { margin-bottom: 3px; }
+.walk h3 { margin-top: 30px; }
+
+/* rules and lists */
+ol.rules > li { margin-bottom: 10px; }
+ol.rules ul { margin: 4px 0 0; font-size: 16.5px; }
+ol.risks > li { margin-bottom: 10px; }
+
+details { border-top: 1px solid var(--line); margin-top: 30px; padding: 14px 0; }
+summary { cursor: pointer; font-weight: 600; min-height: 44px; display: flex; align-items: center; list-style: none; }
+summary::-webkit-details-marker { display: none; }
+summary::before { content: "\25B8"; margin-right: 8px; color: var(--muted); }
+details[open] summary::before { content: "\25BE"; }
+details ul { font-size: 15.5px; color: var(--muted); }
+footer { color: var(--muted); font-size: 14px; padding-top: 20px; padding-bottom: 40px; }
+</style>
+</head>
+<body>
+
+<nav class="top" data-ss-react="off">
+  <a class="home" href="https://spacesheep.dev/@benmac/rtsim-hub">mic-rtsim for Ben</a>
+  <a href="#decide">Decisions</a>
+  <a href="#shop">Machines</a>
+  <a href="#ammo">Ammo</a>
+  <a href="#guns">Guns</a>
+  <a href="#walk">Walkthroughs</a>
+  <a href="#phases">Phases</a>
+  <a href="#risks">Risks</a>
+</nav>
+
+<main>
+
+<header id="short" data-ss-id="page-header">
+  <h1 data-ss-id="headline">Arms industry: every gun becomes 4 to 9 manufactured items, made on four new tool heads, and eight questions wait on you</h1>
+  <p class="dek" data-ss-id="dek">The pack's armaments-manufacturing plan, a design for your approval dated 26 October 2026. Nothing is built yet. It supersedes the September gun-crafting plan, whose rule was "no new machines", because you have said new machines are welcome if they are reusable.</p>
+
+  <div class="tiles" data-ss-id="kpi-tiles">
+    <div class="tile" data-ss-id="kpi-akm"><div class="k">Today</div><div class="n">2,394</div><div class="t">items in one AKM, 2,048 of them birch logs</div></div>
+    <div class="tile" data-ss-id="kpi-m107"><div class="k">Today</div><div class="n">320</div><div class="t">steel ingots in one M107</div></div>
+    <div class="tile" data-ss-id="kpi-cannon"><div class="k">Today</div><div class="n">54 <small>of 54</small></div><div class="t">guns eat a CBC autocannon barrel, breech and recoil spring: a 9 mm barrel is a cannon block</div></div>
+    <div class="tile" data-ss-id="kpi-parts"><div class="k">After</div><div class="n">4 to 9</div><div class="t">manufactured items per gun (it fits a 3×3 crafter), made on 4 new tool heads</div></div>
+  </div>
+
+  <div class="two" data-ss-id="before-after">
+    <div class="box" data-ss-id="box-today">
+      <p class="label">Today: guns are piles of ingots clicked together at the Gun Smith Table</p>
+      <ul>
+        <li>The AKM (<code>tacz:ak47</code>) costs 2,394 items, 2,048 of them birch logs.</li>
+        <li>The M107 costs 320 steel ingots.</li>
+        <li>Every one of the 54 guns eats a Create Big Cannons autocannon barrel, breech and recoil spring, so a 9 mm pistol barrel is literally a cannon block.</li>
+        <li>Five guns need boss drops, and 347 precision mechanisms are spread across the gun list.</li>
+        <li>Ammo is one click: 1 smokeless powder, 1 brass, 1 copper, 1 lead and 1 fulminated mercury give 18 to 100 rounds.</li>
+      </ul>
+    </div>
+    <div class="box" data-ss-id="box-after">
+      <p class="label">After: the player builds an arms industry</p>
+      <ul>
+        <li>Steel goes into bar stock, and bar stock goes down a <strong>barrel line</strong> (saw, harden, gun-drill, rifle, proof).</li>
+        <li>Receivers are milled from forgings, or stamped from sheet. Actions are machined and heat-treated.</li>
+        <li>An <strong>ammunition plant</strong> draws brass cases, swages bullets, charges primers and loads them in measured lots with propellant from Destroy.</li>
+        <li>A gun is assembled from 4 to 9 manufactured items it actually has.</li>
+        <li>Parts carry how well they were made. A barrel cut with a fresh broach makes a more accurate gun. An unproofed barrel that was water-quenched can burst in the field.</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="box" data-ss-id="box-built">
+    <p class="label">What gets built</p>
+    <ul>
+      <li>One new Java mod, <code>mic_machining</code>: four <strong>tool heads</strong> that sit over a belt or depot like a Mechanical Press, an oil-quench fan process, and a small set of item data for build quality.</li>
+      <li>A KubeJS layer for the parts and all recipes.</li>
+    </ul>
+    <p>The heads are generic: the same Die Ram that draws a 9 mm case also draws CBC cartridges, stamps magazine bodies, rivets RHA plate and loads nuclear fuel rods. <strong>What you decide:</strong> <a href="#decide">eight questions</a>, each with a recommended answer.</p>
+  </div>
+
+  <div class="box tags-box" data-ss-id="box-tags">
+    <p class="label">How to read the tags</p>
+    <div class="tags">
+      <div data-ss-id="tag-verify"><span class="chip verify">VERIFY</span>must be proven in a boot or GameTest before building on it.</div>
+      <div data-ss-id="tag-tune"><span class="chip tune">TUNE</span>a balance value we pick and adjust in play; it is not a fact.</div>
+      <div data-ss-id="tag-opt"><span class="chip opt">OPT</span>marks an optional piece, built only if you want it.</div>
+    </div>
+    <p>Every other number is a recipe count, a tick time, or derived from a real measurement that is named next to it. Sources: four surveys run on 2026-10-26 against the pinned jars (TaCZ 1.1.8-hotfix-r6, Create 6.0.10, CBC 5.11.7, CBC Neo Warfare 0.0.6v, Vintage 1.3.9, Metallurgy 1.0.3, Destroy 0.4.1, Overgeared 1.6.17/1.6.18.1, Power Grid 0.6.1/0.6.2, RHA 1.0.3b) and the pack's KubeJS scripts.</p>
+  </div>
+</header>
+
+<section id="decide" data-ss-id="decide" data-ss-section>
+  <h2 data-ss-id="decide-h">Eight decisions for you, each with a recommended answer</h2>
+  <p data-ss-id="decide-p">The recommended option comes first in each card; the alternatives follow it.</p>
+
+  <div class="decisions" data-ss-id="decision-list">
+    <div class="decision" id="d1" data-ss-id="d1">
+      <h3 data-ss-id="d1-h"><span class="dn">D1</span>Build a new Java mod for the machines?</h3>
+      <div class="pick" data-ss-id="d1-rec"><span class="badge">Recommended</span><span class="what">Yes: <code>mic_machining</code> with four tool heads, the oil-quench fan, the quality components and the carry rule</span></div>
+      <p class="alt-h">Alternative</p>
+      <ul class="alts" data-ss-id="d1-alts"><li>KubeJS only: the September plan, zero machines, flat quality</li></ul>
+      <p class="where">In the plan: <a href="#shop">the machine shop</a>, <a href="#ledger">the custom-roll ledger</a>.</p>
+    </div>
+
+    <div class="decision" id="d2" data-ss-id="d2">
+      <h3 data-ss-id="d2-h"><span class="dn">D2</span>Where does TaCZ-specific code live (craft hook, stats, burst, rust)?</h3>
+      <div class="pick" data-ss-id="d2-rec"><span class="badge">Recommended</span><span class="what">Inside <code>mic_machining</code> as an optional compat package that loads only with TaCZ</span></div>
+      <p class="alt-h">Alternative</p>
+      <ul class="alts" data-ss-id="d2-alts"><li>a separate <code>mic_arsenal</code> mod</li></ul>
+      <p class="where">In the plan: <a href="#quality">build quality</a>, <a href="#assembly">final assembly</a>.</p>
+    </div>
+
+    <div class="decision" id="d3" data-ss-id="d3">
+      <h3 data-ss-id="d3-h"><span class="dn">D3</span>Build quality changes gun stats, and unproofed flawed guns can burst?</h3>
+      <div class="pick" data-ss-id="d3-rec"><span class="badge">Recommended</span><span class="what">Yes, both</span></div>
+      <p class="alt-h">Alternatives</p>
+      <ul class="alts" data-ss-id="d3-alts"><li>grades shown but cosmetic</li><li>no quality at all</li></ul>
+      <p class="where">In the plan: <a href="#quality">build quality</a>.</p>
+    </div>
+
+    <div class="decision" id="d4" data-ss-id="d4">
+      <h3 data-ss-id="d4-h"><span class="dn">D4</span>Move <code>create:precision_mechanism</code> onto the Spindle (a pack-wide change to about 110 recipes)?</h3>
+      <div class="pick" data-ss-id="d4-rec"><span class="badge">Recommended</span><span class="what">Yes, from G2, same material cost</span></div>
+      <p class="alt-h">Alternative</p>
+      <ul class="alts" data-ss-id="d4-alts"><li>leave Create's recipe alone</li></ul>
+      <p class="where">In the plan: <a href="#refactor">refactoring the pack</a>.</p>
+    </div>
+
+    <div class="decision" id="d5" data-ss-id="d5">
+      <h3 data-ss-id="d5-h"><span class="dn">D5</span>Is CBC munitions, Neo Warfare and RHA in this plan's scope (phase 6)?</h3>
+      <div class="pick" data-ss-id="d5-rec"><span class="badge">Recommended</span><span class="what">Yes</span></div>
+      <p class="alt-h">Alternative</p>
+      <ul class="alts" data-ss-id="d5-alts"><li>guns only; do CBC later</li></ul>
+      <p class="where">In the plan: <a href="#refactor">refactoring the pack</a>, <a href="#phases">phase 6</a>.</p>
+    </div>
+
+    <div class="decision" id="d6" data-ss-id="d6">
+      <h3 data-ss-id="d6-h"><span class="dn">D6</span>Is wear still <code>tacz-durability</code> (decided 2026-09-17, never installed)?</h3>
+      <div class="pick" data-ss-id="d6-rec"><span class="badge">Recommended</span><span class="what">Yes, rust and burst sit on top of it</span></div>
+      <p class="alt-h">Alternative</p>
+      <ul class="alts" data-ss-id="d6-alts"><li>the KubeJS fouling fallback</li></ul>
+      <p class="where">In the plan: <a href="#reuse">the reuse table</a>, <a href="#phases">phase 0</a>.</p>
+    </div>
+
+    <div class="decision" id="d7" data-ss-id="d7">
+      <h3 data-ss-id="d7-h"><span class="dn">D7</span>Should mic_nuclear's planned <code>qc_bay</code> and <code>rod_loader</code> become this plan's Inspection Head and Die Ram?</h3>
+      <div class="pick" data-ss-id="d7-rec"><span class="badge">Recommended</span><span class="what">Yes: one machine family for the pack</span></div>
+      <p class="alt-h">Alternative</p>
+      <ul class="alts" data-ss-id="d7-alts"><li>keep them separate</li></ul>
+      <p class="where">In the plan: <a href="#inspection">the Inspection Head</a>, <a href="#refactor">refactoring the pack</a>.</p>
+    </div>
+
+    <div class="decision" id="d8" data-ss-id="d8">
+      <h3 data-ss-id="d8-h"><span class="dn">D8</span>Mod id and name</h3>
+      <div class="pick" data-ss-id="d8-rec"><span class="badge">Recommended</span><span class="what"><code>mic_machining</code>, "MIC Machining"</span></div>
+      <p class="alt-h">Alternatives</p>
+      <ul class="alts" data-ss-id="d8-alts"><li><code>mic_works</code></li><li><code>mic_machineshop</code></li></ul>
+    </div>
+  </div>
+
+  <div class="box" data-ss-id="reversible">
+    <p class="label" data-ss-id="reversible-h">Choices made without asking (all reversible)</p>
+    <ul data-ss-id="reversible-list">
+      <li>void the Curving Press</li>
+      <li>fix the recipe card</li>
+      <li>one shared spring chain</li>
+      <li>lots sized to retail boxes</li>
+      <li>1 powder item = 16 g</li>
+      <li>the cutter speed ladder of 32, 64 and 256 RPM</li>
+      <li>all 54 guns may be line-built (the September plan kept milled guns hand-only)</li>
+      <li>the five no-gun calibers get recipes anyway</li>
+    </ul>
+  </div>
+</section>
+
+<section id="rules" data-ss-id="rules" data-ss-section>
+  <h2 data-ss-id="rules-h"><span class="sec-n">2</span>Design rules</h2>
+  <ol class="rules" data-ss-id="rules-list">
+    <li><strong>No piles.</strong> Every gun recipe is 4 to 9 manufactured items (so it fits a 3×3 crafter). A strong gun costs more because its parts need better tools and more processes, not because it needs 300 ingots.</li>
+    <li><strong>The process is the progression.</strong> Each tier is gated by a capability the player builds: a harder cutter, a die, a heat-treatment route, a propellant. Tiers are not gated by an arbitrary rare ingredient. The select-fire sear needs an HSS cutter, and HSS needs tungsten, so the tungsten age is still where automatic weapons arrive; it simply arrives for a real reason.</li>
+    <li><strong>One idiom, many products.</strong> A tool head sits over a belt or depot exactly like Create's Mechanical Press and takes a tool. The tool chooses the operation (drill, broach, die, gauge), and the head's filter slot chooses the output when one tool can make several things, as Create's saw does for stonecutting. Every head also works as a step inside sequenced assembly.</li>
+    <li><strong>Consequences, not refusals.</strong> Nothing is blocked for being badly made:
+      <ul>
+        <li>A worn tool makes rough parts; rough parts make a less accurate gun.</li>
+        <li>Water quenching alloy steel risks a hidden crack. Proof firing finds it; skipping proof can cost you the gun.</li>
+      </ul>
+    </li>
+    <li><strong>Hand first, factory later.</strong> Every part has a hand route (Overgeared forge, TaCZ tables) and a factory route. The factory is faster and makes better parts. It is the reward, never the requirement.</li>
+    <li><strong>Real numbers.</strong> Charges, case masses, cutting speeds and tool-life exponents come from real firearms practice and machining tables. Balance knobs are marked <span class="chip tune">TUNE</span>.</li>
+  </ol>
+</section>
+
+<section id="shop" data-ss-id="shop" data-ss-section>
+  <h2 data-ss-id="shop-h"><span class="sec-n">3</span>The machine shop: four tool heads</h2>
+  <p data-ss-id="shop-p">All four are new blocks in <code>mic_machining</code>. They share one base: Create's public <code>PressingBehaviour</code> driven by our own <code>PressingBehaviourSpecifics</code>. Vintage Improvements' Curving Press is built the same way. The base gives every head the following, for free:</p>
+  <ul data-ss-id="shop-base">
+    <li><strong>Placement:</strong> it works over a belt, a depot or a basin, and as a sequenced-assembly step.</li>
+    <li><strong>Tool slot:</strong> right-click a tool in, or feed it from a funnel or Mechanical Arm on the back face. That back-face feed is an <strong>automatic tool changer</strong>: when a tool breaks, the next one is pulled in.</li>
+    <li><strong>Filter slot:</strong> chooses the output when several recipes share the same input and tool.</li>
+    <li><strong>Goggle readout and Display Source:</strong> tool name, wear percentage, rated RPM and current RPM, with a red overspeed warning. A Display Link can put "Broach: 37 % left" on a factory board.</li>
+    <li><strong>Comparator output:</strong> proportional to tool wear.</li>
+  </ul>
+
+  <figure data-ss-id="fig-head">
+    <svg class="dg head-dg" viewBox="0 0 380 330" role="img" aria-label="A tool head over a belt: goggles readout above, filter slot on the front face, back-face tool feed on the rear, the tool slot holding a cutter below, and a belt, depot or basin under it.">
+      <!-- goggles readout -->
+      <rect x="172" y="6" width="204" height="96" rx="6" fill="#ffffff" stroke="#8a8a93"/>
+      <text x="184" y="28" class="b">Goggles readout</text>
+      <text x="184" y="48" class="s">tool name and wear %</text>
+      <text x="184" y="66" class="s">rated RPM and current RPM</text>
+      <text x="184" y="84" class="warn">red overspeed warning</text>
+      <path d="M172 80 L150 134" stroke="#5f5f68" stroke-width="1.2" stroke-dasharray="3 3" fill="none"/>
+      <!-- casing -->
+      <polygon points="40,150 62,132 192,132 170,150" fill="#ececef" stroke="#5f5f68" stroke-width="1.5"/>
+      <polygon points="170,150 192,132 192,208 170,226" fill="#c8c8ce" stroke="#5f5f68" stroke-width="1.5"/>
+      <rect x="40" y="150" width="130" height="76" fill="#dcdce0" stroke="#5f5f68" stroke-width="1.5"/>
+      <line x1="40" y1="162" x2="170" y2="162" stroke="#a9a9b1"/>
+      <!-- filter slot -->
+      <rect x="84" y="174" width="42" height="26" rx="3" fill="#ffffff" stroke="#8f620f" stroke-width="2"/>
+      <text x="8" y="112" class="b">Filter slot</text>
+      <text x="8" y="129" class="s">picks the output</text>
+      <path d="M62 134 L98 174" stroke="#5f5f68" stroke-width="1.2" fill="none"/>
+      <circle cx="98" cy="174" r="2.5" fill="#5f5f68"/>
+      <!-- back-face tool feed -->
+      <path d="M246 186 L198 186" stroke="#8f620f" stroke-width="2" fill="none"/>
+      <path d="M204 180 L196 186 L204 192" stroke="#8f620f" stroke-width="2" fill="none"/>
+      <rect x="214" y="181" width="20" height="10" rx="2" fill="#9a9aa3"/>
+      <text x="252" y="170" class="b">Back-face</text>
+      <text x="252" y="188" class="b">tool feed</text>
+      <text x="252" y="206" class="s">funnel or</text>
+      <text x="252" y="222" class="s">Mechanical Arm</text>
+      <!-- tool slot -->
+      <rect x="100" y="226" width="10" height="14" fill="#8a8a93"/>
+      <rect x="94" y="240" width="22" height="10" rx="2" fill="#6b6b74"/>
+      <polygon points="97,250 113,250 105,278" fill="#9a9aa3" stroke="#5f5f68"/>
+      <path d="M99 256 L111 260 M100 263 L110 267 M102 270 L108 272" stroke="#5f5f68" stroke-width="1"/>
+      <path d="M118 254 L150 254" stroke="#5f5f68" stroke-width="1.2" fill="none"/>
+      <circle cx="118" cy="254" r="2.5" fill="#5f5f68"/>
+      <text x="156" y="252" class="b">Tool slot</text>
+      <text x="156" y="270" class="s">cutter, die or instrument</text>
+      <!-- belt -->
+      <rect x="82" y="282" width="46" height="12" rx="2" fill="#b9b9c2" stroke="#5f5f68"/>
+      <rect x="10" y="294" width="240" height="18" rx="9" fill="#e5e5ea" stroke="#8a8a93"/>
+      <circle cx="19" cy="303" r="5" fill="#ffffff" stroke="#8a8a93"/>
+      <circle cx="241" cy="303" r="5" fill="#ffffff" stroke="#8a8a93"/>
+      <path d="M40 299 l5 4 l-5 4 M150 299 l5 4 l-5 4 M190 299 l5 4 l-5 4" stroke="#8a8a93" stroke-width="1.5" fill="none"/>
+      <text x="258" y="301" class="b">Belt, depot</text>
+      <text x="258" y="319" class="b">or basin</text>
+    </svg>
+    <figcaption class="cap" data-ss-id="fig-head-cap">One head, drawn here holding a carbon gun drill. The same base serves all four; the tool in the slot chooses the operation.</figcaption>
+  </figure>
+
+  <div class="family" data-ss-id="fig-family">
+    <figure data-ss-id="fam-spindle">
+      <svg class="dg" viewBox="0 0 160 132" role="img" aria-label="Spindle Head: a casing with a vertical spindle and cutter over a depot">
+        <rect x="45" y="12" width="70" height="46" fill="#dcdce0" stroke="#5f5f68" stroke-width="1.5"/>
+        <rect x="76" y="58" width="8" height="12" fill="#8a8a93"/>
+        <polygon points="73,70 87,70 80,96" fill="#9a9aa3" stroke="#5f5f68"/>
+        <path d="M70 92 l-6 3 M92 90 l6 2 M68 84 l-5 -1" stroke="#8a8a93" stroke-width="1.5"/>
+        <circle cx="64" cy="76" r="1.8" fill="#6a8fbf"/><circle cx="98" cy="80" r="1.8" fill="#6a8fbf"/><circle cx="95" cy="70" r="1.5" fill="#6a8fbf"/>
+        <rect x="62" y="98" width="36" height="8" rx="1.5" fill="#b9b9c2" stroke="#5f5f68"/>
+        <rect x="48" y="106" width="64" height="20" fill="#e5e5ea" stroke="#8a8a93"/>
+      </svg>
+      <figcaption><strong>Spindle Head</strong>takes cutters: gun drill, end mill, broach, gear hob</figcaption>
+    </figure>
+    <figure data-ss-id="fam-dieram">
+      <svg class="dg" viewBox="0 0 160 132" role="img" aria-label="Die Ram: a heavy press with a die block bolted under the ram, over a belt">
+        <rect x="36" y="6" width="88" height="40" fill="#dcdce0" stroke="#5f5f68" stroke-width="1.5"/>
+        <rect x="58" y="46" width="44" height="20" fill="#c8c8ce" stroke="#5f5f68"/>
+        <rect x="52" y="66" width="56" height="16" fill="#8a8a93" stroke="#5f5f68"/>
+        <circle cx="59" cy="74" r="2.2" fill="#dcdce0"/><circle cx="101" cy="74" r="2.2" fill="#dcdce0"/>
+        <rect x="54" y="98" width="52" height="6" rx="1" fill="#b9b9c2" stroke="#5f5f68"/>
+        <rect x="14" y="104" width="132" height="14" rx="7" fill="#e5e5ea" stroke="#8a8a93"/>
+      </svg>
+      <figcaption><strong>Die Ram</strong>takes dies; over a basin it batch-presses</figcaption>
+    </figure>
+    <figure data-ss-id="fam-inspection">
+      <svg class="dg" viewBox="0 0 160 132" role="img" aria-label="Inspection Head: an andesite casing with a probe arm and a lamp, over a belt">
+        <rect x="40" y="12" width="74" height="44" fill="#dcdce0" stroke="#5f5f68" stroke-width="1.5"/>
+        <path d="M62 56 L70 78 L86 90" stroke="#5f5f68" stroke-width="3" fill="none" stroke-linecap="round"/>
+        <circle cx="88" cy="92" r="3.5" fill="#5f5f68"/>
+        <rect x="104" y="56" width="10" height="8" fill="#5f5f68"/>
+        <circle cx="109" cy="70" r="6" fill="#f2d675" stroke="#8f620f"/>
+        <path d="M120 72 l8 3 M117 79 l6 6 M109 80 l0 8" stroke="#c9a25a" stroke-width="1.5"/>
+        <rect x="58" y="98" width="52" height="6" rx="3" fill="#b9b9c2" stroke="#5f5f68"/>
+        <rect x="14" y="104" width="132" height="14" rx="7" fill="#e5e5ea" stroke="#8a8a93"/>
+      </svg>
+      <figcaption><strong>Inspection Head</strong>takes instruments: gauge set, proof chamber, MPI, radiography</figcaption>
+    </figure>
+    <figure data-ss-id="fam-induction">
+      <svg class="dg" viewBox="0 0 160 132" role="img" aria-label="Induction Head: a copper casing ringed by a glowing copper coil with a quench spray ring and its own tank, over a belt">
+        <rect x="40" y="10" width="70" height="40" fill="#d9a27a" stroke="#8a4b22" stroke-width="1.5"/>
+        <rect x="116" y="14" width="18" height="34" rx="2" fill="#ffffff" stroke="#5f5f68"/>
+        <rect x="118" y="30" width="14" height="16" fill="#9dbbe0"/>
+        <path d="M110 30 L116 30" stroke="#5f5f68" stroke-width="2"/>
+        <ellipse cx="75" cy="60" rx="24" ry="5" fill="none" stroke="#e8892a" stroke-width="3"/>
+        <ellipse cx="75" cy="68" rx="24" ry="5" fill="none" stroke="#e8892a" stroke-width="3"/>
+        <ellipse cx="75" cy="76" rx="24" ry="5" fill="none" stroke="#e8892a" stroke-width="3"/>
+        <ellipse cx="75" cy="88" rx="27" ry="4" fill="none" stroke="#6a8fbf" stroke-width="2" stroke-dasharray="3 3"/>
+        <circle cx="60" cy="95" r="1.6" fill="#6a8fbf"/><circle cx="90" cy="95" r="1.6" fill="#6a8fbf"/><circle cx="75" cy="94" r="1.6" fill="#6a8fbf"/>
+        <rect x="58" y="98" width="34" height="6" rx="1" fill="#b9b9c2" stroke="#5f5f68"/>
+        <rect x="14" y="104" width="132" height="14" rx="7" fill="#e5e5ea" stroke="#8a8a93"/>
+      </svg>
+      <figcaption><strong>Induction Head</strong>no tool: a 1,000 mB quench tank, Power Grid power</figcaption>
+    </figure>
+  </div>
+  <p class="cap" data-ss-id="fam-cap">The family side by side, each drawn as the plan describes it.</p>
+
+  <div class="heads" data-ss-id="head-cards">
+    <div class="head-card" data-ss-id="card-spindle">
+      <h4>Spindle Head</h4>
+      <dl>
+        <dt>Looks like</dt><dd>casing with a vertical spindle; the cutter spins and plunges; chips and coolant particles</dd>
+        <dt>Tool</dt><dd>cutters: gun drill, end mill, broach, gear hob, in three steels</dd>
+        <dt>Recipe type</dt><dd><code>mic_machining:<wbr>machining</code></dd>
+        <dt>Unlocks</dt><dd>G1</dd>
+        <dt>Stress <span class="chip tune">TUNE</span></dt><dd>8 SU</dd>
+      </dl>
+    </div>
+    <div class="head-card" data-ss-id="card-dieram">
+      <h4>Die Ram</h4>
+      <dl>
+        <dt>Looks like</dt><dd>heavy press with a die block bolted under the ram</dd>
+        <dt>Tool</dt><dd>dies, selected by a profile (cup, draw, swage, stamp, load, rivet, coin)</dd>
+        <dt>Recipe type</dt><dd><code>mic_machining:<wbr>die_pressing</code> (belt/depot), <code>mic_machining:<wbr>batch_pressing</code> (basin)</dd>
+        <dt>Unlocks</dt><dd>G1</dd>
+        <dt>Stress <span class="chip tune">TUNE</span></dt><dd>16 SU</dd>
+      </dl>
+    </div>
+    <div class="head-card" data-ss-id="card-inspection">
+      <h4>Inspection Head</h4>
+      <dl>
+        <dt>Looks like</dt><dd>andesite casing with a probe arm and a lamp</dd>
+        <dt>Tool</dt><dd>instruments: gauge set, proof chamber, magnetic-particle kit, radiography kit</dd>
+        <dt>Recipe type</dt><dd><code>mic_machining:<wbr>inspection</code></dd>
+        <dt>Unlocks</dt><dd>G1 (proof chamber; other instruments later)</dd>
+        <dt>Stress <span class="chip tune">TUNE</span></dt><dd>2 SU</dd>
+      </dl>
+    </div>
+    <div class="head-card" data-ss-id="card-induction">
+      <h4>Induction Head</h4>
+      <dl>
+        <dt>Looks like</dt><dd>copper casing ringed by a glowing copper coil, with a quench spray ring</dd>
+        <dt>Tool</dt><dd>none; it has a 1,000 mB tank for the quench (water, oil or brine)</dd>
+        <dt>Recipe type</dt><dd><code>mic_machining:<wbr>induction</code></dd>
+        <dt>Unlocks</dt><dd>G4</dd>
+        <dt>Stress <span class="chip tune">TUNE</span></dt><dd>Power Grid electricity</dd>
+      </dl>
+    </div>
+  </div>
+
+  <h3 id="spindle" data-ss-id="spindle-h">3.1 Spindle Head (machining)</h3>
+  <p data-ss-id="spindle-p">What it does: drills, mills, broaches (rifling and keyways) and hobs gears on the item below it. <strong>Cutters</strong> (12 items) are 4 shapes in 3 steels: <code>mic_machining:&lt;steel&gt;_&lt;shape&gt;</code>, where shape is <code>gun_drill</code>, <code>end_mill</code>, <code>broach</code> or <code>gear_hob</code>.</p>
+<div class="scroll">
+<table class="stack" data-ss-id="cutter-table">
+<thead><tr><th>Steel</th><th>Made from</th><th>Rated speed</th><th>Taylor exponent n</th><th>Tier</th></tr></thead>
+<tbody>
+<tr><td>Carbon tool steel</td><td data-label="Made from">steel carburised with coal (Metallurgy alloying), cast as a tool blank</td><td data-label="Rated speed">32 RPM</td><td data-label="Taylor exponent n">0.1</td><td data-label="Tier">G1</td></tr>
+<tr><td>High-speed steel (HSS)</td><td data-label="Made from">steel + tungsten + chromium (Metallurgy alloying, HYPERHEATED), the T1 recipe without vanadium (the pack has none)</td><td data-label="Rated speed">64 RPM</td><td data-label="Taylor exponent n">0.125</td><td data-label="Tier">G3</td></tr>
+<tr><td>Cemented carbide</td><td data-label="Made from">tungsten + graphite in Destroy's Arc Furnace gives tungsten carbide; pressed with nickel and sintered</td><td data-label="Rated speed">256 RPM</td><td data-label="Taylor exponent n">0.25</td><td data-label="Tier">G5</td></tr>
+</tbody>
+</table>
+</div>
+  <p data-ss-id="speeds-p"><strong>Why those speeds.</strong> Handbook cutting speeds for steel are roughly 12 m/min for carbon tool steel, 27 m/min for HSS and 110 m/min for carbide, a ratio near 1 : 2 : 9. Create tops out at 256 RPM, so carbide is pinned to 256 and the others keep the ratio (1 : 2 : 8).</p>
+  <p data-ss-id="overspeed-p"><strong>Overspeed.</strong> Above rated speed, each operation costs this many wear points. That is Taylor's tool-life law (V·T^n = C), so the penalty is real and steep:</p>
+  <div class="formula" data-ss-id="overspeed-f">(RPM / rated)^(1/n)</div>
+  <ul data-ss-id="overspeed-list">
+    <li>An HSS cutter at twice its rated speed wears 2^8 = 256 times faster and dies in a few parts.</li>
+    <li>Carbide at twice rated wears 16 times faster.</li>
+  </ul>
+  <p data-ss-id="overspeed-rule">The goggles show the multiplier, so the rule the player learns is simple: run each cutter at its rated speed.</p>
+  <p data-ss-id="durability-p"><strong>Durability</strong> at rated speed: carbon 64, HSS 256, carbide 1,024 operations <span class="chip tune">TUNE</span>.</p>
+  <p data-ss-id="sharpen-p"><strong>Sharpening.</strong> A blunt carbon or HSS cutter is reground on Metallurgy's Mechanical Belt Grinder (a <code>grinding</code> recipe that returns it at full durability). Carbide cannot be reground on sandpaper; scrap carbide is melted back to tungsten.</p>
+  <p data-ss-id="grade-p"><strong>Grade.</strong> The grade of a part is set by the cutter at the part's last cut. The thresholds are <span class="chip tune">TUNE</span>.</p>
+<div class="scroll">
+<table class="stack" data-ss-id="grade-table">
+<thead><tr><th>Cutter condition at the cut</th><th>Part grade</th></tr></thead>
+<tbody>
+<tr><td>above 2/3 durability and not over speed</td><td data-label="Part grade">Precision</td></tr>
+<tr><td>1/3 to 2/3</td><td data-label="Part grade">Standard</td></tr>
+<tr><td>below 1/3, or cut over speed</td><td data-label="Part grade">Rough</td></tr>
+</tbody>
+</table>
+</div>
+  <p data-ss-id="first-cutters-p"><strong>Making the first cutters.</strong> The first carbon cutters are hand-forged on the Overgeared anvil, hardened by hand (<a href="#heat">heat treatment</a>) and ground on the belt grinder. After that the Spindle makes its own cutters from tool-steel blanks, as real shops do.</p>
+
+  <h3 id="dieram" data-ss-id="dieram-h">3.2 Die Ram (die pressing and batch pressing)</h3>
+  <p data-ss-id="dieram-p">What it does:</p>
+  <ul data-ss-id="dieram-list">
+    <li><strong>Over a belt or depot:</strong> blanking, cupping, deep drawing, stamping, swaging, riveting and coining.</li>
+    <li><strong>Over a basin:</strong> multi-ingredient batch pressing with counts, which is how ammunition is loaded (<a href="#ammo">the ammunition plant</a>).</li>
+  </ul>
+  <p data-ss-id="dieram-press">This is the same pattern as Create's own press, where belt means pressing and basin means compacting.</p>
+  <p data-ss-id="dies-p"><strong>Dies.</strong> There is one item, <code>mic_machining:die</code>, carrying a <code>die_profile</code> component. JEI shows each profile as its own stack.</p>
+  <ul data-ss-id="dies-list">
+    <li><strong>Making dies:</strong> a tool-steel blank goes under a Spindle with an end mill, the Spindle's filter picks the profile, and the die is then hardened.</li>
+    <li><strong>Wear:</strong> each stroke costs 1 point, and a die lasts 512 strokes <span class="chip tune">TUNE</span>.</li>
+    <li><strong>Grade:</strong> dies wear but do not grade parts. Drawn and stamped parts come out Standard.</li>
+  </ul>
+<div class="scroll">
+<table class="stack" data-ss-id="die-profile-table">
+<thead><tr><th>Profile family</th><th>Used for</th></tr></thead>
+<tbody>
+<tr><td><code>cup</code></td><td data-label="Used for">brass and copper cups for cases, jackets, primer cups</td></tr>
+<tr><td><code>draw/&lt;case family&gt;</code> (6), plus <code>draw/big_cartridge</code>, <code>draw/autocannon</code>, <code>draw/<wbr>medium_cartridge</code>, <code>draw/liner</code></td><td data-label="Used for">small-arms cartridge cases; CBC big cartridges and autocannon cartridges; Neo Warfare medium cartridges; shaped-charge liners</td></tr>
+<tr><td><code>swage/<wbr>&lt;bullet family&gt;</code> (7)</td><td data-label="Used for">bullets (lead core into copper jacket)</td></tr>
+<tr><td><code>stamp/&lt;part&gt;</code></td><td data-label="Used for">stamped receivers, magazine bodies, belt links, suppressor baffles, propeller blades</td></tr>
+<tr><td><code>load/&lt;caliber&gt;</code> (22), plus <code>load/primer</code> and <code>load/cbc_mg</code></td><td data-label="Used for">ammunition and primer loading over a basin; the die set selects the caliber, as a real loading press's die set does</td></tr>
+<tr><td><code>rivet</code></td><td data-label="Used for">rivets for stamped receivers and riveted RHA</td></tr>
+<tr><td><code>coin</code></td><td data-label="Used for">spare capacity for Numismatics coins if wanted (not in this plan's scope)</td></tr>
+<tr><td><code>rod_load</code></td><td data-label="Used for">nuclear fuel rods (pellets into cladding), shared with mic_nuclear</td></tr>
+</tbody>
+</table>
+</div>
+  <p data-ss-id="curving-p"><strong>Replaces Vintage's Curving Press.</strong> The Curving Press has four hard-coded heads (<code>switch(mode)</code> in its block entity; a fifth head needs a mixin). The Die Ram does the same job driven by data. We void the Curving Press and its heads. The pack uses none of its recipes today.</p>
+
+  <h3 id="inspection" data-ss-id="inspection-h">3.3 Inspection Head (inspection)</h3>
+  <p data-ss-id="inspection-p">What it does: tests the part below it. The instrument chooses the test.</p>
+<div class="scroll">
+<table class="stack" data-ss-id="instrument-table">
+<thead><tr><th>Instrument</th><th>Tier</th><th>What it does</th></tr></thead>
+<tbody>
+<tr><td><code>gauge_set</code></td><td data-label="Tier">G2</td><td data-label="What it does">Go/no-go gauging. Rough parts are rejected to <code>kubejs:scrap_steel</code>, which melts back to steel; other parts are stamped "Gauged". Use it on a line so rough parts never reach assembly</td></tr>
+<tr><td><code>proof_chamber</code></td><td data-label="Tier">G1</td><td data-label="What it does">Fires one <strong>proof load</strong> (a cartridge loaded about 30 % over service pressure, the common commercial proof standard) through a barrel. A barrel with a resolved hidden crack bursts: it is destroyed with a small explosion and smoke. A sound barrel is stamped "Proofed"</td></tr>
+<tr><td><code>mpi_kit</code></td><td data-label="Tier">G4</td><td data-label="What it does">Magnetic-particle inspection (Power Grid electromagnet plus iron filings in oil). Resolves the hidden-crack risk on bolts, sears, springs and actions without destroying them; cracked parts are scrapped</td></tr>
+<tr><td><code>radiography_kit</code></td><td data-label="Tier">G6</td><td data-label="What it does">X-ray film (Exposure) plus a cobalt-60 source. Resolves casting porosity and weld defects. This <strong>is</strong> the mic_nuclear plan's planned QC bay, so one machine serves both plans (decision D7)</td></tr>
+</tbody>
+</table>
+</div>
+
+  <h3 id="induction" data-ss-id="induction-h">3.4 Induction Head (induction hardening, tempering, annealing)</h3>
+  <p data-ss-id="induction-p">What it does: heats the part below it with Power Grid electricity, then sprays it from its own tank. This is real induction hardening, which is how gun parts, shafts and gears are hardened in industry. <strong>Modes</strong>, set by wrench-scroll:</p>
+<div class="scroll">
+<table class="stack" data-ss-id="induction-modes">
+<thead><tr><th>Mode</th><th>Quench</th><th>Result</th></tr></thead>
+<tbody>
+<tr><td>Harden</td><td data-label="Quench">yes</td><td data-label="Result">the <code>heat_treatment</code> component becomes <code>hardened</code></td></tr>
+<tr><td>Temper</td><td data-label="Quench">no</td><td data-label="Result"><code>tempered</code></td></tr>
+<tr><td>Anneal</td><td data-label="Quench">no</td><td data-label="Result">softens drawn brass between draws</td></tr>
+</tbody>
+</table>
+</div>
+  <p data-ss-id="heat-time-p"><strong>Heat time from physics:</strong></p>
+  <div class="formula" data-ss-id="heat-time-f">ticks = 20 · m · c · ΔT / P</div>
+  <ul data-ss-id="heat-time-list">
+    <li>m is the part's mass (from a data table), c = 490 J/kg·K for steel, and ΔT = 825 K (room temperature to 845 °C, the austenitizing temperature of 4140, the usual barrel and receiver steel).</li>
+    <li>P is the electrical power the head draws.</li>
+    <li>Worked example, a 1.2 kg rifle barrel blank: 1.2 × 490 × 825 = 485 kJ. At 10 kW that is 48.5 s (970 ticks). A 10 g spring takes 0.4 s.</li>
+    <li><span class="chip verify">VERIFY</span> what wattages Power Grid generators really deliver. A config multiplier may be needed so the times feel right.</li>
+  </ul>
+  <p data-ss-id="induction-why"><strong>Quench medium matters</strong> (<a href="#heat">heat treatment</a>). <strong>Why have it when fans exist:</strong> it is one block instead of a three-fan line, it is precise, and it is the pack's first real reason to run Power Grid power into a factory floor.</p>
+</section>
+
+<section id="heat" data-ss-id="heat" data-ss-section>
+  <h2 data-ss-id="heat-h"><span class="sec-n">4</span>Heat treatment, finishing and moulding: mostly reuse</h2>
+
+  <h3 data-ss-id="routes-h">4.1 Heat treatment, three routes</h3>
+  <p data-ss-id="routes-p">Heat-treatment state is a <strong>component on the part</strong>, <code>mic_machining:heat_treatment</code> = <code>hardened</code> or <code>tempered</code>, not a separate item for every state. A recipe that needs a hardened part asks for the component with NeoForge's <code>neoforge:components</code> ingredient. TaCZ's table, Create and Metallurgy all accept NeoForge custom ingredients (TaCZ registers its own <code>tacz:nbt</code> ingredient the same way).</p>
+<div class="scroll">
+<table class="stack" data-ss-id="routes-table">
+<thead><tr><th>Route</th><th>Tier</th><th>Steps</th><th>Reuses</th></tr></thead>
+<tbody>
+<tr><td><strong>Hand</strong></td><td data-label="Tier">G1</td><td data-label="Steps">heat the part in a furnace (Overgeared heated state), dunk it in a water cauldron (Overgeared <code>cooling</code> recipe gives <code>hardened</code>), then temper in a smoker</td><td data-label="Reuses">Overgeared's heated-item system: <code>overgeared:heated</code> component, cools after 1,200 ticks, water quench, and <code>copyComponentsExceptHeated</code> keeps our grade</td></tr>
+<tr><td><strong>Fan line</strong></td><td data-label="Tier">G1 (water); oil quench from G2, once CDG plant oil flows</td><td data-label="Steps">belt through a blasting fan, which wraps the part in a glowing <code>mic_machining:<wbr>hot_workpiece</code>; then a water fan (Create splashing) or an <strong>oil-quench fan</strong>; then a smoking fan (temper)</td><td data-label="Reuses">Create bulk processing, plus one new fan type</td></tr>
+<tr><td><strong>Induction Head</strong></td><td data-label="Tier">G4</td><td data-label="Steps">one block</td><td data-label="Reuses">Power Grid</td></tr>
+</tbody>
+</table>
+</div>
+  <p data-ss-id="oilfan-p"><strong>The oil-quench fan type</strong> is new: <code>mic_machining:oil_quenching</code>, priority 450.</p>
+  <ul data-ss-id="oilfan-list">
+    <li><strong>Catalyst:</strong> any fluid in <code>#mic_machining:quench_oils</code>. That is Create Diesel Generators' plant oil now, and mic_petrochem's mineral oil when it ships. Canola-type vegetable oil is a real industrial quenchant.</li>
+    <li><strong>Template:</strong> Create Dragons Plus's fluid-keyed "ending" fan type, the same registry and the same <code>isValidAt</code> pattern. Air passes through fluid catalysts, as it does through lava for blasting.</li>
+  </ul>
+  <p data-ss-id="traps-h"><strong>Fan traps found, and how the plan avoids them:</strong></p>
+  <ul data-ss-id="traps-list">
+    <li><strong>Blasting burns anything without a smelting recipe.</strong> <code>BlastingType.canProcess</code> is true for any non-fireproof item, and <code>process</code> then returns nothing. So every heat-treatable part gets an explicit blasting recipe into the hot workpiece, and the hot workpiece carries <code>minecraft:fire_resistant</code> so it is not burned on the next pass.</li>
+    <li><strong>CBC's built-up cannon heating checks the blasting type by identity.</strong> We never wrap or replace blasting; the new type has its own catalyst.</li>
+  </ul>
+  <p data-ss-id="water-oil-h"><strong>Water versus oil is a consequence, not a refusal.</strong></p>
+  <ul data-ss-id="water-oil-list">
+    <li>Plain carbon steel parts (G1 to G2) may be water-quenched freely.</li>
+    <li>Alloy parts (HSS, stainless, spring steel, and anything tagged <code>#mic_machining:alloy_parts</code>) come out of water with the <strong>risk</strong> component <code>quench_crack</code>, shown on the tooltip as "Water-quenched: crack risk".</li>
+    <li>The risk is resolved, not rolled, at the first proof or inspection, or at final assembly. The chance is <span class="chip tune">TUNE</span>, starting at 10 %.</li>
+    <li>Oil quench carries no risk.</li>
+    <li>This matches real practice: 4140 and spring steels are oil-quenched because water cracks them.</li>
+  </ul>
+  <p data-ss-id="heat-loop-p">The fan recipes (a blasting recipe into the hot workpiece, then splashing, oil and smoking out of it) are generated by one KubeJS loop from a table of heat-treatable items, so a new part needs one table line.</p>
+
+  <h3 data-ss-id="finish-h">4.2 Finishing (all Destroy chemistry through existing machines)</h3>
+  <p data-ss-id="finish-p">Bare steel rusts. A gun or part with <code>finish: bare</code> loses durability while its holder stands in rain or water. The check runs every 100 ticks from the player's inventory, and the rate is <span class="chip tune">TUNE</span>. Finishing fixes that and is visible on the tooltip.</p>
+<div class="scroll">
+<table class="stack" data-ss-id="finish-table">
+<thead><tr><th>Finish</th><th>Real process</th><th>In-game machine</th><th>Tier</th><th>Rust rate</th></tr></thead>
+<tbody>
+<tr><td>Blued</td><td data-label="Real process">hot alkaline nitrate salt bath (NaOH + NaNO₃)</td><td data-label="In-game machine"><code>create:filling</code> on a Spout with a Destroy mixture (spouts accept Destroy mixture ingredients; Destroy's own oxidation recipes do this)</td><td data-label="Tier">G2</td><td data-label="Rust rate">½ <span class="chip tune">TUNE</span></td></tr>
+<tr><td>Parkerized</td><td data-label="Real process">manganese or zinc phosphate in phosphoric acid</td><td data-label="In-game machine">Spout, Destroy phosphoric acid mixture <span class="chip verify">VERIFY</span> that the species exists</td><td data-label="Tier">G4</td><td data-label="Rust rate">¼ <span class="chip tune">TUNE</span></td></tr>
+<tr><td>Chrome-lined bore</td><td data-label="Real process">chromium electroplating</td><td data-label="In-game machine"><code>destroy:electrolysis</code> in a Dynamo basin (items plus a mixture in, item out) with a chromium-ion mixture <span class="chip verify">VERIFY</span> the ion</td><td data-label="Tier">G5</td><td data-label="Rust rate">0, and heavy barrels need it</td></tr>
+<tr><td>Stainless</td><td data-label="Real process">material, not a finish</td><td data-label="In-game machine">stainless parts are born with <code>finish: stainless</code></td><td data-label="Tier">G5</td><td data-label="Rust rate">0</td></tr>
+</tbody>
+</table>
+</div>
+
+  <h3 data-ss-id="polymer-h">4.3 Polymer parts (Metallurgy foundry and casting)</h3>
+  <p data-ss-id="polymer-real"><strong>Real process:</strong> glass-filled nylon is injection-moulded into frames and furniture; PMMA into lenses. <strong>In game</strong> (no new machine):</p>
+  <ol data-ss-id="polymer-steps">
+    <li>Destroy's nylon, PVC or PMMA items melt in a Metallurgy <strong>foundry basin</strong> (heated). Melting recipes accept any item to any fluid.</li>
+    <li>The melt goes to three new KubeJS fluids: <code>kubejs:molten_nylon</code>, <code>kubejs:molten_pvc</code> and <code>kubejs:molten_pmma</code>.</li>
+    <li>It is cast on Metallurgy's <strong>casting table</strong> into a steel <strong>mould</strong>. Casting takes any fluid plus any ingredient as the mould, and <code>mold_consumed: false</code> keeps it.</li>
+  </ol>
+  <p data-ss-id="moulds-p"><strong>Moulds:</strong> one item, <code>mic_machining:mould</code>, with a profile: <code>polymer_frame</code>, <code>polymer_furniture</code>, <code>grip</code>, <code>lens</code>, <code>magazine_body_polymer</code>. A mould is a steel block milled by the Spindle, with its filter choosing the profile.</p>
+</section>
+
+<section id="quality" data-ss-id="quality" data-ss-section>
+  <h2 data-ss-id="quality-h"><span class="sec-n">5</span>Build quality: what a part remembers</h2>
+  <p data-ss-id="quality-p">Six small data components, kept separate so Create stock lists fragment as little as possible (each has 2 to 4 values):</p>
+<div class="scroll">
+<table class="stack" data-ss-id="components-table">
+<thead><tr><th>Component</th><th>Values</th><th>Set by</th><th>Shown</th></tr></thead>
+<tbody>
+<tr><td><code>mic_machining:grade</code></td><td data-label="Values">precision, standard, rough</td><td data-label="Set by">the Spindle's last cut; Overgeared forging quality for hand-forged parts (POOR → rough, WELL and EXPERT → standard, PERFECT and MASTER → precision)</td><td data-label="Shown">always</td></tr>
+<tr><td><code>mic_machining:risk</code></td><td data-label="Values">quench_crack, forging_defect</td><td data-label="Set by">water quench of alloy parts; POOR forging</td><td data-label="Shown">as "crack risk" until resolved</td></tr>
+<tr><td><code>mic_machining:<wbr>proofed</code></td><td data-label="Values">true</td><td data-label="Set by">proof chamber, MPI, radiography</td><td data-label="Shown">stamp line</td></tr>
+<tr><td><code>mic_machining:<wbr>heat_treatment</code></td><td data-label="Values">hardened, tempered</td><td data-label="Set by">heat-treatment routes</td><td data-label="Shown">always</td></tr>
+<tr><td><code>mic_machining:finish</code></td><td data-label="Values">bare, blued, parkerized, chrome, stainless</td><td data-label="Set by">finishing</td><td data-label="Shown">always</td></tr>
+<tr><td><code>mic_machining:maker</code></td><td data-label="Values">player or works name</td><td data-label="Set by">the assembling player or the line's owner</td><td data-label="Shown">"Made by Ben at North Works"</td></tr>
+</tbody>
+</table>
+</div>
+  <p data-ss-id="carry-h"><strong>Carrying data through Create.</strong> Create builds every recipe result fresh: <code>RecipeApplier.applyRecipeOn</code> and sequenced assembly's <code>rollResult</code> copy nothing from the input. We add one carry rule: when the input has <code>mic_machining</code> components and the output item is in <code>#mic_machining:keeps_spec</code>, the components are merged onto the output.</p>
+  <ul data-ss-id="carry-list">
+    <li>It is installed as an <code>@Inject</code> on <code>RecipeApplier.applyRecipeOn</code> and on basin result output.</li>
+    <li>It is installed as an <code>@Inject</code> at RETURN on <code>SequencedAssemblyRecipe.advance</code>. Destroy 0.4.1 already <code>@Overwrite</code>s that method and copies input components for steps after the first. We must inject, never overwrite again, and <span class="chip verify">VERIFY</span> the order.</li>
+    <li>This is the same "propagate data through processing" service the mic_nuclear plan wants for isotopic composition, so it is built once in <code>mic_machining</code> and mic_nuclear uses it.</li>
+  </ul>
+  <p data-ss-id="inherit-p"><strong>What a gun inherits</strong> (computed at assembly; see <a href="#assembly">final assembly</a> for the hooks):</p>
+<div class="scroll">
+<table class="stack" data-ss-id="inherit-table">
+<thead><tr><th>From part</th><th>Gun effect <span class="chip tune">TUNE</span></th></tr></thead>
+<tbody>
+<tr><td>Barrel grade precision / rough</td><td data-label="Gun effect (TUNE)"><code>INACCURACY</code> and <code>AIM_INACCURACY</code> × 0.8 / × 1.3; <code>EFFECTIVE_RANGE</code> × 1.1 / × 0.9</td></tr>
+<tr><td>Action grade precision / rough</td><td data-label="Gun effect (TUNE)">jam chance × 0.5 / × 2 (through tacz-durability's jam)</td></tr>
+<tr><td>Unresolved risk on barrel or action</td><td data-label="Gun effect (TUNE)">resolved at assembly. A flawed gun bursts after a hidden shot count drawn from 50 to 400 <span class="chip tune">TUNE</span>: the gun is destroyed, the shooter takes blast damage, and there is a loud report. Proofed parts never burst</td></tr>
+<tr><td>Finish</td><td data-label="Gun effect (TUNE)">rust rate (section 4.2)</td></tr>
+<tr><td>Maker</td><td data-label="Gun effect (TUNE)">tooltip only</td></tr>
+</tbody>
+</table>
+</div>
+  <p data-ss-id="stats-p"><strong>How the stats apply.</strong> TaCZ posts <code>AttachmentPropertyEvent</code> with the live gun ItemStack whenever a gun is drawn or refitted, and its cache exposes every stat (<code>INACCURACY</code>, <code>RECOIL</code>, <code>ROUNDS_PER_MINUTE</code>, <code>DAMAGE</code>, ...). Our handler multiplies the cached values, so a gun's quality is applied each time it is drawn.</p>
+</section>
+
+<section id="tiers" data-ss-id="tiers" data-ss-section>
+  <h2 data-ss-id="tiers-h"><span class="sec-n">6</span>Tier ladder</h2>
+<div class="scroll">
+<table class="stack" data-ss-id="tier-table">
+<thead><tr><th>Tier</th><th>Pack stage</th><th>New capability for arms</th><th>First guns</th></tr></thead>
+<tbody>
+<tr><td><strong>G0 Scavenger</strong></td><td data-label="Pack stage">spawn, loot</td><td data-label="New capability for arms">bonus-chest Taurus 943; worn guns in structure loot <span class="chip opt">OPT</span></td><td data-label="First guns">taurus943</td></tr>
+<tr><td><strong>G1 Gunsmith</strong></td><td data-label="Pack stage">Metallurgy steel, Overgeared anvil, andesite Create</td><td data-label="New capability for arms">Spindle with carbon cutters, Die Ram (pistol, shotshell and magnum-pistol dies), hand heat treatment and the water fan line, Inspection Head with proof chamber, Gun Smith Table, black powder</td><td data-label="First guns">db_short, db_long, m870, rhino357, springfield1873. Built here, fed at G4: kar98, m700, lonetrail</td></tr>
+<tr><td><strong>G2 Machinist</strong></td><td data-label="Pack stage">brass, precision mechanism, sequenced assembly, mechanical crafter</td><td data-label="New capability for arms">gauge set, oil-quench fan, self-loading actions, box magazines, jacketed bullets, bluing, line assembly</td><td data-label="First guns">m1911, m9a4, deagle_golden, m1014. Built here, fed at G4: sks_tactical</td></tr>
+<tr><td><strong>G3 Armourer</strong></td><td data-label="Pack stage">tungsten age</td><td data-label="New capability for arms">HSS cutters (select-fire sears), stamping dies (stamped receivers)</td><td data-label="First guns">uzi, hk_mp5a5, cz75, b93r. Built here, fed at G4: ak47, type_81, fn_fal</td></tr>
+<tr><td><strong>G4 Chemist</strong></td><td data-label="Pack stage">Power Grid power, Destroy organics</td><td data-label="New capability for arms">smokeless powder (all rifle ammo), nylon moulding, Induction Head, MPI, parkerizing, optics and lasers</td><td data-label="First guns">glock_17, p320, hk_mk23, ump45, p90, m16a1, m16a4, m4a1, aug, g36k, qbz_95, hk_g3, aa12. Built here, fed at G6: m320</td></tr>
+<tr><td><strong>G5 Metallurgist</strong></td><td data-label="Pack stage">HYPERHEATED stainless, chromium</td><td data-label="New capability for arms">carbide cutters, stainless fittings, chrome-lined heavy barrels, cordite as an alternative propellant, magnum-rifle and heavy case dies</td><td data-label="First guns">deagle, timeless50, taurus500, vector45, spas_12, scar_l, hk416d, qbz_191, spr15hb, mk14, scar_h, m249, rpk, fn_evolys, ai_awp</td></tr>
+<tr><td><strong>G6 Ordnance</strong></td><td data-label="Pack stage">Power Grid motors, CBC fuzes, Destroy high explosives</td><td data-label="New capability for arms">rotary drive, recoil buffers, launcher munitions, .50 BMG, radiography</td><td data-label="First guns">m95, m107, minigun, rpg7 (+ 40 mm)</td></tr>
+</tbody>
+</table>
+</div>
+  <p data-ss-id="tiers-rule"><strong>A gun's effective tier is the higher of its own tier and its ammunition's.</strong></p>
+</section>
+
+<section id="ammo" data-ss-id="ammo" data-ss-section>
+  <h2 data-ss-id="ammo-h"><span class="sec-n">7</span>The ammunition plant</h2>
+
+  <h3 data-ss-id="anchors-h">7.1 The numbers and where they come from</h3>
+  <p data-ss-id="anchors-p">Three anchors, chosen once, turn real masses into recipe counts:</p>
+  <div class="tiles anchors" data-ss-id="anchor-tiles">
+    <div class="tile" data-ss-id="anchor-powder"><div class="n">16 g</div><div class="t">1 powder item: the charge for one 50-round lot of 9 mm at 0.32 g (5 grains) per round. It applies to <code>minecraft:gunpowder</code>, <code>kubejs:smokeless_powder</code> and <code>destroy:cordite_rods</code> alike.</div></div>
+    <div class="tile" data-ss-id="anchor-metal"><div class="n">320 g</div><div class="t">1 brass, copper or lead sheet or ingot</div></div>
+    <div class="tile" data-ss-id="anchor-lot"><div class="n">Retail box</div><div class="t">the lot size: pistol 50, rifle 20, magnum pistol 20, .338 and .50 BMG 10, 12 gauge 25</div></div>
+  </div>
+  <p data-ss-id="from-these">From these:</p>
+  <ul data-ss-id="from-these-list">
+    <li><strong>Powder per lot</strong> = round(lot × charge ÷ 16 g), at least 1.</li>
+    <li><strong>Black powder</strong> fills the case, as it did historically: charge = the case's water capacity × 0.9 g/cm³ bulk density. This reproduces the real .45-70 (70 gr, 4.5 g) and the 12-gauge 3-dram load (5.3 g).</li>
+    <li>Black-powder loads exist only for pistol, revolver and shotgun calibers plus .45-70 (your 2026-09-17 decision, kept).</li>
+  </ul>
+
+  <h3 data-ss-id="ammo-comp-h">7.2 Components</h3>
+<div class="scroll">
+<table class="stack" data-ss-id="ammo-components">
+<thead><tr><th>Component</th><th>Route</th><th>Count per input (real mass ÷ anchor)</th><th>Tier</th></tr></thead>
+<tbody>
+<tr><td><code>kubejs:brass_cup</code></td><td data-label="Route">Die Ram <code>cup</code> on a brass sheet</td><td data-label="Count per input (real mass ÷ anchor)">64 (a 9 mm case is about 4 g)</td><td data-label="Tier">G1</td></tr>
+<tr><td>Cases: <code>pistol_case</code>, <code>magnum_pistol_case</code>, <code>intermediate_case</code>, <code>rifle_case</code>, <code>magnum_rifle_case</code>, <code>heavy_case</code></td><td data-label="Route">cups → anneal (blasting fan from G1, Induction Head from G4) → Die Ram <code>draw/&lt;family&gt;</code> (several cups per case for the big ones)</td><td data-label="Count per input (real mass ÷ anchor)">cases per sheet, 320 g ÷ case mass rounded down: pistol 64 (5 g), magnum pistol 29 (11 g), intermediate 49 (6.5 g), rifle 25 (12.5 g), magnum rifle 14 (22 g), heavy 5 (55 g)</td><td data-label="Tier">G1 / G1 / G4 / G4 / G5 / G6</td></tr>
+<tr><td><code>kubejs:<wbr>shotshell_hull</code></td><td data-label="Route">brass cups + paper (G1) or rigid plastic (G4), batch-pressed over a basin</td><td data-label="Count per input (real mass ÷ anchor)">64 cups + 16 paper → 64</td><td data-label="Tier">G1</td></tr>
+<tr><td><code>kubejs:bullet_jacket</code></td><td data-label="Route">Die Ram <code>cup</code> on a copper sheet</td><td data-label="Count per input (real mass ÷ anchor)">64 (about 4 g average jacket, capped at a stack)</td><td data-label="Tier">G2</td></tr>
+<tr><td>Bullets: <code>bullet_22</code>, <code>bullet_30</code>, <code>bullet_35</code>, <code>bullet_45</code>, <code>bullet_50</code>, <code>bullet_338</code>, <code>bullet_50bmg</code></td><td data-label="Route">1 lead ingot + N jackets in a basin under a Die Ram <code>swage/&lt;family&gt;</code>. Before G2, lead-only (no jacket) for pistol families</td><td data-label="Count per input (real mass ÷ anchor)">N per ingot = 320 g ÷ core mass: .22 64, .30 32, .35 35, .45 21, .50 15, .338 20, .50 BMG 7 (4 jackets each)</td><td data-label="Tier">G1 (lead) / G2 (jacketed)</td></tr>
+<tr><td>Shot</td><td data-label="Route"><code>#c:nuggets/lead</code>, 1 per shell (a nugget is 35.6 g against a real 32 g, 1 1/8 oz load)</td><td data-label="Count per input (real mass ÷ anchor)"></td><td data-label="Tier">G1</td></tr>
+<tr><td><code>kubejs:primer_cup</code></td><td data-label="Route">Die Ram <code>cup</code> on a brass sheet</td><td data-label="Count per input (real mass ÷ anchor)">64</td><td data-label="Tier">G1</td></tr>
+<tr><td><code>kubejs:<wbr>priming_compound</code></td><td data-label="Route">Create mixing: 1 <code>destroy:<wbr>fulminated_mercury</code> + 1 sulfur + 1 glass powder → 8 (the historical corrosive Berdan mix) <span class="chip verify">VERIFY</span> the tier of fulminate</td><td data-label="Count per input (real mass ÷ anchor)"></td><td data-label="Tier">G1</td></tr>
+<tr><td><code>kubejs:primer</code>, <code>kubejs:rifle_primer</code></td><td data-label="Route">64 cups + 1 compound, batch-pressed under the Die Ram <code>load/primer</code> (rifle: thicker cup, 2 cups each)</td><td data-label="Count per input (real mass ÷ anchor)">64 / 32</td><td data-label="Tier">G1 / G1 (the .45-70 needs it at G1; rifle ammo is G4 because of smokeless powder, not the primer)</td></tr>
+<tr><td>Powder</td><td data-label="Route">gunpowder (G1); <code>kubejs:<wbr>smokeless_powder</code> (existing heated mixing recipe, G4); <code>destroy:cordite_rods</code> (G5, interchangeable through <code>#<wbr>kubejs:<wbr>propellants/<wbr>smokeless</code>)</td><td data-label="Count per input (real mass ÷ anchor)"></td><td data-label="Tier"></td></tr>
+</tbody>
+</table>
+</div>
+
+  <h3 data-ss-id="loading-h">7.3 Loading</h3>
+  <p data-ss-id="loading-p">A Die Ram with a <code>load/&lt;caliber&gt;</code> die over a basin:</p>
+  <div class="formula" data-ss-id="loading-f">N cases + N bullets + N primers + P powder → N rounds (<code>tacz:ammo</code> with <code>AmmoId</code>)</div>
+  <p data-ss-id="loading-die">The die set picks the caliber, so 9 mm and .357, which share case and bullet families, never clash. Output is a <code>create:</code>-style result with components (Create's output codec carries <code>minecraft:custom_data</code>).</p>
+  <p data-ss-id="loading-hand">The <strong>hand route</strong> is the same lot at the TaCZ Ammo Table (<code>tacz:workbench_a</code>) with identical inputs. It needs no machines, it is just not automatable.</p>
+<div class="wide" data-ss-id="caliber-table-wrap" tabindex="0" role="region" aria-label="Caliber table, scrolls sideways">
+<table class="grid" data-ss-id="caliber-table">
+<thead><tr><th>Caliber</th><th class="wrapcol">Guns in pack</th><th>Case</th><th>Bullet</th><th>Primer</th><th class="num">Lot</th><th class="num">Charge (typical factory load)</th><th class="num">Smokeless per lot</th><th class="num">Black powder per lot</th><th>Tier</th></tr></thead>
+<tbody>
+<tr><td>.22 WMR</td><td class="wrapcol">taurus943</td><td>pistol</td><td>.22</td><td>pistol</td><td class="num">50</td><td class="num">0.39 g</td><td class="num">1</td><td class="num">2</td><td>G1</td></tr>
+<tr><td>9 mm</td><td class="wrapcol">b93r, cz75, glock_17, m9a4, hk_mp5a5, uzi</td><td>pistol</td><td>.35</td><td>pistol</td><td class="num">50</td><td class="num">0.32 g</td><td class="num">1</td><td class="num">2</td><td>G1</td></tr>
+<tr><td>.45 ACP</td><td class="wrapcol">hk_mk23, m1911, p320, ump45, vector45</td><td>pistol</td><td>.45</td><td>pistol</td><td class="num">50</td><td class="num">0.36 g</td><td class="num">1</td><td class="num">5</td><td>G1</td></tr>
+<tr><td>.357 Mag</td><td class="wrapcol">deagle_golden, rhino357</td><td>pistol</td><td>.35</td><td>pistol</td><td class="num">50</td><td class="num">0.9 g</td><td class="num">3</td><td class="num">5</td><td>G1</td></tr>
+<tr><td>5.7×28</td><td class="wrapcol">p90</td><td>pistol</td><td>.22</td><td>pistol</td><td class="num">50</td><td class="num">0.43 g</td><td class="num">1</td><td class="num nil">–</td><td>G4</td></tr>
+<tr><td>.50 AE</td><td class="wrapcol">deagle, timeless50</td><td>magnum pistol</td><td>.50</td><td>pistol</td><td class="num">20</td><td class="num">1.75 g</td><td class="num">2</td><td class="num nil">–</td><td>G4</td></tr>
+<tr><td>.500 S&amp;W</td><td class="wrapcol">taurus500</td><td>magnum pistol</td><td>.50</td><td>pistol</td><td class="num">20</td><td class="num">2.3 g</td><td class="num">3</td><td class="num nil">–</td><td>G4</td></tr>
+<tr><td>.45-70</td><td class="wrapcol">springfield1873</td><td>magnum pistol</td><td>.45</td><td>rifle</td><td class="num">20</td><td class="num">2.6 g</td><td class="num">3</td><td class="num">6</td><td>G1</td></tr>
+<tr><td>5.56×45</td><td class="wrapcol">aug, g36k, hk416d, m16a1, m16a4, m4a1, scar_l, spr15hb, m249</td><td>intermediate</td><td>.22</td><td>rifle</td><td class="num">20</td><td class="num">1.6 g</td><td class="num">2</td><td class="num nil">–</td><td>G4</td></tr>
+<tr><td>7.62×39</td><td class="wrapcol">ak47, sks_tactical, type_81, rpk</td><td>intermediate</td><td>.30</td><td>rifle</td><td class="num">20</td><td class="num">1.6 g</td><td class="num">2</td><td class="num nil">–</td><td>G4</td></tr>
+<tr><td>5.8×42</td><td class="wrapcol">qbz_191, qbz_95</td><td>intermediate</td><td>.22</td><td>rifle</td><td class="num">20</td><td class="num">1.75 g</td><td class="num">2</td><td class="num nil">–</td><td>G4</td></tr>
+<tr><td>.308</td><td class="wrapcol">fn_fal, hk_g3, mk14, scar_h, fn_evolys, minigun</td><td>rifle</td><td>.30</td><td>rifle</td><td class="num">20</td><td class="num">2.9 g</td><td class="num">4</td><td class="num nil">–</td><td>G4</td></tr>
+<tr><td>.30-06</td><td class="wrapcol">lonetrail, m700</td><td>rifle</td><td>.30</td><td>rifle</td><td class="num">20</td><td class="num">3.2 g</td><td class="num">4</td><td class="num nil">–</td><td>G4</td></tr>
+<tr><td>7.92×57</td><td class="wrapcol">kar98</td><td>rifle</td><td>.30</td><td>rifle</td><td class="num">20</td><td class="num">3.1 g</td><td class="num">4</td><td class="num nil">–</td><td>G4</td></tr>
+<tr><td>.338 Lapua</td><td class="wrapcol">ai_awp</td><td>magnum rifle</td><td>.338</td><td>rifle</td><td class="num">10</td><td class="num">5.8 g</td><td class="num">4</td><td class="num nil">–</td><td>G5</td></tr>
+<tr><td>.50 BMG</td><td class="wrapcol">m95, m107</td><td>heavy</td><td>.50 BMG</td><td>rifle</td><td class="num">10</td><td class="num">15 g</td><td class="num">9</td><td class="num nil">–</td><td>G6</td></tr>
+<tr><td>12 gauge</td><td class="wrapcol">aa12, db_long, db_short, m1014, m870, spas_12</td><td>shotshell hull</td><td>lead nugget</td><td>pistol</td><td class="num">25</td><td class="num">1.5 g</td><td class="num">2</td><td class="num">8</td><td>G1</td></tr>
+</tbody>
+</table>
+</div>
+  <p class="scroll-hint" data-ss-id="caliber-hint">17 calibers. The table scrolls sideways on a phone.</p>
+  <p data-ss-id="nogun-p">The five calibers with no gun in the pack (5.45×39, 4.6×30, 6.8×51, 7.62×25, 7.62×54R) get table-generated recipes too, because the generator makes them for free.</p>
+  <p data-ss-id="launcher-p"><strong>Launcher munitions (G6)</strong>, each made from parts:</p>
+<div class="scroll">
+<table class="stack" data-ss-id="launcher-table">
+<thead><tr><th>Round</th><th>Parts</th><th>Lot</th></tr></thead>
+<tbody>
+<tr><td>40 mm grenade</td><td data-label="Parts"><code>kubejs:grenade_body</code> (Spindle on a steel bar, then Die Ram) + HE melt-poured from a Spout (Destroy TNT mixture, as <code>destroy:filling/tnt</code> already does) + <code>createbigcannons:<wbr>impact_fuze</code> (the same fuze CBC shells use) + a <code>heavy_case</code> cut down + 1 powder</td><td data-label="Lot">6</td></tr>
+<tr><td>RPG rocket</td><td data-label="Parts">warhead: a <code>kubejs:<wbr>shaped_charge_liner</code> (a copper cone deep-drawn on the Die Ram, which is exactly how real liners are made) + HE fill + impact fuze; <code>kubejs:rocket_motor</code>: a steel tube plus 4 cordite or smokeless powder, 4 stamped fins</td><td data-label="Lot">1</td></tr>
+</tbody>
+</table>
+</div>
+</section>
+
+<section id="guns" data-ss-id="guns" data-ss-section>
+  <h2 data-ss-id="guns-h"><span class="sec-n">8</span>Gun parts and assembly</h2>
+
+  <h3 data-ss-id="parts-h">8.1 Parts catalogue (KubeJS items, <code>kubejs:</code> namespace)</h3>
+<div class="scroll">
+<table class="stack" data-ss-id="parts-table">
+<thead><tr><th>Part</th><th>Route</th><th>Grade from</th><th>Tier</th></tr></thead>
+<tbody>
+<tr><td><code>steel_bar</code></td><td data-label="Route">Metallurgy casting table, molten steel 270 mB in a graphite bar mould</td><td class="nil" data-label="Grade from">–</td><td data-label="Tier">G1</td></tr>
+<tr><td><code>barrel_blank_small</code>, <code>barrel_blank</code>, <code>barrel_blank_heavy</code></td><td data-label="Route">Mechanical Saw on <code>steel_bar</code> (the saw's filter picks the size; heavy is cut from <code>destroy:<wbr>stainless_steel_rod</code>). Hand route: Overgeared forging</td><td class="nil" data-label="Grade from">–</td><td data-label="Tier">G1 / G1 / G5</td></tr>
+<tr><td>Barrels: <code>pistol_barrel</code>, <code>rifle_barrel</code>, <code>smoothbore_barrel</code>, <code>heavy_barrel</code>, <code>launcher_tube</code></td><td data-label="Route">sequenced assembly on a <strong>tempered</strong> blank: Spindle gun drill → Spindle gun drill (ream) → Spindle broach (rifling; smoothbore skips it) → [heavy: Destroy electrolysis chrome-lining] → proof chamber</td><td data-label="Grade from">broach (or drill for smoothbore) at the last cut</td><td data-label="Tier">G1 / G1 / G1 / G5 / G4</td></tr>
+<tr><td><code>receiver_forging</code></td><td data-label="Route">Vintage Helve Hammer on a hot steel bar (<code>hammering</code>), or Overgeared forging by hand</td><td data-label="Grade from">Overgeared quality (hand)</td><td data-label="Tier">G1</td></tr>
+<tr><td><code>milled_receiver</code></td><td data-label="Route">Spindle end mill on <code>receiver_forging</code> (filter picks it)</td><td data-label="Grade from">end mill</td><td data-label="Tier">G1</td></tr>
+<tr><td><code>stamped_receiver</code></td><td data-label="Route">Die Ram <code>stamp/receiver</code> on 2 steel sheets → deploy 4 rivets (Die Ram <code>rivet</code> on steel rod) → Create press</td><td data-label="Grade from">– (Standard)</td><td data-label="Tier">G3</td></tr>
+<tr><td><code>polymer_frame</code></td><td data-label="Route">molten nylon in the <code>polymer_frame</code> mould → deploy a milled steel rail insert</td><td data-label="Grade from">rail insert's end mill</td><td data-label="Tier">G4</td></tr>
+<tr><td><code>bolt_blank</code>, <code>bolt</code>, <code>sear</code></td><td data-label="Route">blank sawn from bar; bolt and sear milled (the sear needs <strong>HSS</strong> or better, because its geometry is the select-fire precision part), then heat-treated</td><td data-label="Grade from">end mill</td><td data-label="Tier">G1 / G1 / G3</td></tr>
+<tr><td><code>manual_action</code></td><td data-label="Route">bolt (hardened) + 2 <code>createvintageneoforged:<wbr>iron_spring</code> (tempered) in a mechanical crafter or crafting table</td><td data-label="Grade from">bolt</td><td data-label="Tier">G1</td></tr>
+<tr><td><code>self_loading_action</code></td><td data-label="Route">sequenced assembly on <code>manual_action</code>: deploy spring → deploy <code>create:<wbr>precision_mechanism</code> → Create press</td><td data-label="Grade from">inherited</td><td data-label="Tier">G2</td></tr>
+<tr><td><code>select_fire_action</code></td><td data-label="Route">sequenced assembly on <code>self_loading_action</code>: deploy <code>sear</code> (tempered) → deploy spring → press</td><td data-label="Grade from">sear</td><td data-label="Tier">G3</td></tr>
+<tr><td><code>magazine_body</code>, <code>box_magazine</code></td><td data-label="Route">Die Ram <code>stamp/magazine_body</code> on a steel sheet; then deploy spring and follower</td><td class="nil" data-label="Grade from">–</td><td data-label="Tier">G2</td></tr>
+<tr><td><code>belt_link</code></td><td data-label="Route">Die Ram <code>stamp/belt_link</code>, 16 per sheet</td><td class="nil" data-label="Grade from">–</td><td data-label="Tier">G5</td></tr>
+<tr><td><code>wood_furniture</code></td><td data-label="Route">Mechanical Saw on logs, then Vintage Lathe turning (stock and grip); the lathe's recipe card must be fixed (section 12)</td><td class="nil" data-label="Grade from">–</td><td data-label="Tier">G1</td></tr>
+<tr><td><code>steel_furniture</code></td><td data-label="Route">Die Ram <code>stamp/folding_stock</code> + rivets</td><td class="nil" data-label="Grade from">–</td><td data-label="Tier">G2</td></tr>
+<tr><td><code>polymer_furniture</code></td><td data-label="Route">molten nylon in the <code>polymer_furniture</code> mould</td><td class="nil" data-label="Grade from">–</td><td data-label="Tier">G4</td></tr>
+<tr><td><code>stainless_fittings</code></td><td data-label="Route">Spindle end mill on <code>destroy:<wbr>stainless_steel_rod</code></td><td data-label="Grade from">end mill</td><td data-label="Tier">G5</td></tr>
+<tr><td><code>recoil_buffer</code></td><td data-label="Route">carbide-milled cylinder + a heavy spring + 250 mB hydraulic oil from a Spout</td><td data-label="Grade from">end mill</td><td data-label="Tier">G6</td></tr>
+<tr><td><code>rotary_drive</code></td><td data-label="Route"><code>powergrid:<wbr>electric_motor</code> + gear train (Spindle hob) + <code>powergrid:<wbr>circuit_board</code></td><td data-label="Grade from">hob</td><td data-label="Tier">G6</td></tr>
+<tr><td><code>barrel_cluster</code></td><td data-label="Route">sequenced assembly: a Spindle-milled carbide rotor, then 6 <code>heavy_barrel</code> deployed into it, then a press</td><td data-label="Grade from">rotor's end mill</td><td data-label="Tier">G6</td></tr>
+<tr><td><code>unfinished_gun_part</code></td><td data-label="Route">the one shared transitional item for every gun-part sequenced assembly</td><td data-label="Grade from"></td><td data-label="Tier"></td></tr>
+</tbody>
+</table>
+</div>
+  <p data-ss-id="springs-p">Springs are Vintage's <code>iron_spring</code> everywhere (<a href="#refactor">the refactor</a> unifies the four spring chains). Springs are tempered by any heat-treatment route.</p>
+
+  <h3 id="assembly" data-ss-id="assembly-h">8.2 Final assembly, two routes, same parts</h3>
+  <ul data-ss-id="assembly-routes">
+    <li><strong>Hand:</strong> the TaCZ Gun Smith Table (<code>tacz:gun_smith_table_crafting</code>, the parts below, ≤ 9 materials).
+      <ul>
+        <li>TaCZ fires no event when a gun is crafted. <code>GunSmithTableMenu#doCraft</code> extracts the stacks and spawns a static copy of the result.</li>
+        <li>So <code>mic_machining</code> adds one mixin there, loaded only when TaCZ is present. It reads the consumed parts' components and writes them onto the gun <span class="chip verify">VERIFY</span> against the unofficial port.</li>
+      </ul>
+    </li>
+    <li><strong>Line:</strong> a Create Mechanical Crafter running <code>mic_machining:assembly</code>.
+      <ul>
+        <li>That is a shaped crafting recipe whose <code>assemble()</code> merges the specified ingredients' components onto the result.</li>
+        <li>It works in a crafting table too.</li>
+        <li>The result is <code>tacz:modern_kinetic_gun</code> with <code>custom_data</code> <code>{GunId, GunFireMode}</code> (shaped results carry components; TaCZ's own ammo box recipe already does this).</li>
+      </ul>
+    </li>
+  </ul>
+
+  <div class="box" data-ss-id="gun-key">
+    <p class="label">Key to the gun table</p>
+    <ul>
+      <li><strong>Receiver:</strong> MI milled, ST stamped, PO polymer frame.</li>
+      <li><strong>Action:</strong> MAN manual, SEMI self-loading, AUTO select-fire.</li>
+      <li><strong>Barrel:</strong> PB pistol, RB rifle, SB smoothbore, HB heavy, LT launcher tube, BC barrel cluster.</li>
+      <li><strong>Feed:</strong> BM box magazine, BL 4 belt links.</li>
+      <li><strong>Furniture:</strong> W wood, S steel, P polymer.</li>
+      <li><strong>Extras:</strong> SF stainless fittings, BUF recoil buffer, RD rotary drive, CB <code>powergrid:circuit_board</code>, G 4 gold sheets.</li>
+    </ul>
+    <p><strong>Every row is 4 to 9 items, counting BL as 4.</strong></p>
+  </div>
+<div class="wide" data-ss-id="gun-table-wrap" tabindex="0" role="region" aria-label="Gun table, scrolls sideways">
+<table class="grid" data-ss-id="gun-table">
+<thead><tr><th>Gun</th><th>id</th><th>TaCZ type</th><th>Caliber</th><th>Gun tier</th><th>Ammo tier</th><th>Receiver</th><th>Action</th><th>Barrel</th><th>Feed</th><th>Furniture</th><th>Extras</th></tr></thead>
+<tbody>
+<tr><td>Taurus 943</td><td class="id">taurus943</td><td>pistol</td><td>.22 WMR</td><td>G1</td><td>G1</td><td>MI</td><td>MAN</td><td>PB</td><td class="nil">–</td><td>W</td><td class="nil">–</td></tr>
+<tr><td>.357 Rhino</td><td class="id">rhino357</td><td>pistol</td><td>.357</td><td>G1</td><td>G1</td><td>MI</td><td>MAN</td><td>PB</td><td class="nil">–</td><td>W</td><td class="nil">–</td></tr>
+<tr><td>Lonetrail</td><td class="id">lonetrail</td><td>pistol</td><td>.30-06</td><td>G1</td><td>G4</td><td>MI</td><td>MAN</td><td>RB</td><td class="nil">–</td><td>W</td><td class="nil">–</td></tr>
+<tr><td>DB-2 Durin</td><td class="id">db_short</td><td>shotgun</td><td>12 ga</td><td>G1</td><td>G1</td><td>MI</td><td>MAN</td><td>2 SB</td><td class="nil">–</td><td>W</td><td class="nil">–</td></tr>
+<tr><td>DB-4 Ursus</td><td class="id">db_long</td><td>shotgun</td><td>12 ga</td><td>G1</td><td>G1</td><td>MI</td><td>MAN</td><td>2 SB</td><td class="nil">–</td><td>W</td><td class="nil">–</td></tr>
+<tr><td>Springfield 1873</td><td class="id">springfield1873</td><td>sniper</td><td>.45-70</td><td>G1</td><td>G1</td><td>MI</td><td>MAN</td><td>RB</td><td class="nil">–</td><td>W</td><td class="nil">–</td></tr>
+<tr><td>M870</td><td class="id">m870</td><td>shotgun</td><td>12 ga</td><td>G1</td><td>G1</td><td>MI</td><td>MAN</td><td>SB</td><td class="nil">–</td><td>W</td><td class="nil">–</td></tr>
+<tr><td>M700</td><td class="id">m700</td><td>sniper</td><td>.30-06</td><td>G1</td><td>G4</td><td>MI</td><td>MAN</td><td>RB</td><td class="nil">–</td><td>W</td><td class="nil">–</td></tr>
+<tr><td>Kar98k</td><td class="id">kar98</td><td>sniper</td><td>7.92×57</td><td>G1</td><td>G4</td><td>MI</td><td>MAN</td><td>RB</td><td class="nil">–</td><td>W</td><td class="nil">–</td></tr>
+<tr><td>M9A4</td><td class="id">m9a4</td><td>pistol</td><td>9 mm</td><td>G2</td><td>G1</td><td>MI</td><td>SEMI</td><td>PB</td><td>BM</td><td>W</td><td class="nil">–</td></tr>
+<tr><td>M1911</td><td class="id">m1911</td><td>pistol</td><td>.45 ACP</td><td>G2</td><td>G1</td><td>MI</td><td>SEMI</td><td>PB</td><td>BM</td><td>W</td><td class="nil">–</td></tr>
+<tr><td>Gold Deagle 357</td><td class="id">deagle_golden</td><td>pistol</td><td>.357</td><td>G2</td><td>G1</td><td>MI</td><td>SEMI</td><td>PB</td><td>BM</td><td>W</td><td>G</td></tr>
+<tr><td>SKS Tactical</td><td class="id">sks_tactical</td><td>rifle</td><td>7.62×39</td><td>G2</td><td>G4</td><td>MI</td><td>SEMI</td><td>RB</td><td>BM</td><td>W</td><td class="nil">–</td></tr>
+<tr><td>M1014</td><td class="id">m1014</td><td>shotgun</td><td>12 ga</td><td>G2</td><td>G1</td><td>MI</td><td>SEMI</td><td>SB</td><td class="nil">–</td><td>S</td><td class="nil">–</td></tr>
+<tr><td>CZ 75</td><td class="id">cz75</td><td>pistol</td><td>9 mm</td><td>G3</td><td>G1</td><td>MI</td><td>AUTO</td><td>PB</td><td>BM</td><td>W</td><td class="nil">–</td></tr>
+<tr><td>B93R</td><td class="id">b93r</td><td>pistol</td><td>9 mm</td><td>G3</td><td>G1</td><td>MI</td><td>AUTO</td><td>PB</td><td>BM</td><td>W</td><td class="nil">–</td></tr>
+<tr><td>UZI</td><td class="id">uzi</td><td>smg</td><td>9 mm</td><td>G3</td><td>G1</td><td>ST</td><td>AUTO</td><td>PB</td><td>BM</td><td>S</td><td class="nil">–</td></tr>
+<tr><td>HK MP5A5</td><td class="id">hk_mp5a5</td><td>smg</td><td>9 mm</td><td>G3</td><td>G1</td><td>ST</td><td>AUTO</td><td>PB</td><td>BM</td><td>S</td><td class="nil">–</td></tr>
+<tr><td>Type 81-1</td><td class="id">type_81</td><td>rifle</td><td>7.62×39</td><td>G3</td><td>G4</td><td>MI</td><td>AUTO</td><td>RB</td><td>BM</td><td>W</td><td class="nil">–</td></tr>
+<tr><td>AKM</td><td class="id">ak47</td><td>rifle</td><td>7.62×39</td><td>G3</td><td>G4</td><td>ST</td><td>AUTO</td><td>RB</td><td>BM</td><td>W</td><td class="nil">–</td></tr>
+<tr><td>FN FAL</td><td class="id">fn_fal</td><td>rifle</td><td>.308</td><td>G3</td><td>G4</td><td>MI</td><td>AUTO</td><td>RB</td><td>BM</td><td>W</td><td class="nil">–</td></tr>
+<tr><td>MK23</td><td class="id">hk_mk23</td><td>pistol</td><td>.45 ACP</td><td>G4</td><td>G1</td><td>PO</td><td>SEMI</td><td>PB</td><td>BM</td><td>P</td><td class="nil">–</td></tr>
+<tr><td>Glock 17</td><td class="id">glock_17</td><td>pistol</td><td>9 mm</td><td>G4</td><td>G1</td><td>PO</td><td>SEMI</td><td>PB</td><td>BM</td><td>P</td><td class="nil">–</td></tr>
+<tr><td>P320</td><td class="id">p320</td><td>pistol</td><td>.45 ACP</td><td>G4</td><td>G1</td><td>PO</td><td>SEMI</td><td>PB</td><td>BM</td><td>P</td><td class="nil">–</td></tr>
+<tr><td>UMP45</td><td class="id">ump45</td><td>smg</td><td>.45 ACP</td><td>G4</td><td>G1</td><td>PO</td><td>AUTO</td><td>PB</td><td>BM</td><td>P</td><td class="nil">–</td></tr>
+<tr><td>P90</td><td class="id">p90</td><td>smg</td><td>5.7×28</td><td>G4</td><td>G4</td><td>PO</td><td>AUTO</td><td>PB</td><td>BM</td><td>P</td><td class="nil">–</td></tr>
+<tr><td>M16A1</td><td class="id">m16a1</td><td>rifle</td><td>5.56</td><td>G4</td><td>G4</td><td>MI</td><td>AUTO</td><td>RB</td><td>BM</td><td>P</td><td class="nil">–</td></tr>
+<tr><td>M16A4</td><td class="id">m16a4</td><td>rifle</td><td>5.56</td><td>G4</td><td>G4</td><td>MI</td><td>AUTO</td><td>RB</td><td>BM</td><td>P</td><td class="nil">–</td></tr>
+<tr><td>M4A1</td><td class="id">m4a1</td><td>rifle</td><td>5.56</td><td>G4</td><td>G4</td><td>MI</td><td>AUTO</td><td>RB</td><td>BM</td><td>P</td><td class="nil">–</td></tr>
+<tr><td>AUG</td><td class="id">aug</td><td>rifle</td><td>5.56</td><td>G4</td><td>G4</td><td>PO</td><td>AUTO</td><td>RB</td><td>BM</td><td>P</td><td class="nil">–</td></tr>
+<tr><td>G36K</td><td class="id">g36k</td><td>rifle</td><td>5.56</td><td>G4</td><td>G4</td><td>PO</td><td>AUTO</td><td>RB</td><td>BM</td><td>P</td><td class="nil">–</td></tr>
+<tr><td>QBZ-95</td><td class="id">qbz_95</td><td>rifle</td><td>5.8×42</td><td>G4</td><td>G4</td><td>PO</td><td>AUTO</td><td>RB</td><td>BM</td><td>P</td><td class="nil">–</td></tr>
+<tr><td>HK G3</td><td class="id">hk_g3</td><td>rifle</td><td>.308</td><td>G4</td><td>G4</td><td>ST</td><td>AUTO</td><td>RB</td><td>BM</td><td>P</td><td class="nil">–</td></tr>
+<tr><td>AA-12</td><td class="id">aa12</td><td>shotgun</td><td>12 ga</td><td>G4</td><td>G1</td><td>MI</td><td>AUTO</td><td>SB</td><td>2 BM</td><td>P</td><td class="nil">–</td></tr>
+<tr><td>M320</td><td class="id">m320</td><td>rpg</td><td>40 mm</td><td>G4</td><td>G6</td><td>MI</td><td>MAN</td><td>LT</td><td class="nil">–</td><td>P</td><td class="nil">–</td></tr>
+<tr><td>Deagle 50</td><td class="id">deagle</td><td>pistol</td><td>.50 AE</td><td>G5</td><td>G4</td><td>MI</td><td>SEMI</td><td>PB</td><td>BM</td><td>W</td><td>SF</td></tr>
+<tr><td>Timeless .50</td><td class="id">timeless50</td><td>pistol</td><td>.50 AE</td><td>G5</td><td>G4</td><td>MI</td><td>SEMI</td><td>PB</td><td>BM</td><td>P</td><td>SF</td></tr>
+<tr><td>Taurus 500</td><td class="id">taurus500</td><td>pistol</td><td>.500</td><td>G5</td><td>G4</td><td>MI</td><td>MAN</td><td>PB</td><td class="nil">–</td><td>W</td><td>2 SF</td></tr>
+<tr><td>Vector</td><td class="id">vector45</td><td>smg</td><td>.45 ACP</td><td>G5</td><td>G1</td><td>PO</td><td>AUTO</td><td>PB</td><td>BM</td><td>P</td><td>2 SF</td></tr>
+<tr><td>SPAS-12</td><td class="id">spas_12</td><td>shotgun</td><td>12 ga</td><td>G5</td><td>G1</td><td>MI</td><td>SEMI</td><td>SB</td><td class="nil">–</td><td>S</td><td>2 SF</td></tr>
+<tr><td>SCAR-L</td><td class="id">scar_l</td><td>rifle</td><td>5.56</td><td>G5</td><td>G4</td><td>MI</td><td>AUTO</td><td>RB</td><td>BM</td><td>P</td><td>2 SF</td></tr>
+<tr><td>HK416</td><td class="id">hk416d</td><td>rifle</td><td>5.56</td><td>G5</td><td>G4</td><td>MI</td><td>AUTO</td><td>RB</td><td>BM</td><td>P</td><td>2 SF</td></tr>
+<tr><td>QBZ-191</td><td class="id">qbz_191</td><td>rifle</td><td>5.8×42</td><td>G5</td><td>G4</td><td>MI</td><td>AUTO</td><td>RB</td><td>BM</td><td>P</td><td>2 SF</td></tr>
+<tr><td>SPR-15 HB</td><td class="id">spr15hb</td><td>rifle</td><td>5.56</td><td>G5</td><td>G4</td><td>MI</td><td>SEMI</td><td>HB</td><td>BM</td><td>P</td><td class="nil">–</td></tr>
+<tr><td>MK14 EBR</td><td class="id">mk14</td><td>rifle</td><td>.308</td><td>G5</td><td>G4</td><td>MI</td><td>AUTO</td><td>HB</td><td>BM</td><td>P</td><td>2 SF</td></tr>
+<tr><td>SCAR-H</td><td class="id">scar_h</td><td>rifle</td><td>.308</td><td>G5</td><td>G4</td><td>MI</td><td>AUTO</td><td>HB</td><td>BM</td><td>P</td><td>2 SF</td></tr>
+<tr><td>M249</td><td class="id">m249</td><td>mg</td><td>5.56</td><td>G5</td><td>G4</td><td>ST</td><td>AUTO</td><td>HB</td><td>BL</td><td>P</td><td class="nil">–</td></tr>
+<tr><td>RPK</td><td class="id">rpk</td><td>mg</td><td>7.62×39</td><td>G5</td><td>G4</td><td>ST</td><td>AUTO</td><td>HB</td><td>2 BM</td><td>W</td><td class="nil">–</td></tr>
+<tr><td>FN EVOLYS</td><td class="id">fn_evolys</td><td>mg</td><td>.308</td><td>G5</td><td>G4</td><td>MI</td><td>AUTO</td><td>HB</td><td>BL</td><td>P</td><td>SF</td></tr>
+<tr><td>AI AWM</td><td class="id">ai_awp</td><td>sniper</td><td>.338</td><td>G5</td><td>G5</td><td>MI</td><td>MAN</td><td>HB</td><td>BM</td><td>P</td><td>2 SF</td></tr>
+<tr><td>M95</td><td class="id">m95</td><td>sniper</td><td>.50 BMG</td><td>G6</td><td>G6</td><td>MI</td><td>MAN</td><td>HB</td><td>BM</td><td>P</td><td>BUF</td></tr>
+<tr><td>M107</td><td class="id">m107</td><td>sniper</td><td>.50 BMG</td><td>G6</td><td>G6</td><td>MI</td><td>SEMI</td><td>HB</td><td>BM</td><td>P</td><td>BUF, CB</td></tr>
+<tr><td>RPG-7</td><td class="id">rpg7</td><td>rpg</td><td>rocket</td><td>G6</td><td>G6</td><td>MI</td><td>MAN</td><td>LT</td><td class="nil">–</td><td>W</td><td>CB</td></tr>
+<tr><td>M134 Minigun</td><td class="id">minigun</td><td>mg</td><td>.308</td><td>G6</td><td>G4</td><td>MI</td><td>AUTO</td><td>BC</td><td>BL</td><td>S</td><td>RD</td></tr>
+</tbody>
+</table>
+</div>
+  <p class="scroll-hint" data-ss-id="gun-hint">All 54 guns. On a phone the table scrolls sideways, with the gun's name pinned on the left.</p>
+  <p data-ss-id="m4a1-p">Where TaCZ's native recipe pre-installs an attachment (the M4A1's stock), the result keeps it.</p>
+
+  <h3 id="attachments" data-ss-id="attachments-h">8.3 Attachments (<code>tacz:workbench_c</code>, hand; the mechanical crafter running <code>mic_machining:assembly</code>, line)</h3>
+<div class="scroll">
+<table class="stack" data-ss-id="attachments-table">
+<thead><tr><th>Family</th><th>Made from</th><th>Tier</th></tr></thead>
+<tbody>
+<tr><td>Stocks, grips</td><td data-label="Made from">wood, steel or polymer furniture</td><td data-label="Tier">G1 / G2 / G4</td></tr>
+<tr><td>Bayonets</td><td data-label="Made from">Overgeared-forged blade, hardened</td><td data-label="Tier">G1</td></tr>
+<tr><td>Muzzle brakes, compensators, chokes, flash hiders</td><td data-label="Made from"><code>kubejs:muzzle_blank</code> (sawn steel bar), Spindle end mill with the filter picking the device</td><td data-label="Tier">G2</td></tr>
+<tr><td>Suppressors</td><td data-label="Made from">Spindle-bored tube + 6 <code>kubejs:<wbr>suppressor_baffle</code> (Die Ram stamp) + <code>#<wbr>destroy:<wbr>plastics/<wbr>rubber</code></td><td data-label="Tier">G4</td></tr>
+<tr><td>Extended magazines</td><td data-label="Made from">2 to 4 <code>magazine_body</code> + spring; T3 needs stainless fittings</td><td data-label="Tier">G2 / G3 / G5</td></tr>
+<tr><td>Fixed optics</td><td data-label="Made from"><code>kubejs:lens</code> (cast PMMA in the <code>lens</code> mould, or glass ground on Metallurgy's belt grinder) + <code>kubejs:optic_housing</code> (milled) + <code>kubejs:reticle</code></td><td data-label="Tier">G4</td></tr>
+<tr><td>Red dots, holographic, variable optics</td><td data-label="Made from">as fixed, plus <code>powergrid:diode</code> and <code>powergrid:<wbr>circuit_board</code></td><td data-label="Tier">G4</td></tr>
+<tr><td>Lasers</td><td data-label="Made from"><code>powergrid:diode</code> + lens + housing</td><td data-label="Tier">G4</td></tr>
+<tr><td>Ammo mods (FMJ, HP, slug, incendiary, HE)</td><td data-label="Made from">jacketed bullets; lead; blaze powder (Destroy has no thermite item); TNT tablet + impact fuze</td><td data-label="Tier">G4 to G6</td></tr>
+</tbody>
+</table>
+</div>
+</section>
+
+<section id="walk" class="walk" data-ss-id="walk" data-ss-section>
+  <h2 data-ss-id="walk-h"><span class="sec-n">9</span>Walkthroughs</h2>
+
+  <h3 data-ss-id="walk1-h">9.1 G1, by hand: your first shotgun (M870)</h3>
+  <ol class="steps" data-ss-id="walk1-steps">
+    <li><div>Smelt steel as usual and build an Overgeared smithing anvil.</div></li>
+    <li><div><strong>Barrel blank.</strong>
+      <ul>
+        <li>Heat a steel ingot in a furnace until it glows (Overgeared heated).</li>
+        <li>On the anvil, choose the barrel-blank pattern and play the hammering minigame.</li>
+        <li>The blank remembers your result: PERFECT means Precision, POOR means a forging-defect risk.</li>
+      </ul></div></li>
+    <li><div><strong>Harden it.</strong>
+      <ul>
+        <li>Reheat the blank and drop it in a water cauldron: it is hardened.</li>
+        <li>Put it in a smoker: it is tempered.</li>
+        <li>The tooltip shows "Tempered".</li>
+      </ul></div></li>
+    <li><div><strong>Spindle Head.</strong>
+      <ul>
+        <li>Craft one from an andesite casing, a shaft, a cogwheel and 2 steel ingots.</li>
+        <li>Place it 2 blocks above a depot, and power it at <strong>32 RPM</strong> (goggles: "Carbon gun drill, rated 32 RPM").</li>
+        <li>Put in a carbon gun drill (Overgeared-forged, hardened, ground on the belt grinder).</li>
+        <li>Drop the blank on the depot. It is bored, then bored again (ream) → <code>smoothbore_barrel</code>.</li>
+      </ul></div></li>
+    <li><div><strong>Proof it.</strong>
+      <ul>
+        <li>Build a proof chamber instrument and an Inspection Head, then load one proof shell (a 12-gauge shell loaded with double powder).</li>
+        <li>The barrel is stamped "Proofed". If you got a forging defect, it bursts here and not in your hands.</li>
+      </ul></div></li>
+    <li><div><strong>Receiver and action.</strong>
+      <ul>
+        <li>Hand-forge a receiver forging and mill it under the Spindle. Filter: Milled Receiver. Use an end mill.</li>
+        <li>Mill a bolt; harden and temper it.</li>
+        <li>Coil two springs on Vintage's coiling machine and temper them.</li>
+        <li>Craft the <code>manual_action</code>.</li>
+      </ul></div></li>
+    <li><div><strong>Furniture.</strong> Saw logs, then turn the stock on the Vintage Lathe → <code>wood_furniture</code>.</div></li>
+    <li><div><strong>Gun Smith Table.</strong> M870 = milled receiver + manual action + smoothbore barrel + wood furniture. The tooltip shows "Barrel: Precision, Proofed · Made by Ben".</div></li>
+    <li><div><strong>Shells.</strong>
+      <ul>
+        <li>Die Ram over a depot with a <code>cup</code> die: brass sheet → 64 cups. Paper + cups → hulls.</li>
+        <li>At the Ammo Table: 25 hulls + 25 lead nuggets + 25 primers + 8 gunpowder → 25 black-powder 12-gauge shells.</li>
+      </ul></div></li>
+  </ol>
+
+  <h3 id="akm-line" data-ss-id="walk2-h">9.2 G3, automated: an AKM line</h3>
+  <p data-ss-id="walk2-p">The AKM today costs 2,394 items. Here it is five parts, each from a line. It is built at G3 and shoots once a G4 plant like <a href="#walk3">9.3</a> runs, with a <code>load/762x39</code> die and <code>bullet_30</code> instead of the 5.56 ones. The barrel line runs on one belt:</p>
+
+  <figure data-ss-id="fig-barrel-line">
+    <svg class="dg flow-wide" viewBox="0 0 872 214" role="img" aria-label="The AKM barrel line on one belt, left to right: Mechanical Saw, blasting fan, oil-quench fan, smoking fan, then three Spindle Heads (gun drill, ream, broach), then two Inspection Heads (gauge, proof).">
+      <!-- group brackets -->
+      <text x="52" y="22" text-anchor="middle" class="s">filter:</text>
+      <text x="52" y="40" text-anchor="middle" class="m">barrel_blank</text>
+      <path d="M106 54 V48 H370 V54" stroke="#8a8a93" fill="none"/>
+      <text x="238" y="40" text-anchor="middle" class="b">fan line → tempered blank</text>
+      <path d="M394 54 V48 H658 V54" stroke="#8f620f" fill="none"/>
+      <text x="526" y="40" text-anchor="middle" class="b">HSS cutters → <tspan class="m" font-family="ui-monospace, Menlo, Consolas, monospace" font-size="12.5">rifle_barrel</tspan></text>
+      <path d="M682 54 V48 H862 V54" stroke="#8f620f" fill="none"/>
+      <text x="772" y="40" text-anchor="middle" class="b">inspection</text>
+      <!-- nodes -->
+      <g>
+        <rect x="10" y="62" width="84" height="58" rx="5" fill="#f7f7f8" stroke="#8a8a93" stroke-width="1.5"/>
+        <text x="52" y="86" text-anchor="middle">Mechanical</text><text x="52" y="104" text-anchor="middle">Saw</text>
+        <rect x="106" y="62" width="84" height="58" rx="5" fill="#f7f7f8" stroke="#8a8a93" stroke-width="1.5"/>
+        <text x="148" y="86" text-anchor="middle">Blasting</text><text x="148" y="104" text-anchor="middle">fan</text>
+        <rect x="202" y="62" width="84" height="58" rx="5" fill="#f7f7f8" stroke="#8f620f" stroke-width="2"/>
+        <text x="244" y="86" text-anchor="middle">Oil-quench</text><text x="244" y="104" text-anchor="middle">fan</text>
+        <rect x="298" y="62" width="84" height="58" rx="5" fill="#f7f7f8" stroke="#8a8a93" stroke-width="1.5"/>
+        <text x="340" y="86" text-anchor="middle">Smoking</text><text x="340" y="104" text-anchor="middle">fan</text>
+        <rect x="394" y="62" width="84" height="58" rx="5" fill="#f7f7f8" stroke="#8f620f" stroke-width="2"/>
+        <text x="436" y="86" text-anchor="middle">Spindle</text><text x="436" y="104" text-anchor="middle">gun drill</text>
+        <rect x="490" y="62" width="84" height="58" rx="5" fill="#f7f7f8" stroke="#8f620f" stroke-width="2"/>
+        <text x="532" y="86" text-anchor="middle">Spindle</text><text x="532" y="104" text-anchor="middle">ream</text>
+        <rect x="586" y="62" width="84" height="58" rx="5" fill="#f7f7f8" stroke="#8f620f" stroke-width="2"/>
+        <text x="628" y="86" text-anchor="middle">Spindle</text><text x="628" y="104" text-anchor="middle">broach</text>
+        <rect x="682" y="62" width="84" height="58" rx="5" fill="#f7f7f8" stroke="#8f620f" stroke-width="2"/>
+        <text x="724" y="86" text-anchor="middle">Inspection</text><text x="724" y="104" text-anchor="middle">gauge</text>
+        <rect x="778" y="62" width="84" height="58" rx="5" fill="#f7f7f8" stroke="#8f620f" stroke-width="2"/>
+        <text x="820" y="86" text-anchor="middle">Inspection</text><text x="820" y="104" text-anchor="middle">proof</text>
+      </g>
+      <!-- arrows between nodes -->
+      <path d="M96 85 l7 6 l-7 6 M192 85 l7 6 l-7 6 M288 85 l7 6 l-7 6 M384 85 l7 6 l-7 6 M480 85 l7 6 l-7 6 M576 85 l7 6 l-7 6 M672 85 l7 6 l-7 6 M768 85 l7 6 l-7 6" stroke="#5f5f68" stroke-width="1.8" fill="none"/>
+      <!-- belt -->
+      <path d="M52 120 V134 M148 120 V134 M244 120 V134 M340 120 V134 M436 120 V134 M532 120 V134 M628 120 V134 M724 120 V134 M820 120 V134" stroke="#b9b9c2" stroke-width="1.5"/>
+      <rect x="10" y="134" width="852" height="12" rx="6" fill="#e5e5ea" stroke="#b9b9c2"/>
+      <path d="M96 136 l5 4 l-5 4 M288 136 l5 4 l-5 4 M480 136 l5 4 l-5 4 M672 136 l5 4 l-5 4" stroke="#8a8a93" stroke-width="1.5" fill="none"/>
+      <!-- notes under the belt -->
+      <text x="244" y="168" text-anchor="middle" class="s">plant oil</text>
+      <text x="244" y="185" text-anchor="middle" class="s">from CDG</text>
+      <text x="436" y="168" text-anchor="middle" class="s">64 RPM</text>
+      <text x="628" y="168" text-anchor="middle" class="s">grades the</text>
+      <text x="628" y="185" text-anchor="middle" class="s">barrel</text>
+      <text x="724" y="168" text-anchor="middle" class="s">rough barrels</text>
+      <text x="724" y="185" text-anchor="middle" class="s">scrapped</text>
+      <text x="820" y="168" text-anchor="middle" class="s">stamped</text>
+      <text x="820" y="185" text-anchor="middle" class="s">"Proofed"</text>
+    </svg>
+
+    <svg class="dg flow-narrow" viewBox="0 0 368 304" role="img" aria-label="The AKM barrel line on one belt, in two rows: Saw, blasting fan, oil-quench fan, smoking fan, Spindle gun drill; then Spindle ream, Spindle broach, Inspection gauge, Inspection proof.">
+      <!-- row 1 brackets -->
+      <path d="M76 30 V24 H292 V30" stroke="#8a8a93" fill="none"/>
+      <text x="184" y="16" text-anchor="middle" class="s">fan line → tempered blank</text>
+      <path d="M304 30 V24 H368 V30" stroke="#8f620f" fill="none"/>
+      <text x="336" y="16" text-anchor="middle" class="s">HSS</text>
+      <!-- row 1 nodes -->
+      <rect x="0.75" y="36" width="64" height="52" rx="5" fill="#f7f7f8" stroke="#8a8a93" stroke-width="1.5"/>
+      <text x="32.75" y="67" text-anchor="middle" font-size="13">Saw</text>
+      <rect x="76" y="36" width="64" height="52" rx="5" fill="#f7f7f8" stroke="#8a8a93" stroke-width="1.5"/>
+      <text x="108" y="58" text-anchor="middle" font-size="13">Blasting</text><text x="108" y="75" text-anchor="middle" font-size="13">fan</text>
+      <rect x="152" y="36" width="64" height="52" rx="5" fill="#f7f7f8" stroke="#8f620f" stroke-width="2"/>
+      <text x="184" y="54" text-anchor="middle" font-size="13">Oil-</text><text x="184" y="68" text-anchor="middle" font-size="13">quench</text><text x="184" y="82" text-anchor="middle" font-size="13">fan</text>
+      <rect x="228" y="36" width="64" height="52" rx="5" fill="#f7f7f8" stroke="#8a8a93" stroke-width="1.5"/>
+      <text x="260" y="58" text-anchor="middle" font-size="13">Smoking</text><text x="260" y="75" text-anchor="middle" font-size="13">fan</text>
+      <rect x="303.25" y="36" width="64" height="52" rx="5" fill="#f7f7f8" stroke="#8f620f" stroke-width="2"/>
+      <text x="335.25" y="58" text-anchor="middle" font-size="13">Spindle</text><text x="335.25" y="75" text-anchor="middle" font-size="13">gun drill</text>
+      <path d="M66 56 l6 5 l-6 5 M142 56 l6 5 l-6 5 M218 56 l6 5 l-6 5 M294 56 l6 5 l-6 5" stroke="#5f5f68" stroke-width="1.6" fill="none"/>
+      <!-- row 1 belt -->
+      <rect x="0.75" y="98" width="366.5" height="10" rx="5" fill="#e5e5ea" stroke="#b9b9c2"/>
+      <!-- wrap to row 2 -->
+      <path d="M362 108 V126 H5 V244 H12" stroke="#8a8a93" stroke-width="1.5" stroke-dasharray="4 3" fill="none"/>
+      <text x="184" y="142" text-anchor="middle" class="s">same belt continues</text>
+      <!-- row 2 brackets -->
+      <path d="M12 176 V170 H186 V176" stroke="#8f620f" fill="none"/>
+      <text x="99" y="162" text-anchor="middle" class="s">HSS → <tspan font-family="ui-monospace, Menlo, Consolas, monospace">rifle_barrel</tspan></text>
+      <path d="M194 176 V170 H368 V176" stroke="#8f620f" fill="none"/>
+      <text x="281" y="162" text-anchor="middle" class="s">inspection</text>
+      <!-- row 2 nodes -->
+      <rect x="12" y="182" width="83" height="52" rx="5" fill="#f7f7f8" stroke="#8f620f" stroke-width="2"/>
+      <text x="53.5" y="204" text-anchor="middle" font-size="13">Spindle</text><text x="53.5" y="221" text-anchor="middle" font-size="13">ream</text>
+      <rect x="103" y="182" width="83" height="52" rx="5" fill="#f7f7f8" stroke="#8f620f" stroke-width="2"/>
+      <text x="144.5" y="204" text-anchor="middle" font-size="13">Spindle</text><text x="144.5" y="221" text-anchor="middle" font-size="13">broach</text>
+      <rect x="194" y="182" width="83" height="52" rx="5" fill="#f7f7f8" stroke="#8f620f" stroke-width="2"/>
+      <text x="235.5" y="204" text-anchor="middle" font-size="13">Inspection</text><text x="235.5" y="221" text-anchor="middle" font-size="13">gauge</text>
+      <rect x="285" y="182" width="82" height="52" rx="5" fill="#f7f7f8" stroke="#8f620f" stroke-width="2"/>
+      <text x="326" y="204" text-anchor="middle" font-size="13">Inspection</text><text x="326" y="221" text-anchor="middle" font-size="13">proof</text>
+      <path d="M96 203 l5 5 l-5 5 M187 203 l5 5 l-5 5 M278 203 l5 5 l-5 5" stroke="#5f5f68" stroke-width="1.6" fill="none"/>
+      <!-- row 2 belt -->
+      <rect x="12" y="239" width="355" height="10" rx="5" fill="#e5e5ea" stroke="#b9b9c2"/>
+      <text x="144.5" y="272" text-anchor="middle" class="s">grades the</text>
+      <text x="144.5" y="288" text-anchor="middle" class="s">barrel</text>
+      <text x="235.5" y="272" text-anchor="middle" class="s">rough</text>
+      <text x="235.5" y="288" text-anchor="middle" class="s">scrapped</text>
+      <text x="326" y="272" text-anchor="middle" class="s">stamped</text>
+      <text x="326" y="288" text-anchor="middle" class="s">"Proofed"</text>
+    </svg>
+    <div class="legend" data-ss-id="barrel-legend">
+      <span><i class="sw new" aria-hidden="true"></i>new in <code>mic_machining</code> (heads and the oil-quench fan type)</span>
+      <span><i class="sw old" aria-hidden="true"></i>existing Create machine</span>
+    </div>
+  </figure>
+
+  <ol class="steps" data-ss-id="walk2-steps">
+    <li><div><strong>Barrel line</strong>, on one belt:
+      <ul>
+        <li>Mechanical Saw (filter: <code>barrel_blank</code>)</li>
+        <li>blasting fan, then oil-quench fan (plant oil from CDG), then smoking fan, giving a tempered blank</li>
+        <li>Spindle (HSS gun drill, <strong>64 RPM</strong>), then Spindle (HSS gun drill, ream), then Spindle (HSS broach), giving a <code>rifle_barrel</code> graded by the broach's condition</li>
+        <li>Inspection Head (gauge set: rough barrels are scrapped back to the foundry)</li>
+        <li>Inspection Head (proof chamber)</li>
+        <li>A Display Link shows the broach's wear on a board, and a Mechanical Arm swaps in a fresh broach from a chest when the comparator reads low.</li>
+      </ul></div></li>
+    <li><div><strong>Receiver:</strong> Die Ram <code>stamp/receiver</code> on 2 steel sheets; Die Ram <code>rivet</code> makes rivets from rod; deployers fit them; the press closes them → <code>stamped_receiver</code>.</div></li>
+    <li><div><strong>Action:</strong>
+      <ul>
+        <li>Sequenced assembly on a <code>manual_action</code>: deploy spring → deploy precision mechanism → press → deploy <strong>HSS-milled</strong> sear → deploy spring → press → <code>select_fire_action</code>.</li>
+        <li>The sear and bolt were oil-quenched on the same fan line.</li>
+      </ul></div></li>
+    <li><div><strong>Magazine:</strong> Die Ram <code>stamp/magazine_body</code> → deploy spring → deploy follower → <code>box_magazine</code>.</div></li>
+    <li><div><strong>Furniture:</strong> the Lathe turns <code>wood_furniture</code>.</div></li>
+    <li><div><strong>Assembly:</strong>
+      <ul>
+        <li>A 3×3 Mechanical Crafter running <code>mic_machining:assembly</code>: receiver, action, barrel, magazine, furniture → AKM, carrying the barrel's grade and proof stamp.</li>
+        <li>A Packager boxes it, and the Stock Keeper lists "AKM (Precision, Proofed) ×12".</li>
+      </ul></div></li>
+  </ol>
+
+  <h3 id="walk3" data-ss-id="walk3-h">9.3 G4, a 5.56 plant feeding the AKM's NATO cousins</h3>
+  <ol class="steps" data-ss-id="walk3-steps">
+    <li><div><strong>Cases:</strong>
+      <ul>
+        <li>Brass sheet → Die Ram <code>cup</code> → cups.</li>
+        <li>Induction Head (Anneal) → Die Ram <code>draw/intermediate</code> → <code>intermediate_case</code>, 49 per sheet.</li>
+      </ul></div></li>
+    <li><div><strong>Bullets:</strong>
+      <ul>
+        <li>Copper sheet → Die Ram <code>cup</code> → jackets.</li>
+        <li>Then a basin under a Die Ram <code>swage/22</code>: 1 lead ingot + 64 jackets → 64 <code>bullet_22</code>.</li>
+      </ul></div></li>
+    <li><div><strong>Primers:</strong>
+      <ul>
+        <li>Die Ram <code>cup</code> → primer cups.</li>
+        <li>Destroy's fulminated mercury + sulfur + glass powder, mixed → priming compound.</li>
+        <li>Basin under a Die Ram <code>load/primer</code>: 64 cups + 1 compound → 32 rifle primers (2 cups each).</li>
+      </ul></div></li>
+    <li><div><strong>Powder:</strong> Destroy nitration gives nitrocellulose, and the existing heated mix gives <code>kubejs:smokeless_powder</code>.</div></li>
+    <li><div><strong>Loading:</strong>
+      <ul>
+        <li>Basin under a Die Ram with <code>load/556x45</code>: 20 cases + 20 bullets + 20 rifle primers + 2 smokeless → 20 rounds of 5.56.</li>
+        <li>A funnel feeds a Packager, which feeds the Stock Keeper.</li>
+      </ul></div></li>
+  </ol>
+</section>
+
+<section id="reuse" data-ss-id="reuse" data-ss-section>
+  <h2 data-ss-id="reuse-h"><span class="sec-n">10</span>Reuse table: every step and the machine it runs on</h2>
+<div class="scroll">
+<table class="stack" data-ss-id="reuse-table">
+<thead><tr><th>Real process</th><th>Machine in the pack</th><th>New?</th></tr></thead>
+<tbody>
+<tr><td>Steelmaking, alloying (HSS, stainless)</td><td data-label="Machine in the pack">Create Metallurgy foundry, alloying, casting</td><td data-label="New?">reuse</td></tr>
+<tr><td>Hand forging with skill</td><td data-label="Machine in the pack">Overgeared anvil and minigame (quality component)</td><td data-label="New?">reuse</td></tr>
+<tr><td>Drop forging (receiver, bolt blanks)</td><td data-label="Machine in the pack">Vintage Helve Hammer (<code>hammering</code>)</td><td data-label="New?">reuse</td></tr>
+<tr><td>Sawing bar stock</td><td data-label="Machine in the pack">Create Mechanical Saw with filter</td><td data-label="New?">reuse</td></tr>
+<tr><td>Turning (stocks, shell bodies)</td><td data-label="Machine in the pack">Vintage Lathe (fix its recipe card)</td><td data-label="New?">reuse</td></tr>
+<tr><td>Gun drilling, reaming, rifling, milling, gear hobbing</td><td data-label="Machine in the pack"><strong>Spindle Head</strong></td><td data-label="New?">new</td></tr>
+<tr><td>Cupping, drawing, stamping, swaging, riveting</td><td data-label="Machine in the pack"><strong>Die Ram</strong> (replaces Vintage Curving Press)</td><td data-label="New?">new</td></tr>
+<tr><td>Loading ammunition, primers, fuel rods</td><td data-label="Machine in the pack"><strong>Die Ram</strong> over a Create basin</td><td data-label="New?">new</td></tr>
+<tr><td>Spring coiling</td><td data-label="Machine in the pack">Vintage Spring Coiling Machine</td><td data-label="New?">reuse</td></tr>
+<tr><td>Hardening, quenching, tempering</td><td data-label="Machine in the pack">Overgeared heated items, Create fans, <strong>oil-quench fan type</strong>, <strong>Induction Head</strong></td><td data-label="New?">mostly reuse</td></tr>
+<tr><td>Grinding and sharpening</td><td data-label="Machine in the pack">Create Metallurgy Mechanical Belt Grinder</td><td data-label="New?">reuse</td></tr>
+<tr><td>Bluing, parkerizing</td><td data-label="Machine in the pack">Create Spout with Destroy mixtures</td><td data-label="New?">reuse</td></tr>
+<tr><td>Chrome plating</td><td data-label="Machine in the pack">Destroy Dynamo electrolysis</td><td data-label="New?">reuse</td></tr>
+<tr><td>Injection moulding (polymers, lenses)</td><td data-label="Machine in the pack">Metallurgy foundry basin and casting table, steel moulds</td><td data-label="New?">reuse (moulds new)</td></tr>
+<tr><td>Propellants, primary explosives, HE</td><td data-label="Machine in the pack">Destroy vat chemistry, existing smokeless mix</td><td data-label="New?">reuse</td></tr>
+<tr><td>Tungsten carbide</td><td data-label="Machine in the pack">Destroy Arc Furnace</td><td data-label="New?">reuse</td></tr>
+<tr><td>Gauging, proof firing, crack inspection, radiography</td><td data-label="Machine in the pack"><strong>Inspection Head</strong> (radiography shared with mic_nuclear)</td><td data-label="New?">new</td></tr>
+<tr><td>Line assembly with data carried</td><td data-label="Machine in the pack">Create Mechanical Crafter + <code>mic_machining:<wbr>assembly</code></td><td data-label="New?">new recipe type</td></tr>
+<tr><td>Hand assembly</td><td data-label="Machine in the pack">TaCZ Gun Smith, Ammo and Attachment tables</td><td data-label="New?">reuse (+1 mixin)</td></tr>
+<tr><td>Logistics, inventory</td><td data-label="Machine in the pack">Create 6 packages, Stock Keeper, Display Links</td><td data-label="New?">reuse</td></tr>
+<tr><td>Wear, jamming, repair</td><td data-label="Machine in the pack"><code>tacz-durability</code> addon (anvil repair)</td><td data-label="New?">add mod (decided 2026-09-17)</td></tr>
+</tbody>
+</table>
+</div>
+</section>
+
+<section id="ledger" data-ss-id="ledger" data-ss-section>
+  <h2 data-ss-id="ledger-h"><span class="sec-n">11</span>Custom-roll ledger: what must be authored</h2>
+
+  <h3 data-ss-id="ledger-mod-h">11.1 <code>mic_machining</code> (new NeoForge 1.21.1 mod)</h3>
+  <p data-ss-id="ledger-repo-h"><strong>Repo and build.</strong></p>
+  <ul data-ss-id="ledger-repo">
+    <li>New repo <code>MinecraftIndustrialComplex/mic-machining</code>, template mic-grid-loader (CreateRegistrate, Ponder, slim Create <code>implementation</code>).</li>
+    <li>No MIC mod has shipped a Create kinetic machine before. The reference is create_power_loader 2.0.5 (same pins), and Power Grid's <code>MagnetizingRecipe</code> is the model for a belt processing recipe type.</li>
+  </ul>
+<div class="scroll">
+<table class="stack" data-ss-id="ledger-mod-table">
+<thead><tr><th>Piece</th><th>Count</th><th>Notes</th></tr></thead>
+<tbody>
+<tr><td>Tool-head base (<code>PressingBehaviour</code> + specifics, tool slot, filter, back-face tool feed, goggles, Display Source, comparator, sequenced-assembly step support)</td><td data-label="Count">1</td><td data-label="Notes">the bulk of the Java</td></tr>
+<tr><td>Head blocks</td><td data-label="Count">4</td><td data-label="Notes">Spindle, Die Ram, Inspection, Induction; Flywheel visuals for the moving parts</td></tr>
+<tr><td>Recipe types</td><td data-label="Count">6</td><td data-label="Notes"><code>machining</code>, <code>die_pressing</code>, <code>batch_pressing</code>, <code>inspection</code>, <code>induction</code>, <code>assembly</code></td></tr>
+<tr><td>Fan type</td><td data-label="Count">1</td><td data-label="Notes"><code>oil_quenching</code></td></tr>
+<tr><td>Items</td><td data-label="Count">22 ids</td><td data-label="Notes">12 cutters, <code>die</code>, <code>mould</code>, 4 instruments, <code>tool_steel_blank</code>, <code>hss_blank</code>, <code>carbide_blank</code>, <code>hot_workpiece</code></td></tr>
+<tr><td>Data components</td><td data-label="Count">8</td><td data-label="Notes">grade, risk, proofed, heat_treatment, finish, maker, die_profile (also moulds), hot contents</td></tr>
+<tr><td>Mixins</td><td data-label="Count">3–4</td><td data-label="Notes">Create <code>RecipeApplier</code> carry, basin output carry, <code>SequencedAssemblyRecipe.<wbr>advance</code> carry (inject only), TaCZ <code>GunSmithTableMenu#<wbr>doCraft</code> (optional)</td></tr>
+<tr><td>Event handlers</td><td data-label="Count">3</td><td data-label="Notes">TaCZ <code>AttachmentPropertyEvent</code> (stats), gun shoot (burst, extra jam via <code>gundb:jammed</code> if tacz-durability is present), player tick (rust)</td></tr>
+<tr><td>KubeJS plugin</td><td data-label="Count">1</td><td data-label="Notes">recipe schemas so the pack writes <code>event.<wbr>recipes.<wbr>mic_machining.<wbr>machining(.<wbr>.<wbr>.<wbr>)</code></td></tr>
+<tr><td>JEI categories</td><td data-label="Count">7</td><td data-label="Notes">one per recipe type + the fan type</td></tr>
+<tr><td>Ponder scenes</td><td data-label="Count">5</td><td data-label="Notes">one per head + the oil-quench fan</td></tr>
+<tr><td>GameTests</td><td data-label="Count">about 12</td><td data-label="Notes">each head on a depot and on a belt in sequenced assembly; overspeed wear; fan route; carry rule; TaCZ craft carries the grade</td></tr>
+<tr><td>Models and textures</td><td data-label="Count">4 blocks, about 22 items</td><td data-label="Notes">Blockbench models reusing Create casing textures; tool icons generated from a palette script, like <code>generate_molds.py</code></td></tr>
+</tbody>
+</table>
+</div>
+
+  <h3 data-ss-id="ledger-pack-h">11.2 Pack (KubeJS and data)</h3>
+<div class="scroll">
+<table class="stack" data-ss-id="ledger-pack-table">
+<thead><tr><th>File</th><th>Contents</th></tr></thead>
+<tbody>
+<tr><td><code>startup_scripts/<wbr>arms_items.<wbr>js</code></td><td data-label="Contents">about 58 parts and components (sections 7, 8), <code>unfinished_gun_part</code></td></tr>
+<tr><td><code>startup_scripts/<wbr>arms_fluids.<wbr>js</code></td><td data-label="Contents"><code>molten_nylon</code>, <code>molten_pvc</code>, <code>molten_pmma</code></td></tr>
+<tr><td><code>server_scripts/<wbr>arms/<wbr>_data.<wbr>js</code></td><td data-label="Contents">the tables: calibers (7.3), guns (8.2), attachments (8.3), heat-treatable items, part masses</td></tr>
+<tr><td><code>server_scripts/<wbr>arms/<wbr>parts.<wbr>js</code></td><td data-label="Contents">part recipes (Spindle, Die Ram, saw, Helve Hammer, Overgeared forging, sequenced assemblies)</td></tr>
+<tr><td><code>server_scripts/<wbr>arms/<wbr>tooling.<wbr>js</code></td><td data-label="Contents">tool steels, cutters, dies, moulds, instruments, belt-grinder sharpening</td></tr>
+<tr><td><code>server_scripts/<wbr>arms/<wbr>heat.<wbr>js</code></td><td data-label="Contents">generated fan-route and Overgeared hand-route recipes</td></tr>
+<tr><td><code>server_scripts/<wbr>arms/<wbr>finish.<wbr>js</code></td><td data-label="Contents">bluing, parkerizing, chrome, polymer melting and casting</td></tr>
+<tr><td><code>server_scripts/<wbr>arms/<wbr>ammo.<wbr>js</code></td><td data-label="Contents">components, loading (line and hand), launcher munitions; moves the existing smokeless powder recipe here</td></tr>
+<tr><td><code>server_scripts/<wbr>arms/<wbr>guns.<wbr>js</code></td><td data-label="Contents">Gun Smith Table + Mechanical Crafter generators</td></tr>
+<tr><td><code>server_scripts/<wbr>arms/<wbr>attachments.<wbr>js</code></td><td data-label="Contents">attachment generator</td></tr>
+<tr><td><code>server_scripts/<wbr>arms/<wbr>refactor_*.<wbr>js</code></td><td data-label="Contents">section 12</td></tr>
+<tr><td><code>data/<wbr>gundb/<wbr>gundb/<wbr>*.<wbr>json</code></td><td data-label="Contents">tacz-durability: repair with the matching barrel (re-barrelling), per-category durability</td></tr>
+<tr><td><code>mods/<wbr>tacz-durability.<wbr>pw.<wbr>toml</code>, <code>mods/<wbr>mic-machining.<wbr>pw.<wbr>toml</code></td><td data-label="Contents">new</td></tr>
+<tr><td>delete <code>tacz_new_recipes.js</code></td><td data-label="Contents">superseded</td></tr>
+<tr><td><code>modDocs/tacz.md</code></td><td data-label="Contents">fix the stale claims (tables A and C swapped, codec, counts)</td></tr>
+</tbody>
+</table>
+</div>
+  <p data-ss-id="recipe-ids">Recipe ids: <code>kubejs:arms/&lt;area&gt;/&lt;name&gt;</code>. The TaCZ recipe filter already whitelists <code>kubejs:*</code>.</p>
+</section>
+
+<section id="refactor" data-ss-id="refactor" data-ss-section>
+  <h2 data-ss-id="refactor-h"><span class="sec-n">12</span>Refactoring the rest of the pack onto the new processes</h2>
+<div class="scroll">
+<table class="stack" data-ss-id="refactor-table">
+<thead><tr><th>Area</th><th>Today</th><th>After</th><th>Machine</th><th>Ben?</th></tr></thead>
+<tbody>
+<tr><td><strong>TaCZ guns, ammo, attachments</strong></td><td data-label="Today">flat piles (above)</td><td data-label="After">this plan</td><td data-label="Machine">all</td><td class="nil" data-label="Ben?">–</td></tr>
+<tr><td><strong>CBC shells</strong> (<code>he_shell</code>, <code>ap_shell</code>, <code>shrapnel_shell</code>, <code>smoke_shell</code>)</td><td data-label="Today">mechanical crafting from ingots + an HE item</td><td data-label="After">Lathe-turned shell body → AP noses induction-hardened → Spout melt-pours Destroy TNT or picric mixture → CBC shell. CBC's own fuzing (hardcoded deployer recipes) stays</td><td data-label="Machine">Lathe, Induction, Spout</td><td data-label="Ben?">yes, D5</td></tr>
+<tr><td><strong>CBC fuzes</strong> (impact, timed, proximity …)</td><td data-label="Today">crafting table</td><td data-label="After">Spindle-milled body + Die Ram striker + <code>kubejs:primer</code>; timed adds a precision mechanism; proximity keeps the pack's radar parts</td><td data-label="Machine">Spindle, Die Ram</td><td data-label="Ben?">D5</td></tr>
+<tr><td><strong>CBC cartridges</strong> (<code>big_cartridge</code>, <code>autocannon_cartridge</code>)</td><td data-label="Today">sequenced assembly, press ×5 or ×6</td><td data-label="After">Die Ram <code>draw/big_cartridge</code>, <code>draw/autocannon</code></td><td data-label="Machine">Die Ram</td><td data-label="Ben?">D5</td></tr>
+<tr><td><strong>CBC machine-gun round</strong></td><td data-label="Today">sequenced assembly</td><td data-label="After">the small-arms loading die (<code>load/cbc_mg</code>) with <code>heavy_case</code> + <code>.50 BMG</code> bullet</td><td data-label="Machine">Die Ram</td><td data-label="Ben?">D5</td></tr>
+<tr><td><strong>CBC recoil springs</strong></td><td data-label="Today">cut plate → wire → press ×3</td><td data-label="After">Vintage coiling + temper</td><td data-label="Machine">Coiler, fans</td><td class="nil" data-label="Ben?">–</td></tr>
+<tr><td><strong>CBC cannon barrels</strong></td><td data-label="Today">Metallurgy and CBC casting → CBC drill → built-up heating</td><td data-label="After">unchanged: already a real process</td><td class="nil" data-label="Machine">–</td><td class="nil" data-label="Ben?">–</td></tr>
+<tr><td><strong>CBC Neo Warfare</strong></td><td data-label="Today">broken as shipped: no crafting recipes; block recipes in <code>block_recipies/</code> (misspelt) and plural tag folders</td><td data-label="After">copy its casting and boring data into <code>kubejs/<wbr>data/<wbr>createbigcannons/<wbr>createbigcannons/<wbr>block_recipes/<wbr></code>; author medium cartridges and rounds on the same lines as CBC</td><td data-label="Machine">Die Ram, Lathe</td><td data-label="Ben?">D5</td></tr>
+<tr><td><strong>RHA armour</strong></td><td data-label="Today">press a steel block → 4 hardsteel</td><td data-label="After">rolled plate (Create press) + quench and temper (fan line or Induction), which is what "rolled homogeneous armour" means; riveted plate uses Die Ram rivets; add the 35 missing hatch recipes</td><td data-label="Machine">fans, Induction, Die Ram</td><td data-label="Ben?">D5</td></tr>
+<tr><td><strong>Springs</strong> (4 chains: Vintage <code>iron_spring</code>, Aeronautics <code>simulated:spring</code>, CBC <code>recoil_spring</code>, gun springs)</td><td data-label="Today">four unrelated recipes</td><td data-label="After">one chain: coil + temper; other mods' spring recipes take the Vintage spring</td><td data-label="Machine">Coiler, heat</td><td class="nil" data-label="Ben?">–</td></tr>
+<tr><td><strong><code>create:<wbr>precision_mechanism</code></strong> (about 110 recipes downstream)</td><td data-label="Today">5 loops of deploying cogwheels and nuggets on a gold sheet</td><td data-label="After">3 loops: deploy <code>kubejs:<wbr>precision_gear</code> (brass, Spindle hob) → deploy cogwheel → deploy nugget → Inspection gauge step. Material cost about the same; needs a Spindle and a hob from G2</td><td data-label="Machine">Spindle, Inspection</td><td data-label="Ben?"><strong>yes, D4</strong></td></tr>
+<tr><td><strong>Vintage Curving Press</strong></td><td data-label="Today">4 hardcoded heads; no pack recipes</td><td data-label="After">voided; the Die Ram does its job</td><td class="nil" data-label="Machine">–</td><td class="nil" data-label="Ben?">–</td></tr>
+<tr><td><strong>Vintage recipe card</strong></td><td data-label="Today">unobtainable (its sequence needs the voided belt grinder's polishing step)</td><td data-label="After">drop the polishing step so the Lathe can be automated</td><td class="nil" data-label="Machine">–</td><td class="nil" data-label="Ben?">–</td></tr>
+<tr><td><strong>Propulsion <code>tempered_wing</code></strong></td><td data-label="Today">furnace smelting</td><td data-label="After">real temper: heat-treatment route</td><td data-label="Machine">fans, Induction</td><td class="nil" data-label="Ben?">–</td></tr>
+<tr><td><strong>CDG engine piston, diesel engine</strong></td><td data-label="Today">crafting table</td><td data-label="After">Spindle-bored cylinder + Lathe-turned piston</td><td data-label="Machine">Spindle, Lathe</td><td data-label="Ben?">later phase</td></tr>
+<tr><td><strong>Create Nuclear <code>graphite_rod</code>, <code>uranium_rod</code></strong></td><td data-label="Today">mechanical crafting</td><td data-label="After">Lathe-turned graphite; Die Ram <code>rod_load</code> over a basin, pellets into cladding</td><td data-label="Machine">Lathe, Die Ram</td><td data-label="Ben?">coordinate with mic_nuclear, D7</td></tr>
+<tr><td><strong>mic_nuclear planned <code>qc_bay</code> and <code>rod_loader</code></strong></td><td data-label="Today">planned blocks</td><td data-label="After">become the Inspection Head with a radiography kit, and the Die Ram with <code>rod_load</code>; two fewer new blocks in that plan</td><td class="nil" data-label="Machine">–</td><td data-label="Ben?">D7</td></tr>
+<tr><td><strong>Overgeared mechanical-forging mirror</strong></td><td data-label="Today">sets <code>acceptMirrored</code>; Create's key is <code>accept_mirrored</code>, so it is ignored</td><td data-label="After">fix the key</td><td class="nil" data-label="Machine">–</td><td class="nil" data-label="Ben?">–</td></tr>
+</tbody>
+</table>
+</div>
+  <h3 data-ss-id="found-h">Found while surveying (fix in phase 0 or alongside)</h3>
+  <ul data-ss-id="found-list">
+    <li><code>workbench_a</code> and <code>workbench_c</code> results lack the <code>BlockId</code> custom_data, so they likely place blank.</li>
+    <li>Five gun recipes need boss drops.</li>
+    <li><code>createbigcannons:cannon_drill_bit</code> has no recipe in 5.11.7 and may not exist.</li>
+    <li><code>destroy:thermite</code> does not exist.</li>
+    <li>Destroy tags stainless into <code>c:ingots/steel</code> and <code>c:plates/steel</code>, so every "steel" slot also takes stainless. Arms recipes name <code>createmetallurgy:steel_*</code> and <code>destroy:stainless_*</code> explicitly.</li>
+    <li>The CBC breech-extractor melt is about a 4× dupe (<code>meltAmountFor</code> ordering).</li>
+    <li>Metallurgy rod and gear casts never load (empty-tag conditions).</li>
+    <li><code>cdg_metallurgy_integration.js</code> uses <code>forge:</code> tags that no longer exist, so the pumpjack crank is unreachable.</li>
+    <li><code>modDocs/tacz.md</code> swaps tables A and C.</li>
+    <li>The September plan says the stub recipes fail to load. The July failure was TaCZ r2; two r6 boots (09-05, 09-28) show no <code>kubejs:tacz</code> error.</li>
+  </ul>
+</section>
+
+<section id="phases" data-ss-id="phases" data-ss-section>
+  <h2 data-ss-id="phases-h"><span class="sec-n">13</span>Phases</h2>
+<div class="scroll">
+<table class="stack phases" data-ss-id="phases-table">
+<thead><tr><th>#</th><th>Phase</th><th>Delivers</th><th>Gate</th></tr></thead>
+<tbody>
+<tr><td>0</td><td data-label="Phase">Groundwork</td><td data-label="Delivers">open the three TaCZ tables in a client and confirm the stub recipes show; fix <code>BlockId</code>; strip boss items from the stub as a stopgap; install tacz-durability and boot it against the unofficial TaCZ port (nine <code>require=1</code> mixins)</td><td data-label="Gate">server and client boot clean</td></tr>
+<tr><td>1</td><td data-label="Phase">Machine shop core</td><td data-label="Delivers"><code>mic_machining</code> with the Spindle, the Die Ram, the Inspection Head with the proof chamber, cutters, dies, the tooling chain; the six components and the carry rule; the hot workpiece and the generated fan recipes (blasting, water quench, smoking temper, brass anneal); KubeJS schemas, JEI, Ponder, GameTests</td><td data-label="Gate">each head works on a depot, on a belt and in sequenced assembly; a part's components survive a Create processing step</td></tr>
+<tr><td>2</td><td data-label="Phase">Ammunition plant</td><td data-label="Delivers">cases, bullets, primers, loading for all 22 calibers (line and hand); delete the stub ammo</td><td data-label="Gate">every caliber made at its tier in a test world</td></tr>
+<tr><td>3</td><td data-label="Phase">Gun parts and assembly</td><td data-label="Delivers">barrels, receivers, actions, feed, furniture; the Overgeared hand heat-treatment route; hand assembly of all 54 guns; delete the stub guns</td><td data-label="Gate">all 54 guns craftable; the tier table holds</td></tr>
+<tr><td>4</td><td data-label="Phase">Quality on guns and advanced heat treatment</td><td data-label="Delivers">oil-quench fan, Induction Head, gauge set and MPI kit, the TaCZ craft mixin (part data onto the gun), stats, burst, rust, line assembly</td><td data-label="Gate">a precision AKM shoots tighter than a rough one; an unproofed water-quenched barrel can burst</td></tr>
+<tr><td>5</td><td data-label="Phase">Attachments and finishing</td><td data-label="Delivers">polymer moulding, optics, suppressors, bluing, parkerizing, chrome</td><td data-label="Gate">about 95 attachments craftable</td></tr>
+<tr><td>6</td><td data-label="Phase">Pack refactors</td><td data-label="Delivers">section 12 per Ben's answers</td><td data-label="Gate">CBC shells, fuzes, cartridges, Neo Warfare, RHA, springs</td></tr>
+<tr><td>7</td><td data-label="Phase">Extras</td><td data-label="Delivers">worn guns in loot <span class="chip opt">OPT</span>; radiography with mic_nuclear; docs and changelog</td><td class="nil" data-label="Gate">–</td></tr>
+</tbody>
+</table>
+</div>
+  <p data-ss-id="phases-note">Phases 2 and 3 ship with the hand route, the water fan line and proof firing, so guns and ammo stop being ingot piles early. Parts already carry their grade and stamps from phase 1; phase 4 is when guns start reading them.</p>
+</section>
+
+<section id="risks" data-ss-id="risks" data-ss-section>
+  <h2 data-ss-id="risks-h"><span class="sec-n">14</span>Risks and checks <span class="chip verify">VERIFY</span></h2>
+  <ol class="risks" data-ss-id="risks-list">
+    <li><strong>A tool head built on Create's <code>PressingBehaviour</code></strong> works over belts, depots and basins, and as a sequenced-assembly step. Vintage's Curving Press proves the pattern, but no MIC mod has done it, so GameTest it first.</li>
+    <li><strong>Carry-rule injects coexist with Destroy's <code>@Overwrite</code></strong> of <code>SequencedAssemblyRecipe.advance</code>.</li>
+    <li><strong>The TaCZ <code>doCraft</code> mixin</strong> applies against the unofficial r6 port.</li>
+    <li><strong>tacz-durability 2.2.2's nine mixins</strong> apply (unchanged risk from September).</li>
+    <li><strong>Whether <code>gundb:jammed</code> can be set from outside</strong> to add jam chance for rough actions.</li>
+    <li><strong>The tier of <code>destroy:fulminated_mercury</code></strong> decides when primers, and so all cartridge ammo, arrive. If it is later than G1, G1 guns need another primary explosive. Candidates in the pack: <code>acetone_peroxide</code> (TATP) and <code>touch_powder</code>.</li>
+    <li><strong>Destroy species for parkerizing (phosphoric acid) and chrome plating (chromium ions).</strong></li>
+    <li><strong>Power Grid's power scale</strong> for Induction Head heat times.</li>
+    <li><strong>KubeJS fluids</strong> melt and cast correctly through Metallurgy.</li>
+    <li><strong><code>neoforge:components</code> ingredients</strong> in TaCZ's table and in vanilla smoking recipes.</li>
+  </ol>
+</section>
+
+<section id="changed" data-ss-id="changed" data-ss-section>
+  <h2 data-ss-id="changed-h"><span class="sec-n">16</span>What changed from the September plan</h2>
+<div class="scroll">
+<table class="stack" data-ss-id="changed-table">
+<thead><tr><th>September (<code>gun-crafting-plan.md</code>)</th><th>Now</th></tr></thead>
+<tbody>
+<tr><td>No new machines</td><td data-label="Now">Four tool heads + one fan type, all reusable</td></tr>
+<tr><td>18 items, plus scalar piles of steel and brass plates scaled by gun strength</td><td data-label="Now">About 58 parts and 22 tool items, <strong>no piles</strong>; strength follows the parts a gun needs</td></tr>
+<tr><td>Tungsten as an ingredient gates automatic weapons</td><td data-label="Now">HSS cutters gate them (tungsten is in the tool, not the gun)</td></tr>
+<tr><td>Curving Press heads make cases</td><td data-label="Now">Die Ram dies, data-driven, for any case family</td></tr>
+<tr><td>7 "line calibers" on mechanical crafters</td><td data-label="Now">Every caliber loads on the Die Ram over a basin; the hand route is kept</td></tr>
+<tr><td><code>cannon_drill_bit</code>, <code>destroy:thermite</code> used</td><td data-label="Now">neither exists; removed</td></tr>
+<tr><td>Stub recipes "do not load"</td><td data-label="Now">they load on r6; phase 0 is a GUI check</td></tr>
+<tr><td>No quality</td><td data-label="Now">grade, risk, proof, heat treatment, finish, maker</td></tr>
+</tbody>
+</table>
+</div>
+</section>
+
+<details data-ss-react="off" data-ss-id="sources">
+  <summary>Sources</summary>
+  <ul>
+    <li>The plan: <code>pack/modDocs/armaments-plan.md</code>, "MIC Arms Industry: armaments manufacturing plan", status: design for your approval, 2026-10-26. Its section 15 is the decisions above; every table on this page is that file's table, unchanged.</li>
+    <li>It supersedes <code>pack/modDocs/gun-crafting-plan.md</code> (2026-09-17).</li>
+    <li>The plan's sources: four surveys run on 2026-10-26 against the pinned jars (TaCZ 1.1.8-hotfix-r6, Create 6.0.10, CBC 5.11.7, CBC Neo Warfare 0.0.6v, Vintage 1.3.9, Metallurgy 1.0.3, Destroy 0.4.1, Overgeared 1.6.17/1.6.18.1, Power Grid 0.6.1/0.6.2, RHA 1.0.3b) and the pack's KubeJS scripts.</li>
+  </ul>
+</details>
+
+</main>
+
+<footer data-ss-react="off">Built for Ben from pack/modDocs/armaments-plan.md on 26 October 2026. Private page. <a href="https://spacesheep.dev/@benmac/rtsim-hub">Back to the hub</a>.</footer>
+</body>
+</html>

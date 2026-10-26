@@ -166,6 +166,10 @@ pub struct Java {
     /// The containers' chunks are not loaded: answer every new TRANSFER_TO_CONTAINER as
     /// CommandDispatcher answers one whose chunk `getChunkNow` does not hold.
     pub unloaded_transfers: bool,
+    /// The next hand-over ends right after the session's DICTs, as `BoundarySession.flushPreamble`
+    /// does when the buffer is full there (it returns false, and `handOver` still submits): no
+    /// TICK, no journal entries. Cleared by that hand-over.
+    pub end_after_dicts: bool,
     /// Players reported every tick: (UUID, dimension id, position).
     pub players: Vec<((u64, u64), u32, [f64; 3])>,
     /// The industry world this Java plays (rtsim-industry's fake world in remote mode), if any.
@@ -315,6 +319,7 @@ impl Java {
             no_free_plot: false,
             fail_transfers: false,
             unloaded_transfers: false,
+            end_after_dicts: false,
             players: Vec::new(),
             mc: None,
             ind_cmd_seq: HashMap::new(),
@@ -524,6 +529,10 @@ impl Java {
             wire::put_u32(r, obs::dict::NAME_LEN, name.len() as u32);
             r[obs::dict::NAME..obs::dict::NAME + name.len()].copy_from_slice(name.as_bytes());
             self.dict_sent += 1;
+        }
+        if self.end_after_dicts {
+            self.end_after_dicts = false;
+            return false;
         }
         if self.tick_marked != self.game_time {
             let gt = self.game_time;
@@ -886,10 +895,15 @@ impl Java {
         use rtsim_ships::boundary as sb;
         *self.refused.entry(kind).or_default() += 1;
         let answer = |j: &mut Java, op: u64, status: u32| {
-            j.journal(obs::COMMAND_RESULT, obs::command_result::SIZE, status, |r| {
-                wire::put_u64(r, obs::command_result::CMD_SEQ, seq);
-                wire::put_u64(r, obs::command_result::OP_ID, op);
-            });
+            j.journal(
+                obs::COMMAND_RESULT,
+                obs::command_result::SIZE,
+                status,
+                |r| {
+                    wire::put_u64(r, obs::command_result::CMD_SEQ, seq);
+                    wire::put_u64(r, obs::command_result::OP_ID, op);
+                },
+            );
         };
         let failed = |j: &mut Java, op: u64| answer(j, op, obs::command_result::FAILED);
         match kind {
