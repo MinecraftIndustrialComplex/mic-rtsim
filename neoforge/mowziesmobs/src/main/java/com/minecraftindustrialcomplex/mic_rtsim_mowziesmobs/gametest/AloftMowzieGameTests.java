@@ -577,7 +577,7 @@ public final class AloftMowzieGameTests {
                 .thenExecute(() -> {
                     check("the puppet is in its animation (dying " + puppet[0].isDeadOrDying() + ", removed " + puppet[0].isRemoved() + ")",
                             puppet[0].isDeadOrDying() && !puppet[0].isRemoved());
-                    op[1] = MowzieKit.reconcile(g[0].faction, epochOf(g[0]), g[0].spot, 0f, List.of(
+                    op[1] = MowzieKit.reconcile(g[0].faction, epochOf(g[0]), g[0].spot, 3f, List.of(
                             CampLine.party(CHIEF_SLOT, 1, UMVUTHI, HAND_BACK, CHIEF, agent[0], ConflictKit.party(agent[0]).epoch)));
                 })
                 .thenWaitUntil(waits.logic(() -> check("the line in the animation is answered", ConflictKit.outcomes(g[0].faction, op[1]).size() == 1)))
@@ -586,7 +586,7 @@ public final class AloftMowzieGameTests {
                     check("no throne body stands (" + thrones(level, g[0]).size() + ")", thrones(level, g[0]).isEmpty());
                 })
                 .thenWaitUntil(waits.logic(() -> check("the puppet's animation has ended", puppet[0].isRemoved())))
-                .thenExecute(() -> op[2] = MowzieKit.reconcile(g[0].faction, epochOf(g[0]), g[0].spot, 0f, List.of(
+                .thenExecute(() -> op[2] = MowzieKit.reconcile(g[0].faction, epochOf(g[0]), g[0].spot, 3f, List.of(
                         CampLine.party(CHIEF_SLOT, 1, UMVUTHI, HAND_BACK, CHIEF, agent[0], ConflictKit.party(agent[0]).epoch))))
                 .thenWaitUntil(waits.logic(() -> check("the line after the puppet is answered", ConflictKit.outcomes(g[0].faction, op[2]).size() == 1)))
                 .thenIdle(20)
@@ -595,7 +595,7 @@ public final class AloftMowzieGameTests {
                     check("no throne body of the retired generation stands (" + thrones(level, g[0]).size() + ")", thrones(level, g[0]).isEmpty());
                     check("none is held for it", MowzieKit.held(g[0].faction, CHIEF_SLOT, 1).isEmpty());
                     // The control: a live puppet is handed back to its throne.
-                    op[3] = MowzieKit.reconcile(g[1].faction, epochOf(g[1]), g[1].spot, 0f, List.of(
+                    op[3] = MowzieKit.reconcile(g[1].faction, epochOf(g[1]), g[1].spot, 3f, List.of(
                             CampLine.party(CHIEF_SLOT, 1, UMVUTHI, HAND_BACK, CHIEF, agent[1], ConflictKit.party(agent[1]).epoch)));
                 })
                 .thenWaitUntil(waits.logic(() -> check("the control's line is answered", ConflictKit.outcomes(g[1].faction, op[3]).size() == 1)))
@@ -1953,7 +1953,7 @@ public final class AloftMowzieGameTests {
                     // the band comes home: the engine's memory of its chief at home names nobody, then the hand-back
                     payer[0].setPos(payer[0].getX(), payer[0].getY(), payer[0].getZ() + 300);
                     ConflictKit.chiefBody(g[0].faction, epochOf(g[0]), 0f, List.of());
-                    op[1] = MowzieKit.reconcile(g[0].faction, epochOf(g[0]), g[0].spot, 0f, List.of(
+                    op[1] = MowzieKit.reconcile(g[0].faction, epochOf(g[0]), g[0].spot, 3f, List.of(
                             CampLine.party(CHIEF_SLOT, 1, UMVUTHI, HAND_BACK, CHIEF, agent, ConflictKit.party(agent).epoch)));
                 })
                 .thenWaitUntil(waits.logic(() -> check("the hand-back is answered", ConflictKit.outcomes(g[0].faction, op[1]).size() == 1)))
@@ -2330,7 +2330,7 @@ public final class AloftMowzieGameTests {
                     was[3] = MowzieKit.camps().heldLines();
                     // the grove came in while the Invasion was out and a player stands near: the engine's TAKE of the chief is held
                     for (int i = 0; i < 2; i++)
-                        op[2 + i] = MowzieKit.reconcile(g[i].faction, epochOf(g[i]), g[i].spot, 0f, List.of(CampLine.of(CHIEF_SLOT, 1, UMVUTHI, TAKE, CHIEF)));
+                        op[2 + i] = MowzieKit.reconcile(g[i].faction, epochOf(g[i]), g[i].spot, 3f, List.of(CampLine.of(CHIEF_SLOT, 1, UMVUTHI, TAKE, CHIEF)));
                 })
                 .thenIdle(5)
                 .thenExecute(() -> {
@@ -2513,7 +2513,7 @@ public final class AloftMowzieGameTests {
                     was[1] = MowzieKit.camps().chiefMerges;
                     was[2] = MowzieKit.camps().heldLines();
                     for (int i = 0; i < 2; i++)
-                        op[2 + i] = MowzieKit.reconcile(g[i].faction, epochOf(g[i]), g[i].spot, 0f, List.of(CampLine.of(CHIEF_SLOT, 1, UMVUTHI, TAKE, CHIEF)));
+                        op[2 + i] = MowzieKit.reconcile(g[i].faction, epochOf(g[i]), g[i].spot, 3f, List.of(CampLine.of(CHIEF_SLOT, 1, UMVUTHI, TAKE, CHIEF)));
                 })
                 .thenWaitUntil(waits.logic(() -> check("C's take is answered", ConflictKit.outcomes(g[1].faction, op[3]).size() == 1)))
                 .thenExecute(() -> {
@@ -2534,7 +2534,7 @@ public final class AloftMowzieGameTests {
                     });
                     // C's puppet is called home at once (its body made from it); H's walks home with its band
                     ConflictKit.chiefBody(g[1].faction, epochOf(g[1]), 180f, List.of());
-                    handBack[1] = MowzieKit.reconcile(g[1].faction, epochOf(g[1]), g[1].spot, 0f, List.of(
+                    handBack[1] = MowzieKit.reconcile(g[1].faction, epochOf(g[1]), g[1].spot, 3f, List.of(
                             CampLine.party(CHIEF_SLOT, 1, UMVUTHI, HAND_BACK, CHIEF, agent[1], ConflictKit.party(agent[1]).epoch)));
                     ConflictKit.steer(agent[0], ConflictKit.party(agent[0]).epoch, PACE, g[0].spot.x, g[0].spot.z, 0, false);
                 })
@@ -2550,7 +2550,7 @@ public final class AloftMowzieGameTests {
                     check("the held line is gone (" + (MowzieKit.camps().heldLines() - was[2]) + ")", MowzieKit.camps().heldLines() == was[2]);
                     // the engine's own home sends the chief's HAND_BACK, with its memory of a chief at home (no player named)
                     ConflictKit.chiefBody(g[0].faction, epochOf(g[0]), 180f, List.of());
-                    handBack[0] = MowzieKit.reconcile(g[0].faction, epochOf(g[0]), g[0].spot, 0f, List.of(
+                    handBack[0] = MowzieKit.reconcile(g[0].faction, epochOf(g[0]), g[0].spot, 3f, List.of(
                             CampLine.party(CHIEF_SLOT, 1, UMVUTHI, HAND_BACK, CHIEF, agent[0], ConflictKit.party(agent[0]).epoch)));
                 })
                 .thenWaitUntil(waits.logic(() -> {
@@ -3356,6 +3356,488 @@ public final class AloftMowzieGameTests {
                     check("no second CHIEF_KILLED (" + ConflictKit.about(ConflictRecords.CHIEF_KILLED, agent[0]).size() + ", " + ConflictKit.about(ConflictRecords.CHIEF_KILLED, agent[1]).size() + ")",
                             ConflictKit.about(ConflictRecords.CHIEF_KILLED, agent[0]).size() == 1 && ConflictKit.about(ConflictRecords.CHIEF_KILLED, agent[1]).size() == 1);
                     drop(player);
+                    far.releaseAll();
+                })
+                .thenSucceed();
+    }
+
+    // ---- 32t: the Umvuthi is handed back on its throne (MZB-821, MZB-822) ------------------------------------
+
+    private static final int SPAWN = ConflictRecords.CampReconcile.SPAWN;
+
+    /**
+     * The chief's HAND_BACK waits for its puppet and then stands the Umvuthi on the throne (test 32's throne clause; MZB-821, MZB-822,
+     * MZB-820). Three groves, each with an Invasion that comes home:
+     * <ul>
+     * <li><b>N</b>, a grove that is in, whose puppet floats 45 blocks east of the throne (health 120, its memory the masked player X's, a
+     * player 100 blocks off). The engine's CHIEF_BODY home names a player Y only it knew, then three HAND_BACK lines in one reconcile:
+     * the chief's and two warriors'. The warriors' lines play at once (the control): within 4 ticks their puppets are gone and a tagged
+     * body stands within 4 blocks of each puppet's last place. The chief's line is held ({@code heldHandBacks} rises by one, no answer):
+     * the puppet floats to the spot, turns to the throne's direction and descends, and only then is one Umvuthi on the throne (DONE,
+     * within 0.5 blocks of the spot, tagged as the chief, health 120, no gravity set, the direction of the throne, remembering exactly X
+     * and Y), the puppet gone. The last place the puppet was seen is within 0.5 blocks of the spot (not 45 blocks off) and facing the
+     * throne's way.</li>
+     * <li><b>L</b>, a grove that is in, whose puppet floats 200 blocks east (it cannot be home in the line's time at the pace of
+     * 0.1 a tick). The line plays at {@link ConflictBridge#RECALL_TIMEOUT} ticks, within 3 before and 12 after, where the puppet stands:
+     * DONE, the body within 3 blocks of the puppet's last place and well off the throne, {@code chiefHandBacksLate} up by one (N's
+     * line was not late). The design's blocked spot cannot do this: a puppet over a block lands on it, which counts as settled.</li>
+     * <li><b>O</b>, a grove that is out (declared, its chunks not loaded), with its puppet on a lane of its own and no player: the
+     * engine sends a BAND_RECALL (RECALL_DONE) and no HAND_BACK. The puppet and its warrior go at once, one BAND_DEMATERIALIZED, no body
+     * made ({@code handedBack} and {@code heldHandBacks} unchanged). The grove then comes in (its chunks are forced) and the census's
+     * scripted chief SPAWN puts one Umvuthi on the throne: DONE, tagged as the chief, direction 3.</li>
+     * </ul>
+     * Fails without MZB-822 (N's chief line plays at once and the Umvuthi stands where the puppet was, not on the throne).
+     */
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "aloft_throne", skyAccess = true)
+    public static void theUmvuthiIsHandedBackOnItsThrone(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 9000);
+        String test = "theUmvuthiIsHandedBackOnItsThrone";
+        Far far = new Far(helper, test);
+        ServerLevel level = far.level;
+        String dim = RtsimTests.dimension(helper);
+        Grove n = groveAt(far, 0, 0), l = groveAt(far, 1, 0), o = groveAt(far, 2, 0); // o: declared, never forced until its census
+        Lane lane = new Lane(far, far.k + 46, 0, 2); // O's puppet, clear of its footprint (chunks k + 38 to k + 42)
+        long[] agent = {ConflictKit.newAgent(), ConflictKit.newAgent(), ConflictKit.newAgent()};
+        EntityUmvuthi[] puppet = new EntityUmvuthi[3];
+        Mob[] warrior = new Mob[3];
+        List<Mob> nWarriors = new ArrayList<>();
+        Vec3[] warriorAt = new Vec3[2];
+        ServerPlayer[] player = new ServerPlayer[1]; // X
+        UUID y = UUID.randomUUID();
+        long[] op = new long[3]; // N's hand-back, L's, O's SPAWN
+        long[] sentAt = new long[3];
+        long[] warriorsGone = new long[1];
+        long[] chiefGone = new long[2]; // N's, L's
+        Vec3[] last = new Vec3[2]; // the last place N's and L's puppets were seen
+        int[] lastDirection = new int[1];
+        boolean[] sampling = {false};
+        long[] was = new long[4]; // heldHandBacks, chiefHandBacksLate, handedBack, chiefMerges
+        long[] oRecalled = new long[2]; // the recall's tick; the puppet gone
+
+        MowzieKit.seq(helper)
+                .thenExecute(() -> {
+                    n.force();
+                    forceEast(n, 6);
+                    l.force();
+                    forceEast(l, 14);
+                    lane.force();
+                    o.declare(); // its chunks are not loaded: the grove is out
+                })
+                .thenWaitUntil(waits.chunks(far.ready()))
+                .thenExecute(() -> {
+                    n.lay().declare();
+                    layEast(n, 6);
+                    l.lay().declare();
+                    layEast(l, 14);
+                    lane.floor();
+                    check("O is out: no epoch, no census (" + o.site().epoch() + ", " + MowzieKit.censusCount(o.faction) + ")",
+                            o.site().epoch() == 0L && MowzieKit.censusCount(o.faction) == 0);
+                })
+                .thenWaitUntil(waits.logic(censused(n, l)))
+                .thenExecute(() -> {
+                    player[0] = MowzieKit.player(helper, off(n, 0, 100), "mowzie-throne-x");
+                    MowzieKit.mask(player[0]);
+                    chiefBand(helper, n, agent[0], n.spot.x + 45, n.spot.z, 120f, List.of(player[0].getUUID()), 2);
+                    chiefBand(helper, l, agent[1], l.spot.x + 200, l.spot.z, 120f, List.of(), 1);
+                    bandAt(helper, o.faction, agent[2], lane.x0 + 20, lane.top + 1, lane.z, 120f, List.of(), 1, true);
+                })
+                .thenWaitUntil(waits.logic(() -> {
+                    for (int i = 0; i < 3; i++) {
+                        puppet[i] = puppet(agent[i]);
+                        check("puppet " + i + " floats", puppet[i].isNoGravity());
+                    }
+                    check("N's two warriors are embodied (" + warriorsOf(agent[0]).size() + ")", warriorsOf(agent[0]).size() == 2);
+                    check("L's and O's warrior are embodied", warriorsOf(agent[1]).size() == 1 && warriorsOf(agent[2]).size() == 1);
+                }))
+                .thenExecute(() -> {
+                    nWarriors.addAll(warriorsOf(agent[0]));
+                    warrior[1] = warriorsOf(agent[1]).get(0);
+                    warrior[2] = warriorsOf(agent[2]).get(0);
+                    for (int i = 0; i < 2; i++)
+                        warriorAt[i] = nWarriors.get(i).position();
+                    check("N's puppet carries the memory of X (" + puppet[0].getTradedPlayers() + ")", puppet[0].hasTradedWith(player[0]));
+                    check("N's puppet does not face the throne's way (" + puppet[0].getDirectionData() + ")", puppet[0].getDirectionData() != 3);
+                    check("N's puppet is " + String.format("%.1f", puppet[0].getX() - n.spot.x) + " blocks east of the throne", puppet[0].getX() - n.spot.x > 40);
+                    was[0] = MowzieKit.camps().heldHandBacks;
+                    was[1] = ConflictKit.chiefHandBacksLate();
+                    was[2] = MowzieKit.camps().handedBack;
+                    was[3] = MowzieKit.camps().chiefMerges;
+                    MowzieKit.everyTick(helper, () -> {
+                        if (!sampling[0])
+                            return;
+                        long now = level.getGameTime();
+                        if (warriorsGone[0] == 0 && nWarriors.get(0).isRemoved() && nWarriors.get(1).isRemoved())
+                            warriorsGone[0] = now;
+                        for (int i = 0; i < 2; i++) {
+                            if (chiefGone[i] == 0 && puppet[i].isRemoved())
+                                chiefGone[i] = now;
+                            if (!puppet[i].isRemoved())
+                                last[i] = puppet[i].position();
+                        }
+                        if (!puppet[0].isRemoved())
+                            lastDirection[0] = puppet[0].getDirectionData();
+                    });
+                    sampling[0] = true;
+                    sentAt[0] = level.getGameTime();
+                    // the engine's own home: CHIEF_BODY home (naming Y), then the chief's HAND_BACK and the two warriors', in one reconcile
+                    ConflictKit.together(() -> {
+                        ConflictKit.chiefBody(n.faction, epochOf(n), 120f, List.of(y));
+                        ConflictKit.chiefBody(l.faction, epochOf(l), 120f, List.of());
+                        op[0] = MowzieKit.reconcile(n.faction, epochOf(n), n.spot, 3f, List.of(
+                                CampLine.party(CHIEF_SLOT, 1, UMVUTHI, HAND_BACK, CHIEF, agent[0], ConflictKit.party(agent[0]).epoch),
+                                CampLine.party(0, 1, WARRIOR, HAND_BACK, 0, agent[0], ConflictKit.party(agent[0]).epoch),
+                                CampLine.party(1, 1, WARRIOR, HAND_BACK, 0, agent[0], ConflictKit.party(agent[0]).epoch)));
+                        op[1] = MowzieKit.reconcile(l.faction, epochOf(l), l.spot, 3f, List.of(
+                                CampLine.party(CHIEF_SLOT, 1, UMVUTHI, HAND_BACK, CHIEF, agent[1], ConflictKit.party(agent[1]).epoch)));
+                    });
+                    sentAt[1] = sentAt[0];
+                })
+                .thenWaitUntil(waits.logic(() -> check("N's warriors went (" + warriorsGone[0] + ")", warriorsGone[0] != 0)))
+                .thenIdle(3)
+                .thenExecute(() -> {
+                    check("N's warriors went at once (" + (warriorsGone[0] - sentAt[0]) + " ticks)", warriorsGone[0] - sentAt[0] <= 5);
+                    for (int i = 0; i < 2; i++) {
+                        List<Entity> body = MowzieKit.held(n.faction, i, 1);
+                        check("a tagged warrior body stands for slot " + i + " (" + body.size() + ")", body.size() == 1);
+                        check("within 4 blocks of where its puppet stood (" + body.get(0).position().distanceTo(warriorAt[i]) + ")",
+                                body.get(0).position().distanceTo(warriorAt[i]) < 4);
+                    }
+                    Map<Integer, MowzieKit.Answered> lines = MowzieKit.answeredLines(n.faction, op[0]);
+                    check("the warriors' lines are DONE and the chief's is held (answered lines: " + lines.keySet() + ")",
+                            lines.size() == 2 && lines.containsKey(1) && lines.containsKey(2) && lines.get(1).outcome() == DONE && lines.get(2).outcome() == DONE);
+                    check("the chiefs' lines of N and L were held (heldHandBacks +" + (MowzieKit.camps().heldHandBacks - was[0]) + ")",
+                            MowzieKit.camps().heldHandBacks == was[0] + 2);
+                    check("N's puppet floats still (removed " + puppet[0].isRemoved() + ", gravity off " + puppet[0].isNoGravity() + ")",
+                            !puppet[0].isRemoved() && puppet[0].isAlive());
+                    check("no Umvuthi stands on N's throne yet (" + thrones(level, n).size() + ")", thrones(level, n).isEmpty());
+                    check("L's puppet floats, its line held (" + puppet[1].isRemoved() + ")", !puppet[1].isRemoved());
+                })
+                .thenWaitUntil(waits.logic(() -> check("N's chief puppet went (" + chiefGone[0] + ")", chiefGone[0] != 0)))
+                .thenExecute(() -> {
+                    long took = chiefGone[0] - sentAt[0];
+                    check("it took the walk, not the first tick (" + took + " ticks)", took > 300);
+                    check("the puppet was last seen within 0.5 blocks of the spot (" + Math.hypot(last[0].x - n.spot.x, last[0].z - n.spot.z) + ")",
+                            Math.hypot(last[0].x - n.spot.x, last[0].z - n.spot.z) < 0.5);
+                    check("and within 0.2 blocks of its height (" + (last[0].y - n.spot.y) + ")", last[0].y - n.spot.y < 0.2);
+                    check("facing the throne's way (" + lastDirection[0] + ", the throne's " + n.site().throneDirection() + ")", lastDirection[0] == n.site().throneDirection());
+                    MowzieKit.Answered chief = MowzieKit.answeredLines(n.faction, op[0]).get(0);
+                    check("the chief's line is answered (" + MowzieKit.answeredLines(n.faction, op[0]).keySet() + ")", chief != null);
+                    check("DONE, not " + MowzieKit.outcomeName(chief.outcome()), chief.outcome() == DONE);
+                    List<Entity> held = MowzieKit.held(n.faction, CHIEF_SLOT, 1);
+                    check("one Umvuthi stands on the throne as the chief (" + held.size() + ")", held.size() == 1 && held.get(0) instanceof EntityUmvuthi);
+                    EntityUmvuthi body = (EntityUmvuthi) held.get(0);
+                    check("within 0.5 blocks of the spot (" + Math.hypot(body.getX() - n.spot.x, body.getZ() - n.spot.z) + ")", Math.hypot(body.getX() - n.spot.x, body.getZ() - n.spot.z) < 0.5);
+                    check("with the puppet's health (" + body.getHealth() + ")", body.getHealth() == 120f);
+                    check("its gravity is on", !body.isNoGravity());
+                    check("facing direction 3 (" + body.getDirectionData() + ")", body.getDirectionData() == 3);
+                    check("it remembers X and Y and no one else (" + body.getTradedPlayers() + ")", body.hasTradedWith(player[0])
+                            && body.getTradedPlayers().contains(y) && body.getTradedPlayers().size() == 2);
+                    check("the puppet is gone", puppet[0].isRemoved());
+                    check("N's line was no merge and no late one (" + (MowzieKit.camps().chiefMerges - was[3]) + ", " + (ConflictKit.chiefHandBacksLate() - was[1]) + ")",
+                            MowzieKit.camps().chiefMerges == was[3] && ConflictKit.chiefHandBacksLate() == was[1]);
+                    check("one chief and two warriors were handed back (" + (MowzieKit.camps().handedBack - was[2]) + ")", MowzieKit.camps().handedBack - was[2] == 3);
+                    record(test, "home", "N's chief line waited " + took + " ticks (the walk of 45 blocks), the puppet was last seen " + String.format("%.2f",
+                            Math.hypot(last[0].x - n.spot.x, last[0].z - n.spot.z)) + " blocks off the spot facing " + lastDirection[0] + "; the body remembers " + body.getTradedPlayers().size());
+                })
+                .thenWaitUntil(waits.logic(() -> check("L's chief puppet went (" + chiefGone[1] + ")", chiefGone[1] != 0)))
+                .thenExecute(() -> {
+                    long took = chiefGone[1] - sentAt[1];
+                    check("L's line played at the timeout, " + ConflictBridge.RECALL_TIMEOUT + " ticks, within 3 before and 12 after (" + took + ")",
+                            took >= ConflictBridge.RECALL_TIMEOUT - 3 && took <= ConflictBridge.RECALL_TIMEOUT + 12);
+                    check("it was counted late, once (" + (ConflictKit.chiefHandBacksLate() - was[1]) + ")", ConflictKit.chiefHandBacksLate() == was[1] + 1);
+                    check("the line is answered DONE", MowzieKit.answeredLines(l.faction, op[1]).containsKey(0) && MowzieKit.answeredLines(l.faction, op[1]).get(0).outcome() == DONE);
+                    List<Entity> held = MowzieKit.held(l.faction, CHIEF_SLOT, 1);
+                    check("one Umvuthi stands as the chief (" + held.size() + ")", held.size() == 1 && held.get(0) instanceof EntityUmvuthi);
+                    double off = held.get(0).position().distanceTo(last[1]);
+                    double fromThrone = Math.hypot(held.get(0).getX() - l.spot.x, held.get(0).getZ() - l.spot.z);
+                    check("where the puppet stood (" + off + " blocks off its last place)", off < 3);
+                    check("and well off the throne (" + fromThrone + " blocks)", fromThrone > 30);
+                    check("with the puppet's health (" + ((EntityUmvuthi) held.get(0)).getHealth() + ")", ((EntityUmvuthi) held.get(0)).getHealth() == 120f);
+                    check("L's puppet is gone", puppet[1].isRemoved());
+                    record(test, "late", "L's line played " + took + " ticks after it was sent, " + String.format("%.0f", fromThrone) + " blocks from the throne; chiefHandBacksLate +"
+                            + (ConflictKit.chiefHandBacksLate() - was[1]));
+                })
+                .thenWaitUntil(waits.logic(() -> check("N and L went (" + dematerialized(agent[0]).size() + ", " + dematerialized(agent[1]).size() + ")",
+                        dematerialized(agent[0]).size() == 1 && dematerialized(agent[1]).size() == 1)))
+                .thenExecute(() -> {
+                    // O: the grove is out, so the engine's home is a recall and no HAND_BACK
+                    was[0] = MowzieKit.camps().heldHandBacks;
+                    was[2] = MowzieKit.camps().handedBack;
+                    oRecalled[0] = level.getGameTime();
+                    ConflictKit.together(() -> {
+                        marchEnded(agent[2], o.faction, dim, o.spot.x, o.spot.z);
+                        ConflictKit.recall(agent[2], ConflictKit.party(agent[2]).epoch, ConflictRecords.RECALL_DONE, 0, o.spot.x, o.spot.z);
+                    });
+                })
+                .thenWaitUntil(waits.logic(() -> check("O's band went (" + dematerialized(agent[2]).size() + ")", dematerialized(agent[2]).size() == 1)))
+                .thenExecute(() -> {
+                    oRecalled[1] = level.getGameTime();
+                    check("O's puppet and warrior are gone (" + puppet[2].isRemoved() + ", " + warrior[2].isRemoved() + ")", puppet[2].isRemoved() && warrior[2].isRemoved());
+                    check("it went at once, nothing held it (" + (oRecalled[1] - oRecalled[0]) + " ticks)", oRecalled[1] - oRecalled[0] <= 12);
+                    check("no body was made and no line held (" + (MowzieKit.camps().handedBack - was[2]) + ", " + (MowzieKit.camps().heldHandBacks - was[0]) + ")",
+                            MowzieKit.camps().handedBack == was[2] && MowzieKit.camps().heldHandBacks == was[0]);
+                    check("no CHIEF_KILLED (" + ConflictKit.about(ConflictRecords.CHIEF_KILLED, agent[2]).size() + ")", ConflictKit.about(ConflictRecords.CHIEF_KILLED, agent[2]).isEmpty());
+                    // the grove comes in: its chunks load, the census comes, and the scripted SPAWN puts the Umvuthi on the throne
+                    o.force();
+                })
+                .thenWaitUntil(waits.chunks(far.ready()))
+                .thenExecute(() -> o.lay())
+                .thenWaitUntil(waits.logic(() -> check("O's census (" + MowzieKit.censusCount(o.faction) + ")", MowzieKit.censusCount(o.faction) >= 1 && o.site().in())))
+                .thenExecute(() -> {
+                    Vec3 throne = o.at(8, 8);
+                    op[2] = MowzieKit.reconcile(o.faction, epochOf(o), throne, 3f, List.of(CampLine.of(CHIEF_SLOT, 1, UMVUTHI, SPAWN, CHIEF)));
+                })
+                .thenWaitUntil(waits.logic(() -> MowzieKit.answered(o.faction, op[2], 1)))
+                .thenExecute(() -> {
+                    MowzieKit.allOutcomes("O's SPAWN", ConflictKit.outcomes(o.faction, op[2]), DONE);
+                    List<Entity> held = MowzieKit.held(o.faction, CHIEF_SLOT, 1);
+                    check("one Umvuthi stands on O's throne as the chief (" + held.size() + ")", held.size() == 1 && held.get(0) instanceof EntityUmvuthi);
+                    EntityUmvuthi body = (EntityUmvuthi) held.get(0);
+                    check("it is no puppet and its gravity is on", !RtsimApi.isPuppet(body) && !body.isNoGravity());
+                    check("facing direction 3 (" + body.getDirectionData() + ")", body.getDirectionData() == 3);
+                    record(test, "out", "O's puppet went " + (oRecalled[1] - oRecalled[0]) + " ticks after the recall, no body made; the census's SPAWN stood one Umvuthi on the throne");
+                    drop(player);
+                    far.releaseAll();
+                })
+                .thenSucceed();
+    }
+
+    // ---- 22-aloft: the chief sets out and comes home in plain view (MZB-822, MZB-830) ----------------------
+
+    private static final int SET_OUT = ConflictRecords.CampReconcile.SET_OUT;
+
+    /**
+     * The Umvuthi sets out and comes home in a player's plain view (test 22's "in plain view" for the chief; MZB-822, MZB-830). A
+     * masked player stands 150 blocks east of grove G (in, view distance 10), whose Umvuthi (health 77, remembering a player A who is
+     * gone again) and four warriors are adopted. The band sets out as the engine's hand-over does: SET_OUT lines for the chief and the
+     * warriors, CHIEF_BODY away and the materialize of the warriors and the chief's stack, in one step. It is steered 60 blocks toward the
+     * player, and there the engine's CHIEF_BODY home and five HAND_BACK lines (the chief's, the warriors') are sent. Every tick's end,
+     * the Umvuthi (the body, then the puppet, then the body again) within 160 blocks of the player is counted and followed:
+     * <ul>
+     * <li>There is exactly one Umvuthi within 160 blocks of the player at the end of every tick, from before the set-out to after the
+     * hand-back (the set-out is no take that waits while the player looks on, MZB-830).</li>
+     * <li>The one that is within 128 blocks of the player moves less than 0.5 blocks a tick. The two swaps (the hand-off and the
+     * hand-back) replace it within 0.1 blocks, one tick's step of the puppet's pace; the measured most is logged.</li>
+     * <li>The puppet has the throne body's health and memory; the throne body made at home has the puppet's, with no one else.</li>
+     * <li>The five SET_OUT lines are DONE, handed off, none taken (one body each). The warriors' HAND_BACKs play at once where each
+     * puppet stands (the control: DONE within 5 ticks, a tagged body within 4 blocks), the chief's waits: the puppet floats home
+     * (taking over 300 ticks), turns and settles on the spot before the Umvuthi stands on the throne, DONE.</li>
+     * </ul>
+     * Fails without MZB-830 (the chief's SET_OUT is a take held while the player looks, so two Umvuthi stand in sight) and without
+     * MZB-822 (the hand-back plays at once, and the Umvuthi jumps from the puppet's place to the throne).
+     */
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "aloft_view", skyAccess = true)
+    public static void anUmvuthiSetsOutAndComesHomeInPlainView(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 9000);
+        String test = "anUmvuthiSetsOutAndComesHomeInPlainView";
+        Far far = new Far(helper, test);
+        ServerLevel level = far.level;
+        String dim = RtsimTests.dimension(helper);
+        Grove g = groveAt(far, 0, 0);
+        long agent = ConflictKit.newAgent();
+        EntityUmvuthi[] throne = new EntityUmvuthi[1], puppet = new EntityUmvuthi[1];
+        EntityUmvuthanaMinion[] w = new EntityUmvuthanaMinion[4];
+        ServerPlayer[] viewer = new ServerPlayer[1], payer = new ServerPlayer[1];
+        UUID[] a = new UUID[1];
+        long[] op = new long[3]; // ADOPT, SET_OUT, HAND_BACK
+        long[] was = new long[3]; // handedOff, taken, handedBack
+        long[] sentAt = new long[1];
+        long[] gone = new long[2]; // the warriors', the chief's puppet's
+        List<Mob> pw = new ArrayList<>();
+        Vec3[] warriorAt = new Vec3[4];
+        Vec3[] last = new Vec3[1];
+        int[] lastDirection = new int[1];
+        boolean[] sampling = {false};
+        Vec3[] prev = new Vec3[1];
+        UUID[] prevId = new UUID[1];
+        List<String> broke = new ArrayList<>();
+        double[] most = new double[2]; // the biggest step of one Umvuthi in sight; the biggest swap
+        int[] swaps = new int[1], ticks = new int[1];
+        Runnable[] back = new Runnable[1];
+
+        MowzieKit.seq(helper)
+                .thenExecute(() -> {
+                    g.force();
+                    forceEast(g, 6);
+                })
+                .thenWaitUntil(waits.chunks(far.ready()))
+                .thenExecute(() -> {
+                    back[0] = viewDistance(helper, level, 10);
+                    g.lay().declare();
+                    layEast(g, 6);
+                    throne[0] = MowzieKit.umvuthi(level, g.at(0, 0));
+                    double[][] at = {{12, 0}, {6, 10}, {-8, -6}, {-14, 4}};
+                    for (int i = 0; i < 4; i++)
+                        w[i] = MowzieKit.warrior(level, g.at(at[i][0], at[i][1]));
+                    viewer[0] = MowzieKit.player(helper, off(g, 150, 0), "mowzie-view-chief");
+                    MowzieKit.mask(viewer[0]);
+                    // A pays the throne body, then goes: its memory is what the puppet must keep
+                    payer[0] = MowzieKit.player(helper, off(g, 0, 8), "mowzie-view-payer");
+                    MowzieKit.mask(payer[0]);
+                    a[0] = payer[0].getUUID();
+                })
+                .thenWaitUntil(waits.logic(censused(g)))
+                .thenExecute(() -> {
+                    List<CampLine> lines = new ArrayList<>();
+                    lines.add(CampLine.of(CHIEF_SLOT, 1, UMVUTHI, ADOPT, CHIEF, throne[0].getUUID()));
+                    for (int i = 0; i < 4; i++)
+                        lines.add(CampLine.of(i, 1, WARRIOR, ADOPT, 0, w[i].getUUID()));
+                    op[0] = MowzieKit.reconcile(g.faction, epochOf(g), lines);
+                })
+                .thenWaitUntil(waits.logic(() -> MowzieKit.answered(g.faction, op[0], 5)))
+                .thenExecute(() -> {
+                    MowzieKit.allOutcomes("ADOPT of the chief and four warriors", ConflictKit.outcomes(g.faction, op[0]), DONE);
+                    throne[0].setHealth(77f);
+                    check("the jar remembers the payer of the throne body", MowzieKit.payUmvuthi(payer[0], throne[0]));
+                    drop(payer);
+                    payer[0] = null;
+                    for (int i = 0; i < 4; i++)
+                        warriorAt[i] = w[i].position();
+                    check("the throne body is 150 blocks from the viewer (" + Math.hypot(throne[0].getX() - viewer[0].getX(), throne[0].getZ() - viewer[0].getZ()) + ")",
+                            Math.abs(Math.hypot(throne[0].getX() - viewer[0].getX(), throne[0].getZ() - viewer[0].getZ()) - 150) < 1);
+                    was[0] = MowzieKit.camps().handedOff;
+                    was[1] = MowzieKit.camps().taken;
+                    AABB wide = new AABB(viewer[0].getX() - 160, level.getMinBuildHeight(), viewer[0].getZ() - 160, viewer[0].getX() + 160,
+                            level.getMaxBuildHeight(), viewer[0].getZ() + 160);
+                    MowzieKit.everyTick(helper, () -> {
+                        if (!sampling[0])
+                            return;
+                        long now = level.getGameTime();
+                        ticks[0]++;
+                        List<EntityUmvuthi> near = new ArrayList<>();
+                        for (EntityUmvuthi u : level.getEntitiesOfClass(EntityUmvuthi.class, wide, e -> !e.isRemoved()))
+                            if (Math.hypot(u.getX() - viewer[0].getX(), u.getZ() - viewer[0].getZ()) < 160)
+                                near.add(u);
+                        if (near.size() != 1) {
+                            if (broke.size() < 8)
+                                broke.add("tick " + now + ": " + near.size() + " Umvuthi within 160 blocks");
+                            prev[0] = null;
+                            return;
+                        }
+                        EntityUmvuthi u = near.get(0);
+                        if (prev[0] != null) {
+                            if (u.getUUID().equals(prevId[0])) {
+                                double dh = Math.hypot(u.getX() - prev[0].x, u.getZ() - prev[0].z);
+                                if (Math.hypot(u.getX() - viewer[0].getX(), u.getZ() - viewer[0].getZ()) < 128) {
+                                    most[0] = Math.max(most[0], dh);
+                                    if (dh >= 0.5 && broke.size() < 8)
+                                        broke.add("tick " + now + ": it moved " + dh + " blocks in sight");
+                                }
+                            } else {
+                                swaps[0]++;
+                                double d = u.position().distanceTo(prev[0]);
+                                most[1] = Math.max(most[1], d);
+                                if (d > 0.1 && broke.size() < 8)
+                                    broke.add("tick " + now + ": the swap moved it " + d + " blocks");
+                            }
+                        }
+                        prev[0] = u.position();
+                        prevId[0] = u.getUUID();
+                        if (puppet[0] != null && !puppet[0].isRemoved()) {
+                            last[0] = puppet[0].position();
+                            lastDirection[0] = puppet[0].getDirectionData();
+                        }
+                        if (gone[0] == 0 && !pw.isEmpty() && pw.stream().allMatch(Mob::isRemoved))
+                            gone[0] = now;
+                        if (gone[1] == 0 && puppet[0] != null && puppet[0].isRemoved())
+                            gone[1] = now;
+                    });
+                    sampling[0] = true;
+                    // the hand-over of a set-out: the five lines, CHIEF_BODY away and the materialize, in one step
+                    ConflictKit.Band b = ConflictKit.band(agent, g.faction, dim);
+                    b.flags |= ConflictRecords.Materialize.FLAG_CHIEF;
+                    b.purpose = ConflictRecords.PURPOSE_INVASION;
+                    b.arcX = g.spot.x;
+                    b.arcZ = g.spot.z;
+                    b.bearing = 0f;
+                    b.targetX = g.spot.x;
+                    b.targetY = g.spot.y;
+                    b.targetZ = g.spot.z;
+                    b.speed = 0f;
+                    int epoch = b.epoch;
+                    ConflictKit.together(() -> {
+                        List<CampLine> lines = new ArrayList<>();
+                        lines.add(CampLine.party(CHIEF_SLOT, 1, UMVUTHI, SET_OUT, CHIEF, agent, epoch));
+                        for (int i = 0; i < 4; i++)
+                            lines.add(CampLine.party(i, 1, WARRIOR, SET_OUT, 0, agent, epoch));
+                        op[1] = MowzieKit.reconcile(g.faction, epochOf(g), lines);
+                        ConflictKit.chiefBody(g.faction, agent, epoch, 77f, List.of(a[0]));
+                        ConflictKit.materialize(b, List.of(new ConflictKit.StackSpec(WARRIOR, 4, false), new ConflictKit.StackSpec(UMVUTHI, 0, true)));
+                    });
+                })
+                .thenWaitUntil(waits.logic(() -> {
+                    MowzieKit.answered(g.faction, op[1], 5);
+                    puppet[0] = puppet(agent);
+                    check("the band has its four warriors (" + warriorsOf(agent).size() + ")", warriorsOf(agent).size() == 4);
+                }))
+                .thenExecute(() -> {
+                    MowzieKit.allOutcomes("the five SET_OUT lines", ConflictKit.outcomes(g.faction, op[1]), DONE);
+                    check("five bodies handed off, none taken (" + (MowzieKit.camps().handedOff - was[0]) + ", " + (MowzieKit.camps().taken - was[1]) + ")",
+                            MowzieKit.camps().handedOff - was[0] == 5 && MowzieKit.camps().taken == was[1]);
+                    check("the throne body is gone and the puppet floats (" + throne[0].isRemoved() + ", " + puppet[0].isNoGravity() + ")", throne[0].isRemoved() && puppet[0].isNoGravity());
+                    check("the puppet has the throne body's health (" + puppet[0].getHealth() + ")", puppet[0].getHealth() == 77f);
+                    check("and its memory of A (" + puppet[0].getTradedPlayers() + ")", puppet[0].getTradedPlayers().contains(a[0]) && puppet[0].getTradedPlayers().size() == 1);
+                    pw.addAll(warriorsOf(agent));
+                    ConflictKit.steer(agent, ConflictKit.party(agent).epoch, PACE, g.spot.x + 60, g.spot.z, 0, false);
+                })
+                .thenWaitUntil(waits.logic(() -> check("the puppet is 55 blocks out (" + (puppet[0].getX() - g.spot.x) + ")", puppet[0].getX() - g.spot.x >= 55)))
+                .thenExecute(() -> {
+                    double d = Math.hypot(puppet[0].getX() - viewer[0].getX(), puppet[0].getZ() - viewer[0].getZ());
+                    check("it passed within 100 blocks of the viewer (" + d + ")", d <= 100);
+                    check("it is still aloft", puppet[0].isNoGravity() && !puppet[0].isRemoved());
+                    for (int i = 0; i < 4; i++)
+                        warriorAt[i] = pw.get(i).position();
+                    was[2] = MowzieKit.camps().handedBack;
+                    sentAt[0] = level.getGameTime();
+                    ConflictKit.together(() -> {
+                        ConflictKit.chiefBody(g.faction, epochOf(g), 77f, List.of());
+                        List<CampLine> lines = new ArrayList<>();
+                        lines.add(CampLine.party(CHIEF_SLOT, 1, UMVUTHI, HAND_BACK, CHIEF, agent, ConflictKit.party(agent).epoch));
+                        for (int i = 0; i < 4; i++)
+                            lines.add(CampLine.party(i, 1, WARRIOR, HAND_BACK, 0, agent, ConflictKit.party(agent).epoch));
+                        op[2] = MowzieKit.reconcile(g.faction, epochOf(g), g.spot, 3f, lines);
+                    });
+                })
+                .thenWaitUntil(waits.logic(() -> check("the warriors went (" + gone[0] + ")", gone[0] != 0)))
+                .thenIdle(3)
+                .thenExecute(() -> {
+                    check("the warriors went at once (" + (gone[0] - sentAt[0]) + " ticks)", gone[0] - sentAt[0] <= 5);
+                    Map<Integer, MowzieKit.Answered> lines = MowzieKit.answeredLines(g.faction, op[2]);
+                    check("the four warriors' lines are DONE and the chief's waits (answered " + lines.keySet() + ")",
+                            lines.size() == 4 && !lines.containsKey(0) && lines.values().stream().allMatch(x -> x.outcome() == DONE));
+                    for (int i = 0; i < 4; i++) {
+                        List<Entity> body = MowzieKit.held(g.faction, i, 1);
+                        check("a tagged warrior body stands for slot " + i + " (" + body.size() + ")", body.size() == 1);
+                        check("within 4 blocks of where its puppet stood (" + body.get(0).position().distanceTo(warriorAt[i]) + ")", body.get(0).position().distanceTo(warriorAt[i]) < 4);
+                    }
+                    check("the puppet floats still, no Umvuthi on the throne (" + thrones(level, g).size() + ")", !puppet[0].isRemoved() && thrones(level, g).isEmpty());
+                })
+                .thenWaitUntil(waits.logic(() -> check("the chief's puppet went (" + gone[1] + ")", gone[1] != 0)))
+                .thenExecute(() -> {
+                    long took = gone[1] - sentAt[0];
+                    check("it floated home first (" + took + " ticks)", took > 300);
+                    check("the puppet was last seen within 0.5 blocks of the spot (" + Math.hypot(last[0].x - g.spot.x, last[0].z - g.spot.z) + ")",
+                            Math.hypot(last[0].x - g.spot.x, last[0].z - g.spot.z) < 0.5);
+                    check("facing the throne's way (" + lastDirection[0] + ")", lastDirection[0] == 3);
+                    Map<Integer, MowzieKit.Answered> lines = MowzieKit.answeredLines(g.faction, op[2]);
+                    check("the chief's line is DONE (" + lines.keySet() + ")", lines.containsKey(0) && lines.get(0).outcome() == DONE);
+                    List<Entity> held = MowzieKit.held(g.faction, CHIEF_SLOT, 1);
+                    check("one Umvuthi stands on the throne as the chief (" + held.size() + ")", held.size() == 1 && held.get(0) instanceof EntityUmvuthi);
+                    EntityUmvuthi body = (EntityUmvuthi) held.get(0);
+                    check("on the spot (" + Math.hypot(body.getX() - g.spot.x, body.getZ() - g.spot.z) + ")", Math.hypot(body.getX() - g.spot.x, body.getZ() - g.spot.z) < 0.5);
+                    check("with the health it had (" + body.getHealth() + ")", body.getHealth() == 77f);
+                    check("remembering A and no one else (" + body.getTradedPlayers() + ")", body.getTradedPlayers().contains(a[0]) && body.getTradedPlayers().size() == 1);
+                    check("five bodies handed back (" + (MowzieKit.camps().handedBack - was[2]) + ")", MowzieKit.camps().handedBack - was[2] == 5);
+                    sampling[0] = false;
+                    check("one Umvuthi stood within 160 blocks of the viewer at the end of every tick (" + ticks[0] + " ticks): " + broke, broke.isEmpty());
+                    check("the hand-off and the hand-back were the two swaps (" + swaps[0] + ")", swaps[0] == 2);
+                    record(test, "view", String.format("%d ticks watched, the most it moved in sight %.3f blocks a tick, the swaps %.3f at the most; the chief's line waited %d ticks",
+                            ticks[0], most[0], most[1], took));
+                })
+                .thenWaitUntil(waits.logic(() -> check("the band went (" + dematerialized(agent).size() + ")", dematerialized(agent).size() == 1)))
+                .thenExecute(() -> {
+                    back[0].run();
+                    drop(viewer);
                     far.releaseAll();
                 })
                 .thenSucceed();
