@@ -2151,12 +2151,12 @@ its files on disk, the rest from the save before. Two directions:
 
 | Row | Op, effect | A | B | After a give-up | Owner of what is left |
 |---|---|---|---|---|---|
-| C1 | TRANSFER_TO_CONTAINER (dragon tribute), chest | exact (noted) | exact when the chest's chunk is loaded at the resend; not loaded: FAILED, then the chunk's REASSERTed APPLIED is admitted as new and the coin sent again, a dupe (inferred) | loss | slice U-b |
+| C1 | TRANSFER_TO_CONTAINER (dragon tribute), chest | exact (noted) | exact (RP-210): an unloaded chest answers NOT_LOADED and the dragons park the stack under its op id, so the chunk's REASSERTed APPLIED books it placed and a resend under the same op answers DUPLICATE. The Umvuthana grove's tribute takes NOT_LOADED as FAILED and goes again under a new op: dupe, as before RP-210 | loss | the Mowzie lead (MZB-760, the grove parks its stack as the dragons do) |
 | C2 | WRITE_GOSSIP, villagers | exact | exact (the villager's ring; a minor loss past its 64 entries) | n/a | none |
-| C3 | PLACE_HOUSE, house box | origin chunk exact; another box chunk skipped by the 10 s cooldown: a partial house, loss | villages newer than the origin chunk: the house missing, loss; another box chunk newer: a second house, dupe | loss | slice U-b |
-| C4 | SPAWN_RESIDENT, resident | resident lost | resident's entity section newer: a second resident, dupe | loss | slice U-b |
-| I1 | reconcile container and energy deltas | exact (epoch, noted) | exact; a double chest across a chunk border: by the delta's sign, dupe or loss (inferred) | negative delta: dupe; positive: loss | slice U-b's test, then the coordinator |
-| I2 | reconcile block destroys, drops | drops lost | drops' section newer: the block back, destroyed again, second drops, dupe | the block back while booked destroyed; with the drops, dupe | slice U-b |
+| C3 | PLACE_HOUSE, house box | exact (RP-211: every loaded box chunk carries the result and is noted) | the half house in the newer chunks stands, the villages without it: loss (was a second house, RP-211: a searching build looks for its op on every candidate plot, the unloaded ones as saved); a candidate chunk not read within 10 s is searched past, a second house possible there, logged and counted | loss | none (RP-211) |
+| C4 | SPAWN_RESIDENT, resident | exact (RP-212: the resident carries its result as a noted holder) | exact (RP-212: entities around the spot loaded first, the op checked every tick, the result carried, the UUID from the op); a resident that walked out of reach before it was stored and its second: one lost when both load, loss | loss | none (RP-212) |
+| I1 | reconcile container and energy deltas | exact (epoch, noted); a double chest across a chunk border: the other half's chunk is not noted | exact; a double chest across a chunk border: a positive delta a dupe (measured, RP-215: 40 for 20), a negative one a dupe (inferred) | negative delta: dupe; positive: loss | the coordinator (RP-215, residual 9) |
+| I2 | reconcile block destroys, drops | exact (RP-213: the drops join only once the broken blocks' chunks are on disk) | exact; the drops a loss on a write failure or a stop before they join, logged and counted (was a dupe) | the block back while booked destroyed, the drops never joined: no dupe (was a dupe) | none (RP-213) |
 | I3 | reconcile deposit draws (Ore Excavation, Destroy crude and chunk pollution) | chunk exact; the pollution ledger cannot be A now | chunk exact; the ledger's ring refuses a second booking (RP-207) | not drawn but delivered, dupe | given-up notes |
 | I4 | IND_DEPOSIT_DELTA, Diesel `cdg_oil_chunks` | cannot happen (RP-200) | exact: the oil file's ring (RP-204) | n/a (not noted) | none |
 | I5 | IND_DEPOSIT_DELTA, Destroy level pollution and the ledger | cannot happen | exact: one ring per file (RP-207); the ledger lost alone: short by the delta | n/a | none (residual 4) |
@@ -2185,10 +2185,11 @@ its files on disk, the rest from the save before. Two directions:
    counted `late` in `/rtsim perf`. Follow-on: take a given-up note's ops out of the applied set and have
    the engine resend them by op (a per-op resend list), which turns A into B.
 3. **Chunk and entity effects the barrier does not note** (the audit's 3.6): the transfer's surplus
-   item entity (C1, rare), the other half of a double chest (I1), house box chunks other than the origin
-   (C3), the resident (C4), a reconcile's drops (I2), Frontier keying when a package is already keyed
-   (K7), goods moved out of a postbox or frogport before its chunk saved (K3, K4), the repair schematic
-   (K8), and the X rows' bodies and drops. Owners in the table.
+   item entity (C1, rare), the other half of a double chest (I1, residual 9), Frontier keying when a
+   package is already keyed (K7), goods moved out of a postbox or frogport before its chunk saved (K3,
+   K4), the repair schematic (K8), and the X rows' bodies and drops. Owners in the table. Slice U-b
+   covers the house box chunks other than the origin (C3, RP-211), the resident (C4, RP-212) and a
+   reconcile's drops (I2, RP-213).
 4. **The pollution ledger's under-count** (RP-207): a crash that keeps the level's pollution and loses
    the ledger leaves the district's total short by the delta. Attribution only: the engine learns a
    slightly lower rate; no pollution is created or removed.
@@ -2232,6 +2233,13 @@ its files on disk, the rest from the save before. Two directions:
    - a postbox changed in this life while its station did not attach it, after the port's mirror was
      marked fresh, and a chunk saved between the postbox's unload and Create's next save of it into the
      buffer: the mirror older than the chunk, primed by the write, a dupe of what automation took since.
+9. **A double chest across a chunk border** (I1, RP-215, slice U-b's test
+   `aReconcileThroughADoubleChestAcrossAChunkBorder`). A reconcile of one chunk changes the pair's other
+   half, in the next chunk, which gets no epoch and no note. With that chunk newer than the reconciled
+   one and the journal, the resend put the 20 diamonds into the other half a second time (40 for 20): a
+   dupe, measured. A negative delta is a dupe by the same mechanism (inferred, not run). The fixes the
+   audit gives: carry and note the reconcile in both halves' chunks, or reconcile each half by its own
+   position. Owner: the coordinator decides.
 
 **Rings and the module switch (a rule for every ring).** Saving and loading a ring of applied ops never
 depends on a module switch: the train's, the station port's, the oil file's, level pollution's, the

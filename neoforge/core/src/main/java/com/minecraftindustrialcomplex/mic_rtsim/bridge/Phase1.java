@@ -423,7 +423,7 @@ public final class Phase1 {
                 + ", gossip commands " + gossipCommands + " (" + gossip.written() + " writes, " + gossip.skippedHasOp() + " already had it)"
                 + ", censuses " + census.taken() + ", hurt reports " + hurts.journaled() + ", rescues " + rescues.journaled()
                 + ", cargo reports " + cargo.reports() + ", bases marked " + bases.marks()
-                + ", houses " + houses.completed() + " built / " + houses.refused() + " refused, residents " + residents.spawned()
+                + ", houses " + houses.completed() + " built / " + houses.refused() + " refused (" + houses.lookCounts() + "), residents " + residents.spawned()
                 + (phase1Errors > 0 ? ", ERRORS " + phase1Errors : "");
     }
 }
