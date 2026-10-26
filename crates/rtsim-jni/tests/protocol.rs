@@ -10911,6 +10911,59 @@ mod conflict {
         e.close(true, Duration::from_secs(5)).unwrap();
     }
 
+    /// The U-b merge (RP-210 meets MZB-423): a grove's chest whose chunk is not loaded is answered
+    /// NOT_LOADED since U-b, where main answered FAILED. The COMMAND_RESULT takes the stack out of
+    /// the core outbox either way, so the grove must take it back too: the stack goes back to the
+    /// grove's stock, the chest is forgotten, and a chest reported again gets a new stack. Ignored,
+    /// the stack would stay in flight with nothing left to answer it, and the grove would send no
+    /// more.
+    #[test]
+    fn a_groves_tribute_stack_answered_not_loaded_goes_back_to_its_stock() {
+        let (_dir, e, mut j) = grove("grove-tribute-unloaded", 3);
+        camp_in(&mut j);
+        let block = j.dict_id(wire::DICT_ITEM, "minecraft:gold_block");
+        j.conflict_obs(&O::ChiefPaid(cb::ChiefPaid {
+            faction: CAMP,
+            slot: 0,
+            generation: 0,
+            flags: cb::PAID_STRAY,
+            player: PLAYER,
+            op: (1 << 63) | 0x6002,
+            items: vec![cb::Item {
+                item: block,
+                count: 7,
+            }],
+        }));
+        j.idle();
+        j.idle();
+        assert_eq!(owed_tribute(&e), (567, 0, 0), "owed, no chest yet");
+
+        let chest = [CAMP_AT.0 + 3, 64, CAMP_AT.1 + 2];
+        j.unloaded_transfers = true;
+        chest_report(&mut j, chest);
+        j.idle();
+        j.idle();
+        let unloaded = tribute_ops(&j);
+        assert_eq!(unloaded.len(), 1, "one stack at a time");
+        assert_eq!(
+            owed_tribute(&e),
+            (567, 0, 1),
+            "NOT_LOADED: back in the grove's stock, nothing in flight"
+        );
+        assert!(j.containers.is_empty());
+        j.idle();
+        j.idle();
+        assert_eq!(tribute_ops(&j), unloaded, "the forgotten chest is sent nothing");
+
+        j.unloaded_transfers = false;
+        chest_report(&mut j, chest);
+        j.idle();
+        j.idle();
+        assert_eq!(j.containers.get(&chest).copied(), Some(64), "a new stack lands");
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
     /// M9 (MZB-446, review P3-3): HAVEN_CHEST is journaled, at 0x0817 (0x0092 is retired). A payment
     /// and the chest named after the last save are in Java's journal when the server dies: the
     /// replay brings both back, so the chest the session knew is known again, and once the camp
