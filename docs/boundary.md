@@ -769,8 +769,19 @@ its natives with `System.load`. Choices are in `docs/overnight-choices-jni.md` (
      world they were saved with, or ones this build cannot read, are dropped loudly and deleted
      at start, and the dragons start afresh.
    - **The switch** (C25, `Module.ECOLOGY`, bit 4; choice U10 in
-     docs/overnight-choices-integrate2.md): off, the dragons ignore their records, run and write
-     nothing and keep the page they had; on again, their bodies of before are gone and they run on.
+     docs/overnight-choices-integrate2.md, as RP-292 in docs/choices-journal-barrier.md amends it):
+     off, the dragons run and write nothing and keep the page they had. The journaled records they
+     hear are kept, on a page beside the meta page (id 2), and applied at the switch-on in the resets
+     every module that shares the phase 1 world runs in one order (`shared::resets`): after every
+     engine's `begin_replay` and before any replay end, merged with the herds' and the conflict's
+     kept records in the order `Replay` admitted them, each after its own catch-up
+     (docs/replay-gate.md 9.7: the switch gates only new decisions). A kept record is booked at its
+     own tick on the dragons' clock, which froze at the switch-off, though the phase 1 world ran on
+     (`shared::floor`), never at the frozen clock; a dragon killed or tamed while they were off stays
+     dead from that tick. MODULES sets every module's flag before any reset, so with ECOLOGY on the
+     herds are the dragons' prey through the window. A tribute stack's answer is taken at once
+     whatever the switch (RP-291). On again, their bodies of before are gone and they run on. No
+     capture is sent at the switch-off: a body stays until Java's own capture (RP-290).
    - **Tests.** Order 25 (`DRAGON_COMMAND`, TEST mode only) queues a dragon command record with
      Java's species and dimension ids as the dragons' own: the Ice and Fire plugin's GameTests drive
      MATERIALIZE, STEER, DEPART, ADOPT and DISCARD with it on the native engine (choice Z2).
@@ -808,7 +819,9 @@ its natives with `System.load`. Choices are in `docs/overnight-choices-jni.md` (
      link snapshots at every save, in the same commit. Ship pages without the phase 1 world they
      were saved with, or ones this build cannot read, are dropped loudly and deleted at start, and
      the ships start afresh.
-   - **The switch** (C25, `Module.SHIPS`, bit 6; U10): as the dragons'.
+   - **The switch** (C25, `Module.SHIPS`, bit 6; U10): off, the ships ignore their records, run and
+     write nothing and keep the page they had; on again, their bodies of before are gone and they run
+     on. RP-292's keeping (the dragons', herds' and conflict's) does not cover them yet.
    - **Tests.** Order 26 (`SHIP_COMMAND`, TEST mode only) queues a ship command record with Java's
      body, item and dimension ids as the ships' own (U15), for a future plugin's GameTests. The
      Rust fake Java side (`tests/common`, `Java::ship_obs`, `ship_command`) plays the plugin in the
@@ -843,7 +856,10 @@ its natives with `System.load`. Choices are in `docs/overnight-choices-jni.md` (
      the rows, the wheel and the claims at 0x4810 and up). While there are herds the phase 1 link
      snapshots at every save, in the same commit. Herd pages without the phase 1 world they were
      saved with, or ones this build cannot read, are dropped loudly and deleted at start.
-   - **The switch** (C25, `Module.ECOLOGY`, bit 4, the dragons' bit; U10's rule).
+   - **The switch** (C25, `Module.ECOLOGY`, bit 4, the dragons' bit; U10's rule as RP-292 amends
+     it): as the dragons', the records heard while off kept (0x4800 id 2) and applied at the switch-on.
+     A kept record is booked at its own tick on the herds' clock, which froze at the switch-off; a
+     sheep killed or taken in the switch's tick is not picked again.
    - **Prey.** With the dragons running too, the dragons run with the herds as prey
      (`Dragons::run_until_with_herds`, Y7).
    - **Climate and founding** (item 16, §10). The climate is the world model's
@@ -881,18 +897,28 @@ its natives with `System.load`. Choices are in `docs/overnight-choices-jni.md` (
      the rows, the wheel and the indexes at 0x4310 and up). While the conflict is active the phase
      1 link snapshots at every save, in the same commit. Pages without the phase 1 world they were
      saved with, or ones this build cannot read, are dropped loudly and deleted at start.
-   - **The switch** (C25, `Module.CONFLICT`, bit 5; U10's rule).
-     - **A residual, not built** (the coordinator's ruling; fixes6 item 6; RP-57). Switched off,
-       the conflict ignores its journaled records without folding their epochs (rtsim-jni
-       `engine/conflict.rs:565`, `journaled`), so this sequence can issue an epoch twice (against
-       docs/replay-gate.md §5.3):
+   - **The switch** (C25, `Module.CONFLICT`, bit 5; U10's rule as RP-292 amends it): as the
+     dragons', the records heard while off kept (0x4300 id 2) and applied at the switch-on, each
+     booked at its own tick on the conflict's clock, not the phase 1 world's present
+     (`shared::floor`); a band member killed in the switch's tick is dead from that tick, before its
+     demand's deadline, and does not return. The kept records and the catch-ups between them run inside the
+     conflict's replay, so its outbox gate holds what they decide: a DEMAND_SETTLED that comes due in
+     the window before the last kept record is dropped, as at a restart (RP-12). A DIFFICULTY heard
+     while off is applied at the switch-on.
+     - **A residual, closed by RP-293** (the coordinator's ruling; fixes6 item 6; RP-57). Before
+       RP-292, switched off, the conflict ignored its journaled records without folding their
+       epochs, so this sequence could issue an epoch twice (against docs/replay-gate.md §5.3). It
+       still folds none while off, but it keeps the records with its pages, and the switch-on of
+       step 3 applies them, floors and all, before it decides anything:
        1. A session crashes with the conflict on, after Java journaled records of epochs it issued
           since its last save.
-       2. The next start has the conflict off: its replay ignores those records, and it saves past
-          the crashed session's window, so the journal is trimmed of them.
+       2. The next start has the conflict off: its replay ignored those records (now it keeps
+          them, and its saves write them), and it saves past the crashed session's window, so the
+          journal is trimmed of them.
        3. A later start turns the conflict on. Its pages never saw that window's epochs and its
-          journal no longer holds them, so no floor is raised (RP-57).
-       4. That session can issue the crashed window's epochs again.
+          journal no longer holds them, so no floor was raised (RP-57). Now the kept records are
+          applied at this switch-on and raise it.
+       4. That session could issue the crashed window's epochs again.
 
        Not the old-life case of RG5 and RG6: that life is Java's, covers the whole directory, and
        is drawn only when the pages include no observation. The option not taken, with no format
@@ -1751,8 +1777,8 @@ refuses a count above the cap (`CodecError::TooMany`) and a record cut short of 
 - **DIFFICULTY** is sent at every session start and whenever the world's difficulty changes. It is
   journaled (MZB-17), so the engine applies it at its game time and its replay after a crash applies
   it again in the same order as the rest; one with the value the engine already has changes nothing.
-  Like every journaled record it is ignored while the module is off (U10); the session start's
-  sends it again (MZB-30).
+  Like every journaled record it is kept while the module is off and applied at the switch-on
+  (RP-292); every session start sends it again (MZB-30).
 - **NOTICE_SHOWN** says the plugin has played a FACTION_NOTICE in the world: its serial in aux and
   its faction and player as the notice's. One with a serial other than the kept notice's (an older
   notice) changes nothing (MZB-10, MZB-28).

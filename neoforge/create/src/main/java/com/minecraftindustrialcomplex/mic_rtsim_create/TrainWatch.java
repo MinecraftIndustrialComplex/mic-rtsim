@@ -648,6 +648,19 @@ public final class TrainWatch {
         return ref == null ? null : ref.get();
     }
 
+    /** Every train Create's map holds, then every other train the hooks saw that is still in memory. */
+    static void eachTrain(java.util.function.Consumer<Train> each) {
+        Set<Train> done = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        for (Train t : Create.RAILWAYS.trains.values())
+            if (done.add(t))
+                each.accept(t);
+        for (WeakReference<Train> ref : new ArrayList<>(SEEN.values())) {
+            Train t = ref.get();
+            if (t != null && done.add(t))
+                each.accept(t);
+        }
+    }
+
     /** IND_CARRIAGE_DELTA (§4.3): applied wherever the train is now, through the cargo handlers. */
     static boolean carriageDelta(Industry ind, ByteBuffer b, int at, int size, int n, long cmdSeq) {
         long opId = b.getLong(at + IndRecords.CarriageDelta.OP_ID);
@@ -656,13 +669,25 @@ public final class TrainWatch {
             ind.commandResult(cmdSeq, opId, Obs.CommandResult.FAILED);
             return true;
         }
-        // Train cargo and the journal reach disk at the same save (RailwaySavedData and the journal are
-        // both SavedData), so the journal's op index is the dedup (choice H17).
-        if (ind.opApplied(opId)) {
-            ind.commandResult(cmdSeq, opId, Obs.CommandResult.DUPLICATE_OP);
+        // The dedup (docs/choices-mowzie-build.md RP-191). For a train that exists it is the train's own ring
+        // (TrainRing), and only the ring: the ring and the goods are written by the same Train.write into
+        // create_tracks.dat, so a crash keeps both or neither. The journal's op index (mic_rtsim_journal.dat,
+        // choice H17) is a second SavedData file, written apart from Create's and held back by the chunk
+        // barrier, so it can survive without the goods (J4: asked, it answers DUPLICATE on restored goods while
+        // the raider is credited again, a dupe) or the goods without it (J3: a double; RP-184). It stays the
+        // dedup for a train Create no longer has (nothing is applied to one) and when the ring's mixin did not
+        // apply (RP-193: slice T's dedup, with J3 and J4 as RP-184 lists them). An op leaves the ring once the
+        // engine acknowledges its answer, and a ring another session answered is settled first (RP-250, RP-251).
+        Train train = train(trainId);
+        AppliedOpRing ring = train != null && TrainRing.available(ind.server()) ? TrainRing.of(train) : null;
+        if (ring != null)
+            TrainRing.settle(ring);
+        if (ring != null ? ring.contains(opId) : ind.opApplied(opId)) {
+            long seq = ind.commandResult(cmdSeq, opId, Obs.CommandResult.DUPLICATE_OP);
+            if (ring != null)
+                TrainRing.answered(ring, opId, seq);
             return true;
         }
-        Train train = train(trainId);
         long[][] results = new long[n][4];
         if (train == null) {
             // Nothing applied: IND_CARRIAGE_RESULT says so (the engine corrects stock from it, §4.3).
@@ -706,8 +731,13 @@ public final class TrainWatch {
             }
             results[j] = new long[] {carriage & 0xFFFF_FFFFL, goodId & 0xFFFF_FFFFL, delta, applied};
         }
+        // In the tick the carriage storage changed, so whichever create_tracks.dat holds the goods holds the op.
+        if (ring != null)
+            TrainRing.applied(train, ring, opId);
         writeCarriageResult(ind, opId, trainId, results);
-        ind.commandResult(cmdSeq, opId, Obs.CommandResult.APPLIED);
+        long seq = ind.commandResult(cmdSeq, opId, Obs.CommandResult.APPLIED);
+        if (ring != null)
+            TrainRing.answered(ring, opId, seq);
         return true;
     }
 
@@ -737,6 +767,14 @@ public final class TrainWatch {
         DOCKS.remove(train.id);
         UNWATCHED.remove(train.id);
         SEEN.remove(CreateIds.of(train.id));
+    }
+
+    /**
+     * Test helper: IND_CARRIAGE_DELTA finds this train under its wire id, as if a hook had seen it. A train
+     * read back from saved NBT has the same id and takes the place of the one it was saved from.
+     */
+    public static void seenForTest(Train train) {
+        SEEN.put(CreateIds.of(train.id), new WeakReference<>(train));
     }
 
     /**
