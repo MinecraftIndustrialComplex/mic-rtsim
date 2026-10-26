@@ -70,6 +70,7 @@ public final class UmvuthiAloft implements Traveller {
     public void made(ServerLevel level, Mob body, CampKind.ChiefBody memory, Memo memo) {
         if (!(body instanceof EntityUmvuthi u))
             return;
+        memo.set(null); // a slot made again (a stack taken back and placed) starts from the body it has now
         of(memo, u);
         if (memory != null)
             GroveKind.remember(u, memory);
