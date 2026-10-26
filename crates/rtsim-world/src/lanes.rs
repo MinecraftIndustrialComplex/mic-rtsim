@@ -342,6 +342,46 @@ impl World {
         out
     }
 
+    /// Goods a haven sends out of the world to a player's container (the grove's tribute put in
+    /// its chest, MZB-423): the mirror of [`World::stock_from_players`]. Taken from node `i`'s
+    /// storehouse at most up to what its line holds, booked as leaving to players. Returns what
+    /// was taken, per good taken; nothing at a node with no storehouse.
+    pub fn stock_to_players(
+        &mut self,
+        i: usize,
+        goods: &BTreeMap<GoodId, Amount>,
+        at: Tick,
+    ) -> BTreeMap<GoodId, Amount> {
+        self.run_until(at);
+        let mut out = BTreeMap::new();
+        if i >= self.nodes.len() {
+            return out;
+        }
+        self.release(i, at);
+        let region = self.nodes[i].region;
+        self.markets.apply(region, at, |m, _| {
+            if !m.is_storehouse() {
+                return;
+            }
+            for (&g, &a) in goods {
+                if a <= 0 || g.index() >= m.lines.len() {
+                    continue;
+                }
+                let l = m.line_mut(g);
+                let t = a.min(l.stock).max(0);
+                if t > 0 {
+                    l.stock -= t;
+                    l.book.player_out += t;
+                    out.insert(g, t);
+                }
+            }
+        });
+        if !out.is_empty() {
+            self.market_event(i, at, Cause::Lane);
+        }
+        out
+    }
+
     /// Pirates from the haven at node `haven` take `share_milli` thousandths of everything leaving
     /// on direction `dir` of lane `edge` (C24), arriving there `delay` quanta after it left; 0
     /// stops them. The origin's flows are re-allocated at `at`, so the change applies from the

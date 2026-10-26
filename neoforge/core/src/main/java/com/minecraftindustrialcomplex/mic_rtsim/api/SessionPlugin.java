@@ -73,6 +73,15 @@ public interface SessionPlugin {
         return false;
     }
 
+    /**
+     * A TRANSFER_TO_CONTAINER of the engine was answered for the container at {@code pos} ({@code status} is
+     * {@code Obs.CommandResult}'s: APPLIED, DUPLICATE_OP or FAILED), after the answer was journaled and the items
+     * went in. A plugin that told the engine about the container (the Umvuthana grove's chest, HAVEN_CHEST) tells it
+     * how the container stands now. Called for every plugin, whoever sent the command.
+     */
+    default void containerTransferred(RtsimSession session, net.minecraft.server.level.ServerLevel level,
+                                      net.minecraft.core.BlockPos pos, int status) {}
+
     /** A session opened: Java's dictionary and the plugin's per-session state start here. */
     default void sessionStarted(RtsimSession session) {}
 

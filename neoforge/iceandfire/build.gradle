@@ -94,6 +94,9 @@ neoForge {
     }
 }
 
+// The unit tests (src/test) see Minecraft and NeoForge, for BlockPos and CompoundTag in Nests.Nest and Nests.Data.
+neoForge.addModdingDependenciesTo(sourceSets.test)
+
 tasks.matching { it.name == 'runGameTestServer' }.configureEach { dependsOn packIafConfig, og10Rules }
 
 dependencies {
@@ -105,6 +108,20 @@ dependencies {
     runtimeOnly iafRuntime
     // In Control (the pack's own jar) for OG-10; with no rules it does nothing.
     runtimeOnly incontrolRuntime
+
+    // Unit tests of the nests' renewal rule and its saved state (Nests.Nest, Nests.Data: RP-14, RP-19, RP-232). They touch
+    // BlockPos and CompoundTag only; the test source set gets Minecraft and NeoForge from the plugin (neoForge.addModdingDependenciesTo).
+    testImplementation(platform("org.junit:junit-bom:${junit_version}"))
+    testImplementation('org.junit.jupiter:junit-jupiter')
+    testRuntimeOnly('org.junit.platform:junit-platform-launcher')
+}
+
+tasks.named('test', Test) {
+    useJUnitPlatform()
+    testLogging {
+        events 'passed', 'skipped', 'failed'
+        exceptionFormat 'full'
+    }
 }
 
 var generateModMetadata = tasks.register('generateModMetadata', ProcessResources) {

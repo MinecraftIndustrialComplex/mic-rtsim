@@ -1,0 +1,12 @@
+{
+  "required": false,
+  "minVersion": "0.8",
+  "package": "com.minecraftindustrialcomplex.mic_rtsim_create.ringmixin",
+  "compatibilityLevel": "JAVA_21",
+  "mixins": [
+    "TrainRingMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 0
+  }
+}

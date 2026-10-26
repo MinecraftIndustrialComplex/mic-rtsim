@@ -172,6 +172,12 @@ impl Cmd {
 /// carrying its IND_RECONCILE_RESULT) answers DUPLICATE and drops. Re-deriving the *same* decision
 /// gives the same id, so the bridge recognises it. Two identical commands of one tick get the
 /// second id from an ordinal, as does a hash that meets another recent id.
+///
+/// A change another engine decided (a raider's attack on a train) is **keyed** instead
+/// ([`IndustryOps::derive_keyed`], docs/choices-mowzie-build.md RP-180): its id comes from the
+/// world seed and the attack's own identity alone, so a raider that replays its window after a
+/// crash, against an industry engine that is not held (docs/replay-gate.md §3.6), derives the id it
+/// derived before the crash, whatever industry's present and the cargo are by then.
 #[derive(Clone, Debug, Default)]
 pub struct IndustryOps {
     /// The ids derived lately, each with the tick that decided it (a lazily replayed cluster can
@@ -224,6 +230,8 @@ const CAP: usize = 4_096;
 /// The bit that marks a key tag in [`IndustryOps::keys`] (slice T's keyed ids, RP-180): a tick
 /// is a game time, below 2^63, so a tag and a tick never meet.
 const KEY_TAG: u64 = 1 << 63;
+/// Where a derived id's hash has its tick, a keyed one's has this: the two never hash the same bytes.
+const KEYED: u64 = u64::MAX;
 
 impl IndustryOps {
     /// The op id of `cmd` (its own op field is ignored), decided at `at` in the world `seed`.
@@ -355,6 +363,48 @@ impl IndustryOps {
         self.newest = None;
     }
 
+    /// The op id of the change `key` names in the world `seed` (RP-180): a function of the two
+    /// alone, never of a tick or of the command's contents. Deriving the same key again while the
+    /// window remembers it gives the same id (the point: a re-decided attack is the attack the
+    /// bridge already applied); a different key whose hash meets an id of the window takes the
+    /// next ordinal, as [`IndustryOps::derive`] does. A window restored from older pages has
+    /// forgotten the key, so the derivation starts again from ordinal 0 and finds the same id,
+    /// unless the live derivation met a collision the restored window lacks (a 56-bit hash
+    /// meeting an id of the window).
+    pub fn derive_keyed(&mut self, seed: u64, key: &[u8]) -> OpId {
+        let mut bytes = keyed_bytes(seed, key);
+        let tag = key_tag(&mut bytes);
+        if let Some(low) = self.key_low(tag) {
+            return OpId::engine(NAMESPACE | low);
+        }
+        for ordinal in 0u64.. {
+            bytes[16..24].copy_from_slice(&ordinal.to_le_bytes());
+            let low = mix(rtsim_kernel::rng::fnv1a64(&bytes)) & LOW_BITS;
+            if low != 0 && !self.lows.contains_key(&low) {
+                self.remember(tag, low);
+                return OpId::engine(NAMESPACE | low);
+            }
+        }
+        unreachable!("an ordinal is always free")
+    }
+
+    /// Whether the window remembers an id derived for `key` in the world `seed`
+    /// ([`IndustryOps::derive_keyed`]): the change it names was decided already (RP-183). The
+    /// window keeps [`RECENT`] key tags apart from the derived ids (RP-275): a key is known until
+    /// [`RECENT`] later keys push it out, whatever else the engine derives.
+    pub fn knows_key(&self, seed: u64, key: &[u8]) -> bool {
+        self.key_low(key_tag(&mut keyed_bytes(seed, key))).is_some()
+    }
+
+    /// The low 56 bits the window holds for the key tag `tag`, if it remembers one: a scan of at
+    /// most [`RECENT`] tags, once a keyed derivation (an attack, not a busy tick's rounds).
+    fn key_low(&self, tag: u64) -> Option<u64> {
+        self.keys
+            .iter()
+            .find(|&&(by, _)| by == tag)
+            .map(|&(_, low)| low)
+    }
+
     pub fn is_industry(op: OpId) -> bool {
         op.is_engine() && op.0 >> 56 == 0x49
     }
@@ -363,6 +413,25 @@ impl IndustryOps {
 /// Where a derived id's hash has its tick, a numbered one's ([`IndustryOps::derive_numbered`]) has
 /// this, which no game time reaches (slice T's keyed ids use `u64::MAX`, RP-180).
 const NUMBERED: u64 = u64::MAX - 1;
+
+/// A keyed id's hashed bytes: the world seed, [`KEYED`] where a derived id has its tick, the
+/// ordinal (0 here), and the key.
+fn keyed_bytes(seed: u64, key: &[u8]) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(24 + key.len());
+    bytes.extend_from_slice(&seed.to_le_bytes());
+    bytes.extend_from_slice(&KEYED.to_le_bytes());
+    bytes.extend_from_slice(&0u64.to_le_bytes());
+    bytes.extend_from_slice(key);
+    bytes
+}
+
+/// A key's tag in the window: its bytes hashed with an ordinal no derivation uses, [`KEY_TAG`] set.
+fn key_tag(bytes: &mut [u8]) -> u64 {
+    bytes[16..24].copy_from_slice(&u64::MAX.to_le_bytes());
+    let tag = rtsim_kernel::rng::fnv1a64(bytes) | KEY_TAG;
+    bytes[16..24].copy_from_slice(&0u64.to_le_bytes());
+    tag
+}
 
 /// SplitMix64's finalizer: spreads FNV's bits over the 56 kept.
 fn mix(mut z: u64) -> u64 {
@@ -744,6 +813,14 @@ mod tests {
         let bytes = w.into_bytes();
         let back = IndustryOps::get(&mut Reader::new(&bytes)).expect("decodes");
         assert_eq!(back, ops);
+        // And a keyed id's tag round-trips through the same pairs (RP-180).
+        ops.derive_keyed(5, b"attack 1");
+        let mut w = Writer::new();
+        ops.put(&mut w);
+        let bytes = w.into_bytes();
+        let back = IndustryOps::get(&mut Reader::new(&bytes)).expect("decodes");
+        assert_eq!(back, ops);
+        assert!(back.knows_key(5, b"attack 1"));
     }
 
     /// The slice R re-check's step 3b: one step of 100,000 derivations (a jni replay since the
@@ -834,5 +911,50 @@ mod tests {
             a.end_step();
             eprintln!("{n} derivations in one step: {:?}", t.elapsed());
         }
+    }
+
+    #[test]
+    fn keyed_op_ids_come_from_the_key_alone() {
+        let mut a = IndustryOps::default();
+        let x = a.derive_keyed(5, b"attack 1");
+        assert!(IndustryOps::is_industry(x), "{:#x}", x.0);
+        assert!(a.knows_key(5, b"attack 1"));
+        assert!(!a.knows_key(5, b"attack 2"));
+        assert!(!a.knows_key(6, b"attack 1"));
+        // The same key again, after other derivations, is the same op (RP-180).
+        a.derive(5, Tick(100), &channel(3));
+        a.derive_keyed(5, b"attack 2");
+        assert_eq!(a.derive_keyed(5, b"attack 1"), x);
+        // A window that never saw it (an engine restored from pages older than the attack) derives
+        // the same op, whatever else it derived.
+        let mut b = IndustryOps::default();
+        b.derive(5, Tick(7), &channel(1));
+        assert_eq!(b.derive_keyed(5, b"attack 1"), x);
+        // Another key or another world is another op, and a keyed id is never a derived one's.
+        assert_ne!(IndustryOps::default().derive_keyed(5, b"attack 2"), x);
+        assert_ne!(IndustryOps::default().derive_keyed(6, b"attack 1"), x);
+        // A different decision whose id meets the key's first one: the key takes the next
+        // ordinal, distinct from it, and keeps it while the window remembers the key.
+        let mut c = IndustryOps::default();
+        c.remember(100, x.0 & LOW_BITS);
+        let y = c.derive_keyed(5, b"attack 1");
+        assert!(IndustryOps::is_industry(y), "{:#x}", y.0);
+        assert_ne!(y, x);
+        assert_eq!(c.derive_keyed(5, b"attack 1"), y);
+        assert_eq!(c.pairs().count(), 2);
+        // A burst of derived ids never pushes the key out (RP-275); only later keys do, and once
+        // the window has forgotten it, it is decided anew.
+        let mut d = IndustryOps::default();
+        d.derive_keyed(5, b"attack 1");
+        for i in 0..RECENT as u64 * 2 {
+            d.derive(5, Tick(1000 + i), &channel(3));
+            d.end_step();
+        }
+        assert!(d.knows_key(5, b"attack 1"));
+        for i in 0..RECENT as u64 {
+            d.derive_keyed(5, format!("attack {}", i + 2).as_bytes());
+        }
+        assert!(!d.knows_key(5, b"attack 1"));
+        assert_eq!(d.derive_keyed(5, b"attack 1"), x);
     }
 }
