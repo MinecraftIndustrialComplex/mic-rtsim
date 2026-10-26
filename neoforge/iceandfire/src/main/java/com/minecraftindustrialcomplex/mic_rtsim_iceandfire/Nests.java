@@ -4,6 +4,7 @@ import com.iafenvoy.iceandfire.entity.DeathWormEntity;
 import com.iafenvoy.iceandfire.event.GriefBreakBlockEvent;
 import com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.ThreatClasses;
+import com.minecraftindustrialcomplex.mic_rtsim.journal.JournalDependent;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.HolderLookup;
 import net.minecraft.core.registries.BuiltInRegistries;
@@ -1511,12 +1512,18 @@ public final class Nests {
     // ---- the saved state ----------------------------------------------------------------------------
 
     /** What the plugin keeps with the world: the nests waiting for their chunk and the nests placed. */
-    public static final class Data extends SavedData {
+    public static final class Data extends SavedData implements JournalDependent {
         public static final String NAME = "mic_rtsim_iceandfire_oil_nests";
         static final Factory<Data> FACTORY = new Factory<>(Data::new, Data::load);
 
         public final Map<Long, Pending> pending = new LinkedHashMap<>();
         public final Map<Long, Nest> placed = new LinkedHashMap<>();
+
+        /** Vanilla cleared the dirty flag before a write that failed: the next world save writes it again (docs/choices-journal-barrier.md U-g1). */
+        @Override
+        public void mic_rtsim$remark() {
+            setDirty();
+        }
 
         @Override
         public CompoundTag save(CompoundTag tag, HolderLookup.Provider registries) {
