@@ -431,7 +431,12 @@ public final class ConflictRecords {
         public static final int CHIEF_SLOT = -1;
         /** A line's flags: the slot is the camp's chief; the body holds its crystal. */
         public static final int LINE_CHIEF = 1, LINE_CRYSTAL = 2;
-        public static final int FLAG_THRONE = 1;
+        /**
+         * {@code FLAG_THRONE}: the throne spot is given. {@code FLAG_RECOUNT} (MZB-1015): the camp takes a census at the end of
+         * the tick, as {@link Camps#forceRecount} asks (a reconcile with no lines, sent to a camp that is in when a member
+         * arrives or while a member body is missed); its census's reconcile then orders what the census found owed.
+         */
+        public static final int FLAG_THRONE = 1, FLAG_RECOUNT = 2;
 
         public static int size(int n) {
             return LINES + LINE * n;

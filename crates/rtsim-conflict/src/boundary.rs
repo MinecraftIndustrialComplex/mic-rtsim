@@ -161,8 +161,10 @@ pub const DIFFICULTY_NORMAL: u32 = 2;
 pub const DIFFICULTY_HARD: u32 = 3;
 /// AMBUSH_SPOT flags.
 pub const AMBUSH_REMOVED: u32 = 1;
-/// CAMP_RECONCILE flags.
+/// CAMP_RECONCILE flags: the throne spot is given; RECOUNT, the camp takes a census at the end
+/// of the tick (a reconcile with no lines, MZB-1015), whose reconcile orders what it found owed.
 pub const RECONCILE_THRONE: u32 = 1;
+pub const RECONCILE_RECOUNT: u32 = 2;
 /// CAMP_RECONCILE line actions.
 pub const ACTION_SPAWN: u8 = 1;
 pub const ACTION_ADOPT: u8 = 2;
@@ -781,7 +783,8 @@ pub struct CampReconcile {
     pub epoch: u64,
     /// Derived from the faction, epoch and decision (allocator byte 0x43, docs/boundary.md §9.2).
     pub op: u64,
-    /// `RECONCILE_THRONE`: the throne spot is given.
+    /// `RECONCILE_THRONE`: the throne spot is given; `RECONCILE_RECOUNT`: the camp is to count
+    /// again (MZB-1015).
     pub flags: u32,
     pub throne: (f64, f64, f64),
     pub direction: f32,
@@ -2396,6 +2399,16 @@ pub(crate) mod tests {
                     },
                 ],
             }),
+            // A RECOUNT: no lines, 72 bytes (MZB-1015).
+            Cmd::Reconcile(CampReconcile {
+                faction: 77,
+                epoch: 1 << 63 | 9,
+                op: AGENT_NAMESPACE << 56 | 13,
+                flags: RECONCILE_RECOUNT | RECONCILE_THRONE,
+                throne: (900.5, 70.0, 1000.5),
+                direction: 90.0,
+                lines: Vec::new(),
+            }),
             Cmd::TrainRobbed(TrainRobbed {
                 faction: 77,
                 train: 0xDEAD_BEEF,
@@ -2840,7 +2853,7 @@ pub(crate) mod tests {
                 tried += 1;
             }
         }
-        assert_eq!(tried, 14);
+        assert_eq!(tried, 15);
     }
 
     /// A record whose size stops short of the entries its counts say is refused. Cut by 16 bytes,
@@ -2849,7 +2862,7 @@ pub(crate) mod tests {
     #[test]
     fn a_record_cut_short_of_its_lists_is_refused() {
         let records = long_records(3);
-        assert_eq!(records.len(), 12);
+        assert_eq!(records.len(), 13);
         for (kind, rec) in records {
             let mut b = rec.clone();
             let size = b.len() - 16;

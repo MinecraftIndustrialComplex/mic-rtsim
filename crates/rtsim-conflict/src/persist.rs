@@ -82,8 +82,9 @@ use crate::tunables::ConflictTunables;
 /// RTC12, `RTCC`: a camp's ledger ends with the end of the band its chief came home with, and the
 /// resident state ends with those ends' index by agent, after the tribute stacks (M11, MZB-853).
 /// RTC13, `RTCD`: a camp's slot ends with its body's UUID, and the ledger with its members gone
-/// missing, the bodies a former engine life left behind and a flags byte (bit 0 the site ledger's
-/// gap, bit 1 the cap's wait next) (M12a, MZB-1014).
+/// missing, the bodies a former engine life left behind, a flags byte (bit 0 the site ledger's
+/// gap, bit 1 the cap's wait next) and its recount's stamp and tick (M12a, MZB-1014, MZB-1015);
+/// the wheel's tag 11 is `Ev::CampRecount`, and the stats end with `camp_recounts`.
 const MAGIC: u32 = u32::from_le_bytes(*b"RTCD");
 /// The meta page of a paged save ([`Conflict::save_paged`]). 2: the indexes, parties and wheel
 /// are in pages of their own, their headers after the row counts (PF10). 3: the resident state
@@ -95,7 +96,7 @@ const MAGIC: u32 = u32::from_le_bytes(*b"RTCD");
 /// march revision, its due flag, its unseen tick and its unwatched epoch ranges (M10, MZB-453,
 /// MZB-706). 11: a camp ends with its chief's band's end, and the resident state with their index
 /// (M11, MZB-853). 12: a camp's slots carry their bodies' UUIDs, and the camp its missing, its
-/// bodies left behind and its gap and cap flags (M12a, MZB-1014).
+/// bodies left behind, its gap and cap flags and its recount (M12a, MZB-1014, MZB-1015).
 const META_MAGIC: u32 = u32::from_le_bytes(*b"RTCM");
 const META_VERSION: u16 = 12;
 
@@ -461,6 +462,8 @@ fn put_camp(w: &mut Writer, c: &Camp) {
         }
     }
     w.u8(u8::from(c.gap) | u8::from(c.cap_next) << 1);
+    w.var_u64(u64::from(c.recount));
+    put_opt(w, &c.recount_at, |w, t| w.u64(t.0));
 }
 
 /// A tribute stack in flight (MZB-423).
@@ -615,6 +618,8 @@ fn get_camp(r: &mut Reader<'_>) -> codec::Result<Camp> {
     if flags > 3 {
         return bad(format!("camp flags {flags:#x}"));
     }
+    let recount = get_u32(r)?;
+    let recount_at = get_opt(r, |r| Ok(Tick(r.u64()?)))?;
     Ok(Camp {
         epoch,
         seen,
@@ -641,6 +646,8 @@ fn get_camp(r: &mut Reader<'_>) -> codec::Result<Camp> {
         left_behind,
         gap: flags & 1 != 0,
         cap_next: flags & 2 != 0,
+        recount,
+        recount_at,
     })
 }
 
@@ -1097,6 +1104,11 @@ fn put_ev(w: &mut Writer, e: &Ev) {
             w.u64(actor.to_bits());
             w.var_u64(u64::from(stamp));
         }
+        Ev::CampRecount { faction, stamp } => {
+            w.u8(11);
+            w.var_u64(u64::from(faction));
+            w.var_u64(u64::from(stamp));
+        }
     }
 }
 
@@ -1148,6 +1160,10 @@ fn get_ev(r: &mut Reader<'_>) -> codec::Result<Ev> {
         10 => Ev::Rail {
             faction: get_u32(r)?,
             actor: handle(r)?,
+            stamp: get_u32(r)?,
+        },
+        11 => Ev::CampRecount {
+            faction: get_u32(r)?,
             stamp: get_u32(r)?,
         },
         t => return bad(format!("event tag {t}")),
@@ -1247,6 +1263,7 @@ fn stats_fields(s: &ConflictStats) -> Vec<u64> {
         s.passes,
         s.passes_watched,
         s.lurk_robberies,
+        s.camp_recounts,
     ]);
     v
 }
@@ -1320,6 +1337,7 @@ fn stats_from(v: &[u64]) -> ConflictStats {
     s.passes = n();
     s.passes_watched = n();
     s.lurk_robberies = n();
+    s.camp_recounts = n();
     s
 }
 

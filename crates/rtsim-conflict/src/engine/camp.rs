@@ -32,7 +32,8 @@ use crate::boundary::{
     ACTION_SPAWN, ACTION_TAKE, BODY_CHIEF, BODY_CRYSTAL, BODY_ELSEWHERE, BODY_STRAY, CENSUS_CHIEF,
     CENSUS_CRYSTAL, CENSUS_THRONE, CHIEF_CRYSTAL, CampBodies, CampCensus, CampDeath, CampOut,
     CampReconcile, CensusBody, ChiefBody, ChiefKilled, ChiefState, DEATH_CHIEF, DEATH_STRAY,
-    LINE_CHIEF, LINE_CRYSTAL, LINE_DONE, LINE_NOTHING, RECONCILE_THRONE, ReconcileLine,
+    LINE_CHIEF, LINE_CRYSTAL, LINE_DONE, LINE_NOTHING, RECONCILE_RECOUNT, RECONCILE_THRONE,
+    ReconcileLine,
 };
 
 /// Whole days after a body's first miss before the third miss writes its member off
@@ -274,6 +275,10 @@ pub struct Camp {
     /// reset's members away, a write-off under a gap; MZB-1014). Cleared by the wait it sets, and
     /// when the camp is no longer short.
     pub cap_next: bool,
+    /// The stamp of the booked `Ev::CampRecount`, and its tick: while the camp is in and its last
+    /// census missed a member body, it counts again a game day after that census (MZB-1015).
+    pub recount: u32,
+    pub recount_at: Option<Tick>,
 }
 
 impl Camp {
@@ -1099,9 +1104,11 @@ impl Conflict {
     }
 
     /// A renewal culture's wait ran out (MZB-256): its camp gains a member, owed a body, and with
-    /// it the crystal a new Frostmaw holds (MZ-4 (a)). A camp that is in is ordered to spawn it at
-    /// once, so one that never unloads gets its arrival when the wait ends (EQUILIBRIUM item 8); one
-    /// that is out has it spawned by its next census, as any owed slot is.
+    /// it the crystal a new Frostmaw holds (MZ-4 (a)). A camp that is in is asked to count again
+    /// (RECOUNT, MZB-1015, fork F10), and that census's reconcile orders the spawn, so one that
+    /// never unloads gets its arrival when the wait ends (EQUILIBRIUM item 8) and a member gone
+    /// missing that came home is seen before a body is spawned beside it; one that is out has it
+    /// spawned by its next census, as any owed slot is.
     pub(super) fn camp_arrival(&mut self, f: u32, stamp: u32, at: Tick) {
         match self.camp_mut(f) {
             Some(c) if c.arrival == stamp && c.arrival_at.is_some() => c.arrival_at = None,
@@ -1126,10 +1133,87 @@ impl Conflict {
             "a member arrives at the camp".to_string(),
         );
         if self.camp_is_in(f) {
-            let lines = self.spawn_lines(f, &[]);
-            self.send_lines(f, lines, at);
+            self.send_recount(f, at);
         }
         self.unblock(f, at);
+    }
+
+    /// A CAMP_RECONCILE with RECOUNT and no lines (MZB-1015): the camp takes a census at the end
+    /// of the tick, and that census's reconcile orders what it found owed (a SPAWN the kind holds
+    /// while a player is near). It carries the throne as every order does (MZB-404). Only to a
+    /// camp that is in, so never while replaying; an answer never comes, as there is no line.
+    fn send_recount(&mut self, f: u32, at: Tick) {
+        let key = self.factions[f as usize].key;
+        let Some(camp) = self.camp_mut(f).filter(|c| c.is_in()) else {
+            return;
+        };
+        let epoch = camp.epoch;
+        let (flags, throne, direction) = match camp.throne {
+            Some(t) => (RECONCILE_RECOUNT | RECONCILE_THRONE, t.spot, t.direction),
+            None => (RECONCILE_RECOUNT, (0.0, 0.0, 0.0), 0.0),
+        };
+        let op = derive_op(key, epoch, camp.seq);
+        camp.seq += 1;
+        self.outbox.push(Cmd::Reconcile(CampReconcile {
+            faction: key,
+            epoch,
+            op,
+            flags,
+            throne,
+            direction,
+            lines: Vec::new(),
+        }));
+        self.stats.camp_recounts += 1;
+        self.note(
+            at,
+            Some(f),
+            "camp",
+            format!("a recount asked at epoch {epoch:#x}"),
+        );
+    }
+
+    /// Whether a member body the camp keeps at home was missed by its last census.
+    fn camp_missed(&self, f: u32) -> bool {
+        self.camp(f).is_some_and(|c| {
+            c.slots
+                .iter()
+                .any(|s| s.state == SlotState::Body && s.misses > 0)
+        })
+    }
+
+    /// Books, moves or cancels the camp's recount (MZB-1015): while the camp is in and its census
+    /// at `at` missed a member body, a census a game day later. A camp that never unloads takes no
+    /// census of its own, so a member lured off and unloaded far away is written off by these, three
+    /// misses over two days, as at a camp that unloads.
+    fn plan_recount(&mut self, f: u32, at: Tick) {
+        let due = (self.camp_is_in(f) && self.camp_missed(f)).then(|| at + TICKS_PER_DAY);
+        let Some(camp) = self.camp_mut(f) else {
+            return;
+        };
+        if camp.recount_at == due {
+            return;
+        }
+        camp.recount = camp.recount.wrapping_add(1);
+        camp.recount_at = due;
+        let stamp = camp.recount;
+        if let Some(t) = due {
+            self.schedule(t, Ev::CampRecount { faction: f, stamp });
+        }
+    }
+
+    /// `Ev::CampRecount` (MZB-1015): a RECOUNT when the booking is still the camp's, it is in and a
+    /// member body is still missed. The census it brings books the next one.
+    pub(super) fn camp_recount_event(&mut self, f: u32, stamp: u32, at: Tick) {
+        match self.camp_mut(f) {
+            Some(c) if c.recount == stamp && c.recount_at.is_some() => c.recount_at = None,
+            _ => {
+                self.stats.stale += 1;
+                return;
+            }
+        }
+        if self.camp_is_in(f) && self.camp_missed(f) {
+            self.send_recount(f, at);
+        }
     }
 
     pub(super) fn camp_refill(&mut self, f: u32, stamp: u32, at: Tick) {
@@ -1589,6 +1673,7 @@ impl Conflict {
             if let Some(camp) = self.camp_mut(f) {
                 camp.epoch = 0;
                 camp.refill_at = None;
+                camp.recount_at = None;
                 camp.see(c.epoch);
             }
             return;
@@ -2072,6 +2157,9 @@ impl Conflict {
         }
         self.send_lines(f, lines, at);
         self.unblock(f, at);
+        // A camp that never unloads counts again a day after a census that missed a member body
+        // (MZB-1015).
+        self.plan_recount(f, at);
         // A chief to come is looked at again at each census (MZB-407).
         self.camp_heir(f, at);
         // The camp is in: tribute owed to a chest the plugin named while the camp was out (or
@@ -2391,6 +2479,8 @@ impl Conflict {
         camp.epoch = 0;
         camp.refill = camp.refill.wrapping_add(1);
         camp.refill_at = None;
+        camp.recount = camp.recount.wrapping_add(1);
+        camp.recount_at = None;
         camp.chest = None;
         camp.void();
         self.unblock(f, at);
@@ -2405,6 +2495,8 @@ impl Conflict {
             camp.epoch = 0;
             camp.refill = camp.refill.wrapping_add(1);
             camp.refill_at = None;
+            camp.recount = camp.recount.wrapping_add(1);
+            camp.recount_at = None;
             camp.chest = None;
             camp.void();
             owes = !camp.owed_tribute.is_empty();

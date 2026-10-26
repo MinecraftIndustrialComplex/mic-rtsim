@@ -558,6 +558,12 @@ pub(crate) enum Ev {
         actor: ActorId,
         stamp: u32,
     },
+    /// A camp that is in and missed a member body at its last census counts again a game day
+    /// after it (`Camp::recount`, MZB-1015). Wheel tag 11.
+    CampRecount {
+        faction: u32,
+        stamp: u32,
+    },
 }
 
 /// A band `home` ended whose HAND_BACK lines Java has not answered (MZB-466).
@@ -677,6 +683,9 @@ pub struct ConflictStats {
     pub passes: u64,
     pub passes_watched: u64,
     pub lurk_robberies: u64,
+    /// The RECOUNTs sent: a camp that is in asked to count again, at an arrival and a day after a
+    /// census that missed a member body (MZB-1015).
+    pub camp_recounts: u64,
 }
 
 /// Where goods went, per world good (thousandths).
@@ -1391,6 +1400,7 @@ impl Conflict {
                 Ev::Arrival { .. } => "arrival",
                 Ev::CampHeir { .. } => "camp_heir",
                 Ev::Rail { .. } => "rail",
+                Ev::CampRecount { .. } => "camp_recount",
             };
             *m.entry(k).or_default() += 1;
         }
@@ -6340,6 +6350,7 @@ impl Conflict {
             Ev::Refill { faction, stamp } => self.camp_refill(faction, stamp, at),
             Ev::Arrival { faction, stamp } => self.camp_arrival(faction, stamp, at),
             Ev::CampHeir { faction, stamp } => self.camp_heir_event(faction, stamp, at),
+            Ev::CampRecount { faction, stamp } => self.camp_recount_event(faction, stamp, at),
             Ev::Rail {
                 faction,
                 actor,

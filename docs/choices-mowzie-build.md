@@ -14588,7 +14588,10 @@ DRAGON_DIED):
   gap resets the engine, so the first census after one is the found census); the census records are unchanged,
   and lairs get no census of their own until EQ-2 gives them home bodies.
 - CAMP_RECONCILE gains flag 2, RECOUNT (no size change), for the census a camp that never unloads takes before an
-  arrival.
+  arrival (MZB-1015). §2.2 names only that one; a camp that is in also counts a game day after a census that
+  missed a member body, until the member is back or written off, and one tick after a member body is hidden with
+  its chunk outside the footprint (vanilla posts the leave at the hide, not at the unload), so a body lured off a
+  den that never unloads is written off as at one that unloads.
 - The ledger file keeps a `gaps` counter beside its rows (MZB-1003).
 - LAIR_FOUND gains flag 2, PLACED (no size change), for PLACE_LAIR's answer: the lair's chunk is old (LATE) but
   the lair is new, so it starts fresh instead of being taken as farmed (MZB-1012).
@@ -14876,6 +14879,49 @@ DRAGON_DIED):
     tests (the tail at 56, a tail above K refused, an old-size record refused; the UUID at 72), and rtsim-jni
     `a_reset_hands_a_dens_wait_to_the_new_engine` (a player kill, a reset 3 days later, and the new engine waits
     the rest with the pressure aged and spawns nothing early).
+- **MZB-1015** (the no-unload census): a camp that is in counts again when the engine asks (at an arrival, and a
+  day after a census that missed a member body) and when a member body is hidden with its chunk away from home.
+  - **RECOUNT** (`boundary::RECONCILE_RECOUNT`, CAMP_RECONCILE flag 2; Java `ConflictRecords.FLAG_RECOUNT`): a
+    reconcile with no lines at the camp's epoch, with the throne when the camp has one, as every order (MZB-404).
+    Its op takes a camp seq as any order's does. Java takes it as `forceRecount` while the epoch is in
+    (`engineRecounts`); with no line, no CAMP_BODIES answers it. Only a camp that is in gets one, so never while
+    replaying.
+  - **The arrival counts first** (fork F10): `camp_arrival` at a camp that is in sends a RECOUNT instead of its
+    spawn lines, and that census's reconcile orders the owed slot's SPAWN (which the kind holds while a player is
+    near). So a member gone missing that came home unseen is found, by its tags or its UUID (MZB-1014), before a
+    second body is made. A camp that is out has the spawn from its next census, as before. `camp_refill` still
+    spawns at once: the design scopes RECOUNT to the arrival.
+  - **The daily recount** (`Camp.recount`, a stamp, and `recount_at`; `Ev::CampRecount`): `plan_recount`, at the
+    end of each census, books one a game day later while the camp is in and a Body slot has misses, and cancels it
+    otherwise. The event sends a RECOUNT when its stamp is the camp's and a member is still missed. A camp going
+    out, a session start and a replayed census cancel it (the stamp moves, so the booked event is stale). A member
+    lured off a den that never unloads is so written off by three censuses over two days, as at one that unloads.
+  - **Java's hide recount** (`Camps.leftUnseen`, `leaveRecounts`): the design put it at EntityLeaveLevelEvent with
+    UNLOADED_TO_CHUNK. Vanilla 1.21.1 posts the leave when the chunk's entity sections go HIDDEN
+    (`PersistentEntitySectionManager.updateChunkStatus`, `stopTracking`, `onTrackingEnd`; no removal reason yet),
+    and the unload that follows (`processUnloads`, `setRemoved(UNLOADED_TO_CHUNK)`) posts nothing, as the section
+    is no longer accessible. So `onLeave` takes both: a camp-tagged body (not an agent's) leaving with no reason
+    or UNLOADED_TO_CHUNK, outside the footprint of its camp that is in and in the camp's dimension, books its camp.
+    The census runs one `Camps.tick` after the next (`unseen`, keyed by `tickEnds`), when a level pass has unloaded
+    the body: counted at once, a hide after the level's own entity pass (a chunk load from elsewhere in the tick)
+    would list the body as found elsewhere, since `live(faction)` drops removed bodies only.
+  - **Save:** still RTCD, META 12 (nothing was released between the steps): a camp's flags byte is followed by
+    `recount` (var u64) and `recount_at` (an optional tick); the wheel's `Ev::CampRecount` is tag 11;
+    `ConflictStats.camp_recounts` ends the stats.
+  - `synth::FakeConflict` answers a RECOUNT to a live camp with a census `answer_ticks` later (`recounts`); the
+    host's fake Java ignores reconciles, as before.
+  - **Known limits:** a body hidden with its entities left loaded (C2ME, MZB-660, or an entity unload that fails
+    until a save) is still indexed when the census runs and is listed elsewhere; nothing asks again when it
+    unloads later, so it is missed only by the camp's next census of another cause (an arrival, a body read from
+    disk outside the footprint, coming in).
+  - Tests: `tests/camp.rs` (an arrival at a camp that is in sends a RECOUNT and nothing else, and its census
+    spawns; a member home unseen before the arrival fills the slot and no second body spawns; a den that never
+    unloads recounts daily while its member is missed and writes it off after three misses, a player's loss, then
+    stops; the booking moves with each census, ends when nothing is missed and when the camp goes out; a booked
+    recount survives a save and a load to the state hash; the rich ledger's round trip carries both fields),
+    frostmaw's `the_arrival_at_a_den_that_is_in_recounts_and_its_census_sends_the_spawn` (was
+    `..._sends_its_spawn`), the codec's samples gain a RECOUNT with no lines, and `sim mowzie` run 8's "a spawn in
+    flight" answers the arrival's recount at once and only the spawn it orders three days later.
 - **MZB-1020** (F1, the credit rides the death reports): taken. Each death report carries the credit code and
   the credited player; the engine maps to a LossCause with `from_credit`, since the boss rule needs each kind's
   tunables, which only the engine has. Not taken: a LossCause byte computed in Java per record.

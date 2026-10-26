@@ -344,6 +344,20 @@ public final class Camps {
     public long heldHandBacks, chiefHandBacksLate, chiefMerges, staleTakes, homeDeaths, puppetPaid, puppetsSecond, chiefBodiesAway;
     /** Untagged strays' deaths journaled, so a member written off as missing whose tag was stripped still counts (MZB-1014). */
     public long strayDeaths;
+    /**
+     * MZB-1015: the engine's RECOUNT reconciles taken (a camp that is in counts again), and the recounts a tagged body
+     * hidden with its chunk outside its camp's footprint asked for.
+     */
+    public long engineRecounts, leaveRecounts;
+    /**
+     * MZB-1015: the camps a body hidden outside their footprint asked to count, each with {@link #tickEnds} at the
+     * leave. They count one {@link #tick} after the next, when a level pass has run since the hide and its entity
+     * manager has unloaded the body: a hide after the level's own entity pass (a chunk load from elsewhere in the
+     * tick) counted at once would list the body as found elsewhere.
+     */
+    private final Map<Long, Long> unseen = new HashMap<>();
+    /** The {@link #tick} calls so far. */
+    private long tickEnds;
 
     /**
      * GameTests only: while the level's game time is below this, {@code ChunkTicketLevelUpdatedEvent} is
@@ -385,7 +399,8 @@ public final class Camps {
         deaths = carried = markers = heldSpawns = recounts = strayWatches = strays = 0;
         heldRemovals = heldPairs = heirs = masks = secondBodies = chiefBodies = chiefBodiesWritten = chiefPaid = traded = 0;
         heldHandBacks = chiefHandBacksLate = chiefMerges = staleTakes = homeDeaths = puppetPaid = puppetsSecond = chiefBodiesAway = 0;
-        strayDeaths = 0;
+        strayDeaths = engineRecounts = leaveRecounts = 0;
+        unseen.clear();
         polls = pollChanges = 0;
         chiefStates = chiefStatesQueued = 0;
     }
@@ -601,9 +616,16 @@ public final class Camps {
      * the index as a removed object until something prunes it (MZB-590: {@link #live}, the poll and
      * {@link #indexAdd}). A body discarded by anything but the reconciler (which takes the
      * tag off first) is gone from its camp: CAMP_DEATH, killer kind none (§4.9).
+     *
+     * <p>A tagged body hidden or unloaded with its chunk outside the footprint of a camp that is in asks for a census
+     * (MZB-1015), as one read from disk there does: a camp that never unloads otherwise never counts again, and a member
+     * lured off and unloaded far away would never be missed.
      */
     void onLeave(Entity e) {
-        if (e.getRemovalReason() == null)
+        Entity.RemovalReason reason = e.getRemovalReason();
+        if (reason == null || reason == Entity.RemovalReason.UNLOADED_TO_CHUNK)
+            leftUnseen(e);
+        if (reason == null)
             return;
         CampMember m = RtsimAttachments.campMember(e);
         if (m != null) {
@@ -618,6 +640,35 @@ public final class Camps {
                 death(e, ConflictRecords.BY_NONE, null, bridge.session().gameTime());
         }
         second.remove(e); // a second body's mark goes when it leaves the level (MZB-611)
+    }
+
+    /**
+     * A tagged body that left with its chunk (hidden: tracking ended, no removal reason; or unloaded): a recount of its
+     * camp when that camp is in and the body was outside its footprint (MZB-1015), booked for after a level pass
+     * ({@link #unseen}). Vanilla posts the leave when the chunk is hidden and nothing at the unload that follows, so
+     * the hide is the one to look at.
+     */
+    private void leftUnseen(Entity e) {
+        CampMember m = RtsimAttachments.campMember(e);
+        if (m == null || !live() || RtsimAttachments.isTagged(e))
+            return;
+        Site c = sites.get(m.faction());
+        if (c == null || !c.in() || !c.dimension.equals(e.level().dimension()) || c.containsChunk(e.chunkPosition().toLong()))
+            return;
+        unseen.putIfAbsent(m.faction(), tickEnds);
+    }
+
+    /** The camps {@link #leftUnseen} booked before the last tick end count now. */
+    private void recountUnseen() {
+        Iterator<Map.Entry<Long, Long>> it = unseen.entrySet().iterator();
+        while (it.hasNext()) {
+            Map.Entry<Long, Long> u = it.next();
+            if (u.getValue() >= tickEnds)
+                continue;
+            it.remove();
+            leaveRecounts++;
+            forceRecount(u.getKey());
+        }
     }
 
     private boolean live() {
@@ -697,8 +748,9 @@ public final class Camps {
     }
 
     /**
-     * GameTests only: the camp counts again at the end of this tick, as a body read from disk outside its footprint
-     * asks for (a new epoch; its waiting lines are answered stale). A second body's mark survives it (MZB-611).
+     * The camp counts again at the end of this tick, as a body read from disk outside its footprint asks for (a new
+     * epoch; its waiting lines are answered stale). A second body's mark survives it (MZB-611). The engine's RECOUNT, a
+     * body hidden outside the footprint (MZB-1015) and the GameTests ask for it; a camp that is out counts when it comes in.
      */
     public void forceRecount(long faction) {
         Site c = sites.get(faction);
@@ -717,6 +769,9 @@ public final class Camps {
             off = false;
             attention.addAll(sites.values()); // switched back on: every camp is looked at again
         }
+        if (!unseen.isEmpty())
+            recountUnseen();
+        tickEnds++;
         flushChiefStates(now); // before the deaths settled below: a robbed chief's state precedes its CAMP_DEATH
         poll(now);
         settleDeaths(now);
@@ -1174,6 +1229,12 @@ public final class Camps {
         }
         if (!quiet.isEmpty())
             answerAll(faction, epoch, op, quiet, quietOutcomes, now);
+        // RECOUNT (MZB-1015): the camp counts again at the end of this tick, and that census's reconcile orders what it
+        // found owed. A camp not in at the epoch counts when it next comes in anyway.
+        if (in && (b.getInt(at + ConflictRecords.CampReconcile.FLAGS) & ConflictRecords.CampReconcile.FLAG_RECOUNT) != 0) {
+            engineRecounts++;
+            forceRecount(faction);
+        }
         // A band handed back is home: what is left of it walks off and goes (no BAND_RECALL comes, MZB-211). With no
         // site it walks off from its own front (MZB-464); a band with no stack in play has no one to walk.
         for (ConflictBridge.Party p : homecoming.values()) {

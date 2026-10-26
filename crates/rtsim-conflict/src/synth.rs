@@ -439,6 +439,8 @@ pub struct FakeConflict {
     /// BAND_DEMATERIALIZED goes after that time, as Java's goes only once the puppet is gone
     /// (MZB-853).
     pub chief_float: u64,
+    /// The RECOUNTs taken: each a census of the camp, as Java's `forceRecount` (MZB-1015).
+    pub recounts: u32,
 }
 
 /// A warrior a MASK may take: tagged, not the chief, in the footprint.
@@ -497,6 +499,7 @@ impl FakeConflict {
             chief_bodies_matched: 0,
             chief_bodies_missing: 0,
             chief_float: 0,
+            recounts: 0,
         }
     }
 
@@ -1561,6 +1564,12 @@ impl FakeConflict {
             });
         }
         self.apply_lines(r.faction, r.epoch, r.op, live, now, at);
+        // RECOUNT (MZB-1015): the camp counts again, as Java's `forceRecount` at the end of the
+        // tick; a camp not in at the epoch counts when it next comes in anyway.
+        if live && r.flags & boundary::RECONCILE_RECOUNT != 0 {
+            self.recounts += 1;
+            self.camp_in(r.faction, at + self.answer_ticks);
+        }
     }
 
     /// Lines of one reconcile applied now (`live`) or answered stale, and answered. The heir's pair
