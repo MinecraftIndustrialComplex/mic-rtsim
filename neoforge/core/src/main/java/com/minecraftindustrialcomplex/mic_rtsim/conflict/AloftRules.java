@@ -338,4 +338,40 @@ public final class AloftRules {
         }
         return true;
     }
+
+    // ---- coming home and Rule U (MZB-822, MZB-823, MZB-827) -------------------------------------
+
+    /** A held chief TAKE is answered stale once a live chief puppet of its faction is within this many blocks of the throne (MZB-823). */
+    public static final double TAKE_STALE = 32.0;
+
+    /**
+     * Whether a puppet {@code dx, dz} blocks from the throne (horizontal, as sight is: MZB-753, MZB-831) is near enough
+     * to answer a held chief TAKE stale. The throne body then stays, and the engine's own {@code home} sends the HAND_BACK.
+     */
+    public static boolean takeStale(double dx, double dz) {
+        return MarchTrim.withinSight(dx, dz, TAKE_STALE);
+    }
+
+    /**
+     * Whether a held chief HAND_BACK plays now (MZB-822): its puppet has settled on the throne's spot, or the line has
+     * waited {@code timeout} ticks (the recall's, {@code ConflictBridge.RECALL_TIMEOUT}) since it arrived at {@code since}.
+     */
+    public static boolean handBackDue(boolean settled, long now, long since, int timeout) {
+        return settled || now - since >= timeout;
+    }
+
+    /** Whether a line that is due plays only because it timed out: the puppet plays it where it stands (counted). */
+    public static boolean handBackLate(boolean settled, long now, long since, int timeout) {
+        return !settled && now - since >= timeout;
+    }
+
+    /**
+     * Whether a recall leaves a chief puppet standing this tick (MZB-822, MZB-827), so that the party's
+     * BAND_DEMATERIALIZED waits for it. A puppet called home belongs to its held HAND_BACK, which plays at the recall's
+     * timeout at the latest, so it stays until {@code grace} ticks past the recall's {@code deadline}, as a net for a line
+     * that was lost. A puppet Rule U holds (a player within sight's own 160, or its target) stays until the deadline.
+     */
+    public static boolean recallKeeps(boolean homing, boolean holds, long now, long deadline, int grace) {
+        return homing && now < deadline + grace || holds && now < deadline;
+    }
 }

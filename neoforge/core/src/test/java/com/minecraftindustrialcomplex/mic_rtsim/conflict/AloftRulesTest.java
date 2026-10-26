@@ -483,4 +483,65 @@ class AloftRulesTest {
         assertTrue(AloftRules.clear(0.5, 0.5, 0.5, 160.5, 0.5, 0.5, count));
         assertEquals(159, asked[0]); // 160 cells between 161, less the two ends: 159 in the middle
     }
+
+    // ---- coming home (MZB-822, MZB-823, MZB-827) ------------------------------------------------
+
+    @Test
+    void aHeldTakeIsStaleWithin32BlocksAndNotBeyond() {
+        assertTrue(AloftRules.takeStale(31.9, 0));
+        assertTrue(AloftRules.takeStale(32.0, 0));
+        assertFalse(AloftRules.takeStale(32.1, 0));
+        assertTrue(AloftRules.takeStale(0, -31.9));
+        assertFalse(AloftRules.takeStale(0, -32.1));
+        assertTrue(AloftRules.takeStale(22.0, 22.0)); // 31.1 across
+        assertFalse(AloftRules.takeStale(23.0, 23.0)); // 32.5 across
+    }
+
+    @Test
+    void theTakesDistanceIsHorizontal() {
+        // takeStale has no height argument: a puppet 2 blocks over the throne is as near as one on it. The jar's own
+        // ground-plane sight is the model (MZB-753); the rule cannot be fooled by a height.
+        assertTrue(AloftRules.takeStale(0, 0));
+    }
+
+    @Test
+    void aHandBackIsDueWhenSettledOrWhenItsTimeoutIsUp() {
+        assertFalse(AloftRules.handBackDue(false, 1199, 0, 1200));
+        assertTrue(AloftRules.handBackDue(false, 1200, 0, 1200));
+        assertTrue(AloftRules.handBackDue(false, 5000, 0, 1200));
+        assertTrue(AloftRules.handBackDue(true, 0, 0, 1200));
+        assertFalse(AloftRules.handBackDue(false, 1299, 100, 1200));
+        assertTrue(AloftRules.handBackDue(false, 1300, 100, 1200));
+    }
+
+    @Test
+    void aHandBackIsLateOnlyWhenItTimedOutUnsettled() {
+        assertFalse(AloftRules.handBackLate(false, 1199, 0, 1200));
+        assertTrue(AloftRules.handBackLate(false, 1200, 0, 1200));
+        assertFalse(AloftRules.handBackLate(true, 1200, 0, 1200)); // settled in time at the last tick: not late
+        assertFalse(AloftRules.handBackLate(true, 10, 0, 1200));
+    }
+
+    @Test
+    void aRecallKeepsAPuppetCalledHomeUntilItsLineCouldHavePlayed() {
+        // The line plays at the deadline (the recall's and the line's start are one tick); the net is one timeout later.
+        assertTrue(AloftRules.recallKeeps(true, false, 0, 1200, 1200));
+        assertTrue(AloftRules.recallKeeps(true, false, 1200, 1200, 1200)); // the tick the line plays: not despawned first
+        assertTrue(AloftRules.recallKeeps(true, false, 2399, 1200, 1200));
+        assertFalse(AloftRules.recallKeeps(true, false, 2400, 1200, 1200)); // a lost line does not hold the party for good
+    }
+
+    @Test
+    void aRecallKeepsAPuppetRuleUHoldsUntilTheDeadline() {
+        assertTrue(AloftRules.recallKeeps(false, true, 0, 1200, 1200));
+        assertTrue(AloftRules.recallKeeps(false, true, 1199, 1200, 1200));
+        assertFalse(AloftRules.recallKeeps(false, true, 1200, 1200, 1200)); // after the timeout it goes, "whoever is near"
+        assertFalse(AloftRules.recallKeeps(false, true, 1201, 1200, 1200));
+    }
+
+    @Test
+    void aRecallKeepsNothingThatNeitherCallsNorHolds() {
+        assertFalse(AloftRules.recallKeeps(false, false, 0, 1200, 1200));
+        assertFalse(AloftRules.recallKeeps(false, false, 1199, 1200, 1200));
+    }
 }
