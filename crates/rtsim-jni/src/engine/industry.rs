@@ -665,7 +665,7 @@ pub(super) fn journaled(st: &mut State, rec: &Rec<'_>) {
     }
     if rec.kind == obs::COMMAND_RESULT {
         let op = OpId(wire::u64_at(rec.bytes, obs::command_result::OP_ID));
-        command_result(l, op, rec.aux, at);
+        command_result(l, op, rec.aux, at, replaying);
         return;
     }
     let Some(t) = l.decode(rec) else { return };
@@ -813,7 +813,7 @@ fn book_kept_answers(l: &mut Link) {
         let at = tick(wire::i64_at(rec.bytes, obs::GAME_TIME));
         if rec.kind == obs::COMMAND_RESULT {
             let op = OpId(wire::u64_at(rec.bytes, obs::command_result::OP_ID));
-            command_result(l, op, rec.aux, at);
+            command_result(l, op, rec.aux, at, false);
         } else if let Some(t) = l.decode(&rec) {
             l.ingest(&t);
         }
@@ -849,8 +849,24 @@ pub(super) fn order_command(st: &mut State, names: &[(u32, u32, String)], record
 /// (a train's loot, or a station exchange the replay derived again) and the journal that would
 /// have carried that application's answers was lost (J3): its goods moved once, so the engine
 /// drops the exchange, whatever its reason (RP-182, RP-199).
-fn command_result(l: &mut Link, op: OpId, status: u32, at: Tick) {
-    let kept = l.complete(op).or_else(|| l.unqueue(op));
+///
+/// `replaying`: an answer the session's replay brings takes a copy out of the queue or the
+/// engine's commands not drained yet only when it is FAILED (RP-259, RP-310). Those copies are
+/// the ones the held replay and the link page decided or kept again under a live op; a copy of an
+/// op Java answered APPLIED or DUPLICATE is written, on purpose. Java refuses it by its guards
+/// (every op ring keeps an op another session answered, its answer unknown, until the engine
+/// sends it again: T2's rule, RP-250, `DurableOpRing.settle`; only the acknowledgement of a live
+/// answer prunes, and no replayed answer is live), and a train's ring that came back without the
+/// op applies it to the restored goods (J4, RP-196), which the replayed IND_CARRIAGE_RESULT booked
+/// already: taken out, the restored train never gets them. A FAILED answer takes its copy at once
+/// (A's `take_out`): Java keeps only the ops it applied, and pages saved before the first drain
+/// after the replay end must not hold the copy ([`unsent_answered`]).
+fn command_result(l: &mut Link, op: OpId, status: u32, at: Tick, replaying: bool) {
+    let kept = if replaying && status != obs::command_result::FAILED {
+        l.complete(op)
+    } else {
+        l.complete(op).or_else(|| l.unqueue(op))
+    };
     if status == obs::command_result::DUPLICATE_OP {
         l.engine.command_duplicate(op);
         return;
