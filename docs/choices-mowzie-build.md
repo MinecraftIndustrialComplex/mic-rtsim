@@ -11208,7 +11208,8 @@ said "All pass" (corrected above). Lines here are at the fix's commit.
     `an_exchange_answered_failed_live_is_not_applied_after_a_crash` passes (`unsent_answered`
     covers one crash).
   - *Left.* No test drives a replayed DUPLICATE meeting a copy decided again inside the replay: a
-    mutation that takes the copy on a replayed DUPLICATE passes every test. Kept with APPLIED (the
+    mutation that takes the copy on a replayed DUPLICATE passes every test (**closed by RP-312**:
+    its test needs two crashes, and fails under that mutation). Kept with APPLIED (the
     copy is written; Java refuses it again and `answered_again` takes the answer, or J4 applies
     it). The copy is written in the first drain after the replay end; the exposure of a durable
     save's acknowledgement read by Java before it (the journal's op index forgets the op, the
@@ -11232,3 +11233,35 @@ said "All pass" (corrected above). Lines here are at the fix's commit.
   -- -D warnings` clean. engine/industry.rs was rustfmt-clean at its base and is after the fix;
   tests/industry.rs was not clean at its base (`ack_never_resends`), so its new lines are wrapped
   by hand. The workspace test and the GameTests were not run (the build lead runs them).
+- **RP-312** (the build lead's follow-up: a replayed DUPLICATE that meets a copy decided again
+  inside the replay): `ack_never_resends::a_replayed_duplicate_leaves_the_copy_the_replay_decided_again_to_be_sent`
+  (tests/industry.rs:4483), the checker's case 5.
+  - *Why two crashes.* The replay refuses an APPLIED or DUPLICATE answer for an op it heard
+    already (`op_of` in engine.rs; `Verdict::DuplicateOp` goes to `answered_again`, which takes
+    only the outbox's copy), so a replayed DUPLICATE reaches `command_result` only as its op's
+    first answer in the replay: the APPLIED gone with the journal (J3 on the ring, RP-199), and
+    the DUPLICATE journaled live by a later session whose pages never saved past the op's
+    decision. One crash gives only RP-199's live DUPLICATE.
+  - *The sequence.* The iron line, seed 11, the pages at day 2 (seq 265), autosaves off. Session
+    0: station exchange X (0x49658e5b8539fe23) is written and applied at S 268; the world
+    restarts in J3 (goods and the checker's rings saved after S, the journal file ending at 266).
+    Session 1: the replay decides X again, it is sent after the end, and the ring refuses it
+    DUPLICATE live at S2 270; the world saves, with no page save and no ack at or past S2.
+    Session 2, the pages still 265: the replay decides X again and hears S2, X's first answer,
+    while replaying; X is sent once (cmdSeq 16), refused live at S3 274, and Java's read of the
+    ack past S3 prunes it. Then to the line's end: no checker violation, the outbox empty, no
+    protocol error, conserved.
+  - *Mutation.* The take on a replayed DUPLICATE (`command_result`'s gate also excluding
+    DUPLICATE_OP, in a scratch worktree): the test fails, X never sent in session 2, so Java's
+    rings would keep it with its answer unknown for good (RP-250's leftovers). The rest of the
+    suite passes under it (four `*_with_industry_off_*` tests hit their 60 s wall clock at load
+    44 in the full run and pass alone).
+  - *Why the send is right.* As RP-310: at each start the pages are behind X's last answer, so
+    the settle keeps X with its answer unknown, and only a live answer's acknowledgement prunes
+    it. The fake world's applied set never prunes, so the assertion is the checker's ring model
+    (`gone` after the ack past S3, no ring keeps X at the end), beside the send itself.
+
+  **Checks** (at the test's commit, fd51c004): `cargo test -p rtsim-jni --test industry` 63
+  passed; `cargo clippy -p rtsim-jni --all-targets -- -D warnings` clean. The new lines are
+  rustfmt's own output for them (the file's base is not rustfmt-clean, so the file was not
+  formatted). No source changed. The workspace test and the GameTests were not run.
