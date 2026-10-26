@@ -21,6 +21,7 @@
 //! - [`profile`]: named zones, microseconds per system.
 //! - [`renewal`]: the shared renewal rule, a site's pressure and its next arrival's wait
 //!   (EQUILIBRIUM.md §2.2).
+//! - [`sites`]: the site ledger's layouts, SITE_STATE and the found tail (EQUILIBRIUM.md §2.3).
 //! - [`store`]: the agent storage facade over plain columns (P4 stays open).
 //! - [`synth`]: synthetic kinds for tests and the scale bench. Scaffolding, not content.
 //!
@@ -45,6 +46,7 @@ pub mod profile;
 pub mod renewal;
 pub mod rng;
 pub mod rows;
+pub mod sites;
 pub mod store;
 pub mod synth;
 pub mod wheel;

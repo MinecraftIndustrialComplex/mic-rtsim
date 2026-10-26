@@ -10422,3 +10422,105 @@ audit's D rows, so it is not edited; the rows are named here.
   is a flag test and an unsigned counter compare in `tick` and a pass over the unverified placed lairs
   every 20 ticks; every other cost is per placement, per worm join, per ADOPT, per chamber found (one
   entity query, RP-241) or per re-placement (one entity query round the box, RP-244).
+
+## M12a: S3, the site ledger and kill credit
+
+EQUILIBRIUM.md's slice S3 (§2.2, §2.3, §4's S3 row, EQ-3 (a)), built on `feat/mowzie-m12a-s3`. Ids MZB-1000 to
+MZB-1099. The design the lead approved is summarised by these records; the fork records (MZB-1020 to MZB-1034)
+name each fork F1 to F15 of that design and what was taken.
+
+- **MZB-1000** (The ledger is core's): one world SavedData, `data/mic_rtsim_sites.dat` on the overworld's data
+  storage, owned by core's new `mic_rtsim.sites.SiteLedger` (VillageRegistry's pattern), beside
+  `mic_rtsim_villages.dat` (EQ-3 (a)). It is outside `world/rtsim/`, so a reset keeps it and an uninstall leaves
+  one inert file. A row is keyed by (kind, the module's u64 site key); kinds 1 camp (the faction key), 2 lair (the
+  lair key), 3 nest (the nest key), `rtsim_kernel::sites::SiteKind`. Only a SITE_STATE writes a row (test hooks
+  aside), and vanilla writes the file at its own world saves, never per event (D1). It holds no op's effect and
+  no dedup, so it is not journal dependent: a crash between saves loses at most one autosave's rows, which
+  matter only after a reset (UR-1).
+- **MZB-1001** (The row's NBT): `v` (int, 1), `gaps` (int, MZB-1003) and `rows`, a ListTag of LongArrayTag, one
+  per row: [0] the key; [1] kind (bits 0 to 7), flags (8 to 15: 1 waiting, 2 broken), K (16 to 31), count at
+  home (32 to 47), away (48 to 63); [2] P as of the stamp (f32 bits, 0 to 31) and gapSeen (32 to 63); [3] the
+  stamp (overworld game time when written); [4] the wait left as of the stamp (kind units: ticks for camps and
+  lairs, thousandths of a drilling day for nests); [5] n home (0 to 15), l left behind (16 to 31), m missing
+  (32 to 47); then 2(n + l + m) longs of UUIDs, home first. 48 bytes plus 16 a body; §2.3 guessed 32, and the
+  stamp and the wait are the 16 more that keep the hand-over relative. A row that does not parse (length, an
+  unknown kind, a count above K) is dropped and counted, logged once a load; an unknown `v` loads empty. No
+  migrations.
+- **MZB-1002** (The clock): the ledger's times are the overworld's game time. Only relative values cross the
+  boundary: SITE_STATE carries P now and the wait left now; the found tail carries both as of the stamp and the
+  game ticks elapsed since (now less the stamp, saturating at 0, so a level.dat restored without the ledger reads
+  as no time passed). Camps and lairs age by their own clock (`Pressure::handed_over`, the wait less elapsed);
+  nests are not aged, since their clock is drilling days and nothing drills while the engine is gone. The due
+  time is rebuilt from the engine's own now, so an engine clock that restarted after a reset shortens no wait.
+- **MZB-1003** (Whether rtsim ran): only the reinstall guard's GAP counts (F9, MZB-1028). Every gap moves
+  `world/rtsim` aside, so a gap always means a fresh engine and the first census after it is the found census.
+  `ReinstallGuard.takeSiteGap(server)` is true once per reset (a compareAndSet, as `takeReadopt`); the ledger asks
+  it first in `apply` and in the tail writer, and true bumps `gaps` and marks the file dirty. A row stores the
+  `gaps` it was written under, and the tail's GAP flag is the two differing, so a site not visited across two
+  gaps still reads GAP. A plain reset (an admin deleting `world/rtsim`, a page failure) is not a gap: rtsim ran.
+- **MZB-1004** (The found tail): 40 bytes plus 16 a UUID, appended at the old end of the three found records
+  (FACTION_FOUND at 56, LAIR_FOUND at 80, NEST_FOUND at 48), rather than a new SITE_FOUND kind: §2.2's
+  contract says SITE_FOUND extends those records. +0 u32 flags (1 ROW, 2 GAP, 4 WAITING, 8 EXISTED: no row,
+  but the plugin knew the site before this engine life, nests only since lairs and camps have LATE), +4 u16 K,
+  +6 u16 count, +8 f32 P as of the stamp, +12 u16 away, +14 u16 n, +16 u64 wait left as of the stamp, +24 u64
+  elapsed game ticks, +32 u16 l, +34 u16 m, +36 reserved, +40 the UUIDs (home, left behind, missing). No row is
+  40 zero bytes, EXISTED aside. The layout lives once, in `rtsim_kernel::sites` (`FoundRow`), which every crate
+  and rtsim-host's fake Java use; a tail whose counts exceed K or whose size does not match its counts does
+  not decode. No old-size reader (no compatibility before a release).
+- **MZB-1005** (SITE_STATE, core command 0x8006): an engine tells the ledger where one site stands: +16 u64
+  key, +24 u32 kind, +28 u32 flags (1 short, 2 empty, 4 broken, 8 waiting), +32 f32 P now, +36 u16 K, +38 u16
+  count, +40 u16 away, +42 u16 n, +44 u16 l, +46 u16 m, +48 u64 wait left (0 unless waiting), +56 the UUIDs;
+  56 + 16(n + l + m) bytes. No answer, no op id, not journaled, not resent, latest wins per (kind, key). A lost
+  one is healed by the site's next change and by the refresh a known site gets at each found record. One core
+  kind for every module (F6, MZB-1025). 0x8006 was free on every branch. The layout is
+  `rtsim_kernel::sites::SiteState`; each body list is bounded to K (missing keeps its newest K) on encode.
+- **MZB-1006** (One kill credit table): every record that reports a sim member's death names its killer with
+  the same codes, 0 none, 1 player, 2 mob, 3 other, 4 taken (`rtsim_kernel::renewal::credit`), the codes
+  CAMP_DEATH, HURT, BAND_CASUALTIES and CHIEF_KILLED already use. DRAGON_DIED's aux gains 4. NEST_LOSS keeps
+  its LossCause aux, computed in Java as today.
+- **MZB-1007** (The engine maps credit to a cause): `LossCause::from_credit(code, boss)`: PLAYER and TAKEN are
+  Player, MOB is Predator, and NONE, OTHER or an unknown code is Player at a boss kind (§2.2's third case, an
+  unclaimed death of a boss kind) and Other elsewhere. It is the camps' `renewal_cause` table (MZB-258) moved
+  to the kernel so every engine reads one rule (F1, MZB-1020). `Pressure::handed_over(p, elapsed_ticks, day,
+  H)` gives the pressure handed over by a tail, aged by elapsed game ticks in f64 and stamped with the engine's
+  own day; a value that is not finite and positive reads as none. `RenewalRule::cap_ticks` is the cap in
+  ticks, the wait of a loss booked Other at the cap. Tests: `credit_maps_to_a_cause`,
+  `handed_over_ages_by_elapsed_ticks` and the `sites` round trips and rejections.
+- **MZB-1020** (F1, the credit rides the death reports): taken. Each death report carries the credit code and
+  the credited player; the engine maps to a LossCause with `from_credit`, since the boss rule needs each kind's
+  tunables, which only the engine has. Not taken: a LossCause byte computed in Java per record.
+- **MZB-1021** (F2, the guard rule stays in nests): taken. A player-made golem's or a player's guard's kill
+  counts as a player's (with no UUID) only at nests, as today (`KillCredit.guard`). Not taken: everywhere,
+  which would make a village golem's kill of a goblin raise that camp's pressure.
+- **MZB-1022** (F3, a missing body found again at a full site is a stray left standing): taken, §2.3's text.
+  Not taken: today's removal above the cap, which takes away the loot-bearing vanilla body.
+- **MZB-1023** (F4, a stray's death adds 1/K whatever killed it): taken, §2.3's anti-farm side. Not taken: by
+  `renewal_cause`, which would let a mob's kill of a stray add nothing.
+- **MZB-1024** (F5, a row's home body not found after a reset goes through the 3-miss write-off): taken: Player
+  with no gap, Other at the cap with one. Not taken: a write-off at the first census, which risks a part-loaded
+  census.
+- **MZB-1025** (F6, one core SITE_STATE kind): taken, MZB-1005. Not taken: one kind per module, which adds a
+  module Cmd and a gate verdict each.
+- **MZB-1026** (F7, villages and Ribbits get no row): taken. Their bodies are vanilla, VILLAGE_CENSUS counts
+  them and they have no pressure on main; their deaths still get kill credit. Not taken: count-only rows on a
+  VILLAGE_ADOPTED tail, which touches Phase1 and its meta (U-d's).
+- **MZB-1027** (F8, resetDoesNotMintADragon): the lead took it, as the tenth GameTest (S4's pending test). Not
+  taken: leaving it to S4.
+- **MZB-1028** (F9, only the reinstall guard's GAP means rtsim did not run): taken, MZB-1003. Not taken: also
+  tracking modules switched off by config and plugin jars removed while core stayed.
+- **MZB-1029** (F10, the no-unload census is census then spawn): taken: a RECOUNT before the owed SPAWN, with
+  today's hold while a player is within 160 blocks and its retry each pass. Hold-max against a daily retry
+  (§2.3's "a game day later") is left to M12b with S9. Not taken: today's spawn at once with no census.
+- **MZB-1030** (F11, CAMP_DEATH grows by the body's UUID, 72 to 88 bytes): taken. Not taken: a separate
+  STRAY_DIED record.
+- **MZB-1031** (F12, a lair row's occupants count as away): taken. Dragons are puppets until EQ-2, so a reset
+  that loses an abstract dragon books it Other at the cap. Not taken: restoring them as owed and refilling from
+  the row's P, which mints after a reset.
+- **MZB-1032** (F13, no heir wait in the row): taken. A chief camp found without its chief waits the cap from
+  then (today's found_empty_heir), which can only lengthen a wait. Not taken: a second wait field, 8 bytes a
+  row.
+- **MZB-1033** (F14, a no-body pool's row restores the count with no regrowth over the gap): taken: the pool
+  regrows from the found time. Not taken: backdating its regrowth by elapsed.
+- **MZB-1034** (F15, DIED is left alone): the lead took the alternative. Phase 1 puppets belong to no site, so
+  nothing would read a killer kind on DIED, and RtsimSession is the U slices'. The design's step 9 is dropped;
+  DIED's layout, phase 1's decoder and RtsimSession are unchanged.
