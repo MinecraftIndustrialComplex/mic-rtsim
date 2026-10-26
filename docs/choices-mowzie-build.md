@@ -10190,6 +10190,12 @@ M11a's implementer appends its records under this heading only (the Rust side).
   - M11b's notes. A CAMP_DEATH of the chief slot with its HAND_BACK in flight is accepted (A6, in both orders
     with the STALE): nothing changes. A CHIEF_KILLED of an ended party is release 3 and books the death, not
     nothing (MZB-824's outcome above).
+  - The fixtures. The workspace run at this step: 2,001 passed, 5 failed, 25 ignored. The 5 are the expected
+    ones: rtsim-view's `the_core_gametest_save_draws_every_layer_and_writes_nothing`,
+    `the_create_gametest_save_draws_every_layer_and_writes_nothing` (fixtures),
+    `every_gametest_save_carries_and_matches_each_modules_hash`, `a_hash_that_differs_is_flagged` (hashes), and
+    rtsim-host's `gametest_worlds_open_in_the_host_with_their_saved_state`. Their saves carry the conflict's META 7
+    ("this build reads 11"), so RTC12 makes no other test fail; the lead regenerates them from fresh worlds.
 
 ### M11b build records (MZB-870 to MZB-889)
 
