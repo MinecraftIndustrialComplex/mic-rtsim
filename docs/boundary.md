@@ -762,11 +762,15 @@ its natives with `System.load`. Choices are in `docs/overnight-choices-jni.md` (
    - **The switch** (C25, `Module.ECOLOGY`, bit 4; choice U10 in
      docs/overnight-choices-integrate2.md, as RP-292 in docs/choices-journal-barrier.md amends it):
      off, the dragons run and write nothing and keep the page they had. The journaled records they
-     hear are kept, on a page beside the meta page (id 2), and applied at the switch-on in their
-     session reset, after `begin_replay` and before the replay end, oldest first, each after its own
-     catch-up (docs/replay-gate.md 9.7: the switch gates only new decisions). A kept record is booked
-     at the later of its own tick and the phase 1 world's present, never at the frozen clock; a dragon
-     killed or tamed while they were off stays dead. A tribute stack's answer is taken at once
+     hear are kept, on a page beside the meta page (id 2), and applied at the switch-on in the resets
+     every module that shares the phase 1 world runs in one order (`shared::resets`): after every
+     engine's `begin_replay` and before any replay end, merged with the herds' and the conflict's
+     kept records in the order `Replay` admitted them, each after its own catch-up
+     (docs/replay-gate.md 9.7: the switch gates only new decisions). A kept record is booked at its
+     own tick on the dragons' clock, which froze at the switch-off, though the phase 1 world ran on
+     (`shared::floor`), never at the frozen clock; a dragon killed or tamed while they were off stays
+     dead from that tick. MODULES sets every module's flag before any reset, so with ECOLOGY on the
+     herds are the dragons' prey through the window. A tribute stack's answer is taken at once
      whatever the switch (RP-291). On again, their bodies of before are gone and they run on. No
      capture is sent at the switch-off: a body stays until Java's own capture (RP-290).
    - **Tests.** Order 25 (`DRAGON_COMMAND`, TEST mode only) queues a dragon command record with
@@ -886,8 +890,9 @@ its natives with `System.load`. Choices are in `docs/overnight-choices-jni.md` (
      saved with, or ones this build cannot read, are dropped loudly and deleted at start.
    - **The switch** (C25, `Module.CONFLICT`, bit 5; U10's rule as RP-292 amends it): as the
      dragons', the records heard while off kept (0x4300 id 2) and applied at the switch-on, each
-     booked at the later of its own tick and the phase 1 world's present; a band member killed in the
-     switch's tick does not return. The kept records and the catch-ups between them run inside the
+     booked at its own tick on the conflict's clock, not the phase 1 world's present
+     (`shared::floor`); a band member killed in the switch's tick is dead from that tick, before its
+     demand's deadline, and does not return. The kept records and the catch-ups between them run inside the
      conflict's replay, so its outbox gate holds what they decide: a DEMAND_SETTLED that comes due in
      the window before the last kept record is dropped, as at a restart (RP-12). A DIFFICULTY heard
      while off is applied at the switch-on.
