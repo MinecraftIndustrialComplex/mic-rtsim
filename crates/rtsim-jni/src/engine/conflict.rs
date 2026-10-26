@@ -1442,8 +1442,10 @@ pub(super) fn after_core(st: &mut State, rec: &Rec<'_>) {
 /// A COMMAND_RESULT heard while switched off that answers one of the grove's stacks in flight is
 /// kept as [`journaled`] keeps a conflict record (RP-292): whole, as it came, saved with the
 /// conflict's kept page. One for an op that is no stack of the grove's is none of the conflict's.
-/// Whether the stack was in flight is read from the engine's placings, which the pages hold, so a
-/// stack answered once and kept is no longer found for a second answer.
+/// Whether the stack was in flight is read from the engine's placings, which do not change while
+/// off, so a second answer to the same op (a chunk's REASSERT copy, a DUPLICATE_OP) is kept too.
+/// At the switch-on the first takes the stack; the second finds no placing and no replayed stack
+/// (the camp's count passed the stack when it was placed), so it changes nothing.
 fn keep_answer(st: &mut State, rec: &Rec<'_>) -> bool {
     let op = wire::u64_at(rec.bytes, obs::command_result::OP_ID);
     if !st.conflict.engine.placings().any(|(o, _)| o == op) {
