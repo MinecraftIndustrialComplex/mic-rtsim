@@ -11462,3 +11462,66 @@ said "All pass" (corrected above). Lines here are at the fix's commit.
     U-d (the coordinator's decision); it needs one more step than the option names: a failed write must
     also mark its data dirty again, since vanilla clears the flag either way and the hold would
     otherwise wait for an unrelated change to that file.
+- **RP-318** (the build lead's re-check of RP-313: two tests it found missing, both on the module-off
+  path of a replayed answer). Tests only: no source changed, and each mutation was reverted
+  (engine/industry.rs is at its base). The record's sequences are in tests/industry.rs, `mod
+  ack_never_resends`.
+  - *Test 1* (`a_kept_duplicate_the_link_page_held_is_booked_as_replayed_at_a_restart_with_industry_on`,
+    tests/industry.rs:5276): pins `replayed: true` in `KeptAnswer::get` (engine/industry.rs:201), the
+    flag of an answer the link page loads. The sequence: `a_duplicate_restarted_off` (session 2 off, the
+    pages hold the copy of station exchange X in the queue, and the replay brings S2, X's DUPLICATE, as
+    its first answer for X: kept, replayed). The replay ends and the module is still off; the pages are
+    asked for through the journal's end and Java reads their ack; the world saves and the engine
+    crashes. Session 3 restarts from those pages with the module on, books the page's S2 at its start,
+    and sends X once: refused DUPLICATE live, its exchange dropped, no ring keeping X at the end. The
+    control is `a_duplicate_restarted_off` switched on in session 2 with no second crash, and the world
+    against the engine's books is the control's (Ok in both; `the_copy_goes_once_in_session` returns it
+    from the line's end, and `finish_with` asserts it closes).
+  - *Mutation 1*: `replayed: false` in `KeptAnswer::get`. The new test fails with "X sent in session 3:
+    not by Tick(48831)": the booking takes the copy out of the queue at the start, so X is never sent
+    and Java's rings keep it with its answer unknown for good. Test 2 passes under it (it never loads a
+    page).
+  - *Test 2* (`a_replayed_duplicate_refused_by_op_id_with_industry_off_leaves_the_queued_copy`,
+    tests/industry.rs:5333): pins `replaying` in `answered_again`'s off branch (engine/industry.rs:782,
+    `take_answered`) and, with it, the `replayed: replaying` of the DUPLICATE it keeps there.
+  - *The sequence, and why it differs from the brief's.* The brief had X's copy moved from the outbox to
+    the queue by `write_resends`. That cannot reach `answered_again` with two answers: a copy of X that
+    survives the start's trim (`Link::resume`, by the world save's lastAppliedCmdSeq) has a cmdSeq
+    above the save's, so the answer to it is not in that save's journal, and then session 2's replay
+    hears one answer for X, a first one, which `keep_answer` handles (test 1's route, not this one). A
+    copy in the pages' queue has no such limit, and a step takes its pages at its end, after `simulate`
+    drained the decided commands into the queue and before `write_commands` (engine.rs step_inner), so
+    pages asked for through a hand-over's last record hold the exchange that hand-over's step decided,
+    queued and unsent. Session 0 asks for the pages that way at every tick until the step that writes
+    X, then lets them land; the world applies X and answers APPLIED (S1), and saves, its journal holding
+    S1 and its lastAppliedCmdSeq the cmdSeq of X's write. The crash comes before any page save covers
+    S1. Session 1 restarts with the module on: the replay hears S1 (replayed, so it takes only the
+    outbox's copy, RP-310) and leaves the queued copy, which goes after the replay end under a new
+    sequence and is refused DUPLICATE live (S2). The world saves again, S1 and S2 in its journal, and
+    the engine crashes with no page save. Session 2 restarts from the same pages with the module off:
+    the replay brings S1 (X's first answer in it), then S2, which `Replay` refuses by op id, so S2 reaches
+    `answered_again` while replaying; the exchange waits for the kept carriage result. The module is
+    switched on: X is sent once in session 2, refused DUPLICATE live (S3), its exchange dropped, the
+    ack past S3 prunes it, and the world against the engine's books closes. A station exchange stands
+    for the op; the same holds for any command a page holds queued.
+  - *Mutation 2*: `false` in place of `replaying` in `answered_again`'s off branch, the call to
+    `take_answered`. Test 2 fails with "X sent in session 2: not by Tick(51121)" (S2 takes the queue's
+    copy; Java's rings keep X unknown). Test 1 passes under it. A third, kept in the same run and
+    reverted with it: `replayed: false` for the kept DUPLICATE `answered_again` pushes in the off
+    branch. The switch then books S2 as heard live and takes the copy, and test 2 fails with "X sent
+    in session 2: not by Tick(51527)", so the flag is pinned too.
+  - *Traps.* (1) `request_save` keeps the lower of two pending requests, so a loop that asks at every
+    tick must let each be taken: it does, since a request through the hand-over's last record is taken
+    at that hand-over's step end. (2) The `applied_ops` assertion on X (written, not applied) must come
+    before the run that lets the pages land: ticks pass and the world answers meanwhile. (3) The mid-hand-over
+    save (`journaled`, before the first record past `through`) would take the pages before the step's
+    decision; asking through the hand-over's last record avoids it, because no record of that
+    hand-over is past `through` and the step-end save takes it.
+
+  **Checks** (at the commit before this record): `cargo test -p rtsim-jni --test industry -j 4` 71
+  passed (the two new ones among them); `cargo clippy -p rtsim-jni --all-targets -- -D warnings` clean.
+  tests/industry.rs is not rustfmt-clean at its base (in the failed-exchange tests near its end, other
+  work's lines), so it was not formatted: the new test lines are rustfmt's own output for them (four lines were wrapped by hand
+  to match it) and `the_copy_goes_once_after_the_switch` keeps its signature (its body moved into
+  `the_copy_goes_once_in_session`, which takes the session). The workspace test and the GameTests were
+  not run.
