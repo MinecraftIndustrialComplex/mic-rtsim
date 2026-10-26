@@ -322,6 +322,17 @@ public final class RtsimApi {
         com.minecraftindustrialcomplex.mic_rtsim.conflict.Lurkers.register(entityType, lurker);
     }
 
+    // ---- travelling aloft (M11; MZB-807) ---------------------------------------------------------
+
+    /**
+     * Registers how a mod's body travels with its party in place of walking, by entity type id
+     * ({@code mowziesmobs:umvuthi}; a string, so it can be called in a plugin's constructor before the registries
+     * freeze). A type with none walks. Call during mod construction.
+     */
+    public static void registerTraveller(String entityType, com.minecraftindustrialcomplex.mic_rtsim.conflict.Traveller traveller) {
+        com.minecraftindustrialcomplex.mic_rtsim.conflict.Travellers.register(entityType, traveller);
+    }
+
     /**
      * Registers what knows which way a rail runs at a point (the create plugin's), so a lurking body is placed on the
      * rail's normal at the spot distance and not on the engine's rounded spot (MZB-360, the re-check's P2). With none

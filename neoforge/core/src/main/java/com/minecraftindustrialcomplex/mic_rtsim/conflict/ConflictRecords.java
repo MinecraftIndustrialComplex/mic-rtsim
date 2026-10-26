@@ -459,13 +459,17 @@ public final class ConflictRecords {
 
     /**
      * CHIEF_PAID (aux = n items, journaled, a Java op id): a payment to a grove's Umvuthi (MZB-418). The slot and
-     * generation are the body's CampMember tag, both 0 with PAID_STRAY.
+     * generation are the body's CampMember tag, both 0 with PAID_STRAY; with PAID_PUPPET (M11, MZB-819) the slot is
+     * {@link CampReconcile#CHIEF_SLOT} and the generation 0: the payment was to a party's chief puppet, which has no
+     * CampMember tag.
      */
     public static final class ChiefPaid {
         public static final int FACTION = 24, SLOT = 32, GENERATION = 36, FLAGS = 40, PLAYER_MOST = 48, PLAYER_LEAST = 56,
                 OP_ID = 64, ITEMS = 72;
         /** A payment to an untagged Umvuthi standing in a grove's footprint. */
         public static final int PAID_STRAY = 1;
+        /** A payment to a party's chief puppet (the faction's chief slot, generation 0). */
+        public static final int PAID_PUPPET = 2;
 
         public static int size(int n) {
             return ITEMS + ITEM * n;
