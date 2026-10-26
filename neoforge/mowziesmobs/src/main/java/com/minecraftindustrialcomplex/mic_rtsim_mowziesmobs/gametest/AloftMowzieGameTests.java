@@ -5,6 +5,7 @@ import com.bobmowzie.mowziesmobs.server.entity.umvuthana.EntityUmvuthanaMinion;
 import com.bobmowzie.mowziesmobs.server.entity.umvuthana.EntityUmvuthi;
 import com.minecraftindustrialcomplex.mic_rtsim.api.RtsimApi;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs;
+import com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.AloftRules;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictBridge;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictNews;
@@ -238,10 +239,15 @@ public final class AloftMowzieGameTests {
         int top;
 
         Lane(Far far, int row, int chunks) {
+            this(far, far.k, row, chunks);
+        }
+
+        /** The lane's first chunk is {@code first} (not the base's {@code k}): a strip kept clear of a grove's footprint declared at {@code k}. */
+        Lane(Far far, int first, int row, int chunks) {
             this.far = far;
             level = far.level;
-            cx0 = far.k;
-            cx1 = far.k + chunks - 1;
+            cx0 = first;
+            cx1 = first + chunks - 1;
             cz = far.z0 + 20 * row;
             x0 = cx0 * 16;
             x1 = cx1 * 16 + 15;
@@ -2577,6 +2583,778 @@ public final class AloftMowzieGameTests {
                 .thenWaitUntil(waits.logic(() -> check("both bands went (" + dematerialized(agent[0]).size() + " and " + dematerialized(agent[1]).size() + ")",
                         dematerialized(agent[0]).size() >= 1 && dematerialized(agent[1]).size() >= 1)))
                 .thenExecute(() -> {
+                    drop(player);
+                    far.releaseAll();
+                })
+                .thenSucceed();
+    }
+
+    // ---- 29c: the four exceptions, and the invariant's own test (MZB-827, MZB-817, MZB-824) ---------------------
+
+    /**
+     * A server player the world sees, with the simulation distance {@code s} and the view distance {@code s + 2} set for it: the
+     * ticking area of a real player, in a far place with no other (a copy of core's {@code MarchGameTests.Ticking}, on a {@link Far}).
+     * It stands on its chunk's west column ({@code px = 16 * pcx + 0.5}) and mid-chunk in z, so the ticking edge is
+     * {@code 16 * (s + 1) - 0.5} blocks east of it. Both distances are the server's, so {@link #end} puts them back (the player first,
+     * before any chunk is let go); it runs when the test ends too, and a second run does nothing. A test using this has a batch of its
+     * own and forces no chunk near the player.
+     */
+    private static final class Watch {
+        final Far far;
+        final ServerLevel level;
+        final int s, pcx, pcz;
+        final double px, pz;
+        ServerPlayer player;
+        private final int savedSimulation, savedView;
+        private boolean ended;
+
+        Watch(GameTestHelper helper, Far far, int s) {
+            this.far = far;
+            this.level = far.level;
+            this.s = s;
+            pcx = far.k + 32;
+            pcz = far.z0 + 32;
+            px = 16.0 * pcx + 0.5;
+            pz = 16.0 * pcz + 8.0;
+            var players = level.getServer().getPlayerList();
+            savedSimulation = players.getSimulationDistance();
+            savedView = players.getViewDistance();
+            ConflictKit.onEnd(helper, this::end);
+        }
+
+        /** The first x outside the ticking area, on the player's row, where the player stands now. */
+        double edge() {
+            return 16.0 * (player.chunkPosition().x + s + 1);
+        }
+
+        /** Sets the distances and joins the player (its chunks load and tick over the next ticks). */
+        void start() {
+            var players = level.getServer().getPlayerList();
+            players.setViewDistance(s + 2);
+            players.setSimulationDistance(s);
+            player = FakePlayers.addSeen(level, new Vec3(px, level.getMinBuildHeight() + 64, pz), "mowzie-aloft-watcher");
+            player.setNoGravity(true);
+        }
+
+        /** Stands the player on the ground once its chunk is there. */
+        void ground() {
+            double y = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, (int) Math.floor(px), (int) Math.floor(pz));
+            player.moveTo(px, y, pz);
+        }
+
+        /** Moves the player {@code dx} blocks along x and tells the chunk map, as the server does for a player's move packet. */
+        void step(double dx) {
+            player.moveTo(player.getX() + dx, player.getY(), player.getZ());
+            level.getChunkSource().move(player);
+        }
+
+        /** Fails until the square of chunks within {@code s} of the player's ticks entities and the first chunk past it east does not. */
+        void check() {
+            int n = 0, total = (2 * s + 1) * (2 * s + 1);
+            for (int x = pcx - s; x <= pcx + s; x++)
+                for (int z = pcz - s; z <= pcz + s; z++)
+                    if (RtsimSession.entitiesTickAt(level, new BlockPos(16 * x + 8, level.getSeaLevel(), 16 * z + 8)))
+                        n++;
+            if (n < total)
+                throw new GameTestAssertException(n + " of " + total + " chunks within " + s + " of the player's (" + pcx + ", " + pcz
+                        + ") tick entities (simulation distance " + level.getServer().getPlayerList().getSimulationDistance() + ")");
+            if (RtsimSession.entitiesTickAt(level, new BlockPos(16 * (pcx + s + 1) + 8, level.getSeaLevel(), 16 * pcz + 8)))
+                throw new GameTestAssertException("the chunk " + (s + 1) + " east of the player's ticks entities: the area is wider than " + s);
+        }
+
+        /** Takes the player out and puts both distances back. */
+        void end() {
+            if (ended)
+                return;
+            ended = true;
+            if (player != null)
+                FakePlayers.removeSeen(player);
+            var players = level.getServer().getPlayerList();
+            players.setSimulationDistance(savedSimulation);
+            players.setViewDistance(savedView);
+        }
+    }
+
+    /** The engine's march of a party it has ended (FLAG_ENDED): home, so far as the engine is concerned; its later records are dropped. */
+    private static void marchEnded(long agent, long faction, String dim, double x, double z) {
+        long bx = (long) Math.floor(x), bz = (long) Math.floor(z);
+        ConflictKit.march(new ConflictKit.MarchSpec(agent, 1, dim, faction, ConflictRecords.PURPOSE_INVASION, ConflictRecords.March.HOME,
+                ConflictRecords.March.FLAG_CHIEF | ConflictRecords.March.FLAG_ENDED, 0L, new LinkedHashMap<>(Map.of(WARRIOR, 1)),
+                List.of(new long[] {bx, bz, 0L}, new long[] {bx + 1, bz, 10_000L})));
+    }
+
+    /** The party's stacks, by their states (for a message). */
+    private static String stateOf(long agent) {
+        ConflictBridge.Party p = ConflictKit.bridge().party(agent);
+        if (p == null)
+            return "no party";
+        StringBuilder b = new StringBuilder();
+        for (ConflictBridge.Stack st : p.stacks())
+            b.append(b.length() == 0 ? "" : ", ").append(st.state());
+        return b.toString();
+    }
+
+    // ---- 29c-edge: at the ticking edge it is taken back, not held (MZB-827) --------------------------------
+
+    /**
+     * An aloft puppet whose chunk stops ticking entities is taken back to pending that tick, and Rule U does not hold it there (test
+     * 29c, the edge; MZB-827). A seen player (a real player's entity-ticking area, {@link Watch}, simulation distance 8 and view 10)
+     * stands on its chunk's west column, masked. A band met 132 blocks east of it, on its row, of one warrior and the war chief, is
+     * placed (both in chunks that tick). The faction has a declared grove that is out (its chunks are not loaded), so that the grove's rule
+     * has a site to ask: with the player within 160 blocks of the puppet it says hold. The player steps 20 blocks west, so that the
+     * edge goes from 143.5 to 111.5 blocks east of where it stood and the band stands past it, 152 blocks from the player and
+     * still inside the hold's range. Each tick the test notes the first tick the puppet's chunk does not tick entities and the first
+     * tick the body is removed, and the same for the warrior.
+     * <ul>
+     * <li>The puppet is removed within 2 ticks of its chunk's stopping, and no later than a tick after the warrior (the control: the
+     * same chunk, the same distance, the same tick). {@code requeued} rose by two (the chief's stack and the warrior's), and each stack is
+     * pending, its chief's slot alive.</li>
+     * <li>No Umvuthi stands in the loaded chunks within 200 blocks of where it was, at once and 40 ticks on; no CHIEF_KILLED, no
+     * casualty. The puppet is removed (the world holds no body of it to save), so no chunk of this area can write it with its gravity off.</li>
+     * </ul>
+     * Fails if {@code requeue} asked Rule U (the puppet hangs in a chunk that does not tick, with its gravity off, and the chunk's
+     * unload saves it). The grove's out-ness is the set-up; the chunk read-back of 23e is not repeated (a removed body is in no save).
+     */
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "aloft_edge", skyAccess = true)
+    public static void anAloftUmvuthiAtTheTickingEdgeIsTakenBack(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 6000);
+        String test = "anAloftUmvuthiAtTheTickingEdgeIsTakenBack";
+        Far far = new Far(helper, test);
+        ServerLevel level = far.level;
+        Watch w = new Watch(helper, far, 8);
+        Grove g = groveAt(far, 0, 0); // declared, never forced: out, and the faction has a site for Rule U to ask
+        long agent = ConflictKit.newAgent();
+        EntityUmvuthi[] puppet = new EntityUmvuthi[1];
+        Mob[] warrior = new Mob[1];
+        long[] off = new long[2], gone = new long[2]; // the puppet's, the warrior's: the tick its chunk stopped ticking, the tick it was removed
+        long[] was = new long[3]; // requeued, chiefsKilled, casualties
+        boolean[] stepped = {false};
+        Vec3[] at = new Vec3[1];
+
+        MowzieKit.seq(helper)
+                .thenExecute(() -> {
+                    g.declare();
+                    w.start();
+                })
+                .thenWaitUntil(waits.chunks(w::check))
+                .thenExecute(() -> {
+                    w.ground();
+                    MowzieKit.mask(w.player);
+                    check("the grove is out: no epoch, no census (" + g.site().epoch() + ", " + MowzieKit.censusCount(g.faction) + ")",
+                            g.site().epoch() == 0L && MowzieKit.censusCount(g.faction) == 0);
+                    int gy = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, (int) Math.floor(w.px + 132), (int) Math.floor(w.pz));
+                    was[0] = ConflictKit.bridge().requeued;
+                    was[1] = ConflictKit.bridge().chiefsKilled;
+                    was[2] = ConflictKit.bridge().casualties;
+                    bandAt(helper, g.faction, agent, w.px + 132, gy, w.pz, 0f, List.of(), 1, true);
+                })
+                .thenWaitUntil(waits.logic(() -> {
+                    puppet[0] = puppet(agent);
+                    check("the puppet floats", puppet[0].isNoGravity());
+                    List<Mob> ws = warriorsOf(agent);
+                    check("its warrior is embodied (" + ws.size() + ")", ws.size() == 1);
+                    warrior[0] = ws.get(0);
+                }))
+                .thenExecute(() -> {
+                    at[0] = puppet[0].position();
+                    check("both stand in chunks that tick entities", RtsimSession.entitiesTickAt(level, puppet[0].blockPosition())
+                            && RtsimSession.entitiesTickAt(level, warrior[0].blockPosition()));
+                    double before = Math.hypot(w.player.getX() - at[0].x, w.player.getZ() - at[0].z);
+                    check("the player is within the hold's range of the puppet (" + before + ")", before < GroveKind.HOLD_RANGE);
+                    check("the grove's rule holds the puppet", GroveKind.INSTANCE.holdRemoval(level, g.site(), puppet[0]));
+                    check("the edge is past the puppet's chunk now (edge " + w.edge() + ", puppet " + at[0].x + ")", w.edge() > at[0].x);
+                    MowzieKit.everyTick(helper, () -> {
+                        if (!stepped[0])
+                            return;
+                        long now = level.getGameTime();
+                        Mob[] es = {puppet[0], warrior[0]};
+                        for (int i = 0; i < 2; i++) {
+                            if (off[i] == 0 && !RtsimSession.entitiesTickAt(level, es[i].blockPosition()))
+                                off[i] = now;
+                            if (gone[i] == 0 && es[i].isRemoved())
+                                gone[i] = now;
+                        }
+                    });
+                    stepped[0] = true;
+                    w.step(-20);
+                    double after = Math.hypot(w.player.getX() - at[0].x, w.player.getZ() - at[0].z);
+                    check("the player's chunk moved, and the edge with it (edge " + w.edge() + ", puppet " + at[0].x + ")", w.edge() < at[0].x);
+                    check("it is still within the hold's range (" + after + ")", after < GroveKind.HOLD_RANGE);
+                    check("and the grove's rule still holds the puppet", GroveKind.INSTANCE.holdRemoval(level, g.site(), puppet[0]));
+                })
+                .thenWaitUntil(waits.logic(() -> check("their chunks stopped ticking entities (" + off[0] + ", " + off[1] + ")", off[0] != 0 && off[1] != 0)))
+                .thenIdle(6)
+                .thenExecute(() -> {
+                    check("the puppet was taken back (its chunk stopped at " + off[0] + ", gone " + gone[0] + ", states " + stateOf(agent) + ")", gone[0] != 0);
+                    check("so was the warrior, the control (" + gone[1] + ")", gone[1] != 0);
+                    check("the puppet went within 2 ticks of its chunk's stopping (" + (gone[0] - off[0]) + ")", gone[0] - off[0] >= 0 && gone[0] - off[0] <= 2);
+                    check("the warrior's chunk stopped with the puppet's (" + (off[1] - off[0]) + ")", Math.abs(off[1] - off[0]) <= 1);
+                    check("the warrior went within 2 ticks of its chunk's stopping (" + (gone[1] - off[1]) + ")", gone[1] - off[1] >= 0 && gone[1] - off[1] <= 2);
+                    check("the puppet went no later than a tick after the control (" + (gone[0] - gone[1]) + ")", gone[0] - gone[1] <= 1);
+                    check("two stacks went back to pending: requeued rose by " + (ConflictKit.bridge().requeued - was[0]), ConflictKit.bridge().requeued == was[0] + 2);
+                    for (ConflictBridge.Stack st : ConflictKit.party(agent).stacks())
+                        check("a stack is pending (" + stateOf(agent) + ")", st.state() == ConflictBridge.StackState.PENDING);
+                    check("the chief's slot is alive", chiefSlot(agent).alive());
+                    check("the party is not recalled", !ConflictKit.party(agent).recalling());
+                    AABB wide = new AABB(at[0].x - 200, level.getMinBuildHeight(), at[0].z - 200, at[0].x + 200, level.getMaxBuildHeight(), at[0].z + 200);
+                    List<EntityUmvuthi> left = level.getEntitiesOfClass(EntityUmvuthi.class, wide);
+                    check("no Umvuthi stands in the loaded chunks within 200 blocks (" + left.size() + ")", left.isEmpty());
+                    check("no CHIEF_KILLED (" + ConflictKit.about(ConflictRecords.CHIEF_KILLED, agent).size() + ")", ConflictKit.about(ConflictRecords.CHIEF_KILLED, agent).isEmpty());
+                    check("no casualty (" + ConflictKit.about(ConflictRecords.BAND_CASUALTIES, agent).size() + ")", ConflictKit.about(ConflictRecords.BAND_CASUALTIES, agent).isEmpty());
+                    check("chiefsKilled and casualties are as they were", ConflictKit.bridge().chiefsKilled == was[1] && ConflictKit.bridge().casualties == was[2]);
+                    record(test, "edge", "the edge went from " + (w.edge() + 20) + " to " + w.edge() + ", the puppet at " + String.format("%.1f", at[0].x) + " went "
+                            + (gone[0] - off[0]) + " ticks after its chunk stopped, the warrior " + (gone[1] - off[1]) + "; requeued +" + (ConflictKit.bridge().requeued - was[0]));
+                })
+                .thenIdle(40)
+                .thenExecute(() -> {
+                    AABB wide = new AABB(at[0].x - 200, level.getMinBuildHeight(), at[0].z - 200, at[0].x + 200, level.getMaxBuildHeight(), at[0].z + 200);
+                    check("still no Umvuthi 40 ticks on (" + level.getEntitiesOfClass(EntityUmvuthi.class, wide).size() + ")", level.getEntitiesOfClass(EntityUmvuthi.class, wide).isEmpty());
+                    check("the stacks are still pending (" + stateOf(agent) + ")", ConflictKit.party(agent).stacks().stream().allMatch(st -> st.state() == ConflictBridge.StackState.PENDING));
+                    recallAll(agent);
+                })
+                .thenWaitUntil(waits.logic(() -> check("the band went (" + dematerialized(agent).size() + ")", dematerialized(agent).size() >= 1)))
+                .thenExecute(() -> {
+                    w.end();
+                    far.releaseAll();
+                })
+                .thenSucceed();
+    }
+
+    // ---- 29c-seam: an edge stop's recall reaches the puppet at its timeout (MZB-827) ---------------------
+
+    /** Ticks a recall of this test lasts before it reaches a puppet Rule U holds. */
+    private static final int SEAM_TIMEOUT = 400;
+
+    /**
+     * An edge stop's recall (BAND_RECALL, RECALL_PASSING) does not despawn a puppet Rule U holds until the recall's own timeout (test
+     * 29c, the seam; MZB-827). Two bands at view distance 8 (sight 128 blocks), each a puppet and a warrior on a lane of forced
+     * chunks, the grove of its faction declared and out. Band A has a masked player 140 blocks off (out of sight, within 160: Rule U
+     * holds the puppet); band B has one 170 blocks off (out of sight, past the range: nothing holds it). Both are sent the same
+     * record, {@value #SEAM_TIMEOUT} ticks.
+     * <ul>
+     * <li>Band B (the control): the puppet and the warrior go at once (within 6 ticks of the recall's tick); BAND_DEMATERIALIZED follows.</li>
+     * <li>Band A: the warrior goes at once (unseen), the puppet stands for the timeout: alive 300 ticks on, no BAND_DEMATERIALIZED,
+     * its slot alive. It goes at the timeout, within 3 ticks before to 8 after the {@value #SEAM_TIMEOUT}th tick from the recall's
+     * (the record's own timeout, not {@link ConflictBridge#RECALL_TIMEOUT}), and one BAND_DEMATERIALIZED follows it.</li>
+     * </ul>
+     * Fails without MZB-827 (band A's puppet goes at once, out of sight).
+     */
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "aloft_seam", skyAccess = true)
+    public static void anEdgeStopRecallReachesThePuppetAtItsTimeout(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 3000);
+        String test = "anEdgeStopRecallReachesThePuppetAtItsTimeout";
+        Far far = new Far(helper, test);
+        ServerLevel level = far.level;
+        Grove[] g = {groveAt(far, 0, 0), groveAt(far, 0, 1)}; // declared, never forced: out
+        Lane[] lane = {new Lane(far, far.k + 6, 0, 2), new Lane(far, far.k + 6, 1, 2)};
+        long[] agent = {ConflictKit.newAgent(), ConflictKit.newAgent()};
+        EntityUmvuthi[] puppet = new EntityUmvuthi[2];
+        Mob[] warrior = new Mob[2];
+        ServerPlayer[] player = new ServerPlayer[2];
+        long[] recalledAt = new long[2], goneAt = new long[2], warriorGoneAt = new long[2];
+        boolean[] sampling = {false};
+        Runnable[] back = new Runnable[1];
+
+        MowzieKit.seq(helper)
+                .thenExecute(() -> {
+                    for (Lane l : lane)
+                        l.force();
+                    g[0].declare();
+                    g[1].declare();
+                })
+                .thenWaitUntil(waits.chunks(far.ready()))
+                .thenExecute(() -> {
+                    back[0] = viewDistance(helper, level, 8);
+                    for (int i = 0; i < 2; i++) {
+                        lane[i].floor();
+                        check("the grove " + i + " is out (" + g[i].site().epoch() + ")", g[i].site().epoch() == 0L);
+                        bandAt(helper, g[i].faction, agent[i], lane[i].x0 + 20, lane[i].top + 1, lane[i].z, 0f, List.of(), 1, true);
+                    }
+                })
+                .thenWaitUntil(waits.logic(() -> {
+                    for (int i = 0; i < 2; i++) {
+                        puppet[i] = puppet(agent[i]);
+                        List<Mob> ws = warriorsOf(agent[i]);
+                        check("band " + i + "'s warrior is embodied (" + ws.size() + ")", ws.size() == 1);
+                        warrior[i] = ws.get(0);
+                    }
+                }))
+                .thenExecute(() -> {
+                    double[] range = {140, 170};
+                    for (int i = 0; i < 2; i++) {
+                        check("the puppet " + i + " floats", puppet[i].isNoGravity());
+                        player[i] = MowzieKit.player(helper, new Vec3(puppet[i].getX(), lane[i].top + 1, puppet[i].getZ() + range[i]), "mowzie-seam-" + i);
+                        MowzieKit.mask(player[i]);
+                    }
+                    double sight = ConflictBridge.sightRange(puppet[0], level);
+                    check("sight is 128 blocks at view distance 8 (" + sight + ")", sight == 128.0);
+                    check("band A's player is out of sight and within the hold's range (140)", 140 > sight && 140 < GroveKind.HOLD_RANGE);
+                    check("the grove's rule holds band A's puppet", GroveKind.INSTANCE.holdRemoval(level, g[0].site(), puppet[0]));
+                    check("and not band B's (its player is 170 off)", !GroveKind.INSTANCE.holdRemoval(level, g[1].site(), puppet[1]));
+                    for (ServerPlayer p : level.players())
+                        for (int i = 0; i < 2; i++)
+                            if (p != player[i] && Math.hypot(p.getX() - puppet[i].getX(), p.getZ() - puppet[i].getZ()) < GroveKind.HOLD_RANGE + 1)
+                                check("no other player is near puppet " + i + " (" + p.getGameProfile().getName() + ")", false);
+                    MowzieKit.everyTick(helper, () -> {
+                        if (!sampling[0])
+                            return;
+                        long now = level.getGameTime();
+                        for (int i = 0; i < 2; i++) {
+                            ConflictBridge.Party p = ConflictKit.bridge().party(agent[i]);
+                            if (recalledAt[i] == 0 && p != null && p.recalling())
+                                recalledAt[i] = now;
+                            if (goneAt[i] == 0 && puppet[i].isRemoved())
+                                goneAt[i] = now;
+                            if (warriorGoneAt[i] == 0 && warrior[i].isRemoved())
+                                warriorGoneAt[i] = now;
+                        }
+                    });
+                    sampling[0] = true;
+                    for (int i = 0; i < 2; i++)
+                        ConflictKit.recall(agent[i], ConflictKit.party(agent[i]).epoch, ConflictRecords.RECALL_PASSING, SEAM_TIMEOUT, g[i].spot.x, g[i].spot.z);
+                })
+                .thenWaitUntil(waits.logic(() -> check("the recalls came and the control's puppet went (" + recalledAt[0] + ", " + recalledAt[1] + ", " + goneAt[1] + ")",
+                        recalledAt[0] != 0 && recalledAt[1] != 0 && goneAt[1] != 0)))
+                .thenIdle(5)
+                .thenExecute(() -> {
+                    check("band B's puppet went at once (" + (goneAt[1] - recalledAt[1]) + " ticks)", goneAt[1] - recalledAt[1] <= 6);
+                    check("so did its warrior (" + (warriorGoneAt[1] - recalledAt[1]) + ")", warriorGoneAt[1] != 0 && warriorGoneAt[1] - recalledAt[1] <= 6);
+                    check("band A's warrior went at once (" + (warriorGoneAt[0] - recalledAt[0]) + ")", warriorGoneAt[0] != 0 && warriorGoneAt[0] - recalledAt[0] <= 6);
+                    check("band A's puppet stands (alive " + puppet[0].isAlive() + ", removed " + puppet[0].isRemoved() + ")", puppet[0].isAlive() && !puppet[0].isRemoved());
+                    check("band A is not over (" + dematerialized(agent[0]).size() + ")", dematerialized(agent[0]).isEmpty());
+                })
+                .thenWaitUntil(waits.logic(() -> check("band B went (" + dematerialized(agent[1]).size() + ")", dematerialized(agent[1]).size() == 1)))
+                .thenIdle(SEAM_TIMEOUT - 100)
+                .thenExecute(() -> {
+                    long now = level.getGameTime();
+                    check("band A's puppet stands " + (now - recalledAt[0]) + " ticks on (removed " + puppet[0].isRemoved() + ")", !puppet[0].isRemoved() && puppet[0].isAlive());
+                    check("its slot is alive", chiefSlot(agent[0]).alive());
+                    check("band A is not over (" + dematerialized(agent[0]).size() + ")", dematerialized(agent[0]).isEmpty());
+                    check("no CHIEF_KILLED for either (" + ConflictKit.about(ConflictRecords.CHIEF_KILLED, agent[0]).size() + ")",
+                            ConflictKit.about(ConflictRecords.CHIEF_KILLED, agent[0]).isEmpty() && ConflictKit.about(ConflictRecords.CHIEF_KILLED, agent[1]).isEmpty());
+                })
+                .thenWaitUntil(waits.logic(() -> check("band A's puppet went (removed " + puppet[0].isRemoved() + ")", goneAt[0] != 0)))
+                .thenExecute(() -> {
+                    long held = goneAt[0] - recalledAt[0];
+                    check("it went at the record's timeout, " + SEAM_TIMEOUT + " ticks on, within 3 before and 8 after (" + held + ")",
+                            held >= SEAM_TIMEOUT - 3 && held <= SEAM_TIMEOUT + 8);
+                    record(test, "seam", "band B (player 170 off) lost its puppet " + (goneAt[1] - recalledAt[1]) + " ticks after the recall; band A (player 140 off) "
+                            + held + " ticks after, at the timeout of " + SEAM_TIMEOUT);
+                })
+                .thenWaitUntil(waits.logic(() -> check("band A went (" + dematerialized(agent[0]).size() + ")", dematerialized(agent[0]).size() == 1)))
+                .thenExecute(() -> {
+                    check("one BAND_DEMATERIALIZED each (" + dematerialized(agent[0]).size() + ", " + dematerialized(agent[1]).size() + ")",
+                            dematerialized(agent[0]).size() == 1 && dematerialized(agent[1]).size() == 1);
+                    check("no second CHIEF_KILLED, no casualty",
+                            ConflictKit.about(ConflictRecords.BAND_CASUALTIES, agent[0]).isEmpty() && ConflictKit.about(ConflictRecords.BAND_CASUALTIES, agent[1]).isEmpty());
+                    back[0].run();
+                    drop(player);
+                    far.releaseAll();
+                })
+                .thenSucceed();
+    }
+
+    // ---- 29c-failed: a failed session captures every puppet (MZB-817, MZB-882) ----------------------------
+
+    /**
+     * A failed session takes every puppet out, finishes the dying chief's loot, and floats nothing on (test 29c, the failed session;
+     * MZB-817, MZB-882). Three bands on three lanes, each a puppet and a warrior (the control): one aloft, one settled before a masked
+     * player, and one killed by a masked player 20 ticks before. The server's engine is made to fail ({@code failForTest}, as
+     * {@code EngineFailureGameTests} does on a session of its own), and the session's end of the tick stops the bridge for the session:
+     * the puppets are captured and the plugin's {@code sessionFailed} runs.
+     * <ul>
+     * <li>Before: the dead chief's CHIEF_KILLED is journaled, once, naming its killer; its body is dying and no Sol Visage lies yet.</li>
+     * <li>After: the session has failed; both live puppets and the three warriors are removed; no Umvuthi is left in any lane (so none
+     * floats); no party is held by the bridge; the dying body is finished: one Sol Visage lies where it fell, nothing is dying, no loot
+     * record was lost, and no second CHIEF_KILLED was journaled.</li>
+     * <li>The session is started again ({@code restartGlobalForTest}): a new session, not failed, with an engine of its own and none of
+     * these parties. Nothing of the failed one outlives it.</li>
+     * </ul>
+     * Fails without the Dying list's finish in {@code sessionFailed} (the dying body is discarded with no drop).
+     */
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "aloft_failed", skyAccess = true)
+    public static void aFailedSessionCapturesEveryPuppet(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 4000);
+        String test = "aFailedSessionCapturesEveryPuppet";
+        Far far = new Far(helper, test);
+        ServerLevel level = far.level;
+        Lane[] lane = {new Lane(far, 0, 2), new Lane(far, 1, 2), new Lane(far, 2, 2)}; // aloft, settled, dying
+        long[] agent = {ConflictKit.newAgent(), ConflictKit.newAgent(), ConflictKit.newAgent()};
+        long[] faction = {ConflictKit.newFaction(), ConflictKit.newFaction(), ConflictKit.newFaction()};
+        EntityUmvuthi[] puppet = new EntityUmvuthi[3];
+        List<List<Mob>> warriors = new ArrayList<>();
+        ServerPlayer[] player = new ServerPlayer[3]; // [0] stays out; [1] the settled puppet's target; [2] the killer
+        Vec3[] fell = new Vec3[1];
+        long[] was = new long[3]; // chiefsKilled, deathLootLost, the tick of the failure order
+        RtsimSession[] old = new RtsimSession[1];
+        ScriptedEngine[] oldEngine = new ScriptedEngine[1];
+        boolean[] target = {true};
+
+        MowzieKit.seq(helper)
+                .thenExecute(() -> {
+                    for (Lane l : lane)
+                        l.force();
+                })
+                .thenWaitUntil(waits.chunks(far.ready()))
+                .thenExecute(() -> {
+                    for (int i = 0; i < 3; i++) {
+                        lane[i].floor();
+                        bandAt(helper, faction[i], agent[i], lane[i].x0 + 8, lane[i].top + 1, lane[i].z, 0f, List.of(), 1, true);
+                    }
+                    player[1] = MowzieKit.player(helper, lane[1].at(18), "mowzie-failed-target");
+                    player[2] = MowzieKit.player(helper, lane[2].at(28), "mowzie-failed-killer");
+                    MowzieKit.mask(player[1]);
+                    MowzieKit.mask(player[2]);
+                })
+                .thenWaitUntil(waits.logic(() -> {
+                    for (int i = 0; i < 3; i++) {
+                        puppet[i] = puppet(agent[i]);
+                        check("band " + i + "'s warrior is embodied (" + warriorsOf(agent[i]).size() + ")", warriorsOf(agent[i]).size() == 1);
+                    }
+                }))
+                .thenExecute(() -> {
+                    for (int i = 0; i < 3; i++)
+                        warriors.add(warriorsOf(agent[i]));
+                    check("the first puppet floats", puppet[0].isNoGravity());
+                    // the second settles before its player: the jar's own AI is off and the target is set by hand
+                    puppet[1].setNoAi(true);
+                    puppet[1].getAttribute(Attributes.FOLLOW_RANGE).setBaseValue(1000);
+                    MowzieKit.everyTick(helper, () -> {
+                        if (target[0] && puppet[1].isAlive() && !puppet[1].isRemoved())
+                            puppet[1].setTarget(player[1]);
+                    });
+                })
+                .thenWaitUntil(waits.logic(() -> check("the second puppet has settled before its player (gravity " + !puppet[1].isNoGravity() + ")", !puppet[1].isNoGravity())))
+                .thenExecute(() -> {
+                    was[0] = ConflictKit.bridge().chiefsKilled;
+                    was[1] = ConflictKit.deathLootLost();
+                    fell[0] = puppet[2].position();
+                    puppet[2].setLastHurtByPlayer(player[2]);
+                    MowzieKit.kill(puppet[2], level.damageSources().playerAttack(player[2]));
+                })
+                .thenIdle(20)
+                .thenWaitUntil(waits.logic(() -> check("the dead chief's CHIEF_KILLED is journaled (" + ConflictKit.about(ConflictRecords.CHIEF_KILLED, agent[2]).size() + ")",
+                        ConflictKit.about(ConflictRecords.CHIEF_KILLED, agent[2]).size() == 1)))
+                .thenExecute(() -> {
+                    ScriptedEngine.Received k = ConflictKit.about(ConflictRecords.CHIEF_KILLED, agent[2]).get(0);
+                    check("by a player, naming the killer", k.aux() == ConflictRecords.BY_PLAYER
+                            && player[2].getUUID().equals(ConflictKit.uuidAt(k, ConflictRecords.ChiefKilled.KILLER_MOST)));
+                    check("chiefsKilled rose by one (" + was[0] + " to " + ConflictKit.bridge().chiefsKilled + ")", ConflictKit.bridge().chiefsKilled == was[0] + 1);
+                    check("its body is dying (" + ConflictKit.bridge().dyingBodies() + ")", ConflictKit.bridge().dyingBodies() == 1);
+                    check("no Sol Visage yet (" + visagesNear(level, fell[0], 6) + ")", visagesNear(level, fell[0], 6) == 0);
+                    check("the body is still in the world (removed " + puppet[2].isRemoved() + ")", !puppet[2].isRemoved());
+                    for (int i = 0; i < 2; i++)
+                        check("band " + i + "'s puppet stands (alive " + puppet[i].isAlive() + ")", puppet[i].isAlive() && !puppet[i].isRemoved());
+                    for (List<Mob> ws : warriors)
+                        check("a warrior stands", ws.get(0).isAlive() && !ws.get(0).isRemoved());
+                    old[0] = RtsimTests.session();
+                    oldEngine[0] = RtsimTests.engine();
+                    check("the session runs before the failure", !old[0].failed());
+                    was[2] = level.getGameTime();
+                    oldEngine[0].failForTest();
+                })
+                .thenWaitUntil(waits.logic(() -> check("the session failed", old[0].failed())))
+                .thenExecute(() -> {
+                    long ticks = level.getGameTime() - was[2];
+                    check("the dying chief's body is finished: removed", puppet[2].isRemoved());
+                    check("one Sol Visage lies where it fell (" + visagesNear(level, fell[0], 6) + ")", visagesNear(level, fell[0], 6) == 1);
+                    check("nothing is dying (" + ConflictKit.bridge().dyingBodies() + ")", ConflictKit.bridge().dyingBodies() == 0);
+                    check("no loot record was lost (" + was[1] + " to " + ConflictKit.deathLootLost() + ")", ConflictKit.deathLootLost() == was[1]);
+                    for (int i = 0; i < 2; i++)
+                        check("band " + i + "'s puppet is removed", puppet[i].isRemoved());
+                    for (int i = 0; i < 3; i++) {
+                        check("band " + i + "'s warrior is removed (the control)", warriors.get(i).get(0).isRemoved());
+                        check("band " + i + " is not held by the bridge", ConflictKit.bridge().party(agent[i]) == null);
+                    }
+                    int floating = 0, standing = 0;
+                    for (Lane l : lane)
+                        for (EntityUmvuthi u : level.getEntitiesOfClass(EntityUmvuthi.class, l.area())) {
+                            standing++;
+                            if (u.isNoGravity())
+                                floating++;
+                        }
+                    check("no Umvuthi stands in any lane (" + standing + ", " + floating + " floating)", standing == 0);
+                    check("one CHIEF_KILLED in all (" + ConflictKit.about(ConflictRecords.CHIEF_KILLED, agent[2]).size() + ")",
+                            ConflictKit.about(ConflictRecords.CHIEF_KILLED, agent[2]).size() == 1
+                                    && ConflictKit.about(ConflictRecords.CHIEF_KILLED, agent[0]).isEmpty() && ConflictKit.about(ConflictRecords.CHIEF_KILLED, agent[1]).isEmpty());
+                    check("chiefsKilled is as it was after the one death (" + ConflictKit.bridge().chiefsKilled + ")", ConflictKit.bridge().chiefsKilled == was[0] + 1);
+                    record(test, "failed", "the session failed " + ticks + " ticks after the order; the aloft, the settled and the dying chief's bodies and their 3 warriors are out, one Sol Visage lies at the dying one");
+                    target[0] = false;
+                    RtsimSession.restartGlobalForTest(level.getServer());
+                    check("a session runs after the restart: " + RtsimSession.startFailure(), RtsimSession.current() != null);
+                    check("it is a new session, and it has not failed", RtsimSession.current() != old[0] && !RtsimSession.current().failed());
+                })
+                .thenIdle(5)
+                .thenExecute(() -> {
+                    RtsimSession now = RtsimTests.session();
+                    check("the new session still runs (failed " + now.failed() + ")", !now.failed());
+                    check("with an engine of its own", RtsimTests.engine() != oldEngine[0]);
+                    for (int i = 0; i < 3; i++)
+                        check("none of the old parties is held (" + i + ")", ConflictKit.bridge().party(agent[i]) == null);
+                    int standing = 0;
+                    for (Lane l : lane)
+                        standing += level.getEntitiesOfClass(EntityUmvuthi.class, l.area()).size();
+                    check("no Umvuthi stands in any lane after the restart (" + standing + ")", standing == 0);
+                    drop(player);
+                    far.releaseAll();
+                })
+                .thenSucceed();
+    }
+
+    // ---- 29c-home: a homecoming with its grove out is recalled (MZB-824, MZB-827) -------------------------
+
+    /**
+     * A band the engine has ended whose grove is out is recalled with RECALL_DONE, not handed back, and its puppet stays under Rule U until
+     * the recall's timeout (test 29c, the homecoming with the grove out; MZB-824, MZB-827). Two bands, H1 and H2, on lanes of forced
+     * chunks 100 blocks and more east of their groves (declared, and not loaded: out, no census, no epoch). Each is a puppet and a warrior,
+     * with a masked player 140 blocks off (out of sight at view distance 8, within the hold's range 160). The engine's march of each is
+     * ENDED and its BAND_RECALL (RECALL_DONE, no timeout, so {@link ConflictBridge#RECALL_TIMEOUT}) names the throne's spot; the band's
+     * speed is 0, so nothing walks.
+     * <ul>
+     * <li>H1: the warrior goes at once; the puppet stands until the timeout (alive 300 ticks on, and at 1,000), goes within 2 ticks
+     * of {@code RECALL_TIMEOUT} after the recall, and one BAND_DEMATERIALIZED follows; no CHIEF_KILLED.</li>
+     * <li>H2: its player kills the puppet 300 ticks into the window: one CHIEF_KILLED by that player, one Sol Visage, and
+     * {@code chiefDeathsAfterEnd} rises by one (the death of a chief of an ended march with no HAND_BACK held, which comes back at the
+     * next census, MZB-824); BAND_DEMATERIALIZED follows the CHIEF_KILLED in the journal.</li>
+     * </ul>
+     * The control, a grove that is in, sends HAND_BACKs and no recall: test 32t. Fails without MZB-827 (the puppet goes at the recall, out
+     * of sight, and H2 has nothing to kill).
+     */
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "aloft_home", skyAccess = true)
+    public static void aHomecomingWithItsGroveOutIsRecalled(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 4000);
+        String test = "aHomecomingWithItsGroveOutIsRecalled";
+        Far far = new Far(helper, test);
+        ServerLevel level = far.level;
+        String dim = RtsimTests.dimension(helper);
+        Grove[] g = {groveAt(far, 0, 0), groveAt(far, 0, 1)}; // H1 and H2: declared, never forced
+        Lane[] lane = {new Lane(far, far.k + 6, 0, 3), new Lane(far, far.k + 6, 1, 3)};
+        long[] agent = {ConflictKit.newAgent(), ConflictKit.newAgent()};
+        EntityUmvuthi[] puppet = new EntityUmvuthi[2];
+        Mob[] warrior = new Mob[2];
+        ServerPlayer[] player = new ServerPlayer[2];
+        long[] recalledAt = new long[2], goneAt = new long[2], warriorGoneAt = new long[2];
+        long[] was = new long[3]; // chiefsKilled, chiefDeathsAfterEnd, deathLootLost
+        Vec3[] fell = new Vec3[1];
+        boolean[] sampling = {false};
+        Runnable[] back = new Runnable[1];
+
+        MowzieKit.seq(helper)
+                .thenExecute(() -> {
+                    for (Lane l : lane)
+                        l.force();
+                    g[0].declare();
+                    g[1].declare();
+                })
+                .thenWaitUntil(waits.chunks(far.ready()))
+                .thenExecute(() -> {
+                    back[0] = viewDistance(helper, level, 8);
+                    for (int i = 0; i < 2; i++) {
+                        lane[i].floor();
+                        bandAt(helper, g[i].faction, agent[i], lane[i].x0 + 24, lane[i].top + 1, lane[i].z, 0f, List.of(), 1, true);
+                    }
+                })
+                .thenWaitUntil(waits.logic(() -> {
+                    for (int i = 0; i < 2; i++) {
+                        puppet[i] = puppet(agent[i]);
+                        List<Mob> ws = warriorsOf(agent[i]);
+                        check("band " + i + "'s warrior is embodied (" + ws.size() + ")", ws.size() == 1);
+                        warrior[i] = ws.get(0);
+                    }
+                }))
+                .thenExecute(() -> {
+                    for (int i = 0; i < 2; i++) {
+                        check("grove " + i + " is out: no epoch, no census (" + g[i].site().epoch() + ", " + MowzieKit.censusCount(g[i].faction) + ")",
+                                g[i].site().epoch() == 0L && MowzieKit.censusCount(g[i].faction) == 0);
+                        check("the puppet " + i + " floats", puppet[i].isNoGravity());
+                        player[i] = MowzieKit.player(helper, new Vec3(puppet[i].getX(), lane[i].top + 1, puppet[i].getZ() + 140), "mowzie-home-" + i);
+                        MowzieKit.mask(player[i]);
+                        check("the grove's rule holds puppet " + i, GroveKind.INSTANCE.holdRemoval(level, g[i].site(), puppet[i]));
+                    }
+                    double sight = ConflictBridge.sightRange(puppet[0], level);
+                    check("sight is 128 blocks at view distance 8 (" + sight + ")", sight == 128.0);
+                    for (ServerPlayer p : level.players())
+                        for (int i = 0; i < 2; i++)
+                            if (p != player[i] && Math.hypot(p.getX() - puppet[i].getX(), p.getZ() - puppet[i].getZ()) < GroveKind.HOLD_RANGE + 1)
+                                check("no other player is near puppet " + i + " (" + p.getGameProfile().getName() + ")", false);
+                    was[0] = ConflictKit.bridge().chiefsKilled;
+                    was[1] = ConflictKit.chiefDeathsAfterEnd();
+                    was[2] = ConflictKit.deathLootLost();
+                    MowzieKit.everyTick(helper, () -> {
+                        if (!sampling[0])
+                            return;
+                        long now = level.getGameTime();
+                        for (int i = 0; i < 2; i++) {
+                            ConflictBridge.Party p = ConflictKit.bridge().party(agent[i]);
+                            if (recalledAt[i] == 0 && p != null && p.recalling())
+                                recalledAt[i] = now;
+                            if (goneAt[i] == 0 && puppet[i].isRemoved())
+                                goneAt[i] = now;
+                            if (warriorGoneAt[i] == 0 && warrior[i].isRemoved())
+                                warriorGoneAt[i] = now;
+                        }
+                    });
+                    sampling[0] = true;
+                    ConflictKit.together(() -> {
+                        for (int i = 0; i < 2; i++) {
+                            marchEnded(agent[i], g[i].faction, dim, g[i].spot.x, g[i].spot.z);
+                            ConflictKit.recall(agent[i], ConflictKit.party(agent[i]).epoch, ConflictRecords.RECALL_DONE, 0, g[i].spot.x, g[i].spot.z);
+                        }
+                    });
+                })
+                .thenWaitUntil(waits.logic(() -> check("both bands are recalled (" + recalledAt[0] + ", " + recalledAt[1] + ")", recalledAt[0] != 0 && recalledAt[1] != 0)))
+                .thenIdle(5)
+                .thenExecute(() -> {
+                    for (int i = 0; i < 2; i++) {
+                        check("band " + i + "'s warrior went at once (" + (warriorGoneAt[i] - recalledAt[i]) + ")", warriorGoneAt[i] != 0 && warriorGoneAt[i] - recalledAt[i] <= 6);
+                        check("band " + i + "'s puppet stands", puppet[i].isAlive() && !puppet[i].isRemoved());
+                        check("band " + i + " is not over (" + dematerialized(agent[i]).size() + ")", dematerialized(agent[i]).isEmpty());
+                    }
+                })
+                .thenIdle(295)
+                .thenExecute(() -> {
+                    long now = level.getGameTime();
+                    for (int i = 0; i < 2; i++)
+                        check("puppet " + i + " stands " + (now - recalledAt[i]) + " ticks into the window", puppet[i].isAlive() && !puppet[i].isRemoved() && chiefSlot(agent[i]).alive());
+                    // H2's player kills it
+                    fell[0] = puppet[1].position();
+                    puppet[1].setLastHurtByPlayer(player[1]);
+                    MowzieKit.kill(puppet[1], level.damageSources().playerAttack(player[1]));
+                })
+                .thenWaitUntil(waits.logic(() -> check("H2's CHIEF_KILLED is journaled (" + ConflictKit.about(ConflictRecords.CHIEF_KILLED, agent[1]).size() + ")",
+                        ConflictKit.about(ConflictRecords.CHIEF_KILLED, agent[1]).size() == 1)))
+                .thenWaitUntil(waits.logic(() -> check("H2's body has ended its animation (removed " + puppet[1].isRemoved() + ")", puppet[1].isRemoved())))
+                .thenWaitUntil(waits.logic(() -> check("H2's band went (" + dematerialized(agent[1]).size() + ")", dematerialized(agent[1]).size() == 1)))
+                .thenExecute(() -> {
+                    ScriptedEngine.Received k = ConflictKit.about(ConflictRecords.CHIEF_KILLED, agent[1]).get(0);
+                    check("H2's CHIEF_KILLED is by a player and names it", k.aux() == ConflictRecords.BY_PLAYER
+                            && player[1].getUUID().equals(ConflictKit.uuidAt(k, ConflictRecords.ChiefKilled.KILLER_MOST)));
+                    check("it came before the band's BAND_DEMATERIALIZED (obsSeq " + k.obsSeq() + " and " + dematerialized(agent[1]).get(0).obsSeq() + ")",
+                            k.obsSeq() < dematerialized(agent[1]).get(0).obsSeq());
+                    check("chiefsKilled rose by one (" + was[0] + " to " + ConflictKit.bridge().chiefsKilled + ")", ConflictKit.bridge().chiefsKilled == was[0] + 1);
+                    check("chiefDeathsAfterEnd rose by one (" + was[1] + " to " + ConflictKit.chiefDeathsAfterEnd() + ")", ConflictKit.chiefDeathsAfterEnd() == was[1] + 1);
+                    check("one Sol Visage where H2's puppet fell (" + visagesNear(level, fell[0], 6) + ")", visagesNear(level, fell[0], 6) == 1);
+                    check("no loot record was lost (" + was[2] + " to " + ConflictKit.deathLootLost() + ")", ConflictKit.deathLootLost() == was[2]);
+                    check("H1's puppet still stands (" + puppet[0].isRemoved() + ")", puppet[0].isAlive() && !puppet[0].isRemoved());
+                    check("H1 is not over", dematerialized(agent[0]).isEmpty());
+                })
+                .thenWaitUntil(waits.logic(() -> check("H1's puppet went (removed " + puppet[0].isRemoved() + ")", goneAt[0] != 0)))
+                .thenExecute(() -> {
+                    long held = goneAt[0] - recalledAt[0];
+                    check("H1's puppet went at RECALL_TIMEOUT (" + ConflictBridge.RECALL_TIMEOUT + "), within 3 ticks before and 8 after (" + held + ")",
+                            held >= ConflictBridge.RECALL_TIMEOUT - 3 && held <= ConflictBridge.RECALL_TIMEOUT + 8);
+                    record(test, "home", "H1's puppet (player 140 off, grove out) went " + held + " ticks after the recall; H2's was killed 300 ticks in: CHIEF_KILLED once, chiefDeathsAfterEnd +"
+                            + (ConflictKit.chiefDeathsAfterEnd() - was[1]));
+                })
+                .thenWaitUntil(waits.logic(() -> check("H1's band went (" + dematerialized(agent[0]).size() + ")", dematerialized(agent[0]).size() == 1)))
+                .thenExecute(() -> {
+                    check("no CHIEF_KILLED for H1 (" + ConflictKit.about(ConflictRecords.CHIEF_KILLED, agent[0]).size() + ")", ConflictKit.about(ConflictRecords.CHIEF_KILLED, agent[0]).isEmpty());
+                    check("chiefDeathsAfterEnd is still one more (" + ConflictKit.chiefDeathsAfterEnd() + ")", ConflictKit.chiefDeathsAfterEnd() == was[1] + 1);
+                    check("neither band has a casualty", ConflictKit.about(ConflictRecords.BAND_CASUALTIES, agent[0]).isEmpty() && ConflictKit.about(ConflictRecords.BAND_CASUALTIES, agent[1]).isEmpty());
+                    back[0].run();
+                    drop(player);
+                    far.releaseAll();
+                })
+                .thenSucceed();
+    }
+
+    // ---- the invariant's own test: the death is journaled before the band is (MZB-824, MZB-882) ----------
+
+    /**
+     * A band's BAND_DEMATERIALIZED never comes before its chief's death is journaled (the lead's invariant; MZB-882). Two bands, each a
+     * puppet and a warrior, on lanes, with a masked killer 20 blocks off. Band X's chief is killed, and 20 ticks later band Y's is
+     * killed in the tick both bands are recalled (BAND_RECALL, RECALL_DONE, 20 ticks): X's chief died 20 ticks before its recall, Y's
+     * in its tick. For each band:
+     * <ul>
+     * <li>one CHIEF_KILLED by the killer and one BAND_DEMATERIALIZED, and the CHIEF_KILLED has the lower observation sequence in the
+     * journal (the engine's received log, by {@code obsSeq});</li>
+     * <li>no second CHIEF_KILLED, no casualty; {@code chiefsKilled} rose by two in all.</li>
+     * </ul>
+     * After the animations one Sol Visage lies at each body, nothing is dying and no loot record was lost: the band's end does not wait
+     * for the animation, only for the death's journal. There is no engine command that makes BAND_DEMATERIALIZED (it is the bridge's own
+     * observation), so the recall is the engine's record that ends the band. Fails if a recall's finish went before {@code settleDeaths}.
+     */
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "aloft_invariant", skyAccess = true)
+    public static void aRecallAfterTheChiefsDeathJournalsTheDeathFirst(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 4000);
+        String test = "aRecallAfterTheChiefsDeathJournalsTheDeathFirst";
+        Far far = new Far(helper, test);
+        ServerLevel level = far.level;
+        Lane[] lane = {new Lane(far, 0, 2), new Lane(far, 1, 2)}; // X, Y
+        long[] agent = {ConflictKit.newAgent(), ConflictKit.newAgent()};
+        long[] faction = {ConflictKit.newFaction(), ConflictKit.newFaction()};
+        EntityUmvuthi[] puppet = new EntityUmvuthi[2];
+        ServerPlayer[] player = new ServerPlayer[2];
+        Vec3[] fell = new Vec3[2];
+        long[] was = new long[2]; // chiefsKilled, deathLootLost
+
+        MowzieKit.seq(helper)
+                .thenExecute(() -> {
+                    for (Lane l : lane)
+                        l.force();
+                })
+                .thenWaitUntil(waits.chunks(far.ready()))
+                .thenExecute(() -> {
+                    for (int i = 0; i < 2; i++) {
+                        lane[i].floor();
+                        bandAt(helper, faction[i], agent[i], lane[i].x0 + 8, lane[i].top + 1, lane[i].z, 0f, List.of(), 1, true);
+                        player[i] = MowzieKit.player(helper, lane[i].at(28), "mowzie-invariant-" + i);
+                        MowzieKit.mask(player[i]);
+                    }
+                })
+                .thenWaitUntil(waits.logic(() -> {
+                    for (int i = 0; i < 2; i++)
+                        puppet[i] = puppet(agent[i]);
+                }))
+                .thenExecute(() -> {
+                    was[0] = ConflictKit.bridge().chiefsKilled;
+                    was[1] = ConflictKit.deathLootLost();
+                    fell[0] = puppet[0].position();
+                    puppet[0].setLastHurtByPlayer(player[0]);
+                    MowzieKit.kill(puppet[0], level.damageSources().playerAttack(player[0]));
+                })
+                .thenIdle(20)
+                .thenExecute(() -> {
+                    check("X's chief died 20 ticks ago and its animation is not over (" + puppet[0].isRemoved() + ")", !puppet[0].isRemoved());
+                    fell[1] = puppet[1].position();
+                    puppet[1].setLastHurtByPlayer(player[1]);
+                    MowzieKit.kill(puppet[1], level.damageSources().playerAttack(player[1]));
+                    for (int i = 0; i < 2; i++)
+                        ConflictKit.recall(agent[i], ConflictKit.party(agent[i]).epoch, ConflictRecords.RECALL_DONE, 20, lane[i].x0, lane[i].z);
+                })
+                .thenWaitUntil(waits.logic(() -> check("both bands went (" + dematerialized(agent[0]).size() + ", " + dematerialized(agent[1]).size() + ")",
+                        dematerialized(agent[0]).size() >= 1 && dematerialized(agent[1]).size() >= 1)))
+                .thenWaitUntil(waits.logic(() -> check("both CHIEF_KILLED are journaled (" + ConflictKit.about(ConflictRecords.CHIEF_KILLED, agent[0]).size() + ", "
+                        + ConflictKit.about(ConflictRecords.CHIEF_KILLED, agent[1]).size() + ")",
+                        ConflictKit.about(ConflictRecords.CHIEF_KILLED, agent[0]).size() >= 1 && ConflictKit.about(ConflictRecords.CHIEF_KILLED, agent[1]).size() >= 1)))
+                .thenIdle(10)
+                .thenExecute(() -> {
+                    String[] name = {"X", "Y"};
+                    for (int i = 0; i < 2; i++) {
+                        List<ScriptedEngine.Received> killed = ConflictKit.about(ConflictRecords.CHIEF_KILLED, agent[i]);
+                        List<ScriptedEngine.Received> over = dematerialized(agent[i]);
+                        check(name[i] + ": one CHIEF_KILLED (" + killed.size() + ")", killed.size() == 1);
+                        check(name[i] + ": one BAND_DEMATERIALIZED (" + over.size() + ")", over.size() == 1);
+                        check(name[i] + ": by a player, naming the killer", killed.get(0).aux() == ConflictRecords.BY_PLAYER
+                                && player[i].getUUID().equals(ConflictKit.uuidAt(killed.get(0), ConflictRecords.ChiefKilled.KILLER_MOST)));
+                        check(name[i] + ": the death is journaled before the band is (obsSeq " + killed.get(0).obsSeq() + " and " + over.get(0).obsSeq() + ")",
+                                killed.get(0).obsSeq() < over.get(0).obsSeq());
+                        check(name[i] + ": no casualty (" + ConflictKit.about(ConflictRecords.BAND_CASUALTIES, agent[i]).size() + ")",
+                                ConflictKit.about(ConflictRecords.BAND_CASUALTIES, agent[i]).isEmpty());
+                    }
+                    check("chiefsKilled rose by two (" + was[0] + " to " + ConflictKit.bridge().chiefsKilled + ")", ConflictKit.bridge().chiefsKilled == was[0] + 2);
+                    record(test, "invariant", "X (died 20 ticks before the recall): CHIEF_KILLED obsSeq " + ConflictKit.about(ConflictRecords.CHIEF_KILLED, agent[0]).get(0).obsSeq()
+                            + ", BAND_DEMATERIALIZED " + dematerialized(agent[0]).get(0).obsSeq() + "; Y (died in the recall's tick): "
+                            + ConflictKit.about(ConflictRecords.CHIEF_KILLED, agent[1]).get(0).obsSeq() + " and " + dematerialized(agent[1]).get(0).obsSeq());
+                })
+                .thenWaitUntil(waits.logic(() -> check("both animations ended (" + ConflictKit.bridge().dyingBodies() + " dying)", ConflictKit.bridge().dyingBodies() == 0
+                        && puppet[0].isRemoved() && puppet[1].isRemoved())))
+                .thenExecute(() -> {
+                    for (int i = 0; i < 2; i++)
+                        check("one Sol Visage where body " + i + " fell (" + visagesNear(level, fell[i], 6) + ")", visagesNear(level, fell[i], 6) == 1);
+                    check("no loot record was lost (" + was[1] + " to " + ConflictKit.deathLootLost() + ")", ConflictKit.deathLootLost() == was[1]);
+                    check("no second CHIEF_KILLED (" + ConflictKit.about(ConflictRecords.CHIEF_KILLED, agent[0]).size() + ", " + ConflictKit.about(ConflictRecords.CHIEF_KILLED, agent[1]).size() + ")",
+                            ConflictKit.about(ConflictRecords.CHIEF_KILLED, agent[0]).size() == 1 && ConflictKit.about(ConflictRecords.CHIEF_KILLED, agent[1]).size() == 1);
                     drop(player);
                     far.releaseAll();
                 })
