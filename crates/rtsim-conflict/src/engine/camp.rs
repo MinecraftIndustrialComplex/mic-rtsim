@@ -1915,7 +1915,14 @@ impl Conflict {
             return self.replayed_placed(w, op, at);
         };
         let good = GoodId(u16::try_from(p.good).unwrap_or(0));
-        w.held_to_players(&BTreeMap::from([(good, p.amount)]));
+        let out = w.held_to_players(&BTreeMap::from([(good, p.amount)]));
+        // The earmark always holds what is owed: a short take is a book error (hit 3 of MZB-930
+        // again), which `take_held` would clamp silently.
+        debug_assert_eq!(
+            out.get(&good).copied(),
+            Some(p.amount),
+            "the earmark is short"
+        );
         if let Some(camp) = self.camp_mut(f)
             && let Ok(i) = camp.owed_tribute.binary_search_by_key(&p.good, |e| e.0)
         {
@@ -1988,7 +1995,12 @@ impl Conflict {
             return false;
         };
         let good = GoodId(u16::try_from(g).unwrap_or(0));
-        w.held_to_players(&BTreeMap::from([(good, amount)]));
+        let out = w.held_to_players(&BTreeMap::from([(good, amount)]));
+        debug_assert_eq!(
+            out.get(&good).copied(),
+            Some(amount),
+            "the earmark is short"
+        );
         let Some(camp) = self.camp_mut(f) else {
             return false;
         };

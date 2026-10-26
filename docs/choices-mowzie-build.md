@@ -6154,7 +6154,8 @@ section). The cause was in the engine, not the test.
     returns the rest. `pay_tribute` and `gift` stock only that rest at the haven, and `ledger.tribute` or
     `ledger.gifts` counts both parts.
   - The plan's "paid tribute is stocked at the grove's haven" now holds for what is not owed to the chest:
-    a gift's other goods, and every culture with no chief body (no camp chest), which are unchanged.
+    a gift's other goods, every culture with no chief body (no camp chest), and a grove with no camp
+    yet, which are unchanged.
   - A payment at a haven that keeps no stock still earmarks the owed part: the chest gets it, where before
     nothing was booked at all.
 - **MZB-932** (booked at the answer, not at the send):
@@ -6168,8 +6169,16 @@ section). The cause was in the engine, not the test.
   - `place_tribute` and `haven_chest` lost their now unused world and tick parameters, and `camp_census`'s
     world parameter is unused (kept, with an underscore).
 - **MZB-933** (where the earmark goes, and the check):
-  - No path drops a camp or a faction: `FactionTable` never removes a row, and a camp is only taken and
-    put back. The earmark lives as long as the faction.
+  - No path drops a camp or a faction in a running engine: `FactionTable` never removes a row, and a camp
+    is only taken and put back. The earmark lives as long as the faction.
+  - One path drops them all at a start: conflict pages this build cannot read (`when_pages_unreadable` in
+    rtsim-jni's conflict link: a conflict page bump on a deployed world, or a corrupt meta page) start the
+    conflict afresh while the world's pages load. The earmark then stays in the world's `outside.held`
+    with no owner, and nothing books it out: the paid tribute never reaches a chest. Before the earmark
+    those goods sat in the haven's line and stayed in the economy, so this is a new loss, bounded by what
+    was owed at the save. Parties' loot in `outside.held` is lost the same way already. Kept (the
+    conservative choice, and no compatibility before release): the fresh conflict cannot know which part
+    of the shared held was its earmark, so it cannot land it.
   - At a reinstall reset the engine and its world start fresh, so the earmark goes with them, as the owed
     goods in the market did before (UR-1: an uninstall loses nothing new).
   - `Conflict::check` adds one rule: per good, what the parties carry plus every grove's `owed_tribute` is
@@ -6180,6 +6189,27 @@ section). The cause was in the engine, not the test.
     whole 64.
   - No saved format changes: `owed_tribute` was already saved, and `outside.held` is the world's.
   - The GameTest keeps its exact-567 check.
+- **MZB-934** (the slice's Opus review: no P1; its P2 and P3 fixed):
+  - P2-1, the check is one-sided. `Conflict::check` asks only that the world's held covers the parties'
+    loot and the earmarks, so a leak into held (a FAILED that earmarks again, an APPLIED that books
+    nothing out) passed it. It stays one-sided: `outside.held` is one pool, and ships and lanes hold
+    goods in it too, so an equality there would fail in any world with them. The grove tests' `ok` adds
+    the equality instead, per good: in those worlds only the conflict holds goods. It holds in all 60
+    grove tests and kills those mutations, as the review showed.
+  - P2-2, the drop path above (unreadable conflict pages): recorded in MZB-933, not fixed.
+  - P2-3, no rtsim-jni test pinned the earmark across a real save and crash. A helper,
+    `assert_earmarked`, asserts that the world's held of the tribute good is what the grove owes and that
+    `Conflict::check` passes. It runs in the crash test
+    (`a_groves_tribute_lands_in_its_chest_once_across_a_failure_and_a_crash`: 567 after the payment, the
+    FAILED and the restart, 503 after the stack lands), in the NOT_LOADED test, and in RP-292's
+    switch-off test, where it replaces the stock bound that the earmark made vacuous (the goods no longer
+    go back to a stock).
+  - P3: `tribute_placed` and `replayed_placed` debug-assert that `held_to_players` took the whole stack,
+    since `take_held` clamps silently and a short take is hit 3 again. The texts that still sent a FAILED
+    stack's goods back to the stock (docs/boundary.md, rtsim-jni's conflict link, the protocol tests'
+    messages) now say it stays owed and earmarked. The test names that say "goes back to its stock" are
+    kept for MZB-760, which rewrites those tests. The conflict and rail benches run `Conflict::check`
+    after their heap samples, as it now reads every faction's camp.
 
 ## M10 March
 
