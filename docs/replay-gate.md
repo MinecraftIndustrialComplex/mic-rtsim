@@ -2018,11 +2018,11 @@ its files on disk, the rest from the save before. Two directions:
 
 | Row | Op, effect | A | B | After a give-up | Owner of what is left |
 |---|---|---|---|---|---|
-| C1 | TRANSFER_TO_CONTAINER (dragon tribute), chest | exact (noted) | exact (RP-210): an unloaded chest answers NOT_LOADED and the dragons park the stack under its op id, so the chunk's REASSERTed APPLIED books it placed and a resend under the same op answers DUPLICATE. The Umvuthana grove's tribute takes NOT_LOADED as FAILED and goes again under a new op: dupe, as before RP-210 | loss | the Mowzie lead (MZB-760, the grove parks its stack as the dragons do) |
+| C1 | TRANSFER_TO_CONTAINER (dragon tribute), chest | exact (noted) | exact (RP-210; for a double chest across a chunk border, slice U-f: the other half's chunk carries the result too and refuses a resend): an unloaded chest answers NOT_LOADED and the dragons park the stack under its op id, so the chunk's REASSERTed APPLIED books it placed and a resend under the same op answers DUPLICATE. The Umvuthana grove's tribute takes NOT_LOADED as FAILED and goes again under a new op: dupe, as before RP-210 | loss | the Mowzie lead (MZB-760, the grove parks its stack as the dragons do) |
 | C2 | WRITE_GOSSIP, villagers | exact | exact (the villager's ring; a minor loss past its 64 entries) | n/a | none |
 | C3 | PLACE_HOUSE, house box | exact (RP-211: every loaded box chunk carries the result and is noted) | the half house in the newer chunks stands, the villages without it: loss (was a second house, RP-211: a searching build looks for its op on every candidate plot, the unloaded ones as saved); a candidate chunk not read within 10 s is searched past, a second house possible there, logged and counted | loss | none (RP-211) |
 | C4 | SPAWN_RESIDENT, resident | exact (RP-212: the resident carries its result as a noted holder) | exact (RP-212: entities around the spot loaded first, the op checked every tick, the result carried, the UUID from the op); a resident that walked out of reach before it was stored and its second: one lost when both load, loss | loss | none (RP-212) |
-| I1 | reconcile container and energy deltas | exact (epoch, noted); a double chest across a chunk border: the other half's chunk is not noted | exact; a double chest across a chunk border: a positive delta a dupe (measured, RP-215: 40 for 20), a negative one a dupe (inferred) | negative delta: dupe; positive: loss | the coordinator (RP-215, residual 9) |
+| I1 | reconcile container and energy deltas | exact (epoch, noted); a double chest across a chunk border: exact too (slice U-f, RP-215: the other half's chunk carries the result and is noted); a Create vault or another multi-block storage across a border: the other parts' chunks are not noted (residual 10) | exact; a double chest across a chunk border: the resend is refused on the other half's carried result (slice U-f; before it, measured: a positive delta 40 for 20, a dupe, and a negative one 0 left of 40 for a booked 20, taken twice, a loss); a vault: as the double chest was (inferred, not run) | negative delta: dupe; positive: loss | none for a double chest (slice U-f); residual 10 for the rest |
 | I2 | reconcile block destroys, drops | exact (RP-213: the drops join only once the broken blocks' chunks are on disk) | exact; the drops a loss on a write failure or a stop before they join, logged and counted (was a dupe) | the block back while booked destroyed, the drops never joined: no dupe (was a dupe) | none (RP-213) |
 | I3 | reconcile deposit draws (Ore Excavation, Destroy crude and chunk pollution) | chunk exact; the pollution ledger cannot be A now | chunk exact; the ledger's ring refuses a second booking (RP-207) | not drawn but delivered, dupe | given-up notes |
 | I4 | IND_DEPOSIT_DELTA, Diesel `cdg_oil_chunks` | cannot happen (RP-200) | exact: the oil file's ring (RP-204) | n/a (not noted) | none |
@@ -2052,7 +2052,7 @@ its files on disk, the rest from the save before. Two directions:
    counted `late` in `/rtsim perf`. Follow-on: take a given-up note's ops out of the applied set and have
    the engine resend them by op (a per-op resend list), which turns A into B.
 3. **Chunk and entity effects the barrier does not note** (the audit's 3.6): the transfer's surplus
-   item entity (C1, rare), the other half of a double chest (I1, residual 9), Frontier keying when a
+   item entity (C1, rare), the other parts of a vault or another multi-block storage (I1, residual 10; the double chest is closed, residual 9), Frontier keying when a
    package is already keyed (K7), goods moved out of a postbox or frogport before its chunk saved (K3,
    K4), the repair schematic (K8), and the X rows' bodies and drops. Owners in the table. Slice U-b
    covers the house box chunks other than the origin (C3, RP-211), the resident (C4, RP-212) and a
@@ -2100,13 +2100,53 @@ its files on disk, the rest from the save before. Two directions:
    - a postbox changed in this life while its station did not attach it, after the port's mirror was
      marked fresh, and a chunk saved between the postbox's unload and Create's next save of it into the
      buffer: the mirror older than the chunk, primed by the write, a dupe of what automation took since.
-9. **A double chest across a chunk border** (I1, RP-215, slice U-b's test
-   `aReconcileThroughADoubleChestAcrossAChunkBorder`). A reconcile of one chunk changes the pair's other
-   half, in the next chunk, which gets no epoch and no note. With that chunk newer than the reconciled
-   one and the journal, the resend put the 20 diamonds into the other half a second time (40 for 20): a
-   dupe, measured. A negative delta is a dupe by the same mechanism (inferred, not run). The fixes the
-   audit gives: carry and note the reconcile in both halves' chunks, or reconcile each half by its own
-   position. Owner: the coordinator decides.
+9. **A double chest across a chunk border** (I1, RP-215). Closed by slice U-f for the vanilla chest and any
+   `ChestBlock` of a mod; what is left is in the last two bullets. A reconcile of one chunk changes the pair's
+   other half, in the next chunk, through the pair's item handler; that chunk got no epoch and no note. With
+   it newer than the reconciled one and the journal, the resend put the goods in a second time. Measured
+   before the fix (slice U-b's test, now a refusal test, and two more of slice U-f's; each resends under the
+   same op after a crash that keeps the other half's chunk and rolls back the reconciled chunk and the journal):
+   a reconcile of +20 into the pair, 40 for 20 (a dupe); a transfer of 20 (C1), 40 for 20 (a dupe); a
+   reconcile of -20 from a half holding 40, 0 left (40 taken for a booked 20: taken twice, a loss in the
+   world, which the audit had inferred to be a dupe). What U-f does (docs/choices-journal-barrier.md, U-f1
+   to U-f6):
+   - The reconcile carries its IND_RECONCILE_RESULT, with the op, in the other half's chunk
+     (`mic_rtsim:pending`, as C1's APPLIED is carried) and notes that chunk with the barrier, as it does
+     the reconciled one. Not an epoch: epochs are the reconciled chunk's own sequence, reported to the engine
+     as `ChunkLoaded.APPLIED_EPOCH`. The engine takes the carried copy at that chunk's load (REASSERT) and
+     closes its pending reconcile, as it does for the reconciled chunk's.
+   - A reconcile and a TRANSFER_TO_CONTAINER whose other half's chunk carries their op are refused as
+     applied (DUPLICATE_OP) and change nothing, whatever the reconciled chunk and the journal say. The worst
+     case of a crash is the loss of the half in the chunk the crash rolled back, never a second put.
+   - The other half is found from the chest's block state (one `instanceof` for any block that is not a
+     chest), so a single chest or any other container costs nothing more.
+   - Not reconciled by half: the pair is one inventory to the engine, so goods still go into whichever half
+     has room.
+   Left:
+   - A `CompoundContainer` that a mod builds for a block that is not a `ChestBlock`. The pair is found from
+     the chest's block state; a compound container's two halves are private fields, and finding them from the
+     handler would cost a capability lookup on every delta and an accessor mixin. None was looked for in the pack.
+   - The other half's chunk not loaded when the reconcile is applied is loaded there, as the pair's handler
+     would at its first read (`ChestBlock.getContainer` through `Level.getBlockState`), and its carried
+     records are the saved ones. A GameTest cannot stage it: a forced chunk's neighbour stays loaded, so the
+     case is argued from the code, not run. A transfer finds the half loaded (its handler lookup loaded it) and
+     answers NOT_LOADED if it somehow is not.
+10. **A Create vault, and other multi-block storages, across a chunk border** (I1, found in slice U-f, not
+   fixed). In Create 6.0.10 (`ItemVaultBlockEntity`, read from the jar's bytecode, there is no sources jar) every
+   vault block entity keeps its own `ItemStackHandler` and saves it with its own chunk (`write`, offsets 95 to
+   124: for a save that is not a client packet each part writes `StorageType: CombinedInv` and its own
+   `Inventory`). The controller's capability (`initCapability`, offsets 167 to 261) is a
+   `VersionedInventoryWrapper` over a `SameSizeCombinedInvWrapper` of every part's handler, found by
+   `ConnectivityHandler.partAt` over the vault's box; a part that is not the controller hands out the
+   controller's. One vault can span two chunks, and up to four at a corner: `getMaxWidth()` is 3 and
+   `getMaxLength(width)` is 3 times the width, so a vault is up to 3 by 3 by 9. The note matters, and it is the
+   double chest's mechanism: the engine names the controller's position (`CreatePlugin.canonicalInventory`), so
+   a reconcile's epoch and result are in the controller's chunk only, while the goods land in the parts' block
+   entities in their own chunks. With a part's chunk newer than the controller's and the journal, the resend
+   would put the goods in again. Not run. The fix is U-f's: an `IndustryPlugin` hook that names the chunks of
+   a position's parts (the vault's box), which the reconcile and the transfer treat as they treat a
+   double chest's other half. Other multi-block storages (Create fluid tanks and others) were not read: the
+   shape is the same wherever a handler combines parts that sit in several block entities.
 
 **Rings and the module switch (a rule for every ring).** Saving and loading a ring of applied ops never
 depends on a module switch: the train's, the station port's, the oil file's, level pollution's, the
