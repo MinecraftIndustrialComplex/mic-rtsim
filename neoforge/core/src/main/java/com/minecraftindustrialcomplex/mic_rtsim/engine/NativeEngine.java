@@ -356,7 +356,7 @@ public final class NativeEngine implements ScriptedEngine {
     // a call can never use a handle another thread is freeing.
 
     @Override
-    public synchronized SessionStart start(long lastAppliedCmdSeq) {
+    public synchronized SessionStart start(long lastAppliedCmdSeq, long worldNextObsSeq) {
         long[] out = new long[2];
         check(nStart(live(), lastAppliedCmdSeq, out), "start");
         return new SessionStart(out[0], out[1]);

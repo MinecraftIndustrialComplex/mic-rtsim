@@ -302,6 +302,130 @@ fn a_rolled_back_pressure_save_takes_its_chunks_with_it() {
     let _ = j.crash();
 }
 
+/// A world save and its WORLD_SAVED (the bridge's order), waited for until the engine's pages are
+/// confirmed through it: the save's serial is then the archive's confirmed one.
+fn world_save_confirmed(e: &Engine, j: &mut Java) -> WorldSave {
+    let through = j.next_obs - 1;
+    let file = j.save_world();
+    j.idle();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while e.durable_obs_seq() < through {
+        assert!(Instant::now() < deadline, "the world save never confirmed");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    j.idle();
+    file
+}
+
+/// Compaction never passes the confirmed save (U-h, docs/choices-leg-purge.md LP12): a world save
+/// the engine has committed stays a pending generation until its WORLD_SAVED, so the serial the
+/// archive compacts through is the save before it, and the pending save's chunk is left whole. The
+/// WORLD_SAVED moves the confirmed serial to it.
+#[test]
+fn the_archive_compacts_only_through_the_confirmed_save() {
+    let dir = tmpdir("archive-confirm");
+    let e = engine(&dir, 256 * 1024);
+    let mut j = Java::open(e.clone(), WorldSave::fresh());
+    j.module_mask = PHASE1;
+    adopt(&mut j, 0x0001_0000_0000_0001, "minecraft:village_plains", 0, 0);
+    j.idle();
+    world_save_confirmed(&e, &mut j);
+    let confirmed = e.stats.archive_confirmed.load(Acquire);
+    assert!(confirmed > 0);
+    assert_eq!(confirmed, e.stats.archive_serial.load(Acquire));
+    adopt(&mut j, 0x0001_0000_0000_0002, "minecraft:village_taiga", 400, 0);
+    j.idle();
+    // The second world save: its pages are asked for, its WORLD_SAVED is not sent yet.
+    let through = j.next_obs - 1;
+    let committed = e.stats.saves_committed.load(Acquire);
+    e.request_save(through);
+    j.idle();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while e.stats.saves_committed.load(Acquire) == committed {
+        assert!(Instant::now() < deadline, "the second save never committed");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    j.idle();
+    let serial = e.stats.archive_serial.load(Acquire);
+    assert!(serial > confirmed, "the second save recorded: {serial}");
+    assert_eq!(
+        e.stats.archive_confirmed.load(Acquire),
+        confirmed,
+        "the archive compacts through the confirmed save, not the pending one"
+    );
+    assert!(
+        events_tags(&dir).contains(&serial),
+        "the pending save's chunk is on disk, whole: {:?}",
+        events_tags(&dir)
+    );
+    j.written_through = Some(through);
+    j.world_saved(through);
+    j.idle();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while e.stats.archive_confirmed.load(Acquire) != serial {
+        assert!(Instant::now() < deadline, "the confirm never moved the serial");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    e.close(true, Duration::from_secs(5)).unwrap();
+    assert_eq!(e.stats.archive_failures.load(Acquire), 0);
+}
+
+/// A world save whose journal file never landed (the process died before it, or the write was
+/// held) is rolled back at the start from the older file, and its chunks go with it: the archive
+/// holds only what the world the file describes had recorded.
+#[test]
+fn a_rolled_back_world_save_takes_its_chunks_with_it() {
+    let dir = tmpdir("archive-world-rollback");
+    let e = engine(&dir, 256 * 1024);
+    let mut j = Java::open(e.clone(), WorldSave::fresh());
+    j.module_mask = PHASE1;
+    adopt(&mut j, 0x0001_0000_0000_0001, "minecraft:village_plains", 0, 0);
+    j.idle();
+    let first_obs = j.next_obs - 1;
+    let first = world_save_confirmed(&e, &mut j);
+    let confirmed = e.stats.archive_confirmed.load(Acquire);
+    assert!(confirmed > 0);
+    adopt(&mut j, 0x0001_0000_0000_0002, "minecraft:village_taiga", 400, 0);
+    adopt(&mut j, 0x0001_0000_0000_0003, "minecraft:village_desert", 0, 400);
+    j.idle();
+    // The second world save: committed by the engine, never confirmed.
+    let committed = e.stats.saves_committed.load(Acquire);
+    e.request_save(j.next_obs - 1);
+    j.idle();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while e.stats.saves_committed.load(Acquire) == committed {
+        assert!(Instant::now() < deadline, "the second save never committed");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    let (on_disk, _) = events(&dir);
+    assert_eq!(
+        on_disk.iter().filter(|r| r.0 == "settle.joined").count(),
+        3,
+        "the second save's events are on disk: {on_disk:?}"
+    );
+    assert!(events_tags(&dir).iter().any(|&t| t > confirmed));
+    let game_time = j.game_time;
+    let _ = j.crash();
+
+    let e = engine(&dir, 256 * 1024);
+    let mut j = Java::open(e.clone(), first);
+    j.module_mask = PHASE1;
+    j.game_time = game_time;
+    assert_eq!(j.pages_obs, first_obs, "the start rolled the second save back");
+    assert_eq!(e.stats.archive_confirmed.load(Acquire), confirmed);
+    let (after, tags) = events(&dir);
+    assert!(
+        tags.iter().all(|&t| t <= confirmed),
+        "no chunk past the generation the restart selected ({confirmed}): {tags:?}"
+    );
+    assert_eq!(
+        after.iter().filter(|r| r.0 == "settle.joined").count(),
+        1,
+        "only the first village's join: the other two died with the world's file: {after:?}"
+    );
+    let _ = j.crash();
+}
+
 /// The save serials the archive's chunks are tagged with.
 fn events_tags(pages: &Path) -> Vec<u64> {
     ArchiveReader::open(archive_dir(pages), None)

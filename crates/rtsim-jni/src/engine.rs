@@ -134,6 +134,13 @@ fn gen_key(k: usize) -> PageKey {
     PageKey::new(GEN_TABLE, k as u64)
 }
 
+/// How many hand-overs a world save may wait for its WORLD_SAVED before a module's budget save is
+/// taken on top of it anyway (docs/choices-leg-purge.md LP12, option a): the hold keeps a budget
+/// save from landing past the journal file the world save's WORLD_SAVED reports, and the valve
+/// keeps a WORLD_SAVED that never comes from holding the resident rows over their budget for
+/// good. PLACEHOLDER: 60 s at 20 TPS, a fifth of an autosave interval; no measurement behind it.
+pub const BUDGET_HOLD_HANDOVERS: u64 = 1_200;
+
 /// `nOpen` flags.
 pub const FLAG_TEST: u32 = 1;
 pub const FLAG_NO_FSYNC: u32 = 2;
@@ -321,6 +328,18 @@ pub struct Stats {
     /// Saves taken for the paged modules' budgets and committed (pending generations, PF15;
     /// not in `saves_done`, which counts the saves Java asked for). Not in Java's array.
     pub pressure_saves: AtomicU64,
+    /// Every save committed to the page store, of any kind (a world save waiting for its
+    /// WORLD_SAVED, a budget's, a test's), and the observation sequence the last one includes.
+    /// `saves_done` and the acknowledgement move at the confirm, not here (docs/choices-leg-purge.md
+    /// LP12). Not in Java's array.
+    pub saves_committed: AtomicU64,
+    pub committed_obs: AtomicU64,
+    /// Generations confirmed by a WORLD_SAVED (or a commit that confirms at once), confirms that
+    /// failed (the generation stays pending; the next WORLD_SAVED or commit tries again), and
+    /// steps whose budget save the held world save kept back. Not in Java's array.
+    pub confirms: AtomicU64,
+    pub confirm_failures: AtomicU64,
+    pub budget_saves_held: AtomicU64,
     /// Event archive rows written, rows it dropped since it began (its index's count, every
     /// cause), and its open, flush and compaction errors (none fail a save). Not in Java's array.
     pub archive_rows: AtomicU64,
@@ -855,6 +874,12 @@ impl Engine {
 
     pub fn durable_obs_seq(&self) -> u64 {
         self.durable.load(Ordering::Acquire)
+    }
+
+    /// The observation sequence the last committed save includes, confirmed or not: what a test
+    /// waits on to know a save has landed on the IO lane ([`Stats::saves_committed`]).
+    pub fn committed_obs_seq(&self) -> u64 {
+        self.stats.committed_obs.load(Ordering::Acquire)
     }
 
     pub fn protocol_error(&self) -> Option<String> {
@@ -2184,6 +2209,8 @@ impl Engine {
         match r {
             Ok(_) => {
                 self.stats.last_save_bytes.store(bytes, Ordering::Release);
+                self.stats.committed_obs.store(obs_seq, Ordering::Release);
+                self.stats.saves_committed.fetch_add(1, Ordering::AcqRel);
                 p1.done();
                 if pending {
                     // Past the last save Java asked for: the journal is not trimmed behind it.
