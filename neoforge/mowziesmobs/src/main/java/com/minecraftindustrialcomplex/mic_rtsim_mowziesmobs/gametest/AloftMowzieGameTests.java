@@ -1,5 +1,6 @@
 package com.minecraftindustrialcomplex.mic_rtsim_mowziesmobs.gametest;
 
+import com.bobmowzie.mowziesmobs.server.entity.umvuthana.EntityUmvuthanaMinion;
 import com.bobmowzie.mowziesmobs.server.entity.umvuthana.EntityUmvuthi;
 import com.minecraftindustrialcomplex.mic_rtsim.api.RtsimApi;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.AloftRules;
@@ -10,6 +11,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.engine.ScriptedEngine;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.ChunkWait;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.ConflictKit;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.ConflictKit.CampLine;
+import com.minecraftindustrialcomplex.mic_rtsim.gametest.FakePlayers;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests;
 import com.minecraftindustrialcomplex.mic_rtsim_mowziesmobs.MicRtsimMowziesMobs;
 import com.minecraftindustrialcomplex.mic_rtsim_mowziesmobs.UmvuthiAloft;
@@ -17,7 +19,10 @@ import com.minecraftindustrialcomplex.mic_rtsim_mowziesmobs.gametest.MowzieKit.F
 import com.minecraftindustrialcomplex.mic_rtsim_mowziesmobs.gametest.MowzieKit.Grove;
 import com.minecraftindustrialcomplex.mic_rtsim_mowziesmobs.mixin.EntityUmvuthiAccessor;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
+import net.minecraft.core.particles.ParticleTypes;
 import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.network.protocol.game.ClientboundLevelParticlesPacket;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestAssertException;
 import net.minecraft.gametest.framework.GameTestHelper;
@@ -25,10 +30,17 @@ import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.entity.Mob;
 import net.minecraft.world.entity.animal.IronGolem;
+import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.entity.item.ItemEntity;
+import net.minecraft.world.level.ExplosionDamageCalculator;
+import net.minecraft.world.level.Level;
+import net.minecraft.world.level.SimpleExplosionDamageCalculator;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.FarmBlock;
 import net.minecraft.world.level.block.LeavesBlock;
+import net.minecraft.world.level.block.NetherPortalBlock;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.world.phys.AABB;
@@ -36,6 +48,7 @@ import net.minecraft.world.phys.Vec3;
 import net.neoforged.bus.api.Event;
 import net.neoforged.bus.api.EventPriority;
 import net.neoforged.neoforge.common.NeoForge;
+import net.neoforged.neoforge.event.entity.EntityTravelToDimensionEvent;
 import net.neoforged.neoforge.event.entity.living.LivingDeathEvent;
 import net.neoforged.neoforge.event.tick.LevelTickEvent;
 import net.neoforged.neoforge.gametest.GameTestHolder;
@@ -43,6 +56,7 @@ import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
@@ -654,7 +668,8 @@ public final class AloftMowzieGameTests {
                     check("it floats", u.isNoGravity());
                     check("it appears at its place in the column (" + s.lag() + " blocks off)", s.lag() <= 1.0);
                     check("its foot is the floor's + 3 (" + (u.getY() - l.top) + ")", Math.abs(u.getY() - (l.top + 3)) <= 0.05);
-                    check("its health is 250 (" + u.getHealth() + ")", u.getHealth() == 250f);
+                    check("its health is the memory's, kept to its maximum (" + u.getHealth() + " of " + u.getMaxHealth() + ")",
+                            u.getHealth() == Math.min(250f, u.getMaxHealth()));
                     check("the player is in its memory", u.hasTradedWith(player[0]));
                     check("its synced direction is 4, the quarter of +x (" + u.getDirectionData() + ")", u.getDirectionData() == 4);
                     check("so is its private one (" + ((EntityUmvuthiAccessor) u).mic_rtsim_mowziesmobs$direction() + ")",
@@ -694,6 +709,551 @@ public final class AloftMowzieGameTests {
                 })
                 .thenIdle(30)
                 .thenExecute(() -> {
+                    drop(player);
+                    far.releaseAll();
+                })
+                .thenSucceed();
+    }
+
+    // ---- 23b: settling and rising (MZB-809, MZB-812) --------------------------------------------------
+
+    /**
+     * An aloft chief puppet settles and rises (test 23b; MZB-809, MZB-812). Lane A's puppet, then lane B's, then the control's throne
+     * body, on flat floors.
+     * <ol>
+     * <li>A's band is steered 50 blocks on with the attack flag. The puppet stays aloft (the floor's + 3) until it is within 32 blocks
+     * of the steer's end, then sinks at most 0.05 a tick. Landed, gravity is on, its restriction centre is its block and it has no
+     * restriction (radius -1).</li>
+     * <li>B's band is steered with no flag; an unmasked player 20 blocks off, in plain view, is its target: it settles on the ground.</li>
+     * <li>With A's flag still set, a player appears, becomes the target, is made invisible and sent 200 blocks off (the target is
+     * cleared): the puppet stays down 400 ticks.</li>
+     * <li>The flag is dropped (a steer back to its place, with no flag) and the player is back in view: it is the target again, and
+     * the puppet stays down. The player is hidden and the target cleared: it rises no sooner than 200 ticks after the last tick it had
+     * a player for target, and is at its place (within 2 blocks) inside 400 ticks of rising.</li>
+     * <li>An iron golem beside the route, the puppet's target: it neither sinks nor stops (it makes headway each 100 ticks). The
+     * Umvuthi's SPAWN started through the ability handler makes summons whose restriction centre is the puppet's block (within a block),
+     * radius 25.</li>
+     * </ol>
+     * The control: a throne Umvuthi's summons have the throne body's own centre (the jar's rule). Fails without the settle rule (step
+     * 1 stays aloft), the per-tick {@code restrictTo} (step 5's centre is the puppet's spawn point), and with a settle on any target
+     * (the golem sets it down).
+     */
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "aloft_settle", skyAccess = true)
+    public static void anAloftUmvuthiSettlesAndRises(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 9000);
+        String test = "anAloftUmvuthiSettlesAndRises";
+        Far far = new Far(helper, test);
+        ServerLevel level = far.level;
+        Lane[] lane = {new Lane(far, 0, 8), new Lane(far, 1, 4), new Lane(far, 2, 2)}; // A; B; the throne body's
+        long[] agent = {ConflictKit.newAgent(), ConflictKit.newAgent()};
+        long faction = ConflictKit.newFaction();
+        int start = 20;
+        EntityUmvuthi[] puppet = new EntityUmvuthi[2];
+        EntityUmvuthi[] throne = new EntityUmvuthi[1];
+        ServerPlayer[] player = new ServerPlayer[2];
+        IronGolem[] golem = new IronGolem[1];
+        Trace[] trace = new Trace[1];
+        int[] phase = {0};
+        int[] rose = {0}, sunk = {0};
+        long[] playerTick = {-1}, riseTick = {-1}, dropTick = {-1};
+        double[] sinkDist = {-1};
+        double[] x = new double[4];
+        double[] summonsAt = new double[3];
+        int[] summoned = {0};
+
+        MowzieKit.seq(helper)
+                .thenExecute(() -> {
+                    for (Lane l : lane)
+                        l.force();
+                })
+                .thenWaitUntil(waits.chunks(far.ready()))
+                .thenExecute(() -> {
+                    for (Lane l : lane)
+                        l.floor();
+                    for (int i = 0; i < 2; i++)
+                        bandAt(helper, faction, agent[i], lane[i].x0 + start, lane[i].top + 1, lane[i].z, 0f, List.of(), 1, true);
+                    throne[0] = MowzieKit.umvuthi(level, lane[2].at(8));
+                })
+                .thenWaitUntil(waits.logic(() -> {
+                    for (int i = 0; i < 2; i++) {
+                        puppet[i] = puppet(agent[i]);
+                        check("puppet " + i + " floats", puppet[i].isNoGravity());
+                    }
+                }))
+                .thenExecute(() -> {
+                    Lane a = lane[0];
+                    trace[0] = trace(helper, level, agent[0]);
+                    MowzieKit.everyTick(helper, () -> {
+                        EntityUmvuthi u = puppet[0];
+                        long now = level.getGameTime();
+                        if (u.getTarget() instanceof Player)
+                            playerTick[0] = now;
+                        switch (phase[0]) {
+                            case 1 -> {
+                                if (sinkDist[0] < 0 && u.getY() < a.top + 3 - 0.01) {
+                                    double[] t = chiefSlot(agent[0]).stack.target();
+                                    sinkDist[0] = Math.hypot(t[0] - u.getX(), t[1] - u.getZ());
+                                }
+                            }
+                            case 3 -> {
+                                if (u.isNoGravity())
+                                    rose[0]++;
+                            }
+                            case 4 -> {
+                                if (riseTick[0] < 0 && u.isNoGravity())
+                                    riseTick[0] = now;
+                            }
+                            case 5 -> {
+                                if (!u.isNoGravity())
+                                    sunk[0]++;
+                                if (golem[0] != null && golem[0].isAlive())
+                                    u.setTarget(golem[0]);
+                            }
+                            default -> {
+                            }
+                        }
+                    });
+                    phase[0] = 1;
+                    ConflictKit.steer(agent[0], ConflictKit.party(agent[0]).epoch, PACE, a.x0 + start + 50, a.z, 0, true);
+                    // B has no flag: a player 20 blocks off in plain view is the target that sets it down
+                    Lane b = lane[1];
+                    ConflictKit.steer(agent[1], ConflictKit.party(agent[1]).epoch, PACE, b.x0 + start + 50, b.z, 0, false);
+                    player[0] = MowzieKit.player(helper, b.at(start + 20), "mowzie-aloft-settle-b");
+                })
+                .thenWaitUntil(waits.logic(() -> check("A's puppet has landed (gravity " + !puppet[0].isNoGravity() + ")", !puppet[0].isNoGravity())))
+                .thenExecute(() -> {
+                    Lane a = lane[0];
+                    EntityUmvuthi u = puppet[0];
+                    phase[0] = 2;
+                    check("it stayed aloft until within 32 of the steer's end, and sank from there (" + sinkDist[0] + ")",
+                            sinkDist[0] > 31.7 && sinkDist[0] <= 32.0 + 1.0e-6);
+                    check("it sank at most 0.05 a tick (" + trace[0].down + ")", trace[0].down <= 0.05 + 1.0e-6);
+                    check("it is on the floor (" + (u.getY() - a.top) + " over it)", Math.abs(u.getY() - (a.top + 1)) < 0.06);
+                    check("its restriction centre is its block (" + u.getRestrictCenter() + " and " + u.blockPosition() + ")",
+                            u.getRestrictCenter().equals(u.blockPosition()));
+                    check("it has no restriction (radius " + u.getRestrictRadius() + ")", !u.hasRestriction());
+                })
+                .thenWaitUntil(waits.logic(() -> check("B's puppet has landed", !puppet[1].isNoGravity())))
+                .thenExecute(() -> {
+                    EntityUmvuthi u = puppet[1];
+                    check("B's puppet targets the player (" + u.getTarget() + ")", u.getTarget() == player[0]);
+                    check("B's puppet is on the floor (" + (u.getY() - lane[1].top) + " over it)", Math.abs(u.getY() - (lane[1].top + 1)) < 0.06);
+                    // A: the flag is still set; a player comes, is the target, goes invisible and 200 blocks off
+                    player[1] = MowzieKit.player(helper, new Vec3(puppet[0].getX() + 12, puppet[0].getY(), puppet[0].getZ()), "mowzie-aloft-settle-a");
+                })
+                .thenWaitUntil(waits.logic(() -> check("A's puppet targets the player", puppet[0].getTarget() == player[1])))
+                .thenExecute(() -> {
+                    phase[0] = 3;
+                    player[1].setInvisible(true);
+                    player[1].setPos(player[1].getX() + 200, player[1].getY(), player[1].getZ());
+                    puppet[0].setTarget(null);
+                })
+                .thenIdle(400)
+                .thenExecute(() -> {
+                    check("with the flag set it stayed down 400 ticks (" + rose[0] + " ticks aloft)", rose[0] == 0);
+                    Lane a = lane[0];
+                    phase[0] = 4;
+                    dropTick[0] = level.getGameTime();
+                    // the flag dropped, and the player is back in plain view: it is the target again, so the rise waits on it
+                    ConflictKit.steer(agent[0], ConflictKit.party(agent[0]).epoch, 0.5f, puppet[0].getX() + 11, a.z, 0, false);
+                    player[1].setInvisible(false);
+                    player[1].setPos(puppet[0].getX() + 12, puppet[0].getY(), puppet[0].getZ());
+                })
+                .thenWaitUntil(waits.logic(() -> check("A's puppet targets the player again", puppet[0].getTarget() == player[1])))
+                .thenIdle(20)
+                .thenExecute(() -> {
+                    check("a player for target keeps it down with the flag gone", !puppet[0].isNoGravity());
+                    player[1].setInvisible(true);
+                    player[1].setPos(player[1].getX() + 200, player[1].getY(), player[1].getZ());
+                    puppet[0].setTarget(null);
+                })
+                .thenWaitUntil(waits.logic(() -> check("A's puppet floats again", puppet[0].isNoGravity())))
+                .thenExecute(() -> {
+                    long waited = riseTick[0] - playerTick[0];
+                    check("it rose no sooner than 200 ticks after its last player target (" + waited + ")", waited >= 198);
+                    check("and not long after (" + waited + ")", waited <= 240);
+                    check("the player was its target after the flag's drop (last at " + playerTick[0] + ", dropped at " + dropTick[0] + ")",
+                            playerTick[0] > dropTick[0]);
+                })
+                .thenWaitUntil(waits.logic(() -> check("it is back at its place (" + chiefSlot(agent[0]).lag() + ")", chiefSlot(agent[0]).lag() <= 2.0)))
+                .thenExecute(() -> {
+                    check("and it came inside 400 ticks of its rise (" + (level.getGameTime() - riseTick[0]) + ")",
+                            level.getGameTime() - riseTick[0] <= 400);
+                    Lane a = lane[0];
+                    golem[0] = EntityType.IRON_GOLEM.create(level);
+                    golem[0].moveTo(puppet[0].getX() + 4, a.top + 1, a.z + 6, 0f, 0f);
+                    golem[0].setNoAi(true);
+                    check("the golem is added", level.addFreshEntity(golem[0]));
+                    phase[0] = 5;
+                    x[0] = puppet[0].getX();
+                    ConflictKit.steer(agent[0], ConflictKit.party(agent[0]).epoch, PACE, puppet[0].getX() + 45, a.z, 0, false);
+                })
+                .thenIdle(10)
+                .thenExecute(() -> {
+                    check("the golem is its target (" + puppet[0].getTarget() + ")", puppet[0].getTarget() == golem[0]);
+                    puppet[0].sendAbilityMessage(EntityUmvuthi.SPAWN_ABILITY);
+                })
+                .thenWaitUntil(waits.logic(() -> check("a summons stands among its extras", !chiefSlot(agent[0]).extras().isEmpty())))
+                .thenExecute(() -> {
+                    EntityUmvuthi u = puppet[0];
+                    Mob first = chiefSlot(agent[0]).extras().get(0);
+                    check("it is a warrior of the jar (" + first + ")", first instanceof EntityUmvuthanaMinion);
+                    double off = Math.sqrt(first.getRestrictCenter().distSqr(u.blockPosition()));
+                    check("its restriction centre is the puppet's block (" + off + " off)", off <= 1.0);
+                    check("with radius 25 (" + first.getRestrictRadius() + ")", first.getRestrictRadius() == 25f);
+                    check("the puppet floats on (sunk " + sunk[0] + " ticks)", sunk[0] == 0);
+                    x[1] = u.getX();
+                })
+                .thenIdle(100)
+                .thenExecute(() -> {
+                    check("headway in 100 ticks with the golem for target (" + (puppet[0].getX() - x[1]) + ")", puppet[0].getX() - x[1] >= 3.0);
+                    x[2] = puppet[0].getX();
+                })
+                .thenIdle(100)
+                .thenExecute(() -> {
+                    check("and in the next 100 (" + (puppet[0].getX() - x[2]) + ")", puppet[0].getX() - x[2] >= 3.0);
+                    check("it never sank (" + sunk[0] + ")", sunk[0] == 0);
+                    phase[0] = 6;
+                    // the control: the throne body's summons keep its own centre
+                    throne[0].sendAbilityMessage(EntityUmvuthi.SPAWN_ABILITY);
+                })
+                .thenWaitUntil(waits.logic(() -> {
+                    List<EntityUmvuthanaMinion> made = level.getEntitiesOfClass(EntityUmvuthanaMinion.class, lane[2].area(),
+                            m -> !m.isRemoved() && m.getRestrictRadius() == 25f);
+                    check("the throne body has made a summons", !made.isEmpty());
+                    check("its centre is the throne body's own (" + made.get(0).getRestrictCenter() + " and " + throne[0].getRestrictCenter() + ")",
+                            made.get(0).getRestrictCenter().equals(throne[0].getRestrictCenter()));
+                }))
+                .thenExecute(() -> {
+                    record(test, "settle", "sank from " + String.format("%.2f", sinkDist[0]) + " blocks, rose " + (riseTick[0] - playerTick[0])
+                            + " ticks after its last player target, summons centre on the puppet's block");
+                    recallAll(agent);
+                })
+                .thenIdle(30)
+                .thenExecute(() -> {
+                    drop(player);
+                    far.releaseAll();
+                })
+                .thenSucceed();
+    }
+
+    // ---- 23c: pushes and portals (MZB-810, MZB-815) ---------------------------------------------------
+
+    /**
+     * Explosions, a fan's push and a portal leave an aloft puppet where it floats (test 23c; MZB-810, MZB-815). One puppet marches
+     * along a lane with no flag; an untagged Umvuthi with its gravity off (the control, no band's) stands behind it.
+     * <ol>
+     * <li>A listener on {@code LevelTickEvent.Pre} (before the entities tick) explodes a blast of power 3 two blocks under the puppet and
+     * another under the control: the puppet's motion is the same after the blast as before (the knockback hook zeroed it); the
+     * control's changes by more than 0.15 blocks a tick. {@code knockbacksZeroed} counts the puppet's blast, once.</li>
+     * <li>The same with a wind charge's blast (knockback times 1.22, no damage): the same two results, a second count.</li>
+     * <li>A listener on {@code LevelTickEvent.Post} (after the entities tick) gives both a push of 0.4 up and 0.4 out ({@code hurtMarked}):
+     * at the next tick's start the puppet's motion is zero (the step took it at the tick's end) and the control still carries the
+     * push.</li>
+     * <li>Through all of it the puppet's steps are within the rule (across at most 0.1, up at most 0.1, down at most 0.05), its gravity
+     * stays off, and its foot is on the rule's target at the end.</li>
+     * <li>A {@code EntityTravelToDimensionEvent} posted for the puppet is cancelled and counted; one for the control is not.</li>
+     * <li>A column of lit portal blocks stands across the route, over the puppet's height: it flies through it and is still the same body
+     * in the same level (the vanilla portal path tries a trip at every tick it is inside; the count is logged).</li>
+     * </ol>
+     * Fails without the knockback hook (steps 1 and 2: the puppet is thrown), without the step's zeroing (step 3: the push carries it
+     * off the line), and without the portal hook (step 5 uncancelled, step 6 a trip to the Nether).
+     */
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "aloft_pushes", skyAccess = true)
+    public static void pushesAndPortalsLeaveItAloft(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 6000);
+        String test = "pushesAndPortalsLeaveItAloft";
+        Far far = new Far(helper, test);
+        ServerLevel level = far.level;
+        Lane lane = new Lane(far, 0, 6);
+        long agent = ConflictKit.newAgent();
+        long faction = ConflictKit.newFaction();
+        int start = 24;
+        EntityUmvuthi[] puppet = new EntityUmvuthi[1];
+        EntityUmvuthi[] control = new EntityUmvuthi[1];
+        Trace[] trace = new Trace[1];
+        // what to do at the next tick's edge: 1 and 2 a blast (Pre), 3 a push (Post), 4 read the push (Pre)
+        int[] fire = {0};
+        Vec3[] pBefore = new Vec3[3], pAfter = new Vec3[3], cBefore = new Vec3[3], cAfter = new Vec3[3];
+        long[] zeroed = new long[3];
+        Vec3[] pushed = new Vec3[2];
+        Runnable[] off = new Runnable[2];
+        long[] portals = new long[3];
+        boolean[] cancelled = new boolean[2];
+
+        MowzieKit.seq(helper)
+                .thenExecute(lane::force)
+                .thenWaitUntil(waits.chunks(far.ready()))
+                .thenExecute(() -> {
+                    lane.floor();
+                    bandAt(helper, faction, agent, lane.x0 + start, lane.top + 1, lane.z, 0f, List.of(), 1, true);
+                    // the control: an Umvuthi no band owns, gravity off (restored and discarded before the sequence ends)
+                    control[0] = MowzieKit.umvuthi(level, lane.at(2));
+                    control[0].setNoGravity(true);
+                    ConflictKit.onEnd(helper, () -> control[0].discard());
+                    // a column of portal blocks across the route, 8 high and 7 wide, over the puppet's height
+                    for (int dz = -3; dz <= 3; dz++)
+                        for (int dy = 1; dy <= 8; dy++)
+                            lane.set(start + 46, dy, dz, Blocks.NETHER_PORTAL.defaultBlockState().setValue(NetherPortalBlock.AXIS, Direction.Axis.Z));
+                })
+                .thenWaitUntil(waits.logic(() -> puppet[0] = puppet(agent)))
+                .thenExecute(() -> {
+                    check("it floats", puppet[0].isNoGravity());
+                    trace[0] = trace(helper, level, agent);
+                    off[0] = listen(helper, EventPriority.NORMAL, LevelTickEvent.Pre.class, e -> {
+                        if (e.getLevel() != level || fire[0] == 0)
+                            return;
+                        int k = fire[0];
+                        if (k == 1 || k == 2) {
+                            fire[0] = 0;
+                            ExplosionDamageCalculator calc = new SimpleExplosionDamageCalculator(false, false,
+                                    k == 2 ? Optional.of(1.22f) : Optional.empty(), Optional.empty());
+                            pBefore[k] = puppet[0].getDeltaMovement();
+                            zeroed[k] = ConflictKit.knockbacksZeroed();
+                            Vec3 at = puppet[0].position().add(0.0, -2.0, 0.0);
+                            level.explode(null, null, calc, at.x, at.y, at.z, 3.0f, false, Level.ExplosionInteraction.NONE);
+                            zeroed[k] = ConflictKit.knockbacksZeroed() - zeroed[k];
+                            pAfter[k] = puppet[0].getDeltaMovement();
+                            cBefore[k] = control[0].getDeltaMovement();
+                            Vec3 under = control[0].position().add(0.0, -2.0, 0.0);
+                            level.explode(null, null, calc, under.x, under.y, under.z, 3.0f, false, Level.ExplosionInteraction.NONE);
+                            cAfter[k] = control[0].getDeltaMovement();
+                        } else if (k == 4) {
+                            fire[0] = 0;
+                            pushed[0] = puppet[0].getDeltaMovement();
+                            pushed[1] = control[0].getDeltaMovement();
+                        }
+                    });
+                    off[1] = listen(helper, EventPriority.NORMAL, LevelTickEvent.Post.class, e -> {
+                        if (e.getLevel() != level || fire[0] != 3)
+                            return;
+                        fire[0] = 4;
+                        for (EntityUmvuthi u : new EntityUmvuthi[] {puppet[0], control[0]}) {
+                            u.setDeltaMovement(0.4, 0.4, 0.0);
+                            u.hurtMarked = true;
+                        }
+                    });
+                    ConflictKit.steer(agent, ConflictKit.party(agent).epoch, PACE, lane.x0 + start + 70, lane.z, 0, false);
+                })
+                .thenWaitUntil(waits.logic(() -> check("it has made 8 blocks", puppet[0].getX() >= lane.x0 + start + 8)))
+                .thenExecute(() -> fire[0] = 1)
+                .thenWaitUntil(waits.logic(() -> check("blast 1 is done", fire[0] == 0)))
+                .thenExecute(() -> {
+                    check("blast 1 did not move the puppet (" + pBefore[1] + " then " + pAfter[1] + ")", pAfter[1].distanceTo(pBefore[1]) < 1.0e-6);
+                    check("blast 1 moved the control (" + cBefore[1] + " then " + cAfter[1] + ")", cAfter[1].distanceTo(cBefore[1]) > 0.15);
+                    check("blast 1 was counted once (" + zeroed[1] + ")", zeroed[1] == 1);
+                })
+                .thenIdle(40)
+                .thenExecute(() -> fire[0] = 2)
+                .thenWaitUntil(waits.logic(() -> check("blast 2 is done", fire[0] == 0)))
+                .thenExecute(() -> {
+                    check("blast 2 did not move the puppet (" + pBefore[2] + " then " + pAfter[2] + ")", pAfter[2].distanceTo(pBefore[2]) < 1.0e-6);
+                    check("blast 2 moved the control (" + cBefore[2] + " then " + cAfter[2] + ")", cAfter[2].distanceTo(cBefore[2]) > 0.15);
+                    check("blast 2 was counted once (" + zeroed[2] + ")", zeroed[2] == 1);
+                })
+                .thenIdle(40)
+                .thenExecute(() -> fire[0] = 3)
+                .thenWaitUntil(waits.logic(() -> check("the push is read", fire[0] == 0)))
+                .thenExecute(() -> {
+                    check("the puppet carries no push into the next tick (" + pushed[0] + ")", pushed[0].length() < 1.0e-6);
+                    check("the control carries it (" + pushed[1] + ")", pushed[1].y > 0.3 && pushed[1].x > 0.3);
+                    // the posted trips: the puppet's is cancelled and counted, the control's is not
+                    portals[0] = ConflictKit.portalsCancelled();
+                    EntityTravelToDimensionEvent mine = new EntityTravelToDimensionEvent(puppet[0], Level.NETHER);
+                    NeoForge.EVENT_BUS.post(mine);
+                    cancelled[0] = mine.isCanceled();
+                    portals[1] = ConflictKit.portalsCancelled();
+                    EntityTravelToDimensionEvent theirs = new EntityTravelToDimensionEvent(control[0], Level.NETHER);
+                    NeoForge.EVENT_BUS.post(theirs);
+                    cancelled[1] = theirs.isCanceled();
+                    check("a trip posted for the puppet is cancelled", cancelled[0]);
+                    check("and counted once (" + portals[0] + " to " + portals[1] + ")", portals[1] == portals[0] + 1);
+                    check("a trip posted for the control is not cancelled", !cancelled[1]);
+                    check("and not counted (" + ConflictKit.portalsCancelled() + ")", ConflictKit.portalsCancelled() == portals[1]);
+                    off[0].run();
+                    off[1].run();
+                    control[0].setNoGravity(false);
+                    control[0].discard();
+                })
+                .thenWaitUntil(waits.logic(() -> check("it is past the portals", puppet[0].getX() >= lane.x0 + start + 50)))
+                .thenExecute(() -> {
+                    portals[2] = ConflictKit.portalsCancelled();
+                    check("it is the same body in the same level (" + puppet[0].level().dimension().location() + ")",
+                            puppet[0].level() == level && !puppet[0].isRemoved() && level.getEntity(puppet[0].getUUID()) == puppet[0]);
+                    check("it floats", puppet[0].isNoGravity());
+                    check("it is still the chief's puppet", chiefSlot(agent) != null && chiefSlot(agent).entity() == puppet[0]);
+                    Trace t = trace[0];
+                    check("no step across was over 0.1 (" + t.across + ")", t.across <= 0.1 + 1.0e-6);
+                    check("none up over 0.1 (" + t.up + ")", t.up <= 0.1 + 1.0e-6);
+                    check("none down over 0.05 (" + t.down + ")", t.down <= 0.05 + 1.0e-6);
+                    check("its gravity was never on (" + t.gravity + ")", t.gravity == 0);
+                    check("its box was never in a block (" + t.crowded + ")", t.crowded == 0);
+                    double target = UmvuthiAloft.INSTANCE.target(chiefSlot(agent).travelMemo());
+                    check("its foot is on the rule's target (" + puppet[0].getY() + " and " + target + ")", Math.abs(puppet[0].getY() - target) <= 0.05);
+                    check("no traveller step failed (" + ConflictKit.travellerErrors() + ")", ConflictKit.travellerErrors() == 0);
+                    record(test, "pushes", "blasts zeroed " + (zeroed[1] + zeroed[2]) + ", control pushed " + String.format("%.2f", cAfter[1].distanceTo(cBefore[1]))
+                            + " and " + String.format("%.2f", cAfter[2].distanceTo(cBefore[2])) + ", fan push left " + pushed[0].length() + ", portal tries " + (portals[2] - portals[1]));
+                    recallAll(agent);
+                })
+                .thenIdle(30)
+                .thenExecute(far::releaseAll)
+                .thenSucceed();
+    }
+
+    // ---- 23d: stuck, raised, held and moved (MZB-811) ------------------------------------------------
+
+    /**
+     * A puppet that cannot rise is raised, held and moved to its place (test 23d; MZB-811). Three lanes, one band each, all steered
+     * 60 blocks on: A's, whose masked player stands 30 blocks off with a clear line; B's, with no player within 160; and the control's,
+     * clear. Once each puppet floats, a stone ceiling is laid over A's and B's, 3 blocks over the foot (30 long, a lane wide): the
+     * rule sees it and aims over it, the puppet cannot rise through it and takes no step across while its target is high, so
+     * neither makes headway.
+     * <ol>
+     * <li>Each stuck puppet's raise (read from its memo) reads 8, then 16, then 24, 100 ticks apart.</li>
+     * <li>B is moved to its place 100 ticks after the 24 (the first look with no player's line): its raise is 0 again, it stands at
+     * its place, which is over a 9 by 9 farmland field. {@code stuckMoves} counts one.</li>
+     * <li>A is held while the player has a line to it, and is moved at the first look past 1,200 ticks held. {@code stuckMoves}
+     * counts two, the control's raise never read above 0 and it was never moved.</li>
+     * <li>B, moved and given the attack flag, sinks onto the farmland. Every field block is farmland still (a fall of the 2 blocks
+     * it sank would turn each to dirt, if the fall were counted), and a watching player 20 blocks off is sent no block particle.</li>
+     * </ol>
+     * Fails without the stuck rule (both stay under the ceiling), without the clip (A is moved in the player's view at once), and
+     * without {@code resetFallDistance} in the sink (step 4: the farmland turns to dirt).
+     */
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "aloft_stuck", skyAccess = true)
+    public static void aStuckUmvuthiRisesThenIsMoved(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 9000);
+        String test = "aStuckUmvuthiRisesThenIsMoved";
+        Far far = new Far(helper, test);
+        ServerLevel level = far.level;
+        Lane[] lane = {new Lane(far, 0, 6), new Lane(far, 1, 6), new Lane(far, 2, 6)}; // A: seen; B: unseen; the control's
+        long[] agent = {ConflictKit.newAgent(), ConflictKit.newAgent(), ConflictKit.newAgent()};
+        long faction = ConflictKit.newFaction();
+        int start = 24, end = 84;
+        EntityUmvuthi[] puppet = new EntityUmvuthi[3];
+        ServerPlayer[] player = new ServerPlayer[1];
+        FakePlayers.Hearer[] hearer = new FakePlayers.Hearer[1];
+        Trace[] trace = new Trace[3];
+        long[][] raisedAt = new long[3][3];
+        long[] movedAt = new long[3];
+        int[] last = new int[3], most = new int[3];
+        double[] ceilingRoom = {0};
+        double[] place = new double[2];
+        long[] moves = {0};
+        long[] buried = {0};
+        int ceiling = 6;
+
+        MowzieKit.seq(helper)
+                .thenExecute(() -> {
+                    for (Lane l : lane)
+                        l.force();
+                })
+                .thenWaitUntil(waits.chunks(far.ready()))
+                .thenExecute(() -> {
+                    for (Lane l : lane)
+                        l.floor();
+                    for (int i = 0; i < 3; i++)
+                        bandAt(helper, faction, agent[i], lane[i].x0 + start, lane[i].top + 1, lane[i].z, 0f, List.of(), 1, true);
+                    player[0] = MowzieKit.player(helper, lane[0].at(start + 30), "mowzie-aloft-stuck-a");
+                    MowzieKit.mask(player[0]);
+                })
+                .thenWaitUntil(waits.logic(() -> {
+                    for (int i = 0; i < 3; i++)
+                        puppet[i] = puppet(agent[i]);
+                }))
+                .thenIdle(20)
+                .thenExecute(() -> {
+                    moves[0] = UmvuthiAloft.INSTANCE.stuckMoves;
+                    for (int i = 0; i < 3; i += 2)
+                        trace[i] = trace(helper, level, agent[i]);
+                    for (int i = 0; i < 2; i++)
+                        for (int dx = start - 12; dx <= start + 20; dx++)
+                            for (int dz = -7; dz <= 7; dz++)
+                                lane[i].set(dx, ceiling, dz, Blocks.STONE.defaultBlockState());
+                    ceilingRoom[0] = lane[0].top + ceiling - puppet[0].getBbHeight();
+                    MowzieKit.everyTick(helper, () -> {
+                        long now = level.getGameTime();
+                        for (int i = 0; i < 3; i++) {
+                            ConflictBridge.Slot sl = chiefSlot(agent[i]);
+                            if (sl == null || sl.travelMemo() == null)
+                                continue;
+                            int r = UmvuthiAloft.INSTANCE.raised(sl.travelMemo());
+                            most[i] = Math.max(most[i], r);
+                            for (int k = 0; k < 3; k++)
+                                if (r == 8 * (k + 1) && raisedAt[i][k] == 0)
+                                    raisedAt[i][k] = now;
+                            if (r == 0 && last[i] > 0 && movedAt[i] == 0)
+                                movedAt[i] = now;
+                            last[i] = r;
+                            if (i < 2 && movedAt[i] == 0 && puppet[i].getY() > ceilingRoom[0] + 1.0e-6)
+                                buried[0]++;
+                        }
+                    });
+                    for (int i = 0; i < 3; i++)
+                        ConflictKit.steer(agent[i], ConflictKit.party(agent[i]).epoch, 0.5f, lane[i].x0 + end, lane[i].z, 0, false);
+                })
+                .thenIdle(160)
+                .thenExecute(() -> {
+                    // its place once the anchor is there: the field of farmland under it, a pool in one corner to keep it wet
+                    ConflictBridge.Stack st = chiefSlot(agent[1]).stack;
+                    place[0] = st.target()[0] - st.back();
+                    place[1] = st.target()[1] + st.side();
+                    int px = (int) Math.floor(place[0]), pz = (int) Math.floor(place[1]);
+                    for (int dx = -4; dx <= 4; dx++)
+                        for (int dz = -4; dz <= 4; dz++)
+                            level.setBlock(new BlockPos(px + dx, lane[1].top, pz + dz),
+                                    Blocks.FARMLAND.defaultBlockState().setValue(FarmBlock.MOISTURE, 7), 2);
+                    level.setBlock(new BlockPos(px + 4, lane[1].top, pz + 4), Blocks.WATER.defaultBlockState(), 2);
+                    check("neither stuck puppet has moved yet (" + movedAt[0] + " and " + movedAt[1] + ")", movedAt[0] == 0 && movedAt[1] == 0);
+                    check("each is under the ceiling (" + puppet[0].getY() + ", " + puppet[1].getY() + " under " + ceilingRoom[0] + ")",
+                            puppet[0].getY() <= ceilingRoom[0] + 1.0e-6 && puppet[1].getY() <= ceilingRoom[0] + 1.0e-6);
+                    hearer[0] = FakePlayers.watching(level, new Vec3(place[0] - 20, lane[1].top + 1, place[1]), "mowzie-aloft-stuck-b-hearer");
+                })
+                .thenWaitUntil(waits.logic(() -> check("B has been moved", movedAt[1] != 0)))
+                .thenExecute(() -> {
+                    long a = raisedAt[1][0], b = raisedAt[1][1], c = raisedAt[1][2];
+                    check("B's raise read 8, 16 and 24 (" + a + ", " + b + ", " + c + ")", a > 0 && b > 0 && c > 0);
+                    check("100 ticks apart (" + (b - a) + " and " + (c - b) + ")", b - a == 100 && c - b == 100);
+                    long wait = movedAt[1] - c;
+                    check("B was moved at the first look after the next 100 ticks (" + wait + ")", wait >= 100 && wait <= 112);
+                    check("one stuck move is counted (" + (UmvuthiAloft.INSTANCE.stuckMoves - moves[0]) + ")", UmvuthiAloft.INSTANCE.stuckMoves - moves[0] == 1);
+                    double off = Math.hypot(puppet[1].getX() - place[0], puppet[1].getZ() - place[1]);
+                    check("B stands at its place (" + off + " off)", off <= 1.5);
+                    check("A is still held under the ceiling (" + most[0] + ", " + movedAt[0] + ")", most[0] == 24 && movedAt[0] == 0);
+                    ConflictKit.steer(agent[1], ConflictKit.party(agent[1]).epoch, 0.5f, lane[1].x0 + end, lane[1].z, 0, true);
+                })
+                .thenWaitUntil(waits.logic(() -> check("B has landed", !puppet[1].isNoGravity())))
+                .thenExecute(() -> {
+                    int px = (int) Math.floor(place[0]), pz = (int) Math.floor(place[1]);
+                    int farmland = 0;
+                    for (int dx = -4; dx <= 4; dx++)
+                        for (int dz = -4; dz <= 4; dz++)
+                            if (level.getBlockState(new BlockPos(px + dx, lane[1].top, pz + dz)).is(Blocks.FARMLAND))
+                                farmland++;
+                    check("the field is farmland still, 80 blocks of it (" + farmland + ")", farmland == 80);
+                    long particles = hearer[0].packets.stream()
+                            .filter(q -> q instanceof ClientboundLevelParticlesPacket p && p.getParticle().getType() == ParticleTypes.BLOCK).count();
+                    check("the watching player was sent no block particle (" + particles + ")", particles == 0);
+                })
+                .thenWaitUntil(waits.logic(() -> check("A has been moved", movedAt[0] != 0)))
+                .thenExecute(() -> {
+                    long c = raisedAt[0][2];
+                    long held = movedAt[0] - c - 100;
+                    check("A was held 1,200 ticks and moved at the first look after (" + held + ")", held >= 1200 && held <= 1212);
+                    check("A's raise read 8, 16 and 24 (" + raisedAt[0][0] + ", " + raisedAt[0][1] + ", " + c + ")",
+                            raisedAt[0][0] > 0 && raisedAt[0][1] - raisedAt[0][0] == 100 && c - raisedAt[0][1] == 100);
+                    check("two stuck moves are counted (" + (UmvuthiAloft.INSTANCE.stuckMoves - moves[0]) + ")", UmvuthiAloft.INSTANCE.stuckMoves - moves[0] == 2);
+                    check("neither stuck puppet was ever above the room under the ceiling (" + buried[0] + ")", buried[0] == 0);
+                    check("the control's raise was never above 0 (" + most[2] + ") and it was never moved (" + movedAt[2] + ")", most[2] == 0 && movedAt[2] == 0);
+                    check("its box was never in a block (" + trace[0].crowded + " and " + trace[2].crowded + ")", trace[0].crowded == 0 && trace[2].crowded == 0);
+                    check("no traveller step failed (" + ConflictKit.travellerErrors() + ")", ConflictKit.travellerErrors() == 0);
+                    record(test, "stuck", "raised at " + raisedAt[1][0] + "/" + raisedAt[1][1] + "/" + raisedAt[1][2] + " (B), moved B at +" + (movedAt[1] - raisedAt[1][2])
+                            + ", A held " + held + ", farmland kept");
+                    recallAll(agent);
+                })
+                .thenIdle(30)
+                .thenExecute(() -> {
+                    FakePlayers.removeSeen(hearer[0]);
                     drop(player);
                     far.releaseAll();
                 })
