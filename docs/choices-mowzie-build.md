@@ -11455,9 +11455,10 @@ said "All pass" (corrected above). Lines here are at the fix's commit.
   is at its base). The workspace test and the GameTests were not run.
   - *Decision* (the build lead): (a), the conservative option. The residual is slice U's (RP-200's
     "always B" assumed every SavedData write succeeds), not slice R's, and it needs a failed disk write
-    and a crash before that file is written again. docs/replay-gate.md §9.6: residual 9, crash class
-    1's "always B" names it, and the A column of K1 and K2 (and, inferred, I4, I5, D1 and D3) reads
-    "cannot happen; after a failed write, loss". The J4 sentence of "What slices T and T2 leave" points
-    to it. (b) goes to the coordinator and slice U's owner as the follow-on that closes it; it needs one
-    more step than the option names: a failed write must also mark its data dirty again, since vanilla
-    clears the flag either way and the hold would otherwise wait for an unrelated change to that file.
+    and a crash before that file is written again. docs/replay-gate.md §9.6: residual 10 (U-b's
+    residual 9, the double chest, lands first), crash class 1's "always B" names it, and the A column
+    of K1 and K2 (and, inferred, I4, I5, D1 and D3, each by its own mechanism and sign) names it. The
+    J4 sentence of "What slices T and T2 leave" points to it. (b) is slice U-g, the SEC-1 lead's, after
+    U-d (the coordinator's decision); it needs one more step than the option names: a failed write must
+    also mark its data dirty again, since vanilla clears the flag either way and the hold would
+    otherwise wait for an unrelated change to that file.
