@@ -1702,6 +1702,12 @@ public final class Camps {
                 answer(c, h.epoch(), h.op(), h.line(), outcome, null, now);
             return;
         }
+        if (second.contains(sl.entity)) {
+            // The throne body was killed while the puppet floated home (MZB-825): the engine has the chief dead, so nothing is handed
+            // back. The puppet is nobody's, and its band's recall takes it.
+            answerStale(h, now);
+            return;
+        }
         if (sl.homeSpot == null)
             bridge.homeChief(sl, c.throne(), c.throneDirection()); // the death it died of was cancelled, or the line was re-held
         boolean settled = bridge.homeStep(sl);
@@ -2162,6 +2168,10 @@ public final class Camps {
         }
     }
 
+    private static boolean isHandBackOf(Held h, ConflictBridge.Party p, ConflictBridge.Slot sl) {
+        return h.type() == HELD_HANDBACK && h.line().a() == p.agent && (int) h.line().b() == p.epoch && h.line().body().equals(sl.body);
+    }
+
     /**
      * A chief puppet died while its party's HAND_BACK of the chief is held (MZB-824), or while one is yet to be played this
      * tick: the engine has ended the party, so a CHIEF_KILLED of its agent would count for nothing. The death is a CAMP_DEATH
@@ -2173,16 +2183,22 @@ public final class Camps {
     ByteBuffer chiefDiedHome(ConflictBridge.Slot sl, int by, UUID killer, long now) {
         Held found = null;
         ConflictBridge.Party p = sl.stack.party;
-        for (Held h : held) {
-            if (h.type() == HELD_HANDBACK && h.line().a() == p.agent && (int) h.line().b() == p.epoch && h.line().body().equals(sl.body)) {
+        for (Held h : held)
+            if (isHandBackOf(h, p, sl)) {
                 found = h;
                 break;
             }
-        }
+        if (found == null) // a pass of playHeld is in flight: the line waits in its queue
+            for (Held h : draining)
+                if (isHandBackOf(h, p, sl)) {
+                    found = h;
+                    break;
+                }
         Mob e = sl.entity;
         if (found == null || e == null || !(e.level() instanceof ServerLevel level) || !live())
             return null;
         held.remove(found);
+        draining.remove(found);
         Site c = found.site();
         Line ln = found.line();
         RtsimSession s = bridge.session();
