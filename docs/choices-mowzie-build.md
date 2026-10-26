@@ -10383,7 +10383,7 @@ M11a's implementer appends its records under this heading only (the Rust side).
   - Checks: rtsim-jni's protocol tests 177 passed; clippy on rtsim-jni `--all-targets -D warnings` clean.
 - **MZB-860** (step 9, the docs; the design's "Docs" list):
   - docs/boundary.md: CHIEF_PAID's row gives the flags as "1 a stray, 2 a puppet (the chief slot, generation 0)",
-    and its §9.5 sentence adds the payment to a band's chief puppet (tribute either way, the payer remembered
+    and its §9.3 sentence adds the payment to a band's chief puppet (tribute either way, the payer remembered
     unless the chief's slot is Dead, MZB-819). CHIEF_BODY's row gives the agent as "0 at home; the party's away,
     just ahead of its BAND_MATERIALIZE with the chief's stack".
   - docs/replay-gate.md §4.4: the ChiefBody row is two, as `outbox.rs`'s gate has them: home (agent 0; keep,
