@@ -2866,6 +2866,98 @@ mod dragons {
         );
     }
 
+    /// The lair's own dragon, hungry and abstract (captured), and a flock of 5,000 sheep 360
+    /// blocks from its lair: its only prey, since the test world has no settlement. With `off`,
+    /// ECOLOGY (the dragons' and the herds' one bit) goes off at once, a stale hurt of the
+    /// captured body comes six days later (a record the dragons keep), and ECOLOGY comes on in
+    /// the next tick: the switch-on's catch-up to the kept record runs the six days. Without
+    /// `off` the six days run with everything on. Returns the dragons' herd hunts by then.
+    fn herd_hunts_in_six_days(tag: &str, off: bool) -> u64 {
+        let dir = tmpdir(tag);
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        j.module_mask = MODULES;
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        e.order(vec![Order::HerdFound {
+            name: "Bait flock".into(),
+            species: "minecraft:sheep".into(),
+            dimension: dim,
+            x: HOME.0 + 300,
+            z: HOME.2 + 200,
+            count: 5_000,
+            seed: 5,
+        }])
+        .unwrap();
+        j.idle();
+        j.dragon_obs(&O::LairFound(db::LairFound {
+            lair: LAIR,
+            late: false,
+            dimension: dim,
+            species: Species::Fire,
+            kind: LairKind::Roost,
+            min: (HOME.0 - 30, 60, HOME.2 - 30),
+            max: (HOME.0 + 30, 140, HOME.2 + 30),
+            home: HOME,
+        }));
+        j.dragon_obs(&untagged((0xD3, 0x3), SpawnKind::Structure, LAIR, dim));
+        j.idle();
+        j.idle();
+        let a = adoptions(&j)[0];
+        j.dragon_obs(&captured(a.agent, a.epoch, dim, 400.0));
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        assert_eq!(e.dragon_stats().0.herd_hunts, 0, "no hunt yet");
+
+        if off {
+            j.modules(0b1111);
+            j.idle();
+        }
+        let until = j.game_time + 6 * 24_000;
+        while j.game_time < until {
+            j.game_time += 1_000;
+            j.idle();
+        }
+        if off {
+            assert_eq!(e.dragon_stats().0.herd_hunts, 0, "nothing runs while off");
+            j.dragon_obs(&O::Hurt(db::Hurt {
+                agent: a.agent,
+                epoch: a.epoch,
+                attacker_kind: AttackerKind::Player,
+                attacker: PLAYER,
+                hits: 1,
+                amount: 1.0,
+                health_after: 399.0,
+            }));
+            j.idle();
+            assert_eq!(e.dragons_ignored(), 1, "the hurt kept");
+            j.modules(MODULES);
+            j.idle();
+        }
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        let hunts = e.dragon_stats().0.herd_hunts;
+        e.close(true, Duration::from_secs(5)).unwrap();
+        hunts
+    }
+
+    /// U-c's review, P2: the dragons and the herds share ECOLOGY's bit, and the switch-on's
+    /// catch-up to a kept dragon record runs the window with the herds as the dragons' prey, as
+    /// it runs with both on: the hungry dragon hunts the flock. Before: MODULES reached the
+    /// dragons before the herds, so the dragons' reset applied their kept record with the herds
+    /// still off, ran the window with no prey (no hunt), and the herds then ran it with no
+    /// predator.
+    #[test]
+    fn the_dragons_hunt_the_herds_in_the_window_a_kept_record_reaches() {
+        assert!(
+            herd_hunts_in_six_days("dragons-hunt-on", false) > 0,
+            "the control: with both on the dragon hunts the flock"
+        );
+        let hunts = herd_hunts_in_six_days("dragons-hunt-kept-window", true);
+        assert!(
+            hunts > 0,
+            "no herd hunt in the window the kept record reached"
+        );
+    }
+
     // ---- a test's order waits for the replay end (docs/replay-gate.md §4.5, RP-74) ------------
 
     /// The replay ends this engine ran.
