@@ -839,6 +839,22 @@ pub(super) fn order_command(st: &mut State, names: &[(u32, u32, String)], record
     }
 }
 
+/// Whether a COMMAND_RESULT `status` reports that Java applied the op: APPLIED, or DUPLICATE_OP
+/// (it had applied it already). An answer the session's replay brings with one of these leaves
+/// the copy of its command that waits to be written ([`command_result`], RP-310). Every other
+/// status takes that copy as a live answer does: FAILED (Java applied nothing, and keeps only the
+/// ops it applied, RP-259), NOT_FREE and VANILLA_KNOWS (Java's answers to PLACE_HOUSE and
+/// WRITE_GOSSIP, never to an industry op), and a status this build does not know. That last is a
+/// decision (P3-3 of the build lead's review of RP-310): only an op Java reports applied meets a
+/// guard that answers its copy again, so a copy left for any other status would be applied as a
+/// new command.
+fn reports_applied(status: u32) -> bool {
+    matches!(
+        status,
+        obs::command_result::APPLIED | obs::command_result::DUPLICATE_OP
+    )
+}
+
 /// Java's answer to an industry command. A kept command leaves the outbox, or the queue the switch
 /// moved it back to ([`Link::unqueue`], RP-285; with the module off it is taken there and the rest
 /// waits for the switch, [`keep_answer`]). A failed carriage delta moved nothing: the engine
@@ -851,18 +867,19 @@ pub(super) fn order_command(st: &mut State, names: &[(u32, u32, String)], record
 /// drops the exchange, whatever its reason (RP-182, RP-199).
 ///
 /// `replaying`: an answer the session's replay brings takes a copy out of the queue or the
-/// engine's commands not drained yet only when it is FAILED (RP-259, RP-310). Those copies are
-/// the ones the held replay and the link page decided or kept again under a live op; a copy of an
-/// op Java answered APPLIED or DUPLICATE is written, on purpose. Java refuses it by its guards
-/// (every op ring keeps an op another session answered, its answer unknown, until the engine
-/// sends it again: T2's rule, RP-250, `DurableOpRing.settle`; only the acknowledgement of a live
-/// answer prunes, and no replayed answer is live), and a train's ring that came back without the
-/// op applies it to the restored goods (J4, RP-196), which the replayed IND_CARRIAGE_RESULT booked
-/// already: taken out, the restored train never gets them. A FAILED answer takes its copy at once
-/// (A's `take_out`): Java keeps only the ops it applied, and pages saved before the first drain
-/// after the replay end must not hold the copy ([`unsent_answered`]).
+/// engine's commands not drained yet only when it does not report an application
+/// ([`reports_applied`]: FAILED, or a status that is no industry op's) (RP-259, RP-310). Those
+/// copies are the ones the held replay and the link page decided or kept again under a live op; a
+/// copy of an op Java answered APPLIED or DUPLICATE is written, on purpose. Java refuses it by its
+/// guards (every op ring keeps an op another session answered, its answer unknown, until the
+/// engine sends it again: T2's rule, RP-250, `DurableOpRing.settle`; only the acknowledgement of a
+/// live answer prunes, and no replayed answer is live), and a train's ring that came back without
+/// the op applies it to the restored goods (J4, RP-196), which the replayed IND_CARRIAGE_RESULT
+/// booked already: taken out, the restored train never gets them. A FAILED answer takes its copy
+/// at once (A's `take_out`): Java keeps only the ops it applied, and pages saved before the first
+/// drain after the replay end must not hold the copy ([`unsent_answered`]).
 fn command_result(l: &mut Link, op: OpId, status: u32, at: Tick, replaying: bool) {
-    let kept = if replaying && status != obs::command_result::FAILED {
+    let kept = if replaying && reports_applied(status) {
         l.complete(op)
     } else {
         l.complete(op).or_else(|| l.unqueue(op))
