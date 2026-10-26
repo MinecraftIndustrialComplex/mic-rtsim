@@ -60,7 +60,8 @@ use crate::tunables::{DragonTunables, PreyKind};
 /// the oil nests (OG-9e), "RTD6" before the lairs' renewal rule (EQUILIBRIUM.md S4: each lair's
 /// pressure, wait and fed share), "RTD7" before each nest's renewal serial (docs/replay-gate.md §7.1,
 /// RP-14), "RTD8" before the site ledger's hand-over (EQUILIBRIUM.md S3: each lair's
-/// `found_unknown`, MZB-1012); no older save opens.
+/// `found_unknown`, MZB-1012, and each nest's `seeded` and `found_unknown`, MZB-1013); no older
+/// save opens.
 const MAGIC: u32 = u32::from_le_bytes(*b"RTD9");
 /// The meta page of a paged save ("RTDM" before PF9, "RTN2" before tribute, "RTN3" before the oil
 /// gate, "RTN4" before the fields' daily watch, "RTN5" before the oil nests, "RTN6" before the
@@ -1054,7 +1055,13 @@ pub(crate) fn put_nest(n: &Nest, w: &mut Writer) {
     if let Some(h) = n.heart {
         [h.0, h.1, h.2].iter().for_each(|v| w.var_i64(i64::from(*v)));
     }
-    w.u8(n.state.code() | u8::from(n.hatched) << 4 | u8::from(n.bottomless) << 5);
+    w.u8(
+        n.state.code()
+            | u8::from(n.hatched) << 4
+            | u8::from(n.bottomless) << 5
+            | u8::from(n.seeded) << 6
+            | u8::from(n.found_unknown) << 7,
+    );
     w.var_u64(u64::from(n.worms));
     let (p, at) = n.pressure.parts();
     w.f32(p);
@@ -1081,7 +1088,7 @@ fn get_nest(r: &mut Reader<'_>) -> codec::Result<Nest> {
         None
     };
     let flags = r.u8()?;
-    let Some(state) = NestState::from_code(flags & 0x0F).filter(|_| flags >> 6 == 0) else {
+    let Some(state) = NestState::from_code(flags & 0x0F) else {
         return bad(format!("nest flags {flags}"));
     };
     let worms = u32_of(r.var_u64()?)?;
@@ -1104,6 +1111,8 @@ fn get_nest(r: &mut Reader<'_>) -> codec::Result<Nest> {
         lost_player: u32_of(r.var_u64()?)?,
         raids: u32_of(r.var_u64()?)?,
         renewals: u32_of(r.var_u64()?)?,
+        seeded: flags & 0x40 != 0,
+        found_unknown: flags & 0x80 != 0,
     })
 }
 

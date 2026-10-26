@@ -1023,7 +1023,7 @@ The bridge and the industry ranges (`docs/industry-boundary.md` §1) stay as the
 | 0x0509 | OIL_CHUNKS | n | 24 u32 dimension, 28 u32 source (1 Deep Time, 2 CDG, 3 a deposit sample), 32 n × (i32 chunkX, i32 chunkZ, i32 amount mB, u32 flags: 1 bottomless). n at most 1024 per record | 32 + 16n |
 | 0x050A | DRAGON_BREATHS | count | 24 u64 agent, 32 u32 epoch, 36 reserved | 40 |
 | 0x050B | OIL_CONFIG | flags: 1 field flights, 2 place lairs, 4 place nests | (none) | 24 |
-| 0x050C | NEST_FOUND | 1 placed, 2 failed (no room) | 24 u64 nest, 32 u32 dimension, 36 i32 heartX, 40 heartY, 44 heartZ (zero when failed) | 48 |
+| 0x050C | NEST_FOUND | 1 placed, 2 failed (no room) | 24 u64 nest, 32 u32 dimension, 36 i32 heartX, 40 heartY, 44 heartZ (zero when failed), 48 the found tail (§2.5; EXISTED when the nest stood before this PLACE_NEST) | 88 + 16 a UUID |
 | 0x050D | NEST_CENSUS | flags: 1 the heart is gone | 24 u64 nest, 32 u32 worms (alive, an unloaded one counting as alive, plus those still owed), 36 reserved | 40 |
 | 0x050E | NEST_LOSS | cause (`LossCause`: 0 player, 1 age, 2 starved, 3 faction, 4 predator, 5 other) | 24 u64 nest, 32 u32 count, 36 reserved, 40 u64 playerMost, 48 u64 playerLeast (zero for none) | 56 |
 | 0x050F | NEST_HEART | 0 | 24 u64 nest, 32 u64 playerMost, 40 u64 playerLeast (zero for none) | 48 |
@@ -1074,6 +1074,16 @@ The bridge and the industry ranges (`docs/industry-boundary.md` §1) stay as the
 - **NEST_FOUND** (OG-9e, §6.8): answers PLACE_NEST, placed (with the heart's block) or failed (the
   chunk has no natural ground for the chamber). Sent again, with the same heart, for a PLACE_NEST of a
   nest already placed. Not ledgered: the engine keeps the nest, the plugin keeps the chamber.
+  Its found tail (EQUILIBRIUM.md §2.3, MZB-1013) is read at the nest's first NEST_FOUND in an engine
+  life (the engine may know the nest before, from its own PLACE_NEST): a row gives the nest its
+  pressure and its worm wait as they were, not aged (the nests' clock is drilling days), and its
+  worms unless a census counted them first (a row with worms or a wait is a nest that hatched). With
+  no row, EXISTED (the plugin's saved state knew the nest, or found its chamber standing) holds the
+  first brood until the first NEST_CENSUS, which takes the count as it is and a short one as farmed:
+  the cap's pressure and the cap to wait. Otherwise the nest starts fresh. The engine sends a nest's
+  SITE_STATE (K, its worms alive or owed as count, the worm wait in thousandths of a drilling day,
+  BROKEN while its heart is) after each NEST_FOUND, loss, census and drilling day that changes it,
+  for nests with a chamber only.
 - **NEST_CENSUS**: a nest counted when its heart's chunk loads and after its worms spawn. The engine
   reconciles without pressure: a count above K is K, a shortfall is a loss of cause other (OGC78).
   Flag 1 (the heart's block is not the spawner) is a heart broken with no player named.
@@ -1264,7 +1274,7 @@ instead. The engine side is `crates/rtsim-ecology/src/oil.rs`; the synthetic plu
   under the chunk's ocean-floor heightmap, only where the chamber and its shell are natural ground with
   no fluid and no block entity (up to 8 seeded spots), sets an inert Death Worm spawner as its heart and
   answers NEST_FOUND (placed or failed). A PLACE_NEST for a nest already placed answers NEST_FOUND
-  placed again, carves nothing, and re-forms a broken heart. NEST_RENEW owes worms (Ice and Fire's
+  placed again (EXISTED in its tail when the ledger has no row, MZB-1013), carves nothing, and re-forms a broken heart. NEST_RENEW owes worms (Ice and Fire's
   Death Worms, sized by the stage), only when its serial is above the last one the nest applied under
   the same engine life (RP-14, RP-19, RP-232: a renewal the engine decides again carries the serial it
   had and owes nothing; a life the nest has not seen starts its serial afresh, and the owed count

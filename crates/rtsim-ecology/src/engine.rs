@@ -699,19 +699,21 @@ impl Dragons {
         self.outbox.take()
     }
 
-    /// The lairs' rows for the site ledger (EQUILIBRIUM.md §2.3, S3, MZB-1012): one
-    /// [`SiteState`] per lair marked since the last take, as it stands now. Nothing while the
-    /// session's replay runs: the marks are kept, and taken after its end, so a row is never
-    /// one the replay's state passes through.
+    /// The lairs' and nests' rows for the site ledger (EQUILIBRIUM.md §2.3, S3, MZB-1012 and
+    /// MZB-1013): one [`SiteState`] per site marked since the last take, as it stands now.
+    /// Nothing while the session's replay runs: the marks are kept, and taken after its end, so a
+    /// row is never one the replay's state passes through.
     pub fn take_site_states(&mut self) -> Vec<SiteState> {
         if self.replaying() {
             return Vec::new();
         }
         let dirty = std::mem::take(&mut self.site_dirty);
-        dirty
+        let mut out: Vec<SiteState> = dirty
             .into_iter()
             .filter_map(|l| self.lair_site_state(l, self.now))
-            .collect()
+            .collect();
+        out.extend(self.take_nest_site_states());
+        out
     }
 
     /// Whether a lair's ledger row is behind (tests).

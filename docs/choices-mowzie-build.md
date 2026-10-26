@@ -10641,6 +10641,43 @@ DRAGON_DIED):
     `protocol.rs::dragons::a_reset_hands_a_lairs_wait_to_the_new_engine` (a player's kill sends the row, the fake
     ledger keeps it through a reset with GAP, and the new engine, three days on, waits what was left with the
     pressure aged three days and mints nothing).
+- **MZB-1013** (Nests hand over and send their rows): `Nest.seeded` (saved) makes the tail apply at the nest's
+  first NEST_FOUND in this engine life; the engine may know the nest before that from its own PLACE_NEST, so "new
+  to the engine" is not the test here as it is for lairs.
+  - **A row:** `Pressure::handed_over(p, 0)`, not aged (§2.5: the nests' clock is drilling days, and nothing
+    drills while the engine is gone); WAITING sets the worm wait to the wait left, in thousandths of a drilling
+    day; and, unless a census counted the nest first, its worms are the row's count (§2.3: the row is "the sim's
+    last count") and it is hatched when the row has worms or a wait. Without that, a new engine's first drilling
+    day would send the first brood of K on top of the worms standing: today's reset mint for nests.
+  - **No row, EXISTED** (`Nests.found`'s `existed`: the saved state knew the nest, or its chamber was found
+    standing; only a placed answer): `found_unknown` (saved). The nest hatches no brood until its first
+    NEST_CENSUS, which takes the count as it is (no loss booked) and, when short, takes the nest as farmed: the
+    cap's pressure (`Pressure::at_cap`) and exactly the cap to wait (96,000 thousandths). A brood before that
+    census would fill the nest and hide what the census would have found.
+  - **Otherwise** fresh, as before.
+  - **A nest found again** (seeded) only marks its row, whatever its tail says.
+  - **The rows sent:** `Nests::site_dirty`, never saved and never read by a decision, marked by every
+    NEST_FOUND, loss, census and heart break, and by a drilling day that changes the nest's state, worms,
+    hatching or wait (so the wait in the ledger follows the drilling days). Drained with the lairs' in
+    `take_site_states`, so it is held through the replay the same way. A row: K, count the worms alive or
+    owed, away 0, P on the nests' clock, SHORT, EMPTY, BROKEN while the heart is, WAITING with the worm wait;
+    none for a nest with no chamber (asked and never placed, or given up). The reform wait is not in the row
+    (MZB-1011: BROKEN is not handed over).
+  - **Save:** the nest's flags byte takes `seeded` at bit 6 and `found_unknown` at bit 7 (no size change); the
+    state hash has them through `put_nest`. The format rides RTD9 and RTN9 with MZB-1012's lair byte: nothing
+    is released between the two steps.
+  - **Known limit:** a broken heart's reform wait is not handed over, and `Nests.place` re-forms a broken heart
+    at the new engine's first PLACE_NEST, as it did before this slice. A nest broken and emptied before a reset
+    can then get its brood sooner than the old engine's reform wait. Not changed here: BROKEN in the tail would be
+    a format change.
+  - The synth plugin (`synth::FakeIaf`) answers a nest it placed before with EXISTED; the host's fake Java
+    fills a nest's tail from its ledger as it does a lair's.
+  - Tests: `tests/nests.rs` (a row's pressure and wait unaged with one worm and no brood, and a row with
+    nothing that broods as usual; EXISTED counted first, a short count taken as farmed and a full one as it is,
+    and a fresh nest's brood; the marks taken once, following a drilling day, kept through a replay, and a found
+    again that changes nothing else; note 2: a restart that loses the marks decides the same for 200 days and
+    the found refresh sends the same rows), and the codec's `all_obs` (a waiting row, and EXISTED on a failed
+    answer).
 - **MZB-1020** (F1, the credit rides the death reports): taken. Each death report carries the credit code and
   the credited player; the engine maps to a LossCause with `from_credit`, since the boss rule needs each kind's
   tunables, which only the engine has. Not taken: a LossCause byte computed in Java per record.
