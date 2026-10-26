@@ -10862,7 +10862,14 @@ the engine's globals IGB1 to IGB2 (`decided` after `now`), and the district IDS4
     one. RP-274's "applies the rest once" was wrong (amended there). **Amended by RP-310:** A's
     `take_out` acts on every answer, not on FAILED alone: merged as it was (7661ca04), a replayed
     APPLIED took out the copy this record writes on purpose. Since RP-310 it takes a copy while
-    replaying only for a FAILED answer.
+    replaying only for a FAILED answer. **Corrected by RP-316:** that sentence names one of
+    two copies. Every answer, replayed or live, takes the outbox's copy (`complete`). The copy
+    still to be written (the queue's, or the engine's commands not drained yet: `unqueue` and
+    `take_out`) is what the gate decides. A live answer takes it whatever its status; a
+    replayed one only when it does not report an application (FAILED, or a status no industry op
+    gets, RP-316), so a replayed APPLIED or DUPLICATE leaves it to be written. With the module off
+    the same rule holds since RP-313; before it the off path (`keep_answer`, `answered_again`
+    while off) took both copies on every answer, replayed or not.
   - **P1-3, one epoch counter per chunk.** Java's guard is per chunk (Reconciler.java:265), the
     engine's counter was per district, so two chunks' rounds decided in another order by the replay
     could swap epochs, the second chunk's above what it applied live. Not driven: the hold path
@@ -11201,7 +11208,9 @@ said "All pass" (corrected above). Lines here are at the fix's commit.
     engine's commands (A's take, which RP-259's second crash needs); an APPLIED or DUPLICATE one
     takes only the outbox's, as R did before the merge. Outside the replay (live answers, and
     `book_kept_answers` at the switch on or a session start, 816) A's rule is unchanged, and so is
-    the module-off path (`keep_answer`, `answered_again` while off).
+    the module-off path (`keep_answer`, `answered_again` while off). **Amended by RP-313:** the
+    off path ignored the gate, and `book_kept_answers` booked every kept answer as live, though
+    it runs while replaying too. Both follow the gate now, by each answer's own flag.
   - *Mutations.* No gate (fe4e80bf): the six and RP-311's test fail. The gate on every status,
     FAILED too: `a_second_crash_after_a_save_before_the_first_drain_writes_no_failed_copy` fails
     (+352 against the control's +128, as the merge's record found with `take_out` disabled), and
@@ -11213,7 +11222,10 @@ said "All pass" (corrected above). Lines here are at the fix's commit.
     copy is written; Java refuses it again and `answered_again` takes the answer, or J4 applies
     it). The copy is written in the first drain after the replay end; the exposure of a durable
     save's acknowledgement read by Java before it (the journal's op index forgets the op, the
-    rings do not) is the one RP-259 accepted before the merge, unchanged.
+    rings do not) is the one RP-259 accepted before the merge, unchanged. **Corrected by
+    RP-315:** this understated it. The copy can wait well past the new session's first
+    acknowledgement, and only the second guards keep it from being applied twice. RP-315 names
+    the waits, the guards and the configurations with no second guard.
 - **RP-311** (the J4 test, the build lead's "show it with evidence"):
   `a_station_exchange_whose_trains_save_was_lost_is_applied_again_after_the_replay`
   (tests/industry.rs:2094). The iron line's exchange at 72,800 over a replay of several hand-overs,
@@ -11265,3 +11277,135 @@ said "All pass" (corrected above). Lines here are at the fix's commit.
   passed; `cargo clippy -p rtsim-jni --all-targets -- -D warnings` clean. The new lines are
   rustfmt's own output for them (the file's base is not rustfmt-clean, so the file was not
   formatted). No source changed. The workspace test and the GameTests were not run.
+- **RP-313** (P2-1 of the build lead's review of RP-310: the module-off path ignored the gate):
+  - *The bug.* With the module off, `keep_answer` (a journaled answer) and `answered_again` took
+    the copy out of the queue or the engine's commands not drained yet on every answer
+    (`complete(op)`, else `unqueue(op)`), whether or not the replay brought it, and
+    `book_kept_answers` booked every kept answer with `replaying` false, though it runs while
+    replaying too (at SESSION_START, and at a MODULES(on) inside a later replay hand-over). A
+    restart with the module off and a switch on later lost the copies RP-310 keeps on purpose:
+    J4's exchange (RP-311) and the replayed DUPLICATE's copy (RP-312).
+  - *Tests, failing first* (95fa116f, run at ed73334e: all three fail with X never sent):
+    `a_station_exchange_whose_trains_save_was_lost_is_applied_again_after_a_restart_with_industry_off`
+    (tests/industry.rs:2219) is RP-311's J4 restarted off. Session 0 crashes with exchange X
+    written and not applied; session 1 (on, MIN_CAPACITY) asks for its pages at its journal's
+    end with 40 records behind them, sends X again under its op and has it applied, saves the
+    world at `saved_at` and crashes with the pages still there. The restart is off: its replay
+    ends with X's APPLIED heard off, and the switch comes 300 ticks past the save. Control: the
+    whole save (J1); J4: X's train cargo from before the application and X dropped from the
+    applied set. Asserts X sent once after the switch and applied, the cargo and the world
+    against its books as the control's, X settled. At ed73334e X was never sent: crushed raw
+    iron -320 against the control's -96, the exchange's 224 short.
+    `ack_never_resends::a_replayed_duplicate_heard_with_industry_off_leaves_the_copy_for_the_switch`
+    (5020) is RP-312's case 5 with session 2 started off: its replay hears S2, X's first answer,
+    off; nothing is sent off; after the switch X goes once, is refused live at S3, and the ack
+    past S3 prunes it. `ack_never_resends::a_switch_on_inside_a_later_replay_hand_over_leaves_the_replayed_duplicates_copy`
+    (5041) is the same at MIN_CAPACITY with 2,000 records behind S2, and MODULES(on) written into
+    the hand-over after the one that carried S2: the switch books S2 while the replay still runs
+    (`sent_obs` below `replay_up_to`, no replay end yet), so `book_kept_answers` runs with
+    `replaying` true and the answer's own flag decides.
+  - *The fix* (3ad4363b). The gate is one function, `take_answered(l, op, replayed, applied)`
+    (engine/industry.rs:914), which `command_result` (957), `keep_answer` (819) and
+    `answered_again` while off (775) call. Each kept answer is a `KeptAnswer { record, replayed }`
+    (179), and `book_kept_answers` (860) passes its own flag. The comments that said Java prunes
+    at the ack whatever the switch (`keep_answer`, `set_enabled`) say now what Java does: it
+    prunes a ring entry at the acknowledgement of a live answer only (RP-209, T2, RP-250), and
+    trims its journal and op index at every acknowledgement.
+  - *No format change.* The link page saves the records alone, byte for byte as before
+    (`the_link_page_round_trips` compares the page with the old encoding), and an answer loaded
+    from it counts as replayed. That is right for every answer a page held: one heard live took
+    its copies at once, the engine was frozen from then until the switch (no decision, so no
+    copy), and a later replay brings only records past those pages, so no copy of its op is left
+    and booked as replayed it takes what booked live would take, nothing.
+  - *U-c.* fix/slice-u-c (ca4c822b) has the same field, page and functions (`answers`,
+    `LinkPage`, `keep_answer`, `answered_again`, `book_kept_answers`) and a `command_result`
+    without `replaying`. The flag lives in the elements of `Link::answers`, so R's merge carries
+    the gate onto U-c under the same names; the design does not change. One comment there needs
+    a clause at that merge: U-c's `begin_session` says only unanswered chain writes are handed
+    on, and a write whose replayed APPLIED or DUPLICATE was heard off now stays in the link and
+    is handed on too (`hand_on_again` leaves a write its store no longer awaits as it is).
+- **RP-314** (P3-2: a FAILED answer heard before the replay decides its copy again):
+  - *The claim.* `command_result` said pages saved before the first drain after the replay end
+    must not hold the copy. That holds for a copy decided before its FAILED answer (A's
+    `take_out` takes it at the answer; `a_second_crash_after_a_save_before_the_first_drain_writes_no_failed_copy`).
+    A copy decided again after the answer meets only `Link::heard`, in memory, at that drain
+    (`unsent_answered`), and `save_now` (engine.rs:1780) runs after `replay_end_before` (1770)
+    and before `simulate`'s drain. Older than RP-310 (RP-259's).
+  - *Which commands.* Never a station exchange: it is decided at its IND_TRAIN_ARRIVED, ingested
+    in journal order, and Java journals that before its answer to the command it led to; an
+    exchange taken late live is no different (the call's record still comes first). It takes a
+    decision no replayed record makes: a chain write at a store's wake (a COMMAND_RESULT runs no
+    `fire_until`; RP-259's unit test), or a raid's loot, which the held step decides at the first
+    `simulate` after the replay end (threats wait there, RP-274).
+  - *The test* (06c95da0):
+    `a_raid_answered_failed_and_decided_again_past_its_answer_is_booked_after_a_second_crash`
+    (tests/industry.rs:2596). The pages stop before a raid on laden train 1; the world fails
+    every carriage delta while the raid lands, so the loot is answered FAILED and taken back
+    (W10); the world saves and crashes. Session 1 has the raid ordered again before its first
+    step (the raider's own older pages, RP-183) and asks for its pages at its journal's end with
+    40 records behind them (as the second-crash test). The second crash restarts from those pages
+    and the world saved with them. Found: after one crash the loot is never sent
+    (`answered_unsent` 1, nothing stolen); after the second it goes under the live op
+    0x496960c7234a3896, the world applies it (one APPLIED), 22 is booked stolen, and the world
+    against its books is the control's (crushed raw iron +128, iron ingots +2,735 in both, the
+    restored world's own baseline). Benign, as asserted: the loot's booking stands and Java's
+    live answer settles it (applied here; a FAILED one would take it back).
+  - *Mutation.* `unsent_answered` replaced by emptying `heard`: the control sends the loot and
+    the test fails, so the drop after one crash is `heard`'s alone.
+  - *The chain write* has no crash fixture: the fake world has no package stores and answers an
+    IND_WRITE_CHAIN APPLIED or DUPLICATE only (fake.rs:1433). There the pages hold the copy
+    itself. By the same argument it is benign, not tested: written after the second crash, Java
+    answers it live, APPLIED with a `CHAIN_IN` carrying its op (the store books the packages), or
+    FAILED (`command_failed` frees the frogport and the store still owes it, SC113).
+  - *Also.* A raider that orders the raid again only after the first drain (at its own pace,
+    RP-252) has the loot written after one crash as well, benign the same way.
+  - *Comments* (66eac4d9): `command_result`, the `heard` field and `unsent_answered` say so.
+- **RP-315** (P3-1: how long a replayed answer's copy can wait, and what guards it then): RP-310's
+  "Left" (corrected there) and the `command_result` comment said the copy is written at the first
+  drain after the replay end. A MODULES(off) in a later replay hand-over, a full buffer or a name
+  wait (W21) can hold it past the new session's first acknowledgement, which trims Java's journal
+  op index; then only the second guards refuse it: the train ring, Diesel's oil ring,
+  LEVEL_APPLIED_OPS, the port rings, the chunk carry and the reconcile epoch. Java would apply it
+  again where the journal's index is the only guard. None of those is reachable in a supported
+  configuration, so they are residuals, not fixed (read in neoforge/, nothing changed there):
+  - *TrainRing off.* `TrainRing.available` (TrainRing.java:87) is false only when its probe
+    fails. The ring mixins (mic_rtsim_create_ring.mixins.json) are `required: false`,
+    `defaultRequire: 0`, so a Create that moved `Train.write` or `read` loads without them and
+    logs a WARN; IND_CARRIAGE_DELTA's dedup is then `ind.opApplied` (TrainWatch.java:682 to
+    685).
+  - *PortRing off.* `PortRing.available` (PortRing.java:80) is false when its probe fails (the
+    same config) or a GameTest switches it off (`fallbackForTest`); an offline buffer's
+    IND_WRITE_PACKAGE is then deduped by `ind.opApplied` alone (WritePackages.java:72 to 73).
+  - *No Diesel ring holder.* `DieselOilPlugin.depositRing` is null when `OilChunksSavedData` is
+    not an `OilRingHolder`, and `Industry.depositDelta` then has `opApplied` alone.
+  - *Why unreachable.* The pack ships Create 6.0.10 (pack/mods/create.pw.toml), the plugin
+    declares [6.0.10,6.1) and compiles against that jar, and its GameTests assert both rings on
+    (TrainRingGameTests and PortRingGameTests, "the ring is on", "the rings are on"). Diesel's
+    mixin config is `required: true`, `defaultRequire: 1`, so a Diesel the mixin no longer
+    matches fails the launch rather than run without the holder; the plugin requires
+    createdieselgenerators 1.21.1-1.3.15 or later, which the pack ships, and without Diesel it
+    does not load and no oil deposit exists. The other at-once deposits have rings too: Destroy's
+    level pollution has LEVEL_APPLIED_OPS, and Destroy's crude and Ore Excavation's veins are
+    written with their chunk's reconcile. The one way in is a pack update to a Create inside the
+    declared range that moves those methods, which the WARN names.
+  - *Comment* (67fa56c6): `command_result` names the waits, the guards and the residuals.
+- **RP-316** (P3-3 and P3-4):
+  - *P3-3* (ed73334e). RP-310's gate was `status != FAILED`, so an unknown status left the copy.
+    It is now `reports_applied` (engine/industry.rs:903), `matches!(status, APPLIED |
+    DUPLICATE_OP)`, and its comment names the rest: FAILED, NOT_FREE and VANILLA_KNOWS (Java's
+    answers to PLACE_HOUSE and WRITE_GOSSIP, never to an industry op) and a status this build
+    does not know take the copy as a live answer does. A decision: only an op Java reports
+    applied meets a guard that answers its copy again, so a copy left for any other status would
+    be applied as a new command.
+  - *P3-4.* RP-259's amendment said that since RP-310 a replayed answer takes a copy "only for a
+    FAILED answer". Every answer takes the outbox's copy; the gate decides only the copy still to
+    be written, and with the module off only since RP-313. Corrected there.
+
+  **Checks** (at 67fa56c6, the source head; only this record after it): `cargo test -p
+  rtsim-industry -p rtsim-jni --no-fail-fast` all pass: rtsim-industry 385 (3 ignored, as
+  before), rtsim-jni 369, of them tests/industry.rs 67 (RP-313's three and RP-314's one among
+  them). `cargo clippy -p rtsim-industry -p rtsim-jni --all-targets -- -D warnings` clean. The
+  new test lines are rustfmt's own output for them (tests/industry.rs is not rustfmt-clean at
+  its base, so it was not formatted);
+  engine/industry.rs was rustfmt-clean at its base and is after each commit. The workspace test
+  and the GameTests were not run.
