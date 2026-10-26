@@ -2,6 +2,7 @@ package com.minecraftindustrialcomplex.mic_rtsim_mowziesmobs.gametest;
 
 import com.bobmowzie.mowziesmobs.server.entity.umvuthana.EntityUmvuthi;
 import com.minecraftindustrialcomplex.mic_rtsim.api.RtsimApi;
+import com.minecraftindustrialcomplex.mic_rtsim.conflict.AloftRules;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictBridge;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictNews;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictRecords;
@@ -11,8 +12,11 @@ import com.minecraftindustrialcomplex.mic_rtsim.gametest.ConflictKit;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.ConflictKit.CampLine;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests;
 import com.minecraftindustrialcomplex.mic_rtsim_mowziesmobs.MicRtsimMowziesMobs;
+import com.minecraftindustrialcomplex.mic_rtsim_mowziesmobs.UmvuthiAloft;
 import com.minecraftindustrialcomplex.mic_rtsim_mowziesmobs.gametest.MowzieKit.Far;
 import com.minecraftindustrialcomplex.mic_rtsim_mowziesmobs.gametest.MowzieKit.Grove;
+import com.minecraftindustrialcomplex.mic_rtsim_mowziesmobs.mixin.EntityUmvuthiAccessor;
+import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestAssertException;
@@ -20,14 +24,28 @@ import net.minecraft.gametest.framework.GameTestHelper;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.entity.animal.IronGolem;
 import net.minecraft.world.entity.item.ItemEntity;
+import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.LeavesBlock;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
+import net.neoforged.bus.api.Event;
+import net.neoforged.bus.api.EventPriority;
+import net.neoforged.neoforge.common.NeoForge;
+import net.neoforged.neoforge.event.entity.living.LivingDeathEvent;
+import net.neoforged.neoforge.event.tick.LevelTickEvent;
 import net.neoforged.neoforge.gametest.GameTestHolder;
 import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import java.util.function.Consumer;
+import java.util.function.Supplier;
 
 import static com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests.check;
 import static com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests.record;
@@ -117,19 +135,35 @@ public final class AloftMowzieGameTests {
      */
     private static ConflictKit.Band chiefBand(GameTestHelper helper, Grove g, long agent, double x, double z, float health,
             List<UUID> traded, int warriors) {
-        ConflictKit.Band b = ConflictKit.band(agent, g.faction, RtsimTests.dimension(helper));
-        b.flags |= ConflictRecords.Materialize.FLAG_CHIEF;
+        return bandAt(helper, g.faction, agent, x, g.spot.y, z, health, traded, warriors, true);
+    }
+
+    /**
+     * An Invasion's band with its head at ({@code x}, {@code y}, {@code z}) heading +x and standing still: {@code warriors} warriors
+     * and, with {@code chief}, the chief's stack (FLAG_CHIEF, its CHIEF_BODY away in the same hand-over, MZB-805). Without, the
+     * same band as M10's: warriors alone, no chief flag, no chief body.
+     */
+    private static ConflictKit.Band bandAt(GameTestHelper helper, long faction, long agent, double x, double y, double z, float health,
+            List<UUID> traded, int warriors, boolean chief) {
+        ConflictKit.Band b = ConflictKit.band(agent, faction, RtsimTests.dimension(helper));
+        if (chief)
+            b.flags |= ConflictRecords.Materialize.FLAG_CHIEF;
         b.purpose = ConflictRecords.PURPOSE_INVASION;
         b.arcX = x;
         b.arcZ = z;
         b.bearing = 0f;
         b.targetX = x;
-        b.targetY = g.spot.y;
+        b.targetY = y;
         b.targetZ = z;
         b.speed = 0f;
+        List<ConflictKit.StackSpec> stacks = new ArrayList<>();
+        stacks.add(new ConflictKit.StackSpec(WARRIOR, warriors, false));
+        if (chief)
+            stacks.add(new ConflictKit.StackSpec(UMVUTHI, 0, true));
         ConflictKit.together(() -> {
-            ConflictKit.chiefBody(g.faction, agent, b.epoch, health, traded);
-            ConflictKit.materialize(b, List.of(new ConflictKit.StackSpec(WARRIOR, warriors, false), new ConflictKit.StackSpec(UMVUTHI, 0, true)));
+            if (chief)
+                ConflictKit.chiefBody(faction, agent, b.epoch, health, traded);
+            ConflictKit.materialize(b, stacks);
         });
         return b;
     }
@@ -147,6 +181,155 @@ public final class AloftMowzieGameTests {
     /** The first tick a BAND_DEMATERIALIZED about an agent was seen, or -1. */
     private static List<ScriptedEngine.Received> dematerialized(long agent) {
         return ConflictKit.about(ConflictRecords.BAND_DEMATERIALIZED, agent);
+    }
+
+    // ---- the lane and what watches it (23a to 23e, 35) -----------------------------------------------
+
+    /** Blocks a tick a steered band walks: under the puppet's cap of 0.1 ({@link AloftRules#PACE}), so the puppet is never left behind. */
+    private static final float PACE = 0.08f;
+
+    /**
+     * A flat lane of forced chunks on the far base: {@code chunks} chunks along +x on row {@code row} (rows are 20 chunks, 320 blocks,
+     * apart), its centre line {@link #z} the middle of a block column. One chunk row wide, so nothing here is laid outside a forced chunk.
+     */
+    private static final class Lane {
+        final Far far;
+        final ServerLevel level;
+        final int cx0, cx1, cz, x0, x1;
+        final double z;
+        /** The floor's y (the stone), once {@link #floor} laid it. */
+        int top;
+
+        Lane(Far far, int row, int chunks) {
+            this.far = far;
+            level = far.level;
+            cx0 = far.k;
+            cx1 = far.k + chunks - 1;
+            cz = far.z0 + 20 * row;
+            x0 = cx0 * 16;
+            x1 = cx1 * 16 + 15;
+            z = cz * 16 + 8.5;
+        }
+
+        Lane force() {
+            far.forceRect(cx0, cz, cx1, cz);
+            return this;
+        }
+
+        /** A stone floor over the lane's width with air over it; the floor's y (a body stands at y + 1). */
+        int floor() {
+            top = MowzieKit.platform(level, x0, x1, cz * 16, cz * 16 + 15);
+            return top;
+        }
+
+        /** The point {@code dx} blocks along the lane, one over the floor. */
+        Vec3 at(double dx) {
+            return new Vec3(x0 + dx, top + 1, z);
+        }
+
+        /** The block {@code dx} along the lane, {@code dy} over the floor and {@code dz} off the centre line. */
+        void set(int dx, int dy, int dz, BlockState state) {
+            level.setBlock(new BlockPos(x0 + dx, top + dy, cz * 16 + 8 + dz), state, 2);
+        }
+
+        /** A box over the whole lane, from under the floor to 40 over it. */
+        AABB area() {
+            return new AABB(x0, top - 6, cz * 16, x1 + 1, top + 40, cz * 16 + 16);
+        }
+    }
+
+    /**
+     * A puppet's record, filled at the end of every tick: the most it moved in a tick (across, up and down), the ticks its box was not
+     * clear of blocks or gravity was on, its height at marks along x, and the foot target the rule held there. The sample is the test's
+     * own, so a violation is counted here and asserted by the sequence (a throw in a per-tick hook is only logged).
+     */
+    private static final class Trace {
+        final Supplier<ConflictBridge.Slot> slot;
+        double px, py, pz;
+        boolean have;
+        int ticks, crowded, gravity;
+        double across, up, down, lowest = Double.MAX_VALUE, highest = -Double.MAX_VALUE;
+        final double[] markX, markY, markTarget;
+
+        Trace(Supplier<ConflictBridge.Slot> slot, double... marks) {
+            this.slot = slot;
+            markX = marks;
+            markY = new double[marks.length];
+            markTarget = new double[marks.length];
+            java.util.Arrays.fill(markY, Double.NaN);
+        }
+
+        void sample(ServerLevel level) {
+            ConflictBridge.Slot s = slot.get();
+            if (s == null || !(s.entity() instanceof EntityUmvuthi u) || u.isRemoved() || u.isDeadOrDying())
+                return;
+            if (have) {
+                across = Math.max(across, Math.hypot(u.getX() - px, u.getZ() - pz));
+                up = Math.max(up, u.getY() - py);
+                down = Math.max(down, py - u.getY());
+            }
+            px = u.getX();
+            py = u.getY();
+            pz = u.getZ();
+            have = true;
+            ticks++;
+            lowest = Math.min(lowest, py);
+            highest = Math.max(highest, py);
+            if (!level.noCollision(u))
+                crowded++;
+            if (!u.isNoGravity())
+                gravity++;
+            for (int i = 0; i < markX.length; i++)
+                if (Double.isNaN(markY[i]) && px >= markX[i]) {
+                    markY[i] = py;
+                    markTarget[i] = s.travelMemo() == null ? Double.NaN : UmvuthiAloft.INSTANCE.target(s.travelMemo());
+                }
+        }
+    }
+
+    /** A trace of the chief's slot of a party, sampled every tick until the test ends. */
+    private static Trace trace(GameTestHelper helper, ServerLevel level, long agent, double... marks) {
+        Trace t = new Trace(() -> {
+            ConflictBridge.Party p = ConflictKit.bridge().party(agent);
+            if (p == null)
+                return null;
+            for (ConflictBridge.Stack st : p.stacks())
+                for (ConflictBridge.Slot s : st.slots())
+                    if (s.chief)
+                        return s;
+            return null;
+        }, marks);
+        MowzieKit.everyTick(helper, () -> t.sample(level));
+        return t;
+    }
+
+    /** Registers {@code c} on the bus until {@code off} runs (or the test ends, passed or failed); the {@code off} to run in the sequence. */
+    private static <E extends Event> Runnable listen(GameTestHelper helper, EventPriority priority, Class<E> type, Consumer<E> c) {
+        NeoForge.EVENT_BUS.addListener(priority, false, type, c);
+        boolean[] on = {true};
+        Runnable off = () -> {
+            if (on[0]) {
+                on[0] = false;
+                NeoForge.EVENT_BUS.unregister(c);
+            }
+        };
+        ConflictKit.onEnd(helper, off);
+        return off;
+    }
+
+    /** Recalls bands at a test's end so that no puppet floats on as its chunks are let go (UR-1); give it a few ticks after. */
+    private static void recallAll(long... agents) {
+        for (long a : agents) {
+            ConflictBridge.Party p = ConflictKit.bridge().party(a);
+            if (p != null && !p.recalling())
+                ConflictKit.recall(a, p.epoch, ConflictRecords.RECALL_DONE, 20, 0, 0);
+        }
+    }
+
+    private static void drop(ServerPlayer... players) {
+        for (ServerPlayer p : players)
+            if (p != null)
+                com.minecraftindustrialcomplex.mic_rtsim.gametest.FakePlayers.remove(p);
     }
 
     // ---- step 0: the M11b review's P2 and P3 (MZB-890, MZB-891) ---------------------------------------
@@ -381,6 +564,137 @@ public final class AloftMowzieGameTests {
                     record(test, "retired hand-back", "S answered STALE twice (in the animation and after) and stood no body; C handed back");
                     for (int i = 0; i < 2; i++)
                         com.minecraftindustrialcomplex.mic_rtsim.gametest.FakePlayers.remove(player[i]);
+                    far.releaseAll();
+                })
+                .thenSucceed();
+    }
+
+    // ---- 23a: the height (MZB-806, MZB-808, MZB-809) -------------------------------------------------
+
+    /**
+     * An Invasion's chief puppet keeps its height over a lane (test 23a; MZB-806, MZB-808, MZB-809). The lane is flat, 160 blocks, with a
+     * wall (6 high, across the whole lane), an oak (trunk 5, leaves to 8) and a roof (7 by 7 slabs on four posts, 4 up) across the way.
+     * A masked player stands beside the start. The script: CHIEF_BODY away (health 250, the player in its memory), the MATERIALIZE
+     * (2 warriors and the chief's stack), a steer along the lane at 0.08 a tick.
+     * <ul>
+     * <li>The puppet appears at its place in the column (within a block of it), floating, facing the way the column goes (direction 4,
+     * private and synced), with health 250 and the player in its memory.</li>
+     * <li>Every tick it moves at most 0.1 across, at most 0.1 up and 0.05 down, and its box is clear of blocks.</li>
+     * <li>Where it passes each structure its foot is at that structure's top + 3 (within 0.05), and the rule's own target says so;
+     * before the first and after the last it is at the floor's + 3.</li>
+     * </ul>
+     * Whether a column the look reaches is unread (MZB-808's {@code getChunkNow}) cannot be made to happen here: a chunk is readable
+     * from the ticket's neighbour ring, and the body stays in a ticking chunk, so no chunk the look reads is farther than the ring. The
+     * rule's skipping of an unread column is JUnit's ({@code AloftRulesTest}); the counter is logged. The control: the same band without
+     * the chief's stack makes no Umvuthi, and its warriors are placed. Fails without MZB-808's look-ahead (it meets the wall), MZB-809's
+     * cap (it moves at the column's pace, past 0.1).
+     */
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "aloft_height", skyAccess = true)
+    public static void anAloftUmvuthiKeepsItsHeight(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 8000);
+        String test = "anAloftUmvuthiKeepsItsHeight";
+        Far far = new Far(helper, test);
+        ServerLevel level = far.level;
+        Lane[] lane = {new Lane(far, 0, 10), new Lane(far, 1, 3)}; // the Invasion's; the control's
+        long[] agent = {ConflictKit.newAgent(), ConflictKit.newAgent()};
+        long faction = ConflictKit.newFaction();
+        int wall = 60, oak = 90, roof = 120, start = 24, finish = 150;
+        ServerPlayer[] player = new ServerPlayer[1];
+        EntityUmvuthi[] puppet = new EntityUmvuthi[1];
+        Trace[] trace = new Trace[1];
+
+        MowzieKit.seq(helper)
+                .thenExecute(() -> {
+                    for (Lane l : lane)
+                        l.force();
+                })
+                .thenWaitUntil(waits.chunks(far.ready()))
+                .thenExecute(() -> {
+                    for (Lane l : lane)
+                        l.floor();
+                    Lane l = lane[0];
+                    for (int dz = -7; dz <= 7; dz++)
+                        for (int dy = 1; dy <= 6; dy++)
+                            l.set(wall, dy, dz, Blocks.STONE_BRICKS.defaultBlockState());
+                    BlockState leaves = Blocks.OAK_LEAVES.defaultBlockState().setValue(LeavesBlock.PERSISTENT, true);
+                    for (int dy = 1; dy <= 5; dy++)
+                        l.set(oak, dy, 0, Blocks.OAK_LOG.defaultBlockState());
+                    for (int dy = 6; dy <= 8; dy++) {
+                        int r = dy == 8 ? 1 : 2;
+                        for (int x = -r; x <= r; x++)
+                            for (int z = -r; z <= r; z++)
+                                if ((x != 0 || z != 0 || dy > 5) && (r == 1 || Math.abs(x) + Math.abs(z) < 4))
+                                    l.set(oak + x, dy, z, leaves);
+                    }
+                    for (int px : new int[] {-3, 3})
+                        for (int pz : new int[] {-3, 3})
+                            for (int dy = 1; dy <= 3; dy++)
+                                l.set(roof + px, dy, pz, Blocks.OAK_LOG.defaultBlockState());
+                    for (int x = -3; x <= 3; x++)
+                        for (int z = -3; z <= 3; z++)
+                            l.set(roof + x, 4, z, Blocks.OAK_SLAB.defaultBlockState());
+                    player[0] = MowzieKit.player(helper, l.at(start - 4).add(0, 0, 5), "mowzie-aloft-height");
+                    MowzieKit.mask(player[0]);
+                    bandAt(helper, faction, agent[0], l.x0 + start, l.top + 1, l.z, 250f, List.of(player[0].getUUID()), 2, true);
+                    Lane c = lane[1];
+                    bandAt(helper, faction, agent[1], c.x0 + start, c.top + 1, c.z, 0f, List.of(), 2, false);
+                })
+                .thenWaitUntil(waits.logic(() -> {
+                    puppet[0] = puppet(agent[0]);
+                    ConflictBridge.Party control = ConflictKit.party(agent[1]);
+                    int warriors = 0;
+                    for (ConflictBridge.Stack st : control.stacks())
+                        warriors += st.bodies().size();
+                    check("the control's two warriors are placed (" + warriors + ")", warriors == 2);
+                }))
+                .thenExecute(() -> {
+                    Lane l = lane[0];
+                    EntityUmvuthi u = puppet[0];
+                    ConflictBridge.Slot s = chiefSlot(agent[0]);
+                    check("it floats", u.isNoGravity());
+                    check("it appears at its place in the column (" + s.lag() + " blocks off)", s.lag() <= 1.0);
+                    check("its foot is the floor's + 3 (" + (u.getY() - l.top) + ")", Math.abs(u.getY() - (l.top + 3)) <= 0.05);
+                    check("its health is 250 (" + u.getHealth() + ")", u.getHealth() == 250f);
+                    check("the player is in its memory", u.hasTradedWith(player[0]));
+                    check("its synced direction is 4, the quarter of +x (" + u.getDirectionData() + ")", u.getDirectionData() == 4);
+                    check("so is its private one (" + ((EntityUmvuthiAccessor) u).mic_rtsim_mowziesmobs$direction() + ")",
+                            ((EntityUmvuthiAccessor) u).mic_rtsim_mowziesmobs$direction() == 4);
+                    check("no Umvuthi stands in the control's lane", level.getEntitiesOfClass(EntityUmvuthi.class, lane[1].area()).isEmpty());
+                    trace[0] = trace(helper, level, agent[0], l.x0 + wall, l.x0 + oak, l.x0 + roof, l.x0 + finish - 1);
+                    ConflictKit.steer(agent[0], ConflictKit.party(agent[0]).epoch, PACE, l.x0 + finish, l.z, 0, false);
+                })
+                .thenWaitUntil(waits.logic(() -> check("it has come to the end of the lane (x " + puppet[0].getX() + ")",
+                        puppet[0].getX() >= lane[0].x0 + finish - 1)))
+                .thenIdle(5)
+                .thenExecute(() -> {
+                    Lane l = lane[0];
+                    Trace t = trace[0];
+                    double[] want = {l.top + 6 + 3, l.top + 8 + 3, l.top + 4 + 3, l.top + 3};
+                    String[] what = {"the wall", "the oak", "the roof", "the end"};
+                    StringBuilder log = new StringBuilder();
+                    for (int i = 0; i < want.length; i++) {
+                        check(what[i] + ": its foot at x " + t.markX[i] + " is " + t.markY[i] + ", not " + want[i],
+                                Math.abs(t.markY[i] - want[i]) <= 0.05);
+                        check(what[i] + ": the rule's target is " + t.markTarget[i] + ", not " + want[i], Math.abs(t.markTarget[i] - want[i]) <= 1.0e-6);
+                        log.append(what[i]).append(' ').append(String.format("%.2f", t.markY[i] - l.top)).append(", ");
+                    }
+                    check("it moved at most 0.1 across (" + t.across + ")", t.across <= 0.1 + 1.0e-6);
+                    check("at most 0.1 up (" + t.up + ")", t.up <= 0.1 + 1.0e-6);
+                    check("at most 0.05 down (" + t.down + ")", t.down <= 0.05 + 1.0e-6);
+                    check("its box was clear every tick (" + t.crowded + " not, of " + t.ticks + ")", t.crowded == 0);
+                    check("its gravity stayed off (" + t.gravity + ")", t.gravity == 0);
+                    check("it went over the oak's top: highest " + (t.highest - l.top), t.highest >= l.top + 8 + 3 - 0.05);
+                    check("and did not stay up: lowest " + (t.lowest - l.top), t.lowest <= l.top + 3 + 0.05);
+                    check("no traveller step failed (" + ConflictKit.travellerErrors() + ")", ConflictKit.travellerErrors() == 0);
+                    check("the control's band made no Umvuthi", level.getEntitiesOfClass(EntityUmvuthi.class, lane[1].area()).isEmpty());
+                    record(test, "heights over the floor", log + "most across " + String.format("%.3f", t.across) + ", up " + String.format("%.3f", t.up)
+                            + ", down " + String.format("%.3f", t.down) + "; columns the look skipped for want of a chunk "
+                            + UmvuthiAloft.INSTANCE.heightColumnsSkipped);
+                    recallAll(agent);
+                })
+                .thenIdle(30)
+                .thenExecute(() -> {
+                    drop(player);
                     far.releaseAll();
                 })
                 .thenSucceed();
