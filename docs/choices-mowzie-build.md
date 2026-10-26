@@ -10039,6 +10039,47 @@ M11a's implementer appends its records under this heading only (the Rust side).
 M11b's implementer appends its records under this heading only (the Java side). MZB-890 to MZB-899 are left for M11c
 and the reviews' fixes.
 
+- **MZB-870** (step 1: `AloftRules`, the pure rules; MZB-841's constants):
+  - Core's `conflict/AloftRules.java`, in `MarchTrim`'s package so that distances go through the package-private
+    `withinSight`. Every constant is named once there and is a PLACEHOLDER (MZB-841): `CLEARANCE` 2, `AHEAD` 8, `RISE`
+    0.1, `SINK` 0.05, `PACE` 0.1, `LOW` 1, `LOOK` 10, `STUCK_PERIOD` 100, `HEADWAY` 0.5, `STUCK_FAR` 8, `RAISE` 8,
+    `RAISE_MAX` 24, `HOLD_MAX` 1200, `SIGHT` 160, `SETTLE` 32, `HOVER_NEAR` 8, `RISE_AFTER` 200, `TURN` 55,
+    `REPAIR_COOLDOWN` 200, `REPAIR_HOLD` 2.
+  - The three machines are small objects the plugin keeps in a body's memo, each allocation-free per tick: `Stuck`
+    (one compare a tick until a 100-tick period ends), `Repair` (the gate) and the DDA `clear` with a `Cells`
+    callback. The callback answers OPEN, BLOCKS or ABSENT (a chunk not at hand), so the rule never reads a level
+    and the glue decides what blocks motion (a glass pane does, grass does not).
+  - Choices where the design left a hair open, each the conservative reading:
+    - `quarter` takes a yaw halfway between two quarters to the later one (`Math.round` rounds half up), so 45 is
+      direction 2. The jar turns the body to that quarter the same tick, so the choice is a facing only.
+    - `Stuck` measures each period from where the last one ended, not from the start of the stuck spell, so a body
+      that creeps 0.4 a period is stuck for as long as it creeps; a headway of exactly 0.5 is headway.
+    - Within `STUCK_FAR` (8) of its place it is never stuck, and a period ending there resets the raises.
+    - A held body looks for a player's line every `LOOK` ticks; `moveDue` takes `seen` as "some player within 160
+      has a clear line" and moves at once when none has, or after 1,200 held ticks whatever the players see.
+    - `Repair.gate` restarts its hold whenever any condition fails during it (the way straightens, an ability
+      starts, it begins to die), so the 2 ticks are always consecutive and the body is still when the packet is built.
+    - `clear` leaves out the eye's cell and the body's cell, which are the ends; a line within one cell is clear.
+      Crossing a cell edge it prefers the x axis, then y, then z, and stops when every axis has crossed its cells,
+      so rounding at a corner cannot step past the target's cell.
+  - Tests: `AloftRulesTest`, 51 tests. First run against a stub that answered each rule's neutral value, 42 failed,
+    each for its own rule's assertion; the 9 that passed were the neutral cases (a body not stuck, a gate saying no,
+    nothing to rise). Then green against the rules.
+- **MZB-871** (step 1: `Traveller`, `Travellers`, `registerTraveller`, PAID_PUPPET):
+  - `conflict/Traveller.java` copies `Lurker`'s shape, a `Memo` with `get(Class)` and `set`, kept by the bridge on
+    the body's slot and emptied with it. Its calls: `made(level, body, memory, memo)` (the chief's CHIEF_BODY is the
+    memory, MZB-805), `step(level, body, way, memo)`, `home(level, body, spot, yaw, memo)` (true once settled),
+    `release(body, memo)` and `died(body, memo)`. `Way` is one reused object the bridge fills: the place's x and z,
+    the walk's target x and z, the attack flag, recalled, and the game time. Fork, taken conservatively: the design
+    lists `step(level, body, way, memo)` without the target player or `homing`; the target is the mob's own
+    (`getTarget`) and the homing is a different call (`home`), so neither is a `Way` field.
+  - `conflict/Travellers.java` is `Lurkers`' registry by type id string; `of(EntityType)` is looked up once per slot
+    when the slot is made (D1), and returns null when nothing is registered, so a pack without a traveller pays one
+    empty-map check per slot made.
+  - `RtsimApi.registerTraveller(String, Traveller)` beside `registerLurker`.
+  - `ConflictRecords.ChiefPaid.PAID_PUPPET = 2` beside `PAID_STRAY`, documented with its slot (`CHIEF_SLOT`, -1) and
+    generation 0. The Rust constant is M11a's (boundary.rs 149).
+
 ## M12 S9
 
 (none yet)
