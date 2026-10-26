@@ -10043,6 +10043,32 @@ M11a's implementer appends its records under this heading only (the Rust side).
   it now holds the old filter's rule for both (kept exactly when no agent is named), and a queue of home, away and
   MATERIALIZE keeps only the home one at `begin_replay`. The old-filter loop of the table test needs no change:
   `Cmd::agent` is read only there and in this test.
+- **MZB-851** (step 2, the chief's stack and its CHIEF_BODY; MZB-801, MZB-803 built): `chief_own_stack` sits
+  beside `chief_stack` in engine.rs, whose doc now names the Frostmaw's chief as one of its band's bodies.
+  `spawn_wave` appends `{ umvuthi, 0, MEMBER_CHIEF }` when `x.chief && chief_own_stack && !walked_in &&
+  x.spawned.is_empty()`, sets BAND_CHIEF when `x.chief` and either rule holds (for the shipped cultures that is
+  `x.chief`: the two rules are each other's negation), and pushes `chief_body_away(p)` (camp.rs, beside
+  `chief_body_record`) just before the MATERIALIZE that carries the stack, both after the `defer`. Tests in the new
+  `tests/mowzie_aloft.rs`:
+  - A1 `the_chief_body_goes_ahead_of_the_chiefs_stack`: met on the road, at the target, after a refused first wave
+    and on the way home, each first wave with bodies has the pair (agent, epoch, health 0, flags 0, the camp's
+    memory with the payer of a payment at home), the chief stack last, `spawned` and `stats.waves` counting the
+    units only. A walk-in, and a second wave of the epoch, send neither. The fight cases set `spawn_quota` to 2
+    and the scripted player kills each wave, since the quota counts what stands, not what a wave sends: a second
+    wave comes only after deaths, a wave interval after them (`casualties` reschedules it). Its controls (the
+    Frostmaw's first stack is its chief and no CHIEF_BODY goes; a grove raid its Umvuthi does not lead sends
+    neither) are their own test.
+  - A2 `a_band_with_only_its_chief_left_sends_nothing`: the warriors' deaths are set on `units` (a test stand-in
+    for abstract deaths); `seen` already returns for a band with nothing alive (MZB-490), so the early return of
+    MZB-802 is not the one that holds it. The control, one warrior left, sends both.
+  - A3 `an_away_chief_body_is_dropped_with_its_materialize`: the band met on its way home with the commands not
+    taken, then home at a grove that is in, so a home CHIEF_BODY (ahead of the chief's line) is queued after the
+    pair; saved and loaded, the queue holds all three, and `begin_replay` keeps the home one only. A meeting while
+    replaying is deferred and pushes neither (`never` 0).
+
+  On the base: a mutation back to the base rule (`own_chief` false, BAND_CHIEF on `chief_stack` only) fails A1
+  (no pair met on the road), A2's control ((1, 0), want (1, 1)) and A3 (no away CHIEF_BODY queued); the gate's
+  away arm mutated to keep fails A3 at "the away CHIEF_BODY is dropped". The controls pass on both.
 
 ### M11b build records (MZB-870 to MZB-889)
 
