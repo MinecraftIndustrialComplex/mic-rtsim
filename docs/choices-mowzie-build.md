@@ -10393,6 +10393,20 @@ and the reviews' fixes.
     round the puppet (test 23's clause, as the design says). No change to what the jar does to them.
   - No JUnit: it needs a live level and the jar's ability. Test 24 (M11c) is the check; the mixin applying at all is the lead's
     first GameTest run (`defaultRequire` 1 makes a missed target fail at load, not silently).
+- **MZB-888** (step 8: GroveKind's two lines; MZB-828 and MZB-820):
+  - `GroveKind.playerWithin` is horizontal: `AloftRules.near` (the one distance the aloft rules, the take's staleness and Rule U share)
+    in place of `distanceToSqr`. A player high above or deep below a point counts as near as one beside it, which is how a body's
+    sight is measured (MZB-753). It can only widen a hold, never narrow it, since the ground-plane distance is never more than the 3D
+    one. Its two callers are both in GroveKind: `holdSpawn` (the throne's 160-block hold, MZB-433) and `holdRemoval` (Rule U's, on a chief
+    body); both only wait the longer for a player overhead, so nothing else changes.
+  - `GroveKind.copy` carries the trade memory between two Umvuthi: `remember(to, new ChiefBody(0f, 0, from.getTradedPlayers()))`, the
+    union `chiefBody` does (the body's list plus the memory's, a `LinkedHashSet`, written with `setTradedPlayersCompound`, so nothing
+    is journaled). Fork (conservative): health 0 in the memory, so `remember` leaves the health `copy` has just set (the old body's,
+    capped at the new one's maximum) alone. `copy(from, to)` has four callers, all of them a body replacing a body, and the union
+    runs the right way in each: `Camps`' hand-back make (two sites) and case B's merge into the standing throne body (the puppet's
+    trades reach the throne body), and `ConflictBridge`'s hand-off (the throne body's trades reach the new puppet, before
+    `Traveller.made` adds the engine's memory on top). Any other pair (an Umvuthana, the Frostmaw) takes the existing branches
+    unchanged. No JUnit: it needs the jar's entity. The M11c hand-back GameTest reads `getTradedPlayers` on the throne body.
 
 ## M12 S9
 
