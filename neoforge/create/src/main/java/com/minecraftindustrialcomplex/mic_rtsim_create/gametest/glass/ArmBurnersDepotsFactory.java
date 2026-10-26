@@ -119,6 +119,7 @@ public final class ArmBurnersDepotsFactory implements CorpusFactory {
         // without a block under it the chute would drop its coal into the world
         set(h, coalChute.below(), Blocks.STONE.defaultBlockState());
         smartChute(h, coalChute, Items.COAL, 1);
+        // One store of 54 slots, listed as outLeft: the pair stays in one chunk (doubleChest asserts it, RP-215)
         doubleChest(h, outLeft, outRight, Direction.SOUTH);
         brassFunnel(h, funnel, Direction.SOUTH, Items.IRON_INGOT);
 

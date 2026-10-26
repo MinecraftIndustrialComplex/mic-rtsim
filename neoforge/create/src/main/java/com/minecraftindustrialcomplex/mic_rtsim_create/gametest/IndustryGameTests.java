@@ -856,6 +856,38 @@ public final class IndustryGameTests {
                 .thenSucceed();
     }
 
+    /**
+     * A vanilla double chest across a chunk border is two boundary inventories, one per half, each its own 27 slots
+     * (RP-215): the pair's handler reads the other half through {@code Level.getBlockState} and writes into either, so a
+     * command at one half would change a chunk it does not name. The two chunks are one district all the same. Either
+     * half leads to itself, and an unloaded position still has none.
+     */
+    @GameTest(template = YARD, batch = "industry_14b", timeoutTicks = 400)
+    public static void aDoubleChestAcrossAChunkBorderIsTwoInventories(GameTestHelper helper) {
+        fastConfig();
+        forget(helper);
+        int bx = borderX(helper), y = floorY(helper), z = midZ(helper);
+        BlockPos a = new BlockPos(bx - 1, y, z), b = a.east();
+        set(helper, a, Blocks.CHEST.defaultBlockState().setValue(net.minecraft.world.level.block.ChestBlock.FACING, Direction.NORTH)
+                .setValue(net.minecraft.world.level.block.ChestBlock.TYPE, net.minecraft.world.level.block.state.properties.ChestType.LEFT));
+        set(helper, b, Blocks.CHEST.defaultBlockState().setValue(net.minecraft.world.level.block.ChestBlock.FACING, Direction.NORTH)
+                .setValue(net.minecraft.world.level.block.ChestBlock.TYPE, net.minecraft.world.level.block.state.properties.ChestType.RIGHT));
+        playerPlaced(helper, a);
+        playerPlaced(helper, b);
+        helper.startSequence()
+                .thenWaitUntil(() -> {
+                    District d = districtAt(helper, a);
+                    check("district", d != null);
+                    check("the other half's chunk is in it", districtAt(helper, b) == d && d.chunks.size() == 2);
+                    check("an inventory for each half, at its own position: " + d.inventories, d.inventories.size() == 2
+                            && d.inventoryAt(a) != null && d.inventoryAt(b) != null);
+                    check("27 slots each: " + d.inventories, d.inventoryAt(a).itemSlots() == 27 && d.inventoryAt(b).itemSlots() == 27);
+                    check("either half leads to itself", a.equals(com.minecraftindustrialcomplex.mic_rtsim.industry.Districts.canonicalInventory(helper.getLevel(), a))
+                            && b.equals(com.minecraftindustrialcomplex.mic_rtsim.industry.Districts.canonicalInventory(helper.getLevel(), b)));
+                })
+                .thenSucceed();
+    }
+
     private static String engineName(int engineGoodId) {
         return ind().engineName(IndRecords.DICT_GOOD, engineGoodId);
     }
