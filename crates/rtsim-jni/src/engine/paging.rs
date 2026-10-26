@@ -19,7 +19,9 @@
 //! - **The budget**: `enforce_budget` after every step; when a module is over its budget with
 //!   every resident page changed since the last save (`needs_save`) and no save is in flight, an
 //!   extra save at that step boundary, committed as a pending generation (P29): a crash rolls it
-//!   back at the next start and the journal replays it (PF15).
+//!   back at the next start, and the journal replays it, unless the journal holds it (slice U-h: the
+//!   start opens the generation the journal's file holds). Not while a world save waits for its
+//!   WORLD_SAVED (PF15, LP12).
 //! - **State hashes** are whole passes (they read every row), so only an engine opened in TEST
 //!   mode writes them, in a page of their own next to the meta page, `(table, 1)` (PF16).
 
