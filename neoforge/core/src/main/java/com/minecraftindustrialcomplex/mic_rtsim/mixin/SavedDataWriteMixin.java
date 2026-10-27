@@ -25,7 +25,7 @@ import java.nio.file.Path;
  */
 @Mixin(SavedData.class)
 public abstract class SavedDataWriteMixin {
-    @WrapOperation(method = "lambda$save$0", at = @At(value = "INVOKE",
+    @WrapOperation(method = "lambda$save$0(Lnet/minecraft/nbt/CompoundTag;Ljava/io/File;)V", at = @At(value = "INVOKE",
             target = "Lnet/neoforged/neoforge/common/IOUtilities;writeNbtCompressed(Lnet/minecraft/nbt/CompoundTag;Ljava/nio/file/Path;)V"))
     private void mic_rtsim$watchWrite(CompoundTag tag, Path path, Operation<Void> original) {
         Object self = this;

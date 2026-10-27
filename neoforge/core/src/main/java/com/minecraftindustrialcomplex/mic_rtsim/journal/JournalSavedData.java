@@ -154,10 +154,20 @@ public final class JournalSavedData extends SavedData {
             warnedBehind = false;
         } else if (!warnedBehind) {
             warnedBehind = true;
-            MicRtsim.LOGGER.warn("[mic_rtsim] the journal's file on disk is {} applied ops behind (its writes held {} world saves in a row: {}{}); a crash"
+            MicRtsim.LOGGER.warn("[mic_rtsim] the journal's file on disk is {} applied ops behind ({}); a crash"
                     + " replays them from the older file, and the chunks and stores they changed must answer them (RP-205)",
-                    behind, chunks.heldInARow(), chunks.lastHeld(), savedDataStreak ? "; a failed SavedData write holds it too (U-g1)" : "");
+                    behind, behindBecause());
         }
+    }
+
+    /** The two causes of a journal file that does not move, each said on its own: chunks not on disk (RP-205), a failed SavedData write (U-g1). */
+    private String behindBecause() {
+        String chunkPart = chunks.heldInARow() > 0
+                ? "its writes waited for chunks " + chunks.heldInARow() + " world saves in a row: " + chunks.lastHeld() : null;
+        String dataPart = savedDataStreak ? "a SavedData file whose write failed holds it (U-g1)" : null;
+        if (chunkPart != null && dataPart != null)
+            return chunkPart + "; and " + dataPart;
+        return chunkPart != null ? chunkPart : dataPart != null ? dataPart : "its writes were held";
     }
 
     /**
@@ -177,7 +187,7 @@ public final class JournalSavedData extends SavedData {
                 }
                 return;
             }
-            String failing = SavedDataWrites.INSTANCE.firstFailing(dirs);
+            String failing = SavedDataWrites.INSTANCE.holdFor(dirs);
             if (failing != null) { // a file of this save is not on disk: the journal's file does not get ahead of it (U-g1)
                 retry = true; // dirty for the next world save, which writes the failed file first. No heldLast: a flush save does not try again (U-g7)
                 savedDataHeld.incrementAndGet();
@@ -192,7 +202,7 @@ public final class JournalSavedData extends SavedData {
             }
             if (savedDataStreak) {
                 savedDataStreak = false;
-                MicRtsim.LOGGER.info("[mic_rtsim] no failed SavedData write holds the journal's file any more (the files were written again, or dropped): it goes on");
+                MicRtsim.LOGGER.info("[mic_rtsim] no failed SavedData write holds the journal's file any more (the files were written again, dropped or given up on): it goes on");
             }
             for (Path d : dirs) // their renames are durable before the journal's can be (RP-201)
                 DirectorySync.sync(d);
