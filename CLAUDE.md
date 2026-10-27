@@ -21,13 +21,15 @@ yourself.
    - 0: read the verdict and every finding. Fix the real ones (a bug gets a failing test first),
      push, and run the script again, so the fix gets its own round. Answer each false positive in
      the pull request with a one-line reason.
-   - 2: git or gh failed. Fix the cause and run it again. Do not land.
+   - 2, or any status not listed here: git or gh failed, or the script was cut off. Fix the cause
+     and run it again. Do not land.
    - 3: no review started. Land without one and say so. After a fix push this means the fix landed
      unreviewed: say that too.
    - 4: the review is still running. Run the script again; it keeps waiting on the same pull
      request. Only after a second 4, land without the review and say so: landing closes the pull
      request and ends that review.
-4. Land. If `main` moved, merge it again, check for unmerged paths, and rerun the tests for any code
-   the merge brought in. Then `git push origin HEAD:main`. A clean merge of `main` needs no new
-   review round. Apart from the second 4 above, never land while a review is still running.
+4. Land. If `main` moved, merge it again, check for unmerged paths, and rerun the tests step 1 ran:
+   a clean merge can still break the branch's own code (a renamed function, a changed signature).
+   Then `git push origin HEAD:main`. A clean merge of `main` needs no new review round. Apart from
+   the second 4 above, never land while a review is still running.
 5. Delete the remote branch: `git push origin --delete <branch>`.
