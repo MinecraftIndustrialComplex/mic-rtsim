@@ -42,6 +42,9 @@ public final class SavedDataWrites {
             m -> com.minecraftindustrialcomplex.mic_rtsim.MicRtsim.LOGGER.error(m),
             m -> com.minecraftindustrialcomplex.mic_rtsim.MicRtsim.LOGGER.info(m));
 
+    /** Consecutive held world saves after which a file stops holding the journal's write (PLACEHOLDER; docs/choices-journal-barrier.md U-g12). */
+    public static final int GIVE_UP_AFTER = 12;
+
     private static final class Entry {
         final Path file;
         WeakReference<JournalDependent> owner;
@@ -191,6 +194,29 @@ public final class SavedDataWrites {
                         return e.file + " (" + e.failed + " failed write(s), last " + e.why + ")";
         }
         return null;
+    }
+
+    /** (stub: the next commit) The journal's question at its write: as {@link #firstFailing}, and counts the hold against each file. */
+    public String holdFor(Collection<Path> dirs) {
+        return firstFailing(dirs);
+    }
+
+    /** (stub: the next commit) Whether {@code file}'s last write failed and it still holds the journal's write. */
+    public boolean holds(Path file) {
+        return false;
+    }
+
+    /** (stub: the next commit) Files the journal stopped holding for after {@link #GIVE_UP_AFTER} held world saves. */
+    public long gaveUp() {
+        return 0;
+    }
+
+    /** (stub: the next commit) Forgets every entry and counter: a server stopped. */
+    public void reset() {
+    }
+
+    /** (stub: the next commit) GameTests: the held world saves after which a file stops holding; {@code <= 0}: back to {@link #GIVE_UP_AFTER}. */
+    public void giveUpAfterForTest(int worldSaves) {
     }
 
     /** Files whose last write failed. */

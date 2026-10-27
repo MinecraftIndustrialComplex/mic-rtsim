@@ -227,7 +227,7 @@ public final class PowerLinks {
     }
 
     /** The links sent, sink to source ({@code data/mic_rtsim_powergrid_links.dat}). */
-    static final class Links extends SavedData {
+    public static final class Links extends SavedData {
         final Map<Long, Long> links = new HashMap<>();
         static final Factory<Links> FACTORY = new Factory<>(Links::new, Links::load);
 
