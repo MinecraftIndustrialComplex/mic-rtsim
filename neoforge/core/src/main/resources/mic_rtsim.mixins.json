@@ -21,6 +21,7 @@
     "MinecraftServerSaveMixin",
     "MobAccessor",
     "RegionFileStorageAccessor",
+    "SavedDataWriteMixin",
     "ServerLevelAccessor",
     "SimpleRegionStorageAccessor",
     "StructureManagerMixin",
