@@ -124,7 +124,9 @@ public final class ChestPairLoadGameTests {
                 })
                 // Unloaded, not only without a visible holder: a holder still waiting in ChunkMap's pendingUnloads
                 // comes back FULL, with its old block entities, at a new ticket.
-                .thenWaitUntil(paced(() -> check("A and N unload (block entities removed, no chunk holder)", old[0].isRemoved() && old[1].isRemoved()
+                // old[0] is null when the step before failed: a failed thenExecute does not stop the sequence's next steps
+                // in that tick, and an NPE here would crash the server and end the whole round.
+                .thenWaitUntil(paced(() -> check("A and N unload (block entities removed, no chunk holder)", old[0] != null && old[0].isRemoved() && old[1].isRemoved()
                         && cache.chunkMap.getVisibleChunkIfPresent(a.toLong()) == null && cache.chunkMap.getVisibleChunkIfPresent(n.toLong()) == null)))
                 .thenExecute(() -> cache.addRegionTicket(FULL_ONLY, a, 0, a))
                 .thenWaitUntil(paced(() -> {
