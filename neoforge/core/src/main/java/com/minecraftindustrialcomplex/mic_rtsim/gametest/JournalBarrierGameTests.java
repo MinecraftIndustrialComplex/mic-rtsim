@@ -588,6 +588,91 @@ public final class JournalBarrierGameTests {
     }
 
     /**
+     * The same with the journal held by a failed SavedData write instead of a blocked one (P29 with U-g1, docs/
+     * choices-journal-barrier.md U-h1, U-h9): a file of a world save's data directories fails to write, so the
+     * journal's file is kept as it was and the marker (WORLD_SAVED) reports that file; the engine's world save stays a
+     * pending generation and the journal keeps its record. With the disk back, the next world save writes the data and
+     * then the journal's file, the marker confirms the pages and the acknowledgement follows. The failing file is a test
+     * Pad of a directory the world save counts as its own ({@link SavedDataWriteKit}), which holds every journal of its
+     * window, the server's too: the test has a batch of its own.
+     */
+    @GameTest(template = RtsimTests.TEMPLATE, batch = "mic_rtsim_saved_data_write_hold_d", timeoutTicks = 6000)
+    public static void aHeldJournalHoldsTheEnginesAcknowledgement(GameTestHelper helper) {
+        String test = "aHeldJournalHoldsTheEnginesAcknowledgement";
+        ServerLevel level = helper.getLevel();
+        boolean noSave = level.noSave;
+        level.noSave = true;
+        ChunkWait.of(helper, 6000).onEnd(() -> level.noSave = noSave);
+        RtsimSession s = RtsimTests.session();
+        JournalSavedData data = s.journal();
+        SavedDataWriteHoldGameTests.Pad pad = new SavedDataWriteHoldGameTests.Pad();
+        SavedDataWriteKit.Kit kit = new SavedDataWriteKit.Kit(level, pad, true);
+        long[] through = new long[1];
+        long[] fileBefore = new long[1];
+        long[] heldBefore = new long[1];
+        helper.startSequence()
+                .thenExecute(kit.step(() -> {
+                    // A record the file and the pages do not hold yet, and a data file that cannot be written.
+                    java.nio.ByteBuffer r = s.boundary().beginJournaled(com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs.TRANSFER,
+                            com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs.Transfer.SIZE,
+                            com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs.Transfer.GENERIC, 0);
+                    r.putLong(com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs.Transfer.TO, 7);
+                    r.putLong(com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs.Transfer.AMOUNT, 5);
+                    s.boundary().commitWithOpId(r, com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs.Transfer.OP_ID);
+                    through[0] = s.boundary().journal().nextObsSeq() - 1;
+                    fileBefore[0] = data.writtenThrough();
+                    heldBefore[0] = data.savedDataHeld();
+                    check("the file is behind the journal", fileBefore[0] < through[0]);
+                    kit.diskFull();
+                    pad.value = 1;
+                    pad.setDirty();
+                    savePad(kit, pad);
+                }))
+                .thenWaitUntil(io(() -> check("the Pad's write failed and holds the journal", kit.heldByFailedWrite())))
+                .thenExecute(kit.step(() -> {
+                    data.setDirty();
+                    saveWorld(level);
+                }))
+                .thenWaitUntil(io(() -> check("the journal's write was held by the failed file", data.savedDataHeld() > heldBefore[0])))
+                .thenExecuteAfter(40, kit.step(() -> {
+                    long ack = RtsimTests.engine().pagesObsSeq();
+                    long marker = s.boundary().durablePending();
+                    record(test, "held: engine ack, marker, file, journal", ack + ", " + marker + ", " + data.writtenThrough() + ", " + through[0]);
+                    check("the file was not written", data.writtenThrough() == fileBefore[0]);
+                    check("the engine's acknowledgement is at most the file: " + ack + " <= " + data.writtenThrough(), ack <= data.writtenThrough());
+                    check("the marker is at most the file: " + marker + " <= " + data.writtenThrough(), marker <= data.writtenThrough());
+                    check("the journal still holds the record", s.boundary().journal().size() > 0 && s.boundary().journal().firstSeq() <= through[0]);
+                    // The disk is back: the Pad is written, and the next world save writes the journal's file.
+                    kit.diskFree();
+                    pad.setDirty();
+                    savePad(kit, pad);
+                }))
+                .thenWaitUntil(io(() -> check("the Pad is written and holds nothing", !kit.heldByFailedWrite())))
+                .thenExecute(kit.step(() -> {
+                    data.setDirty();
+                    saveWorld(level);
+                }))
+                .thenWaitUntil(io(() -> check("the file was written", data.writtenThrough() >= through[0])))
+                .thenWaitUntil(io(() -> check("the engine acknowledged the save and the journal was trimmed past it",
+                        RtsimTests.engine().pagesObsSeq() >= through[0]
+                                && (s.boundary().journal().size() == 0 || s.boundary().journal().firstSeq() > through[0]))))
+                .thenExecute(kit.step(() -> {
+                    record(test, "after the write: engine ack, marker, file",
+                            RtsimTests.engine().pagesObsSeq() + ", " + s.boundary().durablePending() + ", " + data.writtenThrough());
+                    check("the acknowledgement is at most the marker: " + RtsimTests.engine().pagesObsSeq() + " <= " + s.boundary().durablePending(),
+                            RtsimTests.engine().pagesObsSeq() <= s.boundary().durablePending());
+                    kit.cleanup();
+                }))
+                .thenSucceed();
+    }
+
+    /** The Pad's own save, as a world save runs it: its write goes on the IO chain and fails or lands there. */
+    private static void savePad(SavedDataWriteKit.Kit kit, net.minecraft.world.level.saveddata.SavedData pad) {
+        net.minecraft.core.HolderLookup.Provider registries = kit.level.registryAccess();
+        WorldSaveOrder.asWorldSaveForTest(kit.level.getServer(), () -> pad.save(kit.dataFile.toFile(), registries));
+    }
+
+    /**
      * A level saved by itself, outside a world save, leaves the journal's file on disk as it was (RP-203). The
      * overworld's own {@code ServerLevel.save}, as a mod might call it, with the server's journal dirty: on the IO
      * chain right after it, the file's bytes are the bytes from before, nothing was written, the journal is still
