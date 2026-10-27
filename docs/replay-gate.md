@@ -2256,16 +2256,23 @@ its files on disk, the rest from the save before. Two directions:
      fed or drawn by Create movers therefore has no counted flows, and the glass compile learns no rates for it. How
      Create fills a chest is unchanged (the coordinator's decision). Test: create's
      `IndustryGameTests.aMoveIntoAHalfOfASplitChestIsDiscardedNotCounted`.
-   - **A player's session at a half is discarded too.** Vanilla's chest menu is the pair's `CompoundContainer`, so what a
-     player takes from or puts into the other half would be booked against the clicked half. `PlayerPorts.rightClicked`
-     marks a click on a split half, and `opened` discards the window as an unattributed session
-     (`IND_DISCARD` UNATTRIBUTED_SESSION) and counts it in `PlayerPorts.splitSessionsDiscarded` (also in
-     `unattributedSessions`); no PLAYER_SESSION port is booked for it. Test: create's
-     `IndustryGameTests.aSessionAtAHalfOfASplitChestIsDiscardedNotBooked`.
+   - **A player's session at a half is booked to the district alone.** Vanilla's chest menu is the pair's
+     `CompoundContainer`, so what a player takes from or puts into the other half must not be booked against the clicked
+     half. `PlayerPorts.rightClicked` marks a click on a split half and takes the player's snapshot as for any stock; the
+     session is a session (`opened` keeps it, counts it in `PlayerPorts.splitSessions`), so tosses and pickups made with
+     the menu open defer to it as for any session. At close the player's change is booked as a PLAYER_SESSION port to the
+     district with `NO_INVENTORY`, the way a toss is: the engine merges it into the district's ports (the learner's
+     differences, so the stock change in either half is explained wherever the goods sat) and sends the glass no
+     port for any store (`Engine::port` calls `glass.port` only when the port names an inventory). The session's diff is
+     the player's own, not a diff of the menu's container, so what a hopper or a mover does to the pair meanwhile is not
+     booked as the player's. Booked at close, however long the menu stays open: a window that rolls over meanwhile sees
+     the stock change before the port, as for every session. Tests: create's
+     `IndustryGameTests.aSessionAtAHalfOfASplitChestIsBookedToTheDistrictAlone` (a menu held open across sweeps, goods
+     moved after them, a throw out of the menu, and a single-chest control booked against its own inventory).
    - **The audit of every path that books goods to a store (slice U-f, found in review rounds 1 and 2).**
      (a) Counted movers: chutes, funnel and arm points, a basin's overflow, packagers, repackagers, unpackers, frogports
      and `InvManipulationBehaviour` all report through `Counting.moved`, the one place a counted move is keyed to a
-     store: discarded at a split half (the first bullet). (b) Player sessions: discarded (above). A player's click that
+     store: discarded at a split half (the first bullet). (b) Player sessions: booked to the district with no inventory (above). A player's click that
      opens no menu books nothing at a split half (no snapshot is taken). (c) A player's break (`PlayerPorts.breaking`):
      drops the half's own block entity slots, which is the half's inventory: exact, no change. Tosses and pickups name
      the district and no store. (d) Vanilla hoppers, droppers, dispensers and hopper minecarts reach a pair through
