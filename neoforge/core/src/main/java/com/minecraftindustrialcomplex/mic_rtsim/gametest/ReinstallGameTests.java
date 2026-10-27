@@ -185,7 +185,7 @@ public final class ReinstallGameTests {
                     // longer; after fewer ticks the journal still starts at observation 1, the reset's engine
                     // replays all of it and does not start over. So the test asks for the save itself.
                     if (!rtsimSavedBefore())
-                        RtsimTests.engine().requestSaveAtNextStep();
+                        RtsimTests.acknowledge();
                 })
                 .thenWaitUntil(RtsimTests.io(() -> check("an engine save was acknowledged before the gap: the journal holds "
                         + journalSpan(), rtsimSavedBefore())))

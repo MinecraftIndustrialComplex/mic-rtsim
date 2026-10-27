@@ -66,6 +66,22 @@ public final class RtsimTests {
     }
 
     /**
+     * Has the engine save its pages at its next step, and takes the journal's file to hold what the session has sent,
+     * so the header after the save acknowledges it and the holders drop what it covers. A bare
+     * {@code requestSaveAtNextStep} no longer reaches the journal: the bridge never trims past the file on disk (JB9),
+     * and these tests make no world save. {@code session} is the one whose journal the acknowledgement trims.
+     */
+    public static void acknowledge(RtsimSession session, ScriptedEngine engine) {
+        session.journal().fileLandedForTest(session.boundary().sentObsSeq());
+        engine.requestSaveAtNextStep();
+    }
+
+    /** {@link #acknowledge(RtsimSession, ScriptedEngine)} for the server's own session. */
+    public static void acknowledge() {
+        acknowledge(session(), engine());
+    }
+
+    /**
      * A new engine of the same kind as the session's, with empty pages, for a test that runs its own
      * sessions: the native engine on a fresh directory under {@code <game dir>/mic_rtsim-test/}, or a
      * stub with no pages file.

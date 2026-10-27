@@ -111,7 +111,7 @@ public final class PendingRecordGameTests {
                         check("the chest got the diamonds once", diamonds(chest) == 3);
                         check("the reasserted result told the engine the op is done", e.opApplied(ENGINE_OP));
                         e.awaitIdle();
-                        e.requestSaveAtNextStep();
+                        RtsimTests.acknowledge(s, e);
                         stage[0]++;
                         wait[0] = 0;
                     }
@@ -215,7 +215,7 @@ public final class PendingRecordGameTests {
                     check("under a new sequence", copy.obsSeq() > t.get(0).obsSeq());
                     check("and dropped", copy.skipped());
                     check("so the take counts once", RtsimTests.engine().eventOpCount(t.get(0).view().getLong(Obs.Taken.OP_ID)) == 1);
-                    RtsimTests.engine().requestSaveAtNextStep();
+                    RtsimTests.acknowledge();
                 })
                 .thenWaitUntil(() -> check("both dropped their records once the engine acknowledged",
                         !e[0].hasData(RtsimAttachments.PENDING) && !e[1].hasData(RtsimAttachments.PENDING)))

@@ -1,5 +1,6 @@
 package com.minecraftindustrialcomplex.mic_rtsim.village;
 
+import com.minecraftindustrialcomplex.mic_rtsim.journal.JournalDependent;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.HolderLookup;
 import net.minecraft.core.registries.Registries;
@@ -32,7 +33,7 @@ import java.util.Map;
  * <p>Lookups by position go through a 64-block cell index, so finding the village a trade or a hurt
  * resident belongs to costs one map lookup and a box test.
  */
-public final class VillageRegistry extends SavedData {
+public final class VillageRegistry extends SavedData implements JournalDependent {
     public static final String FILE = "mic_rtsim_villages";
     /** How far outside its structure box a village still counts (PLACEHOLDER). */
     public static final int MARGIN = 16;
@@ -234,6 +235,12 @@ public final class VillageRegistry extends SavedData {
     }
 
     // ---- NBT ------------------------------------------------------------------------------------
+
+    /** Vanilla cleared the dirty flag before a write that failed: the next world save writes it again (docs/choices-journal-barrier.md U-g1). */
+    @Override
+    public void mic_rtsim$remark() {
+        setDirty();
+    }
 
     @Override
     public CompoundTag save(CompoundTag tag, HolderLookup.Provider registries) {

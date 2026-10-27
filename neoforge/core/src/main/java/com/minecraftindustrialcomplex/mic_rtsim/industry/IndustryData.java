@@ -1,5 +1,6 @@
 package com.minecraftindustrialcomplex.mic_rtsim.industry;
 
+import com.minecraftindustrialcomplex.mic_rtsim.journal.JournalDependent;
 import it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import net.minecraft.core.BlockPos;
@@ -33,7 +34,7 @@ import java.util.TreeMap;
  * player-placed block entities detection starts from) live in their chunk, not here
  * ({@link IndustryAttachments#SEEDS}).
  */
-public final class IndustryData extends SavedData {
+public final class IndustryData extends SavedData implements JournalDependent {
     public static final String FILE = "mic_rtsim_industry";
 
     /**
@@ -140,6 +141,12 @@ public final class IndustryData extends SavedData {
     }
 
     // ---- NBT ------------------------------------------------------------------------------------
+
+    /** Vanilla cleared the dirty flag before a write that failed: the next world save writes it again (docs/choices-journal-barrier.md U-g1). */
+    @Override
+    public void mic_rtsim$remark() {
+        setDirty();
+    }
 
     @Override
     public CompoundTag save(CompoundTag tag, HolderLookup.Provider registries) {
