@@ -955,6 +955,73 @@ public final class IndustryGameTests {
                 .thenSucceed();
     }
 
+    /**
+     * A player's container session on one half of a vanilla double chest across a chunk border is booked to neither
+     * half (RP-215, residual 13): vanilla's chest menu is the {@code CompoundContainer} of both halves, so goods taken
+     * from the other half would be booked against the wrong store. A fake player clicks the west half P and opens the
+     * pair's menu, takes 5 ingots out of the east half Q and closes it: no PLAYER_SESSION port is sent, and the
+     * session is counted as discarded (an unattributed session, and in {@code splitSessionsDiscarded}). The control
+     * is a session on a single chest, which is booked as before.
+     */
+    @GameTest(template = YARD, batch = "industry_14d", timeoutTicks = 400)
+    public static void aSessionAtAHalfOfASplitChestIsDiscardedNotBooked(GameTestHelper helper) {
+        String t = "aSessionAtAHalfOfASplitChestIsDiscardedNotBooked";
+        fastConfig();
+        forget(helper);
+        int bx = borderX(helper), y = floorY(helper), z = midZ(helper);
+        net.minecraft.world.level.block.state.BlockState chest = Blocks.CHEST.defaultBlockState().setValue(net.minecraft.world.level.block.ChestBlock.FACING, Direction.NORTH);
+        BlockPos west = new BlockPos(bx - 1, y, z), east = west.east();
+        set(helper, west, chest.setValue(net.minecraft.world.level.block.ChestBlock.TYPE, net.minecraft.world.level.block.state.properties.ChestType.LEFT));
+        set(helper, east, chest.setValue(net.minecraft.world.level.block.ChestBlock.TYPE, net.minecraft.world.level.block.state.properties.ChestType.RIGHT));
+        playerPlaced(helper, west);
+        playerPlaced(helper, east);
+        ServerLevel level = helper.getLevel();
+        net.neoforged.neoforge.common.util.FakePlayer fp = net.neoforged.neoforge.common.util.FakePlayerFactory.getMinecraft(level);
+        var ports = ind().ports();
+        long[] id = {0};
+        long[] before = new long[3]; // unattributed, split discarded, session ports
+        helper.startSequence()
+                .thenWaitUntil(() -> {
+                    District d = districtAt(helper, west);
+                    check("the pair's district", d != null && d.inventoryAt(west) != null && d.inventoryAt(east) != null);
+                    id[0] = d.id;
+                })
+                .thenExecute(() -> {
+                    ((net.minecraft.world.level.block.entity.ChestBlockEntity) level.getBlockEntity(east)).setItem(0, new ItemStack(Items.IRON_INGOT, 5));
+                    before[0] = ports.unattributedSessions();
+                    before[1] = ports.splitSessionsDiscarded();
+                    before[2] = ports.sessionPorts();
+                    fp.setPos(west.getX() + 0.5, west.getY() + 1, west.getZ() + 0.5);
+                    fp.getInventory().clearContent();
+                    var pair = new net.minecraft.world.CompoundContainer((net.minecraft.world.Container) level.getBlockEntity(west), (net.minecraft.world.Container) level.getBlockEntity(east));
+                    net.minecraft.world.inventory.ChestMenu menu = net.minecraft.world.inventory.ChestMenu.sixRows(1, fp.getInventory(), pair);
+                    net.neoforged.neoforge.common.NeoForge.EVENT_BUS.post(new net.neoforged.neoforge.event.entity.player.PlayerInteractEvent.RightClickBlock(
+                            fp, net.minecraft.world.InteractionHand.MAIN_HAND, west,
+                            new net.minecraft.world.phys.BlockHitResult(Vec3.atCenterOf(west), Direction.UP, west, false)));
+                    net.neoforged.neoforge.common.NeoForge.EVENT_BUS.post(new net.neoforged.neoforge.event.entity.player.PlayerContainerEvent.Open(fp, menu));
+                    // The goods leave Q, the half the player did not click, into the player's pockets.
+                    fp.getInventory().setItem(0, pair.removeItem(27, 5));
+                    net.neoforged.neoforge.common.NeoForge.EVENT_BUS.post(new net.neoforged.neoforge.event.entity.player.PlayerContainerEvent.Close(fp, menu));
+                })
+                .thenIdle(10)
+                .thenExecute(() -> {
+                    int sessionRecords = 0;
+                    for (ByteBuffer p : received(IndRecords.IND_PORT, IndRecords.Port.DISTRICT, id[0]))
+                        if (p.getInt(IndRecords.Port.PORT_KIND) == IndRecords.Port.PLAYER_SESSION)
+                            sessionRecords++;
+                    record(t, "counts", "ingots in the player's pockets " + count(fp.getInventory(), Items.IRON_INGOT) + ", session port records " + sessionRecords
+                            + ", unattributed +" + (ports.unattributedSessions() - before[0]) + ", split discarded +" + (ports.splitSessionsDiscarded() - before[1])
+                            + ", session ports +" + (ports.sessionPorts() - before[2]));
+                    check("the 5 ingots left the east half for the player", count(fp.getInventory(), Items.IRON_INGOT) == 5 && pairStock(level, east) == 0);
+                    check("no session was booked to either half: " + sessionRecords + " records, +" + (ports.sessionPorts() - before[2]) + " ports",
+                            sessionRecords == 0 && ports.sessionPorts() == before[2]);
+                    check("the session was discarded as unattributed: +" + (ports.unattributedSessions() - before[0]), ports.unattributedSessions() - before[0] == 1);
+                    check("and counted as a split pair's: +" + (ports.splitSessionsDiscarded() - before[1]), ports.splitSessionsDiscarded() - before[1] == 1);
+                    fp.getInventory().clearContent();
+                })
+                .thenSucceed();
+    }
+
     /** The ingots in one chest half's own slots (not the pair's). */
     private static long pairStock(ServerLevel level, BlockPos half) {
         return level.getBlockEntity(half) instanceof net.minecraft.world.level.block.entity.ChestBlockEntity c ? count(c, Items.IRON_INGOT) : 0;
