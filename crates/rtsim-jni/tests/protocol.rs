@@ -4420,7 +4420,7 @@ mod herds {
         save_bytes(&e, &mut j);
         let confirmed = e.durable_obs_seq();
         let file = j.world_save();
-        assert!(confirmed <= file.next_obs - 1, "the file holds the save");
+        assert!(confirmed < file.next_obs, "the file holds the save");
         let herds = e.herd_agents();
         // Records past the file, and the herds moving on: budget saves with observations past it.
         for i in 0..80u64 {

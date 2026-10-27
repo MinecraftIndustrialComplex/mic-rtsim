@@ -1120,7 +1120,11 @@ impl Engine {
             log_warn(&format!(
                 "both page generations hold observations the world's save lacks (the pages include {}, the world's journal file {held}): a world older than its pages; {}the replay skips what the pages have",
                 store.obs_seq(),
-                if rolled { "the pending save is rolled back; " } else { "" }
+                if rolled {
+                    "the pending save is rolled back; "
+                } else {
+                    ""
+                }
             ));
         } else {
             let (pending, before) = (store.current() != store.confirmed(), store.current());
