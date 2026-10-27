@@ -11,6 +11,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.mixin.ServerLevelAccessor;
 import com.minecraftindustrialcomplex.mic_rtsim.mixin.SimpleRegionStorageAccessor;
 import net.minecraft.SharedConstants;
 import net.minecraft.core.BlockPos;
+import net.minecraft.gametest.framework.AfterBatch;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
 import net.minecraft.nbt.CompoundTag;
@@ -594,9 +595,10 @@ public final class JournalBarrierGameTests {
      * pending generation and the journal keeps its record. With the disk back, the next world save writes the data and
      * then the journal's file, the marker confirms the pages and the acknowledgement follows. The failing file is a test
      * Pad of a directory the world save counts as its own ({@link SavedDataWriteKit}), which holds every journal of its
-     * window, the server's too: the test has a batch of its own.
+     * window, the server's too: the test has a batch of its own (a batch's tests run together, and U-g12's lowers the give-up
+     * limit for every file on record).
      */
-    @GameTest(template = RtsimTests.TEMPLATE, batch = "mic_rtsim_saved_data_write_hold_d", timeoutTicks = 6000)
+    @GameTest(template = RtsimTests.TEMPLATE, batch = "mic_rtsim_journal_barrier_held_ack", timeoutTicks = 6000)
     public static void aHeldJournalHoldsTheEnginesAcknowledgement(GameTestHelper helper) {
         String test = "aHeldJournalHoldsTheEnginesAcknowledgement";
         ServerLevel level = helper.getLevel();
@@ -664,6 +666,12 @@ public final class JournalBarrierGameTests {
                     kit.cleanup();
                 }))
                 .thenSucceed();
+    }
+
+    /** A timed-out {@link #aHeldJournalHoldsTheEnginesAcknowledgement} never ran its cleanup, and its failing Pad would hold every later journal. */
+    @AfterBatch(batch = "mic_rtsim_journal_barrier_held_ack")
+    public static void cleanUpHeldAck(ServerLevel level) {
+        SavedDataWriteKit.cleanupAll();
     }
 
     /** The Pad's own save, as a world save runs it: its write goes on the IO chain and fails or lands there. */
