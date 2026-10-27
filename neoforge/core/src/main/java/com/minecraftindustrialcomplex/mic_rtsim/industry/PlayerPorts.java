@@ -23,7 +23,9 @@ import java.util.UUID;
  *       attributed to the block the player right-clicked just before it opened. If that block is in a
  *       district, the session's port is the negated change of the player's own inventory (what left the
  *       player went in). A session that cannot be attributed while the player stands in a district
- *       discards the open learning window instead (IND_DISCARD reason 1).</li>
+ *       discards the open learning window instead (IND_DISCARD reason 1). A session at a half of a vanilla
+ *       double chest across a chunk border is one it cannot attribute: the menu is the pair's, so the goods may
+ *       sit in the other half ({@link #splitSessionsDiscarded}).</li>
  *   <li><b>Tosses</b> ({@code ItemTossEvent}) by a player in a district: + into it.</li>
  *   <li><b>Pickups</b> ({@code ItemEntityPickupEvent.Post}) in a district: - out of it, unless the
  *       item entity is the drop of a stock block the player broke, whose contents already left as that
@@ -34,7 +36,7 @@ import java.util.UUID;
  */
 public final class PlayerPorts {
 
-    private record Click(ServerLevel level, BlockPos pos, long at, District district, int inventory, List<ItemStack> before) {}
+    private record Click(ServerLevel level, BlockPos pos, long at, District district, int inventory, List<ItemStack> before, boolean split) {}
 
     private record Session(District district, int inventory, List<ItemStack> before) {}
 
@@ -97,7 +99,7 @@ public final class PlayerPorts {
                 ind.port(c.district, IndRecords.Port.PLAYER_SESSION, c.inventory, playerKey(player), 0, port);
                 clickPorts++;
             }
-            e.setValue(new Click(c.level, c.pos, c.at, c.district, c.inventory, null));
+            e.setValue(new Click(c.level, c.pos, c.at, c.district, c.inventory, null, c.split));
         }
     }
 
@@ -105,14 +107,20 @@ public final class PlayerPorts {
         District d = ind.districtAt(level, pos);
         int inventory = IndRecords.NO_INVENTORY;
         List<ItemStack> before = null;
+        boolean split = false;
         if (d != null && player instanceof ServerPlayer sp) {
-            District.Inventory inv = stockAt(d, level, pos);
+            // A half of a vanilla double chest across a chunk border is its own store to the sim, but vanilla's chest
+            // menu is the CompoundContainer of both halves: what the player moves may sit in the other half. The
+            // session is attributed to neither half (it is discarded when the menu opens), as a menu it cannot
+            // attribute is (RP-215, residual 13).
+            split = StockAccess.splitPair(level.getBlockState(pos), pos) != null;
+            District.Inventory inv = split ? null : stockAt(d, level, pos);
             if (inv != null) {
                 inventory = inv.index();
                 before = snapshot(sp);
             }
         }
-        lastClick.put(player.getUUID(), new Click(level, pos.immutable(), ind.gameTime(), d, inventory, before));
+        lastClick.put(player.getUUID(), new Click(level, pos.immutable(), ind.gameTime(), d, inventory, before, split));
     }
 
     private static District.Inventory stockAt(District d, ServerLevel level, BlockPos pos) {
@@ -139,6 +147,8 @@ public final class PlayerPorts {
         // nothing we can tell: its effect cannot be told apart from production, so the window is
         // discarded (§3.4, IND_DISCARD 1).
         District here = c != null && c.district != null ? c.district : ind.districtAt(player.level(), player.blockPosition());
+        if (c != null && c.split && now - c.at <= 2 && c.level == player.level())
+            splitSessions++;
         if (here != null) {
             ind.districts.discard(here, IndRecords.Discard.UNATTRIBUTED_SESSION);
             unattributed++;
