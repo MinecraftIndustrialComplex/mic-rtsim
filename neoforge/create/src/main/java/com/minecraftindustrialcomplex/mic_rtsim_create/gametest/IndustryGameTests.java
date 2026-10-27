@@ -18,7 +18,9 @@ import com.minecraftindustrialcomplex.mic_rtsim.industry.StockAccess;
 import com.minecraftindustrialcomplex.mic_rtsim_create.CreateIds;
 import com.minecraftindustrialcomplex.mic_rtsim_create.MicRtsimCreate;
 import com.minecraftindustrialcomplex.mic_rtsim_create.TrainWatch;
+import com.simibubi.create.AllBlocks;
 import com.simibubi.create.content.logistics.box.PackageItem;
+import com.simibubi.create.content.logistics.chute.ChuteBlockEntity;
 import com.simibubi.create.content.logistics.packagePort.PackagePortBlockEntity;
 import com.simibubi.create.content.trains.bogey.AbstractBogeyBlock;
 import com.simibubi.create.content.trains.entity.Carriage;
@@ -891,6 +893,71 @@ public final class IndustryGameTests {
                             && b.equals(com.minecraftindustrialcomplex.mic_rtsim.industry.Districts.canonicalInventory(helper.getLevel(), b)));
                 })
                 .thenSucceed();
+    }
+
+    /**
+     * A counted move into one half of a vanilla double chest across a chunk border is credited to neither half
+     * (RP-215, residual 13). Create's movers put goods into a chest through NeoForge's chest item handler, which
+     * is the whole pair's, so a mover facing half Q may fill half P in the other chunk, and a count credited to
+     * Q's store would disagree with the stocks of both halves. A chute over the east half is held as a counted
+     * mover of that half and given 4 ingots: they land in the pair (the stock of the two halves rose by 4), the
+     * east half's counter stays at 0, and the move is in {@code splitMovesDiscarded}, not in
+     * {@code movesCounted}. The control is the same chute over a single chest, whose move is counted as before.
+     */
+    @GameTest(template = YARD, batch = "industry_14c", timeoutTicks = 400)
+    public static void aMoveIntoAHalfOfASplitChestIsDiscardedNotCounted(GameTestHelper helper) {
+        String t = "aMoveIntoAHalfOfASplitChestIsDiscardedNotCounted";
+        fastConfig();
+        forget(helper);
+        int bx = borderX(helper), y = floorY(helper), z = midZ(helper);
+        net.minecraft.world.level.block.state.BlockState chest = Blocks.CHEST.defaultBlockState().setValue(net.minecraft.world.level.block.ChestBlock.FACING, Direction.NORTH);
+        BlockPos west = new BlockPos(bx - 1, y, z), east = west.east();
+        BlockPos single = new BlockPos(bx + 6, y, z + 4);
+        set(helper, west, chest.setValue(net.minecraft.world.level.block.ChestBlock.TYPE, net.minecraft.world.level.block.state.properties.ChestType.LEFT));
+        set(helper, east, chest.setValue(net.minecraft.world.level.block.ChestBlock.TYPE, net.minecraft.world.level.block.state.properties.ChestType.RIGHT));
+        set(helper, single, chest);
+        BlockPos chuteSplit = east.above(), chuteSingle = single.above();
+        set(helper, chuteSplit, AllBlocks.CHUTE.getDefaultState());
+        set(helper, chuteSingle, AllBlocks.CHUTE.getDefaultState());
+        ServerLevel level = helper.getLevel();
+        com.minecraftindustrialcomplex.mic_rtsim.industry.glass.Counting counting = ind().counting();
+        long district = 0x5f5f0001L;
+        long[] before = new long[3]; // moves counted, moves discarded, the pair's stock
+        helper.startSequence()
+                .thenExecute(() -> {
+                    check("the east half is a half of a split pair", StockAccess.splitPair(level.getBlockState(east), east) != null);
+                    check("the single chest is not", StockAccess.splitPair(level.getBlockState(single), single) == null);
+                    long now = level.getGameTime();
+                    counting.holdForTest(district, level.dimension(), chuteSplit, east, now);
+                    counting.holdForTest(district, level.dimension(), chuteSingle, single, now);
+                    before[0] = counting.movesCounted();
+                    before[1] = counting.splitMovesDiscarded();
+                    before[2] = pairStock(level, west) + pairStock(level, east);
+                    check("the east half is a counted store of its chute", counting.holds(district, chuteSplit, east));
+                    ((ChuteBlockEntity) level.getBlockEntity(chuteSplit)).setItem(new ItemStack(Items.IRON_INGOT, 4), 1f);
+                    ((ChuteBlockEntity) level.getBlockEntity(chuteSingle)).setItem(new ItemStack(Items.IRON_INGOT, 4), 1f);
+                })
+                .thenWaitUntil(() -> {
+                    check("both chutes emptied into their chests", ((ChuteBlockEntity) level.getBlockEntity(chuteSplit)).getItem().isEmpty()
+                            && ((ChuteBlockEntity) level.getBlockEntity(chuteSingle)).getItem().isEmpty());
+                })
+                .thenExecute(() -> {
+                    long stock = pairStock(level, west) + pairStock(level, east) - before[2];
+                    long[] k = counting.counters(district, chuteSplit, east), c = counting.counters(district, chuteSingle, single);
+                    record(t, "counts", "pair stock +" + stock + ", split pair counters " + java.util.Arrays.toString(k) + ", control " + java.util.Arrays.toString(c)
+                            + ", moves counted +" + (counting.movesCounted() - before[0]) + ", discarded +" + (counting.splitMovesDiscarded() - before[1]));
+                    check("the 4 ingots landed in the split pair: +" + stock, stock == 4);
+                    check("the control chute's move was counted: " + java.util.Arrays.toString(c), c != null && c[1] == 4);
+                    check("the east half was credited nothing: " + java.util.Arrays.toString(k), k != null && k[1] == 0 && k[2] == 0);
+                    check("one move was counted (the control's), not two: +" + (counting.movesCounted() - before[0]), counting.movesCounted() - before[0] == 1);
+                    check("the split half's move is in its own counter: +" + (counting.splitMovesDiscarded() - before[1]), counting.splitMovesDiscarded() - before[1] == 1);
+                })
+                .thenSucceed();
+    }
+
+    /** The ingots in one chest half's own slots (not the pair's). */
+    private static long pairStock(ServerLevel level, BlockPos half) {
+        return level.getBlockEntity(half) instanceof net.minecraft.world.level.block.entity.ChestBlockEntity c ? count(c, Items.IRON_INGOT) : 0;
     }
 
     private static String engineName(int engineGoodId) {

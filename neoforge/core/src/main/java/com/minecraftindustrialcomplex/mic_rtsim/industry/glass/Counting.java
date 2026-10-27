@@ -145,6 +145,8 @@ public final class Counting {
     long samplesSent;
     long samplesDropped;
     long movesCounted;
+    /** Moves at a half of a split vanilla double chest, credited to neither half (RP-215, residual 13). */
+    long splitMovesDiscarded;
     /** Count points that threw (logged, the move uncounted). */
     long failures;
 
@@ -494,6 +496,11 @@ public final class Counting {
     /** Moves counted (each real move at a counted pair). */
     public long movesCounted() {
         return movesCounted;
+    }
+
+    /** Moves not credited because the store is a half of a vanilla double chest across a chunk border. */
+    public long splitMovesDiscarded() {
+        return splitMovesDiscarded;
     }
 
     /** Pairs held now, in every district. */
