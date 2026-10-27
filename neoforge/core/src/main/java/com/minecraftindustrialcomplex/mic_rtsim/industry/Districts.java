@@ -1109,6 +1109,7 @@ public final class Districts {
             this.excluded = data.excluded(dim);
             this.pins = data.pins(dim);
             this.stationJoinsAtStart = new Long2LongOpenHashMap(data.stationJoins(dim));
+            LongOpenHashSet ring = new LongOpenHashSet();
             if (full) {
                 for (District d : data.districts.values())
                     if (d.dim == dim)
@@ -1118,14 +1119,24 @@ public final class Districts {
                 for (long c : dirtyHere)
                     for (int dx = -1; dx <= 1; dx++)
                         for (int dz = -1; dz <= 1; dz++) {
-                            District o = index.get(ChunkPos.asLong(ChunkPos.getX(c) + dx, ChunkPos.getZ(c) + dz));
+                            long n = ChunkPos.asLong(ChunkPos.getX(c) + dx, ChunkPos.getZ(c) + dz);
+                            District o = index.get(n);
                             if (o != null)
                                 affected.add(o.id);
+                            else if (n != c && !excluded.contains(n) && level.getChunkSource().getChunkNow(ChunkPos.getX(n), ChunkPos.getZ(n)) != null)
+                                ring.add(n);
                         }
             }
             for (long c : dirtyHere)
                 schedule(c);
             scheduleDistricts(affected);
+            // The ring (SECTIONS.md §2.1, SC184): a loaded chunk beside an edit that no district holds, asked about as a root
+            // after the edit's own chunks. root() roots it only if it holds a station, which is the common build order (a station
+            // first, the factory beside it later, nothing of it against the station, so no touch reaches it). At most eight a
+            // dirty chunk, each read once (holdsStation caches by chunk) and counted in the budget by root(); a chunk that is not
+            // loaded is never asked, and getChunkNow never loads one. A full detection has no ring.
+            for (long n : ring)
+                schedule(n);
         }
 
         private void schedule(long c) {
@@ -1968,18 +1979,18 @@ public final class Districts {
                     // A chain conveyor or a station joins nothing by touch (J1): it carries packages or trains
                     // between districts. A station's touch still names J6's candidates.
                     if (!joinsByTouch || !touchJoins(nbe)) {
+                        boolean nStation = isStation(nbe);
                         if (station)
                             scan.stationTouches.add(new long[] {c, nc});
-                        else if (isStation(nbe)) {
+                        else if (nStation)
                             scan.stationTouches.add(new long[] {nc, c});
-                            // J6 only sees the chunks the walk looked at (SC184): a station placed before the machine
-                            // that touches it is in no district, and nothing else would walk its chunk again. The walk
-                            // reaches it with no join, so it is a group of its own with no seed and J6 alone attaches it.
-                            // One a district holds is walked with that district, and reaching it from here would pull
-                            // the district's whole walk into this edit.
-                            if (!excluded.contains(nc) && !index.containsKey(nc))
-                                reach.accept(nc);
-                        }
+                        // J6 only sees the chunks the walk looked at (SC184): a station placed before what touches it is in
+                        // no district, and nothing else would walk its chunk again. The walk reaches it with no join, so its
+                        // own joins are followed and, with no seed in its group, J6 alone attaches it (a station that touches
+                        // a station too). One a district holds is walked with that district, and reaching it from here would
+                        // pull the district's whole walk into this edit.
+                        if (nStation && !excluded.contains(nc) && !index.containsKey(nc))
+                            reach.accept(nc);
                         continue;
                     }
                     scan.touches.add(new Touch(c, nc, p, n));
