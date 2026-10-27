@@ -4,7 +4,11 @@
 //! copied without its `rtsim/archive` (the event timeline): `events.rs` needs a real save with no
 //! archive and writes its own archive onto a copy of this one. The create save keeps its archive.
 //!
-//! - `tests/data/core`: neoforge/core's GameTest world, a fresh one, run from commit abe7bad3
+//! - `tests/data/core`: neoforge/core's GameTest world, a fresh one, run from commit 8e3eda72
+//!   (replay-gate slice R, the industry op window, merged with main ad04337a, which carries slices
+//!   U-b, U-c and U-d; R's formats: the industry globals are IGB2, `decided` after `now`, and an
+//!   industry district page starts with IDS5, its reconcile epochs per chunk, each pending
+//!   reconcile's round and the packages written per postbox, RP-259); before that, abe7bad3
 //!   (replay-gate slice U-d, the joint switch-on, on slice U-c, which carries slice U-b and main
 //!   6be65f2c; U-d's formats: phase 1's meta page RTP1 is version 5, the inputs kept while phase 1
 //!   was off following its queue, RP-300); before that, c1bd6472 (Mowzie's Mobs M9, the chiefs' heirs, trade memory, tribute and hunts, merged with main
@@ -65,7 +69,9 @@
 //!   when the server stops: 6638edc's save had one, while both runs of 98d6d34 and main's 7e4042a
 //!   had every herd staying put. So the route layer is not required here; it still has to draw or
 //!   say why.
-//! - `tests/data/create`: neoforge/create's GameTest world, run from 012f1fa2 (abe7bad3 merged
+//! - `tests/data/create`: neoforge/create's GameTest world, run from 2acae5ba (8e3eda72 merged
+//!   with main 13051753, the grove tribute earmark, which changes no format: the core save's
+//!   formats, R's); before that, 012f1fa2 (abe7bad3 merged
 //!   with main 4b3c2343, which adds pages only: the core save's formats, U-d's); before that,
 //!   c1bd6472 (M9's formats); before that, c934042f (slice N's formats); before that, 32726818 (the core save's
 //!   formats before slice N and before its merge with main 588b229c; before that, 1290d0b7, M6's, and fe87a92, S5-2

@@ -4,6 +4,10 @@ import com.minecraftindustrialcomplex.mic_rtsim.MicRtsim;
 import com.minecraftindustrialcomplex.mic_rtsim.journal.JournalSavedData;
 import com.minecraftindustrialcomplex.mic_rtsim.journal.SavedDataWrites;
 import com.minecraftindustrialcomplex.mic_rtsim.journal.WorldSaveOrder;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.core.LogEvent;
+import org.apache.logging.log4j.core.appender.AbstractAppender;
+import org.apache.logging.log4j.core.config.Property;
 import net.minecraft.core.HolderLookup;
 import net.minecraft.nbt.NbtAccounter;
 import net.minecraft.nbt.NbtIo;
@@ -16,8 +20,11 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Comparator;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Stream;
 
@@ -34,6 +41,37 @@ import static com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests.io;
 public final class SavedDataWriteKit {
     private SavedDataWriteKit() {}
 
+    /** Every kit not yet cleaned up: a test that times out never runs its own cleanup, so {@link #cleanupAll} (an {@code @AfterBatch}) does. */
+    private static final List<Kit> OPEN = new CopyOnWriteArrayList<>();
+
+    /**
+     * For the {@code @AfterBatch} of every batch that uses a kit: cleans up each kit still open, and gives the give-up limit
+     * back. A test that timed out would otherwise leave its directory in the world save's data directories, and a record of
+     * a failed write under it, holding every later journal of the server, the server's own included.
+     */
+    public static void cleanupAll() {
+        for (Kit k : new ArrayList<>(OPEN))
+            k.cleanup();
+        SavedDataWrites.INSTANCE.giveUpAfterForTest(0);
+    }
+
+    /** What vanilla logged: {@code SavedData}'s "Could not save data" lines, counted (the write's rethrow must reach its catch). */
+    private static final class VanillaLog extends AbstractAppender {
+        final AtomicInteger lines = new AtomicInteger();
+
+        VanillaLog() {
+            super("mic_rtsim-saved-data-test", null, null, true, Property.EMPTY_ARRAY);
+        }
+
+        @Override
+        public void append(LogEvent event) {
+            if (event.getMessage().getFormattedMessage().contains("Could not save data"))
+                lines.incrementAndGet();
+        }
+    }
+
+    private static final String SAVED_DATA_LOGGER = "net.minecraft.world.level.saveddata.SavedData";
+
     /** What the IO chain saw after a save's last task. */
     public record Look(byte[] journal, int value, long writes, boolean dirty) {}
 
@@ -45,6 +83,7 @@ public final class SavedDataWriteKit {
         public final JournalSavedData journal = JournalSavedData.fresh();
         public final AtomicReference<Look> look = new AtomicReference<>();
         public final long failuresBefore = SavedDataWrites.INSTANCE.failures();
+        private final VanillaLog vanillaLog = new VanillaLog();
 
         /** {@code counted}: the directory is one the world save counts as its own (a failed write there holds the journal). */
         public Kit(ServerLevel level, SavedData data, boolean counted) {
@@ -60,6 +99,14 @@ public final class SavedDataWriteKit {
             journalFile = dir.resolve("journal.dat");
             if (counted)
                 WorldSaveOrder.EXTRA_DATA_DIRS_FOR_TEST.add(dir);
+            vanillaLog.start();
+            ((org.apache.logging.log4j.core.Logger) LogManager.getLogger(SAVED_DATA_LOGGER)).addAppender(vanillaLog);
+            OPEN.add(this);
+        }
+
+        /** How many "Could not save data" lines vanilla logged since this kit began: one per failed write, as before the hook. */
+        public int vanillaLines() {
+            return vanillaLog.lines.get();
         }
 
         /** The journal moves on, as every applied op moves it: a write of it would differ from the last. */
@@ -119,6 +166,10 @@ public final class SavedDataWriteKit {
         }
 
         public void cleanup() {
+            OPEN.remove(this);
+            ((org.apache.logging.log4j.core.Logger) LogManager.getLogger(SAVED_DATA_LOGGER)).removeAppender(vanillaLog);
+            vanillaLog.stop();
+            SavedDataWrites.INSTANCE.giveUpAfterForTest(0);
             SavedDataWrites.INSTANCE.forgetForTest(dir);
             WorldSaveOrder.EXTRA_DATA_DIRS_FOR_TEST.remove(dir);
             try (Stream<Path> s = Files.walk(dir)) {
