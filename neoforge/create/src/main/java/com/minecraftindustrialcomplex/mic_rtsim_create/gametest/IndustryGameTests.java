@@ -956,67 +956,114 @@ public final class IndustryGameTests {
     }
 
     /**
-     * A player's container session on one half of a vanilla double chest across a chunk border is booked to neither
-     * half (RP-215, residual 13): vanilla's chest menu is the {@code CompoundContainer} of both halves, so goods taken
-     * from the other half would be booked against the wrong store. A fake player clicks the west half P and opens the
-     * pair's menu, takes 5 ingots out of the east half Q and closes it: no PLAYER_SESSION port is sent, and the
-     * session is counted as discarded (an unattributed session, and in {@code splitSessionsDiscarded}). The control
-     * is a session on a single chest, which is booked as before.
+     * A player's container session at a half of a vanilla double chest across a chunk border is booked at close as a
+     * port to the district that names no inventory (RP-215, residual 13): vanilla's chest menu is the
+     * {@code CompoundContainer} of both halves, so the goods may sit in the half the player did not click, and a port
+     * against the clicked half would be wrong. A fake player clicks the west half, opens the pair's menu, lets sweeps
+     * pass (a learning window can roll over meanwhile), then takes 5 ingots from the east half and throws 3 of them
+     * out of the open menu. The session still stands, so: one PLAYER_SESSION port of -2 iron with no inventory, no
+     * PLAYER_TOSS for the throw (the session's diff has it), no unattributed discard, and the session is counted in
+     * {@code splitSessions}. The control is a session on a single chest in the same chunk and district, booked against
+     * that chest's own inventory index as before.
      */
-    @GameTest(template = YARD, batch = "industry_14d", timeoutTicks = 400)
-    public static void aSessionAtAHalfOfASplitChestIsDiscardedNotBooked(GameTestHelper helper) {
-        String t = "aSessionAtAHalfOfASplitChestIsDiscardedNotBooked";
+    @GameTest(template = YARD, batch = "industry_14d", timeoutTicks = 600)
+    public static void aSessionAtAHalfOfASplitChestIsBookedToTheDistrictAlone(GameTestHelper helper) {
+        String t = "aSessionAtAHalfOfASplitChestIsBookedToTheDistrictAlone";
         fastConfig();
         forget(helper);
         int bx = borderX(helper), y = floorY(helper), z = midZ(helper);
         net.minecraft.world.level.block.state.BlockState chest = Blocks.CHEST.defaultBlockState().setValue(net.minecraft.world.level.block.ChestBlock.FACING, Direction.NORTH);
         BlockPos west = new BlockPos(bx - 1, y, z), east = west.east();
+        BlockPos single = new BlockPos(bx + 6, y, z); // the east half's chunk, so the same district
         set(helper, west, chest.setValue(net.minecraft.world.level.block.ChestBlock.TYPE, net.minecraft.world.level.block.state.properties.ChestType.LEFT));
         set(helper, east, chest.setValue(net.minecraft.world.level.block.ChestBlock.TYPE, net.minecraft.world.level.block.state.properties.ChestType.RIGHT));
+        set(helper, single, chest);
         playerPlaced(helper, west);
         playerPlaced(helper, east);
+        playerPlaced(helper, single);
         ServerLevel level = helper.getLevel();
         net.neoforged.neoforge.common.util.FakePlayer fp = net.neoforged.neoforge.common.util.FakePlayerFactory.getMinecraft(level);
         var ports = ind().ports();
         long[] id = {0};
-        long[] before = new long[3]; // unattributed, split discarded, session ports
+        long[] before = new long[3]; // unattributed, split sessions, session ports
+        net.minecraft.world.CompoundContainer[] pair = {null};
+        net.minecraft.world.inventory.ChestMenu[] menu = {null};
         helper.startSequence()
                 .thenWaitUntil(() -> {
                     District d = districtAt(helper, west);
                     check("the pair's district", d != null && d.inventoryAt(west) != null && d.inventoryAt(east) != null);
+                    check("the single chest is in it", districtAt(helper, single) == d && d.inventoryAt(single) != null);
                     id[0] = d.id;
                 })
                 .thenExecute(() -> {
                     ((net.minecraft.world.level.block.entity.ChestBlockEntity) level.getBlockEntity(east)).setItem(0, new ItemStack(Items.IRON_INGOT, 5));
                     before[0] = ports.unattributedSessions();
-                    before[1] = ports.splitSessionsDiscarded();
+                    before[1] = ports.splitSessions();
                     before[2] = ports.sessionPorts();
                     fp.setPos(west.getX() + 0.5, west.getY() + 1, west.getZ() + 0.5);
                     fp.getInventory().clearContent();
-                    var pair = new net.minecraft.world.CompoundContainer((net.minecraft.world.Container) level.getBlockEntity(west), (net.minecraft.world.Container) level.getBlockEntity(east));
-                    net.minecraft.world.inventory.ChestMenu menu = net.minecraft.world.inventory.ChestMenu.sixRows(1, fp.getInventory(), pair);
+                    pair[0] = new net.minecraft.world.CompoundContainer((net.minecraft.world.Container) level.getBlockEntity(west), (net.minecraft.world.Container) level.getBlockEntity(east));
+                    menu[0] = net.minecraft.world.inventory.ChestMenu.sixRows(1, fp.getInventory(), pair[0]);
                     net.neoforged.neoforge.common.NeoForge.EVENT_BUS.post(new net.neoforged.neoforge.event.entity.player.PlayerInteractEvent.RightClickBlock(
                             fp, net.minecraft.world.InteractionHand.MAIN_HAND, west,
                             new net.minecraft.world.phys.BlockHitResult(Vec3.atCenterOf(west), Direction.UP, west, false)));
-                    net.neoforged.neoforge.common.NeoForge.EVENT_BUS.post(new net.neoforged.neoforge.event.entity.player.PlayerContainerEvent.Open(fp, menu));
-                    // The goods leave Q, the half the player did not click, into the player's pockets.
-                    fp.getInventory().setItem(0, pair.removeItem(27, 5));
-                    net.neoforged.neoforge.common.NeoForge.EVENT_BUS.post(new net.neoforged.neoforge.event.entity.player.PlayerContainerEvent.Close(fp, menu));
+                    net.neoforged.neoforge.common.NeoForge.EVENT_BUS.post(new net.neoforged.neoforge.event.entity.player.PlayerContainerEvent.Open(fp, menu[0]));
+                })
+                .thenIdle(60) // sweeps (every 20 ticks in the test config) pass with the menu open
+                .thenExecute(() -> {
+                    // The goods leave Q, the half the player did not click, and 3 are thrown out of the open menu.
+                    fp.getInventory().setItem(0, pair[0].removeItem(27, 5));
+                    fp.getInventory().setItem(0, new ItemStack(Items.IRON_INGOT, 2));
+                    ItemEntity thrown = new ItemEntity(level, fp.getX(), fp.getY(), fp.getZ(), new ItemStack(Items.IRON_INGOT, 3));
+                    net.neoforged.neoforge.common.NeoForge.EVENT_BUS.post(new net.neoforged.neoforge.event.entity.item.ItemTossEvent(thrown, fp));
+                    net.neoforged.neoforge.common.NeoForge.EVENT_BUS.post(new net.neoforged.neoforge.event.entity.player.PlayerContainerEvent.Close(fp, menu[0]));
+                })
+                .thenExecute(() -> {
+                    // The control: a session on a single chest, 4 coal in.
+                    fp.getInventory().clearContent();
+                    fp.getInventory().setItem(0, new ItemStack(Items.COAL, 4));
+                    net.minecraft.world.inventory.ChestMenu m = net.minecraft.world.inventory.ChestMenu.threeRows(2, fp.getInventory(), chest(helper, single));
+                    net.neoforged.neoforge.common.NeoForge.EVENT_BUS.post(new net.neoforged.neoforge.event.entity.player.PlayerInteractEvent.RightClickBlock(
+                            fp, net.minecraft.world.InteractionHand.MAIN_HAND, single,
+                            new net.minecraft.world.phys.BlockHitResult(Vec3.atCenterOf(single), Direction.UP, single, false)));
+                    net.neoforged.neoforge.common.NeoForge.EVENT_BUS.post(new net.neoforged.neoforge.event.entity.player.PlayerContainerEvent.Open(fp, m));
+                    chest(helper, single).setItem(0, fp.getInventory().removeItem(0, 4));
+                    net.neoforged.neoforge.common.NeoForge.EVENT_BUS.post(new net.neoforged.neoforge.event.entity.player.PlayerContainerEvent.Close(fp, m));
                 })
                 .thenIdle(10)
                 .thenExecute(() -> {
-                    int sessionRecords = 0;
-                    for (ByteBuffer p : received(IndRecords.IND_PORT, IndRecords.Port.DISTRICT, id[0]))
-                        if (p.getInt(IndRecords.Port.PORT_KIND) == IndRecords.Port.PLAYER_SESSION)
-                            sessionRecords++;
-                    record(t, "counts", "ingots in the player's pockets " + count(fp.getInventory(), Items.IRON_INGOT) + ", session port records " + sessionRecords
-                            + ", unattributed +" + (ports.unattributedSessions() - before[0]) + ", split discarded +" + (ports.splitSessionsDiscarded() - before[1])
+                    long splitIron = 0, controlCoal = 0;
+                    int splitSessionRecords = 0, controlRecords = 0, tosses = 0;
+                    int singleIndex = ind().district(id[0]).inventoryAt(single).index();
+                    for (ByteBuffer p : received(IndRecords.IND_PORT, IndRecords.Port.DISTRICT, id[0])) {
+                        int kind = p.getInt(IndRecords.Port.PORT_KIND), inventory = p.getInt(IndRecords.Port.INVENTORY);
+                        if (kind == IndRecords.Port.PLAYER_TOSS)
+                            tosses++;
+                        if (kind != IndRecords.Port.PLAYER_SESSION)
+                            continue;
+                        for (int i = 0; i < aux(p); i++) {
+                            int e = IndRecords.Port.ENTRIES + i * IndRecords.ENTRY16;
+                            String good = javaName(p.getInt(e));
+                            if (inventory == IndRecords.NO_INVENTORY) {
+                                splitSessionRecords++;
+                                if (good.equals("i/64/minecraft:iron_ingot"))
+                                    splitIron += p.getLong(e + 8);
+                            } else if (inventory == singleIndex) {
+                                controlRecords++;
+                                if (good.equals("i/64/minecraft:coal"))
+                                    controlCoal += p.getLong(e + 8);
+                            }
+                        }
+                    }
+                    record(t, "counts", "split session records " + splitSessionRecords + " (iron " + splitIron + "), control records " + controlRecords + " (coal " + controlCoal
+                            + "), tosses " + tosses + ", unattributed +" + (ports.unattributedSessions() - before[0]) + ", split sessions +" + (ports.splitSessions() - before[1])
                             + ", session ports +" + (ports.sessionPorts() - before[2]));
-                    check("the 5 ingots left the east half for the player", count(fp.getInventory(), Items.IRON_INGOT) == 5 && pairStock(level, east) == 0);
-                    check("no session was booked to either half: " + sessionRecords + " records, +" + (ports.sessionPorts() - before[2]) + " ports",
-                            sessionRecords == 0 && ports.sessionPorts() == before[2]);
-                    check("the session was discarded as unattributed: +" + (ports.unattributedSessions() - before[0]), ports.unattributedSessions() - before[0] == 1);
-                    check("and counted as a split pair's: +" + (ports.splitSessionsDiscarded() - before[1]), ports.splitSessionsDiscarded() - before[1] == 1);
+                    check("the pair's session was booked to the district with no inventory: -2 iron, not " + splitIron, splitIron == -2);
+                    check("the throw out of the open menu was not a PLAYER_TOSS: " + tosses, tosses == 0);
+                    check("the session was not discarded as unattributed: +" + (ports.unattributedSessions() - before[0]), ports.unattributedSessions() == before[0]);
+                    check("and was counted as a split pair's: +" + (ports.splitSessions() - before[1]), ports.splitSessions() - before[1] == 1);
+                    check("the control: a session on a single chest is booked against that chest, +4 coal, not " + controlCoal, controlCoal == 4);
+                    check("two session ports in all: +" + (ports.sessionPorts() - before[2]), ports.sessionPorts() - before[2] == 2);
                     fp.getInventory().clearContent();
                 })
                 .thenSucceed();
