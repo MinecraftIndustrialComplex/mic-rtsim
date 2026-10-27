@@ -547,7 +547,8 @@ fn saved_hash(source: &dyn PageSource, meta: PageKey) -> Option<u64> {
 }
 
 /// The phase 1 link's meta page: what the viewer needs of it (the rest is the link's session
-/// state: scripted villages, the kept outbox, agents, queued commands).
+/// state: scripted villages, the kept outbox, agents, queued commands, the inputs kept while it
+/// was off).
 struct Meta {
     now: u64,
     hash: u64,
