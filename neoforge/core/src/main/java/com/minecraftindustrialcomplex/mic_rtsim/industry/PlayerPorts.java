@@ -66,6 +66,11 @@ public final class PlayerPorts {
         return splitSessions;
     }
 
+    /** Container sessions at a half of a split vanilla double chest (booked to the district alone). */
+    public long splitSessions() {
+        return splitSessions;
+    }
+
     /** Container sessions booked as a port. */
     public long sessionPorts() {
         return sessionPorts;
