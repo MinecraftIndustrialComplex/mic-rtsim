@@ -358,6 +358,197 @@ public final class CreateSeedGameTests {
                 .thenSucceed();
     }
 
+    /**
+     * J6 and the build order (SECTIONS.md §2.1, SC184): a station placed first, at x = 15 of its chunk, is in no district;
+     * a vault placed after it at x = 0 of the next chunk touches it across the border. The station's touch joins nothing
+     * (J1), but the walk of the vault's chunk must look at the station's chunk, or nothing ever does (a periodic detection
+     * schedules only dirty and district chunks) and the station never joins, nor names the district.
+     */
+    @GameTest(template = YARD, batch = "create_seed_12", timeoutTicks = 600)
+    public static void aStationPlacedFirstJoinsTheDistrictThatTouchesItLater(GameTestHelper helper) {
+        fastConfig();
+        forget(helper);
+        BlockPos stationPos = at(helper, 0, 15, 6), vault = at(helper, 1, 0, 6);
+        check("the station is at x = 15 of its chunk and the vault at x = 0 of the next", (stationPos.getX() & 15) == 15 && vault.getX() == stationPos.getX() + 1);
+        helper.startSequence()
+                .thenExecute(() -> station(helper, stationPos, at(helper, 0, 2, 5).getX(), at(helper, 1, 14, 5).getX()))
+                .thenIdle(5)
+                .thenExecute(() -> placeStation(helper, stationPos))
+                .thenWaitUntil(() -> {
+                    var sbe = (com.simibubi.create.content.trains.station.StationBlockEntity) helper.getLevel().getBlockEntity(stationPos);
+                    check("the station joined the track graph", sbe != null && sbe.getStation() != null);
+                })
+                .thenExecute(() -> {
+                    var sbe = (com.simibubi.create.content.trains.station.StationBlockEntity) helper.getLevel().getBlockEntity(stationPos);
+                    sbe.getStation().name = "Harbor Gate";
+                })
+                .thenIdle(3) // the place event reaches the districts at the end of a tick
+                .thenExecute(() -> {
+                    ind().districts().rescanNow(helper.getLevel());
+                    check("a station alone is in no district", districtAt(helper, stationPos) == null);
+                    set(helper, vault, block("create:item_vault").defaultBlockState());
+                    playerPlaced(helper, vault);
+                })
+                .thenIdle(3)
+                .thenExecute(() -> ind().districts().rescanNow(helper.getLevel()))
+                .thenWaitUntil(() -> {
+                    District d = districtAt(helper, vault);
+                    check("the vault's district", d != null);
+                    check("the district holds the station's chunk: " + d.chunks.size() + " chunks", districtAt(helper, stationPos) == d);
+                    check("two chunks, one district: " + d.chunks.size(), d.chunks.size() == 2);
+                    check("the district lists the station", d.stations.size() == 1);
+                    check("named after its station: " + d.displayName(), d.displayName().equals("Harbor Gate"));
+                    check("the station is no seed, only the vault's marker: " + d.seeds(), d.seeds() == 1);
+                    record("aStationPlacedFirstJoinsTheDistrictThatTouchesItLater", "chunks", d.chunks.size());
+                })
+                .thenSucceed();
+    }
+
+    /**
+     * J6 and the common build order (SECTIONS.md §2.1, §14, SC184): a station placed first, in the middle of its chunk,
+     * is in no district. A press placed after it in the next chunk touches nothing of it (no block against it), so no
+     * touch reaches the station's chunk. The press's edit is an incremental detection of its chunk and the ring around
+     * it; the station's chunk is in the ring and in no district, so the walk looks at it, finds the station, and J6
+     * attaches it to the press's district (the chunk beside it). Detected by the ticked pass, as a player's edit is,
+     * never by {@code rescanNow} (a full detection with no dirty chunk has no ring).
+     */
+    @GameTest(template = YARD, batch = "create_seed_13", timeoutTicks = 600)
+    public static void aStationPlacedFirstJoinsTheMachineNextToItLater(GameTestHelper helper) {
+        fastConfig();
+        forget(helper);
+        BlockPos stationPos = at(helper, 1, 8, 6), press = at(helper, 0, 8, 2);
+        check("the press and the station are in chunks side by side", (press.getX() >> 4) + 1 == (stationPos.getX() >> 4));
+        helper.startSequence()
+                .thenExecute(() -> station(helper, stationPos, at(helper, 0, 2, 5).getX(), at(helper, 1, 14, 5).getX()))
+                .thenIdle(5)
+                .thenExecute(() -> placeStation(helper, stationPos))
+                .thenWaitUntil(() -> {
+                    var sbe = (com.simibubi.create.content.trains.station.StationBlockEntity) helper.getLevel().getBlockEntity(stationPos);
+                    check("the station joined the track graph", sbe != null && sbe.getStation() != null);
+                })
+                .thenExecute(() -> {
+                    var sbe = (com.simibubi.create.content.trains.station.StationBlockEntity) helper.getLevel().getBlockEntity(stationPos);
+                    sbe.getStation().name = "Dry Dock";
+                })
+                .thenIdle(3) // the place event reaches the districts at the end of a tick
+                .thenExecute(() -> {
+                    ind().districts().rescanNow(helper.getLevel());
+                    check("a station alone is in no district", districtAt(helper, stationPos) == null);
+                    set(helper, press, block("create:mechanical_press").defaultBlockState());
+                    playerPlacedBare(helper, press);
+                })
+                .thenWaitUntil(() -> check("the press's district", districtAt(helper, press) != null))
+                .thenExecute(() -> {
+                    District d = districtAt(helper, press);
+                    check("the district holds the station's chunk: " + d.chunks.size() + " chunks", districtAt(helper, stationPos) == d);
+                    check("two chunks, one district: " + d.chunks.size(), d.chunks.size() == 2);
+                    check("the district lists the station", d.stations.size() == 1);
+                    check("named after its station: " + d.displayName(), d.displayName().equals("Dry Dock"));
+                    check("the station is no seed, only the press: " + d.seeds(), d.seeds() == 1);
+                    record("aStationPlacedFirstJoinsTheMachineNextToItLater", "chunks", d.chunks.size());
+                })
+                .thenSucceed();
+    }
+
+    /**
+     * The same build order as {@link #aStationPlacedFirstJoinsTheMachineNextToItLater}, but the press's edit is detected
+     * by a full detection (SECTIONS.md §2.1, SC184), as it is whenever the periodic pass or a command's
+     * {@code rescanSoon} takes the waiting edit: the edit's ring is built whatever the detection's kind, or the
+     * station's chunk, held by no district, is never looked at and the station never joins. The ticked pass is held off
+     * by a long interval, so that {@code rescanSoon} (a full detection that takes the waiting edit) is the one that runs.
+     */
+    @GameTest(template = YARD, batch = "create_seed_15", timeoutTicks = 600)
+    public static void aStationPlacedFirstJoinsTheMachineNextToItInAFullDetection(GameTestHelper helper) {
+        fastConfig();
+        forget(helper);
+        BlockPos stationPos = at(helper, 1, 8, 6), press = at(helper, 0, 8, 2);
+        check("the press and the station are in chunks side by side", (press.getX() >> 4) + 1 == (stationPos.getX() >> 4));
+        boolean[] done = {false};
+        helper.startSequence()
+                .thenExecute(() -> station(helper, stationPos, at(helper, 0, 2, 5).getX(), at(helper, 1, 14, 5).getX()))
+                .thenIdle(5)
+                .thenExecute(() -> placeStation(helper, stationPos))
+                .thenWaitUntil(() -> {
+                    var sbe = (com.simibubi.create.content.trains.station.StationBlockEntity) helper.getLevel().getBlockEntity(stationPos);
+                    check("the station joined the track graph", sbe != null && sbe.getStation() != null);
+                })
+                .thenExecute(() -> {
+                    var sbe = (com.simibubi.create.content.trains.station.StationBlockEntity) helper.getLevel().getBlockEntity(stationPos);
+                    sbe.getStation().name = "Slipway";
+                })
+                .thenIdle(3) // the place event reaches the districts at the end of a tick
+                .thenExecute(() -> {
+                    ind().districts().rescanNow(helper.getLevel());
+                    check("a station alone is in no district", districtAt(helper, stationPos) == null);
+                    // No ticked pass takes the press's edit: rescanSoon does, as a full detection.
+                    com.minecraftindustrialcomplex.mic_rtsim.industry.IndustryConfig.Test.set(
+                            com.minecraftindustrialcomplex.mic_rtsim.industry.IndustryConfig.RESCAN_INTERVAL, 72_000);
+                    set(helper, press, block("create:mechanical_press").defaultBlockState());
+                    playerPlacedBare(helper, press);
+                })
+                .thenIdle(3)
+                .thenExecute(() -> {
+                    check("the press's edit waits for the full detection", districtAt(helper, press) == null);
+                    ind().districts().rescanSoon(helper.getLevel(), () -> done[0] = true);
+                })
+                .thenWaitUntil(() -> check("the full detection is done", done[0]))
+                .thenExecute(() -> {
+                    com.minecraftindustrialcomplex.mic_rtsim.industry.IndustryConfig.Test.set(
+                            com.minecraftindustrialcomplex.mic_rtsim.industry.IndustryConfig.RESCAN_INTERVAL, 1);
+                    District d = districtAt(helper, press);
+                    check("the press's district", d != null);
+                    check("the district holds the station's chunk: " + d.chunks.size() + " chunks", districtAt(helper, stationPos) == d);
+                    check("two chunks, one district: " + d.chunks.size(), d.chunks.size() == 2);
+                    check("the district lists the station", d.stations.size() == 1);
+                    check("named after its station: " + d.displayName(), d.displayName().equals("Slipway"));
+                    check("the station is no seed, only the press: " + d.seeds(), d.seeds() == 1);
+                    record("aStationPlacedFirstJoinsTheMachineNextToItInAFullDetection", "chunks", d.chunks.size());
+                })
+                .thenSucceed();
+    }
+
+    /**
+     * A station that touches a station across a border (SECTIONS.md §2.1, SC184): the one in a district's chunk touches
+     * one in the next chunk, which is in no district and which no detection has looked at (as if it were unloaded when
+     * the district's chunk was edited). The district's walk meets the touch from its own station, which records the
+     * touch for J6 but, before this was fixed, never reached the other chunk, so J6 never saw it. A full detection
+     * (the periodic one, here {@code rescanNow}) has no ring, so only the touch can reach it.
+     */
+    @GameTest(template = YARD, batch = "create_seed_14", timeoutTicks = 600)
+    public static void aStationTouchingAStationAcrossABorderIsReached(GameTestHelper helper) {
+        fastConfig();
+        forget(helper);
+        BlockPos press = at(helper, 0, 8, 2), inside = at(helper, 0, 15, 6), across = at(helper, 1, 0, 6);
+        check("the two stations touch across the border", across.getX() == inside.getX() + 1 && across.getZ() == inside.getZ());
+        helper.startSequence()
+                .thenExecute(() -> {
+                    set(helper, press, block("create:mechanical_press").defaultBlockState());
+                    playerPlacedBare(helper, press);
+                })
+                .thenWaitUntil(() -> check("the press's district", districtAt(helper, press) != null))
+                .thenExecute(() -> {
+                    set(helper, inside, block("create:track_station").defaultBlockState());
+                    playerPlacedBare(helper, inside);
+                })
+                .thenIdle(5)
+                .thenExecute(() -> {
+                    ind().districts().rescanNow(helper.getLevel());
+                    District d = districtAt(helper, press);
+                    check("the station beside the press is in its district", d != null && districtAt(helper, inside) == d);
+                    // Placed with no event: no edit marks its chunk, and no detection has looked at it.
+                    set(helper, across, block("create:track_station").defaultBlockState());
+                    check("the station across the border is in no district yet", districtAt(helper, across) == null);
+                    ind().districts().rescanNow(helper.getLevel());
+                })
+                .thenExecute(() -> {
+                    District d = districtAt(helper, press);
+                    check("the district holds the next chunk's station: " + d.chunks.size() + " chunks", districtAt(helper, across) == d);
+                    check("two chunks, one district: " + d.chunks.size(), d.chunks.size() == 2);
+                    record("aStationTouchingAStationAcrossABorderIsReached", "chunks", d.chunks.size());
+                })
+                .thenSucceed();
+    }
+
     /** A station with no machine anywhere near it makes no district: it is an anchor, never a seed. */
     @GameTest(template = YARD, batch = "create_seed_9", timeoutTicks = 400)
     public static void aLoneStationMakesNoDistrict(GameTestHelper helper) {
