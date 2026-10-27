@@ -186,6 +186,10 @@ public final class ChestPairLoadGameTests {
         forgetAll(helper);
         ServerLevel level = helper.getLevel();
         BlockPos west = inChunk(helper, 15, 8), east = west.east();
+        // A chest seeds no district (DS-10, the minecraft namespace): a machine in the west half's chunk does, and has no inventory.
+        BlockPos machine = inChunk(helper, 4, 8);
+        IndustryTestKit.set(helper, machine, TestMachines.MACHINE.get().defaultBlockState());
+        playerPlaced(helper, machine);
         IndustryTestKit.set(helper, west, Blocks.CHEST.defaultBlockState().setValue(ChestBlock.FACING, Direction.NORTH).setValue(ChestBlock.TYPE, ChestType.LEFT));
         IndustryTestKit.set(helper, east, Blocks.CHEST.defaultBlockState().setValue(ChestBlock.FACING, Direction.NORTH).setValue(ChestBlock.TYPE, ChestType.RIGHT));
         playerPlaced(helper, west);
@@ -206,6 +210,7 @@ public final class ChestPairLoadGameTests {
                 .thenExecute(() -> {
                     IndustryTestKit.set(helper, east, Blocks.AIR.defaultBlockState());
                     IndustryTestKit.set(helper, west, Blocks.AIR.defaultBlockState());
+                    IndustryTestKit.set(helper, machine, Blocks.AIR.defaultBlockState());
                 })
                 .thenSucceed();
     }
