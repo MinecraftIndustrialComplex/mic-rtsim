@@ -116,7 +116,7 @@ public final class SavedDataWriteHoldGameTests {
                     check("the journal's file is byte for byte W0's, not written once more (" + l.writes() + " writes)",
                             Arrays.equals(w0[0], l.journal()) && l.writes() == 1);
                     check("the journal stays dirty for the next save", l.dirty());
-                    check("the hold is counted", kit.journal.savedDataHeld() == 1);
+                    check("the hold is counted, and starts one streak (its one error line)", kit.journal.savedDataHeld() == 1 && kit.journal.savedDataStreaks() == 1);
                     // more saves with the disk still full: held each time, the data tried each time, one record
                     pad.value = 3;
                     kit.journalMoves();
@@ -131,7 +131,7 @@ public final class SavedDataWriteHoldGameTests {
                     check("the mark was made on the server thread, by the save's start, not by the IO chain", kit.remarkedOnTheServerThread());
                     check("the failure was seen on the IO chain again", kit.failureSeenOffTheServerThread());
                     check("one record for the file however often it fails", SavedDataWrites.INSTANCE.failing() == failing[0] + 1);
-                    check("two holds counted", kit.journal.savedDataHeld() == 2);
+                    check("two holds counted, still one streak: logged once", kit.journal.savedDataHeld() == 2 && kit.journal.savedDataStreaks() == 1);
                     kit.journalMoves();
                     kit.save();
                 }))
@@ -140,7 +140,7 @@ public final class SavedDataWriteHoldGameTests {
                     Look l = kit.look.get();
                     check("held at the third save as well: " + l.writes(), Arrays.equals(w0[0], l.journal()) && l.writes() == 1 && l.dirty());
                     check("still one record", SavedDataWrites.INSTANCE.failing() == failing[0] + 1);
-                    check("three holds counted", kit.journal.savedDataHeld() == 3);
+                    check("three holds counted, still one streak", kit.journal.savedDataHeld() == 3 && kit.journal.savedDataStreaks() == 1);
                     // the disk is back: this save writes the data, then the journal
                     kit.diskFree();
                     pad.value = 4;
@@ -156,7 +156,21 @@ public final class SavedDataWriteHoldGameTests {
                     check("then the journal's file is written, and is not W0's (" + l.writes() + " writes)", l.writes() == 2 && !Arrays.equals(w0[0], l.journal()));
                     check("nothing is dirty any more", !l.dirty() && !pad.isDirty());
                     check("the record is gone", !kit.heldByFailedWrite() && SavedDataWrites.INSTANCE.failing() == failing[0]);
-                    check("three holds in all", kit.journal.savedDataHeld() == 3);
+                    check("three holds in all, in one streak", kit.journal.savedDataHeld() == 3 && kit.journal.savedDataStreaks() == 1);
+                    // the disk fails again: a new streak, logged again, and the journal's file held at this save's state
+                    w0[0] = l.journal();
+                    kit.diskFull();
+                    pad.value = 5;
+                    pad.setDirty();
+                    kit.journalMoves();
+                    kit.save();
+                }))
+                .thenWaitUntil(kit.looked())
+                .thenExecute(kit.step(() -> {
+                    Look l = kit.look.get();
+                    check("held again, the file as the last good save left it (" + l.writes() + " writes)", Arrays.equals(w0[0], l.journal()) && l.writes() == 2 && l.dirty());
+                    check("a second streak, four holds", kit.journal.savedDataHeld() == 4 && kit.journal.savedDataStreaks() == 2);
+                    check("one record", kit.heldByFailedWrite() && SavedDataWrites.INSTANCE.failing() == failing[0] + 1);
                     kit.cleanup();
                 })).thenSucceed();
     }

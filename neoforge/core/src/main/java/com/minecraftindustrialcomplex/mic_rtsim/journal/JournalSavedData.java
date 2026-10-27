@@ -62,6 +62,8 @@ public final class JournalSavedData extends SavedData {
     private final AtomicLong flushKept = new AtomicLong();
     /** Writes held by a failed SavedData write (U-g1), set on the IO chain. */
     private final AtomicLong savedDataHeld = new AtomicLong();
+    /** Streaks of such holds (each logged once). */
+    private final AtomicLong savedDataStreaks = new AtomicLong();
     /** The last write was held by a failed SavedData write, and the streak is logged (on the IO chain). */
     private volatile boolean savedDataStreak;
     /** {@link Journal#appliedRecords} at the snapshot the file on disk holds (this start's; 0 before the first write). */
@@ -152,9 +154,9 @@ public final class JournalSavedData extends SavedData {
             warnedBehind = false;
         } else if (!warnedBehind) {
             warnedBehind = true;
-            MicRtsim.LOGGER.warn("[mic_rtsim] the journal's file on disk is {} applied ops behind (its writes held {} world saves in a row: {}); a crash"
+            MicRtsim.LOGGER.warn("[mic_rtsim] the journal's file on disk is {} applied ops behind (its writes held {} world saves in a row: {}{}); a crash"
                     + " replays them from the older file, and the chunks and stores they changed must answer them (RP-205)",
-                    behind, chunks.heldInARow(), chunks.lastHeld());
+                    behind, chunks.heldInARow(), chunks.lastHeld(), savedDataStreak ? "; a failed SavedData write holds it too (U-g1)" : "");
         }
     }
 
@@ -175,10 +177,22 @@ public final class JournalSavedData extends SavedData {
                 }
                 return;
             }
-            // (the hold on a failed SavedData write goes here: the next commit)
+            String failing = SavedDataWrites.INSTANCE.firstFailing(dirs);
+            if (failing != null) { // a file of this save is not on disk: the journal's file does not get ahead of it (U-g1)
+                retry = true; // dirty for the next world save, which writes the failed file first. No heldLast: a flush save does not try again (U-g7)
+                savedDataHeld.incrementAndGet();
+                if (!savedDataStreak) { // once per streak, counted after; the end of the streak is said below
+                    savedDataStreak = true;
+                    savedDataStreaks.incrementAndGet();
+                    MicRtsim.LOGGER.error("[mic_rtsim] the journal's file is kept as it was: a write of {} failed; it is {} applied ops behind and each world"
+                            + " save tries that file again; a restart before then replays them from the older file; logged once until it is written"
+                            + " (docs/choices-journal-barrier.md U-g1)", failing, applied - appliedDurable);
+                }
+                return;
+            }
             if (savedDataStreak) {
                 savedDataStreak = false;
-                MicRtsim.LOGGER.info("[mic_rtsim] the files whose write failed are written again: the journal's file goes on");
+                MicRtsim.LOGGER.info("[mic_rtsim] no failed SavedData write holds the journal's file any more (the files were written again, or dropped): it goes on");
             }
             for (Path d : dirs) // their renames are durable before the journal's can be (RP-201)
                 DirectorySync.sync(d);
@@ -221,6 +235,11 @@ public final class JournalSavedData extends SavedData {
         return savedDataHeld.get();
     }
 
+    /** Streaks of holds by a failed SavedData write: each is one error line at its first hold and one info line at its end (U-g1). */
+    public long savedDataStreaks() {
+        return savedDataStreaks.get();
+    }
+
     /** Flush saves (the stop, {@code /save-all flush}) that kept the older file after their second try (RP-205). */
     public long flushKept() {
         return flushKept.get();
@@ -240,7 +259,7 @@ public final class JournalSavedData extends SavedData {
         return "journal file: written " + writes() + ", through observation " + writtenThrough + ", " + appliedBehind() + " applied ops behind"
                 + "; held " + b.held() + " (" + b.heldInARow() + " in a row" + (b.lastHeld().isEmpty() ? "" : ", last: " + b.lastHeld()) + ")"
                 + ", late " + b.late() + ", wait max " + b.maxWaitMillis() + " ms, kept at a flush save " + flushKept()
-                + ", outside a world save " + skipped() + ", by a failed SavedData write " + savedDataHeld() + " (" + SavedDataWrites.INSTANCE.describe() + "); "
+                + ", outside a world save " + skipped() + ", by a failed SavedData write " + savedDataHeld() + " in " + savedDataStreaks() + " streak(s) (" + SavedDataWrites.INSTANCE.describe() + "); "
                 + DurableOpRings.perfLine()
                 + "; directory syncs " + DirectorySync.synced() + " (" + DirectorySync.failed() + " failed, " + DirectorySync.nanos() / 1_000_000 + " ms)";
     }

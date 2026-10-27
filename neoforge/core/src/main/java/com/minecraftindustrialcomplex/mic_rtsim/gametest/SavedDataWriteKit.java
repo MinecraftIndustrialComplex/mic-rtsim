@@ -1,5 +1,6 @@
 package com.minecraftindustrialcomplex.mic_rtsim.gametest;
 
+import com.minecraftindustrialcomplex.mic_rtsim.MicRtsim;
 import com.minecraftindustrialcomplex.mic_rtsim.journal.JournalSavedData;
 import com.minecraftindustrialcomplex.mic_rtsim.journal.SavedDataWrites;
 import com.minecraftindustrialcomplex.mic_rtsim.journal.WorldSaveOrder;
@@ -100,12 +101,17 @@ public final class SavedDataWriteKit {
             return io(() -> check("the IO chain looked", look.get() != null));
         }
 
-        /** Runs a step; a failed check cleans up first, so a failure here does not hold the next test's journal. */
+        /**
+         * Runs a step; a failed check cleans up first, so a failure here does not hold the next test's journal. It also
+         * logs the check: {@code thenExecute} lets a failed step fail the test and goes on with the next, so the
+         * failure the reporter shows is the last one, a cascade of the first.
+         */
         public Runnable step(Runnable body) {
             return () -> {
                 try {
                     body.run();
                 } catch (RuntimeException | Error e) {
+                    MicRtsim.LOGGER.error("[gametest] a step of the SavedData write test failed: {}", e.getMessage());
                     cleanup();
                     throw e;
                 }
