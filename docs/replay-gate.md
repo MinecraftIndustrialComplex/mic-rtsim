@@ -2111,21 +2111,29 @@ its files on disk, the rest from the save before. Two directions:
    dupe, measured. A negative delta is a dupe by the same mechanism (inferred, not run). The fixes the
    audit gives: carry and note the reconcile in both halves' chunks, or reconcile each half by its own
    position. Owner: the coordinator decides.
+10. **Reserved for slice R** (`fix/replay-industry-ids`): the failed SavedData write as R found it (RP-317), open
+    in R's docs and tests. When R meets slice U-g it shrinks to "answered inside the pages" (the written case is
+    exact once the journal is held) and points at 11, which is where U-g's leftovers are written
+    (docs/choices-journal-barrier.md, "Merging with slice R").
 11. **A failed SavedData write: what the hold leaves** (RP-317, slice U-g, docs/choices-journal-barrier.md
-    U-g1 to U-g10). Vanilla's `SavedData.save` clears the dirty flag and only logs a failed write, so a
+    U-g1 to U-g12). Vanilla's `SavedData.save` clears the dirty flag and only logs a failed write, so a
     tracks write that failed while the journal's succeeded, then a crash, was direction A for every train op
     the restored pages had decided (RP-200's "always B" assumed every write succeeds). A failed write of a
     `JournalDependent` file (Create's tracks, our own SavedData) now holds the journal's file at the save
-    before until the data has written: B, which the rings make exact. Left:
+    before until the data has written: B, which the rings make exact. The hold has a limit (U-g12): a file
+    that fails at 12 world saves in a row (PLACEHOLDER) stops holding, logged once, and the journal goes on
+    without it: A for that file until it writes again. Left:
     - **The engine's pages are ahead (P29).** They are requested at the save's start and written whatever
       happens to the data. A station exchange in the pages' outbox when they were saved (written, not
       answered): exact, resent once and applied once (rtsim-jni `held_journal`, the written test). One
       answered inside the pages: lost with or without the hold, X's load (the answered test, named for
-      P29). Wiring P29's confirm on WORLD_SAVED (docs/choices-leg-purge.md LP12) mends it; Ben's, and slice U-h's to close.
+      P29). Wiring P29's confirm on WORLD_SAVED (docs/choices-leg-purge.md LP12) mends it; Ben's, and slice U-h's to close
+      (this item only; the rest stay open).
     - **Files not marked:** Diesel's `cdg_oil_chunks` (I4) and NeoForge's `neoforge_data_attachments`
       (Destroy's level pollution, I5, and every plugin's rings): a failed write of one is still A.
     - A stop with a write outstanding keeps the older journal file (U-g7); the data whose level was
-      dropped is abandoned and the journal goes on without it (U-g5): A for it, logged.
+      dropped is abandoned and the journal goes on without it (U-g5), and a file given up on (U-g12) no longer
+      holds it: A for each of them, logged.
 
 **Rings and the module switch (a rule for every ring).** Saving and loading a ring of applied ops never
 depends on a module switch: the train's, the station port's, the oil file's, level pollution's, the
