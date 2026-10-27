@@ -177,7 +177,7 @@ public final class ReinstallGuard {
      * reset deletes the marker behind them on the same chain, so after the industry data that remembers what to
      * re-adopt. A crash before then resets again at the next start, which is harmless (the engine is still new).
      */
-    static void onOverworldSave(MinecraftServer server) {
+    public static void onOverworldSave(MinecraftServer server) {
         Path dir = worldDir(server);
         Status s = STATUS.get(dir);
         if (s == null || s.markerCleared || s.deletionQueued)
@@ -224,6 +224,26 @@ public final class ReinstallGuard {
     /** GameTests: forgets a capture this start will not take (a test's read that did not restart). */
     public static void forgetCaptureForTest(MinecraftServer server) {
         CAPTURES.remove(worldDir(server));
+    }
+
+    /**
+     * GameTests: this world's status becomes a reset that has not deleted its marker, with the marker written. Returns
+     * what {@link #restoreStatusForTest} gives back.
+     */
+    public static Object installResetForTest(MinecraftServer server) throws IOException {
+        Path dir = worldDir(server);
+        ReinstallRules.writeMarker(dir, "a GameTest's reset\n");
+        Status before = STATUS.put(dir, new Status(null, new Reset("a GameTest's reset", null, Instant.now())));
+        return before == null ? Boolean.FALSE : before;
+    }
+
+    /** GameTests: the status {@link #installResetForTest} replaced. The marker is the caller's to delete. */
+    public static void restoreStatusForTest(MinecraftServer server, Object before) {
+        Path dir = worldDir(server);
+        if (before instanceof Status s)
+            STATUS.put(dir, s);
+        else
+            STATUS.remove(dir);
     }
 
     /** GameTests: whether this start's reset has deleted its marker. */

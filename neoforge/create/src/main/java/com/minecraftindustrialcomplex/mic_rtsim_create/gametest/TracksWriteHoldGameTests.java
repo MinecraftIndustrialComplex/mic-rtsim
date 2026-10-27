@@ -1,13 +1,16 @@
 package com.minecraftindustrialcomplex.mic_rtsim_create.gametest;
 
+import com.minecraftindustrialcomplex.mic_rtsim.gametest.SavedDataWriteKit;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.SavedDataWriteKit.Kit;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.SavedDataWriteKit.Look;
 import com.minecraftindustrialcomplex.mic_rtsim.journal.JournalDependent;
 import com.minecraftindustrialcomplex.mic_rtsim.journal.SavedDataWrites;
 import com.minecraftindustrialcomplex.mic_rtsim_create.MicRtsimCreate;
 import com.simibubi.create.content.trains.RailwaySavedData;
+import net.minecraft.gametest.framework.AfterBatch;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
+import net.minecraft.server.level.ServerLevel;
 import net.neoforged.neoforge.gametest.GameTestHolder;
 import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 
@@ -101,5 +104,10 @@ public final class TracksWriteHoldGameTests {
                     check("the record is gone", !kit.heldByFailedWrite());
                     kit.cleanup();
                 })).thenSucceed();
+    }
+
+    @AfterBatch(batch = "mic_rtsim_tracks_write_hold")
+    public static void cleanUp(ServerLevel level) {
+        SavedDataWriteKit.cleanupAll();
     }
 }
