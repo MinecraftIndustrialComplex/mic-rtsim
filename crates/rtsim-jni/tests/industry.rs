@@ -3348,7 +3348,10 @@ mod ack_never_resends {
             "a world save no WORLD_SAVED confirmed is not acknowledged"
         );
         let sent = r.c.crash(&r.j);
-        assert!(sent <= pages, "the engine sent ack {sent} past the pages {pages}");
+        assert!(
+            sent <= pages,
+            "the engine sent ack {sent} past the pages {pages}"
+        );
         let start = r.restart(&w0);
         assert_eq!(
             r.j.pages_obs, pages,
@@ -5072,7 +5075,7 @@ mod held_journal {
     /// W0 does not hold X), it is sent and applied once, the train loaded as it was, the books
     /// close. Before U-h the pages were acknowledged at the commit and the start kept X's copy in
     /// their outbox.
-        #[test]
+    #[test]
     fn a_station_exchange_written_before_the_pages_is_applied_once_with_the_journal_held() {
         let tag = "ind-exch-held-outbox";
         let o = exchange_decided_before_the_pages(tag, true);

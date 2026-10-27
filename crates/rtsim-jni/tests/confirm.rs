@@ -54,7 +54,12 @@ fn transfers(j: &mut Java, from: u64, n: u64) {
 }
 
 /// The store's (current, confirmed) generations, read while the engine runs.
-fn generations(dir: &Path) -> (rtsim_kernel::page::Generation, rtsim_kernel::page::Generation) {
+fn generations(
+    dir: &Path,
+) -> (
+    rtsim_kernel::page::Generation,
+    rtsim_kernel::page::Generation,
+) {
     let s = PageStore::open_read_only(dir).unwrap();
     (s.current(), s.confirmed())
 }
@@ -107,7 +112,11 @@ fn a_world_save_is_acknowledged_only_after_its_world_saved() {
         "the journal is trimmed to the save: {:?}",
         j.journal.front().map(|(s, _)| *s)
     );
-    assert_eq!(e.stats_array()[SAVES_DONE], 1, "one save done, at the confirm");
+    assert_eq!(
+        e.stats_array()[SAVES_DONE],
+        1,
+        "one save done, at the confirm"
+    );
     assert_eq!(e.stats.confirms.load(Acquire), 1);
     let (current, confirmed) = generations(&dir);
     assert_eq!(current, confirmed, "confirmed");
@@ -337,7 +346,10 @@ fn a_budget_save_waits_for_the_world_saved_of_the_save_under_it() {
     wait_committed(&e, 1);
     let free_peak = days(&mut j, &e, STEPS);
     let free_end = resident(&e);
-    assert!(e.stats.pressure_saves.load(Acquire) > 0, "the control's budget saves ran");
+    assert!(
+        e.stats.pressure_saves.load(Acquire) > 0,
+        "the control's budget saves ran"
+    );
     assert_eq!(e.stats.budget_saves_held.load(Acquire), 0);
     let _ = j.crash();
     // The unpaged footprint.
@@ -372,7 +384,10 @@ fn a_budget_save_waits_for_the_world_saved_of_the_save_under_it() {
         e.stats.budget_saves_held.load(Acquire) > 0,
         "steps that wanted a budget save were held"
     );
-    assert!(held_peak <= unpaged, "{held_peak} B held, {unpaged} B unpaged");
+    assert!(
+        held_peak <= unpaged,
+        "{held_peak} B held, {unpaged} B unpaged"
+    );
     let (current, confirmed) = generations(&dir);
     assert_ne!(current, confirmed, "the world save is still pending");
     assert_eq!(current.obs_seq, t);
@@ -453,7 +468,10 @@ fn a_stop_confirms_its_final_save_at_once() {
     let t = j.next_obs - 1;
     e.request_save(t);
     settle(&e, &mut j, 1);
-    assert!(e.durable_obs_seq() < t, "the world save waits for its WORLD_SAVED");
+    assert!(
+        e.durable_obs_seq() < t,
+        "the world save waits for its WORLD_SAVED"
+    );
     transfers(&mut j, 200, 5);
     j.idle();
     j.idle();
@@ -485,7 +503,10 @@ fn a_confirm_that_fails_keeps_the_save_pending_and_the_next_world_saved_confirms
         e.stats.confirm_failures.load(Acquire) >= 1
     });
     j.idle();
-    assert!(e.durable_obs_seq() < t, "a failed confirm acknowledges nothing");
+    assert!(
+        e.durable_obs_seq() < t,
+        "a failed confirm acknowledges nothing"
+    );
     assert_eq!(e.stats.confirms.load(Acquire), 0);
     assert_eq!(e.stats_array()[SAVES_DONE], 0);
     assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());

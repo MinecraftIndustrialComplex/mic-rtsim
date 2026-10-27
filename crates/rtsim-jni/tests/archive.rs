@@ -344,7 +344,10 @@ fn a_kept_pressure_save_keeps_its_chunks() {
     assert!(newest > p.confirmed);
     let e = engine_with(&p.dir, 256 * 1024, |c| c.row_budget = p.budget);
     let j = Java::open(e.clone(), p.crashed);
-    assert_eq!(j.pages_obs, p.confirmed_obs, "the pressure saves share its observations");
+    assert_eq!(
+        j.pages_obs, p.confirmed_obs,
+        "the pressure saves share its observations"
+    );
     assert_eq!(
         e.stats.archive_confirmed.load(Acquire),
         e.stats.archive_serial.load(Acquire),
@@ -390,13 +393,25 @@ fn the_archive_compacts_only_through_the_confirmed_save() {
     let e = engine(&dir, 256 * 1024);
     let mut j = Java::open(e.clone(), WorldSave::fresh());
     j.module_mask = PHASE1;
-    adopt(&mut j, 0x0001_0000_0000_0001, "minecraft:village_plains", 0, 0);
+    adopt(
+        &mut j,
+        0x0001_0000_0000_0001,
+        "minecraft:village_plains",
+        0,
+        0,
+    );
     j.idle();
     world_save_confirmed(&e, &mut j);
     let confirmed = e.stats.archive_confirmed.load(Acquire);
     assert!(confirmed > 0);
     assert_eq!(confirmed, e.stats.archive_serial.load(Acquire));
-    adopt(&mut j, 0x0001_0000_0000_0002, "minecraft:village_taiga", 400, 0);
+    adopt(
+        &mut j,
+        0x0001_0000_0000_0002,
+        "minecraft:village_taiga",
+        400,
+        0,
+    );
     j.idle();
     // The second world save: its pages are asked for, its WORLD_SAVED is not sent yet.
     let through = j.next_obs - 1;
@@ -426,7 +441,10 @@ fn the_archive_compacts_only_through_the_confirmed_save() {
     j.idle();
     let deadline = Instant::now() + Duration::from_secs(20);
     while e.stats.archive_confirmed.load(Acquire) != serial {
-        assert!(Instant::now() < deadline, "the confirm never moved the serial");
+        assert!(
+            Instant::now() < deadline,
+            "the confirm never moved the serial"
+        );
         std::thread::sleep(Duration::from_millis(2));
     }
     e.close(true, Duration::from_secs(5)).unwrap();
@@ -442,14 +460,32 @@ fn a_rolled_back_world_save_takes_its_chunks_with_it() {
     let e = engine(&dir, 256 * 1024);
     let mut j = Java::open(e.clone(), WorldSave::fresh());
     j.module_mask = PHASE1;
-    adopt(&mut j, 0x0001_0000_0000_0001, "minecraft:village_plains", 0, 0);
+    adopt(
+        &mut j,
+        0x0001_0000_0000_0001,
+        "minecraft:village_plains",
+        0,
+        0,
+    );
     j.idle();
     let first_obs = j.next_obs - 1;
     let first = world_save_confirmed(&e, &mut j);
     let confirmed = e.stats.archive_confirmed.load(Acquire);
     assert!(confirmed > 0);
-    adopt(&mut j, 0x0001_0000_0000_0002, "minecraft:village_taiga", 400, 0);
-    adopt(&mut j, 0x0001_0000_0000_0003, "minecraft:village_desert", 0, 400);
+    adopt(
+        &mut j,
+        0x0001_0000_0000_0002,
+        "minecraft:village_taiga",
+        400,
+        0,
+    );
+    adopt(
+        &mut j,
+        0x0001_0000_0000_0003,
+        "minecraft:village_desert",
+        0,
+        400,
+    );
     j.idle();
     // The second world save: committed by the engine, never confirmed.
     let committed = e.stats.saves_committed.load(Acquire);
@@ -474,7 +510,10 @@ fn a_rolled_back_world_save_takes_its_chunks_with_it() {
     let mut j = Java::open(e.clone(), first);
     j.module_mask = PHASE1;
     j.game_time = game_time;
-    assert_eq!(j.pages_obs, first_obs, "the start rolled the second save back");
+    assert_eq!(
+        j.pages_obs, first_obs,
+        "the start rolled the second save back"
+    );
     assert_eq!(e.stats.archive_confirmed.load(Acquire), confirmed);
     let (after, tags) = events(&dir);
     assert!(
