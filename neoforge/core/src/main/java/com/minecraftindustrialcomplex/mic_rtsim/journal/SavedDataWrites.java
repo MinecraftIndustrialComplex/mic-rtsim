@@ -35,6 +35,12 @@ import java.util.function.Consumer;
  * and the write that ends the streak says so; the later failures and each held write are counted. An entry holds
  * its data weakly: data that was dropped (its level unloaded) cannot be written again, so its entry goes at the next
  * {@link #remarkAll}, logged, and the journal goes on without it.
+ *
+ * <p>The hold has a limit (U-g12): a file that is still failing after {@link #GIVE_UP_AFTER} world saves whose journal
+ * write it held stops holding it. A disk that fails at every save would otherwise keep the journal's file at one save
+ * for ever, and the engine's replay of everything since with it. The give-up is logged once, loudly, and counted; the
+ * journal then goes on and accepts RP-317's risk for that file until the file writes again, which ends the streak (a new
+ * failure holds again from its first save). Its record stays, so the data is still marked dirty at every world save.
  */
 public final class SavedDataWrites {
     /** The server's. */
@@ -50,6 +56,12 @@ public final class SavedDataWrites {
         WeakReference<JournalDependent> owner;
         long failed;
         String why;
+        /** World saves whose journal write this file held (U-g12). */
+        int held;
+        /** The limit passed: this file no longer holds the journal's write. */
+        boolean gaveUp;
+        /** A re-mark of its data threw, and the line is logged (once per entry). */
+        boolean remarkFailureSaid;
 
         Entry(Path file) {
             this.file = file;
@@ -66,6 +78,10 @@ public final class SavedDataWrites {
     private final AtomicLong recovered = new AtomicLong();
     private final AtomicLong remarked = new AtomicLong();
     private final AtomicLong abandoned = new AtomicLong();
+    private final AtomicLong gaveUp = new AtomicLong();
+    private final AtomicLong remarkErrors = new AtomicLong();
+    /** World saves a file may hold the journal's write for; {@link #GIVE_UP_AFTER} unless a GameTest sets it. */
+    private volatile int giveUpAfter = GIVE_UP_AFTER;
     /** The thread that saw the last failure: NeoForge's IO worker, where the write runs, never the server thread (-1: none yet). */
     private volatile long failedOnThread = -1;
     /** The thread that last marked a failed data dirty again: the server thread, at a world save's start (-1: none yet). */
@@ -115,9 +131,9 @@ public final class SavedDataWrites {
             failures.incrementAndGet();
             if (first)
                 say(error, "[mic_rtsim] the write of " + k + " failed (" + why + "): the journal's file is kept as it was until that file is"
-                        + " written again, and the next world save tries it again. A stop or crash before then restarts from the journal's"
-                        + " last good file, and the ops decided since replay from it; further failures of this file are counted, not"
-                        + " logged (docs/choices-journal-barrier.md U-g1)");
+                        + " written again (at most " + giveUpAfter + " world saves), and the next world save tries it again. A stop or crash before then"
+                        + " restarts from the journal's last good file, and the ops decided since replay from it; further failures of this file"
+                        + " are counted, not logged (docs/choices-journal-barrier.md U-g1, U-g12)");
         } catch (RuntimeException e) {
             say(error, "[mic_rtsim] could not record the failed write of " + file + ": " + e);
         }
@@ -135,7 +151,8 @@ public final class SavedDataWrites {
             }
             if (e != null) {
                 recovered.incrementAndGet();
-                say(info, "[mic_rtsim] " + e.file + " was written again after " + e.failed + " failed write(s): the journal's file goes on");
+                say(info, "[mic_rtsim] " + e.file + " was written again after " + e.failed + " failed write(s)"
+                        + (e.gaveUp ? " (the journal's file had been given up holding for it)" : ": the journal's file goes on"));
             }
         } catch (RuntimeException e) {
             say(error, "[mic_rtsim] could not record the write of " + file + ": " + e);
@@ -144,12 +161,14 @@ public final class SavedDataWrites {
 
     /**
      * A world save starts (server thread): every failed file's data is marked dirty again, so this save writes it.
-     * An entry whose data is gone is dropped, logged.
+     * An entry whose data is gone is dropped, logged. A re-mark that throws is counted and said once for its file: it
+     * must not abort the world save, nor the other files' re-marks.
      */
     public void remarkAll() {
         if (count == 0)
             return;
         List<JournalDependent> owners = new ArrayList<>();
+        List<Entry> live = new ArrayList<>();
         List<Entry> gone = new ArrayList<>();
         synchronized (lock) {
             for (Iterator<Entry> it = failing.values().iterator(); it.hasNext(); ) {
@@ -160,14 +179,25 @@ public final class SavedDataWrites {
                     it.remove();
                 } else {
                     owners.add(o);
+                    live.add(e);
                 }
             }
             count = failing.size();
         }
-        for (JournalDependent o : owners) {
-            o.mic_rtsim$remark();
-            remarked.incrementAndGet();
-            remarkedOnThread = Thread.currentThread().threadId();
+        for (int i = 0; i < owners.size(); i++) {
+            try {
+                owners.get(i).mic_rtsim$remark();
+                remarked.incrementAndGet();
+                remarkedOnThread = Thread.currentThread().threadId();
+            } catch (RuntimeException ex) {
+                remarkErrors.incrementAndGet();
+                Entry e = live.get(i);
+                if (!e.remarkFailureSaid) {
+                    e.remarkFailureSaid = true;
+                    say(error, "[mic_rtsim] marking the data of " + e.file + " dirty again failed (" + ex + "): it is not written again until it"
+                            + " changes, and the journal's file waits for it (docs/choices-journal-barrier.md U-g1); said once for this file");
+                }
+            }
         }
         for (Entry e : gone) {
             abandoned.incrementAndGet();
@@ -178,8 +208,8 @@ public final class SavedDataWrites {
     }
 
     /**
-     * Why the journal's write must be held, or null: the first file under one of {@code dirs} (the directories of the save
-     * the journal's file belongs to) whose last write failed and has not succeeded since. On the IO chain.
+     * The pure form of {@link #holdFor}, which counts: the first file under one of {@code dirs} (the directories of the save
+     * the journal's file belongs to) whose last write failed, has not succeeded since and has not given up, or null.
      */
     public String firstFailing(Collection<Path> dirs) {
         if (count == 0)
@@ -189,34 +219,102 @@ public final class SavedDataWrites {
             roots.add(key(d));
         synchronized (lock) {
             for (Entry e : failing.values())
-                for (Path root : roots)
-                    if (e.file.startsWith(root))
-                        return e.file + " (" + e.failed + " failed write(s), last " + e.why + ")";
+                if (!e.gaveUp && under(e, roots))
+                    return reasonOf(e);
         }
         return null;
     }
 
-    /** (stub: the next commit) The journal's question at its write: as {@link #firstFailing}, and counts the hold against each file. */
+    /**
+     * The journal's question at its write, on the IO chain, once per world save: why its write must be held, or null. The
+     * first file under one of {@code dirs} that is failing and has not given up holds it. Each such file is counted as
+     * one more world save it held; the one whose count passes the limit gives up here, said once, and no longer holds.
+     */
     public String holdFor(Collection<Path> dirs) {
-        return firstFailing(dirs);
+        if (count == 0)
+            return null;
+        List<Path> roots = new ArrayList<>(dirs.size());
+        for (Path d : dirs)
+            roots.add(key(d));
+        String why = null;
+        List<Entry> gave = new ArrayList<>(1);
+        int limit = giveUpAfter;
+        synchronized (lock) {
+            for (Entry e : failing.values()) {
+                if (e.gaveUp || !under(e, roots))
+                    continue;
+                if (++e.held > limit) {
+                    e.gaveUp = true;
+                    gave.add(e);
+                } else if (why == null) {
+                    why = reasonOf(e);
+                }
+            }
+        }
+        for (Entry e : gave) {
+            gaveUp.incrementAndGet();
+            say(error, "[mic_rtsim] GIVING UP holding the journal's file for " + e.file + ": its write failed at each of the last " + limit
+                    + " world saves (" + e.why + "). The journal's file goes on without it from now on, so a crash before that file is written"
+                    + " again can leave the ops decided since in the journal and not in that file (docs/choices-journal-barrier.md U-g12,"
+                    + " RP-317's risk); the file is still tried at every world save, and a write that succeeds ends this");
+        }
+        return why;
     }
 
-    /** (stub: the next commit) Whether {@code file}'s last write failed and it still holds the journal's write. */
-    public boolean holds(Path file) {
+    private static boolean under(Entry e, List<Path> roots) {
+        for (Path root : roots)
+            if (e.file.startsWith(root))
+                return true;
         return false;
     }
 
-    /** (stub: the next commit) Files the journal stopped holding for after {@link #GIVE_UP_AFTER} held world saves. */
+    private static String reasonOf(Entry e) {
+        return e.file + " (" + e.failed + " failed write(s), last " + e.why + ")";
+    }
+
+    /** Whether {@code file}'s last write failed and it still holds the journal's write (not given up): the reinstall marker waits for the same. */
+    public boolean holds(Path file) {
+        if (count == 0)
+            return false;
+        Path k = key(file);
+        synchronized (lock) {
+            Entry e = failing.get(k);
+            return e != null && !e.gaveUp;
+        }
+    }
+
+    /** Files the journal stopped holding for after {@link #GIVE_UP_AFTER} held world saves. */
     public long gaveUp() {
-        return 0;
+        return gaveUp.get();
     }
 
-    /** (stub: the next commit) Forgets every entry and counter: a server stopped. */
+    /** Re-marks that threw. */
+    public long remarkErrors() {
+        return remarkErrors.get();
+    }
+
+    /**
+     * A server stopped: every entry and counter goes. The record is one per JVM, and an integrated server's next world
+     * must not inherit the last one's failing files or counts. Server thread, at the stop.
+     */
     public void reset() {
+        synchronized (lock) {
+            failing.clear();
+            count = 0;
+        }
+        failures.set(0);
+        recovered.set(0);
+        remarked.set(0);
+        abandoned.set(0);
+        gaveUp.set(0);
+        remarkErrors.set(0);
+        failedOnThread = -1;
+        remarkedOnThread = -1;
     }
 
-    /** (stub: the next commit) GameTests: the held world saves after which a file stops holding; {@code <= 0}: back to {@link #GIVE_UP_AFTER}. */
+    /** GameTests: the held world saves after which a file stops holding; {@code <= 0}: back to {@link #GIVE_UP_AFTER}. */
     public void giveUpAfterForTest(int worldSaves) {
+        giveUpAfter = worldSaves > 0 ? worldSaves : GIVE_UP_AFTER;
     }
 
     /** Files whose last write failed. */
@@ -257,7 +355,7 @@ public final class SavedDataWrites {
     /** One line for {@code /rtsim perf}. */
     public String describe() {
         return "SavedData writes failed " + failures() + ", failing now " + failing() + ", recovered " + recovered()
-                + ", marked dirty again " + remarked() + ", abandoned " + abandoned();
+                + ", marked dirty again " + remarked() + " (" + remarkErrors() + " threw), abandoned " + abandoned() + ", given up holding " + gaveUp();
     }
 
     /** GameTests: forgets every failing file under {@code dir}, as after the data is deleted. */

@@ -7,8 +7,9 @@ package com.minecraftindustrialcomplex.mic_rtsim.journal;
  * U-g1).
  *
  * <p>Our own SavedData implements it; another mod's gets it from a mixin in the plugin that owns the dependency (D4):
- * Create's {@code create_tracks}, Diesel's {@code cdg_oil_chunks}, NeoForge's level attachments (Destroy's pollution).
- * The marker adds nothing to a save (UR-1).
+ * so far Create's {@code create_tracks} ({@code RailwaySavedDataMixin}). Not marked yet (residual 11 of
+ * docs/replay-gate.md 9.6): Diesel's {@code cdg_oil_chunks} and NeoForge's level attachments (Destroy's pollution, and
+ * every plugin's rings). The marker adds nothing to a save (UR-1).
  */
 public interface JournalDependent {
     /**
