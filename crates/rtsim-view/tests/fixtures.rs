@@ -4,7 +4,11 @@
 //! copied without its `rtsim/archive` (the event timeline): `events.rs` needs a real save with no
 //! archive and writes its own archive onto a copy of this one. The create save keeps its archive.
 //!
-//! - `tests/data/core`: neoforge/core's GameTest world, a fresh one, run from commit 8e3eda72
+//! - `tests/data/core`: neoforge/core's GameTest world, a fresh one, run from commit da5aea80
+//!   (Mowzie's Mobs M8, the lurk by the track, merged with main 589d5f82, which carries slice R;
+//!   M8's formats: the conflict's pages are RTC10 (magic `RTCA`) with meta version 9, the stats
+//!   ending with the lurk's five counters, MZB-690; the later merges of U-g, J6 and U-h change no
+//!   format); before that, 8e3eda72
 //!   (replay-gate slice R, the industry op window, merged with main ad04337a, which carries slices
 //!   U-b, U-c and U-d; R's formats: the industry globals are IGB2, `decided` after `now`, and an
 //!   industry district page starts with IDS5, its reconcile epochs per chunk, each pending
@@ -69,7 +73,8 @@
 //!   when the server stops: 6638edc's save had one, while both runs of 98d6d34 and main's 7e4042a
 //!   had every herd staying put. So the route layer is not required here; it still has to draw or
 //!   say why.
-//! - `tests/data/create`: neoforge/create's GameTest world, run from 2acae5ba (8e3eda72 merged
+//! - `tests/data/create`: neoforge/create's GameTest world, run from da5aea80 with `-Psec1fx`
+//!   (the core save's formats, M8's); before that, 2acae5ba (8e3eda72 merged
 //!   with main 13051753, the grove tribute earmark, which changes no format: the core save's
 //!   formats, R's); before that, 012f1fa2 (abe7bad3 merged
 //!   with main 4b3c2343, which adds pages only: the core save's formats, U-d's); before that,
