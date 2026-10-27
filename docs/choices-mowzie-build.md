@@ -5654,6 +5654,8 @@ M9b takes MZB-600 to 624 (M9c takes 625 to 649); the M9b build choices are under
   - APPLIED or DUPLICATE_OP lowers what is owed by the amount. FAILED returns the goods through
     `stock_from_players`.
   - A grove whose chest is gone keeps owing.
+  - Amended by MZB-930: what is owed is earmarked out of the market's line at the payment, and it is
+    booked out to the players at the answer, not at the send.
 - **MZB-424** (owed hunts, ledger 11): a unit field `hunts: u32` (raptor 2, PLACEHOLDER) and a culture field
   `hunt_cap: u32` (8, PLACEHOLDER).
   - `raid_district` adds `survivors × hunts` for each class it did not skip, capped at `hunt_cap` per
@@ -6006,6 +6008,8 @@ M9b takes MZB-600 to 624 (M9c takes 625 to 649); the M9b build choices are under
     the camp was out (or by a replayed record, MZB-446 above) goes at the census that brings the camp in, and
     the plugin's session-start HAVEN_CHEST is no longer what places it. A duplicate census (the camp's own
     epoch) and a replayed one place nothing.
+  - Amended by MZB-930: P3-2's read of the stock is gone with the earmark. A stack is the least of what is
+    owed and 64, and no market is read.
 - **MZB-447** (tribute pricing, M9a): `gift_value` prices only the faction's tribute good and an unpriced
   tribute good is worth `1 / tribute_per_coin` of a coin, so 567 nuggets are 63 coins at the fallback 9.0. TRADED's
   coins are its nuggets over `tribute_per_coin`. Any other unpriced good is still worth nothing.
@@ -7159,6 +7163,94 @@ conversion or the merge: the tests had been compiled but never run.
     rescans' slice count in the tick they ran. On a host slow enough that one call passes the 5 ms slice
     limit (11 ms here against 2.5 ms on main), those rescans split into slices too, and the wait passed on
     them. It now waits for one more detection by `Districts.rescans()`.
+
+### The tribute earmark (MZB-930 to MZB-933)
+
+The GameTest `tributeLandsInAGroveChestWhenTheGroveLoads` failed twice on SEC-1's rounds with "566 of 567".
+The plan says a player who later raids the grove "finds the gold they paid" (MOWZIE.md, the Umvuthana
+section). The cause was in the engine, not the test.
+
+- **MZB-930** (the bug, three hits, each pinned by a test that failed first):
+  - Tribute was stocked into the haven market's nugget line and kept owed as a number, with no reservation.
+    The line is drawn by the market's own draw (about two nuggets a day in the test world), lanes and
+    caravans, player trades at the haven, and predator and raid takes.
+  - **Hit 1** (`place_tribute`): each stack was `owed.min(held).min(64)`, cut to whole items. A draw of
+    even a thousandth between the payment and the last stack cut a whole nugget. The rest (1,000 owed
+    against 999 held) then cut to 0. No later chest, census or answer placed it, and it stayed owed, saved
+    in the page. Test `a_market_that_draws_its_nuggets_takes_none_of_the_tribute_owed_to_the_chest`, before
+    the fix: 566 placed, 1 owed.
+  - **Hit 2** (`tribute_failed`): a FAILED stack went back into the line while the chest was forgotten, so
+    the line could be drawn until the next HAVEN_CHEST or census. Test
+    `a_failed_stack_goes_back_to_the_chest_not_to_a_line_the_market_draws`, before the fix: 566 placed, 1
+    owed.
+  - **Hit 3, a dupe** (`replayed_placed`): a replayed APPLIED took `stock_to_players` of the stack and
+    ignored what it got. The replay holds the stack's goods in the line from the payment to the answer, so a
+    line drawn meanwhile booked out less than Java put in its chest: the chest has the items, and the
+    market also spent them. Test `a_replayed_stack_leaves_the_books_by_what_java_put_in_the_chest` (the
+    line drawn to nothing between the payment and the replayed answer), before the fix: 0 of the 30 booked
+    out, a dupe of 30. The size of the dupe is whatever the line was drawn below the stack.
+- **MZB-931** (the earmark): what a grove owes its chest leaves the payment before anything is stocked.
+  - `owe_tribute` takes the tribute good's whole items, books them `World::held_from_players`
+    (`outside.player_in` and `outside.held`, never consumed, so the world's conservation holds), and
+    returns the rest. `pay_tribute` and `gift` stock only that rest at the haven, and `ledger.tribute` or
+    `ledger.gifts` counts both parts.
+  - The plan's "paid tribute is stocked at the grove's haven" now holds for what is not owed to the chest:
+    a gift's other goods, every culture with no chief body (no camp chest), and a grove with no camp
+    yet, which are unchanged.
+  - A payment at a haven that keeps no stock still earmarks the owed part: the chest gets it, where before
+    nothing was booked at all.
+- **MZB-932** (booked at the answer, not at the send):
+  - `place_tribute` reads no market. A stack is `owed.min(64 items)`, and owed is always whole items.
+  - The goods stay held while the stack is in flight. APPLIED or DUPLICATE_OP books them
+    `held_to_players` and lowers what is owed. FAILED moves nothing (the chest is forgotten as before).
+    The send-then-return round trip of MZB-423 and MZB-446 is gone, so a grove's earmark is exactly its
+    `owed_tribute`, in flight included.
+  - `replayed_placed` books the whole stack `held_to_players`, which the earmark always holds, and
+    `replayed_failed` moves nothing.
+  - `place_tribute` and `haven_chest` lost their now unused world and tick parameters, and `camp_census`'s
+    world parameter is unused (kept, with an underscore).
+- **MZB-933** (where the earmark goes, and the check):
+  - No path drops a camp or a faction in a running engine: `FactionTable` never removes a row, and a camp
+    is only taken and put back. The earmark lives as long as the faction.
+  - One path drops them all at a start: conflict pages this build cannot read (`when_pages_unreadable` in
+    rtsim-jni's conflict link: a conflict page bump on a deployed world, or a corrupt meta page) start the
+    conflict afresh while the world's pages load. The earmark then stays in the world's `outside.held`
+    with no owner, and nothing books it out: the paid tribute never reaches a chest. Before the earmark
+    those goods sat in the haven's line and stayed in the economy, so this is a new loss, bounded by what
+    was owed at the save. Parties' loot in `outside.held` is lost the same way already. Kept (the
+    conservative choice, and no compatibility before release): the fresh conflict cannot know which part
+    of the shared held was its earmark, so it cannot land it.
+  - At a reinstall reset the engine and its world start fresh, so the earmark goes with them, as the owed
+    goods in the market did before (UR-1: an uninstall loses nothing new).
+  - `Conflict::check` adds one rule: per good, what the parties carry plus every grove's `owed_tribute` is
+    at most the world's `outside.held`. Grove tests' `ok` now runs `Conflict::check`. A mutation that drops
+    the earmark's `held_from_players` breaks 9 grove tests, 5 of them by this rule.
+  - The MZB-423 P3-2 test pinned the old cut. It is now
+    `a_drained_line_cuts_no_stack_of_the_earmarked_tribute`: the line drained to nothing, the stack is a
+    whole 64.
+  - No saved format changes: `owed_tribute` was already saved, and `outside.held` is the world's.
+  - The GameTest keeps its exact-567 check.
+- **MZB-934** (the slice's Opus review: no P1; its P2 and P3 fixed):
+  - P2-1, the check is one-sided. `Conflict::check` asks only that the world's held covers the parties'
+    loot and the earmarks, so a leak into held (a FAILED that earmarks again, an APPLIED that books
+    nothing out) passed it. It stays one-sided: `outside.held` is one pool, and ships and lanes hold
+    goods in it too, so an equality there would fail in any world with them. The grove tests' `ok` adds
+    the equality instead, per good: in those worlds only the conflict holds goods. It holds in all 60
+    grove tests and kills those mutations, as the review showed.
+  - P2-2, the drop path above (unreadable conflict pages): recorded in MZB-933, not fixed.
+  - P2-3, no rtsim-jni test pinned the earmark across a real save and crash. A helper,
+    `assert_earmarked`, asserts that the world's held of the tribute good is what the grove owes and that
+    `Conflict::check` passes. It runs in the crash test
+    (`a_groves_tribute_lands_in_its_chest_once_across_a_failure_and_a_crash`: 567 after the payment, the
+    FAILED and the restart, 503 after the stack lands), in the NOT_LOADED test, and in RP-292's
+    switch-off test, where it replaces the stock bound that the earmark made vacuous (the goods no longer
+    go back to a stock).
+  - P3: `tribute_placed` and `replayed_placed` debug-assert that `held_to_players` took the whole stack,
+    since `take_held` clamps silently and a short take is hit 3 again. The texts that still sent a FAILED
+    stack's goods back to the stock (docs/boundary.md, rtsim-jni's conflict link, the protocol tests'
+    messages) now say it stays owed and earmarked. The test names that say "goes back to its stock" are
+    kept for MZB-760, which rewrites those tests. The conflict and rail benches run `Conflict::check`
+    after their heap samples, as it now reads every faction's camp.
 
 ## M10 March
 
