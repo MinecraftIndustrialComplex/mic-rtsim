@@ -1,6 +1,7 @@
 package com.minecraftindustrialcomplex.mic_rtsim_iceandfire;
 
 import com.iafenvoy.iceandfire.entity.DragonBaseEntity;
+import com.minecraftindustrialcomplex.mic_rtsim.journal.JournalDependent;
 import it.unimi.dsi.fastutil.longs.LongSet;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.HolderLookup;
@@ -438,13 +439,19 @@ public final class LairPlacer {
     }
 
     /** What the plugin keeps with the world: the fields asked for, the waiting requests, the placed lairs. */
-    public static final class Data extends SavedData {
+    public static final class Data extends SavedData implements JournalDependent {
         public static final String NAME = "mic_rtsim_iceandfire_oil_lairs";
         static final Factory<Data> FACTORY = new Factory<>(Data::new, Data::load);
 
         public final Set<Long> fields = new LinkedHashSet<>();
         public final List<Request> pending = new ArrayList<>();
         public final List<Placed> placed = new ArrayList<>();
+
+        /** Vanilla cleared the dirty flag before a write that failed: the next world save writes it again (docs/choices-journal-barrier.md U-g1). */
+        @Override
+        public void mic_rtsim$remark() {
+            setDirty();
+        }
 
         @Override
         public CompoundTag save(CompoundTag tag, HolderLookup.Provider registries) {

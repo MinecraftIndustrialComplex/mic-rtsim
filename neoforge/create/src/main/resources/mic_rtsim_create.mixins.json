@@ -26,6 +26,7 @@
     "PackagerBlockEntityMixin",
     "PortableStorageInterfaceMixin",
     "PoweredShaftBlockEntityMixin",
+    "RailwaySavedDataMixin",
     "RepackagerBlockEntityMixin",
     "RotationPropagatorInvoker",
     "RotationPropagatorMixin",
