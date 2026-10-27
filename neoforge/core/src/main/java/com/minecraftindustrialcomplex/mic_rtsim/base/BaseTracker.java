@@ -2,6 +2,7 @@ package com.minecraftindustrialcomplex.mic_rtsim.base;
 
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs;
 import com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession;
+import com.minecraftindustrialcomplex.mic_rtsim.journal.JournalDependent;
 import net.minecraft.core.HolderLookup;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.nbt.CompoundTag;
@@ -35,7 +36,7 @@ import java.util.UUID;
  * decays below {@link #UNMARK} unmarks it (BASE UNMARKED). Each player keeps at most {@link #CELLS}
  * counters; the weakest goes. Saved in {@code data/mic_rtsim_bases.dat}.
  */
-public final class BaseTracker extends SavedData {
+public final class BaseTracker extends SavedData implements JournalDependent {
     public static final String FILE = "mic_rtsim_bases";
 
     /** Cell size in blocks (PLACEHOLDER). */
@@ -81,6 +82,16 @@ public final class BaseTracker extends SavedData {
 
     public static BaseTracker get(MinecraftServer server) {
         return server.overworld().getDataStorage().computeIfAbsent(FACTORY, FILE);
+    }
+
+    /**
+     * The dwell counters are the dedup of BASE MARKED and UNMARKED (a base is marked once, by the counter that reached
+     * {@link #MARK}); the journal's file must not reach disk ahead of this file. Vanilla clears the dirty flag before a
+     * write that fails, so the next world save marks it again here (docs/choices-journal-barrier.md U-g3, U-g1).
+     */
+    @Override
+    public void mic_rtsim$remark() {
+        setDirty();
     }
 
     public long marks() {

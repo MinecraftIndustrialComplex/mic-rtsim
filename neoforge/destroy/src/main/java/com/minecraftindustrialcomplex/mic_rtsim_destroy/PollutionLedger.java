@@ -7,6 +7,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.industry.IndustryApi;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.IndustryPlugin;
 import com.minecraftindustrialcomplex.mic_rtsim.journal.DurableOpRing;
 import com.minecraftindustrialcomplex.mic_rtsim.journal.DurableOpRings;
+import com.minecraftindustrialcomplex.mic_rtsim.journal.JournalDependent;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.HolderLookup;
 import net.minecraft.nbt.CompoundTag;
@@ -32,7 +33,7 @@ import java.util.TreeMap;
  * each total as a deposit the district produces (choice Q9), so the engine learns its rate as an output of
  * the box; a reconcile's delta writes the replayed pollution back ({@link DestroyPlugin#applyDeposit}).
  */
-public final class PollutionLedger extends SavedData {
+public final class PollutionLedger extends SavedData implements JournalDependent {
     public static final String FILE = "mic_rtsim_destroy_pollution";
 
     /** District id to (pollution type id to cumulative change). */
@@ -182,6 +183,12 @@ public final class PollutionLedger extends SavedData {
     }
 
     // ---- NBT ------------------------------------------------------------------------------------
+
+    /** Vanilla cleared the dirty flag before a write that failed: the next world save writes it again (docs/choices-journal-barrier.md U-g1). */
+    @Override
+    public void mic_rtsim$remark() {
+        setDirty();
+    }
 
     @Override
     public CompoundTag save(CompoundTag tag, HolderLookup.Provider registries) {
