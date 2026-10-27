@@ -1920,7 +1920,7 @@ public final class Districts {
                 BlockPos canon = canonicalInventory(level, p);
                 if (canon != null) {
                     candidates.add(new Candidate(canon, 0));
-                    inventoryJoin(scan, p, canon, excluded, reach);
+                    inventoryJoin(level, scan, p, canon, excluded, reach);
                 }
             }
             for (IndustryPlugin plugin : IndustryApi.PLUGINS)
@@ -1928,7 +1928,7 @@ public final class Districts {
                     BlockPos canon = canonicalInventory(level, pos);
                     if (canon != null) {
                         candidates.add(new Candidate(canon, kind));
-                        inventoryJoin(scan, pos, canon, excluded, reach);
+                        inventoryJoin(level, scan, pos, canon, excluded, reach);
                     }
                 });
             boolean station = false;
@@ -2022,8 +2022,18 @@ public final class Districts {
      * J3 (SECTIONS.md §2.1, choice SC2): an inventory whose canonical position (a vault's controller, a double
      * chest's lower half) lies in another chunk than the block that leads to it joins the two chunks.
      */
-    private static void inventoryJoin(Scan scan, BlockPos at, BlockPos canon, LongOpenHashSet excluded, java.util.function.LongConsumer reach) {
-        long a = ChunkPos.asLong(at.getX() >> 4, at.getZ() >> 4), b = ChunkPos.asLong(canon.getX() >> 4, canon.getZ() >> 4);
+    private static void inventoryJoin(ServerLevel level, Scan scan, BlockPos at, BlockPos canon, LongOpenHashSet excluded, java.util.function.LongConsumer reach) {
+        join(scan, at, canon, excluded, reach);
+        // A vanilla double chest across a chunk border is two inventories, one in each chunk (RP-215), and the chunks
+        // are one district all the same: a half in a chunk with no other industry would be left out of it, or in
+        // another district, and the district's stock would be half of what the chest holds. {@code canon}'s chunk is loaded.
+        BlockPos far = StockAccess.splitPair(level.getBlockState(canon), canon);
+        if (far != null)
+            join(scan, canon, far, excluded, reach);
+    }
+
+    private static void join(Scan scan, BlockPos at, BlockPos to, LongOpenHashSet excluded, java.util.function.LongConsumer reach) {
+        long a = ChunkPos.asLong(at.getX() >> 4, at.getZ() >> 4), b = ChunkPos.asLong(to.getX() >> 4, to.getZ() >> 4);
         if (a == b)
             return;
         scan.joins.add(new long[] {a, b});
@@ -2136,6 +2146,10 @@ public final class Districts {
             return true;
         BlockPos p = be.getBlockPos();
         BlockState s = be.getBlockState();
+        // A vanilla double chest's half across a chunk border has an item handler (its own slots, StockAccess.splitHalf);
+        // the chest's capability would read the other half's chunk.
+        if (StockAccess.splitPair(s, p) != null)
+            return true;
         if (level.getCapability(Capabilities.ItemHandler.BLOCK, p, s, be, null) != null
                 || level.getCapability(Capabilities.FluidHandler.BLOCK, p, s, be, null) != null
                 || level.getCapability(Capabilities.EnergyStorage.BLOCK, p, s, be, null) != null)
@@ -2206,7 +2220,8 @@ public final class Districts {
 
     /**
      * The position whose capability is the whole inventory at {@code pos}: a plugin's controller (a
-     * vault's), a double chest's lower half, else {@code pos}. Null when {@code pos}, or the position it
+     * vault's), a double chest's lower half (a vanilla one's two halves in two chunks are two inventories, each its
+     * own, RP-215), else {@code pos}. Null when {@code pos}, or the position it
      * leads to, is in a chunk that is not loaded: nothing here ever loads a chunk. One function for every
      * caller (tagged stock, packager targets, ports), so an inventory is counted once.
      */
@@ -2227,7 +2242,11 @@ public final class Districts {
         }
         if (result == null) {
             BlockState s = be.getBlockState();
-            if (s.getBlock() instanceof ChestBlock && s.hasProperty(ChestBlock.TYPE) && s.getValue(ChestBlock.TYPE) != ChestType.SINGLE) {
+            if (StockAccess.splitPair(s, pos) != null) {
+                // A vanilla double chest across a chunk border: each half is its own inventory (RP-215), so a command
+                // at it names the chunk it changes. The detection still joins the two chunks (inventoryJoin).
+                result = pos.immutable();
+            } else if (s.getBlock() instanceof ChestBlock && s.hasProperty(ChestBlock.TYPE) && s.getValue(ChestBlock.TYPE) != ChestType.SINGLE) {
                 BlockPos other = pos.relative(ChestBlock.getConnectedDirection(s));
                 result = other.asLong() < pos.asLong() ? other.immutable() : pos.immutable();
             } else {
@@ -2247,8 +2266,10 @@ public final class Districts {
      * The boundary inventory at {@code pos} as a detection describes it, {@code kind} the candidate's own kind
      * bits; null when it is in a chunk that is not loaded. Never loads a chunk, nor waits for one (R2-11): an
      * inventory with a part in a chunk that is not loaded (a Create vault, a double chest, across a chunk still
-     * loading) takes its shape from its plugin ({@link IndustryPlugin#describe}) or, a double chest, from its
-     * loaded half, not from its capability, which would read that part. Public for the GameTests.
+     * loading) takes its shape from its plugin ({@link IndustryPlugin#describe}) or, a mod's double chest, from its
+     * loaded half, not from its capability, which would read that part. A vanilla double chest's halves in two chunks
+     * are each described as their own 27 slots, whether the other chunk is loaded or not (RP-215). Public for the
+     * GameTests.
      */
     public static District.Inventory describeInventory(ServerLevel level, BlockPos pos, int kind) {
         if (level.getChunkSource().getChunkNow(pos.getX() >> 4, pos.getZ() >> 4) == null)
@@ -2265,8 +2286,9 @@ public final class Districts {
                     return new District.Inventory(0, pos, kind | (int) shape[0], (int) shape[1], shape[2], shape[3]);
             }
             if (!whole) {
-                // A double chest: the pair's slots, as its handler (a CompoundContainer of the two halves,
-                // both the same block) counts them; anything else as an inventory in a chunk not loaded.
+                // A mod's double chest (a vanilla one's halves in two chunks are never here): the pair's slots, as its
+                // handler (a CompoundContainer of the two halves, both the same block) counts them; anything else
+                // as an inventory in a chunk not loaded.
                 BlockEntity be = loadedBlockEntity(level, pos);
                 if (be != null && StockAccess.chestPair(be) != null && be instanceof net.minecraft.world.Container c)
                     return new District.Inventory(0, pos, kind | IndRecords.Inventory.KIND_ITEMS, 2 * c.getContainerSize(), 0, 0);

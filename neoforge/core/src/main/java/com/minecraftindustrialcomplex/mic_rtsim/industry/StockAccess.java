@@ -3,7 +3,10 @@ package com.minecraftindustrialcomplex.mic_rtsim.industry;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.Container;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.ChestBlock;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
@@ -15,6 +18,7 @@ import net.neoforged.neoforge.fluids.FluidStack;
 import net.neoforged.neoforge.fluids.capability.IFluidHandler;
 import net.neoforged.neoforge.items.IItemHandler;
 import net.neoforged.neoforge.items.ItemHandlerHelper;
+import net.neoforged.neoforge.items.wrapper.InvWrapper;
 
 /**
  * Reads and writes one boundary inventory. The default ({@link #capabilities}) goes through NeoForge's
@@ -48,14 +52,16 @@ public interface StockAccess {
 
     /**
      * Whether reading {@code be}'s capabilities reads only loaded (FULL) chunks, {@code be}'s own chunk being
-     * loaded (R2-11): a double chest's other half is (NeoForge's chest item handler is the pair's, and
-     * {@code ChestBlock.getContainer} reads the other half through {@code Level.getBlockState}, which loads its
-     * chunk, or waits for it while it loads), and no plugin says a part is not
-     * ({@link IndustryPlugin#partsLoaded}). Loads nothing.
+     * loaded (R2-11): a double chest's other half is, for a mod's chest (NeoForge's chest item handler is the pair's,
+     * and {@code ChestBlock.getContainer} reads the other half through {@code Level.getBlockState}, which loads its
+     * chunk, or waits for it while it loads), and no plugin says a part is not ({@link IndustryPlugin#partsLoaded}).
+     * A vanilla chest's halves in two chunks are each their own inventory ({@link #splitHalf}), which reads nothing of
+     * the other chunk. Loads nothing.
      */
     static boolean partsLoaded(ServerLevel level, BlockEntity be) {
         BlockPos other = chestPair(be);
-        if (other != null && level.getChunkSource().getChunkNow(other.getX() >> 4, other.getZ() >> 4) == null)
+        if (other != null && !vanillaChest(be.getBlockState())
+                && level.getChunkSource().getChunkNow(other.getX() >> 4, other.getZ() >> 4) == null)
             return false;
         for (IndustryPlugin plugin : IndustryApi.PLUGINS)
             if (!plugin.partsLoaded(level, be))
@@ -65,22 +71,61 @@ public interface StockAccess {
 
     /** A double chest's other half (vanilla's {@code ChestBlock}, and a mod's that extends it), else null. */
     static BlockPos chestPair(BlockEntity be) {
-        return chestPair(be.getBlockState(), be.getBlockPos());
+        BlockState s = be.getBlockState();
+        if (!(s.getBlock() instanceof ChestBlock) || !s.hasProperty(ChestBlock.TYPE) || s.getValue(ChestBlock.TYPE) == ChestType.SINGLE)
+            return null;
+        return be.getBlockPos().relative(ChestBlock.getConnectedDirection(s));
+    }
+
+    /** A vanilla chest or trapped chest, exactly: a mod's {@code ChestBlock} subclass keeps the handler it registers. */
+    static boolean vanillaChest(BlockState s) {
+        Block b = s.getBlock();
+        return b == Blocks.CHEST || b == Blocks.TRAPPED_CHEST;
     }
 
     /**
-     * {@link #chestPair(BlockEntity)} from the half's state and position: one {@code instanceof} for any block that is
-     * not a chest, no block entity read. What a reconcile or a transfer into a chest has to know to find the other
-     * chunk its pair's handler writes into (RP-215).
+     * The other half of a vanilla double chest whose two halves are in different chunks, else null (RP-215). NeoForge's
+     * chest item handler is the pair's, so a command at one half would change the other half too, in a chunk the
+     * command does not name and the engine's op does not note. Each half of such a pair is therefore its own inventory
+     * of its own 27 slots ({@link #splitHalf}); a pair inside one chunk stays one inventory, as that chunk's one write
+     * covers it. One reference comparison for any block that is not a vanilla chest, and no block entity read.
      */
-    static BlockPos chestPair(BlockState s, BlockPos pos) {
-        if (!(s.getBlock() instanceof ChestBlock) || !s.hasProperty(ChestBlock.TYPE) || s.getValue(ChestBlock.TYPE) == ChestType.SINGLE)
+    static BlockPos splitPair(BlockState s, BlockPos pos) {
+        if (!vanillaChest(s) || s.getValue(ChestBlock.TYPE) == ChestType.SINGLE)
             return null;
-        return pos.relative(ChestBlock.getConnectedDirection(s));
+        BlockPos other = pos.relative(ChestBlock.getConnectedDirection(s));
+        return (other.getX() >> 4) == (pos.getX() >> 4) && (other.getZ() >> 4) == (pos.getZ() >> 4) ? null : other;
+    }
+
+    /**
+     * The handler of a vanilla double chest's half whose other half is in another chunk: that half's own slots, which
+     * reads and writes nothing of the other chunk, loaded or not. Null for any other position, whose handler is its
+     * capability's, and for a position whose chunk is not loaded (nothing here loads one).
+     */
+    static IItemHandler splitHalf(ServerLevel level, BlockPos pos) {
+        LevelChunk chunk = level.getChunkSource().getChunkNow(pos.getX() >> 4, pos.getZ() >> 4);
+        if (chunk == null || splitPair(chunk.getBlockState(pos), pos) == null)
+            return null;
+        return chunk.getBlockEntity(pos) instanceof Container half ? new InvWrapper(half) : null;
+    }
+
+    /**
+     * After a write into the half at {@code pos} through {@link #splitHalf}: a comparator by the other half reads the
+     * pair's fullness, and the half's own change reaches only the comparators beside it, where the pair's handler
+     * would have changed both. Marks nothing unsaved: the other half did not change.
+     */
+    static void splitWritten(ServerLevel level, BlockPos pos) {
+        BlockState s = level.getBlockState(pos);
+        BlockPos far = splitPair(s, pos);
+        if (far != null && level.getChunkSource().getChunkNow(far.getX() >> 4, far.getZ() >> 4) != null)
+            level.updateNeighbourForOutputSignal(far, s.getBlock());
     }
 
     /** The item handler at a position, the unsided one first, else the first side that has one. */
     static IItemHandler items(ServerLevel level, BlockPos pos) {
+        IItemHandler half = splitHalf(level, pos);
+        if (half != null)
+            return half;
         IItemHandler h = level.getCapability(Capabilities.ItemHandler.BLOCK, pos, null);
         if (h != null)
             return h;
@@ -148,7 +193,10 @@ public interface StockAccess {
                 return switch (good.cls()) {
                     case 'i' -> {
                         IItemHandler h = items(level, inv.pos());
-                        yield h == null ? 0 : applyItems(industry, h, industry.goods().itemPrototype(good), delta);
+                        long done = h == null ? 0 : applyItems(industry, h, industry.goods().itemPrototype(good), delta);
+                        if (done != 0)
+                            splitWritten(level, inv.pos());
+                        yield done;
                     }
                     case 'f' -> {
                         IFluidHandler h = fluids(level, inv.pos());

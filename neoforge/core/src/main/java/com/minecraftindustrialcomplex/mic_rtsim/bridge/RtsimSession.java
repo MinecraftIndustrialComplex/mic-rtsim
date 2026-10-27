@@ -1070,9 +1070,8 @@ public final class RtsimSession {
     }
 
     /**
-     * The op id a record a chunk carries is pending for: a COMMAND_RESULT's, the engine op of an
-     * IND_CHAIN_PACKAGE an IND_WRITE_CHAIN journaled (SECTIONS.md §2.5), or an IND_RECONCILE_RESULT's, which the
-     * chunk of the other half of a double chest carries (RP-215).
+     * The op id a record a chunk carries is pending for: a COMMAND_RESULT's, or the engine op of an
+     * IND_CHAIN_PACKAGE an IND_WRITE_CHAIN journaled (SECTIONS.md §2.5).
      */
     public static long pendingOp(byte[] record) {
         ByteBuffer b = ByteBuffer.wrap(record).order(com.minecraftindustrialcomplex.mic_rtsim.boundary.Layout.ORDER);
@@ -1080,9 +1079,6 @@ public final class RtsimSession {
         if (kind == com.minecraftindustrialcomplex.mic_rtsim.industry.IndRecords.IND_CHAIN_PACKAGE
                 && record.length >= com.minecraftindustrialcomplex.mic_rtsim.industry.IndRecords.ChainPackage.OP_ID + 8)
             return b.getLong(com.minecraftindustrialcomplex.mic_rtsim.industry.IndRecords.ChainPackage.OP_ID);
-        if (kind == com.minecraftindustrialcomplex.mic_rtsim.industry.IndRecords.IND_RECONCILE_RESULT
-                && record.length >= com.minecraftindustrialcomplex.mic_rtsim.industry.IndRecords.ReconcileResult.OP_ID + 8)
-            return b.getLong(com.minecraftindustrialcomplex.mic_rtsim.industry.IndRecords.ReconcileResult.OP_ID);
         return record.length >= Obs.CommandResult.OP_ID + 8 ? b.getLong(Obs.CommandResult.OP_ID) : 0;
     }
 
@@ -1125,35 +1121,11 @@ public final class RtsimSession {
     }
 
     void carryInChunk(net.minecraft.world.level.chunk.LevelChunk chunk, ByteBuffer commandResult) {
-        carryRecordInChunk(chunk, commandResult, commandResult.getLong(Obs.CommandResult.OP_ID), commandResult.getLong(Obs.OBS_SEQ));
-    }
-
-    /**
-     * A record journaled for engine op {@code opId} (sequence {@code seq}) carried in {@code chunk} until the engine
-     * acknowledges it: a COMMAND_RESULT, or the IND_RECONCILE_RESULT a reconcile also carries in the chunk of the
-     * other half of a double chest (RP-215).
-     */
-    public void carryRecordInChunk(net.minecraft.world.level.chunk.LevelChunk chunk, ByteBuffer record, long opId, long seq) {
         com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords old = chunk.getData(RtsimAttachments.PENDING);
-        chunk.setData(RtsimAttachments.PENDING, carried(old, java.util.List.of(record.array())));
+        chunk.setData(RtsimAttachments.PENDING, carried(old, java.util.List.of(commandResult.array())));
         chunk.setUnsaved(true);
         journalData.chunks().dependsOn(chunk); // the journal's next file waits for this chunk's (R21)
-        dropFromChunkWhenAcked(chunk, opId, seq);
-    }
-
-    /** GameTests: chunks (by position) whose carried records an acknowledgement does not drop. */
-    private static final java.util.Set<Long> KEPT_FOR_TEST = java.util.concurrent.ConcurrentHashMap.newKeySet();
-
-    /**
-     * GameTests: while a chunk is kept, an acknowledgement does not drop the records it carries. The stub engine
-     * acknowledges whenever a world save asks it to (an autosave, another test's), so a crash emulation that needs
-     * its carried record to survive until its resend keeps the chunk, and lets it go in its cleanup.
-     */
-    public static void keepCarriedForTest(net.minecraft.world.level.ChunkPos pos, boolean keep) {
-        if (keep)
-            KEPT_FOR_TEST.add(pos.toLong());
-        else
-            KEPT_FOR_TEST.remove(pos.toLong());
+        dropFromChunkWhenAcked(chunk, commandResult.getLong(Obs.CommandResult.OP_ID), commandResult.getLong(Obs.OBS_SEQ));
     }
 
     void dropFromChunkWhenAcked(net.minecraft.world.level.chunk.LevelChunk chunk, long opId, long seq) {
@@ -1164,8 +1136,6 @@ public final class RtsimSession {
             net.minecraft.world.level.chunk.LevelChunk c = level == null ? null : level.getChunkSource().getChunkNow(pos.x, pos.z);
             if (c == null)
                 return; // unloaded: it is journaled again when it loads
-            if (!KEPT_FOR_TEST.isEmpty() && KEPT_FOR_TEST.contains(pos.toLong()))
-                return;
             com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords p = c.getExistingDataOrNull(RtsimAttachments.PENDING);
             if (p == null)
                 return;
