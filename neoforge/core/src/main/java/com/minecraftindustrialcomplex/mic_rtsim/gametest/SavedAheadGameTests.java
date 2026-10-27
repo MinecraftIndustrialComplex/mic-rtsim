@@ -6,6 +6,8 @@ import com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs;
 import com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession;
 import com.minecraftindustrialcomplex.mic_rtsim.engine.ScriptedEngine;
 import com.minecraftindustrialcomplex.mic_rtsim.growth.HouseBuilder;
+import com.minecraftindustrialcomplex.mic_rtsim.industry.District;
+import com.minecraftindustrialcomplex.mic_rtsim.industry.Districts;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.IndRecords;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.IndustryAttachments;
 import com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords;
@@ -1175,12 +1177,71 @@ public final class SavedAheadGameTests {
                     check("P's goods dropped, once: " + diamonds + " diamonds, " + chests + " chests", diamonds == 100 && chests == 1);
                     check("Q's goods did not: " + emeralds + " lying, " + inQ + " in Q", emeralds == 0 && inQ == 30);
                     check("Q is a single chest now: " + left, left.is(Blocks.CHEST) && left.getValue(ChestBlock.TYPE) == ChestType.SINGLE);
+                    // The goods the engine booked as dropped but the world kept rejoin the sim at the next detection: it finds
+                    // Q a chest of its own, an inventory of 27 slots at its own position.
+                    District.Inventory survivor = Districts.describeInventory(level, q, 0);
+                    record(t, "the surviving chest's inventory at a detection", survivor);
+                    check("Q leads to itself", q.equals(Districts.canonicalInventory(level, q)));
+                    check("Q describes as an inventory of 27 slots: " + survivor, survivor != null
+                            && survivor.kind() == IndRecords.Inventory.KIND_ITEMS && survivor.itemSlots() == 27);
                 })
                 .thenExecute(() -> {
                     level.getEntitiesOfClass(ItemEntity.class, around).forEach(Entity::discard);
                     dropCarried(level.getChunk(c.x, c.z), op);
                     if (level.getBlockEntity(q) instanceof Container qc)
                         qc.clearContent();
+                    fill(level, p.getX() - 4, y - 1, p.getZ() - 4, q.getX() + 4, y + 3, p.getZ() + 4, Blocks.AIR.defaultBlockState());
+                    level.setChunkForced(c.x, c.z, false);
+                })
+                .thenSucceed();
+    }
+
+    /**
+     * The same break from the other side (RP-215, slice U-f's open question on a same-chunk pair): the engine dooms only
+     * the pair's lower half P, so a break of the higher half Q reaches it as a block with no inventory. The world drops
+     * what Q itself holds, 30 emeralds, and the chest; P keeps its 100 diamonds, now a single chest. As for P's break,
+     * nothing is spawned beyond what the world held: no dupe and no loss, whichever half breaks.
+     */
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 2400, batch = "mic_rtsim_saved_ahead")
+    public static void aSimBreakOfAPairsSecondHalfDropsOnlyThatHalf(GameTestHelper helper) {
+        String t = "aSimBreakOfAPairsSecondHalfDropsOnlyThatHalf";
+        ServerLevel level = helper.getLevel();
+        BlockPos o = helper.absolutePos(BlockPos.ZERO);
+        ChunkPos c = new ChunkPos((o.getX() >> 4) + 7130, (o.getZ() >> 4) + 6810);
+        int y = 180;
+        BlockPos p = new BlockPos(c.getMinBlockX() + 8, y, c.getMinBlockZ() + 8), q = p.east();
+        AABB around = new AABB(p).inflate(6);
+        BlockState qState = Blocks.CHEST.defaultBlockState().setValue(ChestBlock.FACING, Direction.NORTH).setValue(ChestBlock.TYPE, ChestType.RIGHT);
+        long op = engineOp(), district = engineOp();
+        helper.startSequence()
+                .thenExecute(() -> level.setChunkForced(c.x, c.z, true))
+                .thenWaitUntil(paced(() -> check("C and the entities around it load", loaded(level, c) && entitiesLoadedAround(level, c))))
+                .thenExecute(() -> {
+                    doublePair(level, p, q, y, Direction.NORTH, ChestType.LEFT);
+                    fill(level, p.getX() - 4, y - 1, p.getZ() - 4, q.getX() + 4, y - 1, p.getZ() + 4, Blocks.STONE.defaultBlockState());
+                    half(level, p).setItem(0, new ItemStack(Items.DIAMOND, 64));
+                    half(level, p).setItem(1, new ItemStack(Items.DIAMOND, 36));
+                    half(level, q).setItem(0, new ItemStack(Items.EMERALD, 30));
+                    IndustryTestKit.reconcile(op, district, 1, level, c.x, c.z, List.of(),
+                            List.of(new IndustryTestKit.Destroy(q, BlockStateParser.serialize(qState))));
+                })
+                .thenWaitUntil(paced(() -> check("the drops are in the world", lying(level, around, Items.EMERALD) > 0)))
+                .thenIdle(40)
+                .thenExecute(() -> {
+                    int diamonds = lying(level, around, Items.DIAMOND), emeralds = lying(level, around, Items.EMERALD), chests = lying(level, around, Items.CHEST);
+                    BlockState left = level.getBlockState(p);
+                    int inP = level.getBlockEntity(p) instanceof Container pc ? count(pc, Items.DIAMOND) : -1;
+                    record(t, "diamonds, emeralds and chests lying, diamonds left in P, P's type", diamonds + ", " + emeralds + ", " + chests + ", " + inP + ", " + left.getValue(ChestBlock.TYPE));
+                    check("the reconcile applied", IndustryTestKit.commandResults(op).equals(List.of(Obs.CommandResult.APPLIED)));
+                    check("Q's goods dropped, once: " + emeralds + " emeralds, " + chests + " chests", emeralds == 30 && chests == 1);
+                    check("P's goods did not: " + diamonds + " lying, " + inP + " in P", diamonds == 0 && inP == 100);
+                    check("P is a single chest now: " + left, left.is(Blocks.CHEST) && left.getValue(ChestBlock.TYPE) == ChestType.SINGLE);
+                })
+                .thenExecute(() -> {
+                    level.getEntitiesOfClass(ItemEntity.class, around).forEach(Entity::discard);
+                    dropCarried(level.getChunk(c.x, c.z), op);
+                    if (level.getBlockEntity(p) instanceof Container pc)
+                        pc.clearContent();
                     fill(level, p.getX() - 4, y - 1, p.getZ() - 4, q.getX() + 4, y + 3, p.getZ() + 4, Blocks.AIR.defaultBlockState());
                     level.setChunkForced(c.x, c.z, false);
                 })
