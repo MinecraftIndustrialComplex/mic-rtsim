@@ -21,7 +21,6 @@ import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.phys.Vec3;
-import net.neoforged.neoforge.capabilities.Capabilities;
 import net.neoforged.neoforge.items.IItemHandler;
 import net.neoforged.neoforge.items.ItemHandlerHelper;
 
@@ -314,28 +313,13 @@ final class CommandDispatcher implements Handover.CommandSink {
             session.dropFromChunkWhenAcked(chunk, opId, dup.getLong(Obs.OBS_SEQ));
             return;
         }
-        IItemHandler handler = level.getCapability(Capabilities.ItemHandler.BLOCK, pos, null);
+        // StockAccess.items, as the sweeps and the reconciles read an inventory: a vanilla double chest's half in another
+        // chunk than its other half is its own 27 slots, so the stack goes into this chunk only, which carries the result
+        // (RP-215). The pair's capability would put it into either half and read the other half's chunk.
+        IItemHandler handler = com.minecraftindustrialcomplex.mic_rtsim.industry.StockAccess.items(level, pos);
         if (handler == null) {
             transferResult(cmdSeq, opId, Obs.CommandResult.FAILED, now, level, pos);
             return;
-        }
-        // A double chest across a chunk border (RP-215): the pair's handler puts the stack into either half, so the
-        // other half's chunk carries the result too, and refuses the op as the container's own does. The handler
-        // above read the half through Level.getBlockState, which loaded its chunk. Before any answer that depends on
-        // what the container holds: FAILED for a full chest would let the engine send the stack again under a new op.
-        net.minecraft.world.level.chunk.LevelChunk half = null;
-        net.minecraft.core.BlockPos pair = com.minecraftindustrialcomplex.mic_rtsim.industry.StockAccess.chestPair(level.getBlockState(pos), pos);
-        if (pair != null && ((pair.getX() >> 4) != (pos.getX() >> 4) || (pair.getZ() >> 4) != (pos.getZ() >> 4))) {
-            half = level.getChunkSource().getChunkNow(pair.getX() >> 4, pair.getZ() >> 4);
-            if (half == null) {
-                transferResult(cmdSeq, opId, Obs.CommandResult.NOT_LOADED, now, level, pos);
-                return;
-            }
-            if (RtsimSession.chunkCarriesOp(half, opId)) {
-                ByteBuffer dup = transferResult(cmdSeq, opId, Obs.CommandResult.DUPLICATE_OP, now, level, pos);
-                session.dropFromChunkWhenAcked(half, opId, dup.getLong(Obs.OBS_SEQ));
-                return;
-            }
         }
         if (count > item.getDefaultMaxStackSize()) {
             // One stack per command, so the simulated insert below is exact; the engine splits larger ones.
@@ -354,10 +338,8 @@ final class CommandDispatcher implements Handover.CommandSink {
             MicRtsim.LOGGER.warn("[mic_rtsim] transfer {} left {} x {} over at {}; dropped there", opId, rest.getCount(), item, pos);
             net.minecraft.world.Containers.dropItemStack(level, pos.getX() + 0.5, pos.getY() + 1, pos.getZ() + 0.5, rest);
         }
-        ByteBuffer applied = transferResult(cmdSeq, opId, Obs.CommandResult.APPLIED, now, level, pos);
-        session.carryInChunk(chunk, applied);
-        if (half != null)
-            session.carryInChunk(half, applied);
+        com.minecraftindustrialcomplex.mic_rtsim.industry.StockAccess.splitWritten(level, pos);
+        session.carryInChunk(chunk, transferResult(cmdSeq, opId, Obs.CommandResult.APPLIED, now, level, pos));
     }
 
     /**
