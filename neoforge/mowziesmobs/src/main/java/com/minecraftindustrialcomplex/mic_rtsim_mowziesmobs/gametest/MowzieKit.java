@@ -344,7 +344,7 @@ public final class MowzieKit {
     public static void acknowledge() {
         ScriptedEngine engine = RtsimTests.engine();
         engine.awaitIdle();
-        engine.requestSaveAtNextStep();
+        RtsimTests.acknowledge(RtsimTests.session(), engine);
     }
 
     /**

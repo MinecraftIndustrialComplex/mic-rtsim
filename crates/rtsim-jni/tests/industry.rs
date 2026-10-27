@@ -162,23 +162,48 @@ fn bars(j: &Java, ids: &Ids) -> i64 {
 /// the slice R review, RP-259). The save is taken in the step that applies `through`: right before
 /// the first journaled record past it, or at the step's end. Ticking until it was durable ran as
 /// many world ticks as the IO lane took (1 to 67 measured, more alone than under parallel load),
-/// so the crash tests' worlds, journals and replays moved with the load. Panics after 60 s of
-/// wall clock instead of spinning for ever: a hung test binary holds the shared cargo lock.
+/// so the crash tests' worlds, journals and replays moved with the load. The pages are durable
+/// when the engine has confirmed the save, on the bridge's WORLD_SAVED for it (the journal's file
+/// holds `through`, P29); it goes in the first hand-over, ahead of the save it confirms, which
+/// the engine remembers (U-h2). Panics after 60 s of wall clock instead of spinning for ever: a
+/// hung test binary holds the shared cargo lock.
 fn mc_tick_until_durable(j: &mut Java, through: u64) {
+    lockstep_until_saved(j, through, true);
+}
+
+/// Takes the step that applies `through` and waits for the pages to hold it, without running
+/// the world to the save's end: the world does not move while the IO lane works. The save is
+/// committed, pending: no WORLD_SAVED comes for it (`confirmed`: it does, as the bridge's
+/// would once the journal's file is written, and the wait is for the acknowledgement).
+fn lockstep_until_saved(j: &mut Java, through: u64, confirmed: bool) {
     use std::sync::atomic::Ordering::Acquire;
+    if confirmed {
+        j.written_through = Some(through);
+        j.world_saved(through);
+    }
     let deadline = std::time::Instant::now() + Duration::from_secs(60);
     loop {
         j.mc_tick();
         if j.e.stats.applied_through.load(Acquire) >= through {
             break;
         }
-    }
-    while j.e.durable_obs_seq() < through {
         assert!(
             std::time::Instant::now() < deadline,
-            "the pages never became durable: waited 60 s for durable_obs_seq to reach the \
-             requested save; durable_obs_seq {}, requested through {through}",
+            "the engine never applied the observations through {through}"
+        );
+    }
+    let at = |j: &Java| {
+        if confirmed {
             j.e.durable_obs_seq()
+        } else {
+            j.e.committed_obs_seq()
+        }
+    };
+    while at(j) < through {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the pages never reached the disk through {through}: {}",
+            at(j)
         );
         std::thread::sleep(Duration::from_millis(1));
     }
@@ -2268,6 +2293,8 @@ fn a_station_exchange_whose_trains_save_was_lost_is_applied_again_after_a_restar
     // Session 1: the pages P1 through the journal's end at once, records right behind them.
     let p1 = j.next_obs - 1;
     j.e.request_save(p1);
+    j.written_through = Some(p1);
+    j.world_saved(p1);
     fillers(&mut j, 40);
     let mut cargo_before = None;
     while cargo_before.is_none() || j.e.durable_obs_seq() < p1 {
@@ -2372,18 +2399,20 @@ fn a_station_exchange_whose_trains_save_was_lost_is_applied_again_after_a_restar
 /// journal file, whose `lastAppliedCmdSeq` is past X's command (no SavedData write orders the
 /// journal's file after a failed one, residual 10 of docs/replay-gate.md 9.6 then). Slice U-g holds
 /// the journal's file at the save before, W0, when a write fails (docs/choices-journal-barrier.md
-/// U-g1), so the restart here has W0's journal (its `lastAppliedCmdSeq` below X's command) and the
-/// pages of the failed save, which no SavedData write orders. The control restarts the same pages
-/// with W1 whole (J1). `held_journal` below runs the same world with both journals side by side.
+/// U-g1), so the restart here has W0's journal (its `lastAppliedCmdSeq` below X's command). The
+/// control restarts the same pages with W1 whole (J1). `held_journal` below runs the same world
+/// with both journals side by side.
 ///
-/// Written: the start keeps X's copy in the pages' outbox, the ring from the tracks file does not
-/// hold X, so X is sent again and applied once: the train loaded as the control's, the books close
-/// (B, exact). Answered: S is inside the pages, so there is no copy to send, X is never sent again,
-/// and J4's train lacks X's load, which both restarts' books count: a loss, with or without the
-/// hold. That is P29, the engine's pages ahead of the world save, and slice U-h's (residual 10, which
-/// points at residual 11; docs/choices-leg-purge.md LP12). An op decided past the pages is decided
-/// again and applied by the ring that came back without it (RP-311).
-fn exchange_decided_before_the_pages_with_its_trains_save_lost(tag: &str, written: bool) {
+/// Slice U-h (P29, LP12): the held journal's WORLD_SAVED never comes (it reports `min(through,
+/// writtenThrough)`), so W1's pages are a pending generation, and W0's save, the one before, is
+/// confirmed. The start from W0's file rolls W1's pages back to W0's; the world is W0's whole
+/// (`held_journal` has the reason). In both cases X is decided again from W0's pages under the
+/// same op, sent under a new sequence (not resent from an outbox) and applied once: the train
+/// loaded as the control's, the books close. Before U-h the answered case was lost, with or
+/// without the hold: its pages were acknowledged at the commit, S inside them, so X was never sent
+/// again; the written case was exact by the outbox's copy. The control's start finds W1's journal
+/// holds the pending generation and confirms it.
+fn exchange_decided_before_the_pages_with_its_trains_save_failed(tag: &str, written: bool) {
     let cfg = IronLine {
         seed: 11,
         days: 10,
@@ -2396,8 +2425,13 @@ fn exchange_decided_before_the_pages_with_its_trains_save_lost(tag: &str, writte
     let mut j = iron_java(&dir, cfg);
     j.mc_run_until(day(3.0));
     // W0: the journal's file of the last save that wrote all its files, the one a failed write of
-    // the next save holds the journal at (U-g1).
+    // the next save holds the journal at (U-g1), and the engine's save for it, confirmed (its
+    // WORLD_SAVED came).
     let jsave0 = j.world_save();
+    let msave0 = j.mc().saved();
+    let w0 = j.next_obs - 1;
+    j.e.request_save(w0);
+    mc_tick_until_durable(&mut j, w0);
     let paged = j.ind_commands.len();
     // (cmdSeq, the delta) of each station exchange Java applied from `from` on.
     let exchanges = |j: &Java, from: usize| -> Vec<(u64, rtsim_industry::cmd::CarriageDelta)> {
@@ -2426,8 +2460,10 @@ fn exchange_decided_before_the_pages_with_its_trains_save_lost(tag: &str, writte
     let cargo_before = cargo(&j);
     let p = j.next_obs - 1;
     if written {
+        // The save for W1: its journal's file is held (the tracks write failed), so its
+        // WORLD_SAVED never comes and the pages stay a pending generation.
         j.e.request_save(p);
-        mc_tick_until_durable(&mut j, p);
+        lockstep_until_saved(&mut j, p, false);
     } else {
         j.mc_tick();
     }
@@ -2453,45 +2489,53 @@ fn exchange_decided_before_the_pages_with_its_trains_save_lost(tag: &str, writte
     if !written {
         let w = j.next_obs - 1;
         j.e.request_save(w);
-        mc_tick_until_durable(&mut j, w);
+        lockstep_until_saved(&mut j, w, false);
     }
-    let pages = j.e.durable_obs_seq();
+    let pages = j.e.committed_obs_seq();
+    assert_eq!(j.e.durable_obs_seq(), w0, "W1's pages are not confirmed");
     if written {
         assert!(pages == p && s > pages, "the pages end before S");
     } else {
         assert!(pages >= s, "the pages hold S");
     }
     j.mc_run_until(Tick(73_500));
-    assert_eq!(j.e.durable_obs_seq(), pages, "no page save past them");
+    assert_eq!(j.e.committed_obs_seq(), pages, "no page save past them");
     assert_eq!(cargo(&j), cargo_live, "no other exchange before the crash");
     let mut mc = j.mc.take().unwrap();
     j.e.close(false, Duration::from_secs(5)).unwrap();
-    // `journal`: the journal's file of the restart; `resent`: X's copy waits in the outbox the start
-    // restores, and X is sent again once (the start trims the outbox by `lastAppliedCmdSeq`, which
-    // takes X's copy when the journal's file is past X's command).
-    let run = |dir: &std::path::PathBuf, mc: FakeWorld, journal: WorldSave, resent: bool| -> Java {
-        let e = engine_with(dir, 256 * 1024, |c| c.industry_seed = Some(cfg.seed));
-        let mut j = restart(e, journal, mc, MODULE_INDUSTRY);
-        let outbox = j.e.with_industry(|_, s| s.outbox);
-        if resent {
-            assert!(outbox >= 1, "the start kept X's copy in the outbox");
-        } else {
+    // `journal`: the journal's file of the restart; `rolled_back`: the start opens W0's pages (no
+    // copy of X in their outbox), and X is decided again and sent once under a new sequence;
+    // otherwise the start keeps W1's pages, and X is never sent again (the journal's file is past
+    // X's command, which takes X's copy out of the outbox).
+    let run =
+        |dir: &std::path::PathBuf, mc: FakeWorld, journal: WorldSave, rolled_back: bool| -> Java {
+            let e = engine_with(dir, 256 * 1024, |c| c.industry_seed = Some(cfg.seed));
+            let mut j = restart(e, journal, mc, MODULE_INDUSTRY);
+            assert_eq!(
+                j.pages_obs,
+                if rolled_back { w0 } else { pages },
+                "the start opens the generation the journal holds"
+            );
+            let outbox = j.e.with_industry(|_, s| s.outbox);
             assert_eq!(outbox, 0, "the start left no copy of X in the outbox");
-        }
-        j.mc_run_until(Tick(73_500));
-        assert_eq!(
-            exchanges(&j, 0).iter().map(|e| e.1.op).collect::<Vec<_>>(),
-            if resent { vec![x] } else { vec![] },
-            "X sent again once, or never"
-        );
-        assert_eq!(j.stale_commands, 0, "nothing sent under an old sequence");
-        assert!(
-            !industry(&j.e, |ie| ie.exchange_pending(x)),
-            "the exchange is settled"
-        );
-        assert!(j.e.protocol_error().is_none(), "{:?}", j.e.protocol_error());
-        j
-    };
+            j.mc_run_until(Tick(73_500));
+            let again = exchanges(&j, 0);
+            assert_eq!(
+                again.iter().map(|e| e.1.op).collect::<Vec<_>>(),
+                if rolled_back { vec![x] } else { vec![] },
+                "X decided again and sent once, or never"
+            );
+            if rolled_back {
+                assert!(again[0].0 > x_seq, "under a new sequence: {again:?}");
+            }
+            assert_eq!(j.stale_commands, 0, "nothing sent under an old sequence");
+            assert!(
+                !industry(&j.e, |ie| ie.exchange_pending(x)),
+                "the exchange is settled"
+            );
+            assert!(j.e.protocol_error().is_none(), "{:?}", j.e.protocol_error());
+            j
+        };
     // The control, from a copy of the pages: both of Java's files saved (J1).
     let control_dir = copy_pages(&dir, &format!("{tag}-control"));
     mc.restore(&msave);
@@ -2499,67 +2543,44 @@ fn exchange_decided_before_the_pages_with_its_trains_save_lost(tag: &str, writte
     let control = books_delta(&c);
     let control_totals = c.mc().totals();
     assert_eq!(cargo(&c), cargo_live, "the control holds what it held");
+    c.e.close(true, Duration::from_secs(5)).unwrap();
+    // J4 with the hold: the journal's file is W0's, and so is the world.
     let mut mc = c.mc.take().unwrap();
-    // J4 with the hold: X's train from the tick before S, the rest from W1 but the journal's file.
-    mc.restore(&msave);
-    let (t, was) = mc
-        .trains
-        .iter_mut()
-        .zip(&cargo_before)
-        .find(|(t, _)| t.id == d.train)
-        .expect("the exchange's train");
-    for (c, was) in t.carriages.iter_mut().zip(was) {
-        c.cargo = was.clone();
-    }
-    assert!(mc.forget_applied(x), "the ring held the op");
-    let j = run(&dir, mc, jsave0.clone(), written);
+    mc.restore(&msave0);
+    let j = run(&dir, mc, jsave0.clone(), true);
     let j4 = books_delta(&j);
-    let load = GoodVec::from_pairs(d.entries.iter().map(|&(_, g, n)| (g, n)));
     let lost = control_totals.minus(&j.mc().totals());
     eprintln!(
         "{tag}: exchange {:#x} (cmdSeq {x_seq}, S {s}), pages through {pages}, lastAppliedCmdSeq W0 \
          {} W1 {}; outbox at the write {outbox_at_write}; the world short of the control's by \
-         {lost:?}, X's load {load:?}; the world against its books {j4:?}, the control's {control:?}",
+         {lost:?}; the world against its books {j4:?}, the control's {control:?}",
         x.0, jsave0.last_applied_cmd, jsave.last_applied_cmd
     );
-    let books = c.e.with_industry(|ie, _| j.mc().conservation_with(ie));
-    assert_eq!(books, j4, "the two restarts' books are the same");
-    if written {
-        assert_eq!(cargo(&j), cargo_live, "the train holds X's load again");
-        assert_ne!(cargo(&j), cargo_before, "not the train before X");
-        assert_eq!(lost, GoodVec::default(), "no goods lost or made");
-        assert_eq!(j4, control, "the books are the control's");
-    } else {
-        assert_eq!(
-            cargo(&j),
-            cargo_before,
-            "the restored train never gets X's load (P29)"
-        );
-        assert_eq!(
-            lost, load,
-            "the world is short of the control's by X's load"
-        );
-        assert_ne!(j4, control, "J4's world is short of its books");
-    }
+    assert_eq!(cargo(&j), cargo_live, "the train holds X's load again");
+    assert_ne!(cargo(&j), cargo_before, "not the train before X");
+    assert_eq!(lost, GoodVec::default(), "no goods lost or made");
+    assert_eq!(j4, control, "the books are the control's");
     c.e.close(true, Duration::from_secs(5)).unwrap();
     j.e.close(true, Duration::from_secs(5)).unwrap();
 }
 
 /// RP-313's trap 4 with the journal held (slice U-g): the pages between X's write and its
-/// application, the copy in their outbox, and the journal's file W0's. X is sent again and applied
-/// once. Before the hold the journal's file was the failed save's, the start trimmed X's copy and X's
-/// load was lost (residual 10).
+/// application, the copy in their outbox, and the journal's file W0's. X is applied once. Before
+/// the hold the journal's file was the failed save's, the start trimmed X's copy and X's load was
+/// lost (residual 10). Since slice U-h the start rolls the pages back with the journal and X is
+/// decided again, not resent from the outbox.
 #[test]
 fn a_station_exchange_written_before_the_pages_is_applied_once_when_its_trains_save_fails() {
-    exchange_decided_before_the_pages_with_its_trains_save_lost("ind-exch-j4-outbox", true);
+    exchange_decided_before_the_pages_with_its_trains_save_failed("ind-exch-j4-outbox", true);
 }
 
-/// The same with X answered inside the pages: no copy at all, the same loss, held or not. P29's
-/// case, slice U-h's (residual 10 points at residual 11): this test must be flipped to the written
-/// one's assertions when the pages are held back with the journal.
+/// The same with X answered inside the pages: no copy at all. Held or not, this was lost before
+/// slice U-h (P29: the pages were acknowledged at the commit, whether or not the journal's file
+/// was written); now the held journal leaves the save pending, the start rolls it back and X is
+/// applied once, as the written case's. (Flipped from `..._is_lost_with_its_trains_save`.)
 #[test]
-fn a_station_exchange_answered_before_the_pages_is_lost_with_its_trains_save() {
-    exchange_decided_before_the_pages_with_its_trains_save_lost("ind-exch-j4-answered", false);
+fn a_station_exchange_answered_before_the_pages_is_applied_once_when_its_trains_save_fails() {
+    exchange_decided_before_the_pages_with_its_trains_save_failed("ind-exch-j4-answered", false);
 }
 
 /// Iron in the fake world: (in its stores, on its trains, minted, burned).
@@ -3505,8 +3526,14 @@ enum Rollback {
     /// As `FailedSave`, then a save past the answer is made and acknowledged; the crash after.
     FailedThenMade,
     /// No save is asked for past the answer: herds founded after it outgrow the row budget, which
-    /// takes saves of its own (pending generations, PF15), and the restart rolls them back.
+    /// takes saves of its own (pending generations, PF15). The crash-time journal holds them, so
+    /// the restart (slice U-h: it opens the generation the journal's file holds) keeps the newest
+    /// and confirms it: the answer is in the pages and is never sent again.
     Pressure,
+    /// As `Pressure`, but the world's journal file is the one before the raid (J3's world: the
+    /// trains and the ring from after it, the journal from before it): the budget saves are past
+    /// the file, the restart rolls them back, the raid is decided again and answered DUPLICATE.
+    PressurePast,
 }
 
 /// The train ring's rollback cases (docs/choices-mowzie-build.md RP-258). A train raid is applied
@@ -3526,7 +3553,7 @@ fn a_train_raid_and_a_rolled_back_save(how: Rollback) {
     use std::sync::atomic::Ordering::Acquire;
     let cfg = raid_line();
     let dir = tmpdir(&format!("ind-rollback-{how:?}"));
-    let pressure = how == Rollback::Pressure;
+    let pressure = matches!(how, Rollback::Pressure | Rollback::PressurePast);
     let config = move |c: &mut rtsim_jni::engine::Config| {
         if pressure {
             c.row_budget = 4 * 1024;
@@ -3585,6 +3612,8 @@ fn a_train_raid_and_a_rolled_back_save(how: Rollback) {
                 loop {
                     let failed = j.e.stats_array()[15];
                     j.e.request_save(asked);
+                    j.written_through = Some(asked);
+                    j.world_saved(asked);
                     ticks += mc_tick_slowly_until(&mut j, "the save after the failed one", |j| {
                         j.e.durable_obs_seq() >= asked || j.e.stats_array()[15] != failed
                     });
@@ -3602,7 +3631,7 @@ fn a_train_raid_and_a_rolled_back_save(how: Rollback) {
                 }
             }
         }
-        Rollback::Pressure => {
+        Rollback::Pressure | Rollback::PressurePast => {
             // Herds whose rows outgrow the budget (archive.rs's recipe), founded once the engine
             // has read the answer: the budget takes a save of its own at once, at a step past the
             // answer (the pending generation's observations are checked on disk below).
@@ -3666,8 +3695,13 @@ fn a_train_raid_and_a_rolled_back_save(how: Rollback) {
             "the ring held the op until its acknowledgement"
         );
     }
-    // The crash, with Java's two files as they stand (J1).
-    let jsave = j.world_save();
+    // The crash, with Java's two files as they stand (J1). `PressurePast`: the journal's file is
+    // the one before the raid, so the budget saves are past it.
+    let jsave = if how == Rollback::PressurePast {
+        r.jsave_before.clone()
+    } else {
+        j.world_save()
+    };
     let msave = j.mc().saved();
     let mut mc = j.mc.take().unwrap();
     j.e.close(false, Duration::from_secs(5)).unwrap();
@@ -3709,7 +3743,7 @@ fn a_train_raid_and_a_rolled_back_save(how: Rollback) {
             .filter(|c| matches!(&c.2, Cmd::CarriageDelta(d) if d.op.0 == live))
             .count()
     };
-    if how == Rollback::FailedThenMade {
+    if matches!(how, Rollback::FailedThenMade | Rollback::Pressure) {
         assert!(j.pages_obs >= s, "the pages hold the answer");
         assert_eq!(ring, None);
         // The raider's pages hold the raid: nothing decides it again, and the engine never sends
@@ -3789,10 +3823,19 @@ fn a_save_made_after_a_failed_one_acknowledges_only_what_the_restart_finds() {
 }
 
 /// RP-258 case 1, pending generations: the budget's own saves past the answer are never
-/// acknowledged, and the restart rolls them back; the raid is taken once.
+/// acknowledged. The crash-time journal holds them, so the restart (slice U-h) keeps the newest
+/// and confirms it: the answer is in the pages, and the engine never sends the op again.
 #[test]
 fn a_budget_save_never_acknowledges_a_train_raid_answer() {
     a_train_raid_and_a_rolled_back_save(Rollback::Pressure);
+}
+
+/// RP-258 case 1, pending generations past the journal's file: the budget's own saves past the
+/// answer are never acknowledged, and the world's journal is the file from before the raid, so
+/// the restart rolls them back; the raid is decided again, answered DUPLICATE, and taken once.
+#[test]
+fn a_budget_save_past_the_journal_file_never_acknowledges_a_train_raid_answer() {
+    a_train_raid_and_a_rolled_back_save(Rollback::PressurePast);
 }
 
 /// RP-258 case 2, a sequence reused after a rollback (P29). J3: the trains (with their ring) from
@@ -4517,6 +4560,19 @@ mod ack_never_resends {
         fn autosave(&mut self) -> Saved {
             let s = self.c.save(&self.j);
             self.j.e.request_save(s.end);
+            // The bridge's order: the journal's file is written, then WORLD_SAVED (P29).
+            self.j.written_through = Some(s.end);
+            self.j.world_saved(s.end);
+            self.last = Some(s.clone());
+            s
+        }
+
+        /// A world save whose journal file landed and whose WORLD_SAVED never came (the process
+        /// dies, or the write is held, before it): the engine is asked for pages through the
+        /// file's end and keeps them as a pending generation. Nothing acknowledges them.
+        fn autosave_held(&mut self) -> Saved {
+            let s = self.c.save(&self.j);
+            self.j.e.request_save(s.end);
             self.last = Some(s.clone());
             s
         }
@@ -4649,6 +4705,55 @@ mod ack_never_resends {
             !start.settled.is_empty(),
             "the second restart settled what it read"
         );
+        r.finish();
+    }
+
+    /// Case 1b (U-h, P29 option a): the last autosave's journal file landed and its WORLD_SAVED
+    /// never came, so its pages are a pending generation nothing acknowledged. The world restarts
+    /// from the autosave before it (the file that did land and was confirmed), as it would if the
+    /// newer file never reached the disk: the engine rolls the pending pages back, its replay
+    /// brings it to that world's present, and the world's books close against the engine's, the
+    /// checker on every op through two more sessions. Before U-h the pages were acknowledged at
+    /// the commit, so they sat ahead of the world the restart loaded.
+    #[test]
+    fn an_autosave_whose_world_saved_never_came_is_rolled_back_and_the_world_conserves() {
+        let mut r = Rig::new("ack-c1b", true);
+        r.run_to(day(3.0));
+        r.every = 0;
+        let w0 = r.last.clone().expect("an autosave by day 3");
+        r.run("the last autosave's pages", day(4.0), |r| {
+            r.j.e.durable_obs_seq() >= w0.end
+        });
+        let pages = r.j.e.durable_obs_seq();
+        let past = |r: &Rig| r.c.lives_in(0).filter(|l| l.seq > pages).count();
+        r.run("ten answers past the pages", day(6.0), |r| past(r) >= 10);
+        let w1 = r.autosave_held();
+        assert!(w1.end > pages);
+        let committed = r.j.e.stats.saves_committed.load(Ordering::Acquire);
+        r.run("the held autosave's pages commit", day(6.0), |r| {
+            r.j.e.stats.saves_committed.load(Ordering::Acquire) > committed
+        });
+        let t = r.j.mc().t;
+        r.run_to(t + 400);
+        assert_eq!(
+            r.j.e.durable_obs_seq(),
+            pages,
+            "a world save no WORLD_SAVED confirmed is not acknowledged"
+        );
+        let sent = r.c.crash(&r.j);
+        assert!(
+            sent <= pages,
+            "the engine sent ack {sent} past the pages {pages}"
+        );
+        let start = r.restart(&w0);
+        assert_eq!(
+            r.j.pages_obs, pages,
+            "the pending pages were rolled back to the confirmed save"
+        );
+        assert!(start.provable);
+        r.every = 3_000;
+        r.run_to(day(6.0));
+        r.crash_after_a_read_ack();
         r.finish();
     }
 
@@ -4874,6 +4979,8 @@ mod ack_never_resends {
             r.run("train 1 under way with cargo", day(8.0), |r| laden(&r.j));
             let through = r.j.next_obs - 1;
             r.j.e.request_save(through);
+            r.j.written_through = Some(through);
+            r.j.world_saved(through);
             r.run("the pages", day(8.0), |r| {
                 r.j.e.durable_obs_seq() >= through
             });
@@ -4917,6 +5024,8 @@ mod ack_never_resends {
         let through = r.j.next_obs - 1;
         assert!(through >= s1.seq);
         r.j.e.request_save(through);
+        r.j.written_through = Some(through);
+        r.j.world_saved(through);
         r.run("the engine acks past S and Java reads it", day(9.0), |r| {
             r.j.acks.last().is_some_and(|a| *a >= s1.seq)
         });
@@ -5151,6 +5260,8 @@ mod ack_never_resends {
         // Session 1's pages P1, inside the replay end's hand-over.
         let p1 = r.j.next_obs - 1;
         r.j.e.request_save(p1);
+        r.j.written_through = Some(p1);
+        r.j.world_saved(p1);
         pad_journal(&mut r.j, 40);
         let t1 = r.j.mc().t;
         r.run("the pages P1", t1 + 400, |r| r.j.e.durable_obs_seq() >= p1);
@@ -5329,6 +5440,8 @@ mod ack_never_resends {
         let through = r.j.next_obs - 1;
         assert!(through >= s2.seq);
         r.j.e.request_save(through);
+        r.j.written_through = Some(through);
+        r.j.world_saved(through);
         r.until_read(through);
         assert!(r.c.arrivals_of(x, 2).is_empty(), "nothing goes while off");
         let w = r.c.save(&r.j);
@@ -5382,6 +5495,8 @@ mod ack_never_resends {
                 |j, _| {
                     through = j.next_obs - 1;
                     j.e.request_save(through);
+                    j.written_through = Some(through);
+                    j.world_saved(through);
                 },
             );
             r.after_tick();
@@ -5630,6 +5745,8 @@ mod ack_never_resends {
         let through = r.j.next_obs - 1;
         assert!(through >= s);
         r.j.e.request_save(through);
+        r.j.written_through = Some(through);
+        r.j.world_saved(through);
         r.until_read(through);
         let acked = r.c.max_ack;
         assert!(acked >= s, "the engine acknowledged S");
@@ -5760,6 +5877,8 @@ mod ack_never_resends {
         r.every = 0;
         let t0 = r.j.next_obs - 1;
         r.j.e.request_save(t0);
+        r.j.written_through = Some(t0);
+        r.j.world_saved(t0);
         r.run("the pages", day(3.0), |r| r.j.e.durable_obs_seq() >= t0);
         let t0 = r.j.e.durable_obs_seq();
         let exchanges = |r: &Rig| -> Vec<u64> {
@@ -6384,6 +6503,8 @@ mod ack_never_resends {
                     if answers_only && answers.iter().any(|a| a.0 == x && a.2 == APPLIED) {
                         j.modules(0);
                         j.e.request_save(first - 1);
+                        j.written_through = Some(first - 1);
+                        j.world_saved(first - 1);
                         hit = true;
                     }
                 },
@@ -6517,6 +6638,8 @@ mod ack_never_resends {
             if before {
                 asked = r.j.next_obs - 1;
                 r.j.e.request_save(asked);
+                r.j.written_through = Some(asked);
+                r.j.world_saved(asked);
             }
             let seen = r.j.ind_commands.len();
             let from = r.j.next_obs;
@@ -6544,6 +6667,8 @@ mod ack_never_resends {
                         j.mc_mut().fail_carriage_deltas = false;
                         if !before {
                             j.e.request_save(first - 1);
+                            j.written_through = Some(first - 1);
+                            j.world_saved(first - 1);
                         }
                         hit = Some(first);
                     }
@@ -6558,7 +6683,11 @@ mod ack_never_resends {
             assert!(Instant::now() < until, "the pages asked for never landed");
             std::thread::sleep(Duration::from_millis(1));
         }
-        assert_eq!(r.j.e.durable_obs_seq(), through, "the pages stop where asked");
+        assert_eq!(
+            r.j.e.durable_obs_seq(),
+            through,
+            "the pages stop where asked"
+        );
         if before {
             assert!(through < decided_from, "the pages stop before X's decision");
         }
@@ -6579,9 +6708,14 @@ mod ack_never_resends {
                 // Still off: an autosave whose pages land, then a crash and a restart off again.
                 let w = a.c.save(&a.j);
                 a.j.e.request_save(w.end);
+                a.j.written_through = Some(w.end);
+                a.j.world_saved(w.end);
                 let until = Instant::now() + Duration::from_secs(20);
                 while a.j.e.durable_obs_seq() < w.end {
-                    assert!(Instant::now() < until, "the autosave while off never landed");
+                    assert!(
+                        Instant::now() < until,
+                        "the autosave while off never landed"
+                    );
                     hand_over_only(&mut a);
                 }
                 a.j.e.close(false, Duration::from_secs(5)).unwrap();
@@ -6603,12 +6737,11 @@ mod ack_never_resends {
             a.run("every command applied", t + 30_000, |r| {
                 r.j.mc().commands_in_flight() == 0
             });
-            let sent = a
-                .j
-                .ind_commands
-                .iter()
-                .filter(|c| c.2.op() == Some(OpId(x)))
-                .count();
+            let sent =
+                a.j.ind_commands
+                    .iter()
+                    .filter(|c| c.2.op() == Some(OpId(x)))
+                    .count();
             let failed = a.j.e.with_industry(|_, l| l.results_failed);
             let pending = industry(&a.j.e, |ie| ie.exchange_pending(OpId(x)));
             let ending = (sent, failed, pending, books_delta(&a.j), cargo(&a.j));
@@ -6635,7 +6768,10 @@ mod ack_never_resends {
             assert_eq!(e.1, 1, "{arm}: X's FAILED booked once");
             assert!(!e.2, "{arm}: X's exchange is not left waiting");
         }
-        assert_eq!(a.3, b.3, "the world against the engine's books, off then on and on");
+        assert_eq!(
+            a.3, b.3,
+            "the world against the engine's books, off then on and on"
+        );
         assert!(a.4 == b.4, "the trains' cargo, off then on and on");
     }
 
@@ -6702,31 +6838,6 @@ mod held_journal {
             .collect()
     }
 
-    /// Takes the step that applies `through` and waits for the pages to hold it, without running
-    /// the world to the save's end: the world does not move while the IO lane works.
-    fn lockstep_until_durable(j: &mut Java, through: u64) {
-        use std::sync::atomic::Ordering::Acquire;
-        let deadline = std::time::Instant::now() + Duration::from_secs(60);
-        loop {
-            j.mc_tick();
-            if j.e.stats.applied_through.load(Acquire) >= through {
-                break;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the engine never applied the observations through {through}"
-            );
-        }
-        while j.e.durable_obs_seq() < through {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the pages never became durable through {through}: {}",
-                j.e.durable_obs_seq()
-            );
-            std::thread::sleep(Duration::from_millis(1));
-        }
-    }
-
     /// A copy of the page directory `from` (the engine closed) in a new one.
     fn copy_pages(from: &std::path::Path, tag: &str) -> std::path::PathBuf {
         fn copy(from: &std::path::Path, to: &std::path::Path) {
@@ -6748,6 +6859,8 @@ mod held_journal {
 
     /// What one arm of the experiment saw after its restart ran to the same game time.
     struct Arm {
+        /// The observation sequence the restart's pages include.
+        pages_at_start: u64,
         /// The station exchanges Java applied since the restart: (cmdSeq, op).
         sent: Vec<(u64, u64)>,
         cargo: Vec<Vec<GoodVec>>,
@@ -6764,6 +6877,8 @@ mod held_journal {
         cargo_live: Vec<Vec<GoodVec>>,
         cargo_before: Vec<Vec<GoodVec>>,
         pages: u64,
+        /// The engine's save for W0, confirmed by its WORLD_SAVED: the pages the held arm opens.
+        w0: u64,
         s: u64,
         w0_applied_cmd: u64,
         w_applied_cmd: u64,
@@ -6788,8 +6903,13 @@ mod held_journal {
         let dir = tmpdir(tag);
         let mut j = iron_java(&dir, cfg);
         j.mc_run_until(day(3.0));
-        // W0: the journal's file and the tracks file of the last save that wrote them both.
+        // W0: the journal's file and the tracks file of the last save that wrote them both, and
+        // the engine's save for it, confirmed (its WORLD_SAVED came).
         let jsave0 = j.world_save();
+        let msave0 = j.mc().saved();
+        let w0 = j.next_obs - 1;
+        j.e.request_save(w0);
+        lockstep_until_saved(&mut j, w0, true);
         let paged = j.ind_commands.len();
         while exchanges(&j, paged).is_empty() {
             assert!(j.mc().t < Tick(73_000), "the exchange at the ore coast");
@@ -6810,8 +6930,10 @@ mod held_journal {
         let cargo_before = cargo_of(&j);
         let p = j.next_obs - 1;
         if written {
+            // The save for W1: its journal's file is held (the tracks write failed), so its
+            // WORLD_SAVED never comes and the pages stay a pending generation.
             j.e.request_save(p);
-            lockstep_until_durable(&mut j, p);
+            lockstep_until_saved(&mut j, p, false);
         } else {
             j.mc_tick();
         }
@@ -6839,16 +6961,16 @@ mod held_journal {
         if !written {
             let w = j.next_obs - 1;
             j.e.request_save(w);
-            lockstep_until_durable(&mut j, w);
+            lockstep_until_saved(&mut j, w, false);
         }
-        let pages = j.e.durable_obs_seq();
+        let pages = j.e.committed_obs_seq();
         if written {
             assert!(pages == p && s > pages, "the pages end before S");
         } else {
             assert!(pages >= s, "the pages hold S");
         }
         j.mc_run_until(Tick(73_500));
-        assert_eq!(j.e.durable_obs_seq(), pages, "no page save past them");
+        assert_eq!(j.e.committed_obs_seq(), pages, "no page save past them");
         assert_eq!(
             cargo_of(&j),
             cargo_live,
@@ -6863,9 +6985,11 @@ mod held_journal {
             j.mc = Some(mc);
             j.module_mask = MODULE_INDUSTRY;
             j.game_time = present.0 as i64;
+            let pages_at_start = j.pages_obs;
             j.mc_run_until(Tick(73_500));
             assert!(j.e.protocol_error().is_none(), "{:?}", j.e.protocol_error());
             let arm = Arm {
+                pages_at_start,
                 sent: exchanges(&j, 0).iter().map(|(s, d)| (*s, d.op.0)).collect(),
                 cargo: cargo_of(&j),
                 totals: j.mc().totals(),
@@ -6901,8 +7025,12 @@ mod held_journal {
         let (mut u, unheld) = run(&unheld_dir, mc, jsave.clone());
         let mut mc = u.mc.take().unwrap();
         u.e.close(true, Duration::from_secs(5)).unwrap();
-        // With it: the journal held at W0's file.
-        lose_x(&mut mc);
+        // With it: the journal held at W0's file, with the tracks file (the one whose write
+        // failed) and the pages' rollback to W0's save (slice U-h). The world is W0's whole, clock
+        // and chunks included: the fake world keeps its production in its clock, so a W1 district
+        // under a W0 clock produces the same goods twice (the books show it), which no real world
+        // does; the chunks of a held save are written ahead of the journal and carry their ops.
+        mc.restore(&msave0);
         let (h, held) = run(&dir, mc, jsave0.clone());
         h.e.close(true, Duration::from_secs(5)).unwrap();
         Observed {
@@ -6912,6 +7040,7 @@ mod held_journal {
             cargo_live,
             cargo_before,
             pages,
+            w0,
             s,
             w0_applied_cmd: jsave0.last_applied_cmd,
             w_applied_cmd: jsave.last_applied_cmd,
@@ -6950,10 +7079,14 @@ mod held_journal {
         );
     }
 
-    /// RP-313's trap 4 with the journal held: the pages end between X's write and its application,
-    /// the copy in their outbox, and the journal's file is W0's, behind X's command. The start keeps
-    /// X's copy (W0's lastAppliedCmdSeq is below it), the ring from the tracks file W0 does not hold
-    /// X: it is sent again and applied once, the train loaded as it was, the books close.
+    /// RP-313's trap 4 with the journal held: the engine's save for W1 ends between X's write and
+    /// its application, and the journal's file is W0's, behind X's command. Slice U-h (P29, the
+    /// confirm on WORLD_SAVED): W1's file was held, so its WORLD_SAVED never came and the save
+    /// stays a pending generation; the start from W0's file rolls it back to W0's save, the pages
+    /// from before X. The engine decides X again under the same op (the ring from the tracks file
+    /// W0 does not hold X), it is sent and applied once, the train loaded as it was, the books
+    /// close. Before U-h the pages were acknowledged at the commit and the start kept X's copy in
+    /// their outbox.
     #[test]
     fn a_station_exchange_written_before_the_pages_is_applied_once_with_the_journal_held() {
         let tag = "ind-exch-held-outbox";
@@ -6976,9 +7109,23 @@ mod held_journal {
             "no hold: the world is short of its books"
         );
         assert_eq!(
+            o.control.pages_at_start, o.pages,
+            "the control keeps the save the journal holds"
+        );
+        assert_eq!(
+            o.held.pages_at_start, o.w0,
+            "the held journal's WORLD_SAVED never came: the start rolled the save back to W0's"
+        );
+        assert_eq!(
             o.held.sent.iter().map(|s| s.1).collect::<Vec<_>>(),
             vec![o.x],
-            "X is sent again, once"
+            "X is decided again from W0's pages, under the same op, and sent once"
+        );
+        assert!(
+            o.held.sent[0].0 > o.x_seq,
+            "under a new sequence, not resent from an outbox: {:?} after {}",
+            o.held.sent,
+            o.x_seq
         );
         assert_eq!(o.held.cargo, o.cargo_live, "the train holds X's load again");
         assert_ne!(o.held.cargo, o.cargo_before, "not the train before X");
@@ -6987,37 +7134,55 @@ mod held_journal {
         assert!(!o.held.pending, "the exchange is settled");
         assert_eq!(o.held.stale, 0, "nothing sent under an old sequence");
     }
-    /// The same with X answered inside the pages (S through them: no copy of X anywhere). The hold
-    /// cannot help: the journal's file is W0's, but the pages hold S, so X is neither in their outbox
-    /// nor sent again, and the tracks from W0 lack X's load. This is P29, the engine's pages ahead of
-    /// the world save (docs/boundary.md section 3.1; docs/choices-journal-barrier.md JB6, JB9, U-g10):
-    /// the pages are requested at the start of the save, before any write fails, and are written whether or not
-    /// the journal's file is. The hold does not make this case worse or better than without it (the
-    /// `unheld` arm); wiring P29's confirm on WORLD_SAVED (docs/choices-leg-purge.md LP12) would roll
-    /// the pages back to W0's with the journal. When it is wired this test must be flipped to the
-    /// written one's assertions.
+    /// The same with X answered inside the pages (S through them: no copy of X anywhere), the
+    /// P29 case that was lost with the hold alone (U-g10 (1): the pages are requested at the start
+    /// of the save, before any write fails, and were acknowledged at the commit whether or not the
+    /// journal's file was written; the `unheld` arm still shows the loss). Slice U-h wired the
+    /// confirm on WORLD_SAVED (docs/choices-leg-purge.md LP12): the held journal's WORLD_SAVED
+    /// never comes, the save stays pending, and the start from W0's file rolls it back with the
+    /// journal. The held arm now has the written test's assertions: X is decided again from W0's
+    /// pages, sent and applied once, the books close. (Flipped from
+    /// `..._is_still_lost_with_the_journal_held_p29`.)
     #[test]
-    fn a_station_exchange_answered_inside_the_pages_is_still_lost_with_the_journal_held_p29() {
+    fn a_station_exchange_answered_inside_the_pages_is_applied_once_with_the_journal_held_p29() {
         let tag = "ind-exch-held-answered";
         let o = exchange_decided_before_the_pages(tag, false);
         report(tag, &o);
-        assert!(o.control.sent.is_empty(), "the control never sends X again");
+        assert!(
+            o.control.sent.is_empty(),
+            "the control never sends X again: {:?}",
+            o.control.sent
+        );
         assert_eq!(
             o.control.cargo, o.cargo_live,
             "the control holds what it held"
         );
         assert!(o.unheld.sent.is_empty(), "no hold: X is never sent again");
         assert_eq!(o.unheld.cargo, o.cargo_before, "no hold: X's load is lost");
-        assert!(o.held.sent.is_empty(), "held: no copy of X to send");
         assert_eq!(
-            o.held.cargo, o.cargo_before,
-            "held: X's load is still lost (P29)"
+            o.control.pages_at_start, o.pages,
+            "the control keeps the save the journal holds"
         );
         assert_eq!(
-            o.held.books, o.unheld.books,
-            "held: the same shortfall as without the hold"
+            o.held.pages_at_start, o.w0,
+            "the held journal's WORLD_SAVED never came: the start rolled the save back to W0's"
         );
-        assert_ne!(o.held.books, o.control.books, "held: short of its books");
-        assert!(!o.held.pending, "the exchange is settled in the pages");
+        assert_eq!(
+            o.held.sent.iter().map(|s| s.1).collect::<Vec<_>>(),
+            vec![o.x],
+            "X is decided again from W0's pages, under the same op, and sent once"
+        );
+        assert!(
+            o.held.sent[0].0 > o.x_seq,
+            "under a new sequence, not resent from an outbox: {:?} after {}",
+            o.held.sent,
+            o.x_seq
+        );
+        assert_eq!(o.held.cargo, o.cargo_live, "the train holds X's load again");
+        assert_ne!(o.held.cargo, o.cargo_before, "not the train before X");
+        assert_eq!(o.held.totals, o.control.totals, "no goods lost or made");
+        assert_eq!(o.held.books, o.control.books, "the books are the control's");
+        assert!(!o.held.pending, "the exchange is settled");
+        assert_eq!(o.held.stale, 0, "nothing sent under an old sequence");
     }
 }
