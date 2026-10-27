@@ -2229,6 +2229,11 @@ its files on disk, the rest from the save before. Two directions:
      when its half is full where the pair has room, and one that draws finds nothing in a half whose goods are in
      the other.
    - A station port and a player's session (`PlayerPorts.stockAt`) at a half see that half only.
+   - Create's glass compile (`CreateCompile.storeContents` and `seedContents`) reads a store's goods through
+     `Loaded.capability`, which guards the half's own chunk and Create's multiblocks but not a chest's other half.
+     At a split half it still lists both halves' goods in the store's reach set, and with the other chunk not yet
+     FULL the chest's provider reads it (`Level.getBlockState` waits for the load: R2-11's hazard, as before this
+     slice, which did not change that guard). Read from the code, not run; a planning-set matter, not goods.
    - A reconcile that adds more than the half has room for is applied in part (`applied` below `requested`), and
      the engine owes the rest as it does for any full chest. A transfer into a full half answers FAILED while the
      other half has room. A removal whose goods sit in the other half is a shortfall, applied 0, which the engine
