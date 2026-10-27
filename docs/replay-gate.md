@@ -2256,6 +2256,31 @@ its files on disk, the rest from the save before. Two directions:
      fed or drawn by Create movers therefore has no counted flows, and the glass compile learns no rates for it. How
      Create fills a chest is unchanged (the coordinator's decision). Test: create's
      `IndustryGameTests.aMoveIntoAHalfOfASplitChestIsDiscardedNotCounted`.
+   - **A player's session at a half is discarded too.** Vanilla's chest menu is the pair's `CompoundContainer`, so what a
+     player takes from or puts into the other half would be booked against the clicked half. `PlayerPorts.rightClicked`
+     marks a click on a split half, and `opened` discards the window as an unattributed session
+     (`IND_DISCARD` UNATTRIBUTED_SESSION) and counts it in `PlayerPorts.splitSessionsDiscarded` (also in
+     `unattributedSessions`); no PLAYER_SESSION port is booked for it. Test: create's
+     `IndustryGameTests.aSessionAtAHalfOfASplitChestIsDiscardedNotBooked`.
+   - **The audit of every path that books goods to a store (slice U-f, found in review rounds 1 and 2).**
+     (a) Counted movers: chutes, funnel and arm points, a basin's overflow, packagers, repackagers, unpackers, frogports
+     and `InvManipulationBehaviour` all report through `Counting.moved`, the one place a counted move is keyed to a
+     store: discarded at a split half (the first bullet). (b) Player sessions: discarded (above). A player's click that
+     opens no menu books nothing at a split half (no snapshot is taken). (c) A player's break (`PlayerPorts.breaking`):
+     drops the half's own block entity slots, which is the half's inventory: exact, no change. Tosses and pickups name
+     the district and no store. (d) Vanilla hoppers, droppers, dispensers and hopper minecarts reach a pair through
+     `getContainerAt` (the `CompoundContainer`) and can fill either half; nothing counts them (no count point, no
+     mixin), so no flow is booked at all and the sweeps read each half's real stock: the change shows as a stock
+     delta in the half it landed in. Nothing to fix for books; the glass models a hopper at a half with no counted flow
+     (as for the Create movers above). (e) Comparators read the pair's fullness and book nothing (`splitWritten`
+     tells the far half's). (f) The sweeps, reconciles, transfers (`CommandDispatcher`) and station ports
+     (`PlayerPorts.stockAt`) go through `StockAccess.items`, which is the half's own slots. (g) The glass compile's
+     probes: `GlassCompiler.swept` reads a split half through `splitHalf`; `CreateCompile.storeContents` and
+     `seedContents` still list the pair's goods through the capability (the planning-set note above, not goods). (h)
+     `TrainWatch.reached` and `GraphBuilder.inventoryAt` resolve a position to the half through `canonicalInventory`
+     and book nothing. (i) Create's package and port buffers (`MailWatch`, `PostboxAccess`, `WritePackages`,
+     `WriteChains`, the train cargo) are not chests and are not at a half. A mod's `ChestBlock` subclass is not a
+     split pair here (residual 9).
    No number the engine books is a quantity the chunk it names did not hold or take, so a resend or a crash cannot
    create or remove goods because of the split. A pair inside one chunk is one inventory of 54 and is not affected.
    Test: `ChestPairLoadGameTests.aSplitDoubleChestIsTwoInventoriesInOneDistrict` and slice U-f's
