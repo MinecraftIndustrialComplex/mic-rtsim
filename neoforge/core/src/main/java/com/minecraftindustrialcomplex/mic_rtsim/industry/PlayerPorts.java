@@ -51,6 +51,23 @@ public final class PlayerPorts {
     long pickupPorts;
     long brokenPorts;
     long unattributed;
+    /** Sessions at a half of a split vanilla double chest, booked to neither half (RP-215, residual 13). */
+    long splitSessions;
+
+    /** Container sessions discarded as unattributed (any cause), for the GameTests. */
+    public long unattributedSessions() {
+        return unattributed;
+    }
+
+    /** Container sessions at a half of a split vanilla double chest: discarded, not booked to either half. */
+    public long splitSessionsDiscarded() {
+        return splitSessions;
+    }
+
+    /** Container sessions booked as a port. */
+    public long sessionPorts() {
+        return sessionPorts;
+    }
 
     PlayerPorts(Industry ind) {
         this.ind = ind;
