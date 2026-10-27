@@ -5456,6 +5456,78 @@ RP-150 to RP-153 the replay records.
     in the tick between the recall's removal of the party and the test's success. Its checks were made before
     (the unprovoked watch, which "a body went for the bare player" shows saw the band): not vacuous, left as it is.
 
+- **MZB-935 to MZB-939** (the rail GameTests' first run: `create -PwithMowzie` at da5aea80, 6 of 262 failed). The
+  rail tests 8 and 9 (`RailFrostmawGameTests`: the ice ball, the lurk and its variants) were written over M8's
+  re-checks "compiled, not run" (their records say so), and this is the first round of them on record. Five of the
+  six failures are theirs, one is a port-ring test. The causes were found with a temporary copy of the 13 rail tests in a
+  namespace of their own (`mic_rtsim_create_dbg`, so a round ran them alone, 5 minutes) with a log line a tick of the
+  puppet, the carriage and the strike (m8-r7-dbg; not committed), and the fixes were run on the same copy (m8-r7-dbg2,
+  13 of 13) before the full rounds.
+  - **MZB-935** (a carriage's entity box is not the carriage: `aLurkingFrostmawSwipesARiderStandingAtTheMiddleOfALongCarriage`
+    and `...AtTheRearOfALongCarriage`, "no carriage box touched the puppet's"). The pass itself was right (a strike, the
+    zombie hurt, 7.8e-7 degrees off the bearing, `overlapped true` the only fault). `LurkRun.sampleSwipe` took the carriage
+    entity's `getBoundingBox()`, which is the contraption's bounds moved to its anchor
+    (`AbstractContraptionEntity.setPos`), and Create's assembly widens those bounds to a square about the anchor, as far as
+    the farthest block and two more (`StationBlockEntity` calls `Contraption.expandBoundsAroundAxis`), whatever the yaw.
+    The 9-block carriage's bounds were `[-9, 0, -9]` to `[10, 2, 10]`: an entity box 19 blocks square, reaching the puppet's
+    box, whose near edge is 3 blocks from the rail's centre line; the seated tests' carriages are short, and only the two
+    long-carriage tests failed. Test only: `touches` asks whether a block of the contraption, where it stands in the world
+    (`toGlobalVector`), touches the puppet's box. The rear test passes with it (m8-r7-dbg, dbg2); no block of any carriage
+    touched a puppet in any run. `TrainSampler.RAIL_CLEARANCE`'s "clear of the carriages' boxes" reads as the carriages'
+    blocks (the sampler never asks for the entity box).
+  - **MZB-936** (the riders-first test's premise was out of its own margin:
+    `theSwingGoesToARiderOnTheNextCarriageBeforeABareBogeyInFront`, "the near plank is inside the swipe's reach
+    (6.708203932499369 of 6.800000011920929)"). The track point two blocks past carriage 0's bogey put the near plank
+    4 along, 5 across and 2 up from the puppet, 6.708 in 3D, and the test wants it 0.3 inside the swipe's 6.8. Nothing
+    of M8's code was involved: the premise was wrong from the start. The point is now three blocks past: the bogey 5.83
+    from the puppet (inside the strike reach, 6.0), the near plank 6.164, the far plank 10.488, the two bearings 61.9
+    degrees apart (m8-r7-dbg). With the premises right the test then met MZB-937 (a roar pushed the zombie off the
+    plank), and passes with it fixed: the first strike 2.9e-8 degrees off the zombie, 61.9 off the bogey (m8-r7-dbg2).
+  - **MZB-937** (an awake Frostmaw roars on its own, and a roaring puppet refuses its strike:
+    `aLurkingFrostmawForAnObliqueDenStandsOnTheRailsNormalAndSwipes`, "the lurk struck at 1.0 (0)"; in m8-r7-dbg the
+    same message in four of the nine pass tests, and the riders-first test's first strike at the bare bogey). Not
+    oblique-specific: a rerun passed the oblique test and failed others. The per-tick log of the failing passes shows the
+    puppet in one 76-tick animation (the same object in each, from 7, 27, 26 and 1 ticks on when the log began until the
+    end, none in a passing run, which shows no animation and then the swipe's 28 ticks), so `FrostmawLurker.strike`
+    (`getAnimation() != NO_ANIMATION`) refused every call while the rider was in reach. A puppet without a target
+    starts one animation by itself: the jar's ambient roar. cfr of mowziesmobs-1.21.1-1.8.2.jar:
+    `EntityFrostmaw.tick` sets `active` every tick for an always-active body (line 384), `Mob.baseTick` rolls
+    `nextInt(1000) < ambientSoundTime++` (the timer counts up from -80), and `playAmbientSound` (line 333), for an
+    active body, sends `ROAR_ANIMATION` (76 ticks) one time in four. That is about one tick in 500, so by that
+    arithmetic a swipe window of a few ticks is lost to a roar that began in the 76 ticks before it about one pass in
+    seven (r6 saw one in eleven, m8-r7-dbg four in nine). The roar's
+    `doRoarEffects` also pushes every living entity within 10 blocks away (with the crystal): in the riders-first run it
+    carried the standing zombie 1 block and off the plank (`riders 0`), and the strike after the roar went to the bogey.
+    It is not a change M8 made, but a gap in M8's hold: the Lurker's job is to hold the body awake and swipe, and a
+    lurking body that roars at random gives itself away, spoils the one roar that means something (MZB-366's, after a
+    robbery) and loses its swing. The fix is in the hold, `FrostmawLurker.hold`: a body in hand has its
+    `ambientSoundTime` put at -1 whenever it is 0 or more, which the roll never beats; the core holds once a tick after
+    every level ticked, so the roll never sees it above 0. The body keeps its other behaviour (its idle breath, its own
+    swipes at a player, a roar by `roar`). A choice that is easy to undo; the lead may prefer the test alone to be quiet
+    (set `ambientSoundTime` in the GameTests). The test is `aHeldPuppetsAmbientSoundTimerStaysBelowZero` (the timer put
+    at 700, the hold run, the timer below 0; before the fix the hold left it at 700, read not run: the rail tests' roared
+    passes are the old code's failing run, m8-r7-dbg 6 of 13 failed, m8-r7-dbg2 13 of 13 with the fix).
+  - **MZB-938** (Create holds a train with a player aboard at a chunk it cannot see ahead:
+    `theIceBallHitRatesAgainstAMovingTrain`, "the front reached the east end (-6085297.5)", on the first pass). The
+    train stood at x0 + 14.5, where its approach to the west end had ended, for the test's 16,000 ticks. m8-r7-dbg's log
+    shows `train.speed -0.5` with the lead not moving and `Train.carriageWaitingForChunks` set (to a carriage's id).
+    cfr of create-1.21.1-6.0.10.jar: `Carriage.DimensionalCarriageEntity.alignEntity`, for a carriage with a
+    `Player` passenger within 32 blocks, looks 16 blocks ahead of the carriage along the way it moves and, when that
+    point is not in an entity-ticking chunk (`CarriageEntityHandler.isActiveChunk`), sets the field and returns before it
+    moves the entity, so the lookahead never changes; `Train.tick` takes the field as zero distance. The ice rider is a mock
+    player (the other tests' riders are mobs, and the static ice test does not move). The forced chunks end where the
+    track does, the approach turned at x0 + 15 (a tick at 2 blocks, so x0 + 14.5), and 16 blocks on lies in the chunk
+    beyond. Test only: the passes turn `ICE_ENDS` (24) from the track's ends, 16 for the lookahead, 2 for a tick's travel
+    and slack. Passed in m8-r7-dbg2 (hits 4/4, 3/4, 1/4, 0/4 at 0.5, 1.0, 1.4 and 2.0, a rate, no gate).
+  - **MZB-939** (`aRestoredBufferWhoseChunkOutlivedTheTracksTakesAPackageOnce`, "one package in the buffer, primed, the
+    op in its ring": not found, not fixed). Nothing of M8's or of the Mowzie plugin is on its path (PortRing,
+    WritePackages, TrainRing and the station mixins are main's, unchanged by M8), and it passed in the same head's
+    `-Psec1fx` round (257 of 257). It failed in the first step after the write was answered, with three conditions in one
+    check, so the log said nothing of which. The check now names the buffer's packages, `primed`, whether the op is in the
+    ring and the answers heard. A write to a port that this server life does not know first reads the postbox's chunk
+    from disk off the server thread (`PortRing.refreshed`), so a timing dependence on the world's save and read is the
+    place to look if it comes back.
+
 ## M9 Umvuthana
 
 M9b takes MZB-600 to 624 (M9c takes 625 to 649); the M9b build choices are under "M9b build choices" below.
