@@ -762,8 +762,8 @@ ahead:
   clock to the hand-over's time. It founds nothing while replaying: the regions stay pending (in
   memory, as today between steps) and are founded after the replay end.
 - **Industry** keeps its own clock (`industry::simulate` runs first in the step,
-  `advance_to(tick(game_time))`) and its own replay rules; it is not held. The modules meet it in two
-  ways. Explicit-time lookups, `trains_crossed(frame, regions, from, to)` over industry's legs:
+  `advance_to(tick(game_time))`) and its own replay rules. It was not held; since slice R it is
+  (below, and RP-274 in docs/choices-mowzie-build.md). The modules meet it in two ways. Explicit-time lookups, `trains_crossed(frame, regions, from, to)` over industry's legs:
   conflict's ambush at a segment's start (rtsim-conflict engine.rs about L2943), dragons'
   `train_scan` (rtsim-ecology engine.rs about L1596) and ships' `coast_raid` (rtsim-ships engine.rs
   about L3493). While held, a module asks about a window that industry has already passed, and a leg
@@ -790,7 +790,27 @@ ahead:
   four cases; only if the ring's mixin did not apply does Java fall back to the journal's index
   (§6.1). **Decided by the coordinator,
   2026-10-24:** industry is not held during the replay, a known limit (holding it would put RP into
-  industry's own replay); the long-replay tests run with industry on and off.
+  industry's own replay); the long-replay tests run with industry on and off. Slice R found that a replay of several hand-overs then derives different industry op ids
+  (RP-262, RP-263 in docs/choices-mowzie-build.md), and that a station exchange is then loaded
+  twice (RP-277). **Reversed for slice R, as the coordinator approved (RP-274):** industry is held
+  while replaying, by its own flag check rather than the replay clock. `industry::simulate` returns
+  while `st.replaying` (no session start, no deferred latest-wins records, no threats, no run of the
+  clock, no commands into the queue), and `journaled` does not flush the deferred records then; the
+  replayed records still run the engine at their own ticks. The first step after the replay end
+  (`replay_end_if_due` runs before `industry::simulate`) runs the held step in the order the first
+  replayed hand-over ran it before: the session start at SESSION_START's game time, the deferred
+  records, the threats, the clock to the hand-over's time, the commands. The reasons above still
+  hold or are answered: industry has no gate and embodies nothing, so the commands its replayed
+  records decide wait in its outbox and go after the end, answered DUPLICATE by op where Java
+  applied them (RP-272), and dropped unsent where Java answered them FAILED while the replay ran
+  (Java keeps only the ops it applied; the link keeps those answers in memory until the first drain
+  after the end, RP-259, which is safe only with SEC-1's option A removing the copy when its answer
+  is heard: pages taken before that drain would otherwise hold the copy without the answer); the
+  threats and the deferred records are this session's, at its present,
+  past every replayed record; the module switch sets the session start that runs at the end. Every
+  industry op id derives with its decision's own tick, never the clock (RP-270, RP-271). The
+  dragons' and pirates' raids still run industry's clock to their own tick when they land while
+  it is held (`IndustryLink`): slices D and S.
 - **Rail and trains:** M7's TRAIN_ARRIVED and TRAIN_UNWATCHED reach conflict through
   `industry::journaled` after `shared::catch_up` to the record's time, so they follow the records
   like every other journaled record (§4.4's note).
@@ -1511,7 +1531,9 @@ RP-205); the re-decided raid's op is one Java forgot, and it is applied again. J
 journal on disk after the raid, the train's goods from before it; Java remembers the op and answers
 DUPLICATE, so the restored train keeps its goods while the re-decided raid credits the raider
 again. Since slice U the journal's file is the last SavedData a world save writes (RP-200), so J4
-needs a tracks write that failed while the journal's succeeded.
+needs a tracks write that failed while the journal's succeeded; since slice U-g such a write holds the
+journal's file until the tracks have written (U-g1), so the resend is applied against the train's ring,
+exact. An op answered inside the engine's pages is still lost then (§9.6's residual 10, RP-317, P29).
 
 **Slice U and the ring's bound** (RP-192, RP-205): the 256 ops cover the ops a train takes while the
 journal's file is behind, which RP-192 put at four autosaves at most. Since RP-205 a hold a later save
@@ -1636,6 +1658,19 @@ rustfmt only on files whose base is clean (protocol.rs is not: hand-format). The
 player positions only in the first hand-over at each game time. A long replay needs enough fillers
 to span three or more hand-overs on a `MIN_CAPACITY` engine (`MAX_RECORD + 128`, about 64 KB):
 4,000 small records, not 1,500.
+
+**Crash tests replay over several hand-overs (slice R, RP-276 in docs/choices-mowzie-build.md).** A
+replay of one hand-over hides every fault that needs a later replayed hand-over to meet what an earlier
+one did: slice R's industry crash tests passed on one hand-over and failed on several (other op ids, a
+station exchange loaded twice, a chunk reconciled twice). So every crash test of a module's own slice
+replays at least two hand-overs (fillers after the pages and a `MIN_CAPACITY` reopen), asserts the count
+(`stats.replay_handovers`), and the slice has one test with nine or more; a one-hand-over test stays
+only as a control. Start the reopened harness at the world's present (`Java::open` resets game time to
+1000; `mc_tick` then follows the fake world). Take the crash test's save by call count, not by load:
+tick until the engine has applied the save's `through`, then wait for durability without ticking
+(rtsim-jni tests/industry.rs `mc_tick_until_durable`, RP-259); ticking while the IO lane writes moves
+the world, the journal and the replay with the machine's load. This is filed for the dragons' (§9.2), herds' (§9.4),
+ships' (§9.5) and conflict's crash tests, in their own slices; slice R changed none of their tests.
 
 ### 9.1 Slice C: the flag, the replay end, the clock, conflict
 
@@ -2034,8 +2069,8 @@ its files on disk, the rest from the save before. Two directions:
 | I3 | reconcile deposit draws (Ore Excavation, Destroy crude and chunk pollution) | chunk exact; the pollution ledger cannot be A now | chunk exact; the ledger's ring refuses a second booking (RP-207) | not drawn but delivered, dupe | given-up notes |
 | I4 | IND_DEPOSIT_DELTA, Diesel `cdg_oil_chunks` | cannot happen (RP-200), except after a failed write of the oil file, which is not marked yet (residual 11) | exact: the oil file's ring (RP-204) | n/a (not noted) | none |
 | I5 | IND_DEPOSIT_DELTA, Destroy level pollution and the ledger | cannot happen (RP-200; the ledger's failed write is held, U-g1), except level pollution after a failed write of `neoforge_data_attachments` (residual 11) | exact: one ring per file (RP-207); the ledger lost alone: short by the delta | n/a | none (residual 4) |
-| K1 | IND_CARRIAGE_DELTA, `create_tracks` | cannot happen (RP-200; a failed tracks write holds the journal's file, U-g1) | exact: T2's train ring (RP-190 on, pruned at the engine's acknowledgement, RP-250), with its mixin applied | n/a | slice T2's limits (residual 6) |
-| K2 | IND_WRITE_PACKAGE, offline buffer | cannot happen (RP-200; U-g1 as K1) | the tracks newer than the chunk: exact, the port's buffer ring (RP-206, pruned at the engine's acknowledgement, RP-209), with its mixins applied. The postbox's chunk newer (its background save, the usual state between world saves): exact through RP-206's hooks, the chunk carrying the ops a restore brought in and the first offline write reading the chunk as saved; residual 8 where they do not reach | n/a | residual 8 |
+| K1 | IND_CARRIAGE_DELTA, `create_tracks` | cannot happen (RP-200; a failed tracks write holds the journal's file, U-g1), except an op answered inside the engine's pages: loss (residual 10, P29; pinned) | exact: T2's train ring (RP-190 on, pruned at the engine's acknowledgement, RP-250), with its mixin applied | n/a | slice T2's limits (residual 6); slice U-h (residual 10) |
+| K2 | IND_WRITE_PACKAGE, offline buffer | cannot happen (RP-200; U-g1 as K1), except an op answered inside the engine's pages: loss (residual 10, P29; inferred) | the tracks newer than the chunk: exact, the port's buffer ring (RP-206, pruned at the engine's acknowledgement, RP-209), with its mixins applied. The postbox's chunk newer (its background save, the usual state between world saves): exact through RP-206's hooks, the chunk carrying the ops a restore brought in and the first offline write reading the chunk as saved; residual 8 where they do not reach | n/a | residual 8; slice U-h (residual 10) |
 | K3 | IND_WRITE_PACKAGE, loaded postbox | exact (noted) | exact: the chunk's carried result when loaded at the resend, the port's postbox ring when not (RP-206). The tracks newer than the chunk (either file can be the newer: chunks save between world saves, the tracks only at one): written again when loaded, exact; refused when unloaded, the package only in Create's unprimed mirror, a loss. Goods moved out of the chunk before it saved, then the write reapplied: dupe | loss | the coordinator (Create slice) |
 | K4 | IND_WRITE_CHAIN, frogport | exact (noted) | exact when loaded; unloaded: FAILED then REASSERT, a possible double booking (inferred); goods pushed out before the save: dupe | loss | the coordinator (Create slice) |
 | K5 | reconcile through PostboxAccess, the tracks mirror | exact | the mirror taken by a train while the postbox is unloaded, then reapplied: dupe, independent of the journal | loss or dupe by sign | the coordinator (Create slice) |
@@ -2043,7 +2078,7 @@ its files on disk, the rest from the save before. Two directions:
 | K8 | repair schematics from I2's destroys | schematic lost (low value) | a second schematic (low value) | n/a | the coordinator (Create slice) |
 | F1 to F3 | camp spawn, adopt, take and remove | exact (noted by holder) | exact | F1 written off after 3 misses and 2 days, loss; F2, F3 exact | none |
 | F4 | ENVOY tribute | cannot happen (player data first) | paid, not credited: loss | n/a | none |
-| D1, D3 | PLACE_LAIR and PLACE_NEST requests (module SavedData) | cannot happen (RP-200; a failed write is held, U-g1) | exact | n/a | none |
+| D1, D3 | PLACE_LAIR and PLACE_NEST requests (module SavedData) | cannot happen (RP-200; a failed write is held, U-g1), except a request answered inside the engine's pages: lost (residual 10, inferred) | exact | n/a | slice U-h (residual 10) |
 | D2, D4, D6, D8 | lair placement, nest carve, worms, adopt | loss | a second roost, a second chamber, worms placed again; the adopted dragon lost (D8) | n/a | the Mowzie lead, slice N2 |
 | D5 | NEST_RENEW | loss or exact | worms owed twice (RP-14); JL widens its route at map capacities of 32 and up | n/a | slice N, which lands before slice U |
 | D7 | NEST_SORTIE | a raid decided again in the replayed window is dropped (§7.2, RP-15): its visible worms are lost, never shown twice (the audit read a doubled raid: harm, no goods) | same | n/a | none (§10 item 1) |
@@ -2114,12 +2149,37 @@ its files on disk, the rest from the save before. Two directions:
    dupe, measured. A negative delta is a dupe by the same mechanism (inferred, not run). The fixes the
    audit gives: carry and note the reconcile in both halves' chunks, or reconcile each half by its own
    position. Owner: the coordinator decides.
+10. **A failed SavedData write, answered inside the pages** (RP-317, found by slice R; numbered 10 because
+    slice U-b's residual 9, the double chest, landed first). Vanilla's `SavedData.save` (NeoForge's patch)
+    clears the dirty flag and queues the write on the IO worker, which logs an IOException and goes on, so
+    the journal's task, last in that chain, still wrote the journal's file: crash class 1's "always B"
+    assumed every write succeeded, and a crash before a later save wrote that file again was direction A for
+    the ops whose effect the file holds (the journal remembers the op, its resend is trimmed, refused or
+    never made, and the effect is missing while the engine books it). Closed for the files the journal
+    depends on by slice U-g (U-g1): a failed write of Create's tracks or of our own SavedData marks the data
+    dirty again and holds the journal's file at the save before until the data has written, which is B, exact
+    by the rings. R's written case is exact under the hold: a station exchange in the pages' outbox when the
+    pages were saved is resent once and applied once (rtsim-jni `tests/industry.rs`,
+    `a_station_exchange_written_before_the_pages_is_applied_once_when_its_trains_save_fails`, R's test
+    restarted with the held journal, and `held_journal`'s written test, which also runs the failed save's
+    journal and shows R's loss; an op decided past the pages is applied again, RP-311, and the ring is the
+    only check, `TrainWatch` and `WritePackages`). What stays of this item is an op **answered inside the
+    pages**: the pages are written whatever happens to the data (P29), so after a failed tracks write and a
+    crash the engine does not send it again, the held journal and the older tracks file do not have it, and
+    it is lost, with the hold or without (pinned for K1 by
+    `a_station_exchange_answered_before_the_pages_is_lost_with_its_trains_save` and by `held_journal`'s
+    `a_station_exchange_answered_inside_the_pages_is_still_lost_with_the_journal_held_p29`: 224 crushed raw
+    iron missing from the train, still on the books; K2, D1 and D3 inferred, the placement request lost for
+    D1 and D3 where the placer dedups by field, not by the journal). The case is slice U-h's (P29's confirm
+    on WORLD_SAVED, docs/choices-leg-purge.md LP12); everything else the hold leaves is residual 11. It
+    needs a failed disk write and then a crash before that file is written again, and it was slice U's
+    (RP-200), not slice R's (the build lead, RP-317).
 11. **A failed SavedData write: what the hold leaves** (RP-317, slice U-g, docs/choices-journal-barrier.md
-    U-g1 to U-g10). Vanilla's `SavedData.save` clears the dirty flag and only logs a failed write, so a
-    tracks write that failed while the journal's succeeded, then a crash, was direction A for every train op
-    the restored pages had decided (RP-200's "always B" assumed every write succeeds). A failed write of a
-    `JournalDependent` file (Create's tracks, our own SavedData) now holds the journal's file at the save
-    before until the data has written: B, which the rings make exact. Left:
+    U-g1 to U-g12). Item 10 has the mechanism. A failed write of a `JournalDependent` file (Create's tracks,
+    our own SavedData) re-marks the data dirty and holds the journal's file at the save before until the
+    data has written: B, which the rings make exact. The hold has a limit (U-g12): a file that fails at 12
+    world saves in a row (PLACEHOLDER) stops holding, logged once, and the journal goes on without it: A for
+    that file until it writes again. Left:
     - ~~**The engine's pages are ahead (P29).**~~ **Closed by slice U-h** (docs/choices-journal-barrier.md
       U-h1 to U-h12; docs/choices-leg-purge.md LP12 option (a)). The pages were requested at the save's
       start and written, and acknowledged, whatever happened to the data. Now the save is a pending
@@ -2129,11 +2189,15 @@ its files on disk, the rest from the save before. Two directions:
       now both applied once (rtsim-jni `held_journal`, the two tests; X is decided again from the
       older pages under the same op). The case that stays open under it is the stop's, below.
     - **Files not marked:** Diesel's `cdg_oil_chunks` (I4) and NeoForge's `neoforge_data_attachments`
-      (Destroy's level pollution, I5, and every plugin's rings): a failed write of one is still A.
+      (Destroy's level pollution, I5, and every plugin's rings): a failed write of one is still A. For
+      the deposit deltas (inferred, not run) `Industry` checks the journal's applied index before the
+      ring, so a resent deposit op the journal holds is refused DUPLICATE on either side of the pages;
+      the sign follows the delta: a draw stays in the ground while the engine books it drawn, a dupe.
     - A stop with a write outstanding keeps the older journal file (U-g7), and the pages the stop
       saves are ahead of it: `close(save = true)` confirms its final save at once (U-h8). Slice U-i's:
       `nClose` carries `writtenThrough` and the engine confirms only through it. The data whose level
-      was dropped is abandoned and the journal goes on without it (U-g5): A for it, logged.
+      was dropped is abandoned and the journal goes on without it (U-g5), and a file given up on (U-g12)
+      no longer holds it: A for each of them, logged.
 
 **Rings and the module switch (a rule for every ring).** Saving and loading a ring of applied ops never
 depends on a module switch: the train's, the station port's, the oil file's, level pollution's, the
@@ -2176,7 +2240,9 @@ chunk newer than the tracks file, the fallbacks, the module switch and the ackno
 Slice U-g: core `SavedDataWriteHoldGameTests` (3: a failed write of a marked data holds the journal's file
 byte for byte until the data writes; the industry data; no hold for another directory or an unmarked
 data), create `TracksWriteHoldGameTests` (a real `RailwaySavedData`), core `SavedDataWritesTest`, and
-rtsim-jni `held_journal` (the written exchange and, since slice U-h, the answered one, each applied once with the journal held).
+rtsim-jni `held_journal` (the written exchange and, since slice U-h, the answered one, each applied once with the journal held)
+and slice R's two J4 tests, restarted with the held journal (the written one applied once; the answered one, which
+slice U-h flips to applied once too).
 Slice U-h: rtsim-jni `confirm` (F1 to F8, F14: the confirm on WORLD_SAVED, the start's selection, the budget hold and
 its valve, the stop), the pressure tests in `archive` and `protocol`, `ack_never_resends`' held autosave, rtsim-host
 `the_viewer_and_the_fork_read_the_save_before_an_unconfirmed_one`, `BoundaryProtocolTest` (the trim clamp and the start's

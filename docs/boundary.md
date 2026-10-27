@@ -2045,16 +2045,17 @@ memory by `setTradedPlayersCompound`) before its stack, spawn line or hand-back 
   to the live chief's body, the chief's trade memory. A tribute the grove took in (CHIEF_PAID,
   TRIBUTE_PAID, a gift) is owed to its chest; with HAVEN_CHEST known and free slots, at each new
   payment, chest record and CAMP_CENSUS while the camp is in, the engine takes
-  one stack (64 items at most, the tribute good only) out of the faction's stock and writes it as a
+  one stack (64 items at most, the tribute good only) of what it owes and writes it as a
   TRANSFER_TO_CONTAINER through the core's outbox under an op id derived from the faction and a
   saved counter, the good and the amount (the same decision re-derived after a crash is the same op,
   a different one never is, §2.2), so a restart sends it again and Java answers DUPLICATE_OP
   (MZB-446). When a crash loses the pages but keeps the chest's chunk, the replay decides its stacks
   from everything it owes, ops the plugin never saw, and puts them down on top of the stacks the chunk
   kept: the gift is every stack answered since the last save (not one stack), the journal ahead of the
-  world, and nothing is ever lost (MZB-446, amended at the re-check). APPLIED or
-  DUPLICATE_OP lowers what is owed and sends the next stack; FAILED returns the goods and forgets the
-  chest. A raid on an unwatched district leaves a hunt owed (`Faction.hunts`, MZB-424): OWED_HUNT for
+  world, and nothing is ever lost (MZB-446, amended at the re-check). What is owed is earmarked
+  at the payment: booked into the world's held, out of the haven market's reach, never stocked
+  (MZB-930). APPLIED or DUPLICATE_OP books the stack out of the earmark to the players, lowers what
+  is owed and sends the next stack; FAILED moves nothing and forgets the chest. A raid on an unwatched district leaves a hunt owed (`Faction.hunts`, MZB-424): OWED_HUNT for
   each district, a new raid on the same district replacing it with the counts added and capped, and
   HUNT_APPLIED clears the one with its op id whatever `killed` is; an answer for the op a hunt replaced
   leaves the hunt held at its `rest` and sends it again with that count and no `replaced`, and any other op

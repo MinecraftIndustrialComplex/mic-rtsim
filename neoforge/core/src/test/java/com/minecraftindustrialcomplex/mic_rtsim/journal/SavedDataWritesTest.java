@@ -156,4 +156,110 @@ class SavedDataWritesTest {
         loud.forgetForTest(dir);
         assertFalse(loud.failing() > 0);
     }
+
+    /** A server stopped in a JVM that goes on (an integrated server's next world): nothing of the last one is left (U-g11). */
+    @Test
+    void aStoppedServerLeavesNothingBehind() {
+        Data d = new Data();
+        writes.failed(d, dir.resolve("a.dat"), new IOException("full"));
+        writes.failed(d, dir.resolve("b.dat"), new IOException("full"));
+        writes.remarkAll();
+        writes.written(dir.resolve("b.dat"));
+        writes.reset();
+        assertEquals(0, writes.failing());
+        assertNull(writes.firstFailing(List.of(dir)));
+        assertEquals(0, writes.failures());
+        assertEquals(0, writes.recovered());
+        assertEquals(0, writes.remarked());
+        assertEquals(0, writes.abandoned());
+        assertEquals(0, writes.gaveUp());
+        assertEquals(-1, writes.lastFailureThreadId());
+        assertEquals(-1, writes.lastRemarkThreadId());
+        writes.failed(d, dir.resolve("a.dat"), new IOException("full again"));
+        assertEquals(3, errors.size(), "a new server's first failure is logged again: " + errors);
+    }
+
+    /** More than one failing file: the journal's write goes ahead only when every one of them has written. */
+    @Test
+    void severalFailingFilesAllHaveToWriteBeforeTheHoldEnds() {
+        Data d = new Data();
+        Path a = dir.resolve("data").resolve("a.dat"), b = dir.resolve("data").resolve("b.dat");
+        writes.failed(d, a, new IOException("full"));
+        writes.failed(d, b, new IOException("full"));
+        assertNotNull(writes.holdFor(List.of(dir)));
+        writes.written(a);
+        String still = writes.holdFor(List.of(dir));
+        assertNotNull(still, "b still holds");
+        assertTrue(still.contains("b.dat"), still);
+        writes.written(b);
+        assertNull(writes.holdFor(List.of(dir)));
+    }
+
+    /** The give-up (U-g12): after N held world saves a file stops holding; its record stays until it writes. */
+    @Test
+    void aFileStopsHoldingAfterTheLimitAndItsRecordStaysUntilItWrites() {
+        Data d = new Data();
+        Path file = dir.resolve("data").resolve("create_tracks.dat");
+        writes.giveUpAfterForTest(3);
+        writes.failed(d, file, new IOException("full"));
+        for (int i = 1; i <= 3; i++) {
+            assertNotNull(writes.holdFor(List.of(dir)), "held at world save " + i);
+            assertEquals(0, writes.gaveUp());
+        }
+        assertTrue(writes.holds(file));
+        assertNull(writes.holdFor(List.of(dir)), "the 4th save goes on");
+        assertEquals(1, writes.gaveUp());
+        assertEquals(2, errors.size(), "the failure and the give-up, each said once: " + errors);
+        assertTrue(errors.get(1).contains("create_tracks.dat") && errors.get(1).contains("3"), errors.get(1));
+        assertNull(writes.holdFor(List.of(dir)));
+        assertNull(writes.firstFailing(List.of(dir)), "given up: the pure question says so too");
+        assertFalse(writes.holds(file), "and so does the marker's");
+        assertEquals(1, writes.gaveUp(), "counted once");
+        assertEquals(2, errors.size(), "said once");
+        writes.failed(d, file, new IOException("still full"));
+        assertNull(writes.holdFor(List.of(dir)), "a later failure of the same streak does not hold again");
+        assertEquals(1, writes.failing(), "the record stays: the data is still marked dirty at every world save");
+        writes.remarkAll();
+        assertEquals(1, d.remarks.get());
+
+        writes.written(file);
+        assertEquals(0, writes.failing());
+        assertEquals(1, infos.size());
+        assertTrue(infos.get(0).contains("given up"), infos.get(0));
+        writes.failed(d, file, new IOException("full again"));
+        assertNotNull(writes.holdFor(List.of(dir)), "a new streak holds again from its first save");
+        assertEquals(1, writes.gaveUp());
+    }
+
+    /** One file given up does not release the journal while another still holds it. */
+    @Test
+    void aGivenUpFileLeavesTheOthersHolding() {
+        Data d = new Data();
+        Path a = dir.resolve("data").resolve("a.dat");
+        writes.giveUpAfterForTest(1);
+        writes.failed(d, a, new IOException("full"));
+        assertNotNull(writes.holdFor(List.of(dir)));
+        writes.failed(d, dir.resolve("data").resolve("b.dat"), new IOException("full"));
+        String second = writes.holdFor(List.of(dir));
+        assertNotNull(second, "a is given up at this save, b holds (its first)");
+        assertTrue(second.contains("b.dat"), second);
+        assertEquals(1, writes.gaveUp());
+    }
+
+    /** A data whose re-mark throws never aborts the world save, nor the other files' re-marks; the failure is said once (P3-8). */
+    @Test
+    void aReMarkThatThrowsIsLoggedOnceAndDoesNotStopTheOthers() {
+        JournalDependent bad = () -> {
+            throw new IllegalStateException("remark broke");
+        };
+        Data good = new Data();
+        writes.failed(bad, dir.resolve("a.dat"), new IOException("full"));
+        writes.failed(good, dir.resolve("b.dat"), new IOException("full"));
+        writes.remarkAll();
+        writes.remarkAll();
+        assertEquals(2, good.remarks.get(), "the other file is marked at every save");
+        long remarkErrors = errors.stream().filter(e -> e.contains("remark broke")).count();
+        assertEquals(1, remarkErrors, "said once: " + errors);
+        assertEquals(2, writes.failing(), "both are still on record");
+    }
 }
