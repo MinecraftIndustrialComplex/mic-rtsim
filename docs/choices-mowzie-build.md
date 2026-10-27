@@ -11554,6 +11554,12 @@ said "All pass" (corrected above). Lines here are at the fix's commit.
     U-d (the coordinator's decision); it needs one more step than the option names: a failed write must
     also mark its data dirty again, since vanilla clears the flag either way and the hold would
     otherwise wait for an unrelated change to that file.
+  - *Closed at the merge with slice U-g* (docs/choices-journal-barrier.md U-g1, "Merged with slice R"):
+    the hold is (b). A failed write of Create's tracks or of our own SavedData now holds the journal's
+    file at the save before, so the written case of this record's two tests is exact: the first test,
+    restarted with the held journal, is now `a_station_exchange_written_before_the_pages_is_applied_once_
+    when_its_trains_save_fails`; the answered one stays lost, as P29 (slice U-h), and is residual 10 of
+    docs/replay-gate.md 9.6, which points at residual 11 for what the hold leaves.
 - **RP-318** (the build lead's re-check of RP-313: two tests it found missing, both on the module-off
   path of a replayed answer). Tests only: no source changed, and each mutation was reverted
   (engine/industry.rs is at its base). The record's sequences are in tests/industry.rs, `mod
