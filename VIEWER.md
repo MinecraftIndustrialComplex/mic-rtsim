@@ -799,14 +799,18 @@ Each chunk carries the save serial and the `obs_seq` of the save it was flushed 
 
 - **The cut.** The engine opens the archive before anything new is written. It cuts every chunk
   whose serial is above the serial in the pages of the generation it starts from
-  (`Archive::cut_above_serial`). That generation is the last one Java's journal was trimmed behind:
-  the start first rolls back the generations saved for the modules' budgets (PF15) with
-  `PageStore::rollback`.
+  (`Archive::cut_above_serial`). That generation is the one the world's journal file holds (slice
+  U-h, P29): the start selects it with `PageStore::select_for_journal` before anything loads,
+  keeping a generation the journal holds (a world save whose WORLD_SAVED had not come, a budget
+  save, PF15) and rolling back one it lacks. Before U-h it was the last one Java's journal was
+  trimmed behind: the start rolled back every pending generation.
 - **What the cut gives.** After a crash, the archive never describes events that the rolled-back
   sim will make differently, and the journal's replay records them once.
 - **Failed and stale saves.** Their chunks stay, and they are consistent: the next save's generation
   includes everything up to its own snapshot, and it has a higher serial.
-- **Compaction** never touches a chunk whose serial is above the confirmed generation's.
+- **Compaction** never touches a chunk whose serial is above the confirmed generation's. A world
+  save's generation is confirmed by WORLD_SAVED (U-h), so the archive compacts through the save
+  before the one a save is waiting on.
 - **Readers.** The sidecar never cuts anything. It ignores chunks above the generation it reads, by
   `obs_seq`, because that is the number it knows (it does not read the serial page), so it may
   show a rolled-back save's chunks that share the generation's `obs_seq`. A fork (§12) copies the
@@ -1122,7 +1126,9 @@ For Deep Time's coordinator to review.
 
 **V2 as built** (feat/viewer-host, 2026-10-21), where it differs from §12:
 - **`rtsim-cli export <world> <dir>`** copies the world's confirmed page generation through the
-  read-only open, page by page, then the Java journal, `level.dat`, the server config, the Deep Time
+  read-only open (since slice U-h a world save's generation is confirmed by WORLD_SAVED, so a viewer or
+  a fork shows the save before the one a world save is waiting on, one world save behind; the fork's
+  pages and journal are then always a pair the engine's start accepts), page by page, then the Java journal, `level.dat`, the server config, the Deep Time
   manifest, Surveyor's summaries of every dimension and the archive, cut above the copied generation
   as the engine's start cuts it (§10.5). When the server moves on during the copy it starts again. It
   never writes into the world and refuses a fork inside the world or the world inside the fork. A

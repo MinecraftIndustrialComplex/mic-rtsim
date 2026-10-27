@@ -299,6 +299,17 @@ public final class JournalSavedData extends SavedData {
         return writtenThrough;
     }
 
+    /**
+     * GameTests only: the file on disk is taken to hold everything through {@code through}, as it does once a world
+     * save's write lands (the marker, WORLD_SAVED, then reports it). A test that has the scripted engine acknowledge
+     * without a world save calls it so the bridge's clamp (JB9) lets the acknowledgement trim, which is what that test
+     * is about; the clamp's own tests (JournalBarrierGameTests) do not.
+     */
+    public void fileLandedForTest(long through) {
+        if (through > writtenThrough)
+            writtenThrough = through;
+    }
+
     /** Files written since the server started (the GameTests read it). */
     public long writes() {
         return writes.get();

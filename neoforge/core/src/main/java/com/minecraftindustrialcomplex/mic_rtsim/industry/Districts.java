@@ -1126,6 +1126,28 @@ public final class Districts {
             for (long c : dirtyHere)
                 schedule(c);
             scheduleDistricts(affected);
+            // The ring (SECTIONS.md §2.1, SC184), after the edit's own chunks and districts, whatever the kind of detection: an
+            // edit can end up in a full one (the periodic pass, rescanSoon, a requeue), and a periodic pass with no edits has
+            // none, so it costs nothing.
+            for (long c : dirtyHere)
+                scheduleRing(c);
+        }
+
+        /**
+         * The ring of the edited chunk {@code c} (SECTIONS.md §2.1, SC184): each loaded chunk beside it that no district holds
+         * and that is not excluded, asked about as a root after the edit's own chunks. root() roots it only if it holds a
+         * station, which is the common build order (a station first, the factory beside it later, nothing of it against the
+         * station, so no touch reaches it). At most eight a dirty chunk, each read once (holdsStation caches by chunk) and
+         * counted in the budget by root(); a chunk that is not loaded is never asked, and getChunkNow never loads one.
+         */
+        private void scheduleRing(long c) {
+            for (int dx = -1; dx <= 1; dx++)
+                for (int dz = -1; dz <= 1; dz++) {
+                    long n = ChunkPos.asLong(ChunkPos.getX(c) + dx, ChunkPos.getZ(c) + dz);
+                    if (n != c && index.get(n) == null && !excluded.contains(n)
+                            && level.getChunkSource().getChunkNow(ChunkPos.getX(n), ChunkPos.getZ(n)) != null)
+                        schedule(n);
+                }
         }
 
         private void schedule(long c) {
@@ -1157,8 +1179,10 @@ public final class Districts {
                     // Not counted: scheduled behind the cursor too, because a root that found the chunk unloaded counted nothing.
                     scheduled.add(c);
                     pending.add(c);
+                    scheduleRing(c);
                     continue;
                 }
+                scheduleRing(c);
                 LevelChunk chunk = level.getChunkSource().getChunkNow(ChunkPos.getX(c), ChunkPos.getZ(c));
                 if (chunk == null)
                     continue; // unloaded since: its district keeps the seeds it recorded, and the adopt's seeds wait for the chunk
@@ -1338,7 +1362,7 @@ public final class Districts {
                 if (!excluded.contains(n) && visited.add(n))
                     queue.enqueue(n);
             };
-            int cost = 1 + scanChunk(level, chunk, scan, excluded, reach);
+            int cost = 1 + scanChunk(level, chunk, scan, excluded, index, reach);
             // A block whose links are not known yet keeps its chunk's saved joins (SC4): what they join is walked too.
             District old = index.get(c);
             if (old != null && scan.keepJoins.contains(c))
@@ -1882,8 +1906,12 @@ public final class Districts {
         return false;
     }
 
-    /** Looks at every block entity of a loaded chunk and records what it holds in {@code scan}. Returns the block entities looked at. */
-    private int scanChunk(ServerLevel level, LevelChunk chunk, Scan scan, LongOpenHashSet excluded, java.util.function.LongConsumer reach) {
+    /**
+     * Looks at every block entity of a loaded chunk and records what it holds in {@code scan}. Returns the block entities looked at.
+     * {@code index} is the chunk-to-district index as the detection began.
+     */
+    private int scanChunk(ServerLevel level, LevelChunk chunk, Scan scan, LongOpenHashSet excluded, Long2ObjectOpenHashMap<District> index,
+            java.util.function.LongConsumer reach) {
         long c = chunk.getPos().toLong();
         List<Candidate> candidates = new ArrayList<>();
         IndustryPlugin.ScanNotes notes = new IndustryPlugin.ScanNotes() {
@@ -1964,10 +1992,18 @@ public final class Districts {
                     // A chain conveyor or a station joins nothing by touch (J1): it carries packages or trains
                     // between districts. A station's touch still names J6's candidates.
                     if (!joinsByTouch || !touchJoins(nbe)) {
+                        boolean nStation = isStation(nbe);
                         if (station)
                             scan.stationTouches.add(new long[] {c, nc});
-                        else if (isStation(nbe))
+                        else if (nStation)
                             scan.stationTouches.add(new long[] {nc, c});
+                        // J6 only sees the chunks the walk looked at (SC184): a station placed before what touches it is in
+                        // no district, and nothing else would walk its chunk again. The walk reaches it with no join, so its
+                        // own joins are followed and, with no seed in its group, J6 alone attaches it (a station that touches
+                        // a station too). One a district holds is walked with that district, and reaching it from here would
+                        // pull the district's whole walk into this edit.
+                        if (nStation && !excluded.contains(nc) && !index.containsKey(nc))
+                            reach.accept(nc);
                         continue;
                     }
                     scan.touches.add(new Touch(c, nc, p, n));
