@@ -1862,8 +1862,8 @@ impl Engine {
                 match st.replay.reconcile(ObsSeq(jf), ObsSeq(world_next)) {
                     Reconcile::InSync => {}
                     Reconcile::EngineAhead { pages, world_next } => log_warn(&format!(
-                        "the engine's pages include observation {} but the world save only reaches {} (P29, open): \
-                         the replay skips what the pages have",
+                        "the engine's pages include observation {} but the world save only reaches {} (both page \
+                         generations are ahead of the journal, P29): the replay skips what the pages have",
                         pages.0,
                         world_next.0.saturating_sub(1)
                     )),
