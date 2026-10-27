@@ -86,7 +86,7 @@ public final class TracksWriteHoldGameTests {
                     check("the tracks data was marked dirty again and tried again: " + SavedDataWrites.INSTANCE.failures() + " failures since this test began",
                             SavedDataWrites.INSTANCE.failures() == kit.failuresBefore + 2);
                     check("the mark was made on the server thread, by the save's start, not by the IO chain", kit.remarkedOnTheServerThread());
-                    check("two holds counted", kit.journal.savedDataHeld() == 2);
+                    check("two holds counted, in one streak (logged once)", kit.journal.savedDataHeld() == 2 && kit.journal.savedDataStreaks() == 1);
                     kit.diskFree();
                     kit.journalMoves(); // nothing of the tracks data changes: only the mark brings it to this save
                     kit.save();
