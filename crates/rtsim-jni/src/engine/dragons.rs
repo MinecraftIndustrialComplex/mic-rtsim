@@ -614,6 +614,12 @@ fn ingest(st: &mut State, o: &Obs, at: Tick) {
         reset(st);
     }
     let at = at.max(shared::floor(st, st.dragons.engine.now()));
+    // Phase 1's kept inputs up to the tick the engine is about to run the shared world to go in
+    // first, each at its own tick (RP-300): a latest-state record applies at the hand-over's time,
+    // which the engine's `run_until` reaches whether or not the dragons run yet. The floor again
+    // after them: the drain may have run the world (and the dragons) on.
+    super::phase1::drain_before_run(st, at);
+    let at = at.max(shared::floor(st, st.dragons.engine.now()));
     // A copy (REASSERT) of an ended session's record is applied by identity, never against a
     // body (docs/replay-gate.md §2.3, §5.7, RP-8, RP-9).
     let copy = st.applying_copy.is_some();
