@@ -1448,6 +1448,833 @@ fn phase1_puppet_records_replayed_after_a_crash_are_still_booked() {
     e.close(true, Duration::from_secs(5)).unwrap();
 }
 
+// ---- phase 1 switched off (RP-300) ------------------------------------------------------------------
+
+/// The rule (docs/choices-journal-barrier.md RP-300): the switch gates only new decisions; every
+/// record of what already happened is heard; a record applied while off goes in at its own tick,
+/// never at the frozen clock. The engine acknowledges each journaled record it admits whatever a
+/// module's switch, and Java then drops what refused a repeat (the journal's applied index, a
+/// chunk's carried copy), so a record phase 1 ignored while off was lost for good: a caravan the
+/// player robbed or traded with between the switch-off and the despawn kept, in the sim's row, the
+/// goods the player now has.
+mod p1_off {
+    use super::*;
+
+    pub const OFF: u32 = 0b0111;
+    pub const ON: u32 = 0b1111;
+    pub const CARAVAN_TRADES: usize = 3;
+    pub const ROBBERIES: usize = 5;
+    pub const REPORTS: usize = 6;
+
+    /// Waits for the engine to finish the last step Java submitted.
+    pub fn step_done(e: &Engine, j: &Java) {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while e.stats_array()[1] < j.submitted {
+            assert!(
+                Instant::now() < deadline,
+                "step {} never finished",
+                j.submitted
+            );
+            std::thread::sleep(Duration::from_micros(100));
+        }
+    }
+
+    /// MODULES to `mask` handed over and heard by the engine (a step that writes the puppets'
+    /// despawns); then `window` journals its records, and only then does Java apply what that step
+    /// wrote, so the despawn's answer (DEMATERIALIZED) comes after the window's records, as it does
+    /// in game, where a despawn takes a tick or more to be carried out.
+    pub fn switch_then(e: &Engine, j: &mut Java, mask: u32, window: impl FnOnce(&mut Java)) {
+        j.modules(mask);
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while !j.hand_over() {
+            assert!(Instant::now() < deadline, "no submit possible");
+            std::thread::sleep(Duration::from_micros(100));
+        }
+        step_done(e, j);
+        j.game_time += 1;
+        window(j);
+        j.apply_commands();
+        j.game_time += 1;
+    }
+
+    /// A MEMBER_STATE: what member `member`'s chest held when the bridge captured it.
+    pub fn member_state(j: &mut Java, agent: u64, epoch: u32, member: u32, items: &[(&str, i32)]) {
+        use obs::member_state as k;
+        let ids: Vec<u32> = items
+            .iter()
+            .map(|(n, _)| j.dict_id(wire::DICT_ITEM, n))
+            .collect();
+        let body = j.dict_id(wire::DICT_BODY, "minecraft:llama");
+        j.journal(obs::MEMBER_STATE, k::size(items.len()), member, |r| {
+            wire::put_u64(r, k::AGENT, agent);
+            wire::put_u32(r, k::EPOCH, epoch);
+            wire::put_u32(r, k::BODY_KIND, body);
+            wire::put_u32(r, k::ITEM_COUNT, items.len() as u32);
+            for (i, ((_, n), id)) in items.iter().zip(&ids).enumerate() {
+                let it = k::ITEMS + i * obs::item::SIZE;
+                wire::put_u32(r, it + obs::item::SLOT, i as u32);
+                wire::put_u32(r, it + obs::item::ITEM, *id);
+                wire::put_i32(r, it + obs::item::COUNT, *n);
+            }
+        });
+    }
+
+    /// A stack to rob: (member, item, how many), preferring a good that is not a coin.
+    pub fn stack_to_rob(cargo: &[(u32, String, i32)]) -> (u32, String, i32) {
+        let (m, i, n) = cargo
+            .iter()
+            .find(|(_, i, _)| i != EMERALD)
+            .unwrap_or(&cargo[0]);
+        (*m, i.clone(), (*n).min(3))
+    }
+
+    /// Member `member`'s chest after `taken` of `item` left it.
+    pub fn chest_after(
+        cargo: &[(u32, String, i32)],
+        member: u32,
+        item: &str,
+        taken: i32,
+    ) -> Vec<(String, i32)> {
+        let mut left = taken;
+        cargo
+            .iter()
+            .filter(|(m, _, _)| *m == member)
+            .map(|(_, i, n)| {
+                let cut = if i == item { left.min(*n) } else { 0 };
+                left -= cut;
+                (i.clone(), n - cut)
+            })
+            .filter(|(_, n)| *n > 0)
+            .collect()
+    }
+
+    /// The first selling offer of `agent`'s merchant offers: (cost item, count, result item, count).
+    pub fn selling_offer(j: &Java, agent: u64) -> Option<(String, i32, String, i32)> {
+        use cmd::merchant_offers as k;
+        let offers = j.p1_of(cmd::MERCHANT_OFFERS);
+        let o = offers
+            .iter()
+            .rfind(|o| wire::u64_at(o, k::AGENT) == agent)?;
+        (0..wire::u32_at(o, wire::R_AUX) as usize)
+            .map(|i| k::OFFERS + i * k::OFFER)
+            .find(|&p| wire::u32_at(o, p + k::O_FLAGS) == k::O_FLAG_SELLS)
+            .map(|p| {
+                (
+                    j.cmd_name(wire::DICT_ITEM, wire::u32_at(o, p + k::O_COST_A_ITEM)),
+                    wire::i32_at(o, p + k::O_COST_A_COUNT),
+                    j.cmd_name(wire::DICT_ITEM, wire::u32_at(o, p + k::O_RESULT_ITEM)),
+                    wire::i32_at(o, p + k::O_RESULT_COUNT),
+                )
+            })
+    }
+
+    /// A session with a caravan: its page directory, the engine, Java, and its members' cargo
+    /// (member, item, count).
+    pub type CaravanSession = (
+        std::path::PathBuf,
+        std::sync::Arc<Engine>,
+        Java,
+        Vec<(u32, String, i32)>,
+    );
+
+    /// A session with a caravan embodied as `agent`.
+    pub fn caravan_session(tag: &str, agent: u64) -> CaravanSession {
+        let dir = tmpdir(tag);
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        let cargo = phase1_caravan(&e, &mut j, agent);
+        assert!(!cargo.is_empty());
+        (dir, e, j, cargo)
+    }
+
+    /// Switches on again and lets the engine hear it and catch up.
+    pub fn switch_on(j: &mut Java) {
+        j.modules(ON);
+        j.idle();
+        j.idle();
+    }
+}
+
+/// Control for the tests below: a window with no record in it. The despawn answer comes with the
+/// chest as the bridge captured it, and the sim's row agrees: no capture mismatch, nothing booked.
+#[test]
+fn a_quiet_window_of_phase1_off_changes_nothing_and_the_capture_matches() {
+    use p1_off::*;
+    let agent = 0xCA4B_u64;
+    let (_dir, e, mut j, cargo) = caravan_session("p1off-quiet", agent);
+    let member = cargo[0].0;
+    switch_then(&e, &mut j, OFF, |j| {
+        let chest = chest_after(&cargo, member, "", 0);
+        let chest: Vec<(&str, i32)> = chest.iter().map(|(i, n)| (i.as_str(), *n)).collect();
+        member_state(j, agent, 1, member, &chest);
+    });
+    j.idle();
+    j.idle();
+    switch_on(&mut j);
+    assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+    assert_eq!(p1_stat(&e, ROBBERIES), 0);
+    assert_eq!(
+        e.phase1_state().2,
+        0,
+        "the capture matches the sim's row when nothing happened in the window"
+    );
+    e.close(true, Duration::from_secs(5)).unwrap();
+}
+
+/// T1. A caravan the player robs between the switch-off and the despawn: the robbery is a record
+/// of what already happened, and Java will not send it again (the engine acknowledged it). It is
+/// booked once, when phase 1 is on again, and the capture check at the despawn does not call the
+/// row (which does not hold the robbery yet) a mismatch.
+#[test]
+fn a_robbery_heard_while_phase1_is_off_is_booked_once_when_it_is_on_again() {
+    use p1_off::*;
+    let agent = 0xCA4B_u64;
+    let (_dir, e, mut j, cargo) = caravan_session("p1off-rob", agent);
+    let (member, item, n) = stack_to_rob(&cargo);
+    switch_then(&e, &mut j, OFF, |j| {
+        j.robbed(agent, 1, member, &[(&item, n)], wire::JAVA_OP_BIT | 0x7c01);
+        let chest = chest_after(&cargo, member, &item, n);
+        let chest: Vec<(&str, i32)> = chest.iter().map(|(i, n)| (i.as_str(), *n)).collect();
+        member_state(j, agent, 1, member, &chest);
+    });
+    let frozen = e.clocks()[2];
+    j.idle();
+    j.idle();
+    assert_eq!(
+        e.clocks()[2],
+        frozen,
+        "phase 1's world does not run while it is off, the robbery heard or not"
+    );
+    switch_on(&mut j);
+    assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+    assert_eq!(
+        p1_stat(&e, ROBBERIES),
+        1,
+        "the robbery heard in the window is booked, once"
+    );
+    assert_eq!(e.phase1_state().2, 0);
+    e.close(true, Duration::from_secs(5)).unwrap();
+}
+
+/// T1b (item 6). The despawn's capture of a caravan whose robbery is still kept (not yet in the
+/// sim's row) is not a mismatch: the row will hold the robbery once it is booked, and the check
+/// at that time compares the same chest.
+#[test]
+fn a_despawn_capture_with_a_kept_robbery_is_not_a_false_mismatch() {
+    use p1_off::*;
+    let agent = 0xCA4B_u64;
+    let (_dir, e, mut j, cargo) = caravan_session("p1off-capture", agent);
+    let (member, item, n) = stack_to_rob(&cargo);
+    switch_then(&e, &mut j, OFF, |j| {
+        j.robbed(agent, 1, member, &[(&item, n)], wire::JAVA_OP_BIT | 0x7c02);
+        let chest = chest_after(&cargo, member, &item, n);
+        let chest: Vec<(&str, i32)> = chest.iter().map(|(i, n)| (i.as_str(), *n)).collect();
+        member_state(j, agent, 1, member, &chest);
+    });
+    j.idle();
+    j.idle();
+    assert_eq!(
+        e.phase1_state().2,
+        0,
+        "no false capture mismatch: the row has not heard the robbery yet"
+    );
+    e.close(true, Duration::from_secs(5)).unwrap();
+}
+
+/// T2. A trade with the caravan in the window is booked when phase 1 is on again: the goods the
+/// player now has leave the sim's row, the coin it paid joins it.
+#[test]
+fn a_trade_heard_while_phase1_is_off_is_booked_once_when_it_is_on_again() {
+    use p1_off::*;
+    let agent = 0xCA4B_u64;
+    let (_dir, e, mut j, _cargo) = caravan_session("p1off-trade", agent);
+    let Some((cost, cn, result, rn)) = selling_offer(&j, agent) else {
+        eprintln!("the caravan offers nothing to sell: nothing to test");
+        return;
+    };
+    switch_then(&e, &mut j, OFF, |j| {
+        let op = wire::JAVA_OP_BIT | 0x7c11;
+        j.trade_with(
+            agent,
+            1,
+            obs::trade::MERCHANT_SELLS,
+            (&cost, cn),
+            (&result, rn),
+            op,
+        );
+        // The same trade again under the same op id (a chunk-carried resend): still once.
+        j.trade_with(
+            agent,
+            1,
+            obs::trade::MERCHANT_SELLS,
+            (&cost, cn),
+            (&result, rn),
+            op,
+        );
+    });
+    j.idle();
+    j.idle();
+    assert_eq!(p1_stat(&e, CARAVAN_TRADES), 0, "nothing applied while off");
+    switch_on(&mut j);
+    assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+    assert_eq!(
+        p1_stat(&e, CARAVAN_TRADES),
+        1,
+        "the trade heard in the window is booked, once"
+    );
+    e.close(true, Duration::from_secs(5)).unwrap();
+}
+
+/// T3. A member taken in the window (TAKEN) leaves the sim's row with what its chest held, once
+/// phase 1 is on again.
+#[test]
+fn a_member_taken_while_phase1_is_off_is_booked_once_when_it_is_on_again() {
+    use p1_off::*;
+    let agent = 0xCA4B_u64;
+    let (_dir, e, mut j, cargo) = caravan_session("p1off-taken", agent);
+    let member = cargo[0].0;
+    switch_then(&e, &mut j, OFF, |j| {
+        let chest: Vec<(&str, i32)> = cargo
+            .iter()
+            .filter(|(m, _, _)| *m == member)
+            .map(|(_, i, n)| (i.as_str(), *n))
+            .collect();
+        member_state(j, agent, 1, member, &chest);
+        j.journal(obs::TAKEN, obs::taken::SIZE, 1, |r| {
+            wire::put_u64(r, obs::taken::AGENT, agent);
+            wire::put_u32(r, obs::taken::EPOCH, 1);
+            wire::put_u32(r, obs::taken::MEMBER, member);
+            wire::put_u64(r, obs::taken::PLAYER_MOST, PLAYER.0);
+            wire::put_u64(r, obs::taken::PLAYER_LEAST, PLAYER.1);
+            wire::put_u64(r, obs::taken::OP_ID, wire::JAVA_OP_BIT | 0x7c21);
+        });
+    });
+    j.idle();
+    j.idle();
+    assert_eq!(p1_stat(&e, REPORTS), 0, "nothing applied while off");
+    switch_on(&mut j);
+    assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+    assert_eq!(
+        p1_stat(&e, REPORTS),
+        1,
+        "the taken member heard in the window is booked, once"
+    );
+    e.close(true, Duration::from_secs(5)).unwrap();
+}
+
+/// A caravan hurt and a caravan rescued in the window (HURT, RESCUE) are the sim's news of what
+/// the player did; they are booked once, when phase 1 is on again.
+#[test]
+fn a_hurt_and_a_rescue_heard_while_phase1_is_off_are_booked_when_it_is_on_again() {
+    use p1_off::*;
+    let agent = 0xCA4C_u64;
+    let (_dir, e, mut j, _cargo) = caravan_session("p1off-reports", agent);
+    switch_then(&e, &mut j, OFF, |j| {
+        j.journal(obs::HURT, obs::hurt::SIZE, obs::hurt::PUPPET_HURT, |r| {
+            wire::put_u64(r, obs::hurt::AGENT, agent);
+            wire::put_u32(r, obs::hurt::EPOCH, 1);
+            wire::put_u64(r, obs::hurt::ATTACKER_MOST, PLAYER.0);
+            wire::put_u64(r, obs::hurt::ATTACKER_LEAST, PLAYER.1);
+            wire::put_u32(r, obs::hurt::ATTACKER_KIND, obs::hurt::ATTACKER_PLAYER);
+        });
+        j.journal(obs::RESCUE, obs::rescue::SIZE, obs::rescue::PUPPET, |r| {
+            wire::put_u64(r, obs::rescue::AGENT, agent);
+            wire::put_u32(r, obs::rescue::EPOCH, 1);
+            wire::put_u64(r, obs::rescue::RESCUER_MOST, PLAYER.0);
+            wire::put_u64(r, obs::rescue::RESCUER_LEAST, PLAYER.1);
+        });
+    });
+    j.idle();
+    j.idle();
+    assert_eq!(p1_stat(&e, REPORTS), 0, "nothing applied while off");
+    switch_on(&mut j);
+    assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+    assert_eq!(
+        p1_stat(&e, REPORTS),
+        2,
+        "the hurt and the rescue heard in the window are booked, once each"
+    );
+    e.close(true, Duration::from_secs(5)).unwrap();
+}
+
+/// The fork variant of the determinism check (RP-300, hazard J3). A world is run to a save (S),
+/// phase 1 is switched off, the records under test reach the journal, and the server dies. The
+/// page directory is copied and the journal cloned, and the same crash is restarted twice: arm A
+/// with phase 1 off (the replayed records are kept), switching on later; arm B with phase 1 on
+/// (the records replay at their own ticks). A rule that books a record at the frozen clock, or
+/// at the tick it happened to be heard at, makes A another world than B.
+mod p1_off_fork {
+    use super::p1_off::*;
+    use super::*;
+
+    /// A crashed session: its page directory, its journal and the game time it died at.
+    pub struct Crashed {
+        pub dir: std::path::PathBuf,
+        pub saved: WorldSave,
+        pub time: i64,
+    }
+
+    pub fn copy_dir(from: &std::path::Path, to: &std::path::Path) {
+        std::fs::create_dir_all(to).unwrap();
+        for entry in std::fs::read_dir(from).unwrap() {
+            let entry = entry.unwrap();
+            let target = to.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                copy_dir(&entry.path(), &target);
+            } else {
+                std::fs::copy(entry.path(), &target).unwrap();
+            }
+        }
+    }
+
+    /// What one restart ended as.
+    #[derive(Debug, PartialEq, Eq)]
+    pub struct Outcome {
+        /// The phase 1 world's hash and tick once every arm has run to the same game time.
+        pub hash: u64,
+        pub tick: i64,
+        /// And after four more days: the hash, and the op ids of the commands decided on the way
+        /// (gossip, houses, residents), in the order they were written.
+        pub hash_later: u64,
+        pub ops: Vec<(u16, u64)>,
+        /// Robberies, caravan trades and reports booked in the restarted session.
+        pub booked: [u64; 3],
+        pub capture_mismatches: u64,
+    }
+
+    /// Restarts the crash on a copy of its pages: `mask` is phase 1's switch at the session start,
+    /// `then_on` switches it on afterwards. `window` lets the test act in the restarted session
+    /// before the arms are compared.
+    pub fn restart(c: &Crashed, tag: &str, mask: u32, then_on: bool) -> Outcome {
+        let dir = tmpdir(tag);
+        copy_dir(&c.dir, &dir);
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), c.saved.clone());
+        j.module_mask = mask;
+        j.game_time = c.time + 1;
+        j.idle();
+        j.idle();
+        if then_on {
+            switch_on(&mut j);
+        }
+        // The same game time for every arm, then the same four days.
+        j.game_time = c.time + 500;
+        j.idle();
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        let (hash, replay_ok, capture_mismatches) = e.phase1_state();
+        assert!(replay_ok, "the restart replayed its log to the saved state");
+        let tick = e.clocks()[2];
+        let booked = [
+            p1_stat(&e, ROBBERIES),
+            p1_stat(&e, CARAVAN_TRADES),
+            p1_stat(&e, REPORTS),
+        ];
+        e.order(vec![Order::Phase1Advance(4 * 24_000)]).unwrap();
+        j.idle();
+        j.idle();
+        let hash_later = e.phase1_state().0;
+        let mut ops: Vec<(u16, u64)> = j
+            .commands
+            .iter()
+            .filter(|(_, k, op)| *op != 0 && *k != cmd::TRANSFER_TO_CONTAINER)
+            .map(|(_, k, op)| (*k, *op))
+            .collect();
+        ops.sort();
+        e.close(true, Duration::from_secs(5)).unwrap();
+        Outcome {
+            hash,
+            tick,
+            hash_later,
+            ops,
+            booked,
+            capture_mismatches,
+        }
+    }
+
+    /// The three arms of a crash: A (off at the start, on later), B (on), and B again.
+    pub fn arms(c: &Crashed, tag: &str) -> (Outcome, Outcome, Outcome) {
+        let b1 = restart(c, &format!("{tag}-b1"), ON, false);
+        let b2 = restart(c, &format!("{tag}-b2"), ON, false);
+        let a = restart(c, &format!("{tag}-a"), OFF, true);
+        (a, b1, b2)
+    }
+}
+
+/// D1. A robbery, a trade and a taken member heard while phase 1 is off, then a crash: restarted
+/// with phase 1 off and switched on later (A) the world is the one a restart with it on (B) makes.
+#[test]
+fn records_heard_while_phase1_is_off_make_the_world_a_restart_with_it_on_makes() {
+    use p1_off::*;
+    use p1_off_fork::*;
+    let agent = 0xCA4B_u64;
+    let (dir, e, mut j, cargo) = caravan_session("p1fork-rob", agent);
+    let (member, item, n) = stack_to_rob(&cargo);
+    let offer = selling_offer(&j, agent);
+    save_durable(&e, &mut j);
+    switch_then(&e, &mut j, OFF, |j| {
+        j.game_time += 20;
+        j.robbed(agent, 1, member, &[(&item, n)], wire::JAVA_OP_BIT | 0x7d01);
+        j.game_time += 37;
+        if let Some((cost, cn, result, rn)) = &offer {
+            j.trade_with(
+                agent,
+                1,
+                obs::trade::MERCHANT_SELLS,
+                (cost, *cn),
+                (result, *rn),
+                wire::JAVA_OP_BIT | 0x7d02,
+            );
+            j.game_time += 41;
+        }
+        let chest = chest_after(&cargo, member, &item, n);
+        let chest: Vec<(&str, i32)> = chest.iter().map(|(i, n)| (i.as_str(), *n)).collect();
+        member_state(j, agent, 1, member, &chest);
+        j.journal(obs::TAKEN, obs::taken::SIZE, 1, |r| {
+            wire::put_u64(r, obs::taken::AGENT, agent);
+            wire::put_u32(r, obs::taken::EPOCH, 1);
+            wire::put_u32(r, obs::taken::MEMBER, member);
+            wire::put_u64(r, obs::taken::PLAYER_MOST, PLAYER.0);
+            wire::put_u64(r, obs::taken::PLAYER_LEAST, PLAYER.1);
+            wire::put_u64(r, obs::taken::OP_ID, wire::JAVA_OP_BIT | 0x7d03);
+        });
+        j.game_time += 3;
+    });
+    // The live engine hears them while off.
+    j.idle();
+    j.idle();
+    assert_eq!(p1_stat(&e, ROBBERIES), 0, "nothing applied live while off");
+    let saved = j.world_save();
+    assert!(
+        saved
+            .journal
+            .iter()
+            .any(|(_, r)| wire::u16_at(r, wire::R_KIND) == obs::CARGO_CHANGED),
+        "the journal still holds the window"
+    );
+    let time = j.game_time;
+    let _ = j.crash();
+    let c = Crashed { dir, saved, time };
+
+    let (a, b1, b2) = arms(&c, "p1fork-rob");
+    eprintln!("A {a:?}\nB {b1:?}");
+    assert_eq!(b1, b2, "A/A control: two restarts of one crash are equal");
+    assert_eq!(b1.booked[0], 1, "the robbery replayed on is booked");
+    assert_eq!(b1.capture_mismatches, 0);
+    assert_eq!(a.booked, b1.booked, "booked once in both arms");
+    assert_eq!(a.tick, b1.tick, "both ran to the same world tick");
+    assert_eq!(a.hash, b1.hash, "the same world at the same tick");
+    assert_eq!(a.hash_later, b1.hash_later, "and four days on");
+    assert_eq!(a.ops, b1.ops, "the op ids decided after are the same");
+    assert!(
+        b1.ops.iter().any(|(k, _)| *k == cmd::WRITE_GOSSIP),
+        "the robbery's news produced commands to compare: {:?}",
+        b1.ops
+    );
+}
+
+/// The sensitivity control of D1: the comparison does see a record. The same crash restarted with
+/// the window's robbery left out of the journal (a record lost) is another world.
+#[test]
+fn the_fork_comparison_sees_a_missing_record() {
+    use p1_off::*;
+    use p1_off_fork::*;
+    let agent = 0xCA4B_u64;
+    let (dir, e, mut j, cargo) = caravan_session("p1fork-ctl", agent);
+    let (member, item, n) = stack_to_rob(&cargo);
+    save_durable(&e, &mut j);
+    switch_then(&e, &mut j, OFF, |j| {
+        j.game_time += 20;
+        j.robbed(agent, 1, member, &[(&item, n)], wire::JAVA_OP_BIT | 0x7d11);
+    });
+    j.idle();
+    j.idle();
+    let saved = j.world_save();
+    let time = j.game_time;
+    let _ = j.crash();
+    let mut without = saved.clone();
+    // The robbery's record becomes an unrelated one of the same size (an empty slot), so the
+    // sequence stays whole.
+    for (_, r) in without.journal.iter_mut() {
+        if wire::u16_at(r, wire::R_KIND) == obs::CARGO_CHANGED {
+            wire::put_u32(r, wire::R_AUX, 0);
+            wire::put_u64(r, obs::cargo_changed::AGENT, agent ^ 0xFFFF);
+        }
+    }
+    let with = Crashed {
+        dir: dir.clone(),
+        saved,
+        time,
+    };
+    let lost = Crashed {
+        dir,
+        saved: without,
+        time,
+    };
+    let b = restart(&with, "p1fork-ctl-with", ON, false);
+    let l = restart(&lost, "p1fork-ctl-lost", ON, false);
+    assert_eq!(b.booked[0], 1);
+    assert_eq!(l.booked[0], 0);
+    assert_ne!(
+        b.hash, l.hash,
+        "a robbery booked or not is another world: the comparison can tell"
+    );
+}
+
+/// D2. A house placed answers after the switch-off: its HOUSE_PLACED is a record of what happened
+/// (the house stands) and the resident's arrival follows from its tick. Restarted with phase 1 off
+/// and switched on later (A) the world is the one a restart with it on (B) makes.
+#[test]
+fn a_house_placed_heard_while_phase1_is_off_makes_the_world_a_restart_with_it_on_makes() {
+    use p1_off::*;
+    use p1_off_fork::*;
+    let dir = tmpdir("p1fork-house");
+    let e = engine(&dir, 256 * 1024);
+    let mut j = Java::open(e.clone(), WorldSave::fresh());
+    j.module_mask = ON;
+    let villages = [
+        0x0001_0000_0000_0001u64,
+        0x0001_0000_0000_0002,
+        0x0001_0000_0000_0003,
+    ];
+    // Houses are a ribbit village's growth (P17): three of them, one road apart.
+    j.adopt(villages[0], "ribbits:village", "ribbit", 40, 0, 0);
+    j.adopt(villages[1], "ribbits:village", "ribbit", 40, 400, 0);
+    j.adopt(villages[2], "ribbits:village", "ribbit", 40, 0, 400);
+    j.idle();
+    j.idle();
+    // Days on until a village wants a house: Java finds no plot (NOT_FREE), the order stays open.
+    j.no_free_plot = true;
+    let mut days = 0;
+    while j.p1_of(cmd::PLACE_HOUSE).is_empty() {
+        assert!(days < 240, "no house wanted in 30 days");
+        e.order(vec![Order::Phase1Advance(3_000)]).unwrap();
+        j.idle();
+        days += 1;
+    }
+    j.no_free_plot = false;
+    let house = j.p1_of(cmd::PLACE_HOUSE).remove(0);
+    let op = wire::u64_at(&house, cmd::place_house::OP_ID);
+    let village = wire::u64_at(&house, cmd::place_house::VILLAGE);
+    save_durable(&e, &mut j);
+    // Phase 1 off, then the house is placed after all (Java's search found a plot late).
+    j.modules(OFF);
+    j.idle();
+    j.idle();
+    j.game_time += 50;
+    j.journal(obs::HOUSE_PLACED, obs::house_placed::SIZE, 0, |r| {
+        wire::put_u64(r, obs::house_placed::OP_ID, op);
+        wire::put_u64(r, obs::house_placed::VILLAGE, village);
+    });
+    j.journal(
+        obs::COMMAND_RESULT,
+        obs::command_result::SIZE,
+        obs::command_result::APPLIED,
+        |r| {
+            wire::put_u64(r, obs::command_result::CMD_SEQ, 0);
+            wire::put_u64(r, obs::command_result::OP_ID, op);
+        },
+    );
+    j.idle();
+    j.idle();
+    let saved = j.world_save();
+    let time = j.game_time;
+    let _ = j.crash();
+    let c = Crashed { dir, saved, time };
+
+    let (a, b1, b2) = arms(&c, "p1fork-house");
+    eprintln!("A {a:?}\nB {b1:?}");
+    assert_eq!(b1, b2, "A/A control: two restarts of one crash are equal");
+    assert_eq!(a.tick, b1.tick);
+    assert_eq!(a.hash, b1.hash, "the same world at the same tick");
+    assert_eq!(a.hash_later, b1.hash_later, "and four days on");
+    assert_eq!(a.ops, b1.ops, "the op ids decided after are the same");
+}
+
+/// D2b. A bought work's answer (COMMAND_RESULT of its PLACE_HOUSE) arrives after the switch-off.
+/// The world takes it at the answer's own tick: its next purchase follows from that time. Restarted
+/// with phase 1 off and switched on later (A) the world is the one a restart with it on (B) makes.
+#[test]
+fn a_work_answer_heard_while_phase1_is_off_makes_the_world_a_restart_with_it_on_makes() {
+    use p1_off::*;
+    use p1_off_fork::*;
+    let dir = tmpdir("p1fork-work");
+    let e = engine(&dir, 256 * 1024);
+    let mut j = Java::open(e.clone(), WorldSave::fresh());
+    j.module_mask = ON;
+    let a = 0x0001_0000_0000_0001u64;
+    j.adopt(a, "minecraft:village_plains", "human", 90, 0, 0);
+    j.idle();
+    j.idle();
+    j.work_catalog(&test_works());
+    j.idle();
+    e.order(vec![Order::WorksGrant {
+        village: a,
+        amount: 5_000_000,
+    }])
+    .unwrap();
+    // One step: the purse buys a lamp and Java answers it, but the answer's records are held back
+    // (they are journaled after the switch-off below, as a slow plot search's would be).
+    j.flush();
+    let house = j.p1_of(cmd::PLACE_HOUSE);
+    assert_eq!(house.len(), 1, "one lamp in flight");
+    let op = wire::u64_at(&house[0], cmd::place_house::OP_ID);
+    let n = j.journal.len();
+    let held: Vec<(u16, u32)> = j
+        .journal
+        .drain(n - 2..)
+        .map(|(_, r)| {
+            (
+                wire::u16_at(&r, wire::R_KIND),
+                wire::u32_at(&r, wire::R_AUX),
+            )
+        })
+        .collect();
+    j.next_obs -= 2;
+    assert_eq!(
+        held,
+        [
+            (obs::HOUSE_PLACED, 0),
+            (obs::COMMAND_RESULT, obs::command_result::APPLIED)
+        ],
+        "the answer's two records"
+    );
+    save_durable(&e, &mut j);
+    assert_eq!(p1_stat(&e, P1_WORKS_PLACED), 0, "not answered yet");
+    switch_then(&e, &mut j, OFF, |j| {
+        j.game_time += 24_000;
+        j.journal(obs::HOUSE_PLACED, obs::house_placed::SIZE, 0, |r| {
+            wire::put_u64(r, obs::house_placed::OP_ID, op);
+            wire::put_u64(r, obs::house_placed::VILLAGE, a);
+        });
+        j.journal(
+            obs::COMMAND_RESULT,
+            obs::command_result::SIZE,
+            obs::command_result::APPLIED,
+            |r| {
+                wire::put_u64(r, obs::command_result::CMD_SEQ, 0);
+                wire::put_u64(r, obs::command_result::OP_ID, op);
+            },
+        );
+    });
+    j.idle();
+    j.idle();
+    assert_eq!(
+        p1_stat(&e, P1_WORKS_PLACED),
+        0,
+        "nothing applied live while off"
+    );
+    let saved = j.world_save();
+    let time = j.game_time;
+    let _ = j.crash();
+    let c = Crashed { dir, saved, time };
+
+    let (a_arm, b1, b2) = arms(&c, "p1fork-work");
+    eprintln!("A {a_arm:?}\nB {b1:?}");
+    assert_eq!(b1, b2, "A/A control: two restarts of one crash are equal");
+    assert!(
+        b1.ops.iter().any(|(k, _)| *k == cmd::PLACE_HOUSE),
+        "the answer let the next lamp be bought: {:?}",
+        b1.ops
+    );
+    assert_eq!(a_arm.tick, b1.tick);
+    assert_eq!(a_arm.hash, b1.hash, "the same world at the same tick");
+    assert_eq!(a_arm.hash_later, b1.hash_later, "and four days on");
+    assert_eq!(a_arm.ops, b1.ops, "the op ids decided after are the same");
+}
+
+/// D3. A crash while phase 1 is off, after a save that carries the kept inputs: they come back
+/// from the pages (the records are acknowledged and not replayed), and are applied exactly once,
+/// at the switch-on, or at the first step of a session that starts with phase 1 on.
+#[test]
+fn inputs_kept_while_phase1_is_off_survive_a_crash_and_are_applied_once() {
+    use p1_off::*;
+    use p1_off_fork::*;
+    let agent = 0xCA4B_u64;
+    let (dir, e, mut j, cargo) = caravan_session("p1fork-kept", agent);
+    let (member, item, n) = stack_to_rob(&cargo);
+    save_durable(&e, &mut j);
+    switch_then(&e, &mut j, OFF, |j| {
+        j.game_time += 20;
+        j.robbed(agent, 1, member, &[(&item, n)], wire::JAVA_OP_BIT | 0x7e01);
+        j.game_time += 9;
+        j.robbed(agent, 1, member, &[(&item, 1)], wire::JAVA_OP_BIT | 0x7e02);
+    });
+    j.idle();
+    j.idle();
+    assert_eq!(e.phase1_kept(), 2, "heard live while off, kept");
+    // This save acknowledges both records and carries them in the meta page.
+    save_durable(&e, &mut j);
+    // The acknowledgement rides the next hand-over's commands.
+    j.idle();
+    j.idle();
+    assert!(
+        j.world_save()
+            .journal
+            .iter()
+            .all(|(_, r)| { wire::u16_at(r, wire::R_KIND) != obs::CARGO_CHANGED }),
+        "the journal gave the records up: only the pages hold them now"
+    );
+    let saved = j.world_save();
+    let time = j.game_time;
+    let _ = j.crash();
+    let c = Crashed { dir, saved, time };
+
+    // Restarted off: they are back, not applied, not heard again.
+    let dir_off = tmpdir("p1fork-kept-off");
+    copy_dir(&c.dir, &dir_off);
+    let e2 = engine(&dir_off, 256 * 1024);
+    let mut j2 = Java::open(e2.clone(), c.saved.clone());
+    j2.module_mask = OFF;
+    j2.game_time = c.time + 1;
+    j2.idle();
+    j2.idle();
+    assert!(e2.protocol_error().is_none(), "{:?}", e2.protocol_error());
+    assert_eq!(
+        e2.phase1_kept(),
+        2,
+        "the kept inputs came back from the pages"
+    );
+    assert_eq!(p1_stat(&e2, ROBBERIES), 0, "and none is applied while off");
+    switch_on(&mut j2);
+    assert_eq!(e2.phase1_kept(), 0);
+    assert_eq!(
+        p1_stat(&e2, ROBBERIES),
+        2,
+        "each applied exactly once at the switch-on"
+    );
+    j2.game_time = c.time + 500;
+    j2.idle();
+    j2.idle();
+    let off_then_on = e2.phase1_state().0;
+    e2.close(true, Duration::from_secs(5)).unwrap();
+
+    // Restarted on: the first step applies them, once, and it is the same world.
+    let dir_on = tmpdir("p1fork-kept-on");
+    copy_dir(&c.dir, &dir_on);
+    let e3 = engine(&dir_on, 256 * 1024);
+    let mut j3 = Java::open(e3.clone(), c.saved.clone());
+    j3.module_mask = ON;
+    j3.game_time = c.time + 1;
+    j3.idle();
+    j3.idle();
+    assert_eq!(e3.phase1_kept(), 0);
+    assert_eq!(
+        p1_stat(&e3, ROBBERIES),
+        2,
+        "each applied exactly once by a session that starts on"
+    );
+    j3.game_time = c.time + 500;
+    j3.idle();
+    j3.idle();
+    assert_eq!(
+        e3.phase1_state().0,
+        off_then_on,
+        "off then on, or on at once: one world"
+    );
+    e3.close(true, Duration::from_secs(5)).unwrap();
+}
+
 // ---- TALK (docs/boundary.md §13) -------------------------------------------------------------------
 
 mod talk {
@@ -1551,6 +2378,37 @@ mod talk {
         j.idle();
         assert_eq!(j.talk_sentiment(2, RIBBIT_VILLAGE, PLAYER), Some(6));
         assert_eq!(e.talk_stats().talked, 1);
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// A talk heard while phase 1 is off (TALKED is journaled, so the engine acknowledged it and
+    /// Java will not send it again) credits its village once phase 1 is on again; the same op id
+    /// reported once more after that changes nothing.
+    #[test]
+    fn a_talk_heard_while_phase1_is_off_credits_its_village_once_when_it_is_on_again() {
+        use super::p1_off::{OFF, switch_on, switch_then};
+        let dir = tmpdir("talked-off");
+        let (e, mut j) = session(&dir, WorldSave::fresh());
+        let op = wire::JAVA_OP_BIT | 0x7b1;
+        switch_then(&e, &mut j, OFF, |j| {
+            j.talked(RIBBIT_VILLAGE, PLAYER, op);
+        });
+        j.idle();
+        j.idle();
+        assert_eq!(e.talk_stats().talked, 0, "not applied while off");
+        assert_eq!(e.talk_stats().talked_refused, 0, "and not refused");
+        switch_on(&mut j);
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        assert_eq!(e.talk_stats().talked, 1, "applied once it is on");
+        assert_eq!(j.talk_sentiment(1, RIBBIT_VILLAGE, PLAYER), Some(3));
+        j.talked(RIBBIT_VILLAGE, PLAYER, op);
+        j.idle();
+        assert_eq!(
+            e.talk_stats().talked,
+            1,
+            "the same op id once more: nothing"
+        );
+        assert_eq!(j.talk_sentiment(2, RIBBIT_VILLAGE, PLAYER), Some(3));
         e.close(true, Duration::from_secs(5)).unwrap();
     }
 
@@ -3134,6 +3992,97 @@ mod dragons {
         assert!(
             (died_at..on_at).contains(&vacant),
             "empty from the death's own tick {died_at}, before the switch-on at {on_at}: {vacant}"
+        );
+    }
+
+    /// The joint switch-on of U-d's review, P2, end to end (RP-300): phase 1 and ECOLOGY, which
+    /// share a MODULES record, go off together; in the window phase 1 hears a village, the
+    /// dragons hear their dragon killed by a player, and phase 1 hears another village; three
+    /// days later both come on in one record. Phase 1's drain runs in that record's resets, after
+    /// the dragons applied the death at its own tick: the dragon stays dead, its lair stands
+    /// empty from the death's tick and before the village after it, both villages are in and
+    /// nothing is left kept. The real engine path's check of the outcome; it passes with the old
+    /// order too (the dragons book the death at its own tick either way). The order itself is the
+    /// lib's, seen by a probe: `a_joint_switch_on_applies_the_viewers_record_between_phase_1s_own_inputs`.
+    #[test]
+    fn a_joint_switch_on_of_phase_1_and_the_dragons_keeps_the_death_at_its_own_tick() {
+        let dir = tmpdir("joint-on-dragon-died");
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        j.module_mask = MODULES;
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        j.dragon_obs(&O::LairFound(db::LairFound {
+            lair: LAIR,
+            late: false,
+            dimension: dim,
+            species: Species::Fire,
+            kind: LairKind::Roost,
+            min: (HOME.0 - 30, 60, HOME.2 - 30),
+            max: (HOME.0 + 30, 140, HOME.2 + 30),
+            home: HOME,
+        }));
+        let mut fed = untagged((0xD3, 0x2), SpawnKind::Structure, LAIR, dim);
+        if let O::Untagged(u) = &mut fed {
+            u.hunger = 100;
+        }
+        j.dragon_obs(&fed);
+        j.idle();
+        j.idle();
+        let a = adoptions(&j)[0];
+        assert_eq!(summary(&e).0, 1, "one dragon, embodied");
+        let villages = |e: &Engine| e.phase1_stats()[0];
+        assert_eq!(villages(&e), 0);
+
+        // Both off. A village at +100, the death at +200, another village at +300.
+        j.modules(0b0111);
+        j.idle();
+        let off_at = j.game_time;
+        j.game_time = off_at + 100;
+        j.adopt(0x91, "minecraft:village_plains", "human", 90, 0, 0);
+        j.idle();
+        j.game_time = off_at + 200;
+        let died_at = j.game_time;
+        j.dragon_obs(&O::Died(db::Died {
+            agent: a.agent,
+            epoch: a.epoch,
+            killer_kind: AttackerKind::Player,
+            killer: PLAYER,
+            dimension: dim,
+            pos: (f64::from(HOME.0), f64::from(HOME.1), f64::from(HOME.2)),
+        }));
+        j.idle();
+        j.game_time = off_at + 300;
+        let after_at = j.game_time;
+        j.adopt(0x92, "minecraft:village_taiga", "human", 90, 400, 0);
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        assert_eq!(summary(&e).0, 1, "nothing changes while off");
+        assert_eq!(villages(&e), 0, "nothing applied while off");
+        assert_eq!(
+            e.phase1_kept(),
+            4,
+            "both villages kept (a join and a work style each)"
+        );
+        let on_at = off_at + 3 * 24_000;
+        while j.game_time < on_at {
+            j.game_time += 1_000;
+            j.idle();
+        }
+
+        j.modules(MODULES);
+        j.idle();
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        assert_eq!(e.phase1_kept(), 0, "nothing left kept");
+        assert_eq!(villages(&e), 2, "both villages are in");
+        let alive = summary(&e).0;
+        let vacant = e.with_dragons(|d, _| d.lairs[0].vacant_since);
+        e.close(true, Duration::from_secs(5)).unwrap();
+        assert_eq!(alive, 0, "the dragon stays dead");
+        let vacant = vacant.expect("the lair stands empty").0 as i64;
+        assert!(
+            (died_at..after_at).contains(&vacant),
+            "empty from the death's own tick {died_at}, before the village at {after_at}: {vacant}"
         );
     }
 
@@ -11831,6 +12780,29 @@ mod conflict {
         })
     }
 
+    /// The grove's earmark (MZB-930): the world's held of its tribute good, in items, is what the
+    /// grove owes its chest, and the conflict's books close.
+    fn assert_earmarked(e: &Engine, items: i64) {
+        e.with_conflict(|c, w| {
+            let f = c.faction_of_key(CAMP).unwrap();
+            let owed = &c.camp(f).unwrap().owed_tribute;
+            let total: i64 = owed.iter().map(|e| e.1).sum();
+            assert_eq!(total / rtsim_trade::MILLI, items, "owed");
+            for &(g, a) in owed {
+                let good = rtsim_trade::GoodId(u16::try_from(g).unwrap());
+                let held = w.outside.held.get(&good).copied().unwrap_or(0);
+                assert_eq!(
+                    held,
+                    i128::from(a),
+                    "the earmark of good {g} is in the world's held"
+                );
+            }
+            if let Err(e) = c.check(w) {
+                panic!("the books break: {e}");
+            }
+        });
+    }
+
     fn chest_report(j: &mut Java, chest: [i32; 3]) {
         let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
         j.conflict_obs(&O::HavenChest(cb::HavenChest {
@@ -11844,7 +12816,7 @@ mod conflict {
     /// M9 (MZB-418, MZB-419, MZB-422, MZB-423): a player's seven gold blocks to a stray Umvuthi
     /// (CHIEF_PAID) are 567 nuggets of tribute, owed to the grove's chest. With no chest reported
     /// nothing is sent; a chest reported in a world whose chunk is gone fails its stack, which
-    /// goes back to the grove's stock and forgets the chest; reported again while Minecraft holds
+    /// stays owed and earmarked (MZB-930) and forgets the chest; reported again while Minecraft holds
     /// the commands (a world save that is lost), the stack is in the outbox at the save, so after
     /// a crash it is sent again under the same op id and lands once, and the rest wait for the
     /// camp to come in again. The CHIEF_PAID's op id is spent by the replay too.
@@ -11874,10 +12846,11 @@ mod conflict {
             (567, 0, 0),
             "seven blocks are 567 nuggets, owed once; no chest yet, nothing sent"
         );
+        assert_earmarked(&e, 567);
         assert!(tribute_ops(&j).is_empty());
         assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
 
-        // The chest is named, but its chunk is gone: the stack fails, goes back and waits.
+        // The chest is named, but its chunk is gone: the stack fails and waits, still earmarked.
         let chest = [CAMP_AT.0 + 3, 64, CAMP_AT.1 + 2];
         j.fail_transfers = true;
         chest_report(&mut j, chest);
@@ -11885,7 +12858,12 @@ mod conflict {
         j.idle();
         let failed = tribute_ops(&j);
         assert_eq!(failed.len(), 1, "one stack at a time");
-        assert_eq!(owed_tribute(&e), (567, 0, 1), "back in the grove's stock");
+        assert_eq!(
+            owed_tribute(&e),
+            (567, 0, 1),
+            "still owed, nothing in flight"
+        );
+        assert_earmarked(&e, 567);
         assert!(j.containers.is_empty());
         let (_, link) = e.conflict_stats();
         assert_eq!(link.haven_chests, 1, "{link:?}");
@@ -11923,6 +12901,7 @@ mod conflict {
             (567, 1, 2),
             "the stack in flight is saved"
         );
+        assert_earmarked(&e, 567);
         j.idle();
         j.idle();
         assert_eq!(tribute_ops(&j), held, "the held stack, by its op id");
@@ -11932,6 +12911,7 @@ mod conflict {
             (503, 0, 2),
             "placed: 64 nuggets less owed; the camp is out, so no more is sent"
         );
+        assert_earmarked(&e, 503);
         // The same answer again changes nothing.
         let (_, link) = e.conflict_stats();
         assert_eq!(link.deferred, 0, "{link:?}");
@@ -11941,8 +12921,8 @@ mod conflict {
 
     /// The U-b merge (RP-210 meets MZB-423): a grove's chest whose chunk is not loaded is answered
     /// NOT_LOADED since U-b, where main answered FAILED. The COMMAND_RESULT takes the stack out of
-    /// the core outbox either way, so the grove must take it back too: the stack goes back to the
-    /// grove's stock, the chest is forgotten, and a chest reported again gets a new stack. Ignored,
+    /// the core outbox either way, so the grove must take it back too: the stack stays owed and
+    /// earmarked (MZB-930), the chest is forgotten, and a chest reported again gets a new stack. Ignored,
     /// the stack would stay in flight with nothing left to answer it, and the grove would send no
     /// more.
     #[test]
@@ -11976,8 +12956,9 @@ mod conflict {
         assert_eq!(
             owed_tribute(&e),
             (567, 0, 1),
-            "NOT_LOADED: back in the grove's stock, nothing in flight"
+            "NOT_LOADED: still owed, nothing in flight"
         );
+        assert_earmarked(&e, 567);
         assert!(j.containers.is_empty());
         j.idle();
         j.idle();
@@ -12351,14 +13332,7 @@ mod conflict {
             "Java's answer is journaled, not yet heard"
         );
         j.unloaded_transfers = false;
-        let good = e.with_conflict(|c, _| c.placings().next().unwrap().1.good);
-        let stock = |e: &Engine| {
-            e.with_conflict(|c, w| {
-                let node = c.factions[c.faction_of_key(CAMP).unwrap() as usize].node;
-                w.market(node).lines[good as usize].stock
-            })
-        };
-        let stock_at_the_answer = stock(&e);
+        assert_earmarked(&e, 567);
         j.modules(MODULES & !MODULE_CONFLICT);
         if answer == Answer::AppliedTwice {
             let op = *first.iter().next().unwrap();
@@ -12439,12 +13413,9 @@ mod conflict {
                     "the chest holds what it held"
                 );
                 assert_eq!(owed_tribute(&e).1, 1, "its answer is kept, not yet taken");
-                assert!(
-                    stock(&e) <= stock_at_the_answer,
-                    "the goods did not go back to the stock: {} after the restart, {} at the answer",
-                    stock(&e),
-                    stock_at_the_answer
-                );
+                // Nothing booked out or back before the kept answer is: the earmark stands whole
+                // (MZB-930).
+                assert_earmarked(&e, 567);
                 (e, j)
             } else {
                 let (e, mut j) =
@@ -12471,8 +13442,9 @@ mod conflict {
             assert_eq!(
                 owed_tribute(&e),
                 (567, 0, 1),
-                "NOT_LOADED, heard while off: back in the grove's stock, nothing in flight"
+                "NOT_LOADED, heard while off: still owed and earmarked, nothing in flight"
             );
+            assert_earmarked(&e, 567);
         }
         // The plugin names the chest again (a chest the answer forgot, and the next stack waits
         // for a camp that is in).
@@ -12496,11 +13468,12 @@ mod conflict {
             j.containers.get(&chest).copied(),
             Some(567),
             "every nugget in the chest once: the first stack was {answer_name}",
-            answer_name = if placed { "placed" } else { "put back" }
+            answer_name = if placed { "placed" } else { "kept owed" }
         );
         let stacks =
             e.with_conflict(|c, _| c.camp(c.faction_of_key(CAMP).unwrap()).unwrap().stacks);
         assert_eq!(owed_tribute(&e), (0, 0, stacks));
+        assert_earmarked(&e, 0);
         assert_eq!(
             tribute_ops(&j).len() as u32,
             if crash { stacks - 1 } else { stacks },
@@ -12563,7 +13536,8 @@ mod conflict {
         );
     }
 
-    /// A NOT_LOADED answer heard while off goes back to the grove's stock at the switch-on.
+    /// A NOT_LOADED answer heard while off leaves the stack owed, and earmarked (MZB-930), at the
+    /// switch-on.
     #[test]
     fn a_groves_tribute_stack_answered_not_loaded_with_the_conflict_off_goes_back_to_its_stock() {
         a_grove_stack_answered_with_the_conflict_off(
