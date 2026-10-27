@@ -28,9 +28,10 @@ yourself.
    - 4: the review is still running. Run the script again; it keeps waiting on the same pull
      request. Only after a second 4, land without the review and say so: landing closes the pull
      request and ends that review.
-4. Land. If `main` moved, merge it again, check for unmerged paths, and rerun the tests step 1 ran
-   and the tests for any code the merge brought in: a clean merge can break either side (a renamed
-   function, a changed signature).
+4. Land. If `main` moved, merge it again, check for unmerged paths, and rerun the tests for
+   everything the branch changes (tests added in review rounds included) and for any code the merge
+   brought in: a clean merge can break either side (a renamed function, a changed signature). If one
+   fails, fix it, push, and go back to step 2 instead of landing.
    Then `git push origin HEAD:main`. A clean merge of `main` needs no new review round. Apart from
    the second 4 above, never land while a review is still running.
 5. Delete the remote branch: `git push origin --delete <branch>`.
