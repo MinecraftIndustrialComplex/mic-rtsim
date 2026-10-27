@@ -2783,11 +2783,13 @@ impl Conflict {
             return false;
         };
         let node = self.factions[f as usize].node;
-        let stocked = w.stock_from_players(node, goods, at);
-        for (&g, &a) in &stocked {
+        // What a grove owes its chest is earmarked first, out of the market's reach; the rest is
+        // stocked at the haven (MZB-930).
+        let (earmarked, rest) = self.owe_tribute(w, f, goods);
+        let stocked = w.stock_from_players(node, &rest, at);
+        for (&g, &a) in earmarked.iter().chain(&stocked) {
             add(&mut self.ledger.tribute, g, a);
         }
-        self.owe_tribute(w, f, &stocked, at);
         let settlers = self.settlers(w);
         // The envoy it was paid to names the demand; at the camp, the payer's own, then the
         // settlers'.
@@ -2836,11 +2838,11 @@ impl Conflict {
             return;
         };
         let node = self.factions[f as usize].node;
-        let stocked = w.stock_from_players(node, goods, at);
-        for (&g, &a) in &stocked {
+        let (earmarked, rest) = self.owe_tribute(w, f, goods);
+        let stocked = w.stock_from_players(node, &rest, at);
+        for (&g, &a) in earmarked.iter().chain(&stocked) {
             add(&mut self.ledger.gifts, g, a);
         }
-        self.owe_tribute(w, f, &stocked, at);
         self.gift_value(w, f, giver, goods, at);
     }
 
@@ -6126,7 +6128,7 @@ impl Conflict {
             Obs::NoticeShown(n) => self.notice_shown(n),
             Obs::TrainPassed(_) => {}
             Obs::RailPass(rp) => self.rail_pass(w, rp, at),
-            Obs::HavenChest(h) => self.haven_chest(w, h, at),
+            Obs::HavenChest(h) => self.haven_chest(h),
             Obs::Traded(t) => self.trade_booked(w, t, at),
             Obs::ChiefPaid(c) => self.chief_paid(w, c, at),
             Obs::ChiefState(c) => self.chief_state(c, at),
@@ -7039,6 +7041,24 @@ impl Conflict {
             if h > w.outside.held.get(g).copied().unwrap_or(0) {
                 return Err(format!(
                     "good {}: parties hold more than the world's held",
+                    g.0
+                ));
+            }
+        }
+        // The earmark (MZB-930): what the groves owe their chests is held in the world's books,
+        // beside what the parties carry, until Java puts it down.
+        let mut kept = held;
+        for f in 0..self.factions.len() {
+            let owed = self.camp(f as u32).map_or(&[][..], |c| &c.owed_tribute[..]);
+            for &(g, a) in owed {
+                let good = GoodId(u16::try_from(g).unwrap_or(u16::MAX));
+                *kept.entry(good).or_default() += i128::from(a);
+            }
+        }
+        for (g, k) in &kept {
+            if *k > w.outside.held.get(g).copied().unwrap_or(0) {
+                return Err(format!(
+                    "good {}: parties and the groves' earmarks hold {k}, more than the world's held",
                     g.0
                 ));
             }

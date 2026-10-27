@@ -2,8 +2,10 @@
 //! [`load_world`]: a world's `rtsim/` pages opened read only and every module decoded as the
 //! native link's start decodes it (VIEWER.md §5.3), with the configuration rebuilt from the code's
 //! defaults. Nothing is written: the store is opened with `PageStore::open_read_only`, shows the
-//! confirmed generation (what the next start would open), and a module whose pages do not read is
-//! reported and left out, never dropped or rewritten.
+//! confirmed generation (what a start opens when the world's journal lacks the save pending on top
+//! of it; one that holds it keeps that save, so the view lags a world save that waits for its
+//! WORLD_SAVED, slice U-h), and a module whose pages do not read is reported and left out, never
+//! dropped or rewritten.
 
 use std::any::Any;
 use std::collections::BTreeMap;
@@ -545,7 +547,8 @@ fn saved_hash(source: &dyn PageSource, meta: PageKey) -> Option<u64> {
 }
 
 /// The phase 1 link's meta page: what the viewer needs of it (the rest is the link's session
-/// state: scripted villages, the kept outbox, agents, queued commands).
+/// state: scripted villages, the kept outbox, agents, queued commands, the inputs kept while it
+/// was off).
 struct Meta {
     now: u64,
     hash: u64,
