@@ -24,8 +24,8 @@ import java.util.UUID;
  *       district, the session's port is the negated change of the player's own inventory (what left the
  *       player went in). A session that cannot be attributed while the player stands in a district
  *       discards the open learning window instead (IND_DISCARD reason 1). A session at a half of a vanilla
- *       double chest across a chunk border is one it cannot attribute: the menu is the pair's, so the goods may
- *       sit in the other half ({@link #splitSessionsDiscarded}).</li>
+ *       double chest across a chunk border is booked the same way but names no inventory: the menu is the pair's,
+ *       so the goods may sit in the other half ({@link #splitSessions}).</li>
  *   <li><b>Tosses</b> ({@code ItemTossEvent}) by a player in a district: + into it.</li>
  *   <li><b>Pickups</b> ({@code ItemEntityPickupEvent.Post}) in a district: - out of it, unless the
  *       item entity is the drop of a stock block the player broke, whose contents already left as that
@@ -53,17 +53,12 @@ public final class PlayerPorts {
     long pickupPorts;
     long brokenPorts;
     long unattributed;
-    /** Sessions at a half of a split vanilla double chest, booked to neither half (RP-215, residual 13). */
+    /** Sessions at a half of a split vanilla double chest, booked to the district without a half (RP-215, residual 13). */
     long splitSessions;
 
-    /** Container sessions discarded as unattributed (any cause), for the GameTests. */
+    /** Container sessions discarded as unattributed, for the GameTests. */
     public long unattributedSessions() {
         return unattributed;
-    }
-
-    /** Container sessions at a half of a split vanilla double chest: discarded, not booked to either half. */
-    public long splitSessionsDiscarded() {
-        return splitSessions;
     }
 
     /** Container sessions at a half of a split vanilla double chest (booked to the district alone). */
@@ -116,12 +111,12 @@ public final class PlayerPorts {
         if (d != null && player instanceof ServerPlayer sp) {
             // A half of a vanilla double chest across a chunk border is its own store to the sim, but vanilla's chest
             // menu is the CompoundContainer of both halves: what the player moves may sit in the other half. The
-            // session is attributed to neither half (it is discarded when the menu opens), as a menu it cannot
-            // attribute is (RP-215, residual 13).
+            // session is a session all the same (tosses and pickups defer to it), booked at close as a port to the
+            // district that names no inventory, as a toss is (RP-215, residual 13).
             split = StockAccess.splitPair(level.getBlockState(pos), pos) != null;
             District.Inventory inv = split ? null : stockAt(d, level, pos);
-            if (inv != null) {
-                inventory = inv.index();
+            if (inv != null || split) {
+                inventory = inv == null ? IndRecords.NO_INVENTORY : inv.index();
                 before = snapshot(sp);
             }
         }
@@ -143,8 +138,11 @@ public final class PlayerPorts {
             return;
         Click c = lastClick.remove(player.getUUID());
         long now = ind.gameTime();
-        if (c != null && now - c.at <= 2 && c.level == player.level() && c.district != null && c.inventory != IndRecords.NO_INVENTORY) {
-            // A session on boundary stock (§3.3): the player's change between Open and Close is the port.
+        if (c != null && now - c.at <= 2 && c.level == player.level() && c.district != null && (c.inventory != IndRecords.NO_INVENTORY || c.split)) {
+            // A session on boundary stock (§3.3): the player's change between Open and Close is the port. At a
+            // half of a split pair the inventory is none: the district alone.
+            if (c.split)
+                splitSessions++;
             sessions.put(player.getUUID(), new Session(c.district, c.inventory, c.before != null ? c.before : snapshot(player)));
             return;
         }
@@ -152,8 +150,6 @@ public final class PlayerPorts {
         // nothing we can tell: its effect cannot be told apart from production, so the window is
         // discarded (§3.4, IND_DISCARD 1).
         District here = c != null && c.district != null ? c.district : ind.districtAt(player.level(), player.blockPosition());
-        if (c != null && c.split && now - c.at <= 2 && c.level == player.level())
-            splitSessions++;
         if (here != null) {
             ind.districts.discard(here, IndRecords.Discard.UNATTRIBUTED_SESSION);
             unattributed++;
