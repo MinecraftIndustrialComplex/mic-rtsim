@@ -1109,7 +1109,6 @@ public final class Districts {
             this.excluded = data.excluded(dim);
             this.pins = data.pins(dim);
             this.stationJoinsAtStart = new Long2LongOpenHashMap(data.stationJoins(dim));
-            LongOpenHashSet ring = new LongOpenHashSet();
             if (full) {
                 for (District d : data.districts.values())
                     if (d.dim == dim)
@@ -1119,24 +1118,36 @@ public final class Districts {
                 for (long c : dirtyHere)
                     for (int dx = -1; dx <= 1; dx++)
                         for (int dz = -1; dz <= 1; dz++) {
-                            long n = ChunkPos.asLong(ChunkPos.getX(c) + dx, ChunkPos.getZ(c) + dz);
-                            District o = index.get(n);
+                            District o = index.get(ChunkPos.asLong(ChunkPos.getX(c) + dx, ChunkPos.getZ(c) + dz));
                             if (o != null)
                                 affected.add(o.id);
-                            else if (n != c && !excluded.contains(n) && level.getChunkSource().getChunkNow(ChunkPos.getX(n), ChunkPos.getZ(n)) != null)
-                                ring.add(n);
                         }
             }
             for (long c : dirtyHere)
                 schedule(c);
             scheduleDistricts(affected);
-            // The ring (SECTIONS.md §2.1, SC184): a loaded chunk beside an edit that no district holds, asked about as a root
-            // after the edit's own chunks. root() roots it only if it holds a station, which is the common build order (a station
-            // first, the factory beside it later, nothing of it against the station, so no touch reaches it). At most eight a
-            // dirty chunk, each read once (holdsStation caches by chunk) and counted in the budget by root(); a chunk that is not
-            // loaded is never asked, and getChunkNow never loads one. A full detection has no ring.
-            for (long n : ring)
-                schedule(n);
+            // The ring (SECTIONS.md §2.1, SC184), after the edit's own chunks and districts, whatever the kind of detection: an
+            // edit can end up in a full one (the periodic pass, rescanSoon, a requeue), and a periodic pass with no edits has
+            // none, so it costs nothing.
+            for (long c : dirtyHere)
+                scheduleRing(c);
+        }
+
+        /**
+         * The ring of the edited chunk {@code c} (SECTIONS.md §2.1, SC184): each loaded chunk beside it that no district holds
+         * and that is not excluded, asked about as a root after the edit's own chunks. root() roots it only if it holds a
+         * station, which is the common build order (a station first, the factory beside it later, nothing of it against the
+         * station, so no touch reaches it). At most eight a dirty chunk, each read once (holdsStation caches by chunk) and
+         * counted in the budget by root(); a chunk that is not loaded is never asked, and getChunkNow never loads one.
+         */
+        private void scheduleRing(long c) {
+            for (int dx = -1; dx <= 1; dx++)
+                for (int dz = -1; dz <= 1; dz++) {
+                    long n = ChunkPos.asLong(ChunkPos.getX(c) + dx, ChunkPos.getZ(c) + dz);
+                    if (n != c && index.get(n) == null && !excluded.contains(n)
+                            && level.getChunkSource().getChunkNow(ChunkPos.getX(n), ChunkPos.getZ(n)) != null)
+                        schedule(n);
+                }
         }
 
         private void schedule(long c) {
@@ -1168,8 +1179,10 @@ public final class Districts {
                     // Not counted: scheduled behind the cursor too, because a root that found the chunk unloaded counted nothing.
                     scheduled.add(c);
                     pending.add(c);
+                    scheduleRing(c);
                     continue;
                 }
+                scheduleRing(c);
                 LevelChunk chunk = level.getChunkSource().getChunkNow(ChunkPos.getX(c), ChunkPos.getZ(c));
                 if (chunk == null)
                     continue; // unloaded since: its district keeps the seeds it recorded, and the adopt's seeds wait for the chunk
