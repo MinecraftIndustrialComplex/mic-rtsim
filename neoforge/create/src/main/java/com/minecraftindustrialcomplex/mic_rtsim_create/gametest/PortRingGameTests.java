@@ -396,7 +396,8 @@ public final class PortRingGameTests {
                 .thenWaitUntil(() -> check("applied offline", commandResults(op).equals(List.of(Obs.CommandResult.APPLIED))))
                 .thenExecute(() -> {
                     GlobalPackagePort port = st[0].connectedPorts.get(postbox);
-                    check("one package in the buffer, primed, the op in its ring",
+                    check("one package in the buffer, primed, the op in its ring (packages " + packages(port.offlineBuffer) + ", primed " + port.primed
+                            + ", the op in the ring " + PortRing.wroteToBuffer(port, op) + ", answers " + commandResults(op) + ")",
                             packages(port.offlineBuffer) == 1 && port.primed && PortRing.wroteToBuffer(port, op));
                     check("the engine has not acknowledged it", ind().opApplied(op));
                     // The postbox's chunk loads, and the postbox is placed and registers with its station: Create
