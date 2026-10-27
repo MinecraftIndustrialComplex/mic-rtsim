@@ -1,5 +1,6 @@
 package com.minecraftindustrialcomplex.mic_rtsim_create;
 
+import com.minecraftindustrialcomplex.mic_rtsim.journal.JournalDependent;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.HolderLookup;
 import net.minecraft.core.registries.Registries;
@@ -35,7 +36,7 @@ import java.util.List;
  * district's next wave. A file someone else deleted leaves the list. The item of a deleted file stays where it
  * is and a cannon reports its file missing.
  */
-public final class RepairFiles extends SavedData {
+public final class RepairFiles extends SavedData implements JournalDependent {
     public static final String FILE = "mic_rtsim_create_repairs";
 
     /** One delivered file: its district, name (under the uploaded folder's {@code mic-rtsim}), level and anchor. */
@@ -113,6 +114,12 @@ public final class RepairFiles extends SavedData {
                 return false;
         }
         return true;
+    }
+
+    /** Vanilla cleared the dirty flag before a write that failed: the next world save writes it again (docs/choices-journal-barrier.md U-g1). */
+    @Override
+    public void mic_rtsim$remark() {
+        setDirty();
     }
 
     @Override

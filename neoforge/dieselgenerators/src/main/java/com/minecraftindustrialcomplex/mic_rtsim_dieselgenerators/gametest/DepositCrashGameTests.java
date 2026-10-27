@@ -143,7 +143,7 @@ public final class DepositCrashGameTests {
                     DurableOpRings.holdPrunesForTest(false);
                 })
                 .thenWaitUntil(paced(() -> {
-                    engine().requestSaveAtNextStep();
+                    com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests.acknowledge();
                     check("the engine acknowledged the answer and the op left the ring",
                             !((OilRingHolder) OilChunksSavedData.load(level)).mic_rtsim$ring().contains(op));
                 }))

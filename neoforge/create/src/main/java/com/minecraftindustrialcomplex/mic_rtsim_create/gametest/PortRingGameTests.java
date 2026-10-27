@@ -752,7 +752,7 @@ public final class PortRingGameTests {
                     TrainRing.holdPrunesForTest(false);
                 })
                 .thenWaitUntil(IndustryKit.paced(() -> {
-                    engine().requestSaveAtNextStep();
+                    com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests.acknowledge();
                     check("the engine acknowledged the answer and the op left the ring read back",
                             !PortRing.wroteToBuffer(st[0].connectedPorts.get(postbox), op));
                 }))

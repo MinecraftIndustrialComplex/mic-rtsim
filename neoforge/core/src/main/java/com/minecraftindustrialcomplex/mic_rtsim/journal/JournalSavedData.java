@@ -35,6 +35,11 @@ import java.util.function.Consumer;
  * <p>A held write is held again at every world save, with no limit; a flush save tries once more and then keeps the
  * older file, logged at error ({@link #flushKept}). The file's lag is counted in applied ops ({@link #appliedBehind})
  * and logged once past {@link #BEHIND_WARN} (RP-205).
+ *
+ * <p>It is held, the same way, while a {@link JournalDependent} file of its save failed to write and has not been
+ * written since ({@link SavedDataWrites}): vanilla logs the failure and clears the data's dirty flag, so without the hold
+ * the journal's file would claim ops a file on disk lacks. The next world save marks the failed data dirty again and
+ * writes it first; the journal's write goes ahead once it succeeded (docs/choices-journal-barrier.md U-g1).
  */
 public final class JournalSavedData extends SavedData {
     public static final String FILE = "mic_rtsim_journal";
@@ -55,6 +60,12 @@ public final class JournalSavedData extends SavedData {
     private volatile boolean heldLast;
     /** Flush saves that kept the older file after their second try. */
     private final AtomicLong flushKept = new AtomicLong();
+    /** Writes held by a failed SavedData write (U-g1), set on the IO chain. */
+    private final AtomicLong savedDataHeld = new AtomicLong();
+    /** Streaks of such holds (each logged once). */
+    private final AtomicLong savedDataStreaks = new AtomicLong();
+    /** The last write was held by a failed SavedData write, and the streak is logged (on the IO chain). */
+    private volatile boolean savedDataStreak;
     /** {@link Journal#appliedRecords} at the snapshot the file on disk holds (this start's; 0 before the first write). */
     private volatile long appliedDurable;
     private boolean warnedBehind;
@@ -143,10 +154,20 @@ public final class JournalSavedData extends SavedData {
             warnedBehind = false;
         } else if (!warnedBehind) {
             warnedBehind = true;
-            MicRtsim.LOGGER.warn("[mic_rtsim] the journal's file on disk is {} applied ops behind (its writes held {} world saves in a row: {}); a crash"
+            MicRtsim.LOGGER.warn("[mic_rtsim] the journal's file on disk is {} applied ops behind ({}); a crash"
                     + " replays them from the older file, and the chunks and stores they changed must answer them (RP-205)",
-                    behind, chunks.heldInARow(), chunks.lastHeld());
+                    behind, behindBecause());
         }
+    }
+
+    /** The two causes of a journal file that does not move, each said on its own: chunks not on disk (RP-205), a failed SavedData write (U-g1). */
+    private String behindBecause() {
+        String chunkPart = chunks.heldInARow() > 0
+                ? "its writes waited for chunks " + chunks.heldInARow() + " world saves in a row: " + chunks.lastHeld() : null;
+        String dataPart = savedDataStreak ? "a SavedData file whose write failed holds it (U-g1)" : null;
+        if (chunkPart != null && dataPart != null)
+            return chunkPart + "; and " + dataPart;
+        return chunkPart != null ? chunkPart : dataPart != null ? dataPart : "its writes were held";
     }
 
     /**
@@ -165,6 +186,23 @@ public final class JournalSavedData extends SavedData {
                             chunks.lastHeld(), applied - appliedDurable);
                 }
                 return;
+            }
+            String failing = SavedDataWrites.INSTANCE.holdFor(dirs);
+            if (failing != null) { // a file of this save is not on disk: the journal's file does not get ahead of it (U-g1)
+                retry = true; // dirty for the next world save, which writes the failed file first. No heldLast: a flush save does not try again (U-g7)
+                savedDataHeld.incrementAndGet();
+                if (!savedDataStreak) { // once per streak, counted after; the end of the streak is said below
+                    savedDataStreak = true;
+                    savedDataStreaks.incrementAndGet();
+                    MicRtsim.LOGGER.error("[mic_rtsim] the journal's file is kept as it was: a write of {} failed; it is {} applied ops behind and each world"
+                            + " save tries that file again; a restart before then replays them from the older file; logged once until it is written"
+                            + " (docs/choices-journal-barrier.md U-g1)", failing, applied - appliedDurable);
+                }
+                return;
+            }
+            if (savedDataStreak) {
+                savedDataStreak = false;
+                MicRtsim.LOGGER.info("[mic_rtsim] no failed SavedData write holds the journal's file any more (the files were written again, dropped or given up on): it goes on");
             }
             for (Path d : dirs) // their renames are durable before the journal's can be (RP-201)
                 DirectorySync.sync(d);
@@ -202,6 +240,16 @@ public final class JournalSavedData extends SavedData {
         return skipped.get();
     }
 
+    /** Writes held because a SavedData file of their save failed to write (U-g1). */
+    public long savedDataHeld() {
+        return savedDataHeld.get();
+    }
+
+    /** Streaks of holds by a failed SavedData write: each is one error line at its first hold and one info line at its end (U-g1). */
+    public long savedDataStreaks() {
+        return savedDataStreaks.get();
+    }
+
     /** Flush saves (the stop, {@code /save-all flush}) that kept the older file after their second try (RP-205). */
     public long flushKept() {
         return flushKept.get();
@@ -221,7 +269,8 @@ public final class JournalSavedData extends SavedData {
         return "journal file: written " + writes() + ", through observation " + writtenThrough + ", " + appliedBehind() + " applied ops behind"
                 + "; held " + b.held() + " (" + b.heldInARow() + " in a row" + (b.lastHeld().isEmpty() ? "" : ", last: " + b.lastHeld()) + ")"
                 + ", late " + b.late() + ", wait max " + b.maxWaitMillis() + " ms, kept at a flush save " + flushKept()
-                + ", outside a world save " + skipped() + "; " + DurableOpRings.perfLine()
+                + ", outside a world save " + skipped() + ", by a failed SavedData write " + savedDataHeld() + " in " + savedDataStreaks() + " streak(s) (" + SavedDataWrites.INSTANCE.describe() + "); "
+                + DurableOpRings.perfLine()
                 + "; directory syncs " + DirectorySync.synced() + " (" + DirectorySync.failed() + " failed, " + DirectorySync.nanos() / 1_000_000 + " ms)";
     }
 
@@ -248,6 +297,17 @@ public final class JournalSavedData extends SavedData {
      */
     public long writtenThrough() {
         return writtenThrough;
+    }
+
+    /**
+     * GameTests only: the file on disk is taken to hold everything through {@code through}, as it does once a world
+     * save's write lands (the marker, WORLD_SAVED, then reports it). A test that has the scripted engine acknowledge
+     * without a world save calls it so the bridge's clamp (JB9) lets the acknowledgement trim, which is what that test
+     * is about; the clamp's own tests (JournalBarrierGameTests) do not.
+     */
+    public void fileLandedForTest(long through) {
+        if (through > writtenThrough)
+            writtenThrough = through;
     }
 
     /** Files written since the server started (the GameTests read it). */

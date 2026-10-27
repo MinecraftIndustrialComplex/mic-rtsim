@@ -234,6 +234,7 @@ public final class RtsimSession {
         this.engine = engine;
         this.journalData = journal;
         this.boundary = new BoundarySession(engine, journal.journal(), RtsimConfig.effectiveMask(), gameTime());
+        this.boundary.trimsClampedTo(journal::writtenThrough);
         boolean startsOver = ReinstallRules.startsOver(boundary.start().pagesObsSeq(), boundary.observationsLost());
         try {
             this.engineLife = ReinstallRules.engineLife(server.getWorldPath(LevelResource.ROOT).resolve("rtsim"), startsOver,
