@@ -5443,7 +5443,9 @@ RP-150 to RP-153 the replay records.
   - The test: it now sets the body 2 blocks from the hold point toward the track point and faces it at the track
     as the bridge does, so the spot is straight behind it on purpose (not by the placement's facing surviving the
     look goals), and it checks the walk back keeps within `STAND` of the straight way (`aside`) besides the old
-    checks. Its comments no longer say the hold point lies beside the rail here.
+    checks. Its comments no longer say the hold point lies beside the rail here. In m8-gt9 (all 73 mowziesmobs
+    tests passed) it was back within `STAND` in 20 ticks, at most 0.160 aside of the way, never nearer the player
+    than 7.948, and stood 100 ticks within the stand with no new path.
   - Left as it is, for the lead: a held puppet off its spot with a player within the jar's swipe reach swipes
     back to back and is not walked back while the player stays. The hold yields to animations by design (MZB-361);
     with the turn fixed the walk back no longer carries a puppet toward a player.
