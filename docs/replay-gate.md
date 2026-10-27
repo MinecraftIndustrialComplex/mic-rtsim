@@ -2238,6 +2238,14 @@ its files on disk, the rest from the save before. Two directions:
      the engine owes the rest as it does for any full chest. A transfer into a full half answers FAILED while the
      other half has room. A removal whose goods sit in the other half is a shortfall, applied 0, which the engine
      books as it books any.
+   - **Create's movers fill the pair, so a split half gets no counted flows.** Funnels, mechanical arms, chutes and
+     packagers insert and extract through NeoForge's chest handler, which covers both halves: a mover facing half Q can
+     put goods into half P's slots in the other chunk. A count credited to Q's store would disagree with both halves'
+     stocks, so `Counting.moved` credits a move at a split half to neither half: it discards the move as it does one it
+     cannot attribute, and raises its own counter (`Counting.splitMovesDiscarded`, beside `movesCounted`). A split pair
+     fed or drawn by Create movers therefore has no counted flows, and the glass compile learns no rates for it. How
+     Create fills a chest is unchanged (the coordinator's decision). Test: create's
+     `IndustryGameTests.aMoveIntoAHalfOfASplitChestIsDiscardedNotCounted`.
    No number the engine books is a quantity the chunk it names did not hold or take, so a resend or a crash cannot
    create or remove goods because of the split. A pair inside one chunk is one inventory of 54 and is not affected.
    Test: `ChestPairLoadGameTests.aSplitDoubleChestIsTwoInventoriesInOneDistrict` and slice U-f's
