@@ -803,7 +803,8 @@ shared phase 1 world. The ships keep U10 (see *Left*), phase 1 is slice U-d, and
       first record after its DICTs. A module's own reset in the middle of a session (a first herd
       or camp) is the same function for that module alone (`shared::reset_these`); it holds no kept
       record.
-    - Phase 1's drain (slice U-d) goes into `shared::resets`, after the viewers.
+    - Phase 1's drain (slice U-d) goes into `shared::resets`, after the viewers (done, RP-300: the joint
+      switch-on).
     - *Before* (P2), each module's reset ran as its switch came. ECOLOGY is the dragons' and the
       herds' one bit and MODULES reached the dragons first, so the dragons applied their kept
       records with the herds still off: each record's catch-up ran the window with no prey, and the
@@ -1009,3 +1010,298 @@ shared phase 1 world. The ships keep U10 (see *Left*), phase 1 is slice U-d, and
     switch-on's covers the writes.
   - Slice A's `begin_session` and `set_enabled` change the same functions: the merge is textual.
   - A write Java applied while off, whose CHAIN_IN came while off, is RP-285's case, not this one.
+
+## RP-300: phase 1 switched off hears its journaled records (slice U-d, findings U10 and PR13)
+
+**The rule.** The switch gates only new decisions; every record of what already happened is heard; a
+record applied while off goes in at its own tick, never at the frozen clock.
+
+**Chosen.**
+
+- Every journaled phase 1 record goes through one path, `phase1::book` (`engine/phase1.rs`): on, the
+  input is applied now; off, it is kept in `Link::kept`, a list in time order (equal ticks in the
+  order heard) at the record's own world tick (`wt(GAME_TIME)`). The kinds: TRADE (a village
+  resident's and a caravan's), CARGO_CHANGED (robbery, goods in), TAKEN and DIED, HURT, RESCUE,
+  TALKED, BASE_MARKED and BASE_UNMARKED, VILLAGE_ADOPTED (its Join and village type), HOUSE_PLACED
+  and a work's COMMAND_RESULT. The census (VILLAGE_CENSUS, latest state, sent again) is still
+  ignored and counted in `ignored`, which now means only that.
+- `drain_kept` applies the list in order, each input after `shared::run_rounds` has run the world
+  and the modules sharing its clock to its tick (so the dragons, ships, herds and conflict meet it
+  in order, S13). It runs at the switch-on (`phase1::drain_when_due`, a step of `shared::resets`:
+  the joint switch-on, below), at the top of `simulate`, at the top of
+  `shared::run_to` (a viewer module running the clock while phase 1 is off must not run it past a
+  kept input) and in the dragons' and the ships' `ingest` before they run their engines
+  (`drain_before_run`: a DRAGON_STATE or SHIP_STATE applies at the hand-over's time, and an engine's
+  `run_until` ends with the world's, so the inputs before that time go in first, review P3). Each
+  input is removed before it is applied, because applying runs the clock again, which comes back
+  to the drain. Off with no viewer running nothing moves the clock, so nothing drains (the guard
+  of `drain_kept`); the two `ingest`s have no guard, because a module that is on and has no lair,
+  dock or oil yet is no viewer and its engine runs the world all the same. While the session's
+  replay runs with a viewer the drain stops at the replay clock (`clock_target`).
+- The list is saved in the meta page (`META_VERSION` 4 to 5, after the queue), in the same atomic
+  commit as the pages of the save that acknowledged its records, so a crash while off brings back
+  exactly the inputs whose records Java dropped. Before release a version 4 save is read as
+  unreadable pages and dropped (S5): no migration.
+- TAKEN and DIED book at `wt(GAME_TIME)` on and off. They booked at `world.now()`, the world's
+  tick when the record was heard, which a replay hears at another tick (hazard J3).
+- Guards resolve against what will be applied: a village is known if it is a node or a kept Join
+  or MarkBase names it, so a HOUSE_PLACED or a work style heard while off for a village adopted
+  in the same window is not refused; a repeat of a record already kept (a copy after a crash) is
+  not kept twice.
+- `check_capture` (the check at a caravan's despawn that its members' items equal the sim's row)
+  returns early while a kept input moves that caravan's goods (Rob, CargoIn, CaravanTrade, Member,
+  MemberHeld): the row has not heard them yet, so a difference is not a bug and was logged as a
+  false mismatch. The check runs again once they are applied.
+- HOUSE_PLACED and the work COMMAND_RESULT went onto the deferral for the order's sake (item 4 of
+  the brief, see Tests): a record applied at once while an earlier one of its village waits would
+  be applied before it, and the input log would not be in time order.
+- WORK_CATALOG is left alone: it is latest state (the whole catalogue), sent once a session and
+  not journaled, so a replay never brings it back at another tick. It is still taken while off, at
+  the frozen clock.
+- **The cap.** The list is bounded by count: `KEPT_CAP` is 24,576 inputs (`Link::kept_cap`, which
+  a test lowers). Over it, `Link::keep` drops one report at a time until the list fits or none is
+  left. Droppable are the inputs whose loss costs a sentiment or reputation nudge and nothing else,
+  in three classes dropped in this order (`drop_rank`, review P3): **talks** first (`Talked`), then
+  **hurts and rescues** (`CaravanReport`, and a `VillageReport` that is not a kill), then
+  **residents killed** (`VillageReport` of kind 8), the dearest of the three (a killing moves a
+  village's sentiment by -125 for 30 days, an assault by -25 and a rescue by +25 for 10:
+  `rtsim-knowledge` tunables). Within a class the
+  oldest goes first, whatever the age of the others: a kill older than a talk outlives it. A new
+  report over a list with none of an earlier class is the oldest of its class and may go itself (a
+  new talk over hurts and kills). Never dropped: trade, caravan trade, robbery and goods in, a
+  taken or killed member (goods that left the sim's row), an adoption (a village for good, with its
+  type), a base mark or unmark, a house placed, a work's answer (a resident or a work for good).
+  `UnmarkBase` is in the kept class although it only removes a base: a base unmarked and never
+  heard stays in the world for good. If loss records and structure alone pass the cap, all are kept
+  over it. Each drop adds to `kept_dropped`, each insert that leaves the list over the cap adds to
+  `kept_over` (both this session's, not saved), and a WARN line is logged at the first and then at
+  each power of two of the counter (naming the class dropped), so a day of overflow is a dozen
+  lines.
+- **The switch-on says what it did.** `switch_on_drain` (`engine/phase1.rs`) wraps the switch-on's
+  drain and logs one INFO line when anything was kept: how many of the kept inputs it applied, how
+  many of them were base marks, and how long it took. Bases are never dropped, so a long window
+  grows the drain, and the step that runs it, linearly with its marks: each is a node built into
+  the world, about 25 ms apiece in the bench below. Inputs a replay's clock has not reached stay
+  kept and the line says how many wait.
+
+- **The joint switch-on** (U-d's review, P2). Phase 1's bit and ECOLOGY's (the dragons' and the
+  herds'), or the conflict's, can come on in one MODULES record, and each of those modules kept
+  records of its own from the same window. The drain ran in `set_enabled`, when phase 1 heard the
+  record and before `shared::switch` set any flag, so the whole window of phase 1's inputs went in
+  with the viewers off, the world ran to the last of them, and each record a viewer kept (a
+  dragon killed in the window, a band wiped out) met a world already past its tick, with inputs of
+  its future in it. Now `set_enabled` only marks the drain due (`Link::switch_on_due`, not saved),
+  and `shared::resets` takes it as its third step, after `apply_kept` and before the replay ends
+  (`phase1::drain_when_due`, which also logs the line above). Each viewer's kept record's catch-up
+  (`shared::run_to`) already applies phase 1's inputs up to its own tick, so the record meets the
+  world at its tick, with phase 1's earlier inputs in and its later ones not yet; the drain then
+  takes what is left, and the replays end. A switch-on of phase 1 alone begins no reset, and the
+  step runs all the same (`finish` is entered with nothing begun). A module's own reset in the
+  middle of a session (`reset_these`, `end_resets`: a first herd, `dragons::reset`) does not take
+  it: it runs inside the application of a record, often a kept one, and would take the drain
+  before the records that follow. The first version of the move took the flag in `end_resets`
+  itself and that is what the probe showed: the dragon's record leaves `reset_if_due` behind it,
+  whose `end_resets` with nothing begun drained the window from inside `apply_kept`.
+  The line counts the window as phase 1 found it when the record came: `Link::switch_on_due` is
+  an `Option<SwitchOn>`, a snapshot (the inputs kept, the base marks among them, the instant) taken
+  in `set_enabled`, none when nothing was kept. Counted at the drain it covered only what the
+  viewers' catch-ups left (an "applied 1 of the 1" over a window of two), and nothing at all when
+  a viewer's record was later than phase 1's last input. The duration runs from the record, so it
+  includes the viewers' catch-ups too.
+
+**Why.** The engine acknowledges every journaled record it admits, whatever a module's switch
+(`Replay`), and Java drops what it saw acknowledged and does not send it again. Phase 1 used to
+ignore its records while off (U10, PR13), so a caravan robbed or traded with between the switch-off
+and its despawn kept in the sim's row the goods the player now has, and a dupe followed at the
+switch-on. Booking at the frozen clock instead would be wrong too: tick-derived op ids and events
+differ between the live run and a replay (J3).
+
+**The cap's estimate** (synthetic, no real server's data). A busy day of switch-off, 40 players
+online on average for 24 hours, 960 player-hours, with these rates per player-hour: resident trades
+10, caravan trades 0.5, robbery stacks taken 1, members taken or killed 0.25, caravan or resident
+hurts 3, rescues 0.25, talks 5; per day 150 villages adopted (an adoption is a Join and, for a typed
+village, its style: 290 inputs), 160 houses placed, 160 work answers and 40 bases marked. That is
+9,600 + 480 + 960 + 240 + 2,880 + 240 + 4,800 + 290 + 160 + 160 + 40 = 19,850 inputs, of which 11,930
+are loss records or structure (never dropped) and 7,920 are reports. The cap, 24,576, holds that day
+with 24 percent to spare; the reports are what the cap trims. Loss records and structure alone pass
+the cap after about 2.06 days of switch-off at this load (24,576 / 11,930), or after about 25
+hours at twice the players (80 on average, 23,860 of them in a day): **that is the residual**, the list then grows past the cap, one
+WARN line at the first and at each power of two, with every loss record kept and applied at the
+switch-on. At about 32 bytes an entry, ten days of this load would be about 119,000 entries (loss
+records and structure only) and about 3.8 MB in the meta page, rewritten at every save.
+
+**The cap against the page.** The page store has no limit on a page below 4 GiB (the length is a
+`u32`), so the budget is mine: the meta page is rewritten at each save, goes through the store's log
+(which folds at 4 MiB), and I held it under 1 MiB. Measured in the unit bench
+`a_list_filled_to_the_cap_saves_loads_and_drains` with the mix above at the cap: 24,576 entries,
+773,339 bytes (31.5 per entry), save and load 6 to 12 ms, and a whole drain at the switch-on 7 ms
+for the inputs themselves (the 49 bases in the bench's mix cost about 25 ms each on top, 1.2 s, which
+is the world adding a node as it would live). The worst case, every entry a robbery of ten goods, is
+1.68 MB, which no mix reaches: a robbery is a stack, mostly one to four goods. So one meta page holds
+the cap and the list is not paged. If a server's switch-off regularly passes the residual above,
+paging the list (a page per few thousand entries) is the next step, not a higher cap.
+
+The drop also means arm A and arm B of D1 are equal only under the cap. Over it, A (a restart with
+phase 1 off) has dropped reports that B (a restart with it on, applying each record as it comes)
+applied. A crash while off keeps the list as saved, so a drop already made is not made again.
+
+**Cost.** One list in the meta page (empty on, a few bytes), a second path through the records
+(`book` and `apply_booked`, which the on path takes too), a drain at four call sites, and one more
+thing the capture check must know. While off and no viewer runs, the kept list grows with the
+window's records, one input each; it is applied at the switch-on in one go, before the world runs
+to now.
+
+**Tests** (`crates/rtsim-jni/tests/protocol.rs`, `mod p1_off` and `mod p1_off_fork`; unit tests in
+`engine/phase1.rs`). Failing first on the base (4e694452), what each printed:
+
+- T1 robbery heard while off, then on again: the sim's row never booked it, `ROBBERIES 0 (want 1)`.
+- T1b a despawn capture with a kept robbery: `capture_mismatches 1 (want 0)`.
+- T2 trade: `CARAVAN_TRADES 0 (want 1)`. T3 member taken: `REPORTS 0 (want 1)`.
+- D1 determinism, fork A/B: run to pages at S, switch phase 1 off, let the window's records in
+  (a robbery, a trade, a taken member; nothing else), crash right after with the journal restored
+  from its file, copy the page dir and clone the `WorldSave`, restart twice. Arm A restarts with
+  phase 1 off and switches on later, arm B restarts with it on (the records replay at their own
+  ticks); both run to the same world tick and compare `phase1_state().0` and the op ids decided
+  after. An A/A control first (two B restarts are equal) and a sensitivity control (a record
+  missing from one arm shows). On the base: A hash 16904006048110328712 with no ops and nothing
+  booked, B hash 2294602932434821836 with nine gossip ops and the three bookings. On the fix A == B.
+- D3 a crash while off after a save that carries the kept inputs: they come back from the pages and
+  are applied once at the switch-on. On the base the list does not exist (0 kept, want 2).
+- Unit tests: the list across a save and load (`the_kept_inputs_come_back_from_a_save_in_order`),
+  the drain order (`kept_inputs_drain_in_time_order_each_at_its_own_tick`: heard 3000, 1000, 2000,
+  2000 applied 1000, 2000, 2000, 3000 and the world at 3000) and a `run_to` with a viewer running
+  and phase 1 off (`a_run_to_with_a_viewer_running_drains_the_inputs_it_passes`: the input before
+  the target in, the one after waiting).
+- Item 3 (TAKEN/DIED tick): with only that booking set back to `world.now()` on the fixed tree D1
+  diverges (A hash 7001903515526480207, B 2294602932434821836, the gossip ops after differ). At
+  `wt(GAME_TIME)` it does not. It is the one on-path behaviour change.
+- Item 4 (HOUSE_PLACED and the work COMMAND_RESULT) under the determinism test first: D2 (HOUSE_PLACED
+  of a growth house, three Ribbit villages) and D2b (a work's answer arriving a day after the
+  switch-off) both pass on the base, that is with both taken at the frozen clock: A == B, same
+  hash, same ops. D2b is sensitive (without the answer the hash and the ops differ), but the answer's
+  tick does not change what the world decides after it: `work_result` only wakes the village's next
+  purchase at `max(at, now)`, and `house_placed` has no tick-derived state. So no divergence was
+  found and neither is a J3 hazard in these setups; they stay on the deferral for the order's sake
+  (above) and because one rule with no exceptions is easier to keep true. Reversible: take them at
+  once as before.
+- Item 5 (VILLAGE_ADOPTED, BASE, HURT, RESCUE, TALKED) all go through `book` with their guards
+  resolved. HURT and RESCUE of a caravan: `REPORTS 0 (want 2)` on the base. TALKED:
+  `talk_stats().talked 0 (want 1)` on the base, and the same op id again changes nothing. A base
+  marked while off is kept and is a node afterwards (unit test); the adoption is the unit test
+  `a_switched_off_phase1_keeps_its_records_and_catches_up`. HURT, RESCUE and a base of a village (as
+  against a caravan) go through the same `known` guard, which the adoption and base tests exercise;
+  no test sends a RESIDENT_HURT, a resident RESCUE or a base UNMARK while off. A quiet-window control
+  (no records: nothing changes, the capture matches) keeps the comparison honest.
+
+**Tests of the cap** (`engine/phase1.rs`; the first four failed on the uncapped list, which kept
+every entry):
+
+- `an_overflowing_kept_list_drops_the_oldest_report_and_never_a_loss_record`: with a cap of 5 and a
+  robbery, a hurt, a trade, a talk and a join kept, a sixth input drops the talk at 40 (the hurt at
+  20 is older, but talks go first; the first version of the cap, oldest report of any class, printed
+  ticks [10, 30, 40, 50, 60] where [10, 20, 30, 50, 60] is wanted, and on the uncapped list [10,
+  20, 30, 40, 50, 60]), a seventh the hurt; over a list of loss records one more is kept over the
+  cap and a new report goes itself.
+- `the_cap_counts_and_warns_on_the_first_drop_and_at_powers_of_two`: nine drops count 9 (printed
+  on the uncapped list: 0) and warn at the 1st, 2nd, 4th and 8th; five loss records over the cap
+  count 5 and warn at the 1st, 2nd and 4th.
+- `loss_records_over_the_cap_are_all_kept_and_applied_at_the_switch_on`: a cap of 3, three villages
+  and 40 trades heard with 40 hurts among them: 43 kept (83 on the uncapped list), 40 hurts dropped,
+  and at the switch-on every village is adopted and all 40 trades are heard by the world.
+- `a_capped_list_survives_a_save_and_load`: a list over its cap of 6 with 7 loss records (14 on the
+  uncapped list) reads back equal, and after the load a further report is the one that goes.
+- `a_list_filled_to_the_cap_saves_loads_and_drains`: the size bench above.
+
+**Tests of the review's three P3s** (`engine/phase1.rs`). Each failed first on `89bcdc61`, what it
+printed:
+
+- Drop order, `the_cap_drops_talks_first_then_hurts_and_rescues_then_kills` (a cap of 6, the oldest
+  entry a kill, then a hurt, a talk, a trade, a resident hurt, a talk): the first drop took the
+  kill at 10 (kept ticks [20, 30, 40, 50, 60, 70]; wanted the talk at 30, [10, 20, 40, 50, 60,
+  70]). Then each class in its order, a new talk over hurts and kills going itself, the kill last,
+  and the per-class counts coming back right from a save (`soft_len`).
+- Drop order at the real cap, `a_mix_past_the_real_cap_keeps_what_the_drop_order_keeps`: the list
+  filled to exactly 24,576 (18,000 trades, 3,000 talks, 2,000 hurts or rescues, 1,576 kills, the
+  oldest entry a kill) drops nothing; 3,500 more trades heard drop all 3,000 talks and the 500
+  oldest hurts (talks, hurts, kills left on `89bcdc61`: 1,251, 833, 992; wanted 0, 1,500, 1,576);
+  2,000 more drop the other 1,500 hurts and the 500 oldest kills (the head of the list among them);
+  1,000 more leave 76 kills, the newest; then the 76 go for loss records, and the 77th over the
+  cap is kept over it. Throughout the list is in time order and `kept_over` is 0 until no report
+  is left.
+- DRAGON_STATE, `a_dragon_state_applies_the_kept_inputs_before_it_runs_the_world_to_the_hand_over`
+  (phase 1 off, a lair, a Join kept at 2,000, the hand-over at 9,000): the record ran the world to
+  9,000 with the Join still kept, and it was booked at 9,000 once on (`Some(9000)`, wanted
+  `Some(2000)`). The same hole for dragons that are on with nothing in the world yet
+  (`a_dragon_state_of_dragons_with_nothing_yet_applies_the_kept_inputs_first`, which is also the
+  first LAIR_FOUND of a session, the same `ingest`) and for ships on with no dock
+  (`a_ship_state_of_ships_with_nothing_yet_applies_the_kept_inputs_first`, which the ships' own
+  drain missed through the viewer guard); all three pass with `drain_before_run`. The herds'
+  `ingest` runs only the legs (`w.legs`), not the world, so it needs no drain. The conflict's
+  `ingest` runs the world only to its own events, and the wheel of a conflict with no faction is
+  empty; the ChiefState arm ingests at the engine's own `now()`. Both read, not probed.
+- The switch-on's line, `the_switch_on_says_how_many_inputs_it_applied_and_how_long_it_took`: 45
+  inputs kept (3 adoptions, 2 base marks, 40 trades) give "applied 45 of the 45 inputs ... (base
+  marks among them: 2) in ...", nothing kept gives nothing, and a replay clock at 5,000 with
+  inputs at 2,000 and 9,000 gives "applied 1 of the 2 inputs" and "1 wait for the replay clock".
+  The call from `drain_when_due` is seen in the output of `modules()` in the other tests (the line
+  prints once per switch-on that had something kept), not asserted.
+
+**Tests of the joint switch-on** (`engine/phase1.rs`, and one in `tests/protocol.rs`). The lib's
+`State::kept_probe` (test builds only) records, for each record a viewer kept and `apply_kept`
+applied: its tick, the phase 1 world's present, and the phase 1 inputs still kept, once it is in.
+Failing first on `879c5367` (the drain in `set_enabled`), what each printed:
+
+- `a_joint_switch_on_applies_the_viewers_record_between_phase_1s_own_inputs`: phase 1 and ECOLOGY off
+  in one MODULES (`0b0_0111`), a lair for the dragons, a village heard at 1,000, a DRAGON_DIED
+  kept at 2,000, a village heard at 3,000, then on in one record (`0b1_1111`). Printed
+  `[(2000, 3000, 0)]` (the death met a world at 3,000 with nothing left waiting); wanted
+  `[(2000, 2000, 1)]`. After the move both villages are in, at their own ticks (1,000 and 3,000).
+- `a_joint_switch_on_applies_the_conflicts_record_between_phase_1s_own_inputs`: the same with the
+  conflict's bit (`0b10_1111`) and a DIFFICULTY record kept at 2,000. Printed `[(2000, 3000, 0)]`,
+  wanted `[(2000, 1000, 1)]`: with no camp the conflict does not run the world to its record, so
+  the present is the village before it. A conflict whose record has a camp to run is the dragons'
+  case with another module's clock, which the first test covers.
+- Both pass on the move. The first run of the move failed the first test with
+  `[(2000, 3000, 0)]` again, for the reason in the bullet above (the nested `end_resets`);
+  `a_modules_own_reset_inside_a_kept_record_does_not_take_phase_1s_drain` keeps that: a
+  `reset_these` and an `end_resets` with nothing begun leave the drain due.
+- The line of the switch-on (review P3 of the joint switch-on), failing first on `ce97ce26`:
+  `the_joint_switch_ons_line_covers_the_whole_window_when_a_viewer_record_is_the_last` (a village at
+  1,000, a base mark at 1,500, a village at 2,000, a dragon's death at 3,000): the death's catch-up
+  drew in all three and the drain found none, so the line fired 0 times (wanted once, "applied 3
+  of the 3 inputs", "base marks among them: 1"). The dragons' test above also asserts the line
+  (a record between two inputs): it said "applied 1 of the 1", wanted "applied 2 of the 2". The
+  lib's `State::switch_on_lines` (test builds only) holds what `drain_when_due` logged.
+- `a_switch_on_of_phase_1_alone_drains_in_the_resets_of_its_record` (nothing begun): phase 1
+  hearing the record leaves both kept inputs kept and the flag due; `shared::switch` drains them
+  in time order and takes the flag, once.
+- The unit tests of the switch-on that called `modules(&mut st, 0b1111)` (the helper only made
+  phase 1 hear the record) now call `shared::resets` after it, as the engine does; five of them
+  failed first on the move for that alone (`a_base_marked_while_off_is_a_node_once_it_is_on_again`,
+  `kept_inputs_drain_in_time_order_each_at_its_own_tick`,
+  `a_switched_off_phase1_keeps_its_records_and_catches_up`,
+  `loss_records_over_the_cap_are_all_kept_and_applied_at_the_switch_on`,
+  `a_list_filled_to_the_cap_saves_loads_and_drains`).
+- `a_joint_switch_on_of_phase_1_and_the_dragons_keeps_the_death_at_its_own_tick` (protocol): the real
+  engine path, a dragon adopted and embodied, both off, a village, the player's kill, a village,
+  three days, both on: the dragon stays dead, its lair is empty from the kill's tick and before the
+  later village, both villages are in and nothing is kept. It passes on `879c5367` too (the dragons
+  book the death at its own tick either way); the order is only seen by the probe.
+
+**Left.**
+
+- The joint switch-on's order is shown for the dragons and the conflict as viewers; the herds,
+  which share ECOLOGY's bit, go through the same merged list (`apply_kept`) and the same catch-up,
+  and have no test of their own.
+- The census stays ignored while off (latest state; the next one after the switch-on lands).
+- WORK_CATALOG is taken at the frozen clock while off (see Chosen), which is harmless because the
+  engine's reply to a catalogue is not tick-derived.
+- `docs/deploy-rehearsal-omegasrv.md` still describes phase 1 ignoring its records while off, as it
+  was when the rehearsal ran.
+- The residual of the cap: loss records and structure alone past 24,576 inputs (about two days of
+  the synthetic busy load) are kept over it, with a WARN. A report dropped for the cap is a
+  sentiment or reputation nudge lost for good; the engine acknowledged it and Java will not send it
+  again.
+- The switch-on's drain grows with the window's base marks (see Chosen), which the cap never
+  drops: a long switch-off with many bases is a long step at the switch-on, logged. Paging the
+  list, and applying it across steps, is the answer if a log line ever shows it.
