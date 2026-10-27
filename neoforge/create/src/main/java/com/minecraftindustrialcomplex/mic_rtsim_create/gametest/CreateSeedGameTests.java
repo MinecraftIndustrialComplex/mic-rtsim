@@ -410,7 +410,7 @@ public final class CreateSeedGameTests {
      * touch reaches the station's chunk. The press's edit is an incremental detection of its chunk and the ring around
      * it; the station's chunk is in the ring and in no district, so the walk looks at it, finds the station, and J6
      * attaches it to the press's district (the chunk beside it). Detected by the ticked pass, as a player's edit is,
-     * never by {@code rescanNow} (a full detection has no ring).
+     * never by {@code rescanNow} (a full detection with no dirty chunk has no ring).
      */
     @GameTest(template = YARD, batch = "create_seed_13", timeoutTicks = 600)
     public static void aStationPlacedFirstJoinsTheMachineNextToItLater(GameTestHelper helper) {
