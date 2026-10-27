@@ -696,7 +696,7 @@ described the hole as open; what the merge changed, by file:
   oil file and NeoForge's level attachments are not marked yet: residual 11).
 - The A columns of I4, I5, K1, K2, D1 and D3 read as this branch wrote them. K1, K2, D1 and D3 also name the one
   exception left to a marked file: an op answered inside the engine's pages (residual 10, P29), and their
-  owner column names slice U-h for it. I4 and I5 keep the unmarked files as their exception (residual 11).
+  owner column named slice U-h for it, which closed it (U-h12; the rows now say so). I4 and I5 keep the unmarked files as their exception (residual 11).
 - The J4 discussion in the slices section no longer says J4 "still loses a train op the restored pages
   decided"; it says a failed tracks write now holds the journal's file, and the answered case is residual 10's.
 - R's two rtsim-jni tests (`tests/industry.rs`) restart the journal of the failed save (W1) and asserted the
