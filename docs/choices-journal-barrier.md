@@ -683,29 +683,28 @@ store from before; B is the store on disk with the journal from before.
 | U-g11 | **The review's findings on the hold (Opus review of 32b1d1d3).** (1) **Two of our own files were not marked:** core `BaseTracker` (BASE MARKED and UNMARKED) and powergrid `PowerLinks.Links` (IND_POWER_LINK, in its own plugin, D4; its class is public for its GameTest). Both implement `JournalDependent` with the `setDirty()` re-mark; U-g3 lists them; the core GameTest `aFailedWriteOfTheIndustryDataHoldsTheJournalsFileToo` checks `BaseTracker` as it checks `VillageRegistry`, and a powergrid GameTest runs a failed write of `Links` through the hold. Every `extends SavedData` of the mod was listed: no other is unmarked. (2) **`SavedDataWrites.INSTANCE` is reset when a server stops** (`BridgeEvents.onServerStopped`: entries, counters, thread ids): one record per JVM, and an integrated server's next world must not inherit the last one's failing files. (3) **A re-mark that throws no longer aborts the world save** (`remarkAll` catches per entry, counts it, says it once for the file): it runs at the head of `saveAllChunks`. (4) **The reinstall marker waits for the industry file** (`ReinstallGuard.onOverworldSave`): the marker's deletion task, queued behind the overworld's SavedData on the IO chain, finds `SavedDataWrites.holds(<world>/data/mic_rtsim_industry.dat)` and keeps the marker (logged once per reset), trying again at the next world save. Deleted, it would leave the next start with no reset and no file that remembers what to re-adopt, the same class as RP-317. Only that file counts, not any failing file of the directory: a stray failure must not make every restart reset the sim. (5) **The give-up** is U-g12. (6) Smaller: the mixin's selector carries the descriptor (`lambda$save$0(Lnet/minecraft/nbt/CompoundTag;Ljava/io/File;)V`, javap of the patched class), the "applied ops behind" warning names the two causes separately, the GameTests' kit logs the check a step failed and cleans up every kit its batch left open in an `@AfterBatch` (a test that times out would otherwise leave its failure record holding every later journal, the server's own included), and a log4j appender asserts vanilla still logs "Could not save data" once per failed write (the wrap rethrows into its catch). | Tests, failing first at 531928a3 (they and the API stubs they call, without the behaviour): see U-g9. **Rejected:** (a) resetting at the next server's start as well (one place is enough: a stop always follows a start, and the stop's reset runs before anything of the next world); (b) a marker that waits for any failing file under `data/` (a stray failed file would make every restart reset the sim); (c) retrying a throwing re-mark at each save without a limit on the line (a line per save is the flood U-g8 avoids). |
 | U-g12 | **The hold gives up on a file after 12 world saves (PLACEHOLDER; `SavedDataWrites.GIVE_UP_AFTER`).** `holdFor`, the journal's question at its write (once per world save, on the IO chain), counts one more held world save against each failing file under the save's data directories; the one whose count passes the limit stops holding, logged once at error, loudly, naming the file ("GIVING UP holding the journal's file for ...") and counted (`gaveUp` in `/rtsim perf`). The journal then writes and accepts RP-317's risk for that file until the file writes again: a crash before then can leave the ops decided since in the journal and not in that file (A for that file). The record stays, so the data is still marked dirty again at every world save; a write that succeeds ends the streak (info: "had been given up holding for it"), and a new failure holds again from its first save. The pure question `firstFailing` and the marker's `holds` leave out a file given up on. | A file that fails at every world save (a disk that stays full, a file made unwritable) would otherwise hold the journal's file at one save for ever, and the engine's replay of everything decided since would grow without end: the hold must be bounded in time as well as in size (U-g5). The limit is the coordinator's reversible call (the SEC-1 lead's, for Ben to see): at the pack's five-minute autosave 12 saves are an hour. **Rejected:** (a) no limit, accepting the growth (the review's P2); (b) a limit in wall-clock time (a world save is the unit the journal's file moves in, and a stopped server has no clock); (c) dropping the record at the give-up (the data would then never be marked again, and the file would stay lost after the disk came back). **Left:** during the give-up the journal's file moves on over a file that is missing its effect: A for it (residual 11). Tests: core `aFileThatFailsAtEverySaveStopsHoldingTheJournalAfterTheLimit` (N = 2 through `giveUpAfterForTest`: two holds, the third save goes on, once, counted; a new streak holds again) and `SavedDataWritesTest`. |
 
-**Merging with slice R (`fix/replay-industry-ids`, RP-317, residual 10).** R's docs and tests describe the hole as open.
-Numbering: on main, docs/replay-gate.md 9.6's residual 9 is slice U-b's and stays as it is. The RP-317 residual is R's
-residual 10, not on main yet; this branch reserves its number with a "10." line before its own residual 11 (what this
-slice leaves: the P29 pages, the unmarked files, a stop with a write outstanding, an abandoned or given-up file:
-U-g10), and slice U-h closes (1) of 11. Whichever of R and this slice lands second does the merge. If R is on main when
-this branch merges it, then at that merge; if this slice lands first, R does it at its own, and the SEC-1 lead tells
-R's lead. Residual 10 shrinks to "answered inside the pages" (the written exchange is exact once the journal is held; the
-answered one is P29's, residual 11); the number stays, as a closed item pointing at 11. The rest of R's rows stay as R
-wrote them except for what U-g changes:
-- In docs/replay-gate.md 9.6 reword R's residual 10 "A failed SavedData write" to say it is closed for the files the
-  journal depends on by U-g1 (Create's tracks, our own SavedData) and to point at residual 11 for what is left, and
-  replace this branch's "10." reservation by it.
-- In crash class 1 replace "(a failed write aside: residual 10)" with this branch's sentence (the journal's file is held
-  until the data has written; the Diesel oil file and NeoForge's level attachments are not marked yet: residual 11).
-- In the A columns, restore "cannot happen" where R wrote "after a failed write ... (residual 10 ...)" for K1, K2, D1 and
-  D3 (with this branch's "U-g1" clause), and for I4 and I5 make the exception the unmarked files only, now
-  "(residual 11)". The owner columns drop "residual 10" (I5 keeps residual 4, K1 slice T2's limits, K2 residual 8).
-- In the J4 discussion near the end of the replay-gate slices drop "With T2's ring J4 still loses a train op the restored
-  pages decided (§9.6's residual 10, RP-317)".
-R's two rtsim-jni tests (`a_station_exchange_written_before_the_pages_is_lost_with_its_trains_save` and
-`a_station_exchange_answered_before_the_pages_is_lost_with_its_trains_save`) restart the journal from the failed save
-and assert the loss: at the merge, flip the first to this slice's held journal (the written case becomes exact, B) or
-delete it for `held_journal`'s, and keep the second as the P29 case (residual 11, not 10).
+**Merged with slice R (`fix/replay-industry-ids`, RP-317, residual 10).** R landed on main first, so this
+branch did the merge (its commit "Merge origin/main (slice R) into fix/slice-u-g"). R's docs and tests had
+described the hole as open; what the merge changed, by file:
+- docs/replay-gate.md 9.6: residual 9 stays slice U-b's. R's residual 10 "A failed SavedData write" is now
+  "answered inside the pages": it keeps R's mechanism, its pinned numbers (224 crushed raw iron) and its
+  inference for K2, D1 and D3, says the hold of U-g1 closes the rest for the files the journal depends on, and
+  points at residual 11 for what is left (the P29 pages, the unmarked files, a stop with a write
+  outstanding, an abandoned or given-up file: U-g10). R's inference for the deposit deltas (I4, I5) moved to
+  residual 11's unmarked files. Slice U-h closes the pages (P29) in (1) of 11.
+- Crash class 1 reads as this branch wrote it (the journal's file is held until the data has written; the Diesel
+  oil file and NeoForge's level attachments are not marked yet: residual 11).
+- The A columns of I4, I5, K1, K2, D1 and D3 read as this branch wrote them. K1, K2, D1 and D3 also name the one
+  exception left to a marked file: an op answered inside the engine's pages (residual 10, P29), and their
+  owner column names slice U-h for it. I4 and I5 keep the unmarked files as their exception (residual 11).
+- The J4 discussion in the slices section no longer says J4 "still loses a train op the restored pages
+  decided"; it says a failed tracks write now holds the journal's file, and the answered case is residual 10's.
+- R's two rtsim-jni tests (`tests/industry.rs`) restart the journal of the failed save (W1) and asserted the
+  loss. Both now restart the held one (W0's): `a_station_exchange_written_before_the_pages_is_lost_with_its_
+  trains_save` became `a_station_exchange_written_before_the_pages_is_applied_once_when_its_trains_save_fails`
+  (X resent once, applied once, the books the control's: B), and `a_station_exchange_answered_before_the_pages_
+  is_lost_with_its_trains_save` keeps its loss as P29's case (residual 10, which points at 11). `held_journal`
+  keeps its three-way comparison (the control, W1's journal, the held one) next to them.
 
 ## RP-290: the switch as a journaled record, in its own slice U-e (slice U-c's design point)
 
