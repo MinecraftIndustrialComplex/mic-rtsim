@@ -5521,12 +5521,16 @@ RP-150 to RP-153 the replay records.
     and slack. Passed in m8-r7-dbg2 (hits 4/4, 3/4, 1/4, 0/4 at 0.5, 1.0, 1.4 and 2.0, a rate, no gate).
   - **MZB-939** (`aRestoredBufferWhoseChunkOutlivedTheTracksTakesAPackageOnce`, "one package in the buffer, primed, the
     op in its ring": not found, not fixed). Nothing of M8's or of the Mowzie plugin is on its path (PortRing,
-    WritePackages, TrainRing and the station mixins are main's, unchanged by M8), and it passed in the same head's
-    `-Psec1fx` round (257 of 257). It failed in the first step after the write was answered, with three conditions in one
-    check, so the log said nothing of which. The check now names the buffer's packages, `primed`, whether the op is in the
-    ring and the answers heard. A write to a port that this server life does not know first reads the postbox's chunk
-    from disk off the server thread (`PortRing.refreshed`), so a timing dependence on the world's save and read is the
-    place to look if it comes back.
+    WritePackages, TrainRing and the station mixins are main's, unchanged by M8). It failed in both `-PwithMowzie` rounds
+    at the same batch order (r6; r7 at ed1d23b1, "packages 0, primed false, the op in the ring false, answers [1]": the
+    write was answered APPLIED, and the port the test reads, the one it put in its station, got nothing), passed in the
+    same head's `-Psec1fx` round (257 of 257), where the batch runs one place later, and passed in r8 (261 of 262). So
+    the write went to some other port: `WritePackages.port` takes the first port at the postbox's position in any
+    graph's station, and the postbox's chunk is the station's plus 7300 chunks, a position another test's station
+    can reach (the GameTest grid's cells are placed by the batch order, which `-PwithMowzie` shifts by one). Not
+    shown, because the diagnostic that would show it (`portsAt`: every station's port at the position, named MINE or
+    OTHER, with its buffer, `primed` and ring) came after the failing runs and the test passed with it. It is in the
+    check's message now, with the buffer's packages, `primed`, the ring and the answers heard.
 
 ## M9 Umvuthana
 
