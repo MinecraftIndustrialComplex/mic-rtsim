@@ -5524,7 +5524,7 @@ RP-150 to RP-153 the replay records.
     WritePackages, TrainRing and the station mixins are main's, unchanged by M8). It failed in both `-PwithMowzie` rounds
     at the same batch order (r6; r7 at ed1d23b1, "packages 0, primed false, the op in the ring false, answers [1]": the
     write was answered APPLIED, and the port the test reads, the one it put in its station, got nothing), passed in the
-    same head's `-Psec1fx` round (257 of 257), where the batch runs one place later, and passed in r8 (261 of 262). So
+    same head's `-Psec1fx` round (257 of 257), where the batch runs one place later, and passed in r8 (261 of 262) and in r9 at the final head (262 of 262). So
     the write went to some other port: `WritePackages.port` takes the first port at the postbox's position in any
     graph's station, and the postbox's chunk is the station's plus 7300 chunks, a position another test's station
     can reach (the GameTest grid's cells are placed by the batch order, which `-PwithMowzie` shifts by one). Not
