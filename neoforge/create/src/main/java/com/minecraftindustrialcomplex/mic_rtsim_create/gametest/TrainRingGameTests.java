@@ -294,7 +294,7 @@ public final class TrainRingGameTests {
                 .thenWaitUntil(paced(() -> check("the module is off", IndustryApi.current() == null)))
                 .thenExecute(() -> TrainRing.holdPrunesForTest(false))
                 .thenWaitUntil(paced(() -> {
-                    engine().requestSaveAtNextStep();
+                    com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests.acknowledge();
                     AppliedOpRing ring = TrainRing.peekForTest(train[0]);
                     check("with the module off, the engine acknowledged the DUPLICATE's answer and the op left: " + ring, ring != null && ring.isEmpty());
                 }))
@@ -507,7 +507,7 @@ public final class TrainRingGameTests {
                 .thenExecute(() -> raid(op, train[0]))
                 .thenWaitUntil(paced(() -> check("the raid is applied", commandResults(op).equals(List.of(Obs.CommandResult.APPLIED)))))
                 .thenWaitUntil(paced(() -> {
-                    engine().requestSaveAtNextStep();
+                    com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests.acknowledge();
                     AppliedOpRing ring = TrainRing.peekForTest(train[0]);
                     check("the engine acknowledged the answer and the op left: " + ring, ring != null && ring.isEmpty());
                 }))
@@ -566,7 +566,7 @@ public final class TrainRingGameTests {
                 })
                 .thenWaitUntil(paced(() -> {
                     // The old ring object's answer is acknowledged (and pruned there); the read ring's op stays.
-                    engine().requestSaveAtNextStep();
+                    com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests.acknowledge();
                     check("the old answer is acknowledged", TrainRing.pruned() > pruned[0]);
                 }))
                 .thenExecute(() -> check("the acknowledgement of the old answer left the op in the read ring",
@@ -581,7 +581,7 @@ public final class TrainRingGameTests {
                     check("the DUPLICATE's sequence is the op's answer now: " + at, at > first[0]);
                 })
                 .thenWaitUntil(paced(() -> {
-                    engine().requestSaveAtNextStep();
+                    com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests.acknowledge();
                     check("its acknowledgement removes the op", !TrainRing.peekForTest(train[0]).contains(op));
                 }))
                 .thenExecute(() -> TrainWatch.forget(train[0]))
