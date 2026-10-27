@@ -2208,21 +2208,33 @@ its files on disk, the rest from the save before. Two directions:
    create or remove goods because of the split. A pair inside one chunk is one inventory of 54 and is not affected.
    Test: `ChestPairLoadGameTests.aSplitDoubleChestIsTwoInventoriesInOneDistrict` and slice U-f's
    `SavedAheadGameTests` (docs/choices-journal-barrier.md, U-f1 to U-f5). Owner: none.
-13. **A reconcile's block destroy of a double chest inside one chunk** (I2, traced in slice U-f, not a dupe). The pair
-   is one inventory to the engine, named by its lower half (`Districts.canonicalInventory`), so the engine's doomed
-   inventory holds both halves' goods. When the lower half breaks, the engine books `inv.effective()`, both halves'
-   goods, as dropped (`crates/rtsim-industry/src/engine.rs`, the block-destroy result, `books.dropped.merge`,
-   `dist.ports.subtract`, `glass.port`), while the world drops what that half holds
-   (`Containers.dropContentsOnDestroy` reads the half's own block entity) and the chest. The other half stays, now a
-   single chest, with its goods. Measured: `SavedAheadGameTests.aSimBreakOfAPairsFirstHalfDropsOnlyThatHalf` (the
-   lower half holding 100 diamonds, the other 30 emeralds): 100 diamonds and one chest on the ground, 30 emeralds
-   still in the surviving chest, which is a single chest. Nothing is spawned beyond what the world held, so there is
-   no dupe. The booking over-counts by the surviving half's goods in the ledgers (`books.dropped` is write-only in
-   production, `ports` is the learner's differences), and the surviving chest is an inventory of its own at the
-   district's next detection (before it, the non-canonical half is a machine block with no inventory index, as
-   `SurveyJob` reads only `inventoryAt` positions), argued from the detection and not run. A break of the higher half,
-   which the engine does not doom (it holds no inventory index), was not traced. Nothing to fix for goods; the
-   ledger's over-count is left.
+13. **A reconcile's block destroy of a double chest inside one chunk** (I2, traced in slice U-f; no dupe and no loss
+   of goods, measured, and a ledger over-count that is left). The pair is one inventory of 54 slots to the engine, named
+   by its lower half (`Districts.canonicalInventory`), so the engine's doomed inventory holds both halves' goods. When
+   the lower half breaks, the engine books `inv.effective()`, both halves' goods, as dropped
+   (`crates/rtsim-industry/src/engine.rs`, the block-destroy result: `books.dropped.merge`, `dist.ports.subtract`,
+   `glass.port`), while the world drops what that half holds (`Containers.dropContentsOnDestroy` reads the half's own
+   block entity, 27 slots) and the chest. The other half stays, now a single chest, with its goods. Measured, in a
+   reconcile of one chunk that breaks one half:
+   - `SavedAheadGameTests.aSimBreakOfAPairsFirstHalfDropsOnlyThatHalf` (the lower half P holds 100 diamonds, the
+     higher half Q 30 emeralds): 100 diamonds and one chest on the ground, no emeralds, and Q a single chest holding
+     its 30. Q describes as an inventory of 27 slots at its own position (`Districts.describeInventory`), which is
+     how the next detection declares it.
+   - `SavedAheadGameTests.aSimBreakOfAPairsSecondHalfDropsOnlyThatHalf` (the same pair, Q breaks): 30 emeralds and one
+     chest on the ground, no diamonds, and P a single chest holding its 100. The engine dooms only the inventory's
+     lower half, so Q's break reaches it as a machine block with no inventory index, and the pair's inventory stays
+     in the engine, declared at 54 slots over a chest that now holds 27, until the next detection.
+   Either way the world spawns nothing beyond what it held and keeps what it did not drop: 130 goods before and 130
+   after (on the ground plus in the survivor), so no dupe, and nothing the survivor holds is lost, since it stays in
+   a chest the next detection finds. What is inexact is the engine's books. After P's break they say 130 dropped
+   where 100 were, and the district's stock lacks Q's 30 until a detection declares Q (the periodic full
+   detection, `IndustryConfig.PERIODIC_RESCAN` in `Districts.tick`; a reconcile's own break marks nothing dirty, as
+   only a player's break does, so it is the periodic one, argued from the code and not run), when they appear as a
+   new inventory. `books.dropped` is read in production by nothing (only the fake engine's conservation sum reads it,
+   `crates/rtsim-industry/src/fake.rs`), `ports` is the learner's differences (a window the break discards,
+   `dist.learner.discard()`), and the glass port books the same goods out of that inventory. So the over-count is a
+   ledger and an attribution effect, not goods.
+   Nothing to fix for goods; the ledger's over-count is left. Owner: none.
 
 **Rings and the module switch (a rule for every ring).** Saving and loading a ring of applied ops never
 depends on a module switch: the train's, the station port's, the oil file's, level pollution's, the
