@@ -5392,6 +5392,8 @@ RP-150 to RP-153 the replay records.
   the body rests within `STAND` of the hold point, stands the player 8 blocks west of it, pushes the body 2 blocks
   off it along z toward the floor's middle (so on the floor), and measures every distance and the floor of the
   "never walked after the player" check from it.
+  - Amended by MZB-770: the reading was wrong. No rail direction is known on the mowziesmobs server, so the hold
+    point there is the engine's spot, and the move changed no number. The cause is MZB-770's.
 - **MZB-699** (train_passed_replay.rs takes the ring as well as the journal; the M8 merge with slice T, RP-187):
   /tmp/mzbuild/rp-t-m8-test.rs, the draft of tests/train_passed_replay.rs, built unchanged against this head
   (its `Conflict` API calls and the shared harness all matched). Two of its three tests passed; its third,
@@ -5404,6 +5406,53 @@ RP-150 to RP-153 the replay records.
   `across_a_crash_on` for both, with the draft's assertions kept for the journal's rows and one added
   assertion that the replayed pass robs again (`lurk_robberies` 1) in every row. The module doc no
   longer says it is for a later merge. Nothing else of the draft changed but rustfmt's wrapping.
+- **MZB-770** (a held Frostmaw turns 90 degrees a tick on its walk back, as vanilla turns any mob; the chase
+  test's failure). The id: MZB-700 to 708 are M10's review fixes (291272be and after, on feat/mowzie-m10 and the
+  branches built on it), and 709 to 719 are in the range M10's brief claims, so this takes the first id no brief
+  claims and no branch uses.
+  - The failure: `aHeldPuppetWalksBackToItsSpotAndDoesNotChaseItsTarget`, the same in m8-gt1b and m8-gt7, "back
+    within 0.5 blocks of its spot in 200 ticks (1501 gone, the closest it came to the spot 2.0, the closest it
+    came to the player 6.441193965241448)". The body never came nearer its spot than the push left it and ended
+    1.88 blocks west, toward the player.
+  - Not the hold point: no plugin registers `RailAxes` on the mowziesmobs server and the test registers none, so
+    `holdPoint` takes the engine's spot and `ConflictKit.lurkHold` is the spot (MZB-698 amended). Not the jar's
+    chase: MZB-361's wraps hold (the three `moveTo(Entity, double)` calls of `EntityFrostmaw.tick` do nothing for a
+    held body).
+  - The cause, from the jar (cfr of mowziesmobs-1.21.1-1.8.2.jar, the build's): `EntityFrostmaw`'s constructor sets
+    `moveControl = new MMEntityMoveHelper(this, 7.0f)`, and `MMEntityMoveHelper.tick`'s `MOVE_TO` branch sets
+    `setYRot(rotlerp(getYRot(), f9, maxRotate))` and then `setSpeed(...)` every tick, whatever the angle: a
+    Frostmaw turns at most 7 degrees a tick while it walks on at full speed (vanilla `MoveControl` turns 90).
+    The bridge places a lurk puppet facing its track point (yaw 180 here, north), and the test's push went 2 blocks
+    north (`home.z < spot.z` was false with the hold point on the spot), on along its facing, so its spot was
+    straight behind it. From 180 the wrap turns it through 90, west: the walk back is a loop about 0.9 blocks in
+    radius toward the player 8 blocks west. In about 16 ticks the body is within the jar's swipe range of its
+    target (`targetDistance`, the distance less half the target's width, at most 6.5): `tick()` sends SWIPE or
+    SWIPE_TWICE whenever the body has no animation, so a new swipe starts in the tick the last one ends, before the
+    hold runs on `ServerTickEvent.Post`, and the hold yields to every animation (`FrostmawLurker.hold`: stop and
+    return). It never walked again while the player stood there. A planar model of the move control, vanilla
+    ground travel on stone and the swipe threshold gives the swipe at tick 16 and 6.41 from the player.
+  - Not the test's doing: the game puts a held puppet with its spot behind it (a camp body handed to its puppet
+    where it stands, with its own yaw, which the hold walks to the hold point; a body that leapt out of lava; one
+    that swung at a player and was moved), and the loop carries a body 2 blocks or more aside, toward the rail as
+    well as a player.
+  - The fix: `MMEntityMoveHelperMixin`, a `@ModifyArg` on the one `rotlerp(FFF)F` call in `MMEntityMoveHelper.tick`
+    (offset 388; its third argument is the `maxRotate` read at 385): for a Frostmaw that `FrostmawLurker.holds`, on
+    the server, it is `max(maxRotate, FrostmawLurker.TURN)`, 90. Other mobs that use the helper, and a Frostmaw not
+    held, keep the jar's turn. In the planar model the body is back within `STAND` in 10 ticks, at most 0.16 aside
+    of the straight way, never nearer the player than 7.9.
+  - The test: it now sets the body 2 blocks from the hold point toward the track point and faces it at the track
+    as the bridge does, so the spot is straight behind it on purpose (not by the placement's facing surviving the
+    look goals), and it checks the walk back keeps within `STAND` of the straight way (`aside`) besides the old
+    checks. Its comments no longer say the hold point lies beside the rail here.
+  - Left as it is, for the lead: a held puppet off its spot with a player within the jar's swipe reach swipes
+    back to back and is not walked back while the player stays. The hold yields to animations by design (MZB-361);
+    with the turn fixed the walk back no longer carries a puppet toward a player.
+  - The other line of m8-gt7, "a per-tick hook failed ... conflict agent 4300d1607fa84c12 holds no party yet" in
+    `aMaskedPlayerIsNotTargetedByTheBand`: `MowzieKit`'s Post listener catches a hook's `RuntimeException`, logs it
+    and keeps the hook, which runs again the next tick until the test ends (not dropped, not retried within the
+    tick). `everyone` tests for a null party, but `ConflictKit.party` throws instead, so the watch hook threw once,
+    in the tick between the recall's removal of the party and the test's success. Its checks were made before
+    (the unprovoked watch, which "a body went for the bare player" shows saw the band): not vacuous, left as it is.
 
 ## M9 Umvuthana
 
