@@ -29,11 +29,16 @@ yourself.
      request. Only after a second 4, land without the review and say so: landing closes the pull
      request and ends that review.
    - 5 (the App did not review this push, for example after the pull request's automatic rounds)
-     or 6 (the review did not finish): nothing printed is a review of this push. Comment
-     `@graphide-review review` on the pull request once, wait until a new "Graphide review" check
-     run appears on the head (`gh api repos/<owner>/<repo>/commits/<sha>/check-runs?check_name=Graphide%20review&filter=latest -q '.check_runs[0].id'`
-     differs from the one before), then run the script again. If no new run appears within 10
-     minutes, or the second run is again 5 or 6, land without the review and say so.
+     or 6 (the review did not finish): nothing printed is a review of this push. Ask once, in this
+     order:
+     1. Record the head's latest "Graphide review" check run id:
+        `gh api 'repos/<owner>/<repo>/commits/<sha>/check-runs?check_name=Graphide%20review&filter=latest' -q '.check_runs[0].id'`
+     2. Comment `@graphide-review review` on the pull request.
+     3. Poll the same command until it prints an id other than the recorded one, then run the
+        script again.
+
+     If no new id appears within 10 minutes, or the second run is again 5 or 6, land without the
+     review and say so.
 4. Land. If `main` moved, merge it again, check for unmerged paths, and rerun the tests for
    everything the branch changes (tests added in review rounds included) and for any code the merge
    brought in: a clean merge can break either side (a renamed function, a changed signature). If one
