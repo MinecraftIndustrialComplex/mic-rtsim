@@ -14,9 +14,12 @@ import com.minecraftindustrialcomplex.mic_rtsim_create.MicRtsimCreate;
 import com.minecraftindustrialcomplex.mic_rtsim_create.PortRing;
 import com.minecraftindustrialcomplex.mic_rtsim_create.PortRingHolder;
 import com.minecraftindustrialcomplex.mic_rtsim_create.TrainRing;
+import com.simibubi.create.Create;
 import com.simibubi.create.content.logistics.box.PackageItem;
 import com.simibubi.create.content.logistics.packagePort.postbox.PostboxBlockEntity;
 import com.simibubi.create.content.trains.graph.DimensionPalette;
+import com.simibubi.create.content.trains.graph.EdgePointType;
+import com.simibubi.create.content.trains.graph.TrackGraph;
 import com.simibubi.create.content.trains.station.GlobalPackagePort;
 import com.simibubi.create.content.trains.station.GlobalStation;
 import com.simibubi.create.content.trains.station.StationBlockEntity;
@@ -357,27 +360,26 @@ public final class PortRingGameTests {
         unloaded(helper, "withoutTheChunkChecksAnUnloadedPostboxWhoseChunkOutlivedTheTracksTakesPackagesTwice", false);
     }
 
-    // DBG-BEGIN
-    private static String portsAt(ServerLevel level, BlockPos pos, GlobalPackagePort mine, GlobalStation station, long op) {
-        StringBuilder sb = new StringBuilder("; ports at ").append(pos).append(" (station ").append(station.getBlockEntityPos()).append(" id ").append(station.id).append("):");
-        int graphs = 0, stations = 0;
+    /**
+     * Which stations hold a port at {@code pos}, for a check that fails on the port it reads (MZB-939): a write goes to the
+     * first port at the postbox's position in any graph's station ({@code WritePackages.port}), which need not be the
+     * test's. Each is named MINE or OTHER with its buffer's packages, {@code primed} and whether it has the op.
+     */
+    private static String portsAt(BlockPos pos, GlobalPackagePort mine, GlobalStation station, long op) {
+        StringBuilder sb = new StringBuilder("; ports at ").append(pos.toShortString()).append(":");
+        int stations = 0;
         boolean listed = false;
-        for (com.simibubi.create.content.trains.graph.TrackGraph g : com.simibubi.create.Create.RAILWAYS.trackNetworks.values()) {
-            graphs++;
-            for (GlobalStation st : g.getPoints(com.simibubi.create.content.trains.graph.EdgePointType.STATION)) {
+        for (TrackGraph g : Create.RAILWAYS.trackNetworks.values())
+            for (GlobalStation st : g.getPoints(EdgePointType.STATION)) {
                 stations++;
-                if (st == station)
-                    listed = true;
+                listed |= st == station;
                 GlobalPackagePort p = st.connectedPorts.get(pos);
                 if (p != null)
-                    sb.append(" [station ").append(st.getBlockEntityPos()).append(" id ").append(st.id).append(p == mine ? " MINE" : " OTHER").append(", packages ")
+                    sb.append(" [station ").append(st.getBlockEntityPos().toShortString()).append(p == mine ? " MINE" : " OTHER").append(", packages ")
                             .append(packages(p.offlineBuffer)).append(", primed ").append(p.primed).append(", op in ring ").append(PortRing.wroteToBuffer(p, op)).append(']');
             }
-        }
-        return sb.append(" of ").append(stations).append(" stations in ").append(graphs).append(" graphs, the test's station is in them: ").append(listed)
-                .append(", its ports ").append(station.connectedPorts.keySet()).toString();
+        return sb.append(" of ").append(stations).append(" stations, the test's station is one of them: ").append(listed).toString();
     }
-    // DBG-END
 
     private static void restored(GameTestHelper helper, String test, boolean checks) {
         fastConfig();
@@ -419,7 +421,7 @@ public final class PortRingGameTests {
                 .thenExecute(() -> {
                     GlobalPackagePort port = st[0].connectedPorts.get(postbox);
                     check("one package in the buffer, primed, the op in its ring (packages " + packages(port.offlineBuffer) + ", primed " + port.primed
-                            + ", the op in the ring " + PortRing.wroteToBuffer(port, op) + ", answers " + commandResults(op) + ")" + portsAt(level, postbox, port, st[0], op),
+                            + ", the op in the ring " + PortRing.wroteToBuffer(port, op) + ", answers " + commandResults(op) + ")" + portsAt(postbox, port, st[0], op),
                             packages(port.offlineBuffer) == 1 && port.primed && PortRing.wroteToBuffer(port, op));
                     check("the engine has not acknowledged it", ind().opApplied(op));
                     // The postbox's chunk loads, and the postbox is placed and registers with its station: Create
