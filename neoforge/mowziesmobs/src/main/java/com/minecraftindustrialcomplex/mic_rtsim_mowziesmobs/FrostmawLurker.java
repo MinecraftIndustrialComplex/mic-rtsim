@@ -102,6 +102,12 @@ public final class FrostmawLurker implements Lurker {
         // Awake for good (the jar skips its sleep and its waking roar for an always-active Frostmaw)
         if (!f.isAlwaysActive())
             f.setAlwaysActive(true);
+        // And quiet: an awake Frostmaw's ambient sound is a ROAR animation one time in four (EntityFrostmaw.playAmbientSound),
+        // 76 ticks in which a strike is refused and whose roar effects push everything within 10 blocks away, a rider included.
+        // The timer stays below zero, which the vanilla roll (nextInt(1000) < timer) never beats; the core holds once a tick
+        // after every level ticked, so the roll never sees it above zero (MZB-937)
+        if (f.ambientSoundTime >= 0)
+            f.ambientSoundTime = -1;
         BlockPos centre = BlockPos.containing(spot);
         if (!f.hasRestriction() || !centre.equals(f.getRestrictCenter()) || f.getRestrictRadius() != RADIUS)
             f.restrictTo(centre, RADIUS);

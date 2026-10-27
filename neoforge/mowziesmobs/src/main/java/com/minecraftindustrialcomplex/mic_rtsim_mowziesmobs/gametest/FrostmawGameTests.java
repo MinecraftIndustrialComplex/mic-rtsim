@@ -13,6 +13,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictBridge;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictNews;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictRecords;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.LurkSpots;
+import com.minecraftindustrialcomplex.mic_rtsim.conflict.Lurker;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.Lurkers;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.RailAxes;
 import com.minecraftindustrialcomplex.mic_rtsim.engine.ScriptedEngine;
@@ -1333,6 +1334,38 @@ public final class FrostmawGameTests {
 
     /** The swipe's tick from which its yaw is read: the jar has turned the body by up to 30 degrees on each of the ticks before. */
     private static final int SWIPE_LATE = 8;
+
+    // ---- a held puppet is quiet (MZB-937) ---------------------------------------------------------------
+
+    /**
+     * A held lurk puppet makes no ambient sound, so no ambient roar (MZB-937). The jar answers an awake Frostmaw's
+     * ambient sound ({@code Mob.baseTick} rolls {@code nextInt(1000)} against {@code ambientSoundTime}, which counts up from
+     * -80 and is a chance a tick once above zero) with a ROAR animation one time in four ({@code playAmbientSound}): 76
+     * ticks in which a strike is refused and whose effects push whatever stands near away. In the rail GameTests a puppet
+     * roared over the train's pass in several runs, so the swipe was never struck, and in one the roar pushed the rider off
+     * its carriage. The held puppet's timer is put at 700 (a 70 per cent roll a tick) and the hold runs on it: the timer is
+     * below zero. On the code before the fix the hold left it at 700 ("the hold put the ambient sound timer below zero
+     * (700)"; read, not run: the rail GameTests' roared passes are that code's failing run).
+     */
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "frostmaw_lurk_quiet", skyAccess = true)
+    public static void aHeldPuppetsAmbientSoundTimerStaysBelowZero(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 1500);
+        String test = "aHeldPuppetsAmbientSoundTimerStaysBelowZero";
+        Held h = new Held(helper, test, waits);
+        h.up(helper)
+                .thenExecute(() -> {
+                    EntityFrostmaw f = h.f[0];
+                    Vec3 at = ConflictKit.lurkHold(h.agent);
+                    check("the bridge holds the puppet at a point", at != null);
+                    f.ambientSoundTime = 700;
+                    Lurkers.of(f).hold(f, at, new Lurker.Memo());
+                    check("the hold put the ambient sound timer below zero (" + f.ambientSoundTime + ")", f.ambientSoundTime < 0);
+                    record(test, "ambient sound timer", "700 before the hold, " + f.ambientSoundTime + " after");
+                    ConflictKit.ambushRemoved(h.agent, 1, h.faction, h.far.dim);
+                })
+                .thenWaitUntil(waits.chunks(io(() -> check("the lurk is gone from the table", !RtsimApi.lurks().containsKey(h.agent)))))
+                .thenSucceed();
+    }
 
 
     // ---- 5: a Frostmaw raid ----------------------------------------------------------------------
