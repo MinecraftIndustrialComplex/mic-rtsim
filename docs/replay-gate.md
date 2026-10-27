@@ -2156,19 +2156,21 @@ its files on disk, the rest from the save before. Two directions:
     depends on by slice U-g (U-g1): a failed write of Create's tracks or of our own SavedData marks the data
     dirty again and holds the journal's file at the save before until the data has written, which is B, exact
     by the rings. R's written case is exact under the hold: a station exchange in the pages' outbox when the
-    pages were saved is resent once and applied once (rtsim-jni `tests/industry.rs`, `mod held_journal`,
-    `a_station_exchange_written_before_the_pages_is_applied_once_with_the_journal_held`; an op decided past
-    the pages is applied again, RP-311, and the ring is the only check, `TrainWatch` and `WritePackages`).
-    What stays of this item is an op **answered inside the pages**: the pages are written whatever happens to
-    the data (P29), so after a failed tracks write and a crash the engine does not send it again, the held
-    journal and the older tracks file do not have it, and it is lost (pinned for K1 by
-    `a_station_exchange_answered_before_the_pages_is_lost_with_its_trains_save` and, with the journal held,
-    `held_journal`'s `..._answered_inside_the_pages_is_still_lost_with_the_journal_held_p29`: 224 crushed raw
+    pages were saved is resent once and applied once (rtsim-jni `tests/industry.rs`,
+    `a_station_exchange_written_before_the_pages_is_applied_once_when_its_trains_save_fails`, R's test
+    restarted with the held journal, and `held_journal`'s written test, which also runs the failed save's
+    journal and shows R's loss; an op decided past the pages is applied again, RP-311, and the ring is the
+    only check, `TrainWatch` and `WritePackages`). What stays of this item is an op **answered inside the
+    pages**: the pages are written whatever happens to the data (P29), so after a failed tracks write and a
+    crash the engine does not send it again, the held journal and the older tracks file do not have it, and
+    it is lost, with the hold or without (pinned for K1 by
+    `a_station_exchange_answered_before_the_pages_is_lost_with_its_trains_save` and by `held_journal`'s
+    `a_station_exchange_answered_inside_the_pages_is_still_lost_with_the_journal_held_p29`: 224 crushed raw
     iron missing from the train, still on the books; K2, D1 and D3 inferred, the placement request lost for
-    D1 and D3 where the placer dedups by field, not by the journal). The
-    case is slice U-h's (P29's confirm on WORLD_SAVED, docs/choices-leg-purge.md LP12); everything else the
-    hold leaves is residual 11. It needs a failed disk write and then a crash before that file is written
-    again, and it was slice U's (RP-200), not slice R's (the build lead, RP-317).
+    D1 and D3 where the placer dedups by field, not by the journal). The case is slice U-h's (P29's confirm
+    on WORLD_SAVED, docs/choices-leg-purge.md LP12); everything else the hold leaves is residual 11. It
+    needs a failed disk write and then a crash before that file is written again, and it was slice U's
+    (RP-200), not slice R's (the build lead, RP-317).
 11. **A failed SavedData write: what the hold leaves** (RP-317, slice U-g, docs/choices-journal-barrier.md
     U-g1 to U-g12). Item 10 has the mechanism. A failed write of a `JournalDependent` file (Create's tracks,
     our own SavedData) re-marks the data dirty and holds the journal's file at the save before until the
@@ -2231,7 +2233,9 @@ chunk newer than the tracks file, the fallbacks, the module switch and the ackno
 Slice U-g: core `SavedDataWriteHoldGameTests` (3: a failed write of a marked data holds the journal's file
 byte for byte until the data writes; the industry data; no hold for another directory or an unmarked
 data), create `TracksWriteHoldGameTests` (a real `RailwaySavedData`), core `SavedDataWritesTest`, and
-rtsim-jni `held_journal` (the written exchange applied once with the journal held; the answered one, P29).
+rtsim-jni `held_journal` (the written exchange applied once with the journal held; the answered one, P29)
+and slice R's two J4 tests, restarted with the held journal (the written one applied once, the answered
+one lost: P29).
 The crash GameTests hold the prunes (`holdPrunesForTest`): the scripted engine acknowledges an answer
 once its own save holds it and the emulated crash then sends the op again, which a real engine does not
 (RP-209).
