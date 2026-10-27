@@ -713,16 +713,27 @@ its natives with `System.load`. Choices are in `docs/overnight-choices-jni.md` (
      page changed. Pages this build cannot read are dropped with a loud log, deleted at start, and
      the phase 1 world starts afresh (`when_pages_unreadable`, S5; Ben chose "Drop and start
      fresh").
-   - **The switch** (C25; U10, Ben: "Ignore everything"; choice PR13). Phase 1 runs only with all
-     four of its modules on (knowledge, settlements, trade, travel). Switched off it captures every
-     puppet back (one last write), drops what was queued for the session, ignores its records
-     (journaled ones are admitted by `Replay` for their sequence and op id, then counted and
-     dropped; censuses too), runs nothing and materializes nothing. Commands the bridge answers by
-     op id decided before the switch and not yet written wait unsequenced until it is on again;
-     resends of ones already written still go out with their sequences; COMMAND_RESULT and
-     HOUSE_PLACED are still taken (the protocol finishing, not the module running). On again, the world runs to
-     now at once. The dragons, ships, herds and conflict live in its world and run its clock while
-     they run.
+   - **The switch** (C25; U10, Ben: "Ignore everything"; choices PR13 and RP-300). Phase 1 runs
+     only with all four of its modules on (knowledge, settlements, trade, travel). The rule:
+     **the switch gates only new decisions; every record of what already happened is heard; a
+     record applied while off goes in at its own tick, never at the frozen clock.** Switched off it
+     captures every puppet back (one last write), drops what was queued for the session, runs
+     nothing, decides nothing new and materializes nothing; censuses (latest state, sent again) are
+     ignored and counted. The journaled records of what happened (TRADE, CARGO_CHANGED, TAKEN and
+     DIED, HURT, RESCUE, TALKED, BASE_MARKED and BASE_UNMARKED, VILLAGE_ADOPTED, HOUSE_PLACED, a
+     work's COMMAND_RESULT) are heard by the same code as when on: the engine acknowledges every
+     record it admits whatever the switch, and Java drops what it saw acknowledged, so ignoring one
+     meant the sim's row kept goods a player had already taken (and a dupe at the switch-on). Their
+     world inputs wait in a list in the meta page, in time order at the records' own ticks, and are
+     applied each after the world (and the modules sharing its clock) has run to its tick: at the
+     switch-on, at the top of the next step, and before a viewer module (dragons, ships, herds,
+     conflict) runs the shared clock past them. A despawn's capture check skips a caravan that has
+     such goods-moving inputs waiting (its row has not heard them yet). Commands the bridge
+     answers by op id decided before the switch and not yet written wait unsequenced until it is on
+     again; resends of ones already written still go out with their sequences. On again, the world
+     runs to now at once. The dragons, ships, herds and conflict live in its world and run its
+     clock while they run. WORK_CATALOG is latest state sent once a session, not journaled, and is
+     still taken while off at the frozen clock.
    - **News** travels separately from cargo (Ben: "News travels separately"; choice PR6): every road
      has messengers on their own schedule, so a news packet never waits for a caravan's dock; touring
      bands carry gossip on their circuits (P16). Nothing of this crosses the boundary.
@@ -2006,16 +2017,17 @@ memory by `setTradedPlayersCompound`) before its stack, spawn line or hand-back 
   to the live chief's body, the chief's trade memory. A tribute the grove took in (CHIEF_PAID,
   TRIBUTE_PAID, a gift) is owed to its chest; with HAVEN_CHEST known and free slots, at each new
   payment, chest record and CAMP_CENSUS while the camp is in, the engine takes
-  one stack (64 items at most, the tribute good only) out of the faction's stock and writes it as a
+  one stack (64 items at most, the tribute good only) of what it owes and writes it as a
   TRANSFER_TO_CONTAINER through the core's outbox under an op id derived from the faction and a
   saved counter, the good and the amount (the same decision re-derived after a crash is the same op,
   a different one never is, §2.2), so a restart sends it again and Java answers DUPLICATE_OP
   (MZB-446). When a crash loses the pages but keeps the chest's chunk, the replay decides its stacks
   from everything it owes, ops the plugin never saw, and puts them down on top of the stacks the chunk
   kept: the gift is every stack answered since the last save (not one stack), the journal ahead of the
-  world, and nothing is ever lost (MZB-446, amended at the re-check). APPLIED or
-  DUPLICATE_OP lowers what is owed and sends the next stack; FAILED returns the goods and forgets the
-  chest. A raid on an unwatched district leaves a hunt owed (`Faction.hunts`, MZB-424): OWED_HUNT for
+  world, and nothing is ever lost (MZB-446, amended at the re-check). What is owed is earmarked
+  at the payment: booked into the world's held, out of the haven market's reach, never stocked
+  (MZB-930). APPLIED or DUPLICATE_OP books the stack out of the earmark to the players, lowers what
+  is owed and sends the next stack; FAILED moves nothing and forgets the chest. A raid on an unwatched district leaves a hunt owed (`Faction.hunts`, MZB-424): OWED_HUNT for
   each district, a new raid on the same district replacing it with the counts added and capped, and
   HUNT_APPLIED clears the one with its op id whatever `killed` is; an answer for the op a hunt replaced
   leaves the hunt held at its `rest` and sends it again with that count and no `replaced`, and any other op
