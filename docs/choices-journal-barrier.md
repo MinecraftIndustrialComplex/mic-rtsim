@@ -1343,8 +1343,8 @@ keeps stays, what it rolls back (A's epoch, A's carried records, the journal's a
 engine's op is sent again under the same id. The tests were written first (10c3b504) and run on the carry code, which is
 what the "before" column shows (core and create on 483ee13f's code, `/tmp/uf5-ff2-core.log` and
 `/tmp/uf5-ff2-create.log`, the tests of d4d3c5a4 but for the seed of the district test). "After" is the per-half code:
-core 146 of 146 required tests passed, create 247 of 247 (at 7ce0fd16, merged with main's 589d5f82; the rounds on
-the head merged with slice U-g are below).
+core 146 of 146 required tests passed, create 247 of 247 (at 7ce0fd16, merged with main's 589d5f82). On the head
+merged with main's 19ef7889 (slice U-g; 02490183, code as of 7ce0fd16 and U-g): core 151 of 151, create 248 of 248.
 
 | Test | Before (carry code) | After (per half) |
 |---|---|---|
@@ -1366,8 +1366,8 @@ the head merged with slice U-g are below).
 On the carry code 9 core tests and 1 create test failed. Of the 9 core ones, 8 failed on the assertion they were
 written for and the ninth, the district test, failed for want of a seed, so 9 tests were red on their own assertion
 before the change (8 in core, 1 in create), and every per-half test that can be red was. Three tests pass on both codes
-by design: the kept-by-the-crash resend, the comparator and the same-chunk break. The unit tests (`:core:test`, 287)
-pass on the per-half code.
+by design: the kept-by-the-crash resend, the comparator and the same-chunk break. The unit tests (`:core:test`) pass on
+the per-half code: 287 tests at 7ce0fd16, 298 on the merged head.
 
 Not covered: a mod's `ChestBlock` subclass and a `CompoundContainer` another mod builds (residual 9); a Create vault
 and other multi-block storages (residual 12); Create's glass compile reads a store's goods through the pair's
