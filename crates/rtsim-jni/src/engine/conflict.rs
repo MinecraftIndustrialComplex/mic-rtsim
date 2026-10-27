@@ -1231,7 +1231,7 @@ fn reject(st: &mut State, cmd: &Cmd, reason: u32) {
 /// RP-292): the first hand-over may end right after the DICTs, and the stacks the kept answers
 /// are for are still in `placing` with no op in the core outbox (the answer completed it). Written
 /// again, a stack would go in the chest twice; with the dimension's DICT not yet there,
-/// `fail_tribute` would put its goods back in stock, and the kept APPLIED would find no stack. The
+/// `fail_tribute` would take the stack as failed, and the kept APPLIED would find no stack. The
 /// conflict decides nothing meanwhile, so no other command is queued: all of it waits for the
 /// reset, which runs at the first record after the DICTs.
 pub(super) fn write_queue(st: &mut State, w: &mut RecordWriter<'_>) -> (u64, bool) {
@@ -1374,10 +1374,10 @@ fn write_tribute(st: &mut State, w: &mut RecordWriter<'_>) -> (u64, bool) {
             .cloned();
         let item = phase1::catalog_item(st, GoodId(u16::try_from(p.good).unwrap_or(u16::MAX)));
         let (Some(dimension), Some(item)) = (dimension, item) else {
-            // Never written: the goods go back to the grove's stock, and the chest waits to be
-            // reported again.
+            // Never written: taken as failed, the goods stay owed and earmarked (MZB-930), and
+            // the chest waits to be reported again.
             log_error(&format!(
-                "a tribute stack (op {op:#x}) to a chest in dimension {} Java never named, or of a good no item stands for; back to its grove",
+                "a tribute stack (op {op:#x}) to a chest in dimension {} Java never named, or of a good no item stands for; still owed by its grove",
                 p.dimension
             ));
             fail_tribute(st, op);
@@ -1426,7 +1426,7 @@ fn fail_tribute(st: &mut State, op: u64) {
 
 /// A COMMAND_RESULT `Replay` admitted (the core's records, after phase 1's): the answer to a stack
 /// of tribute sent to a grove's chest (MZB-423). Applied or a duplicate, the stack is in the
-/// chest and the next goes; failed, the goods go back to the grove's stock and the chest is
+/// chest and the next goes; failed, the goods stay owed and earmarked (MZB-930) and the chest is
 /// forgotten until the plugin reports one again. NOT_LOADED (the chest's chunk was not loaded,
 /// RP-210) is taken as FAILED, as Java answered it before RP-210: the answer takes the op out of
 /// the core outbox, so a stack left in flight would have nothing to answer it. Unlike the
@@ -1438,8 +1438,8 @@ pub(super) fn after_core(st: &mut State, rec: &Rec<'_>) {
     if !st.conflict.enabled {
         // RP-292 (docs/replay-gate.md 9.7): the switch gates only new decisions, and this answer
         // is a record of what already happened. It cannot be taken now: `tribute_placed` picks
-        // the next stack and `tribute_failed` stocks the goods back, both decisions at a tick,
-        // and decisions wait for the switch. Nor can it wait to be answered again: the core's
+        // the next stack, a decision at a tick, and `tribute_failed` forgets the chest the next
+        // stack is decided by, and decisions wait for the switch. Nor can it wait to be answered again: the core's
         // outbox completed the op on this very answer (whatever the switch), so the stack is
         // never sent again, and Java forgets the op at the engine's acknowledgement. So it is
         // kept with the conflict's other records and applied at its own tick at the switch-on
