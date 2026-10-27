@@ -451,6 +451,63 @@ public final class CreateSeedGameTests {
     }
 
     /**
+     * The same build order as {@link #aStationPlacedFirstJoinsTheMachineNextToItLater}, but the press's edit is detected
+     * by a full detection (SECTIONS.md §2.1, SC184), as it is whenever the periodic pass or a command's
+     * {@code rescanSoon} takes the waiting edit: the edit's ring is built whatever the detection's kind, or the
+     * station's chunk, held by no district, is never looked at and the station never joins. The ticked pass is held off
+     * by a long interval, so that {@code rescanSoon} (a full detection that takes the waiting edit) is the one that runs.
+     */
+    @GameTest(template = YARD, batch = "create_seed_15", timeoutTicks = 600)
+    public static void aStationPlacedFirstJoinsTheMachineNextToItInAFullDetection(GameTestHelper helper) {
+        fastConfig();
+        forget(helper);
+        BlockPos stationPos = at(helper, 1, 8, 6), press = at(helper, 0, 8, 2);
+        check("the press and the station are in chunks side by side", (press.getX() >> 4) + 1 == (stationPos.getX() >> 4));
+        boolean[] done = {false};
+        helper.startSequence()
+                .thenExecute(() -> station(helper, stationPos, at(helper, 0, 2, 5).getX(), at(helper, 1, 14, 5).getX()))
+                .thenIdle(5)
+                .thenExecute(() -> placeStation(helper, stationPos))
+                .thenWaitUntil(() -> {
+                    var sbe = (com.simibubi.create.content.trains.station.StationBlockEntity) helper.getLevel().getBlockEntity(stationPos);
+                    check("the station joined the track graph", sbe != null && sbe.getStation() != null);
+                })
+                .thenExecute(() -> {
+                    var sbe = (com.simibubi.create.content.trains.station.StationBlockEntity) helper.getLevel().getBlockEntity(stationPos);
+                    sbe.getStation().name = "Slipway";
+                })
+                .thenIdle(3) // the place event reaches the districts at the end of a tick
+                .thenExecute(() -> {
+                    ind().districts().rescanNow(helper.getLevel());
+                    check("a station alone is in no district", districtAt(helper, stationPos) == null);
+                    // No ticked pass takes the press's edit: rescanSoon does, as a full detection.
+                    com.minecraftindustrialcomplex.mic_rtsim.industry.IndustryConfig.Test.set(
+                            com.minecraftindustrialcomplex.mic_rtsim.industry.IndustryConfig.RESCAN_INTERVAL, 72_000);
+                    set(helper, press, block("create:mechanical_press").defaultBlockState());
+                    playerPlacedBare(helper, press);
+                })
+                .thenIdle(3)
+                .thenExecute(() -> {
+                    check("the press's edit waits for the full detection", districtAt(helper, press) == null);
+                    ind().districts().rescanSoon(helper.getLevel(), () -> done[0] = true);
+                })
+                .thenWaitUntil(() -> check("the full detection is done", done[0]))
+                .thenExecute(() -> {
+                    com.minecraftindustrialcomplex.mic_rtsim.industry.IndustryConfig.Test.set(
+                            com.minecraftindustrialcomplex.mic_rtsim.industry.IndustryConfig.RESCAN_INTERVAL, 1);
+                    District d = districtAt(helper, press);
+                    check("the press's district", d != null);
+                    check("the district holds the station's chunk: " + d.chunks.size() + " chunks", districtAt(helper, stationPos) == d);
+                    check("two chunks, one district: " + d.chunks.size(), d.chunks.size() == 2);
+                    check("the district lists the station", d.stations.size() == 1);
+                    check("named after its station: " + d.displayName(), d.displayName().equals("Slipway"));
+                    check("the station is no seed, only the press: " + d.seeds(), d.seeds() == 1);
+                    record("aStationPlacedFirstJoinsTheMachineNextToItInAFullDetection", "chunks", d.chunks.size());
+                })
+                .thenSucceed();
+    }
+
+    /**
      * A station that touches a station across a border (SECTIONS.md §2.1, SC184): the one in a district's chunk touches
      * one in the next chunk, which is in no district and which no detection has looked at (as if it were unloaded when
      * the district's chunk was edited). The district's walk meets the touch from its own station, which records the
