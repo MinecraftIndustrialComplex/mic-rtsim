@@ -49,6 +49,7 @@ public final class NativeEngine implements ScriptedEngine {
     static final int STAT_ACKED_SENT = 6;
     static final int STAT_NEXT_CMD_SEQ = 7;
     static final int STAT_ORDERS_PENDING = 8;
+    /** Saves confirmed: a world save counts at its WORLD_SAVED, not at its commit (P29, slice U-h); a test's save at once. */
     static final int STAT_SAVES_DONE = 9;
     static final int STAT_LAST_STEP_NANOS = 10;
     static final int STAT_AGENTS = 11;
