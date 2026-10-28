@@ -101,6 +101,12 @@ checked against what landed and amended where main differs from what they assume
   neither dispatches it or touches `replaying`. RP-29's end at the arm, before it comes, is harmless:
   `the_replay_ends_right_before_each_sessions_journal_gen` (tests/reassert.rs) runs three sessions
   and counts one end, one stale skip and exactly the replayed tail in each.
+- **U-e (RP-290):** the SESSION_START arm no longer sets any module's `enabled`. The flags are the
+  mask the pages were saved in (the engine's meta page, set at `Engine::start`, before any record), or
+  SESSION_START's `moduleMask` when the pages hold none; the replay runs in that mask, and every
+  MODULE_SWITCH in the journal moves it at its place (docs/boundary.md §3.3). The session's own switch
+  (its JOURNAL_GEN's sequence plus 1) comes after the replay end, so a restart whose config differs
+  from the journal's last mask is a live switch, in the session's first step.
 - **SEC-1 fact 4 (pinnedGen):** S4p keeps the newest acknowledged JOURNAL_GEN outside the trimmed
   entries (SC130: `Journal.pinnedGen` in Java, `pinned_gen` in rtsim-host) and sends it first at each
   session start. Pages that include it skip it (`stale_skipped` + 1 a session) and `applied_through`
@@ -737,7 +743,7 @@ same five as on the earlier merges (listed under Fixtures above); the next fixtu
   `session_first`; the step's top once `applied_through + 1 >= session_first`; the SESSION_START
   arm's end once `max(applied_through + 1, jf) >= session_first` (RP-29). Not the predicate latched:
   RP-29's journal check can clear it while `applied_through + 1 < session_first`.
-- A module switched on in the middle of a session (MODULES, U10) resets as today
+- A module switched on in the middle of a session (MODULE_SWITCH, U10; in the replay too, U-e) resets as today
   (`reset_due`, `reset_if_due`); its replay end runs at once when `st.replaying` is false, else at the
   session's replay end.
 
@@ -2415,11 +2421,27 @@ answer, a store's op ring) at the engine's acknowledgement of the answer, whatev
 engine that acknowledges a record it ignored, and then sends the op again or decides the same goods
 again at the switch-on, applies them twice.
 
-**The preamble order stays.** A hand-over's preamble writes MODULES ahead of the journal's drain
-(`BoundarySession.flushPreamble`), so every record of the switch's tick reaches the engine after the
-switch. Under the rule that order no longer matters for correctness; do not reorder it to "fix" a hole,
-fix the module's off path instead. There is no Java-side freeze of puppets at the switch either: the
-engine's own capture (the despawn it sends) ends a puppet, and what happens to it before then is heard.
+**The switch is a record (U-e, RP-290).** MODULES, a latest-wins record the preamble wrote ahead of the
+journal's drain, is retired. The switch is MODULE_SWITCH (0x0132), a journaled kind: Java journals it
+at its real place among the records (`BoundarySession.setModuleMask`), and again with the session's
+mask right after each session's JOURNAL_GEN; the engine applies it in the journaled dispatch, live and
+in a replay, and the pages hold the mask as of their sequence (docs/boundary.md §3.3). So the order
+that used to matter ("every record of the switch's tick reaches the engine after the switch") is the
+journal's, not the preamble's: a record journaled before the switch is heard with the module on, one
+after it with the module off, and a crash and a restart replay the window exactly as it was lived: the
+records before the switch with the module on, the switch (the modules run to its tick first, the
+industry engine freezes there), the records after it kept, and a switch-on that applies them at their
+own ticks. A restart whose config differs from the journal's last mask is the session's own switch,
+made live after the replay. The live path and the replayed path are equal for the records the
+modules keep; what they do at the switch-off and the switch-on themselves (the puppets captured back,
+the viewers' bodies abstract again) is the same code in both. There is no Java-side freeze of
+puppets at the switch either: the engine's own capture (the despawn it sends) ends a puppet, and
+what happens to it before then is heard. RP-285's A/B ("a restart off, switched on later, against
+a restart on") and RP-300's D1 are restated for it: a restart that replays an off window against a
+run that never had the window (the same journal with the switches patched to the mask the module was
+already in) makes the world the same, and the replay of the window itself is shown by a record
+before the switch being booked in the replay and one after it kept
+(`crates/rtsim-jni/tests/protocol.rs`, module `module_switch`).
 
 **The modules** (a sweep at fdfa88e0; each row is updated when its slice lands):
 

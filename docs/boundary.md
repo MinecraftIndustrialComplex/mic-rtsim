@@ -198,10 +198,10 @@ an operation id at most once.
 
 | Kind | Name | aux | Fields (offset type name) | Size |
 |---|---|---|---|---|
-| 0x0001 | SESSION_START | 0 | 8 i64 gameTime, 16 u64 lastAppliedCmdSeq, 24 u64 journalFirstObsSeq (0 = empty), 32 u64 worldNextObsSeq, 40 u32 moduleMask, 44 u32 reserved | 48 |
+| 0x0001 | SESSION_START | 0 | 8 i64 gameTime, 16 u64 lastAppliedCmdSeq, 24 u64 journalFirstObsSeq (0 = empty), 32 u64 worldNextObsSeq, 40 u32 moduleMask (the mask the session starts in: the engine's starting mask when its pages hold none, §3.3), 44 u32 reserved | 48 |
 | 0x0002 | DICT | dict kind | 8 u32 id, 12 u32 nameLen, 16 UTF-8 name, zero-padded | 16 + name, aligned |
 | 0x0003 | TICK | 0 | 8 i64 gameTime. Starts one tick's latest-wins records | 16 |
-| 0x0004 | MODULES | 0 | 8 u32 mask, 12 u32 reserved. At start and on change | 16 |
+| 0x0004 | (retired) | | Was MODULES, a latest-wins copy of the module mask. Retired by U-e (MODULE_SWITCH, §3.3); the number is never reused | |
 | 0x0005 | WORLD_SAVED | 0 | 8 u64 durableObsSeq: a world save holding every observation up to it is on disk. Once per save. The engine confirms the page generation it took for that save (P29) | 16 |
 | 0x0010 | PLAYER | dimension | 8 u64 uuidMost, 16 u64 uuidLeast, 24 f64 x, 32 f64 y, 40 f64 z. Every 20 ticks per player | 48 |
 | 0x0011 | PUPPET_STATE | member index | 8 u64 agent, 16 u32 epoch, 20 u32 dimension, 24 f32 health, 28 u32 flags, 32 f64 x, 40 f64 y, 48 f64 z | 56 |
@@ -215,6 +215,7 @@ an operation id at most once.
 | 0x0111 | COMMAND_RESULT | status | 24 u64 cmdSeq, 32 u64 opId | 40 |
 | 0x0130 | JOURNAL_GEN | 0 | 24 u64 gen: the session's generation, random, never 0. A session's first journaled record (§3.2) | 32 |
 | 0x0131 | REASSERT | 0 | 24 u64 gen (the inner record's; 0: none), 32 the record a holder carried, whole as first journaled. gameTime the inner record's (§3.2) | 32 + record |
+| 0x0132 | MODULE_SWITCH | 0 | 24 u32 mask (bit = `Module.ordinal()`), 28 u32 reserved. The module switches from this record on. Journaled at the switch's real place among the records, and again with the session's mask right after each session's JOURNAL_GEN (§3.3) | 32 |
 | 0x0020 to 0x0022, 0x0120 to 0x0126 | phase 1 | | §4.1 | |
 
 **MEMBER_STATE** (what a body adapter captured):
@@ -483,6 +484,33 @@ again what it remembers (`BoundarySession.observationsLost`).
 **After a reset** (the reinstall guard's choice RG14): an engine that started over took its state
 from the world. The guard drops the old engine's records in Java before they are journaled; without
 it, a copy applies unless the generation the journal kept admitted that sequence or a later one.
+
+### 3.3 The module switch is a journaled record (U-e, RP-290)
+
+A module's switch (`Module`, the bridge's bits; one mask) used to be MODULES, a latest-wins record the
+preamble wrote ahead of the journal's backlog, and SESSION_START set every module's flag before the
+replay. A crash and a restart then replayed a switched-off window as if the module had never been
+off, and a switch-off could reach the engine before answers Java gave while the module was still on.
+Now MODULE_SWITCH (0x0132) is a journaled kind: the prefix (`obsSeq`, `gameTime`) and a `u32` mask.
+
+- **Java** (`BoundarySession.setModuleMask(mask, gameTime)`) journals it at the switch's real place
+  among the records, not in the preamble; a mask equal to the current one journals nothing. The
+  constructor journals the session's own mask right after its JOURNAL_GEN, every session, so the
+  record at the session's first sequence plus 1 is the session's own switch.
+- **The engine** applies it in the journaled dispatch, live and in a replay, as the retired MODULES
+  was applied: the modules run to the record's tick first (`shared::catch_up`; the industry engine
+  runs to it inside the step and thaws at it, so a replay freezes and thaws it at the ticks the live
+  run did), then each module's own switch (docs/replay-gate.md 9.7). A record that changes nothing
+  does nothing. Admitted by sequence like any journaled record, it carries no op id, a holder never
+  carries one, and it is not pinned by the trim: what a trim drops is in the pages.
+- **The pages hold the mask** as of their sequence, in the engine's meta page (`RTJM`, version 3: a
+  `u32` after the outbox). A start sets every module's flag from it, before any record, and the
+  replay runs in it. SESSION_START no longer sets `enabled`; its `moduleMask` is the mask the session
+  starts in (the constructor's), read only when the pages hold no mask (a new world, or pages
+  deleted), as the starting mask.
+- **A restart whose config differs from the journal's last mask** is that session's own switch: the
+  session's record comes after its JOURNAL_GEN, so the replay has ended when it arrives, and it is a
+  live switch. The replay itself is the crashed session's.
 
 ## 4. Phase 1: caravans and markets (PLAN.md §8)
 
@@ -821,7 +849,7 @@ its natives with `System.load`. Choices are in `docs/overnight-choices-jni.md` (
      (docs/replay-gate.md 9.7: the switch gates only new decisions). A kept record is booked at its
      own tick on the dragons' clock, which froze at the switch-off, though the phase 1 world ran on
      (`shared::floor`), never at the frozen clock; a dragon killed or tamed while they were off stays
-     dead from that tick. MODULES sets every module's flag before any reset, so with ECOLOGY on the
+     dead from that tick. A MODULE_SWITCH sets every module's flag before any reset, so with ECOLOGY on the
      herds are the dragons' prey through the window. A tribute stack's answer is taken at once
      whatever the switch (RP-291). On again, their bodies of before are gone and they run on. No
      capture is sent at the switch-off: a body stays until Java's own capture (RP-290).
@@ -2367,7 +2395,7 @@ manifest's `projection.edges[].iso` (FORMAT.md "The world's layout").
 ### 11.3 When Java sends it
 
 - For every level at the session's first hand-over, as a **sticky preamble record**: written right
-  after the dictionary and MODULES, so before any journal entry the hand-over replays
+  after the dictionary, so before any journal entry the hand-over replays
   (`BoundarySession.preamble`). Never dropped for space: a preamble that does not fit waits for the
   next hand-over, with everything after it.
 - Again when a level's topology changes: the bridge looks every 200 ticks (PLACEHOLDER) and at once
