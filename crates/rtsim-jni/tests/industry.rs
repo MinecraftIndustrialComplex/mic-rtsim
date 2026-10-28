@@ -6351,6 +6351,59 @@ mod ack_never_resends {
         r.finish();
     }
 
+    /// U-e13 (review of U-e, PR 16): a switch-on an earlier session journaled, replayed by the
+    /// next session, runs the engine's session start the live run did at that switch, at the
+    /// switch's tick, and leaves the pending session start SESSION_START stored for this session
+    /// alone: it runs at the replay's end at the session's own game time. Session 0 switches
+    /// industry off and on again in a window after the pages, and crashes; session 1 restarts with
+    /// industry on (the mask the journal ended in, so its own switch changes nothing). At cdd6aa4c
+    /// the replayed switch-on replaced the session's pending start with its own tick: one session
+    /// start at the old switch's tick and none at the session's present.
+    #[test]
+    fn a_restart_replays_an_earlier_sessions_switch_on_with_its_session_start() {
+        let mut r = Rig::new("ack-replayed-on", false);
+        r.run_to(day(3.0));
+        r.every = 0;
+        let through = r.j.next_obs - 1;
+        r.j.e.request_save(through);
+        r.j.written_through = Some(through);
+        r.j.world_saved(through);
+        r.until_read(through);
+        let starts = |r: &Rig| r.j.e.with_industry(|_, l| (l.session_starts, l.session_start_tick));
+        let (before, _) = starts(&r);
+        let t = r.j.mc().t;
+        r.run_to(t + 300);
+        r.j.modules(0);
+        r.tick();
+        let t = r.j.mc().t;
+        r.run_to(t + 200);
+        let on_at = r.j.game_time as u64;
+        switch_on(&mut r);
+        let t = r.j.mc().t;
+        r.run_to(t + 400);
+        let (live, live_tick) = starts(&r);
+        assert_eq!(live, before + 1, "live, the switch-on ran one session start");
+        assert!(live_tick >= on_at, "at the switch-on's tick");
+        let w = r.c.save(&r.j);
+        r.modules = MODULE_INDUSTRY;
+        r.restart(&w);
+        let present = r.j.game_time as u64;
+        assert!(present > live_tick, "the restart is later than the switch-on");
+        hand_over_only(&mut r);
+        hand_over_only(&mut r);
+        assert!(
+            r.j.e.stats.replays_ended.load(Ordering::Acquire) > 0,
+            "the replay ended"
+        );
+        assert_eq!(
+            starts(&r),
+            (2, present),
+            "the replayed switch-on's session start at its tick, then this session's at its present"
+        );
+        r.every = 3_000;
+        r.finish();
+    }
+
     /// RP-285 (P2-1), IND_RECONCILE_RESULT heard while off, across a crash while still off. Industry
     /// goes off in the tick Java applies a chunk reconcile X and journals its IND_RECONCILE_RESULT
     /// and APPLIED (the switch journaled ahead of both). Off, the engine keeps the result with its tick: X stays
