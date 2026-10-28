@@ -5617,19 +5617,19 @@ mod ack_never_resends {
         twice("ack-twice-late-on", Some(THIRD_EXCHANGE + 100), false);
     }
 
-    /// MZB-940, the engine's gap, pinned and not fixed: [`twice`] as the test above it, industry
-    /// off in session 2, with the world saved after train 1's third exchange since the pages. Off,
-    /// the replay ignores every record but Java's answers, the train arrivals among them, so the
-    /// engine decides none of the window's exchanges again: the carriage side of each is in the
-    /// world (the crashed session wrote it) and its station side, held in the engine's memory until
-    /// the district's reconcile, is not booked anywhere. The kept IND_CARRIAGE_RESULTs meet no
-    /// pending exchange (`Engine::carriage_result` returns). With an even number of exchanges in
-    /// the window the missing station sides cancel in the world's total (an unload and a load of
-    /// the same good), with an odd one the world is short by the odd one's request: "world totals
-    /// off by: create:crushed_raw_iron -224". Ignored until the engine keeps what it needs from an
-    /// off replay's arrivals (an open decision in docs/choices-mowzie-build.md MZB-940).
+    /// MZB-940, closed by slice U-e (RP-290): [`twice`] as the test above it, industry off in
+    /// session 2, with the world saved after train 1's third exchange since the pages. Session 1
+    /// ran with industry on, so the pages' mask is on and the replay of session 2 starts from it:
+    /// it hears the train arrivals and decides each exchange of the window again, so the
+    /// carriage side of each (in the world, the crashed session wrote it) meets its station side.
+    /// Session 2's config is its own switch, journaled after its JOURNAL_GEN and applied once the
+    /// replay is over. Before U-e SESSION_START set the module off before the replay, whose
+    /// `journaled` ignored every record but Java's answers, the arrivals among them: the engine
+    /// decided none of the window's exchanges again, the kept IND_CARRIAGE_RESULTs met no pending
+    /// exchange, and with an odd number of exchanges the world was short by the odd one's request:
+    /// "world totals off by: create:crushed_raw_iron -224" (docs/choices-mowzie-build.md MZB-940,
+    /// docs/choices-journal-barrier.md U-e11).
     #[test]
-    #[ignore = "MZB-940: the engine ignores the arrivals of a replay with industry off, so an odd number of exchanges in the window loses goods"]
     fn a_world_saved_after_three_later_exchanges_closes_its_books_with_industry_off() {
         twice("ack-twice-late-off", Some(THIRD_EXCHANGE + 100), true);
     }
