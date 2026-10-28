@@ -4,7 +4,11 @@
 //! copied without its `rtsim/archive` (the event timeline): `events.rs` needs a real save with no
 //! archive and writes its own archive onto a copy of this one. The create save keeps its archive.
 //!
-//! - `tests/data/core`: neoforge/core's GameTest world, a fresh one, run from commit 9d123ab5
+//! - `tests/data/core`: neoforge/core's GameTest world, a fresh one, run from commit aec7918b
+//!   (Mowzie's Mobs M11, the Umvuthi aloft, with M10 merged in, which carries main 8703d216; M11's
+//!   formats: the conflict's pages are RTC12 (magic `RTCC`) with meta version 11, a camp's ledger
+//!   ending with the end of the band its chief came home with and the resident state ending with
+//!   those ends' index by agent, after the tribute stacks, MZB-853); before that, 9d123ab5
 //!   (Mowzie's Mobs M10, the march, merged with main 8703d216, which carries U-g, J6, U-h and
 //!   MZB-760, plus the march GameTests' fixes, MZB-941; M10's formats: the conflict's pages are
 //!   RTC11 (magic `RTCB`) with meta version 10, a party's row ending with its march revision, its
@@ -78,7 +82,8 @@
 //!   when the server stops: 6638edc's save had one, while both runs of 98d6d34 and main's 7e4042a
 //!   had every herd staying put. So the route layer is not required here; it still has to draw or
 //!   say why.
-//! - `tests/data/create`: neoforge/create's GameTest world, run from 49fef870 with `-Psec1fx`
+//! - `tests/data/create`: neoforge/create's GameTest world, run from aec7918b with `-Psec1fx`
+//!   (M11 with M10 merged in; the core save's formats, M11's); before that, 49fef870
 //!   (M10 merged with main 8703d216; the core save's formats, M10's); before that, da5aea80
 //!   (the core save's formats, M8's); before that, 2acae5ba (8e3eda72 merged
 //!   with main 13051753, the grove tribute earmark, which changes no format: the core save's
