@@ -14,6 +14,7 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.util.Mth;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.gametest.GameTestHolder;
@@ -112,16 +113,18 @@ public final class PathSweepGameTests {
                     }
 
                     // 2: a wall of stone 6 high and 9 wide across the way, 12 and 13 blocks along x
-                    fill(level, (int) ex + 12, (int) ex + 13, (int) ez - 4, (int) ez + 4, top + 1, top + 6, true);
+                    int wx = Mth.floor(ex) + 12, wz = Mth.floor(ez);
+                    fill(level, wx, wx + 1, wz - 4, wz + 4, top + 1, top + 6, true);
                     Answer wall = sweep(nav, sweep, new Vec3(30, 0, 0), ex, y, ez, w, h);
                     check("a wall of stone across the way: blocked (" + wall + ")", !wall.clear && !wall.budget.overran());
-                    fill(level, (int) ex + 12, (int) ex + 13, (int) ez - 4, (int) ez + 4, top + 1, top + 6, false);
+                    fill(level, wx, wx + 1, wz - 4, wz + 4, top + 1, top + 6, false);
 
-                    // 3: the floor missing in a strip 2 blocks wide: open air under the way
-                    fill(level, (int) ex + 12, (int) ex + 13, (int) ez - 4, (int) ez + 4, top, top, false);
+                    // 3: the floor missing in a strip 2 blocks wide and 2 deep: open air under the way. (One block deep is a step down
+                    // the jar's sweep lets a mob take: the cell under its feet is then walkable, standing on the ground below.)
+                    fill(level, wx, wx + 1, wz - 4, wz + 4, top - 1, top, false);
                     Answer hole = sweep(nav, sweep, new Vec3(30, 0, 0), ex, y, ez, w, h);
                     check("the floor missing across the way: blocked (" + hole + ")", !hole.clear && !hole.budget.overran());
-                    fill(level, (int) ex + 12, (int) ex + 13, (int) ez - 4, (int) ez + 4, top, top, true);
+                    fill(level, wx, wx + 1, wz - 4, wz + 4, top - 1, top, true);
 
                     // 4: both put back
                     Answer again = sweep(nav, sweep, new Vec3(30, 0, 0), ex, y, ez, w, h);
