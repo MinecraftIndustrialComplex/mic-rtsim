@@ -123,6 +123,10 @@ pub struct IndustryStats {
     /// (docs/choices-mowzie-build.md RP-259): the replay decided them again, or the link page
     /// held them unwritten. Taken back, as the answer does.
     pub answered_unsent: u64,
+    /// The industry engine's own session starts run (a restart's, and a switch-on's, live or
+    /// replayed: docs/choices-journal-barrier.md U-e13), and the tick of the last.
+    pub session_starts: u64,
+    pub session_start_tick: u64,
 }
 
 /// The industry side of one session.
@@ -294,6 +298,8 @@ impl Link {
                 }
             }
             self.engine.session_start(t);
+            self.stats.session_starts += 1;
+            self.stats.session_start_tick = t.0;
         }
     }
 
@@ -592,7 +598,7 @@ pub(super) fn switched(st: &mut State, rec: &Rec<'_>, on: bool) {
         }
         l.engine.run_in_step(at);
     }
-    set_enabled_at(st, on, at);
+    set_enabled_at(st, on, at, this_session);
 }
 
 /// The switch changed in a session (MODULE_SWITCH, U10). Off: the engine is frozen where it stands (its
@@ -615,13 +621,21 @@ pub(super) fn switched(st: &mut State, rec: &Rec<'_>, on: bool) {
 /// The chain writes the link held while off (queued, or kept in the outbox) go to Java now: the
 /// engine's session start awaits their answers from its game time (`Link::begin_session`,
 /// RP-294).
-fn set_enabled_at(st: &mut State, on: bool, gt: Tick) {
+///
+/// `this_session`: the switch is a record of this session, so the session start it moves is this
+/// session's own. A switch-on an earlier session journaled, replayed (docs/choices-journal-barrier.md
+/// U-e13), is the session start the live run did there: it runs now, at that switch's tick, and
+/// leaves the one SESSION_START stored for this session alone, which runs at the replay's end.
+fn set_enabled_at(st: &mut State, on: bool, gt: Tick, this_session: bool) {
     let l = &mut st.industry;
     let was = l.enabled;
     l.enabled = on;
     if on && !was {
         book_kept_answers(l);
-        l.session_start_at = Some(gt.max(l.engine.now()));
+        let start = gt.max(l.engine.now());
+        if this_session {
+            l.session_start_at = Some(start);
+        }
         // Every kept command goes again, under a new sequence (Java skips any at or below the last
         // it applied), and Java answers it by op id (DUPLICATE if it had applied it). The answers
         // that came while off took theirs out of the outbox (RP-285), so this sends only commands
@@ -634,6 +648,13 @@ fn set_enabled_at(st: &mut State, on: bool, gt: Tick) {
             l.queue.push_front(c);
         }
         l.gauges();
+        if !this_session {
+            // The live run began the engine's session at the next record; the replay does it here,
+            // with the commands requeued above, as the live run's had them.
+            let pending = l.session_start_at.replace(start);
+            l.begin_session();
+            l.session_start_at = pending;
+        }
     }
 }
 
@@ -2117,7 +2138,7 @@ mod tests {
     /// The switch as the tests time it: at the step's game time.
     fn set_enabled(st: &mut State, on: bool) {
         let at = tick(st.game_time);
-        set_enabled_at(st, on, at);
+        set_enabled_at(st, on, at, true);
     }
 
     /// How the module comes back on in [`writes_after_a_held_write`].
