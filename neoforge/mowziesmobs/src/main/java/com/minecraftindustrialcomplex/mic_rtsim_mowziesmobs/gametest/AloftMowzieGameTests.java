@@ -4470,7 +4470,8 @@ public final class AloftMowzieGameTests {
                     check("only two re-pairs so far (" + r.repairs + ")", r.repairs.size() == 2);
                     check("the third turn is due: its way has been 55 degrees off its facing since " + (level.getGameTime() - r.dueAfter[2]) + " ticks ago (due after "
                                     + java.util.Arrays.toString(r.dueAfter) + ", at " + u.position() + ", yaw " + u.getYRot() + ", facing " + u.getDirectionData()
-                                    + ", lag " + chiefSlot(agent[0]).lag() + ", re-pairs " + r.repairs + ")",
+                                    + ", lag " + chiefSlot(agent[0]).lag() + ", re-pairs " + r.repairs + ", now " + level.getGameTime() + ", the wait began at " + at[5]
+                                    + ", the second steer at " + at[3] + ")",
                             r.dueAfter[2] != 0 && level.getGameTime() - r.dueAfter[2] >= 10);
                     check("the body is alive, with no ability (" + u.isDeadOrDying() + ", " + u.getActiveAbility() + ")", !u.isDeadOrDying() && u.getActiveAbility() == null);
                     r.removedBefore = (int) (hearer[0].removed(u.getId()) + hearer[1].removed(u.getId()));
