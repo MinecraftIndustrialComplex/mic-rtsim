@@ -11792,6 +11792,12 @@ rounds of phase 2 are the check, and what they found is recorded after them.
   was sent in the step before H's walk home, with C's puppet 45 blocks off at 0.1 a tick, which is longer than H's walk to within
   TAKE_STALE of its throne: so one line is held when H's take is answered, C's own. The check counts it (one while C's hand-back is
   unanswered, none after) and names both. Passed in the round at 9cc86af5.
+- **MZB-919** (round at 9cc86af5, test 23d `aStuckUmvuthiRisesThenIsMoved`; MZB-811): "B's raise read 8, 16 and 24 (481443, 0, 0; the most read 8, moved at 482056, ... B at
+  (..., -58.9, ...)". B had been set down on the floor, not held under the ceiling. The test put the watching player 20 blocks from B's place in the
+  step before B's move, while B still stood 58 blocks from that place: 38 blocks from the player with a clear line under the ceiling. That is a player B
+  can see, so the stuck rule never found B unseen (which is B's point), and one the jar's AI targets, and a puppet settles on a player target in sight
+  (`AloftRules.settles`): after its first raise B sank, its stuck machine was replaced, and the raise read back as 0, which the test takes for a move.
+  The player is now put there after B has been moved, in the step that gives B the attack flag. Not run yet.
 
 ## M12 S9
 

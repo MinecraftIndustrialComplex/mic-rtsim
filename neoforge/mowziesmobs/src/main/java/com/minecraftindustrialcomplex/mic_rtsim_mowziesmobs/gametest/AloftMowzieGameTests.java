@@ -1287,7 +1287,6 @@ public final class AloftMowzieGameTests {
                     check("neither stuck puppet has moved yet (" + movedAt[0] + " and " + movedAt[1] + ")", movedAt[0] == 0 && movedAt[1] == 0);
                     check("each is under the ceiling (" + puppet[0].getY() + ", " + puppet[1].getY() + " under " + ceilingRoom[0] + ")",
                             puppet[0].getY() <= ceilingRoom[0] + 1.0e-6 && puppet[1].getY() <= ceilingRoom[0] + 1.0e-6);
-                    hearer[0] = FakePlayers.watching(level, new Vec3(place[0] - 20, lane[1].top + 1, place[1]), "mowzie-aloft-stuck-b-hearer");
                 })
                 .thenWaitUntil(waits.logic(() -> check("B has been moved", movedAt[1] != 0)))
                 .thenExecute(() -> {
@@ -1302,6 +1301,9 @@ public final class AloftMowzieGameTests {
                     double off = Math.hypot(puppet[1].getX() - place[0], puppet[1].getZ() - place[1]);
                     check("B stands at its place (" + off + " off)", off <= 1.5);
                     check("A is still held under the ceiling (" + most[0] + ", " + movedAt[0] + ")", most[0] == 24 && movedAt[0] == 0);
+                    // the watching player stands 20 blocks from B's place only now (MZB-919): put there while B was held under the ceiling, 38 blocks
+                    // off with a clear line, it was a player B could see, so B was neither unseen nor moved, and the jar's AI targeted it and set B down
+                    hearer[0] = FakePlayers.watching(level, new Vec3(place[0] - 20, lane[1].top + 1, place[1]), "mowzie-aloft-stuck-b-hearer");
                     ConflictKit.steer(agent[1], ConflictKit.party(agent[1]).epoch, 0.5f, lane[1].x0 + end, lane[1].z, 0, true);
                 })
                 .thenWaitUntil(waits.logic(() -> check("B has landed", !puppet[1].isNoGravity())))
