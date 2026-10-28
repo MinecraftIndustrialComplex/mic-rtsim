@@ -3,6 +3,8 @@
 //! cross-store change carries an operation id (A9), allocated once when the change is decided and
 //! resent unchanged, so Java applies it once however often it arrives.
 
+use std::collections::{BTreeMap, VecDeque};
+
 use rtsim_kernel::clock::Tick;
 use rtsim_kernel::journal::OpId;
 use serde::Serialize;
@@ -170,46 +172,265 @@ impl Cmd {
 /// carrying its IND_RECONCILE_RESULT) answers DUPLICATE and drops. Re-deriving the *same* decision
 /// gives the same id, so the bridge recognises it. Two identical commands of one tick get the
 /// second id from an ordinal, as does a hash that meets another recent id.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+///
+/// A change another engine decided (a raider's attack on a train) is **keyed** instead
+/// ([`IndustryOps::derive_keyed`], docs/choices-mowzie-build.md RP-180): its id comes from the
+/// world seed and the attack's own identity alone, so a raider that replays its window after a
+/// crash, against an industry engine that is not held (docs/replay-gate.md §3.6), derives the id it
+/// derived before the crash, whatever industry's present and the cargo are by then.
+#[derive(Clone, Debug, Default)]
 pub struct IndustryOps {
-    /// The last [`RECENT`] ids derived, with their ticks (a lazily replayed cluster can decide at a
-    /// tick older than another's last decision, so this is a window, not one tick).
-    recent: std::collections::VecDeque<(Tick, u64)>,
+    /// The ids derived lately, each with the tick that decided it (a lazily replayed cluster can
+    /// decide at a tick older than another's last decision, so this is a window, not one tick),
+    /// keyed by that tick and the order they came in, so the oldest tick's go first: the last
+    /// [`RECENT`], and every one at or above the step's oldest tick, [`CAP`] more at most
+    /// ([`IndustryOps::remember`]).
+    derived: BTreeMap<(u64, u64), u64>,
+    /// The key tags ([`KEY_TAG`] set, which no tick reaches) and their ids, oldest first: a
+    /// budget of their own.
+    keys: VecDeque<(u64, u64)>,
+    /// How many of the window's ids have each low 56 bits: the probe, one lookup a derivation
+    /// however many the window holds (the slice R re-check's step 3b).
+    lows: BTreeMap<u64, u32>,
+    /// The order the next derived id comes in. Not saved: a restored window numbers its ids
+    /// again in their page order, which is that order.
+    next: u64,
+    /// The oldest tick derived since the step began ([`IndustryOps::end_step`]), None before the
+    /// step's first derivation. Not saved, and not part of the state: a restored engine starts a
+    /// step. Which ids a window forgets decides only whether a later identical decision of their
+    /// tick takes a fresh ordinal; ordinals are taken lowest free first, so the ops of one tick's
+    /// identical decisions are a prefix live and replayed alike, and two windows can differ by a
+    /// loss, never a double, barring a 56-bit collision (an unrelated id in one window alone
+    /// with an ordinal's low bits moves a decision to the next ordinal, past the prefix).
+    floor: Option<u64>,
+    /// The newest tick derived since the step began: [`IndustryOps::end_step`] keeps its ids.
+    newest: Option<u64>,
 }
+
+/// Two windows are equal when their pages are: the step's ticks and the order numbers are not
+/// part of the state.
+impl PartialEq for IndustryOps {
+    fn eq(&self, other: &Self) -> bool {
+        self.pairs().eq(other.pairs())
+    }
+}
+impl Eq for IndustryOps {}
 
 const NAMESPACE: u64 = 0x49 << 56;
 const LOW_BITS: u64 = (1 << 56) - 1;
 /// Ids remembered for ordinals and collisions. TUNABLE, PLACEHOLDER 256: identical commands come
 /// from one cluster's burst of events.
 const RECENT: usize = 256;
+/// The derived ids at or above the step's oldest tick kept past [`RECENT`] at most (the slice R
+/// re-check's step 3b). TUNABLE, PLACEHOLDER 4,096: a step that decides more (a jni replay since
+/// the last durable pages, a catch-up over a long time off) forgets its oldest ticks' ids first,
+/// and an identical decision of such a tick later in the step takes an op of its tick again, one
+/// op for two changes, a loss (docs/choices-mowzie-build.md RP-259).
+const CAP: usize = 4_096;
+/// The bit that marks a key tag in [`IndustryOps::keys`] (slice T's keyed ids, RP-180): a tick
+/// is a game time, below 2^63, so a tag and a tick never meet.
+const KEY_TAG: u64 = 1 << 63;
+/// Where a derived id's hash has its tick, a keyed one's has this: the two never hash the same bytes.
+const KEYED: u64 = u64::MAX;
 
 impl IndustryOps {
     /// The op id of `cmd` (its own op field is ignored), decided at `at` in the world `seed`.
     pub fn derive(&mut self, seed: u64, at: Tick, cmd: &Cmd) -> OpId {
-        let mut bytes = Vec::with_capacity(64);
+        self.derive_with(seed, at, cmd, &[])
+    }
+
+    /// [`IndustryOps::derive`] with `extra`, identity the command does not carry, hashed after it:
+    /// a deposit delta's district (two districts on one oil chunk write back at one tick, RP-275).
+    /// Empty, it is `derive`'s id.
+    pub fn derive_with(&mut self, seed: u64, at: Tick, cmd: &Cmd, extra: &[u8]) -> OpId {
+        self.derive_from(seed, at.0, at, cmd, extra)
+    }
+
+    /// The op id of the `n`th change of `cmd`'s kind and target, counted by the engine and saved
+    /// with its pages, whatever tick decided it (`at` only places it in the window): a package
+    /// written into a postbox's offline buffer (docs/choices-mowzie-build.md RP-259, P1-4 of the
+    /// review). Decided again after a crash, the `n`th package meets the op the world applied
+    /// whenever the replay decides it, and carries the same content.
+    pub fn derive_numbered(&mut self, seed: u64, at: Tick, cmd: &Cmd, n: u64) -> OpId {
+        self.derive_from(seed, NUMBERED, at, cmd, &n.to_le_bytes())
+    }
+
+    /// The id of `cmd` with `word` hashed where a derived id has its tick.
+    fn derive_from(&mut self, seed: u64, word: u64, at: Tick, cmd: &Cmd, extra: &[u8]) -> OpId {
+        let mut bytes = Vec::with_capacity(64 + extra.len());
         bytes.extend_from_slice(&seed.to_le_bytes());
-        bytes.extend_from_slice(&at.0.to_le_bytes());
+        bytes.extend_from_slice(&word.to_le_bytes());
         bytes.extend_from_slice(&0u64.to_le_bytes());
         let mut w = rtsim_kernel::codec::Writer::new();
         crate::persist::Persist::put(&cmd.without_op(), &mut w);
         bytes.extend_from_slice(&w.into_bytes());
+        bytes.extend_from_slice(extra);
         for ordinal in 0u64.. {
             bytes[16..24].copy_from_slice(&ordinal.to_le_bytes());
             let low = mix(rtsim_kernel::rng::fnv1a64(&bytes)) & LOW_BITS;
-            if low != 0 && !self.recent.iter().any(|&(_, l)| l == low) {
-                if self.recent.len() >= RECENT {
-                    self.recent.pop_front();
-                }
-                self.recent.push_back((at, low));
+            if low != 0 && !self.lows.contains_key(&low) {
+                self.remember(at.0, low);
                 return OpId::engine(NAMESPACE | low);
             }
         }
         unreachable!("an ordinal is always free")
     }
 
+    /// Remembers `low`, derived at tick `by` (or for a key tag), and forgets past the window
+    /// (docs/choices-mowzie-build.md RP-275, RP-259). The oldest tick's derived id goes once more
+    /// than [`RECENT`] are kept, but never one at or above the oldest tick derived in the step
+    /// until [`CAP`] more are kept: two identical decisions of one tick more than [`RECENT`]
+    /// derivations apart would otherwise both take ordinal 0, one op for two changes, which Java
+    /// answers DUPLICATE (a loss in a live run), and a step decides at older ticks than its newest
+    /// (a stale record, a cluster behind another), so keeping `by`'s own tick alone is not enough
+    /// (the slice R re-check). Past the cap the step forgets its own oldest ticks' ids, a loss at
+    /// worst (step 3b). The step ends at [`IndustryOps::end_step`], which trims the window back
+    /// to [`RECENT`] plus the ids at the step's newest tick. A derivation costs a few map
+    /// operations, whatever the window holds. Key tags ([`KEY_TAG`]) are counted and forgotten
+    /// apart, [`RECENT`] of them: a burst of derived ids never pushes a key out, so `knows_key`
+    /// still knows a change another engine decided (a raid on a train, RP-183) when that engine's
+    /// replay decides it again.
+    fn remember(&mut self, by: u64, low: u64) {
+        self.restore(by, low);
+        if by & KEY_TAG != 0 {
+            if self.keys.len() > RECENT
+                && let Some((_, gone)) = self.keys.pop_front()
+            {
+                self.forget(gone);
+            }
+            return;
+        }
+        let floor = self.floor.map_or(by, |f| f.min(by));
+        self.floor = Some(floor);
+        self.newest = Some(self.newest.map_or(by, |t| t.max(by)));
+        self.trim(floor);
+    }
+
+    /// Puts back an id of a saved window, in its page order, forgetting nothing.
+    fn restore(&mut self, by: u64, low: u64) {
+        *self.lows.entry(low).or_default() += 1;
+        if by & KEY_TAG != 0 {
+            self.keys.push_back((by, low));
+        } else {
+            self.derived.insert((by, self.next), low);
+            self.next += 1;
+        }
+    }
+
+    /// Forgets the oldest ticks' derived ids past [`RECENT`] below `keep`, and past [`RECENT`]
+    /// and [`CAP`] whatever their tick.
+    fn trim(&mut self, keep: u64) {
+        while self.derived.len() > RECENT {
+            let over_cap = self.derived.len() > RECENT + CAP;
+            let Some(oldest) = self.derived.first_entry() else {
+                break;
+            };
+            if oldest.key().0 >= keep && !over_cap {
+                break;
+            }
+            let low = oldest.remove();
+            self.forget(low);
+        }
+    }
+
+    /// One id of `low` leaves the window.
+    fn forget(&mut self, low: u64) {
+        if let Some(n) = self.lows.get_mut(&low) {
+            *n -= 1;
+            if *n == 0 {
+                self.lows.remove(&low);
+            }
+        }
+    }
+
+    /// The window as its page holds it: the derived ids oldest tick first, then the key tags.
+    fn pairs(&self) -> impl Iterator<Item = (u64, u64)> + '_ {
+        self.derived
+            .iter()
+            .map(|(&(by, _), &low)| (by, low))
+            .chain(self.keys.iter().copied())
+    }
+
+    /// The step is over (the engine's `advance_to`): the window keeps the last [`RECENT`] and the
+    /// ids at or above the step's newest tick (the next step may decide at it again), so a page
+    /// saved at the step's end holds no more, and the next step's derivations may forget the
+    /// step's ids again, oldest tick first.
+    pub fn end_step(&mut self) {
+        if let Some(newest) = self.newest {
+            self.trim(newest);
+        }
+        self.floor = None;
+        self.newest = None;
+    }
+
+    /// The op id of the change `key` names in the world `seed` (RP-180): a function of the two
+    /// alone, never of a tick or of the command's contents. Deriving the same key again while the
+    /// window remembers it gives the same id (the point: a re-decided attack is the attack the
+    /// bridge already applied); a different key whose hash meets an id of the window takes the
+    /// next ordinal, as [`IndustryOps::derive`] does. A window restored from older pages has
+    /// forgotten the key, so the derivation starts again from ordinal 0 and finds the same id,
+    /// unless the live derivation met a collision the restored window lacks (a 56-bit hash
+    /// meeting an id of the window).
+    pub fn derive_keyed(&mut self, seed: u64, key: &[u8]) -> OpId {
+        let mut bytes = keyed_bytes(seed, key);
+        let tag = key_tag(&mut bytes);
+        if let Some(low) = self.key_low(tag) {
+            return OpId::engine(NAMESPACE | low);
+        }
+        for ordinal in 0u64.. {
+            bytes[16..24].copy_from_slice(&ordinal.to_le_bytes());
+            let low = mix(rtsim_kernel::rng::fnv1a64(&bytes)) & LOW_BITS;
+            if low != 0 && !self.lows.contains_key(&low) {
+                self.remember(tag, low);
+                return OpId::engine(NAMESPACE | low);
+            }
+        }
+        unreachable!("an ordinal is always free")
+    }
+
+    /// Whether the window remembers an id derived for `key` in the world `seed`
+    /// ([`IndustryOps::derive_keyed`]): the change it names was decided already (RP-183). The
+    /// window keeps [`RECENT`] key tags apart from the derived ids (RP-275): a key is known until
+    /// [`RECENT`] later keys push it out, whatever else the engine derives.
+    pub fn knows_key(&self, seed: u64, key: &[u8]) -> bool {
+        self.key_low(key_tag(&mut keyed_bytes(seed, key))).is_some()
+    }
+
+    /// The low 56 bits the window holds for the key tag `tag`, if it remembers one: a scan of at
+    /// most [`RECENT`] tags, once a keyed derivation (an attack, not a busy tick's rounds).
+    fn key_low(&self, tag: u64) -> Option<u64> {
+        self.keys
+            .iter()
+            .find(|&&(by, _)| by == tag)
+            .map(|&(_, low)| low)
+    }
+
     pub fn is_industry(op: OpId) -> bool {
         op.is_engine() && op.0 >> 56 == 0x49
     }
+}
+
+/// Where a derived id's hash has its tick, a numbered one's ([`IndustryOps::derive_numbered`]) has
+/// this, which no game time reaches (slice T's keyed ids use `u64::MAX`, RP-180).
+const NUMBERED: u64 = u64::MAX - 1;
+
+/// A keyed id's hashed bytes: the world seed, [`KEYED`] where a derived id has its tick, the
+/// ordinal (0 here), and the key.
+fn keyed_bytes(seed: u64, key: &[u8]) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(24 + key.len());
+    bytes.extend_from_slice(&seed.to_le_bytes());
+    bytes.extend_from_slice(&KEYED.to_le_bytes());
+    bytes.extend_from_slice(&0u64.to_le_bytes());
+    bytes.extend_from_slice(key);
+    bytes
+}
+
+/// A key's tag in the window: its bytes hashed with an ordinal no derivation uses, [`KEY_TAG`] set.
+fn key_tag(bytes: &mut [u8]) -> u64 {
+    bytes[16..24].copy_from_slice(&u64::MAX.to_le_bytes());
+    let tag = rtsim_kernel::rng::fnv1a64(bytes) | KEY_TAG;
+    bytes[16..24].copy_from_slice(&0u64.to_le_bytes());
+    tag
 }
 
 /// SplitMix64's finalizer: spreads FNV's bits over the 56 kept.
@@ -319,7 +540,20 @@ mod persist_impls {
         action,
         serials
     });
-    persist_struct!(IndustryOps { recent });
+    /// The window alone, as the `(Tick, u64)` pairs it held before ([`IndustryOps::pairs`]):
+    /// the step's ticks are not saved ([`IndustryOps::floor`]).
+    impl Persist for IndustryOps {
+        fn put(&self, w: &mut Writer) {
+            self.pairs().collect::<Vec<_>>().put(w);
+        }
+        fn get(r: &mut Reader<'_>) -> Result<Self> {
+            let mut ops = IndustryOps::default();
+            for (by, low) in Vec::<(u64, u64)>::get(r)? {
+                ops.restore(by, low);
+            }
+            Ok(ops)
+        }
+    }
     persist_struct!(crate::glass::records::ProbeSet {
         district,
         compile,
@@ -425,5 +659,302 @@ mod tests {
         let mut set = channel(3);
         set.set_op(OpId(99));
         assert_eq!(IndustryOps::default().derive(5, Tick(100), &set), x);
+        // No extra identity is `derive`'s id; some is another.
+        assert_eq!(
+            IndustryOps::default().derive_with(5, Tick(100), &channel(3), &[]),
+            x
+        );
+        assert_ne!(
+            IndustryOps::default().derive_with(5, Tick(100), &channel(3), &7u64.to_le_bytes()),
+            x
+        );
+        // A numbered id (a package, RP-259) is its number's at any tick, and two numbers at one
+        // tick (the review's table: several packages of one pool at one tick) are two ids.
+        let n1 = IndustryOps::default().derive_numbered(5, Tick(100), &channel(3), 1);
+        assert_eq!(
+            IndustryOps::default().derive_numbered(5, Tick(9_000), &channel(3), 1),
+            n1
+        );
+        let mut e = IndustryOps::default();
+        assert_eq!(e.derive_numbered(5, Tick(100), &channel(3), 1), n1);
+        assert_ne!(e.derive_numbered(5, Tick(100), &channel(3), 2), n1);
+        assert_ne!(n1, x);
+    }
+
+    /// The slice R review's P2-3 (RP-275): two identical decisions of one tick more than
+    /// [`RECENT`] derivations apart (a busy tick: a round per chunk and a write per pool). On
+    /// 2a975cc3 the window had forgotten the first by the second, which took ordinal 0 again: one
+    /// op for two changes, the second answered DUPLICATE in a live run.
+    #[test]
+    fn identical_decisions_of_one_tick_never_share_an_op_however_far_apart() {
+        let mut a = IndustryOps::default();
+        let first = a.derive(5, Tick(100), &channel(3));
+        for n in 0..RECENT as i64 + 10 {
+            a.derive(5, Tick(100), &channel(1_000 + n));
+        }
+        let second = a.derive(5, Tick(100), &channel(3));
+        assert_ne!(second, first, "the second change has an op of its own");
+        // The step's ids are all kept while it derives, and at its end, all at its newest tick;
+        // the next step trims back.
+        assert_eq!(a.pairs().count(), RECENT + 12);
+        a.end_step();
+        assert_eq!(a.pairs().count(), RECENT + 12);
+        a.derive(5, Tick(101), &channel(3));
+        assert_eq!(a.pairs().count(), RECENT);
+        assert_eq!(a.pairs().last().map(|(by, _)| by), Some(101));
+        // Older steps' ticks still go oldest first.
+        let mut b = IndustryOps::default();
+        for n in 0..RECENT as u64 + 5 {
+            b.derive(5, Tick(n), &channel(3));
+            b.end_step();
+        }
+        assert_eq!(b.pairs().count(), RECENT);
+        assert_eq!(b.pairs().next().map(|(by, _)| by), Some(5));
+    }
+
+    /// The slice R re-check's P3: a derivation at an older tick in the same step (a stale record,
+    /// a cluster that decides behind another) once forgot the step's newer ids past [`RECENT`],
+    /// and the next identical decision at the newer tick took ordinal 0 again: one op for two
+    /// changes, the second answered DUPLICATE. Every tick at or above the step's oldest is kept.
+    #[test]
+    fn an_older_ticks_decision_never_makes_the_step_forget_a_newer_ticks_ids() {
+        let mut a = IndustryOps::default();
+        let first = a.derive(5, Tick(100), &channel(3));
+        let stale = a.derive(5, Tick(90), &channel(4));
+        for n in 0..RECENT as i64 + 10 {
+            a.derive(5, Tick(100), &channel(1_000 + n));
+        }
+        // A stale record of the same step decides at 90.
+        a.derive(5, Tick(90), &channel(5));
+        let second = a.derive(5, Tick(100), &channel(3));
+        let stale_again = a.derive(5, Tick(90), &channel(4));
+        assert_eq!(
+            (second == first, stale_again == stale),
+            (false, false),
+            "each change has an op of its own: first {:#x} second {:#x}; stale {:#x} again {:#x}",
+            first.0,
+            second.0,
+            stale.0,
+            stale_again.0
+        );
+        // The step ends: the window keeps RECENT plus the ids at the step's newest tick, and the
+        // next step's derivations trim back to RECENT plus the ids at or above its oldest tick.
+        assert_eq!(a.pairs().count(), RECENT + 15);
+        a.end_step();
+        assert_eq!(
+            a.pairs().count(),
+            RECENT + 12,
+            "the 100s kept, the 90s gone"
+        );
+        assert!(a.pairs().all(|(by, _)| by == 100));
+        a.derive(5, Tick(100), &channel(6));
+        assert_eq!(a.pairs().count(), RECENT + 13);
+        a.end_step();
+        a.derive(5, Tick(200), &channel(6));
+        assert_eq!(a.pairs().count(), RECENT);
+        // A restored window starts a step.
+        let mut w = rtsim_kernel::codec::Writer::new();
+        crate::persist::Persist::put(&a, &mut w);
+        let bytes = w.into_bytes();
+        let mut back: IndustryOps =
+            crate::persist::Persist::get(&mut rtsim_kernel::codec::Reader::new(&bytes))
+                .expect("decodes");
+        assert_eq!(back.floor, None);
+        assert_eq!(back, a);
+        back.derive(5, Tick(150), &channel(7));
+        assert_eq!(back.pairs().count(), RECENT);
+    }
+
+    /// Key tags (slice T's keyed ids, RP-180) have a window of their own: a burst of derived ids
+    /// never pushes one out (RP-275), so a change another engine decided is still known when its
+    /// replay decides it again.
+    #[test]
+    fn a_burst_of_derived_ids_never_pushes_a_key_tag_out() {
+        let mut a = IndustryOps::default();
+        a.remember(KEY_TAG | 0x77, 0x1234);
+        for n in 0..RECENT as u64 * 2 {
+            a.derive(5, Tick(n), &channel(3));
+            a.end_step();
+        }
+        assert!(a.pairs().any(|p| p == (KEY_TAG | 0x77, 0x1234)));
+        assert_eq!(a.pairs().count(), RECENT + 1);
+        // Only other tags push it out, oldest first.
+        for n in 0..RECENT as u64 {
+            a.remember(KEY_TAG | (0x100 + n), 0x5000 + n);
+        }
+        assert!(!a.pairs().any(|p| p == (KEY_TAG | 0x77, 0x1234)));
+        assert_eq!(a.pairs().count(), RECENT * 2);
+    }
+
+    /// The window's page bytes are the `(Tick, u64)` pairs it held before, the derived ids
+    /// oldest tick first and the key tags last: no format change.
+    #[test]
+    fn the_window_keeps_its_page_bytes() {
+        use crate::persist::Persist;
+        use rtsim_kernel::codec::{Reader, Writer};
+        let mut ops = IndustryOps::default();
+        let newer = ops.derive(5, Tick(101), &channel(4));
+        ops.remember(KEY_TAG | 0x77, 0x1234);
+        // A stale record of the same step.
+        let older = ops.derive(5, Tick(100), &channel(3));
+        let before: std::collections::VecDeque<(Tick, u64)> = [
+            (Tick(100), older.0 & LOW_BITS),
+            (Tick(101), newer.0 & LOW_BITS),
+            (Tick(KEY_TAG | 0x77), 0x1234),
+        ]
+        .into();
+        let mut old = Writer::new();
+        before.put(&mut old);
+        let mut new = Writer::new();
+        ops.put(&mut new);
+        assert_eq!(new.into_bytes(), old.into_bytes());
+        let mut w = Writer::new();
+        ops.put(&mut w);
+        let bytes = w.into_bytes();
+        let back = IndustryOps::get(&mut Reader::new(&bytes)).expect("decodes");
+        assert_eq!(back, ops);
+        // And a keyed id's tag round-trips through the same pairs (RP-180).
+        ops.derive_keyed(5, b"attack 1");
+        let mut w = Writer::new();
+        ops.put(&mut w);
+        let bytes = w.into_bytes();
+        let back = IndustryOps::get(&mut Reader::new(&bytes)).expect("decodes");
+        assert_eq!(back, ops);
+        assert!(back.knows_key(5, b"attack 1"));
+    }
+
+    /// The slice R re-check's step 3b: one step of 100,000 derivations (a jni replay since the
+    /// last durable pages, the switch-on catch-up, `glass_replay_offline`) kept every id on
+    /// 2bd1d828, and each derivation scanned them all. However long the step, the window holds at
+    /// most [`CAP`] and [`RECENT`] derived ids and its key tags, and the page saved at the step's
+    /// end holds the trimmed window: the last [`RECENT`] and the ids at the step's newest tick.
+    #[test]
+    fn a_step_of_100000_derivations_keeps_a_bounded_window_and_pages_the_trimmed_one() {
+        use crate::persist::Persist;
+        use rtsim_kernel::codec::{Reader, Writer};
+        // The window as a page holds it: (tick or key tag, low) pairs.
+        fn paged(ops: &IndustryOps) -> Vec<(u64, u64)> {
+            let mut w = Writer::new();
+            ops.put(&mut w);
+            let bytes = w.into_bytes();
+            let pairs: std::collections::VecDeque<(u64, u64)> =
+                Persist::get(&mut Reader::new(&bytes)).expect("decodes");
+            pairs.into_iter().collect()
+        }
+        let derived = |p: &[(u64, u64)]| p.iter().filter(|&&(by, _)| by & KEY_TAG == 0).count();
+        let mut a = IndustryOps::default();
+        for k in 0..3 {
+            a.remember(KEY_TAG | k, 0x9000 + k);
+        }
+        let mut busy = std::collections::HashSet::new();
+        for n in 0..100_000u64 {
+            // A catch-up: ten decisions a tick, a stale record every 1,000, and a busy last tick
+            // of 1,000 (twenty identical decisions of each of fifty commands).
+            let at = if n >= 99_000 {
+                20_000
+            } else if n % 1_000 == 999 {
+                500
+            } else {
+                1_000 + n / 10
+            };
+            let op = a.derive(5, Tick(at), &channel((n % 50) as i64));
+            if at == 20_000 {
+                assert!(
+                    busy.insert(op),
+                    "derivation {n} took an op of its tick again"
+                );
+            }
+            if n % 5_000 == 4_999 {
+                let p = paged(&a);
+                assert!(
+                    derived(&p) <= CAP + RECENT,
+                    "after {} derivations the window holds {} derived ids",
+                    n + 1,
+                    derived(&p)
+                );
+                assert_eq!(p.len() - derived(&p), 3, "the key tags stay");
+            }
+        }
+        a.end_step();
+        let p = paged(&a);
+        assert_eq!(
+            derived(&p),
+            1_000,
+            "the busy last tick's ids, nothing older"
+        );
+        assert!(p.iter().all(|&(by, _)| by & KEY_TAG != 0 || by == 20_000));
+        assert_eq!(p.len(), 1_003);
+        // The page derives on as the window would: the busy tick's next identical decision
+        // takes an op of its own.
+        let mut w = Writer::new();
+        a.put(&mut w);
+        let bytes = w.into_bytes();
+        let mut back = IndustryOps::get(&mut Reader::new(&bytes)).expect("decodes");
+        assert_eq!(back, a);
+        let next = back.derive(5, Tick(20_000), &channel(0));
+        assert!(!busy.contains(&next));
+        assert_eq!(next, a.derive(5, Tick(20_000), &channel(0)));
+    }
+
+    /// One step of many derivations, timed (the re-check's bench: 17.2 s for 100,000 on
+    /// 2bd1d828). Not a test: `cargo test -p rtsim-industry --release --lib -- --ignored
+    /// one_step_of_derivations_timed --nocapture`.
+    #[test]
+    #[ignore = "a timing bench"]
+    fn one_step_of_derivations_timed() {
+        for n in [1_000u64, 10_000, 30_000, 100_000] {
+            let mut a = IndustryOps::default();
+            let t = std::time::Instant::now();
+            for i in 0..n {
+                a.derive(5, Tick(1_000 + i / 10), &channel((i % 50) as i64));
+            }
+            a.end_step();
+            eprintln!("{n} derivations in one step: {:?}", t.elapsed());
+        }
+    }
+
+    #[test]
+    fn keyed_op_ids_come_from_the_key_alone() {
+        let mut a = IndustryOps::default();
+        let x = a.derive_keyed(5, b"attack 1");
+        assert!(IndustryOps::is_industry(x), "{:#x}", x.0);
+        assert!(a.knows_key(5, b"attack 1"));
+        assert!(!a.knows_key(5, b"attack 2"));
+        assert!(!a.knows_key(6, b"attack 1"));
+        // The same key again, after other derivations, is the same op (RP-180).
+        a.derive(5, Tick(100), &channel(3));
+        a.derive_keyed(5, b"attack 2");
+        assert_eq!(a.derive_keyed(5, b"attack 1"), x);
+        // A window that never saw it (an engine restored from pages older than the attack) derives
+        // the same op, whatever else it derived.
+        let mut b = IndustryOps::default();
+        b.derive(5, Tick(7), &channel(1));
+        assert_eq!(b.derive_keyed(5, b"attack 1"), x);
+        // Another key or another world is another op, and a keyed id is never a derived one's.
+        assert_ne!(IndustryOps::default().derive_keyed(5, b"attack 2"), x);
+        assert_ne!(IndustryOps::default().derive_keyed(6, b"attack 1"), x);
+        // A different decision whose id meets the key's first one: the key takes the next
+        // ordinal, distinct from it, and keeps it while the window remembers the key.
+        let mut c = IndustryOps::default();
+        c.remember(100, x.0 & LOW_BITS);
+        let y = c.derive_keyed(5, b"attack 1");
+        assert!(IndustryOps::is_industry(y), "{:#x}", y.0);
+        assert_ne!(y, x);
+        assert_eq!(c.derive_keyed(5, b"attack 1"), y);
+        assert_eq!(c.pairs().count(), 2);
+        // A burst of derived ids never pushes the key out (RP-275); only later keys do, and once
+        // the window has forgotten it, it is decided anew.
+        let mut d = IndustryOps::default();
+        d.derive_keyed(5, b"attack 1");
+        for i in 0..RECENT as u64 * 2 {
+            d.derive(5, Tick(1000 + i), &channel(3));
+            d.end_step();
+        }
+        assert!(d.knows_key(5, b"attack 1"));
+        for i in 0..RECENT as u64 {
+            d.derive_keyed(5, format!("attack {}", i + 2).as_bytes());
+        }
+        assert!(!d.knows_key(5, b"attack 1"));
+        assert_eq!(d.derive_keyed(5, b"attack 1"), x);
     }
 }

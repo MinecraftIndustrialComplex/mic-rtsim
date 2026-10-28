@@ -43,6 +43,11 @@ public final class FrostmawLurker implements Lurker {
     public static final int RESEARCH_TICKS = 10;
     /** The swipe hits at this animation tick (AnimationAreaAttackAI damage frame): the body faces the strike until then. */
     public static final int SWIPE_HIT_TICK = 9;
+    /**
+     * The most a held body turns a tick as the hold walks it (degrees): vanilla {@code MoveControl}'s, not the jar's 7,
+     * which walks a Frostmaw round a loop to a spot behind it ({@code MMEntityMoveHelperMixin}, MZB-770).
+     */
+    public static final float TURN = 90.0F;
 
     /** Path searches the hold asked for, and live paths it dropped (D1 diagnostics, {@link Lurker#pathSearches}). */
     private long searches, dropped;
@@ -57,8 +62,9 @@ public final class FrostmawLurker implements Lurker {
      * The bodies the hold has in hand, by the game time of its last hold: the one thing that moves a held puppet is
      * the hold (MZB-361). The jar's own chase of its target is switched off for them in {@code EntityFrostmawMixin}
      * ({@link #holds}), and its goals that walk a body about (a stroll, the pull back into a restriction) are taken
-     * out while it is held and put back on release. Synchronised: the mixin reads it on the server thread only, but
-     * the map is shared by the class.
+     * out while it is held and put back on release. The jar's move control turns it at {@link #TURN} degrees a tick
+     * while it is held, not its own 7 ({@code MMEntityMoveHelperMixin}, MZB-770). Synchronised: the mixins read it on
+     * the server thread only, but the map is shared by the class.
      */
     private static final Map<Mob, Long> HELD = Collections.synchronizedMap(new WeakHashMap<>());
 
@@ -96,6 +102,12 @@ public final class FrostmawLurker implements Lurker {
         // Awake for good (the jar skips its sleep and its waking roar for an always-active Frostmaw)
         if (!f.isAlwaysActive())
             f.setAlwaysActive(true);
+        // And quiet: an awake Frostmaw's ambient sound is a ROAR animation one time in four (EntityFrostmaw.playAmbientSound),
+        // 76 ticks in which a strike is refused and whose roar effects push everything within 10 blocks away, a rider included.
+        // The timer stays below zero, which the vanilla roll (nextInt(1000) < timer) never beats; the core holds once a tick
+        // after every level ticked, so the roll never sees it above zero (MZB-937)
+        if (f.ambientSoundTime >= 0)
+            f.ambientSoundTime = -1;
         BlockPos centre = BlockPos.containing(spot);
         if (!f.hasRestriction() || !centre.equals(f.getRestrictCenter()) || f.getRestrictRadius() != RADIUS)
             f.restrictTo(centre, RADIUS);
@@ -129,7 +141,8 @@ public final class FrostmawLurker implements Lurker {
         }
         // Walk back: one search when the navigation is not already on its way to the spot, not one a tick (D1), and
         // not again within RESEARCH_TICKS of the last (a body that cannot get closer to the spot than the path's end
-        // would search every tick)
+        // would search every tick). The jar's move control walks the path, turning the held body TURN degrees a tick
+        // (MZB-770: at its own 7 a spot behind the body was a loop that carried it 2 blocks aside)
         PathNavigation nav = f.getNavigation();
         double off = nodeOffset(f);
         double ax = spot.x - off, az = spot.z - off;

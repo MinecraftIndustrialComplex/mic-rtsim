@@ -364,6 +364,11 @@ public final class UmvuthanaWorldGameTests {
                                 && (struck[0] == null || w.distanceTo(masked[0]) < struck[0].distanceTo(masked[0])))
                             struck[0] = w;
                     check("a warrior to strike", struck[0] != null);
+                    // A blow is struck from beside the warrior: by now the band has walked toward the bare player,
+                    // and even its nearest warrior can stand past the hurt-by goal's reach of where the masked player
+                    // stood (MZB-697). The masked player steps to 3 blocks east of it, away from the bare one.
+                    Vec3 beside = struck[0].position().add(3, 0, 0);
+                    masked[0].moveTo(beside.x, beside.y, beside.z, 90f, 0f);
                     double hurtByReach = 1.7 * struck[0].getAttributeValue(Attributes.FOLLOW_RANGE);
                     check("it is within the hurt-by goal's reach (" + struck[0].distanceTo(masked[0]) + " of " + hurtByReach + ")",
                             struck[0].distanceTo(masked[0]) < hurtByReach);

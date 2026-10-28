@@ -95,7 +95,7 @@ are connected only by these joins:
 
 | # | Join | Where it is found | Cost |
 |---|---|---|---|
-| J1 | **Face touch** of two industrial block entities across the border, horizontal faces (`Districts.scanChunk`, its touch loop), **except** where either side is a `ChainConveyorBlockEntity` or a `StationBlockEntity`; two stores side by side still do not join (DS-10). A station's touch names J6's candidates and nothing else | the walk; the class test is `IndustryPlugin.touchJoins` (`CreatePlugin.touchJoins`) | one class test per touch |
+| J1 | **Face touch** of two industrial block entities across the border, horizontal faces (`Districts.scanChunk`, its touch loop), **except** where either side is a `ChainConveyorBlockEntity` or a `StationBlockEntity`; two stores side by side still do not join (DS-10). A station's touch joins nothing and names J6's candidates and nothing else; but the walk also looks at the station's chunk when no district holds it (`scanChunk` reaches it, choice SC184), because J6 only sees chunks the walk looked at: a station placed before the factory beside it (at x = 15 of its chunk, say) is in no district, and a detection that does not go by its chunk never walks it (§2.1) | the walk; the class test is `IndustryPlugin.touchJoins` (`CreatePlugin.touchJoins`) | one class test per touch |
 | J2 | **Plugin link** (`IndustryPlugin.links`): a fan's stream (`FanLinks`), an Ender channel; new: a mechanical arm's interaction points (`ArmBlockEntity.inputs`, `outputs`, `ArmInteractionPoint.getPos()`, read through the existing `CreateGlassAccess.armInputs` and `armOutputs`) and a weighted ejector's target (`EjectorBlockEntity.getTargetPosition()` :589) when they lie in another chunk. An arm's lists are empty, never null, until its first tick reads its saved points (`ArmBlockEntity.updateInteractionPoints`, read by `CreateGlassAccess.armPointsPending`, PATCHES.md row 84), so the chunk of an arm with saved points it has not read (the flag set and `interactionPointTag` not null) keeps its saved pairs (`IndustryPlugin.linksKnown`, choice SC157) | `CreatePlugin.links`: `FanLinks`, then `JoinLinks` | the arm's points, the ejector's one target |
 | J3 | **One inventory across chunks:** a store whose canonical position (`canonicalInventory`, `CreatePlugin.canonicalInventory`: an `IMultiBlockEntityContainer`'s controller, a double chest's lower half) lies in another chunk joins the two chunks; an item vault (`ItemVaultBlockEntity`), a fluid tank, a create_connected item silo (`ItemSiloBlockEntity implements IMultiBlockEntityContainer$Inventory`) or fluid vessel | the walk canonicalizes every candidate and records the pair (`Districts.inventoryJoin`), for tagged storage and plugin inventories. `canonicalInventory` returns null when the controller's chunk is not loaded; the saved pair then stands (§2.3) | one pair per such store |
 | J4 | **Rotation across the border that is not a face touch:** diagonal cogs (`KineticBlockEntity.addPropagationLocations` :559 adds 4 diagonal positions when a small cog can propagate diagonally, the lambda at its line 565; a large cog is a `SimpleKineticBlockEntity`, whose override :26 to :34 adds all 12 edge diagonals) and any class that overrides `addPropagationLocations` (Ender Transmission's `EnergyTransmitterBlockEntity` :33), confirmed by Create's own rule (`RotationPropagator.isConnected`, public, :403); chain conveyors excluded on both sides (§2.6) | `JoinLinks.rotation` through `CreatePlugin.links`, for kinetic block entities within one block of a border only, and for overriding classes (`StaleKinetics.ownPropagation`, a per-class cache); a target in another chunk only, read through `getChunkNow` | a few neighbour reads per border cog (for a large cog at a chunk corner, its 7 diagonals outside the chunk, a connected one read again as the walk's target, besides J1's 2 faces across the border), not counted in the DS-11 budget (§7.1) |
@@ -109,6 +109,35 @@ owning a dirty chunk or a chunk next to it, because an edit in one chunk can cre
 own district and pin, the far end of a merge link, and for a station chunk the districts beside it and the
 ones holding its stations' served chunks (J6's candidates). So an edit walks the districts bordering the
 edited chunk (the start), and those it joins; it does not walk a factory that does not border it.
+
+J6 only sees the chunks the walk looked at, so the walk looks at a station's chunk that no district holds
+(SC184), in two ways:
+
+- **A touch.** A station's touch across a border (J1's exception) is the one thing the walk reaches without a
+  join: a block that touches a station in the next chunk (a station too) reaches that chunk when no district
+  holds it and it is not excluded. The reached chunk is walked like any other: its own J1 to J4 joins are
+  followed, so its group is whatever they reach, and it has no seed unless one of them holds one. A group with
+  no seed is attached by J6's commit alone: to the district holding the chunks its stations served last
+  (saved per station), the first choice, else to a district beside it or touched by its station; else it is in
+  none. A station chunk that a district holds already is not reached by the touch: its district's walk looks
+  at it, and reaching it would pull that district's whole walk into an edit that has nothing to say to it.
+- **The ring.** An incremental detection already starts from the districts owning a dirty chunk or a chunk next
+  to it (above); it also schedules each loaded chunk next to a dirty chunk that no district holds and that is
+  not excluded, and `root` roots it if it holds a station (or a seed: a chunk detection had not looked at
+  yet). The common build order, a station placed first and a factory placed later in the next chunk with
+  nothing of it against the station, is this case: the factory's chunk is the dirty one, and the station's
+  chunk is in its ring. At most eight such chunks a dirty chunk, each read once a detection (`holdsStation`
+  caches by chunk, `stationLooked`), the block entities of each counted in the budget as any root's look is;
+  `getChunkNow` only, so no chunk is loaded or forced. The ring belongs to the dirty chunks, not to the kind of
+  detection: an edit can end up in a full one (the periodic pass, an operator's `rescanSoon`, a waiting edit put
+  back by `requeue`), which builds the ring of its dirty chunks as an incremental one does, and a deferred adopt
+  that joins a running detection (`Rescan.join`) schedules the ring of the chunks it adds. A full detection with
+  no edits has no dirty chunk, so it has no ring and pays nothing.
+
+Load order: a chunk that is not loaded when its neighbour is walked reads as no block entity (`getChunkNow`
+returns null), so a touch into it is not seen and a ring chunk is not scheduled. The next walk with both
+loaded reaches it for a touch, at the latest at the periodic pass (`periodicRescanTicks`, default 6,000: it
+walks every district's chunks). For the ring there is no such pass (§14).
 
 ### 2.2 The cut points, per mod
 
@@ -921,6 +950,22 @@ No migration code (no backward compatibility before release; G2-85). On load:
 - `Rescan.grown()` no longer pulls in the 8-neighbour districts of every reached chunk (§2.1), so an
   incremental detection walks the districts its edit can join, not a whole patch of factories side by
   side. `Rescan.joinedToAway` reads each district's saved pairs once a detection.
+- A station's touch (J1's exception) reaches the station's chunk when no district holds it (SC184): one more
+  chunk walked for each such touch, its block entities counted in the budget as any chunk's are, and `grown()`
+  adds the districts beside it (J6's candidates), as it does for any station chunk the walk reaches. Once J6
+  attaches the chunk it is a district's and no touch reaches it again. J6 cannot attach it when no seeded
+  district holds a chunk beside it (the touching chunk is in none, or in one only through J6); the station
+  is then reached again with every detection that walks the touching chunk, which for a touching chunk held
+  through J6 is every detection of that district: one chunk a touch.
+- An incremental detection's ring (§2.1, SC184): at most eight loaded chunks outside every district for each
+  dirty chunk, each one read once a detection (`holdsStation`, cached in `stationLooked`) and counted in the
+  budget by `root` (one chunk's block entities, plus one); a chunk with no station is dropped after that
+  read, one with a station is walked as a touch's reach is. Neighbours that are already scheduled (dirty,
+  or a district's chunk) cost nothing more, and a chunk that is not loaded is not scheduled (`getChunkNow`,
+  never a load). A detection with no dirty chunk (a periodic pass with no edit) pays none of it; a full detection
+  that took edits pays it for those. A station chunk that J6 cannot attach
+  (no seeded district holds a chunk beside it) is walked again with every edit beside it, with the districts
+  beside it (`grown()`, a station chunk's candidates): one chunk and its neighbours' districts an edit.
 - Join pairs: 16 bytes each; a district has at most its touches' worth.
 
 ### 7.2 Sections (engine)
@@ -1072,6 +1117,9 @@ inside the yard, as `CreateSeedGameTests`' chain helper does.
 | `twoFrogportsOfOneDistrictOnASharedChain` | a third frogport of the first factory on the same chain | its packages to the first frogport are counted once each way, with no `CHAIN` edge |
 | `anUnloadedMemberKeepsItsJoins` | a district with one member chunk unloaded before a detection | the same district after it (saved pairs) |
 | `aStationBetweenTwoFactories` | a station touching two factories, its interfaces serving the one whose chunk it does not share | two districts; the station's chunk and its cargo with the one its interfaces serve, also after a restart before the next docking |
+| `aStationPlacedFirstJoinsTheDistrictThatTouchesItLater` (`CreateSeedGameTests`) | a named station at x = 15 of its chunk, placed and detected first (in no district); then a vault at x = 0 of the next chunk, touching it, placed and detected | the vault's district holds the station's chunk (two chunks), lists the station and takes its name; the station is no seed (J1's exception, J6, SC184) |
+| `aStationPlacedFirstJoinsTheMachineNextToItLater` (`CreateSeedGameTests`) | a named station in the middle of its chunk, placed and detected first (in no district); then a press in the next chunk with nothing against the station, detected by the ticked incremental pass | the press's district holds the station's chunk (two chunks), lists the station and takes its name; the station is no seed (the ring, J6, SC184) |
+| `aStationTouchingAStationAcrossABorderIsReached` (`CreateSeedGameTests`) | a station in a press's district at x = 15 of its chunk; a second station placed with no event at x = 0 of the next chunk, which no detection has looked at; a full detection | the district holds the second station's chunk (two chunks): the first station's touch reached it (SC184) |
 | `aBoilerOnAChainDrivesTheNextDistrict` | a boiler (one burner, a pumped tank, one engine) and a millstone line in one district, a chain carrying rotation to a millstone line in the next | loaded, both compiles report SHARED parts of one network (each the other's one peer, the engine's shaft driven in A and foreign in B, no tail, members not bounded); away, both lines grind at the boiler's speed until the burner runs out in A's replay and at the passive 16 RPM after (SC154), as each district's reconcile shows in the wheat |
 | `aPackageIntoAChunkThatDoesNotTick` | a chain from a ticking chunk into one that does not tick, with a reversal | first records what Create does (route expiry, the reversal at line 175); with S1's guards the package waits on the last ticking conveyor and the next chunk is not loaded |
 | `aRouteToAnAwayFrogportIsKept` | the same, the far frogport's district away, then a restart | with the frontier, packages for the far frogport reach the boundary conveyor and are held there, before and after the restart; one `CHAIN_HELD` each |
@@ -1485,6 +1533,7 @@ The options below stay as the record of what was offered.
 | SC181 | The viewer reads at most 4,096 glass pages and 4,096 store pages (`Limits.glass_pages`, `Limits.store_pages`), takes each glass page under `catch_unwind`, and names the pages it left out (`glass_unread`, `stores_unread`) in the empty layer's reason instead of failing the whole industry view | one bad page took the stations, lines, trains and glass down with it, and the paged readers are capped | 
 | SC182 | `rtsim-cli stores` lists the held and drawn packages at positions the store no longer lists (`dropped`), prints `left` and `owed` as one line each per position, names an unreadable store page (the viewer's first 8 named, the rest counted, and the pages past its limit) and carries on, reading the pages once with the viewer (a page that panics its decoder is named too), exits 0 with a message for a world with no industry pages and 1 for one whose industry pages do not read | `redeclare` keeps `on_hold` and `drawn` at dropped positions; the JSON had `left` and `owed` and the text did not; one bad page hid the listing |
 | SC183 | `/rtsim district sections` prints no "same unit as sN" lines, and with no units prints the district's worst good once under the header | the line repeated the unit's first and the same good on every section |
+| SC184 | J6 sees only the chunks the walk looked at, so the walk looks at a station's chunk that no district holds (`Rescan.index`, as the detection began), is not excluded and is loaded (`getChunkNow`, never a load), in two ways. A block that touches a station across a chunk border reaches the station's chunk (a station's touch of a station too): the touch loop of `Districts.scanChunk` calls the walk's `reach` for it though it records no join. And a detection's constructor, full or incremental, schedules, beside each dirty chunk's districts, each loaded chunk next to a dirty chunk that no district holds (its ring, at most eight a dirty chunk): `root` roots it only if it holds a station (or a seed, as it would any chunk), reading its block entities once a detection (`holdsStation`, cached in `stationLooked`) and counting them in the budget. The reached chunk is walked like any other, its own J1 to J4 joins followed, and a group with no seed is attached by J6's commit alone (or is in no district); J1 still joins nothing by a station's touch. A station chunk that a district holds is not reached by a touch, and the ring is built from the dirty chunks of any detection, full or incremental (the helper `scheduleRing`, also run for the chunks a deferred adopt joins into a running one), so a full detection with no edit has none. What stays out is a chunk not loaded at the edit, and a station stranded before the ring existed (§14) | J6 only sees the chunks the walk looked at. A station placed first sat in no district, and nothing looked at its chunk again once a factory stood beside it (periodic detections schedule dirty and district chunks only, `onChunkLoad` marks seeded chunks only, no train is watched there), so it never joined and the district never took its name (District.displayName: custom, station, coordinates). A touch alone leaves most of them: a station on a chunk border is about one in four (60 of 256 columns; one in sixteen is a single given side), and the other three in four have no block against them. The ring is bounded for the weak PC (D1): at most eight reads a dirty chunk, each chunk once a detection, nothing for a neighbour that a district holds (its district's walk looks at it, and a far edit would pull that whole walk in through `grown()`) or that is not loaded, and none in a periodic pass that took no edit. `reach` already refuses an excluded chunk and one visited |
 
 ---
 
@@ -1565,7 +1614,21 @@ The options below stay as the record of what was offered.
     (`IND_TRAIN_UNWATCHED`, SG50), so its departure runs no `ports` and calls no `stationServed`. A
     platform whose station block lies outside every district while its carriages dock in a factory stays
     outside, as before S6, unless a seeded district is 8-adjacent to the station's chunk or touched by
-    its station (J6's fallback).
+    its station (J6's fallback; it needs the station's chunk walked, see the next item).
+  - J6's fallback needs the walk to look at the station's chunk. A block that touches a station across a
+    border reaches its chunk (SC184), a station placed or broken is an edit of its own chunk (`playerPlaced`
+    and `playerBroke` mark it dirty), and a detection, full or incremental, looks at each loaded chunk beside a dirty
+    chunk that no district holds (its ring), so a station placed after the factory beside it joins, and so does
+    one placed first, in a chunk 8-adjacent to the factory's (the common build order;
+    `aStationPlacedFirstJoinsTheMachineNextToItLater`). What is left is a station chunk that is not loaded
+    when the edit is detected (`getChunkNow` is null: the edit came as the world was loading, or at the edge of
+    the loaded area), and one stranded before the ring existed (a world built then). `onChunkLoad` marks only
+    seeded chunks and a periodic pass with no edit has no ring, so nothing walks such a chunk again until a
+    block entity in it is placed or broken (`playerPlaced` and `playerBroke` mark it dirty), or a later edit
+    of a chunk beside it. A block that touches the station is the exception: the periodic pass walks every
+    district chunk, reaches the station through the touch, and attaches it (SC184). No GameTest covers the
+    unloaded neighbour. A saved set of the station chunks J6 left in no district (beside `stationJoins`, a
+    format change) would close it; it is not made until a world shows it.
   - An arm in a loaded chunk that does not tick (or whose range is not loaded) keeps its points unread,
     so its chunk keeps its saved pairs until it ticks (SC157), whatever has changed around it.
 - **Fluid counting** (§4.2): which position names a pipe network's mover is UNVERIFIED. Until it is, a

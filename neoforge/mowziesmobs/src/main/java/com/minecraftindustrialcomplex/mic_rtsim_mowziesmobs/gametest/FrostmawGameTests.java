@@ -13,6 +13,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictBridge;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictNews;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictRecords;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.LurkSpots;
+import com.minecraftindustrialcomplex.mic_rtsim.conflict.Lurker;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.Lurkers;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.RailAxes;
 import com.minecraftindustrialcomplex.mic_rtsim.engine.ScriptedEngine;
@@ -858,18 +859,24 @@ public final class FrostmawGameTests {
     private static final int STEADY_PATHS = 2;
 
     /**
-     * The hold wins against the jar's chase (MZB-361, the re-check's P1). A held puppet is pushed 2 blocks off its spot,
-     * across the line to a player 8 blocks west who is its target (the jar's {@code tick} walks an awake Frostmaw to
-     * its target every tick it is more than 5.5 blocks off, replacing the hold's path, and stops it when it is
-     * not). The puppet has no crystal, so no ice breath or ice ball animation stops its walk. Asserted: it is back
-     * within {@link FrostmawLurker#STAND} of the spot within {@value #BACK_TICKS} ticks; it never comes closer to
-     * the player than its spot is, less the stand (it did not walk after the player); and in the {@value #STEADY_TICKS}
-     * ticks after, it stays within the stand and is given at most {@value #STEADY_PATHS} new paths (the jar's fresh
-     * A* each tick, after a hold's stop cleared the last, was twenty a second). The wandering stroll goal, which a
-     * Frostmaw has and which moves a body up to its restriction's radius, is out while it is held too.
-     * <p>On the code before the fix the jar's chase wins nine ticks in ten and the puppet walks west: the test fails
-     * with "back within the stand of its spot in 200 ticks" (the closest it came to the spot is printed), or, inside
-     * 5.5 of the player, a stop each tick keeps it where it is. Not run.
+     * The hold wins against the jar's chase (MZB-361, the re-check's P1). A held puppet is pushed 2 blocks off its hold
+     * point (here the engine's spot: no rail is known on this server), on along its facing, so its spot is straight
+     * behind it (MZB-770), with a player 8 blocks west who is its target (the jar's {@code tick} walks an awake
+     * Frostmaw to its target every tick it is more than 5.5 blocks off, replacing the hold's path, and stops it when
+     * it is not). The puppet has no crystal, so no ice breath or ice ball animation stops its walk. Asserted: it is
+     * back within {@link FrostmawLurker#STAND} of the spot within {@value #BACK_TICKS} ticks, and was never more than
+     * the stand aside of the straight way back; it never comes closer to the player than its spot is, less the stand
+     * (it did not walk after the player); and in the {@value #STEADY_TICKS} ticks after, it stays within the stand and
+     * is given at most {@value #STEADY_PATHS} new paths (the jar's fresh A* each tick, after a hold's stop cleared the
+     * last, was twenty a second). The wandering stroll goal, which a Frostmaw has and which moves a body up to its
+     * restriction's radius, is out while it is held too.
+     * <p>On the code before MZB-361's fix the jar's chase wins nine ticks in ten and the puppet walks west: the test
+     * fails with "back within the stand of its spot in 200 ticks" (the closest it came to the spot is printed), or,
+     * inside 5.5 of the player, a stop each tick keeps it where it is. On the code before MZB-770 the jar's move
+     * control turns the body 7 degrees a tick as it walks: it loops round through the west, into the jar's swipe range
+     * of the player, and swipes at it back to back, which the hold yields to; it failed so in M8's rounds, "back within
+     * 0.5 blocks of its spot in 200 ticks (1501 gone, the closest it came to the spot 2.0, the closest it came to the
+     * player 6.441193965241448)".
      */
     @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "frostmaw_lurk_chase", skyAccess = true)
     public static void aHeldPuppetWalksBackToItsSpotAndDoesNotChaseItsTarget(GameTestHelper helper) {
@@ -877,21 +884,38 @@ public final class FrostmawGameTests {
         String test = "aHeldPuppetWalksBackToItsSpotAndDoesNotChaseItsTarget";
         Held h = new Held(helper, test, waits);
         ServerPlayer[] player = new ServerPlayer[1];
-        double[] closest = {Double.MAX_VALUE}, nearest = {Double.MAX_VALUE}, stray = {0};
+        double[] closest = {Double.MAX_VALUE}, nearest = {Double.MAX_VALUE}, stray = {0}, aside = {0};
         long[] from = new long[2];
         int[] paths = {0, 0};
         Path[] last = new Path[1];
+        Vec3[] home = new Vec3[1], ahead = new Vec3[1];
         h.up(helper)
                 .thenExecute(() -> {
                     EntityFrostmaw f = h.f[0];
                     f.setHasCrystal(false);
-                    player[0] = FakePlayers.add(h.level, h.spot[0].add(-8, 0, 0), "mowzie-chase");
+                    // The hold point: Java holds the puppet at a point it chose beside the rail when it knows the rail's
+                    // direction (MZB-361's amendment), and the hold walks it back there (MZB-698). Here none is known (no
+                    // create plugin, no RailAxes registered), so it is the engine's spot (MZB-770)
+                    home[0] = ConflictKit.lurkHold(h.agent);
+                    check("the puppet is held at a point", home[0] != null);
+                    check("and rests within its stand of it", Math.hypot(f.getX() - home[0].x, f.getZ() - home[0].z) <= FrostmawLurker.STAND + 1e-6);
+                    player[0] = FakePlayers.add(h.level, home[0].add(-8, 0, 0), "mowzie-chase");
                     player[0].setNoGravity(true);
                     player[0].getAttribute(Attributes.MAX_HEALTH).setBaseValue(1000.0);
                     player[0].setHealth(1000f);
                     ConflictKit.onEnd(helper, () -> FakePlayers.remove(player[0]));
-                    // Two blocks north of the spot: the player (west) is then 8.2 blocks off, past the jar's 5.5 chase threshold and 6.5 swipe range
-                    f.setPos(h.spot[0].x, h.spot[0].y, h.spot[0].z - 2.0);
+                    // The puppet is placed facing the track point (4 blocks north). It is set 2 blocks on along that
+                    // facing, still facing it, so its spot is straight behind it and the walk back starts with a half
+                    // turn (MZB-770); it is on the floor, which runs 6 blocks north of the middle. The player (west) is
+                    // then 8.2 blocks off, past the jar's 5.5 chase threshold and 6.5 swipe range.
+                    ahead[0] = new Vec3(h.track[0].x - home[0].x, 0.0, h.track[0].z - home[0].z).normalize();
+                    check("the track point is off the hold point", ahead[0].lengthSqr() > 0.5);
+                    float yaw = (float) (Math.atan2(ahead[0].z, ahead[0].x) * (180.0 / Math.PI)) - 90.0F; // as the bridge faces it
+                    f.setPos(home[0].x + 2.0 * ahead[0].x, home[0].y, home[0].z + 2.0 * ahead[0].z);
+                    f.setYRot(yaw);
+                    f.yBodyRot = yaw;
+                    f.yBodyRotO = yaw;
+                    f.setYHeadRot(yaw);
                     f.setDeltaMovement(Vec3.ZERO);
                     f.getNavigation().stop();
                     f.setTarget(player[0]);
@@ -901,8 +925,10 @@ public final class FrostmawGameTests {
                 .thenWaitUntil(waits.logic(() -> {
                     EntityFrostmaw f = h.f[0];
                     f.setTarget(player[0]); // the restriction gates its own targeting (MZB-362)
-                    double fromSpot = Math.hypot(f.getX() - h.spot[0].x, f.getZ() - h.spot[0].z);
+                    double fromSpot = Math.hypot(f.getX() - home[0].x, f.getZ() - home[0].z);
                     closest[0] = Math.min(closest[0], fromSpot);
+                    // How far aside of the straight way back (the line through the spot along the push) it is
+                    aside[0] = Math.max(aside[0], Math.abs((f.getX() - home[0].x) * ahead[0].z - (f.getZ() - home[0].z) * ahead[0].x));
                     nearest[0] = Math.min(nearest[0], Math.hypot(f.getX() - player[0].getX(), f.getZ() - player[0].getZ()));
                     long now = h.level.getGameTime();
                     check("back within " + FrostmawLurker.STAND + " blocks of its spot in " + BACK_TICKS + " ticks (" + (now - from[0])
@@ -912,11 +938,12 @@ public final class FrostmawGameTests {
                 .thenExecute(() -> {
                     from[1] = h.level.getGameTime();
                     last[0] = h.f[0].getNavigation().getPath();
-                    stray[0] = Math.hypot(h.f[0].getX() - h.spot[0].x, h.f[0].getZ() - h.spot[0].z);
+                    stray[0] = Math.hypot(h.f[0].getX() - home[0].x, h.f[0].getZ() - home[0].z);
                     // The wait above ends when the puppet is back, however late (the test's own timeout is longer than the budget)
                     check("it was back in " + (from[1] - from[0]) + " ticks, within the " + BACK_TICKS + " the hold is given", from[1] - from[0] <= BACK_TICKS);
-                    record(test, "back", "pushed 2 blocks off its spot, the puppet was back within " + FrostmawLurker.STAND + " in " + (from[1] - from[0])
-                            + " ticks, never nearer the player than " + nearest[0]);
+                    check("it walked the straight way back: at most " + FrostmawLurker.STAND + " aside of it (" + aside[0] + ")", aside[0] <= FrostmawLurker.STAND);
+                    record(test, "back", "pushed 2 blocks off its spot with the spot behind it, the puppet was back within " + FrostmawLurker.STAND + " in "
+                            + (from[1] - from[0]) + " ticks, at most " + aside[0] + " aside of the way, never nearer the player than " + nearest[0]);
                 })
                 .thenWaitUntil(waits.logic(() -> {
                     EntityFrostmaw f = h.f[0];
@@ -925,13 +952,13 @@ public final class FrostmawGameTests {
                     if (p != null && p != last[0])
                         paths[0]++;
                     last[0] = p;
-                    stray[0] = Math.max(stray[0], Math.hypot(f.getX() - h.spot[0].x, f.getZ() - h.spot[0].z));
+                    stray[0] = Math.max(stray[0], Math.hypot(f.getX() - home[0].x, f.getZ() - home[0].z));
                     nearest[0] = Math.min(nearest[0], Math.hypot(f.getX() - player[0].getX(), f.getZ() - player[0].getZ()));
                     check("the steady stretch ran " + (h.level.getGameTime() - from[1]) + " of " + STEADY_TICKS + " ticks",
                             h.level.getGameTime() - from[1] >= STEADY_TICKS);
                 }))
                 .thenExecute(() -> {
-                    double floor = h.spot[0].distanceTo(player[0].position().with(net.minecraft.core.Direction.Axis.Y, h.spot[0].y)) - FrostmawLurker.STAND;
+                    double floor = home[0].distanceTo(player[0].position().with(net.minecraft.core.Direction.Axis.Y, home[0].y)) - FrostmawLurker.STAND;
                     check("it never walked after the player: the closest it came was " + nearest[0] + ", its spot is " + (floor + FrostmawLurker.STAND)
                             + " off (" + floor + " allowed)", nearest[0] >= floor - 0.05);
                     check("it stayed within its stand for " + STEADY_TICKS + " ticks (strayed " + stray[0] + ")", stray[0] <= FrostmawLurker.STAND + 1e-6);
@@ -1307,6 +1334,38 @@ public final class FrostmawGameTests {
 
     /** The swipe's tick from which its yaw is read: the jar has turned the body by up to 30 degrees on each of the ticks before. */
     private static final int SWIPE_LATE = 8;
+
+    // ---- a held puppet is quiet (MZB-937) ---------------------------------------------------------------
+
+    /**
+     * A held lurk puppet makes no ambient sound, so no ambient roar (MZB-937). The jar answers an awake Frostmaw's
+     * ambient sound ({@code Mob.baseTick} rolls {@code nextInt(1000)} against {@code ambientSoundTime}, which counts up from
+     * -80 and is a chance a tick once above zero) with a ROAR animation one time in four ({@code playAmbientSound}): 76
+     * ticks in which a strike is refused and whose effects push whatever stands near away. In the rail GameTests a puppet
+     * roared over the train's pass in several runs, so the swipe was never struck, and in one the roar pushed the rider off
+     * its carriage. The held puppet's timer is put at 700 (a 70 per cent roll a tick) and the hold runs on it: the timer is
+     * below zero. On the code before the fix the hold left it at 700 ("the hold put the ambient sound timer below zero
+     * (700)"; read, not run: the rail GameTests' roared passes are that code's failing run).
+     */
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "frostmaw_lurk_quiet", skyAccess = true)
+    public static void aHeldPuppetsAmbientSoundTimerStaysBelowZero(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 1500);
+        String test = "aHeldPuppetsAmbientSoundTimerStaysBelowZero";
+        Held h = new Held(helper, test, waits);
+        h.up(helper)
+                .thenExecute(() -> {
+                    EntityFrostmaw f = h.f[0];
+                    Vec3 at = ConflictKit.lurkHold(h.agent);
+                    check("the bridge holds the puppet at a point", at != null);
+                    f.ambientSoundTime = 700;
+                    Lurkers.of(f).hold(f, at, new Lurker.Memo());
+                    check("the hold put the ambient sound timer below zero (" + f.ambientSoundTime + ")", f.ambientSoundTime < 0);
+                    record(test, "ambient sound timer", "700 before the hold, " + f.ambientSoundTime + " after");
+                    ConflictKit.ambushRemoved(h.agent, 1, h.faction, h.far.dim);
+                })
+                .thenWaitUntil(waits.chunks(io(() -> check("the lurk is gone from the table", !RtsimApi.lurks().containsKey(h.agent)))))
+                .thenSucceed();
+    }
 
 
     // ---- 5: a Frostmaw raid ----------------------------------------------------------------------

@@ -59,6 +59,7 @@ final class IndustryEvents {
         bus.addListener(IndustryEvents::onContainerClose);
         bus.addListener(EventPriority.LOWEST, false, ItemTossEvent.class, IndustryEvents::onToss);
         bus.addListener(IndustryEvents::onPickup);
+        bus.addListener(EventPriority.HIGHEST, false, EntityJoinLevelEvent.class, IndustryEvents::onDrop);
         bus.addListener(EventPriority.LOWEST, false, EntityJoinLevelEvent.class, IndustryEvents::onJoin);
         bus.addListener(IndustryEvents::onRegisterCommands);
     }
@@ -184,6 +185,15 @@ final class IndustryEvents {
         Industry ind = IndustryApi.current();
         if (ind != null)
             ind.ports.pickedUp(event.getPlayer(), event.getItemEntity(), event.getOriginalStack(), event.getCurrentStack());
+    }
+
+    /** An item a reconcile's break drops is kept out of the level until the chunks are on disk (RP-213). */
+    private static void onDrop(EntityJoinLevelEvent event) {
+        if (event.getLevel().isClientSide() || !(event.getEntity() instanceof ItemEntity item) || event.loadedFromDisk())
+            return;
+        Industry ind = IndustryApi.current();
+        if (ind != null && ind.reconciler.captured(item))
+            event.setCanceled(true);
     }
 
     private static void onJoin(EntityJoinLevelEvent event) {
