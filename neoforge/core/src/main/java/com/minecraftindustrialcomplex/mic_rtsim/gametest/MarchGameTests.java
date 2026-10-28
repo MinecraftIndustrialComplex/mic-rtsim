@@ -599,6 +599,7 @@ public final class MarchGameTests {
         long[] before = new long[2];   // walkIns, clamps
         long[] said = new long[2];     // the tick the march was sent, the tick W was seen placed
         long[] cas = new long[1];
+        long[] steers = new long[1];   // the bridge's steered count when the walk home was sent
 
         helper.startSequence()
                 .thenWaitUntil(waits.chunks(() -> f.checkSquare(at.cx(), at.cz(), s)))
@@ -688,11 +689,15 @@ public final class MarchGameTests {
                     // The walk home: the march turns to HOME and the band is steered to its head's spot.
                     long now = level.getGameTime();
                     double hx = at.x() + 8, hz = wz;
+                    steers[0] = bridge().steered;
                     say(w, 2, dim, faction, HOME, MARCH_CHIEF, units, wp(hx, hz, now), wp(hx, hz, now + 100_000));
                     ConflictKit.steer(w, 1, 0.5f, hx, hz, 0, false);
                     said[0] = now;
                 })
                 .thenWaitUntil(waits.logic(() -> {
+                    // The steer is read a step or more after it is sent (2 to 7 ticks): until then the stacks stand at their old ends, which
+                    // is where they are "arrived" (MZB-941).
+                    check("the steer was read", bridge().steered > steers[0]);
                     long now = level.getGameTime();
                     for (ConflictBridge.Stack st : stacks[0]) {
                         double[] a = st.anchorAt(now), e = st.target();
