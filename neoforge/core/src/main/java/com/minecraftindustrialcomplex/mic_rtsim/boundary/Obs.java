@@ -52,6 +52,12 @@ public final class Obs {
     public static final int JOURNAL_GEN = 0x0130;
     /** A copy of a record a chunk or entity carried, journaled again when its holder loads. */
     public static final int REASSERT = 0x0131;
+    /**
+     * A module switch (docs/choices-journal-barrier.md U-e, RP-290): the mask the bridge's modules are in
+     * from this record on. Journaled at the switch's real place among the records, and again with the
+     * session's mask right after each session's JOURNAL_GEN.
+     */
+    public static final int MODULE_SWITCH = 0x0132;
 
     public static boolean isJournaled(int kind) {
         return kind >= 0x0100 && kind < 0x8000;
@@ -117,6 +123,13 @@ public final class Obs {
     public static final class Tick {
         public static final int GAME_TIME = 8; // i64
         public static final int SIZE = 16;
+    }
+
+    /** MODULE_SWITCH (journaled), aux 0. The module switches (bit = {@code Module.ordinal()}) from this record on. */
+    public static final class ModuleSwitch {
+        public static final int MASK = 24; // u32
+        // 28: u32 reserved
+        public static final int SIZE = 32;
     }
 
     /** MODULES. The module switches (bit = {@code Module.ordinal()}); sent at start and on change. */
