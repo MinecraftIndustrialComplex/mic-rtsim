@@ -1016,8 +1016,8 @@ public final class AloftMowzieGameTests {
      * Explosions, a fan's push and a portal leave an aloft puppet where it floats (test 23c; MZB-810, MZB-815). One puppet marches
      * along a lane with no flag; an untagged Umvuthi with its gravity off (the control, no band's) stands behind it.
      * <ol>
-     * <li>A listener on {@code LevelTickEvent.Pre} (before the entities tick) explodes a blast of power 3 two blocks under the puppet and
-     * another under the control: the puppet's motion is the same after the blast as before (the knockback hook zeroed it); the
+     * <li>A listener on {@code LevelTickEvent.Pre} (before the entities tick) explodes a blast of power 3 two blocks beside the puppet, at the height of its middle (MZB-910: a blast under it stood in the floor,
+     * where its rays are blocked and it pushes nothing), and another beside the control: the puppet's motion is the same after the blast as before (the knockback hook zeroed it); the
      * control's changes by more than 0.15 blocks a tick. {@code knockbacksZeroed} counts the puppet's blast, once.</li>
      * <li>The same with a wind charge's blast (knockback times 1.22, no damage): the same two results, a second count.</li>
      * <li>A listener on {@code LevelTickEvent.Post} (after the entities tick) gives both a push of 0.4 up and 0.4 out ({@code hurtMarked}):
@@ -1083,12 +1083,12 @@ public final class AloftMowzieGameTests {
                                     k == 2 ? Optional.of(1.22f) : Optional.empty(), Optional.empty());
                             pBefore[k] = puppet[0].getDeltaMovement();
                             zeroed[k] = ConflictKit.knockbacksZeroed();
-                            Vec3 at = puppet[0].position().add(0.0, -2.0, 0.0);
+                            Vec3 at = puppet[0].position().add(2.0, puppet[0].getBbHeight() / 2.0, 0.0);
                             level.explode(null, null, calc, at.x, at.y, at.z, 3.0f, false, Level.ExplosionInteraction.NONE);
                             zeroed[k] = ConflictKit.knockbacksZeroed() - zeroed[k];
                             pAfter[k] = puppet[0].getDeltaMovement();
                             cBefore[k] = control[0].getDeltaMovement();
-                            Vec3 under = control[0].position().add(0.0, -2.0, 0.0);
+                            Vec3 under = control[0].position().add(2.0, control[0].getBbHeight() / 2.0, 0.0);
                             level.explode(null, null, calc, under.x, under.y, under.z, 3.0f, false, Level.ExplosionInteraction.NONE);
                             cAfter[k] = control[0].getDeltaMovement();
                         } else if (k == 4) {

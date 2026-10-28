@@ -11706,7 +11706,6 @@ rounds of phase 2 are the check, and what they found is recorded after them.
   unchanged.
 - **MZB-906** (round 1; commit a69bff6d): the retired hand-back test read its band's epoch from the party after the puppet's death, when the party
   may be gone ("holds no party yet"). It reads the epoch while the band lives. The line's answer does not depend on the party.
-
 - **MZB-907** (the merge of feat/mowzie-m10 at 125ad528 into M11c at 33d628e1, commit aec7918b): M10's head carries main at 8703d216
   (M8, MZB-760's grove tribute parking, the tribute earmark MZB-930, U-g, J6, U-h) and the march GameTests' fixes (MZB-940, MZB-941) and
   fixtures. M11 was cut from M10 at 1c2644af, so the march itself is on both sides unchanged; what M10 added since is main's work.
@@ -11717,10 +11716,10 @@ rounds of phase 2 are the check, and what they found is recorded after them.
     `UmvuthiSummonsMixin` and M10's `MMEntityMoveHelperMixin` (the march's steering) are all listed, in alphabetical order.
   - Nine files changed on both sides and merged without a conflict (MOWZIE.md, docs/boundary.md, docs/choices-mowzie-build.md,
     docs/replay-gate.md, `engine/camp.rs`, `persist.rs`, `rtsim-jni/tests/protocol.rs`, `BridgeEvents.java`, `ConflictKit.java`). The
-    two places where the slices touch one function are `camp.rs` (M10's earmark rewrote `owe_tribute`, `place_tribute`, `tribute_placed`
-    and `tribute_failed`; M11 added the camp's `ended` and the chief's band end around them) and `ConflictKit.java` (M10's `bodyName`
-    reads the journal's dictionary, MZB-941; M11 added its counters and `chiefBody` with an agent): the edits are in different functions
-    and both behaviours stand, so no design choice was needed where the march and the aloft meet (M11's design already says how they
+    two places where the slices touch near each other are `camp.rs` (M10's earmark rewrote `owe_tribute`, `place_tribute`,
+    `tribute_placed` and `tribute_failed`; M11's `chief_paid`, with its PAID_PUPPET case, MZB-819, calls `pay_tribute`, which calls
+    `owe_tribute`, and the call is unchanged) and `ConflictKit.java` (M10's `bodyName` reads the journal's dictionary, MZB-941; M11
+    added its counters and `chiefBody` with an agent): the edits are in different functions and both behaviours stand, so no design choice was needed where the march and the aloft meet (M11's design already says how they
     combine: the chief's stack walks at the column's rear and its puppet floats, MZB-805 to MZB-809, MZB-822).
   - Record ids: no MZB id is defined on both sides (M11 adds 800 to 906; M10 and main add 694 to 699, 760 to 770, 920 and 930 to 941),
     so none was renumbered.
@@ -11738,6 +11737,12 @@ rounds of phase 2 are the check, and what they found is recorded after them.
   far from the origin, fixed on main's side by M10's head 36634dd2 (the rail tests at `nearBase`, the sweep mixin MZB-951, the heap back
   to 4G). The round is not rerun on this branch before that merge; M10's earlier pass at 6G on the same test did not meet a sweep that
   ran away. The server was stopped by hand and no heap was raised.
+- **MZB-910** (GameTest round 2 on the merge, test 23c `pushesAndPortalsLeaveItAloft`; MZB-810): it failed its first check on the control,
+  "blast 1 moved the control ((0.0, 0.0, 0.0) then (0.0, 0.0, 0.0))". The blast stood two blocks under each body, and the control stands
+  one block over the stone floor, so the explosion's centre was inside the floor: vanilla's exposure rays start in a block and are
+  blocked, the push is nil, and the knockback event still fires. The puppet's "did not move" check passed for the same reason (and the
+  count of one, since the event fires), so it tested nothing either. The blasts now stand two blocks beside each body at the height of
+  its middle, in the lane's air, so the control is pushed and the puppet's equality is a test of the hook. Not run yet.
 
 ## M12 S9
 
