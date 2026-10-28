@@ -68,4 +68,17 @@ public interface Engine extends AutoCloseable {
     /** Ends the session. May block briefly to let a step in flight finish and pages be written. */
     @Override
     void close();
+
+    /**
+     * Ends the session at a stop, naming what the world's journal file holds: {@code writtenThrough} is
+     * the last observation sequence the file on disk holds ({@code JournalSavedData.writtenThrough}, read
+     * after the stop's flush save). The engine's final save is confirmed at once only if the file holds
+     * every observation it includes; otherwise it stays a pending generation, and the restart from the
+     * older file rolls it back as it does a world save whose WORLD_SAVED never came (slice U-i,
+     * docs/choices-journal-barrier.md U-i1). {@link #close()} is this with a file that holds everything.
+     * An engine that keeps one generation just closes.
+     */
+    default void close(long writtenThrough) {
+        close();
+    }
 }
