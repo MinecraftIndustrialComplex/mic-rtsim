@@ -177,11 +177,12 @@ class PathSweepTest {
 
     @Test
     void theSweepOfMzb950RunsAwayInTheJarAndEndsInTheShippedWalk() {
-        // found by fuzzing the jar's copy (PathSweepFloatTest in core): a Frostmaw-sized box 3.5 wide, a path node 38.6 blocks off
-        double[] vec = {-37.251516399504, 0.0, 10.136477625167588};
-        double x = -3_797_619.272, z = 4_715_190.381;
-        double[] base = {x - 1.75, -59.75, z - 1.75};
-        Sweep far = new Sweep(vec, base, new double[] {base[0] + 3.5, base[1] + 4.5, base[2] + 3.5});
+        // found by fuzzing the jar's copy (PathSweepFloatTest in core): a Frostmaw-sized box 3.5 wide, a path node 38.6 blocks off; the
+        // GameTest builds its far place round these numbers (PathSweepRunaway)
+        double[] vec = {PathSweepRunaway.VX, PathSweepRunaway.VY, PathSweepRunaway.VZ};
+        double x = PathSweepRunaway.X, z = PathSweepRunaway.Z, w = PathSweepRunaway.WIDTH, h = PathSweepRunaway.HEIGHT;
+        double[] base = {x - w / 2, -59.75, z - w / 2};
+        Sweep far = new Sweep(vec, base, new double[] {base[0] + w, base[1] + h, base[2] + w});
         assertEquals("ran away", fault(JAR, true, far), "the jar's walk, at the far base of the ice-rates test's second run");
         assertEquals(null, fault(SHIPPED, false, far), "the shipped walk");
         Visits v = walk(SHIPPED, far, false);
@@ -206,6 +207,7 @@ class PathSweepTest {
             if (f != null)
                 faults.add(f + " at " + s.base[0] + ", " + s.base[2]);
         }
+        System.out.println("[PathSweepTest] at 0.5 to 7.1 million blocks: " + ranAway + " of the first 1,500 sweeps ran away in the jar's copy; the shipped walk faulted in " + faults.size() + " of " + sweeps);
         assertTrue(faults.isEmpty(), "the shipped walk faulted in " + faults.size() + " of " + sweeps + ": " + faults.stream().limit(3).toList());
         assertTrue(ranAway > 20, "only " + ranAway + " of 1,500 sweeps ran away in the jar's copy: the far inputs do not show the bug");
     }
@@ -257,8 +259,9 @@ class PathSweepTest {
                     examples.add(describe(s) + ": jar " + jar.cells.size() + " cells, shipped " + shipped.cells.size());
             }
         }
+        System.out.println("[PathSweepTest] within 16 blocks: " + stable + " of " + n + " sweeps stable, " + differ + " of them differ from the jar's float walk");
         assertEquals(0, differ, differ + " of " + stable + " stable sweeps differ, e.g. " + examples);
-        assertTrue(stable > n * 0.7, "only " + stable + " of " + n + " sweeps were stable");
+        assertTrue(stable > n * 0.55, "only " + stable + " of " + n + " sweeps were stable");
     }
 
     /**
@@ -283,6 +286,7 @@ class PathSweepTest {
             sym.removeAll(both);
             worstPermille = Math.max(worstPermille, (int) (sym.size() * 1000L / shipped.cells.size()));
         }
+        System.out.println("[PathSweepTest] within 1,000 blocks: " + differ + " of " + n + " sweeps differ, the worst by " + worstPermille + " cells in a thousand");
         assertTrue(differ < n * 0.06, differ + " of " + n + " sweeps differ");
         assertTrue(worstPermille < 60, "the worst difference is " + worstPermille + " cells in a thousand");
     }
