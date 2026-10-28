@@ -2391,7 +2391,7 @@ fn a_restart_replays_the_window_before_a_switch_off_with_the_module_on() {
     use module_switch::*;
     use p1_off::*;
     use p1_off_fork::Crashed;
-    let (dir, e, mut j, member, item) = caravan("msw-replay");
+    let (dir, _e, mut j, member, item) = caravan("msw-replay");
     rob(&mut j, member, &item, 0x7e11);
     j.modules(OFF);
     rob(&mut j, member, &item, 0x7e12);
