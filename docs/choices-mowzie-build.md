@@ -11835,7 +11835,40 @@ rounds of phase 2 are the check, and what they found is recorded after them.
   ROAR is a 70-tick animation ability of the jar and it was seen active for 17 ticks, so something cut it short; the same check passed in the three rounds before,
   and the puppet's AI is on in that test (it can start abilities and targets). Neither failure is read as the merge's: neither code path is M10's or main's. What
   the earlier rounds' messages meant is in MZB-916: the message of a failed test is the LAST failing check of its last tick, so a test's first failure can be one
-  of the checks before it; both tests were read that way here.
+  of the checks before it; both tests were read that way here. Diagnosed below: 31s as MZB-957 and test 24 as MZB-958, each a test expectation.
+- **MZB-957** (round at 6e912760, test 31s `anAloftUmvuthiReadsAndTurns`; MZB-813, MZB-956; a test expectation, not a production fault; the cause is read
+  from the jar's code and the numbers, not seen): the ROAR the test counted was not a ROAR. The jar starts abilities of its own on an Umvuthi with nothing to
+  do, and `Ability.canUse` drops a message sent while another ability runs, without a word (of the Umvuthi's abilities only DIE and BLESS can cancel another, so a ROAR cancels none).
+  Read with cfr in the 1.8.2 jar, three starts meet this test. (1) Ambient talk, with the AI on or off: `Mob.baseTick` rolls `nextInt(1000) < ambientSoundTime++`
+  and `EntityUmvuthi.getAmbientSound` answers an idle roll by sending TALK_ABILITY, 23 ticks; the timer counts from -80 and the roll is a chance a tick once above
+  zero, so a TALK runs for about one tick in six. This is also why MZB-917's casts were dropped. (2) With the AI on, `EntityUmvuthi.tick` sends BELLY_ABILITY
+  (40 ticks, one time in 200 a tick, with no target) and ROAR_ABILITY on its own timer. (3) With the AI on it sends SPAWN_SUNBLOCKERS_ABILITY once `healthLost`
+  reaches the config's threshold, and the test sets the loss to 20. The test sent its ROAR at a tick and checked `getActiveAbility() != null`, which any ability
+  satisfies, and `Reading` counted the ticks of whichever ability ran: 17 is what a TALK (23 ticks) started 6 ticks before the send has left. The module did its part:
+  `AloftRules.Repair.gate` takes `ability` as busy, so no add came before the TALK ended and the re-pair followed its hold; the check that failed is the first of
+  its step (a failing `check` throws), so the checks after it did not run, and every later step of the test (the 200 to 260 window, "no ability" before the kill)
+  met the same chance. Fix: the step that arms the reading, 100 ticks before the ROAR, sets the puppet `setNoAi(true)` (test 24 does the same) and a per-tick hook
+  holds its `ambientSoundTime` at -1000 (as `Lurkers.hold` holds a Frostmaw's, MZB-937); the ROAR step checks that no ability runs before the send and that the
+  one running after it is the ROAR (`getActiveAbilityType() == ROAR_ABILITY`). The check of 20 ticks stays (the jar's ROAR is 70) and so does everything the test
+  asks of the module: no add while an ability is active, the re-pair 2 to 12 ticks after it ended, after two ticks held. The per-tick hook that clears the stuck
+  machine (MZB-955) ran before the parties were made and logged an error for each of the first ticks (`conflict agent ... holds no party yet`); it skips an agent
+  with no party. Not run yet.
+- **MZB-958** (round at 6e912760, test 24 `theChiefsSummonsArePuppets`; MZB-816, MZB-956; a test expectation, not a production fault; the cause is read from the code,
+  not seen): "the warrior's animation has ended (not within 8000 ticks of the last chunk wait)". The kill came about 180 ticks after the chunk wait and the wait
+  ran to its bound, 7,800 ticks (the progress bar prints a line each 20 ticks: 402 lines from the chunk wait to the failure). A warrior's death ends in
+  `MowzieEntity.tickDeath`, which `LivingEntity.baseTick` runs from the warrior's own tick: after the DIE ability's 70 ticks, or after the duration of the ability
+  running, or 20, when `MowzieKit.kill` fell back to `setHealth(0)` and `die` because `EntityUmvuthana.hurt` blocked the hit with its mask or refused it. Nothing in
+  the module stops a summons' tick or its removal: it cancels a summons' drops and books nothing for its death (`ConflictBridge.onDeath` finds no slot for it),
+  and `tickDying` is for chief puppets, whose loot waits on the animation. What does stop it is vanilla's: `ServerLevel.tick` ticks an entity only in a chunk in
+  the distance manager's entity-ticking range, and the lane forces one row of chunks, 16 blocks deep, with only loaded chunks round it. A warrior that stands
+  outside the row (the summons walk to the target, are pushed by the crowd of five others, and the warriors' own TELEPORT_ABILITY moves them) never ticks again,
+  so its corpse stays until the party ends (`adoptSummons` prunes the dead, the party's end removes the rest); it is no production loss, as its drops are
+  cancelled and it is never saved. The three rounds before had every warrior in the row. Fix: the test kills a warrior that stands in a chunk that ticks
+  entities (`RtsimSession.entitiesTickAt`) and, with none, teleports the first to the lane's middle, as the bridge puts back a stray; a record line says how many
+  of the warriors stood in a ticking chunk, and the wait's message gives the killed warrior's state (removed, dying, death time, health, ability, position, whether
+  its chunk ticks entities, ticks lived), so a failure with the chunk ticking is a different finding. What the test asks of the module is as before: a warrior
+  killed by a player books no BAND_CASUALTIES and no CHIEF_KILLED, the band keeps its members, the puppet stays the chief's, and none of the summons is saved. Not
+  run yet.
 
 ## M12 S9
 

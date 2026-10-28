@@ -1881,12 +1881,20 @@ public final class AloftMowzieGameTests {
                     check("and the adopted count did not move for them", ConflictKit.summonsAdopted() - was[0] == mine[0].size());
                     record(test, "summons", warriors + " warriors and " + cranes + " cranes of the puppet tagged and listed before their joins; "
                             + theirs[0].size() + " of the throne body's untagged strays");
-                    // a warrior killed by the player books nothing
-                    killed[0] = (EntityUmvuthanaMinion) mine[0].stream().filter(j -> !j.crane()).findFirst().orElseThrow().body();
+                    // a warrior killed by the player books nothing. The jar ends a death animation from the body's own tick (MowzieEntity.tickDeath), which a
+                    // chunk that does not tick entities never gives; the lane is one chunk deep and the summons walk, are pushed and teleport (the warriors'
+                    // TELEPORT ability), so one may stand outside it and never finish dying (MZB-958). The one killed is one that stands in a chunk that ticks.
+                    List<EntityUmvuthanaMinion> fighters = mine[0].stream().filter(j -> !j.crane()).map(j -> (EntityUmvuthanaMinion) j.body()).toList();
+                    List<EntityUmvuthanaMinion> ticking = fighters.stream().filter(w -> !w.isRemoved() && RtsimSession.entitiesTickAt(level, w.blockPosition())).toList();
+                    killed[0] = ticking.isEmpty() ? fighters.get(0) : ticking.get(0);
+                    if (ticking.isEmpty())
+                        killed[0].teleportTo(lane.x0 + start + 10, lane.top + 1, lane.z); // as the bridge puts back a stray (the lane's middle ticks)
+                    record(test, "warriors", ticking.size() + " of " + fighters.size() + " of the puppet's warriors stood in a chunk that ticks entities; killed "
+                            + killed[0].getId() + warriorState(level, killed[0]));
                     killed[0].setLastHurtByPlayer(player[0]);
                     MowzieKit.kill(killed[0], level.damageSources().playerAttack(player[0]));
                 })
-                .thenWaitUntil(waits.logic(() -> check("the warrior's animation has ended", killed[0].isRemoved())))
+                .thenWaitUntil(waits.logic(() -> check("the warrior's animation has ended" + warriorState(level, killed[0]), killed[0].isRemoved())))
                 .thenIdle(20)
                 .thenExecute(() -> {
                     check("no BAND_CASUALTIES for the party (" + ConflictKit.about(ConflictRecords.BAND_CASUALTIES, agent).size() + ")",
@@ -2092,6 +2100,13 @@ public final class AloftMowzieGameTests {
     private static String abilityState(EntityUmvuthi u, com.bobmowzie.mowziesmobs.server.ability.AbilityType<?, ?> type) {
         com.bobmowzie.mowziesmobs.server.ability.Ability<?> a = com.bobmowzie.mowziesmobs.server.ability.AbilityHandler.INSTANCE.getAbility(u, type);
         return a == null ? "no such ability" : "can use " + a.canUse() + ", using " + a.isUsing() + ", cooldown " + a.getCooldownTimer();
+    }
+
+    /** What decides whether a warrior finishes dying (MZB-958): the jar's tickDeath runs from its own tick, in a chunk that ticks entities. */
+    private static String warriorState(ServerLevel level, EntityUmvuthanaMinion w) {
+        return " (removed " + w.isRemoved() + ", dying " + w.isDeadOrDying() + ", death time " + w.deathTime + ", health " + w.getHealth() + ", ability "
+                + w.getActiveAbilityType() + ", at " + w.position() + ", in a chunk that ticks entities " + RtsimSession.entitiesTickAt(level, w.blockPosition())
+                + ", ticks lived " + w.tickCount + ")";
     }
 
     /** Health an Umvuthi out of battle heals in the ticks between a test's set and its read: 0.3 a tick (the jar's, once its timer ran out). */
@@ -4362,6 +4377,8 @@ public final class AloftMowzieGameTests {
                     // (MZB-955). The stuck machine is started over every tick here; the rule itself is 23d's.
                     MowzieKit.everyTick(helper, () -> {
                         for (long ag : agent) {
+                            if (ConflictKit.bridge().party(ag) == null)
+                                continue; // the bands are not made yet (the hook ran for the first ticks and logged an error each)
                             ConflictBridge.Slot sl = chiefSlot(ag);
                             if (sl != null && sl.travelMemo() != null)
                                 UmvuthiAloft.INSTANCE.clearStuck(sl.travelMemo());
@@ -4391,6 +4408,16 @@ public final class AloftMowzieGameTests {
                     check("the away hearer is more than the sight rule's 160 off (" + Math.hypot(u.getX() - hearer[2].getX(), u.getZ() - hearer[2].getZ()) + ")",
                             Math.hypot(u.getX() - hearer[2].getX(), u.getZ() - hearer[2].getZ()) > AloftRules.SIGHT + 10);
                     check("it faces east (" + u.getDirectionData() + ")", u.getDirectionData() == 4);
+                    // The jar starts abilities of its own on an Umvuthi with nothing to do, and Ability.canUse drops a message sent while one is active
+                    // (MZB-957): an ambient TALK (Mob.baseTick rolls nextInt(1000) against ambientSoundTime and getAmbientSound sends it: 23 ticks, about one
+                    // time in six), and with its AI on a BELLY drum (40) or a ROAR of its own (70), or the sunblockers of a health loss. A ROAR sent at the
+                    // wrong moment was refused and the test counted the 17 ticks left of a TALK. The puppet has no AI here, and its ambient timer is held
+                    // below zero (as Lurkers.hold holds a Frostmaw's, MZB-937): the ROAR is the only ability it has, the one the test sends.
+                    u.setNoAi(true);
+                    MowzieKit.everyTick(helper, () -> {
+                        if (!u.isRemoved())
+                            u.ambientSoundTime = -1000;
+                    });
                     u.addEffect(new MobEffectInstance(EffectHandler.SUNBLOCK, 6000, 0));
                     u.addEffect(new MobEffectInstance(MobEffects.FIRE_RESISTANCE, 6000, 0));
                     u.setGlowingTag(true);
@@ -4459,8 +4486,9 @@ public final class AloftMowzieGameTests {
                     check("no re-pair yet, the body still east (" + r.repairs + ", " + u.getDirectionData() + ")", r.repairs.isEmpty() && u.getDirectionData() == 4);
                     record(test, "trail", "near " + near + ", far " + far1 + " small_flame packets in 100 ticks, away "
                             + hearer[2].count(ClientboundLevelParticlesPacket.class));
+                    check("it has no ability before the ROAR (" + u.getActiveAbilityType() + ")", u.getActiveAbility() == null);
                     u.sendAbilityMessage(EntityUmvuthi.ROAR_ABILITY);
-                    check("the ROAR started (" + u.getActiveAbility() + ")", u.getActiveAbility() != null);
+                    check("the ROAR started, and not another ability (" + u.getActiveAbilityType() + ")", u.getActiveAbilityType() == EntityUmvuthi.ROAR_ABILITY);
                     r.roarAt = level.getGameTime();
                     at[1] = r.roarAt;
                     // south, 60 blocks at 0.2: the anchor outruns the puppet, so its way is 90 degrees off its facing at once
