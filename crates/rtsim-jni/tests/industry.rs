@@ -192,6 +192,15 @@ fn lockstep_until_saved(j: &mut Java, through: u64, confirmed: bool) {
             "the engine never applied the observations through {through}"
         );
     }
+    wait_for_pages(j, through, confirmed);
+}
+
+/// Waits, without ticking anything, until the pages hold `through`: durable (the engine has
+/// confirmed the save) when `confirmed`, else committed. The save must be taken already. Waiting
+/// by ticking (`Rig::run`) runs as many world ticks as the IO lane takes, so a world save that
+/// follows lands at a tick the load decides (MZB-940).
+fn wait_for_pages(j: &Java, through: u64, confirmed: bool) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
     let at = |j: &Java| {
         if confirmed {
             j.e.durable_obs_seq()
@@ -5591,7 +5600,46 @@ mod ack_never_resends {
     /// never sent in session 2.
     #[test]
     fn a_replayed_duplicate_refused_by_op_id_with_industry_off_leaves_the_queued_copy() {
-        let mut r = Rig::new("ack-twice-off", false);
+        twice("ack-twice-off", None, true);
+    }
+
+    /// The tick of train 1's third station exchange after the pages of [`twice`] (seed 11's iron
+    /// line: X, the tick-48,400 exchange of train 2, is the pages' last decision; train 1 calls
+    /// at 49,000, 50,400 and 51,800).
+    const THIRD_EXCHANGE: Tick = Tick(51_800);
+
+    /// MZB-940, the control: [`twice`] with the world saved after train 1's third exchange since
+    /// the pages (an odd number of exchanges in the window the restarts replay), industry on in
+    /// session 2. The replay decides those exchanges again from the train arrivals it hears, so
+    /// the world against the engine's books closes at whatever tick the world saved.
+    #[test]
+    fn a_world_saved_after_three_later_exchanges_closes_its_books_with_industry_on() {
+        twice("ack-twice-late-on", Some(THIRD_EXCHANGE + 100), false);
+    }
+
+    /// MZB-940, the engine's gap, pinned and not fixed: [`twice`] as the test above it, industry
+    /// off in session 2, with the world saved after train 1's third exchange since the pages. Off,
+    /// the replay ignores every record but Java's answers, the train arrivals among them, so the
+    /// engine decides none of the window's exchanges again: the carriage side of each is in the
+    /// world (the crashed session wrote it) and its station side, held in the engine's memory until
+    /// the district's reconcile, is not booked anywhere. The kept IND_CARRIAGE_RESULTs meet no
+    /// pending exchange (`Engine::carriage_result` returns). With an even number of exchanges in
+    /// the window the missing station sides cancel in the world's total (an unload and a load of
+    /// the same good), with an odd one the world is short by the odd one's request: "world totals
+    /// off by: create:crushed_raw_iron -224". Ignored until the engine keeps what it needs from an
+    /// off replay's arrivals (an open decision in docs/choices-mowzie-build.md MZB-940).
+    #[test]
+    #[ignore = "MZB-940: the engine ignores the arrivals of a replay with industry off, so an odd number of exchanges in the window loses goods"]
+    fn a_world_saved_after_three_later_exchanges_closes_its_books_with_industry_off() {
+        twice("ack-twice-late-off", Some(THIRD_EXCHANGE + 100), true);
+    }
+
+    /// RP-318's case ([`a_replayed_duplicate_refused_by_op_id_with_industry_off_leaves_the_queued_copy`])
+    /// with industry `off` in session 2 or on (a control). `late`: the world runs on to that tick
+    /// before it saves, so the window the two restarts replay holds the exchanges between; none
+    /// else (the world saves right after X is answered, whatever the IO lane took).
+    fn twice(tag: &str, late: Option<Tick>, off: bool) {
+        let mut r = Rig::new(tag, false);
         r.run_to(day(2.0));
         r.every = 0;
         let exchanges = |r: &Rig| -> Vec<u64> {
@@ -5625,13 +5673,17 @@ mod ack_never_resends {
             !r.j.mc().applied_ops().contains(&OpId(x)),
             "X is written, not applied"
         );
-        r.run("the pages", day(8.0), |r| {
-            r.j.e.durable_obs_seq() >= through
-        });
+        // The wait does not tick: the pages land when the IO lane has them, and the world is where
+        // the loop left it, whatever the load (MZB-940: waiting by ticking saved the world at a
+        // tick the IO lane's latency decided, and three exchanges later the books did not close).
+        wait_for_pages(&r.j, through, true);
         assert_eq!(r.j.e.durable_obs_seq(), through);
         r.run("the world answers X", day(8.0), |r| {
             r.c.lives_in(0).any(|l| l.op == x)
         });
+        if let Some(t) = late {
+            r.run_to(t);
+        }
         let s1 = *r.c.lives_in(0).find(|l| l.op == x).unwrap();
         assert_eq!(s1.status, APPLIED);
         assert!(through < s1.seq, "the pages are behind S1");
@@ -5645,8 +5697,11 @@ mod ack_never_resends {
         );
         let t1 = r.j.mc().t;
         // Industry goes off in the tick the world refuses X (S2), ahead of it: S1 is replayed on
-        // and S2 off (U-e). The world answers in the tick X arrives: the pick is set before.
-        r.switch_pick = Some(Box::new(move |_, _, a| a.0 == x && a.2 == DUPLICATE));
+        // and S2 off (U-e). The world answers in the tick X arrives: the pick is set before. Not
+        // with `late` (MZB-940): there session 1 stays on and session 2's config is the switch.
+        if off && late.is_none() {
+            r.switch_pick = Some(Box::new(move |_, _, a| a.0 == x && a.2 == DUPLICATE));
+        }
         r.run("X sent again in session 1", t1 + 400, |r| {
             !r.c.arrivals_of(x, 1).is_empty()
         });
@@ -5663,7 +5718,9 @@ mod ack_never_resends {
             "no page save past the first"
         );
         assert!(r.c.crash(&r.j) < s1.seq, "no ack at or past S1");
-        r.modules = 0;
+        if off {
+            r.modules = 0;
+        }
         r.restart(&w2);
         assert_eq!(
             r.j.pages_obs, through,
@@ -5673,19 +5730,24 @@ mod ack_never_resends {
         r.run("the replay ends", t2 + 100, |r| {
             r.j.e.stats.replays_ended.load(Ordering::Acquire) > 0
         });
-        // S1 was replayed on and S2 off (session 1 switched industry off ahead of S2, U-e): the
-        // copy the pages queued is still there, and nothing goes while off.
-        assert!(
-            r.j.e.with_industry(|_, l| l.queued) >= 1,
-            "off, the replayed answers left the queued copy"
-        );
-        assert!(r.c.arrivals_of(x, 2).is_empty(), "nothing goes while off");
+        if off {
+            // S1 was replayed on; S2 off when session 1 switched industry off ahead of it (U-e), and
+            // on up to session 2's own switch (MZB-940's `late`: session 1 stayed on). Either way
+            // the copy the pages queued is still there, and nothing goes while off.
+            assert!(
+                r.j.e.with_industry(|_, l| l.queued) >= 1,
+                "off, the replayed answers left the queued copy"
+            );
+            assert!(r.c.arrivals_of(x, 2).is_empty(), "nothing goes while off");
+        }
         eprintln!(
             "twice: X {x:#x} answered APPLIED at S1 {} in session 0, refused at S2 {} in session 1; \
              pages through {through}",
             s1.seq, s2.seq
         );
-        switch_on(&mut r);
+        if off {
+            switch_on(&mut r);
+        }
         let books = the_copy_goes_once_in_session(r, x, 2);
         assert_eq!(books, Ok(()), "the world against the engine's books");
     }

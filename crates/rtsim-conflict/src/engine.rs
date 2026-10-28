@@ -82,6 +82,11 @@ pub const REPLAY_HOLD_TICKS: u64 = 20;
 /// record then embodies the band: a double. `ConflictStats::fight_record_gap_max` measures the
 /// delay live, so the value can be set from data (RP-51).
 pub const REPLAY_HOLD_SLACK_TICKS: u64 = 600;
+/// How many ranges of epochs a party keeps for the fights its held arrivals resolved unwatched
+/// (`Party::unwatched`, MZB-706): the oldest goes first. A raid party is held once in its life, a
+/// siege once for each restart that finds a round held, so the list is short; the bound keeps a
+/// long siege's row from growing with the restarts.
+pub const UNWATCHED_KEPT: usize = 8;
 /// The settlers actor's external id (P14: one shared actor for unowned signals).
 pub const SETTLERS_KEY: u64 = fnv1a64(b"mic_rtsim.conflict.settlers");
 
@@ -430,9 +435,36 @@ pub struct Party {
     /// after the party has ended finds no party (`party_of` checks the handle's generation and the
     /// epoch). Saved with the party.
     pub casualty_ops: Vec<u64>,
+    /// The revision of the march record last built for it (BAND_MARCH, MZB-451): it rises by one
+    /// for each record, so Java keeps the latest of a session (a map of its own, per session).
+    /// Saved with the party (RTC11, MZB-453).
+    pub march_rev: u32,
+    /// What the march record says has changed since the record last built: the party is on
+    /// [`Conflict::march_due`] while this is set. Saved with the party, as the outbox is, so a mark
+    /// made before a crash is not lost (MZB-453).
+    pub march_due: bool,
+    /// The tick of the party's one `Unseen` that acts (MZB-458): `book_unseen` sets it to the tick
+    /// it books, and an `Unseen` popped at another tick finds it moved and does nothing, so a
+    /// re-bind adds no event that fires with the old ones. Saved with the party.
+    pub unseen_due: Tick,
+    /// The epochs, as inclusive ranges (low, high), that a fight the last session may have run
+    /// could carry and that this one resolved unwatched, because no record answered the party's
+    /// held arrival, or its arrival in the window the replay did not reach (MZB-706): a copy of casualties naming one of them is dropped, as the abstract
+    /// resolve took that fight's losses already (`casualties`). Booked by
+    /// [`Conflict::book_unwatched_hold`], cut short when the party's next body takes an epoch
+    /// ([`Conflict::next_epoch`]), at most [`UNWATCHED_KEPT`] of them. Saved with the party
+    /// (RTC11, META 10: the format as M10 has it).
+    pub unwatched: Vec<(u32, u32)>,
 }
 
 impl Party {
+    /// Whether a fight at `epoch` is one this party's held arrival resolved unwatched (MZB-706).
+    pub fn resolved_unwatched(&self, epoch: u32) -> bool {
+        self.unwatched
+            .iter()
+            .any(|&(lo, hi)| lo <= epoch && epoch <= hi)
+    }
+
     pub fn alive(&self) -> u32 {
         self.units.iter().map(|u| u.1).sum()
     }
@@ -527,6 +559,19 @@ pub(crate) enum Ev {
     },
 }
 
+/// A band `home` ended whose HAND_BACK lines Java has not answered (MZB-466).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HomeOpen {
+    pub faction: u32,
+    pub epoch: u32,
+    /// The camp slots of the lines sent, for the log line.
+    pub slots: Vec<u32>,
+    /// When the lines went.
+    pub at: Tick,
+    /// The ops of the records counted against it, so a copy or a reassert counts once.
+    pub counted: Vec<u64>,
+}
+
 /// Counters for the CLI, tests and the bench.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct ConflictStats {
@@ -585,6 +630,12 @@ pub struct ConflictStats {
     /// A BAND_SPAWN_REJECTED of a newer epoch's wave 0 counts too (RP-63), a refused
     /// sighting's among them (the record has no flags). rtsim-jni logs each.
     pub fights_unheld: u64,
+    /// BAND_CASUALTIES and CHIEF_KILLED records that named a party `home` had ended while its
+    /// HAND_BACK lines were still unanswered, each op once: a puppet killed in the tick or two
+    /// between the end and the line (MZB-466). Booked nowhere (no casualty, no signal): its
+    /// slot's line finds no puppet and the body spawns at the edge. A stat; the open lines
+    /// are in memory only.
+    pub unbooked_home_deaths: u64,
     /// Camp ledgers (MOWZIE.md §4.9): censuses booked, CAMP_RECONCILEs and the lines in them
     /// sent, answers and deaths booked, and members written off after three misses.
     pub camp_censuses: u64,
@@ -971,6 +1022,25 @@ pub struct Conflict {
     /// and a hunt it owes takes its op from this tick, the one the session that went on decided
     /// at (`owe_hunt`, RP-133). In memory only.
     pub(crate) hold_ending: Option<Tick>,
+    /// The holds the replay end let go (MZB-706): per party, the plan of its poll and whether its
+    /// bodies were in Minecraft (the pages' or a replayed record's) just before the end made every
+    /// party abstract. The poll that follows decides the arrival as live, and finds here that it
+    /// was a held one, so that an unwatched resolve of it is booked as one
+    /// ([`Conflict::book_unwatched_hold`]), however late the poll comes. Replaced at each replay
+    /// end. In memory only.
+    pub(crate) held_over: BTreeMap<Handle<Party>, (u32, bool)>,
+    /// The parties whose bodies were in Minecraft just before the replay end made every party
+    /// abstract (MZB-706): the arrival of one that falls in the lost window (see `lost_until`)
+    /// is decided with no record of the last session's fight, and its walk-in, if there was one,
+    /// was at the party's own epoch. Replaced at each replay end. In memory only.
+    pub(crate) left_embodied: BTreeSet<Handle<Party>>,
+    /// The session's present, told at the replay end ([`Conflict::replay_present`], MZB-706):
+    /// the replay clock stops at the last replayed record, and the first run after the end goes
+    /// on to the present. A war party's arrival or a siege's round that falls in between was a
+    /// moment of the last session whose records may be in a journal's lost tail, so that an
+    /// unwatched resolve of it is booked as a held one's is. `Tick::ZERO` when not told. In
+    /// memory only.
+    pub(crate) lost_until: Tick,
     /// The replayed fights that found no hold (RP-56): per party, the epoch of its fight
     /// recorded at or past its hold's slack, counted once in `ConflictStats::fights_unheld`;
     /// its loot counts against nothing, as its bodies. In memory only, cleared at the replay end.
@@ -979,6 +1049,11 @@ pub struct Conflict {
     /// the fight's epoch and the tick `start_fight` decided it, for
     /// `ConflictStats::fight_record_gap_max`. In memory only.
     pub(crate) fights_unanswered: BTreeMap<Handle<Party>, (u32, Tick)>,
+    /// The parties `home` ended with HAND_BACK lines sent and not yet answered (MZB-466): per
+    /// party agent, what a puppet's death before the answer is counted against
+    /// ([`Conflict::unbooked_home_death`]). Cleared by the band's BAND_DEMATERIALIZED (the
+    /// answer) and aged out after a day. In memory only.
+    pub home_open: BTreeMap<u64, HomeOpen>,
     /// The journal sequence of the record being ingested (0 where the host has none, as in the
     /// simulations, whose answers are then kept to the end of their epoch): a CAMP_BODIES answer is
     /// kept with it. Set by the host; not state.
@@ -1002,6 +1077,10 @@ pub struct Conflict {
     /// The CHIEF_STATE records ingested while replaying (RP-100), the latest for each faction key:
     /// applied at the replay end, after every replayed record. Not state.
     pub(crate) chief_states_held: BTreeMap<u64, boundary::ChiefState>,
+    /// The parties whose march record is due (`Party::march_due` set), in the order marked
+    /// (MZB-451). Derived: `take_commands` sorts it by handle and empties it, and a load rebuilds
+    /// it from the flags. Not saved.
+    pub(crate) march_due: Vec<Handle<Party>>,
 }
 
 fn dist(a: (i64, i64), b: (i64, i64)) -> f64 {
@@ -1107,8 +1186,12 @@ impl Conflict {
             fill_deaths: BTreeMap::new(),
             held: BTreeMap::new(),
             hold_ending: None,
+            held_over: BTreeMap::new(),
+            left_embodied: BTreeSet::new(),
+            lost_until: Tick::ZERO,
             unheld_fights: BTreeMap::new(),
             fights_unanswered: BTreeMap::new(),
+            home_open: BTreeMap::new(),
             obs_seq: 0,
             durable_obs_seq: 0,
             rail_held: BTreeMap::new(),
@@ -1116,6 +1199,7 @@ impl Conflict {
             rail_held_n: 0,
             durable_held: 0,
             chief_states_held: BTreeMap::new(),
+            march_due: Vec::new(),
         }
     }
 
@@ -1139,8 +1223,9 @@ impl Conflict {
         Pos::new(frame, x, z)
     }
 
-    /// A party's position on its route at `t`, in the route's chart.
-    fn party_chart_pos(&self, p: Handle<Party>, t: Tick) -> (i32, i32) {
+    /// A party's position on its route at `t`, in the route's chart (the cell the march record's
+    /// `chart_pos` gives at `t`, MZB-454).
+    pub fn party_chart_pos(&self, p: Handle<Party>, t: Tick) -> (i32, i32) {
         let x = &self.parties[p];
         match x.phase {
             Phase::Mustering => x.route[0],
@@ -1210,8 +1295,125 @@ impl Conflict {
         m
     }
 
+    /// The commands the engine has queued, taken by the host. The march records of the parties
+    /// whose march changed since the last take come first, one for each party in handle order,
+    /// the rest of the outbox after them unchanged (MZB-451). While the session's replay runs
+    /// none is built and the flags stay set (MZB-484): the replay's records are the last
+    /// session's, Java's map holds nothing of them, and the first take after the replay sends each
+    /// party the state the replay left. A party that is gone is skipped.
     pub fn take_commands(&mut self) -> Vec<Cmd> {
-        self.outbox.take()
+        if self.outbox.replaying() || self.march_due.is_empty() {
+            return self.outbox.take();
+        }
+        let mut due = std::mem::take(&mut self.march_due);
+        due.sort();
+        due.dedup();
+        let rest = self.outbox.take();
+        let per = crate::tables::FACTIONS_PER_PAGE as usize;
+        let mut built = 0;
+        for p in due {
+            let Some(x) = self.parties.get_mut(p).filter(|x| x.march_due) else {
+                continue;
+            };
+            x.march_due = false;
+            x.march_rev = x.march_rev.saturating_add(1);
+            let record = self.march_record(p, false);
+            self.outbox.push(Cmd::March(record));
+            built += 1;
+            if built % per == 0 {
+                self.enforce_budget();
+            }
+        }
+        let mut out = self.outbox.take();
+        out.extend(rest);
+        out
+    }
+
+    /// The party's march has changed (MZB-451): its next take builds one record with what it
+    /// is then. Several changes between takes make one record. A party gone is no one's.
+    pub(crate) fn march_changed(&mut self, p: Handle<Party>) {
+        let Some(x) = self.parties.get_mut(p) else {
+            return;
+        };
+        if !x.march_due {
+            x.march_due = true;
+            self.march_due.push(p);
+        }
+    }
+
+    /// Builds the unsaved [`Conflict::march_due`] list from the saved flags, in handle order,
+    /// once the parties are read (a load, a paged open; MZB-453).
+    pub(crate) fn rebuild_march_due(&mut self) {
+        let mut due: Vec<Handle<Party>> = self
+            .parties
+            .iter()
+            .filter(|(_, x)| x.march_due)
+            .map(|(h, _)| h)
+            .collect();
+        due.sort();
+        self.march_due = due;
+    }
+
+    /// The party's BAND_MARCH as it stands (MOWZIE.md §4.16, MZB-452), carrying `march_rev` as the
+    /// caller has set it. `ended`: the party has ended (`home` removed its row).
+    pub(crate) fn march_record(&self, p: Handle<Party>, ended: bool) -> boundary::BandMarch {
+        let x = &self.parties[p];
+        let f = &self.factions[x.faction as usize];
+        let c = self.culture(x.faction);
+        let phase = match x.phase {
+            Phase::Mustering => boundary::MARCH_MUSTERING,
+            Phase::Out => boundary::MARCH_OUT,
+            Phase::Waiting => boundary::MARCH_WAITING,
+            Phase::Fighting => boundary::MARCH_FIGHTING,
+            Phase::Home => boundary::MARCH_HOME,
+        };
+        let mut units: Vec<(u32, u32)> = Vec::new();
+        for &(u, n) in &x.units {
+            if n == 0 {
+                continue;
+            }
+            let body = body_id(&self.cultures, &c.unit(u).body);
+            match units.iter_mut().find(|e| e.0 == body) {
+                Some(e) => e.1 += n,
+                None => units.push((body, n)),
+            }
+        }
+        units.sort_unstable();
+        let seg = (x.seg as usize).min(x.route.len().saturating_sub(1));
+        let at = |i: usize| (x.route[i].0, x.route[i].1, x.times[i].0 as i64);
+        let waypoints: Vec<(i32, i32, i64)> = match x.phase {
+            Phase::Mustering => (0..x.route.len()).map(at).collect(),
+            Phase::Out | Phase::Home => (seg..x.route.len()).map(at).collect(),
+            Phase::Waiting | Phase::Fighting => {
+                let (px, pz) = *x.route.last().expect("a route");
+                vec![(px, pz, x.until.0 as i64)]
+            }
+        };
+        let mut flags = 0;
+        if x.chief {
+            flags |= boundary::MARCH_CHIEF;
+        }
+        if ended || (x.alive() == 0 && !x.chief) {
+            flags |= boundary::MARCH_ENDED;
+        }
+        boundary::BandMarch {
+            agent: Party::agent(p),
+            revision: x.march_rev,
+            dimension: u32::from(x.frame),
+            faction: f.key,
+            culture: u32::from(f.culture) + 1,
+            kind: x.kind as u8,
+            phase,
+            flags,
+            partner: 0,
+            muster_end: if x.phase == Phase::Mustering {
+                x.until.0 as i64
+            } else {
+                0
+            },
+            units,
+            waypoints,
+        }
     }
 
     /// Between [`Conflict::begin_replay`] and [`Conflict::replay_done`]: the session's replay
@@ -1641,6 +1843,7 @@ impl Conflict {
             .collect();
         for p in led {
             self.parties[p].chief = false;
+            self.march_changed(p);
         }
         // News of the fall (TALK.md §9.4, TK26), witnessed by the new chief and heir, so the camp
         // tells its own loss (its chief's Killing names the dead chief, who has left the camp).
@@ -3150,7 +3353,12 @@ impl Conflict {
             breaker: None,
             fight_strength: 0.0,
             casualty_ops: Vec::new(),
+            march_rev: 0,
+            march_due: false,
+            unseen_due: Tick::ZERO,
+            unwatched: Vec::new(),
         });
+        self.march_changed(p);
         self.stats.parties[kind.index()] += 1;
         if kind.is_war() {
             self.factions[f as usize].away += start_units;
@@ -3292,6 +3500,7 @@ impl Conflict {
                 self.camp_set_out(p, at);
                 self.parties[p].phase = Phase::Out;
                 self.parties[p].seg = 0;
+                self.march_changed(p);
                 self.start_segment(w, infra, p, at);
             }
             Phase::Out | Phase::Home => {
@@ -3340,23 +3549,20 @@ impl Conflict {
         self.home(w, p, at);
     }
 
-    fn start_segment(
-        &mut self,
-        w: &mut World,
-        infra: &mut dyn Infrastructure,
-        p: Handle<Party>,
-        at: Tick,
-    ) {
+    /// An embodied band's orders for the segment it is on (`seg`): a segment that crosses an
+    /// edge_stop seam is recalled (RECALL_PASSING toward the segment's end, TP12); else the band
+    /// is steered to the segment's end, attacking only on a war band's last segment out, and its
+    /// watcher's unseen check is booked. A band that is not embodied is left alone. `start_segment`
+    /// calls it for each segment, and `go_home` for the first one home (MZB-456).
+    fn steer_segment(&mut self, w: &mut World, p: Handle<Party>, at: Tick) {
         let x = &self.parties[p];
+        if !x.embodied {
+            return;
+        }
         let s = x.seg as usize;
         let (a, b) = (x.route[s], x.route[s + 1]);
-        let (t0, t1) = (x.times[s], x.times[s + 1]);
-        let (kind, phase, embodied, epoch, frame) = (x.kind, x.phase, x.embodied, x.epoch, x.frame);
-        // A band bound for a track has its trains from sampling (MOWZIE.md ledger 8).
-        let to_track = matches!(x.target, Target::Track { .. });
-        self.book_leg(w, p, a, b, t0.max(at), t1);
-        let plan = self.bump(p);
-        self.schedule(t1, Ev::Party { party: p, plan });
+        let t1 = x.times[s + 1];
+        let (kind, phase, epoch, frame) = (x.kind, x.phase, x.epoch, x.frame);
         // A watched band never walks a body across an edge_stop seam: it is recalled at the
         // start of a segment that would, and marches on abstract (TP12).
         let crosses_stop = {
@@ -3367,7 +3573,7 @@ impl Conflict {
                 t.stopped_crossing((f.x, f.z), e).is_some()
             }
         };
-        if embodied && crosses_stop {
+        if crosses_stop {
             self.note(
                 at,
                 Some(self.parties[p].faction),
@@ -3375,7 +3581,7 @@ impl Conflict {
                 "its march crosses an edge_stop seam".into(),
             );
             self.recall(p, epoch, boundary::RECALL_PASSING, b);
-        } else if embodied {
+        } else {
             let speed = self
                 .culture(self.parties[p].faction)
                 .def
@@ -3393,8 +3599,32 @@ impl Conflict {
                 pos: (f64::from(b.0), 64.0, f64::from(b.1)),
                 arrive: t1.0 as i64,
             }));
-            self.book_unseen(w, p, at);
+            self.book_unseen(w, p, at, at);
         }
+    }
+
+    fn start_segment(
+        &mut self,
+        w: &mut World,
+        infra: &mut dyn Infrastructure,
+        p: Handle<Party>,
+        at: Tick,
+    ) {
+        let x = &self.parties[p];
+        let s = x.seg as usize;
+        let (a, b) = (x.route[s], x.route[s + 1]);
+        let (t0, t1) = (x.times[s], x.times[s + 1]);
+        let (kind, phase, frame) = (x.kind, x.phase, x.frame);
+        // A band bound for a track has its trains from sampling (MOWZIE.md ledger 8).
+        let to_track = matches!(x.target, Target::Track { .. });
+        // A route the record cannot hold whole sends the window from this segment on (MZB-455).
+        if x.route.len() - s >= boundary::MAX_ENTRIES {
+            self.march_changed(p);
+        }
+        self.book_leg(w, p, a, b, t0.max(at), t1);
+        let plan = self.bump(p);
+        self.schedule(t1, Ev::Party { party: p, plan });
+        self.steer_segment(w, p, at);
         // Supply lines (C16, I24): a war band on its way out may fall on a train leg it crosses.
         if phase == Phase::Out
             && !to_track
@@ -3437,9 +3667,28 @@ impl Conflict {
         }
     }
 
-    /// When a party walking its current segment leaves a circle of `radius` around `c`: `None`
-    /// when it is still inside at the segment's end; `at` when it is not inside now.
+    /// The squared distance from the party's place at `at` (chart coordinates) to the image of
+    /// `c` nearest it, when that is within `radius` (MZB-458). [`Conflict::exit_time`] and
+    /// [`Conflict::rebind_to`] share it, so that the two never disagree on who is inside.
+    fn inside_now(&self, p: Handle<Party>, c: (i32, i32), radius: u32, at: Tick) -> Option<f64> {
+        let now = self.party_chart_pos(p, at);
+        let i = self.topo(self.parties[p].frame).toward(
+            (i64::from(now.0), i64::from(now.1)),
+            (i64::from(c.0), i64::from(c.1)),
+        );
+        let (dx, dz) = (f64::from(now.0) - i.0 as f64, f64::from(now.1) - i.1 as f64);
+        let d2 = dx * dx + dz * dz;
+        let r = f64::from(radius);
+        (d2 <= r * r).then_some(d2)
+    }
+
+    /// When a party walking its current segment leaves a circle of `radius` around `c`, as
+    /// [`Conflict::inside_now`] reads it (the first tick its chart position is outside, MZB-701):
+    /// `None` when it is still inside at the segment's end; `at` when it is not inside now.
     fn exit_time(&self, p: Handle<Party>, c: (i32, i32), radius: u32, at: Tick) -> Option<Tick> {
+        if self.inside_now(p, c, radius, at).is_none() {
+            return Some(at);
+        }
         let x = &self.parties[p];
         let s = (x.seg as usize).min(x.route.len().saturating_sub(2));
         let (a, b) = (x.route[s], x.route[s + 1]);
@@ -3458,9 +3707,6 @@ impl Conflict {
             let (dx, dz) = (f64::from(q.0 - c.0), f64::from(q.1 - c.1));
             dx * dx + dz * dz <= r * r
         };
-        if !inside(now) {
-            return Some(at);
-        }
         if inside(b) || t1 <= t0 {
             return None;
         }
@@ -3472,13 +3718,27 @@ impl Conflict {
         let qc = ax * ax + az * az - r * r;
         let disc = (qb * qb - 4.0 * qa * qc).max(0.0);
         let f = ((-qb + disc.sqrt()) / (2.0 * qa)).clamp(0.0, 1.0);
-        Some(Tick(t0.0 + ((t1.0 - t0.0) as f64 * f).floor() as u64).max(at))
+        let mut t = Tick(t0.0 + ((t1.0 - t0.0) as f64 * f).floor() as u64).max(at);
+        // The root is the continuous path's exit, but `inside_now` (and so `rebind_to`) reads the
+        // truncated chart position, up to sqrt 2 blocks off the path, and that can still be
+        // inside here: booked at the root, `unseen` would find the same player inside and book a
+        // tick on, again and again, until the truncated position left (MZB-701). So step on to
+        // the first tick it is outside, which the segment's end (`b`, outside) bounds. The steps
+        // are `inside_now` calls, no events: the worst case is a near-tangent road, where the
+        // path needs sqrt(2 sqrt 2 R + 2) blocks of walk to put the truncated position beyond
+        // the circle of radius R, so at most that over the march speed, in ticks.
+        while t < t1 && self.inside_now(p, c, radius, t).is_some() {
+            t += 1;
+        }
+        Some(t)
     }
 
-    /// Books the time an embodied party walks out of its watcher's view.
-    fn book_unseen(&mut self, w: &World, p: Handle<Party>, at: Tick) {
+    /// Books the time an embodied party on the road, out or home, walks out of its watcher's view
+    /// (MZB-458). It books at `not_before` or the exit, whichever is later, and keeps that tick in
+    /// `unseen_due`: only the latest booking acts, an earlier one finds `unseen_due` moved.
+    fn book_unseen(&mut self, w: &World, p: Handle<Party>, at: Tick, not_before: Tick) {
         let x = &self.parties[p];
-        if !x.embodied || x.phase != Phase::Out {
+        if !x.embodied || !matches!(x.phase, Phase::Out | Phase::Home) {
             return;
         }
         let Some(player) = x.seen_by else {
@@ -3495,8 +3755,32 @@ impl Conflict {
             None => Some(at),
         };
         if let Some(t) = leave {
+            let t = t.max(not_before);
+            self.parties[p].unseen_due = t;
             self.schedule(t, Ev::Unseen { party: p, epoch });
         }
+    }
+
+    /// The player a band that walks out of its watcher's view could be re-bound to (MZB-458): of
+    /// the players reported in its frame within `player_stale_ticks`, the nearest to the band's
+    /// place at `at` that is inside `book_unseen`'s circle (`view_radius + party_radius + 16`),
+    /// ties by actor.
+    fn rebind_to(&self, w: &World, p: Handle<Party>, at: Tick) -> Option<ActorId> {
+        let frame = self.parties[p].frame;
+        let radius = self.tun.view_radius + self.tun.party_radius + 16;
+        let stale = self.tun.player_stale_ticks;
+        w.players
+            .iter()
+            .filter_map(|(a, s)| {
+                let (pp, t) = s.pos?;
+                if pp.frame != frame || at.0.saturating_sub(t.0) > stale {
+                    return None;
+                }
+                self.inside_now(p, (pp.x, pp.z), radius, at)
+                    .map(|d2| (d2, *a))
+            })
+            .min_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)))
+            .map(|e| e.1)
     }
 
     /// The party's alive units by threat class: (count, strength, loads). The loads are its
@@ -3752,21 +4036,36 @@ impl Conflict {
                 // the arrival waits for its replayed fight or for the replay end (§6.1, RP-23),
                 // up to the hold's slack. Past it no fight answered the hold, and it resolves
                 // unwatched, as the last session did (RP-48).
-                let watcher = if self.outbox.defer() {
+                let (watcher, held) = if self.outbox.defer() {
                     if self.hold_ending.is_none() && at < arrival + REPLAY_HOLD_SLACK_TICKS {
                         self.hold(p, arrival, at, true);
                         return;
                     }
-                    None
+                    (None, Some(self.parties[p].embodied))
                 } else {
-                    self.watcher(w, tpos, at)
+                    (self.watcher(w, tpos, at), self.held_over_embodied(p, at))
                 };
                 if let Some(player) = watcher {
                     self.start_fight(w, p, player, at);
                 } else {
+                    if let Some(embodied) = held {
+                        self.book_unwatched_hold(p, embodied);
+                    }
                     if self.parties[p].embodied {
-                        let epoch = self.parties[p].epoch;
-                        self.recall(p, epoch, boundary::RECALL_PASSING, (tpos.x, tpos.z));
+                        // A band that walked here in its bodies with a player still near it is
+                        // that player's to watch: it resolves abstractly, its losses falling
+                        // through `lose_units`, and walks home. A siege is recalled (MZB-460).
+                        let rebound = if kind == PartyKind::Siege || self.outbox.replaying() {
+                            None
+                        } else {
+                            self.rebind_to(w, p, at)
+                        };
+                        if let Some(player) = rebound {
+                            self.parties[p].seen_by = Some(player);
+                        } else {
+                            let epoch = self.parties[p].epoch;
+                            self.recall(p, epoch, boundary::RECALL_PASSING, (tpos.x, tpos.z));
+                        }
                     }
                     self.resolve(w, infra, p, self.hold_ending.unwrap_or(arrival), at);
                     // A siege's next round runs from its arrival, as in the session that went on
@@ -3783,12 +4082,53 @@ impl Conflict {
         }
     }
 
+    /// Whether party `p`'s decision at `at` is one the last session may have made with records
+    /// the replay did not reach (MZB-706), live after the replay end: the held arrival the end
+    /// let go (the poll that follows it), or an arrival in the lost window (`lost_until`). If so,
+    /// whether its bodies were in Minecraft when the end made every party abstract. Taken, so a
+    /// later decision of the party is its own.
+    fn held_over_embodied(&mut self, p: Handle<Party>, at: Tick) -> Option<bool> {
+        let plan = self.parties[p].plan;
+        let embodied = self.left_embodied.remove(&p);
+        match self.held_over.remove(&p) {
+            Some((q, held)) if q == plan => Some(held),
+            _ if at <= self.lost_until => Some(embodied),
+            _ => None,
+        }
+    }
+
+    /// A held arrival (or a siege's round), or one in the window the replay did not reach,
+    /// resolved unwatched, because no record answered it (MZB-706): the last session may have
+    /// fought it watched all the same, with its BAND_MATERIALIZED lost in a journal's tail. If it did, its casualties were journaled on
+    /// the entities that carried them, and a holder's copy of them is yet to come: the abstract
+    /// resolve took that fight's losses already, so such a copy must count nothing more (lose,
+    /// never double). The fight's epoch is the party's own when it walked in in its bodies
+    /// (`embodied`: MZB-461), else the one its next body takes (`next_epoch`); the party books
+    /// both, and `casualties` drops a copy naming either. A band that was not in its bodies at
+    /// the arrival books the second alone, so that the copy of a death on the march, at the
+    /// party's own epoch, still counts. Booked also when nothing was fought: no copy of that
+    /// epoch exists then, or it is a death on the march of a band that was in view, which is
+    /// dropped with the rest (a loss).
+    fn book_unwatched_hold(&mut self, p: Handle<Party>, embodied: bool) {
+        let floor = self.floors.get(&Party::agent(p)).copied().unwrap_or(0);
+        let x = &mut self.parties[p];
+        let fresh = x.epoch.max(floor).saturating_add(1);
+        let range = (if embodied { x.epoch } else { fresh }, fresh);
+        if !x.unwatched.contains(&range) {
+            x.unwatched.push(range);
+        }
+        if x.unwatched.len() > UNWATCHED_KEPT {
+            x.unwatched.remove(0);
+        }
+    }
+
     fn wait(&mut self, w: &mut World, p: Handle<Party>, until: Tick, at: Tick) {
         let until = until.min(self.parties[p].bored_at).max(at + 1);
         let x = &mut self.parties[p];
         x.phase = Phase::Waiting;
         x.until = until;
         let here = *x.route.last().expect("a route");
+        self.march_changed(p);
         self.book_leg(w, p, here, here, at, until);
         let plan = self.bump(p);
         self.schedule(until, Ev::Party { party: p, plan });
@@ -3905,7 +4245,9 @@ impl Conflict {
             Obs::Casualties(cs)
                 if Party::of_agent(cs.agent)
                     .and_then(|p| self.parties.get(p))
-                    .is_some_and(|x| x.casualty_ops.contains(&cs.op)) =>
+                    .is_some_and(|x| {
+                        x.casualty_ops.contains(&cs.op) || (copy && x.resolved_unwatched(cs.epoch))
+                    }) =>
             {
                 return;
             }
@@ -4071,19 +4413,22 @@ impl Conflict {
         let round = x.until.min(at);
         if kind == PartyKind::Siege && round < x.bored_at && x.alive() > 0 && !self.peaceful {
             // As `arrive`'s (§6.1, RP-23, RP-48).
-            let watcher = if self.outbox.defer() {
+            let (watcher, held) = if self.outbox.defer() {
                 if self.hold_ending.is_none() && at < round + REPLAY_HOLD_SLACK_TICKS {
                     self.hold(p, round, at, false);
                     return;
                 }
-                None
+                (None, Some(self.parties[p].embodied))
             } else {
                 let tpos = self.target_pos(w, self.parties[p].target);
-                self.watcher(w, tpos, at)
+                (self.watcher(w, tpos, at), self.held_over_embodied(p, at))
             };
             if let Some(player) = watcher {
                 self.start_fight(w, p, player, at);
                 return;
+            }
+            if let Some(embodied) = held {
+                self.book_unwatched_hold(p, embodied);
             }
             self.resolve(w, infra, p, self.hold_ending.unwrap_or(round), at);
             if self.parties[p].alive() > 0 && round < self.parties[p].bored_at {
@@ -4528,6 +4873,17 @@ impl Conflict {
                 self.stats.casualties += u64::from(t);
             }
         }
+        // The bodies in Minecraft are no more than the members left (MZB-462): the books of a band
+        // that stands there while the engine resolves a fight abstractly. `recalled` stays: an
+        // older epoch's stack is counted by its own BAND_DEMATERIALIZED (MZB-131), and clamping it
+        // would hide deaths in Minecraft. The puppets over the count are Java's to trim (MZB-473).
+        if x.embodied {
+            for s in &mut x.spawned {
+                if let Some(e) = x.units.iter().find(|e| e.0 == s.0) {
+                    s.1 = s.1.min(e.1);
+                }
+            }
+        }
         let at = self.now;
         if lost > 0
             && self.parties[p].alive() == 0
@@ -4677,9 +5033,25 @@ impl Conflict {
         if self.lurking(p) {
             self.lurk_end(p);
         }
-        let here = self.party_pos(p, at);
+        // The route is in the chart: a canonical `here` among its waypoints would send the walk
+        // across the world after a seam (MZB-456).
+        let here = self.party_chart_pos(p, at);
         let f = self.parties[p].faction;
-        if self.parties[p].embodied {
+        // A watched band that is done, bored or routed walks home in its own bodies, where its
+        // watcher can see it go; the rest are recalled toward the camp, as ever. Not while the
+        // session's replay runs: no body of this session stands yet, and a replayed record must
+        // not make the pages' bodies walk (MZB-456, MZB-484).
+        let x = &self.parties[p];
+        let walks = x.embodied
+            && matches!(
+                reason,
+                boundary::RECALL_DONE | boundary::RECALL_BORED | boundary::RECALL_ROUTED
+            )
+            && x.spawned.iter().any(|s| s.1 > 0)
+            && x.kind != PartyKind::Envoy
+            && !self.peaceful
+            && !self.outbox.replaying();
+        if x.embodied && !walks {
             let camp = self.factions[f as usize].pos;
             let epoch = self.parties[p].epoch;
             self.recall(p, epoch, reason, (camp.x, camp.z));
@@ -4702,9 +5074,13 @@ impl Conflict {
         x.phase = Phase::Home;
         x.feud = x.feud.filter(|_| x.kind != PartyKind::Envoy);
         let (a, b, t1) = (x.route[0], x.route[1], x.times[1]);
+        self.march_changed(p);
         self.book_leg(w, p, a, b, at, t1);
         let plan = self.bump(p);
         self.schedule(t1, Ev::Party { party: p, plan });
+        if walks {
+            self.steer_segment(w, p, at);
+        }
         // The feud it served may move on while it walks home.
         if let Some(a) = self.parties[p].feud {
             if let Some(feud) = self.feud_mut(f, a)
@@ -4775,10 +5151,19 @@ impl Conflict {
                 items,
             )
             .text(|| format!("{} home: {alive} left, {items} items", kind.name()));
+        let mut handled = false;
         if kind.is_war() {
-            self.camp_home(p, at);
+            handled = self.camp_home(p, at);
             self.pool_return(f, alive, at);
             self.unblock(f, at);
+        }
+        // A band still in Minecraft that no hand-back line or recall took (every member Left, a
+        // faction with no camp ledger, a homecoming with no line to send) is recalled toward its
+        // camp, so no puppet outlives its band's row (MZB-463, P2-7).
+        if !handled && self.parties[p].embodied {
+            let epoch = self.parties[p].epoch;
+            let camp = self.factions[f as usize].pos;
+            self.recall(p, epoch, boundary::RECALL_DONE, (camp.x, camp.z));
         }
         if chief {
             self.factions[f as usize].chief_out = false;
@@ -4806,6 +5191,19 @@ impl Conflict {
             self.plan_feud(f, a, at, false);
         }
         if self.parties[p].loot.is_empty() {
+            // The band's end goes to Java after camp_home's hand-back lines and any recall, in
+            // the outbox's order (MZB-451, MZB-463). A replay's session has no map of it to end
+            // (MZB-484): the row goes, and nothing is sent. The gate's Drop of BAND_MARCH
+            // (docs/replay-gate.md §4.4) covers the send as well, so this guard changes no
+            // behaviour (the review's mutation of it passed): it is kept so that a replay builds
+            // no record for a row that goes (MZB-703).
+            if !self.outbox.replaying() {
+                let x = &mut self.parties[p];
+                x.march_rev = x.march_rev.saturating_add(1);
+                let record = self.march_record(p, true);
+                self.outbox.push(Cmd::March(record));
+            }
+            self.parties[p].march_due = false;
             self.parties.remove(p);
             self.fights_unanswered.remove(&p);
         } else {
@@ -4816,6 +5214,7 @@ impl Conflict {
                 x.target = Target::Pos(track);
             }
             x.phase = Phase::Waiting;
+            self.march_changed(p);
         }
         self.note(
             at,
@@ -4929,24 +5328,53 @@ impl Conflict {
         let bearing = (bz as f64).atan2(bx as f64).to_degrees() as f32;
         let ends = (at + self.tun.watched_fight_ticks).min(x.bored_at.max(at + 1));
         let strength = self.strength(p);
-        let epoch = self.next_epoch(p);
+        // A band that walked here in its bodies fights in them (MZB-461): its epoch, its
+        // placed members and its wave count stay, and the arc below sends only the members not
+        // in Minecraft yet.
+        let walked_in = x.embodied;
+        let epoch = if walked_in {
+            x.epoch
+        } else {
+            self.next_epoch(p)
+        };
         {
             let x = &mut self.parties[p];
             x.phase = Phase::Fighting;
             x.until = ends;
             x.fight_strength = strength;
-            x.epoch = epoch;
-            x.embodied = true;
             x.seen_by = Some(player);
-            x.wave = 0;
-            x.spawned.clear();
+            if !walked_in {
+                x.epoch = epoch;
+                x.embodied = true;
+                x.wave = 0;
+                x.spawned.clear();
+            }
         }
-        self.fights_unanswered.insert(p, (epoch, at));
+        self.march_changed(p);
+        if walked_in {
+            let target = *self.parties[p].route.last().expect("route");
+            let speed = self.culture(f).def.march_blocks_per_tick as f32;
+            self.outbox.push(Cmd::Steer(boundary::BandSteer {
+                agent: Party::agent(p),
+                epoch,
+                flags: boundary::STEER_ATTACK,
+                speed,
+                pos: (f64::from(target.0), 64.0, f64::from(target.1)),
+                arrive: 0,
+            }));
+        }
+        // The fight's first record is its first wave's. A walked-in band has no such wave: its
+        // members are placed, so its record is the empty marker `spawn_wave` sends (MZB-700), and
+        // a later wave answers nothing of this decision (MZB-492). The marker's gap is not
+        // measured, to keep RP-51's figure about the first wave of bodies.
+        if !walked_in {
+            self.fights_unanswered.insert(p, (epoch, at));
+        }
         let here = *self.parties[p].route.last().expect("route");
         self.book_leg(w, p, here, here, at, ends);
         let plan = self.bump(p);
         self.schedule(ends, Ev::Party { party: p, plan });
-        self.spawn_wave(w, p, player, Some((centre, bearing)), at);
+        self.spawn_wave(w, p, player, Some((centre, bearing)), at, walked_in);
         self.schedule(
             at + self.tun.wave_interval_ticks,
             Ev::Wave { party: p, plan },
@@ -4965,6 +5393,14 @@ impl Conflict {
 
     /// One wave (or the whole group when seen on the march): members up to the quota that are
     /// not in Minecraft yet.
+    ///
+    /// `walked_in`: the fight's decision is a band that walked in in its bodies (MZB-461). Its
+    /// members are all placed by then, yet the fight's record is still sent, BAND_FIGHT-flagged
+    /// and with no members (MZB-700): Java echoes it and spawns nothing, and the echo is what a
+    /// restart's replay finds to release the hold of the held arrival (MZB-491, MZB-492). That
+    /// record carries a wave number (`wave` advances, as `honour` reads it) but no bodies, so it
+    /// is not counted in `stats.waves` or `stats.materialized`, which count bodies sent. Any
+    /// other call with nothing to place sends nothing.
     fn spawn_wave(
         &mut self,
         w: &World,
@@ -4972,6 +5408,7 @@ impl Conflict {
         player: ActorId,
         arc: Option<((i32, i32), f32)>,
         at: Tick,
+        walked_in: bool,
     ) {
         // Nothing embodies while the session's replay runs (docs/replay-gate.md §6, RP-11).
         if self.outbox.defer() {
@@ -4980,7 +5417,7 @@ impl Conflict {
         let f = self.parties[p].faction;
         let c = self.culture(f).clone();
         let fill = self.wave_fill(p, 0);
-        if fill.is_empty() {
+        if fill.is_empty() && !walked_in {
             return;
         }
         let x = &self.parties[p];
@@ -5025,7 +5462,7 @@ impl Conflict {
                 self.tun.spawn_edge_blocks,
                 self.tun.arc_half_width_deg,
             ),
-            None => (here, 0.0, 0, 0.0),
+            None => (here, self.march_bearing(p, here), 0, 0.0),
         };
         let x = &self.parties[p];
         let tpos = self.target_pos(w, x.target);
@@ -5063,8 +5500,49 @@ impl Conflict {
         self.outbox.push(cmd);
         self.place(p, &fill);
         self.parties[p].wave += 1;
-        self.stats.waves += 1;
-        self.stats.materialized += 1;
+        if !fill.is_empty() {
+            self.stats.waves += 1;
+            self.stats.materialized += 1;
+        }
+    }
+
+    /// The way a band met on the march faces, in degrees from +x toward +z as `start_fight` takes
+    /// them (MZB-457). `centre` is the image of the band's place that `spawn_wave` puts it at.
+    /// Out and Home: toward the segment's end, or, standing on it, along the segment's own way;
+    /// Waiting: the way it came, from the last waypoint before its target; any other phase, or no
+    /// direction at all: 0.
+    fn march_bearing(&self, p: Handle<Party>, centre: (i32, i32)) -> f32 {
+        let x = &self.parties[p];
+        let n = x.route.len();
+        if n < 2 {
+            return 0.0;
+        }
+        let topo = self.topo(x.frame);
+        let image = |q: (i32, i32)| {
+            let i = topo.toward(
+                (i64::from(centre.0), i64::from(centre.1)),
+                (i64::from(q.0), i64::from(q.1)),
+            );
+            (i.0 as i32, i.1 as i32)
+        };
+        let (from, to) = match x.phase {
+            Phase::Out | Phase::Home => {
+                let s = (x.seg as usize).min(n - 2);
+                let ahead = image(x.route[s + 1]);
+                if ahead == centre {
+                    (image(x.route[s]), centre)
+                } else {
+                    (centre, ahead)
+                }
+            }
+            Phase::Waiting => (image(x.route[n - 2]), centre),
+            _ => return 0.0,
+        };
+        let (dx, dz) = (to.0 - from.0, to.1 - from.1);
+        if dx == 0 && dz == 0 {
+            return 0.0;
+        }
+        (dz as f64).atan2(dx as f64).to_degrees() as f32
     }
 
     /// A wave's members (`spawn_wave`'s, and the honour's, docs/replay-gate.md §5.2): the units
@@ -5135,7 +5613,7 @@ impl Conflict {
             );
             let bearing = (bz as f64).atan2(bx as f64).to_degrees() as f32;
             let wave = self.parties[p].wave;
-            self.spawn_wave(w, p, player, Some((centre, bearing)), at);
+            self.spawn_wave(w, p, player, Some((centre, bearing)), at, false);
             // A wave commanded is in Minecraft by the books, also after Java refused the first
             // one and left the band unembodied: its bodies' records find the band again, and the
             // fight's end recalls them.
@@ -5485,10 +5963,17 @@ impl Conflict {
             self.stats.stale += 1;
             return;
         }
+        // A band on its way home is met as one on its way out is (MZB-457), unless nobody of it
+        // is left alive to show: a routed band walks home with its dead (MZB-490).
         let x = &self.parties[p];
         if x.embodied
-            || matches!(x.phase, Phase::Home | Phase::Mustering | Phase::Fighting)
+            || x.alive() == 0
+            || matches!(x.phase, Phase::Mustering | Phase::Fighting)
             || (self.peaceful && (x.kind.is_war() || x.kind == PartyKind::Envoy))
+            // An envoy goes home recalled, never in bodies (MZB-456), and `go_home` has cleared
+            // the feud it came for: met again, it would show a demand of nothing to nobody
+            // (MZB-702).
+            || (x.kind == PartyKind::Envoy && x.phase == Phase::Home)
         {
             return;
         }
@@ -5506,10 +5991,10 @@ impl Conflict {
         if self.parties[p].kind == PartyKind::Envoy {
             self.materialize_envoy(w, p, player, at);
         } else {
-            self.spawn_wave(w, p, player, None, at);
+            self.spawn_wave(w, p, player, None, at, false);
         }
         let x = &self.parties[p];
-        if x.phase == Phase::Out {
+        if matches!(x.phase, Phase::Out | Phase::Home) {
             let s = x.seg as usize;
             let next = x.route[s + 1];
             let arrive = x.times[s + 1];
@@ -5525,7 +6010,7 @@ impl Conflict {
             }));
         }
         // Passing through: it leaves view where its walk leaves the area, unless it stops here.
-        self.book_unseen(w, p, at);
+        self.book_unseen(w, p, at, at);
         let kind = self.parties[p].kind;
         self.note(
             at,
@@ -5586,7 +6071,14 @@ impl Conflict {
     /// and above its floor, which it spends.
     fn next_epoch(&mut self, p: Handle<Party>) -> u32 {
         let floor = self.floors.remove(&Party::agent(p)).unwrap_or(0);
-        self.parties[p].epoch.max(floor) + 1
+        let epoch = self.parties[p].epoch.max(floor) + 1;
+        // The body this epoch is for is the engine's own: a fight unwatched before it may have
+        // owned epochs below it only (`Party::unwatched`, MZB-706).
+        self.parties[p].unwatched.retain_mut(|r| {
+            r.1 = r.1.min(epoch - 1);
+            r.0 <= r.1
+        });
+        epoch
     }
 
     /// No epoch is used twice (§5.3, RP-7, RP-57): a replayed record or a copy that names a party's
@@ -5612,16 +6104,32 @@ impl Conflict {
         }
     }
 
-    fn unseen(&mut self, p: Handle<Party>, epoch: u32, at: Tick) {
+    /// An embodied band on the road, out or home, walks out of its watcher's view (MZB-458). Only
+    /// the latest booking acts (`at` is `unseen_due`). A player near it takes it over, the same one
+    /// when it followed, and the next exit is booked a tick on; with none, the band is recalled
+    /// toward its segment's end, as it has been.
+    fn unseen(&mut self, w: &World, p: Handle<Party>, epoch: u32, at: Tick) {
         let Some(x) = self.parties.get(p) else {
             return;
         };
-        if !x.embodied || x.epoch != epoch || x.phase != Phase::Out {
+        if !x.embodied
+            || x.epoch != epoch
+            || !matches!(x.phase, Phase::Out | Phase::Home)
+            || at != x.unseen_due
+        {
             return;
         }
+        // No player is routed while the replay runs: the pages' bodies are the last session's.
+        if !self.outbox.replaying()
+            && let Some(player) = self.rebind_to(w, p, at)
+        {
+            self.parties[p].seen_by = Some(player);
+            self.book_unseen(w, p, at, at + 1);
+            return;
+        }
+        let x = &self.parties[p];
         let next = x.route[(x.seg as usize + 1).min(x.route.len() - 1)];
         self.recall(p, epoch, boundary::RECALL_PASSING, next);
-        let _ = at;
     }
 
     // ---- the run loop -----------------------------------------------------------------------
@@ -5686,7 +6194,7 @@ impl Conflict {
                 player,
                 meeting,
             } => self.seen(w, party, player, meeting, at),
-            Ev::Unseen { party, epoch } => self.unseen(party, epoch, at),
+            Ev::Unseen { party, epoch } => self.unseen(w, party, epoch, at),
             Ev::Wave { party, plan } => {
                 if self.parties.get(party).is_none_or(|x| x.plan != plan) {
                     return;
@@ -5752,6 +6260,12 @@ impl Conflict {
         // notices go again from what is kept, after the replay (`resend_notices`). Every push is
         // gated from here to `replay_done`.
         self.outbox.begin_replay();
+        // Java's map of marches is per session (MOWZIE.md §4.16, MZB-451): every party is marked,
+        // and the first take after the replay sends each what it is then.
+        let ids: Vec<Handle<Party>> = self.parties.iter().map(|(h, _)| h).collect();
+        for p in ids {
+            self.march_changed(p);
+        }
         // A new session sends the stacks parked in the last one again (MZB-760), unless a replayed
         // NOT_LOADED parks one again (MZB-761).
         self.parked.clear();
@@ -5781,6 +6295,20 @@ impl Conflict {
             return;
         }
         self.outbox.replay_done();
+        // The holds the end lets go, with whether their bodies were in Minecraft, and every party
+        // whose bodies were (MZB-706).
+        let held_over = self
+            .held
+            .iter()
+            .filter_map(|(&p, h)| Some((p, (h.plan, self.parties.get(p)?.embodied))))
+            .collect();
+        self.left_embodied = self
+            .parties
+            .iter()
+            .filter(|(_, x)| x.embodied)
+            .map(|(p, _)| p)
+            .collect();
+        self.lost_until = Tick::ZERO;
         let ids: Vec<Handle<Party>> = self.parties.iter().map(|(h, _)| h).collect();
         for p in ids {
             let x = &mut self.parties[p];
@@ -5791,10 +6319,12 @@ impl Conflict {
             if x.phase == Phase::Fighting {
                 x.phase = Phase::Waiting;
             }
+            self.march_changed(p);
         }
         self.fill_deaths.clear();
         // The held arrivals' polls run `arrive` or `wait_over` as live (§6.1).
         self.held.clear();
+        self.held_over = held_over;
         self.unheld_fights.clear();
         // Live, every stack in flight is a placing (RP-134).
         self.tribute_owing = Vec::new();
@@ -5815,6 +6345,17 @@ impl Conflict {
             self.chief_state(&c, now);
         }
         self.presence.every_player_left();
+    }
+
+    /// The session's present, told by the host right after the replay end (MZB-706): the game time
+    /// of the hand-over that ended it. A war party's arrival (or a siege's round) that the engine
+    /// decides on or before it, unwatched, is a moment of the last session that the replay's
+    /// records did not reach (the journal ended before it, or before its fight's BAND_MATERIALIZED):
+    /// that session may have fought it watched, so a holder's copy of the fight's deaths must
+    /// count nothing once the abstract resolve took its losses. An arrival after the present is
+    /// this session's own.
+    pub fn replay_present(&mut self, present: Tick) {
+        self.lost_until = present;
     }
 
     /// A world save made the records through journal sequence `durable` durable (WORLD_SAVED):
@@ -6270,6 +6811,15 @@ impl Conflict {
                 }
             }
             Obs::Dematerialized(d) => {
+                // The answer to a homecoming's HAND_BACK lines (MZB-466): no death is unbooked
+                // from here on.
+                if self
+                    .home_open
+                    .get(&d.agent)
+                    .is_some_and(|e| e.epoch == d.epoch)
+                {
+                    self.home_open.remove(&d.agent);
+                }
                 // By the party, not through `party_of`: a band recalled at one epoch and seen
                 // again at the next has its old epoch's despawn still to come (MZB-131).
                 let Some(p) = Party::of_agent(d.agent).filter(|p| self.parties.contains(*p)) else {
@@ -6347,6 +6897,7 @@ impl Conflict {
             Obs::ChiefKilled(ck) => {
                 let Some(p) = Party::of_agent(ck.agent).filter(|p| self.parties.contains(*p))
                 else {
+                    self.unbooked_home_death(ck.agent, ck.epoch, ck.op, None, at);
                     return;
                 };
                 let killer = (ck.by == boundary::BY_PLAYER).then(|| self.player(w, ck.killer));
@@ -6502,11 +7053,19 @@ impl Conflict {
         if again {
             self.parties[p].embodied = true;
         }
-        // A held arrival's fight (§6.1, RP-23, RP-56): Java echoes BAND_FIGHT from the command,
-        // and `start_fight` always takes a new epoch, so a record of the same one, or a
-        // sighting's, is no fight. A sighting only embodies and keeps the hold.
-        let fight = newer && m.flags & u32::from(boundary::BAND_FIGHT) != 0;
-        let held = if fight { self.held_since(p, at) } else { None };
+        // A held arrival's fight (§6.1, RP-23, RP-56): Java echoes BAND_FIGHT from the command.
+        // `start_fight` takes a new epoch for a band that is not embodied, so a record of a new
+        // epoch is the fight; a sighting's carries no flag and only embodies, keeping the hold.
+        // A band that walked in embodied fights at the epoch it was met at (MZB-461): its fight
+        // record is of its own epoch, and only a held arrival makes it the fight (a later wave of
+        // a fight in progress has no hold).
+        let flagged = m.flags & u32::from(boundary::BAND_FIGHT) != 0;
+        let held = if flagged && (newer || same) {
+            self.held_since(p, at)
+        } else {
+            None
+        };
+        let fight = flagged && (newer || held.is_some());
         if fight && held.is_none() {
             // Recorded at or past its hold's slack, whose poll resolves the round unwatched as
             // of the hold: the epoch floor only (raised in `ingest`, RP-57), so that its bodies
@@ -6547,10 +7106,11 @@ impl Conflict {
     /// body is gone, so a copy embodies nothing and is applied by identity. Every copy that names
     /// a party's epoch raises the agent's epoch floor to it, live or replayed (RP-57). Then a
     /// BAND_CASUALTIES against the party's alive units of that body kind, at any epoch, from no
-    /// stack, with the killer's signal and the rout as for a live one; a BAND_MATERIALIZED
-    /// nothing more. Every other kind (CHIEF_KILLED by party and op id among them) as
-    /// [`Conflict::ingest`]. The host refuses a BAND_CASUALTIES copy of generation 0 before it
-    /// gets here (RP-21).
+    /// stack, with the killer's signal and the rout as for a live one, unless its party and epoch
+    /// name a fight an arrival resolved unwatched (`Party::unwatched`), which the abstract resolve took already
+    /// (it counts nothing, MZB-706); a BAND_MATERIALIZED nothing more. Every other kind
+    /// (CHIEF_KILLED by party and op id among them) as [`Conflict::ingest`]. The host refuses a
+    /// BAND_CASUALTIES copy of generation 0 before it gets here (RP-21).
     pub fn ingest_copy(
         &mut self,
         w: &mut World,
@@ -6602,6 +7162,43 @@ impl Conflict {
         }
     }
 
+    /// A death naming a party that is gone (MZB-466): when `home` ended it with HAND_BACK lines
+    /// still unanswered at that epoch, a puppet died in the tick or two before its line. It books
+    /// nothing, and nothing else is touched: its slot's line finds no puppet and the body spawns
+    /// at the edge. Counted once for each op, whichever copy of the record comes, and logged with
+    /// the party and the slots its lines name. A record for any other ended party is a straggler
+    /// and counts for nothing.
+    fn unbooked_home_death(
+        &mut self,
+        agent: u64,
+        epoch: u32,
+        op: u64,
+        unit: Option<(u32, u32)>,
+        at: Tick,
+    ) {
+        let Some(e) = self.home_open.get_mut(&agent) else {
+            return;
+        };
+        if e.epoch != epoch || e.counted.contains(&op) {
+            return;
+        }
+        e.counted.push(op);
+        let (f, slots) = (e.faction, e.slots.clone());
+        self.stats.unbooked_home_deaths += 1;
+        let what = match unit {
+            Some((body, count)) => format!("{count} of body {body}"),
+            None => "the chief".to_string(),
+        };
+        self.note(
+            at,
+            Some(f),
+            "unbooked",
+            format!(
+                "{what} of party {agent:#x} (epoch {epoch}) died after the band's end, its HAND_BACK lines for camp slots {slots:?} not answered"
+            ),
+        );
+    }
+
     /// A BAND_CASUALTIES. `copy`: a copy of an ended session's record (§5.7, RP-9), whose body
     /// is gone: it needs no stack.
     fn casualties(&mut self, w: &mut World, cs: &boundary::BandCasualties, at: Tick, copy: bool) {
@@ -6612,12 +7209,31 @@ impl Conflict {
         // a newer epoch (MZB-131). The despawn removes the stack, so a straggler after it is no
         // death. A copy takes from no stack, whatever its epoch.
         let Some(p) = Party::of_agent(cs.agent).filter(|&p| self.parties.get(p).is_some()) else {
+            self.unbooked_home_death(cs.agent, cs.epoch, cs.op, Some((cs.body, cs.count)), at);
             return;
         };
         // A casualty the party counted already: the reassert of a record journaled on an entity,
         // or a copy of one (MZB-589). By the party's own list, not the world's `applied_ops`,
         // which never shrinks and would hold an op for every member death of the world's life.
         if self.parties[p].casualty_ops.contains(&cs.op) {
+            return;
+        }
+        // A copy of the deaths of a fight this party's held arrival resolved unwatched (MZB-706):
+        // the abstract resolve took that fight's losses, so the copy counts nothing more. A live
+        // record is left to the rules below: after the replay end the party is not in its bodies,
+        // so one for such an epoch is a straggler and counts nothing, and while replaying it is
+        // the original of a death the session that went on counted (RP-59).
+        if copy && self.parties[p].resolved_unwatched(cs.epoch) {
+            let f = self.parties[p].faction;
+            self.note(
+                at,
+                Some(f),
+                "unwatched",
+                format!(
+                    "a copy of {} of body {} of party {:#x} (epoch {}) counts nothing: its fight was resolved unwatched",
+                    cs.count, cs.body, cs.agent, cs.epoch
+                ),
+            );
             return;
         }
         let x = &self.parties[p];
@@ -6797,6 +7413,7 @@ impl Conflict {
             return;
         }
         self.parties[p].chief = false;
+        self.march_changed(p);
         let (x, z) = self.party_pos(p, at);
         let fall = At::new(at.0, u32::from(self.parties[p].frame), x, z);
         let cowed = self.chief_falls(w, f, killer, fall, "the band routs", at);
@@ -7138,6 +7755,7 @@ impl Conflict {
                 + x.route.len() * 16
                 + x.units.len() * 8
                 + x.casualty_ops.len() * 8
+                + x.unwatched.len() * 8
         };
         BTreeMap::from([
             ("factions", self.factions.rows.heap_bytes()),
@@ -7291,7 +7909,6 @@ impl Viewer for Conflict {
     }
 
     fn player_left(&mut self, w: &mut World, player: ActorId) {
-        let _ = w;
         // P14's counter: the gap until the player's next report is not time spent anywhere.
         self.presence.left(player);
         let ids: Vec<Handle<Party>> = self
@@ -7301,14 +7918,25 @@ impl Viewer for Conflict {
             .map(|(h, _)| h)
             .collect();
         for p in ids {
+            let siege = self.parties[p].kind == PartyKind::Siege;
+            // A siege with nobody watching is recalled and its fight goes on abstractly at its
+            // next event. Any other band passes to a player near it if there is one (MZB-459).
+            let x = &mut self.parties[p];
+            if x.phase == Phase::Fighting {
+                x.phase = Phase::Waiting;
+                self.march_changed(p);
+            }
+            if !siege
+                && !self.outbox.replaying()
+                && let Some(next) = self.rebind_to(w, p, self.now)
+            {
+                self.parties[p].seen_by = Some(next);
+                self.book_unseen(w, p, self.now, self.now + 1);
+                continue;
+            }
             let camp = self.factions[self.parties[p].faction as usize].pos;
             let epoch = self.parties[p].epoch;
             self.recall(p, epoch, boundary::RECALL_PLAYER_LEFT, (camp.x, camp.z));
-            let x = &mut self.parties[p];
-            // A watched fight with nobody watching goes on abstractly at its next event.
-            if x.phase == Phase::Fighting {
-                x.phase = Phase::Waiting;
-            }
         }
     }
 }

@@ -76,6 +76,14 @@ public final class ConflictBodies {
          * body's slot or stack). Null when the body cannot be made now; the stack waits and is tried again.
          */
         Mob make(ServerLevel level, double x, double y, double z, float yaw, List<Mob> extras);
+
+        /**
+         * True when a member of this body travels as a pack (the raptor with its followers): the march's column gives
+         * each member a stack of its own, two to a pair abreast and well apart, instead of a row of two (MZB-469).
+         */
+        default boolean pack() {
+            return false;
+        }
     }
 
     private static final Map<String, Maker> MAKERS = new HashMap<>();
@@ -91,6 +99,12 @@ public final class ConflictBodies {
     /** The maker of a body kind, or null when it is made as an ordinary stand-in. */
     static synchronized Maker maker(String body) {
         return body == null ? null : MAKERS.get(body);
+    }
+
+    /** True when a body kind's maker says its members travel as packs ({@link Maker#pack}). */
+    static boolean pack(String body) {
+        Maker m = maker(body);
+        return m != null && m.pack();
     }
 
     /** True when a body of this type is a monster that Peaceful removes (not a friendly category). */

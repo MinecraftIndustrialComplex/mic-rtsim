@@ -76,8 +76,11 @@ pub(crate) fn gate(c: &Cmd) -> Gate {
         Cmd::TrainRobbed(_) => verdicts(Q::Keep, R::Drop),
         // Goes only ahead of a stack, a spawn line or a hand-back, none made while replaying.
         Cmd::ChiefBody(_) => verdicts(Q::Keep, R::Never),
-        // Latest wins per agent (MOWZIE.md §4.16): the abstract party's march.
-        Cmd::March(_) => verdicts(Q::Drop, R::Send),
+        // Latest wins per agent (MOWZIE.md §4.16): a party's march, built by `take_commands` and
+        // by `home`'s end only while not replaying. Java's map is a session's, so what is queued
+        // at the start goes with the session, and the first take after the replay sends every
+        // party's march afresh from the party (RP-170).
+        Cmd::March(_) => verdicts(Q::Drop, R::Drop),
         // The faction's hunts are state: every hunt still held goes again from them at the
         // replay end (`resend_notices`), after a journaled HUNT_APPLIED cleared its own (MZB-449).
         Cmd::OwedHunt(_) => verdicts(Q::Drop, R::Drop),
@@ -203,7 +206,7 @@ mod tests {
         (boundary::CAMP_RECONCILE, Queued::Drop, Replaying::Never),
         (boundary::TRAIN_ROBBED, Queued::Keep, Replaying::Drop),
         (boundary::CHIEF_BODY, Queued::Keep, Replaying::Never),
-        (boundary::BAND_MARCH, Queued::Drop, Replaying::Send),
+        (boundary::BAND_MARCH, Queued::Drop, Replaying::Drop),
         (boundary::OWED_HUNT, Queued::Drop, Replaying::Drop),
     ];
 
@@ -250,9 +253,9 @@ mod tests {
             o.push(c.clone());
         }
         let sent: Vec<u16> = o.take().iter().map(Cmd::kind).collect();
-        assert_eq!(sent, vec![boundary::TERRITORY, boundary::BAND_MARCH]);
+        assert_eq!(sent, vec![boundary::TERRITORY]);
         let want = GateCounts {
-            dropped: 8,
+            dropped: 9,
             ..GateCounts::default()
         };
         assert_eq!(o.counts(), want, "the drops are counted");

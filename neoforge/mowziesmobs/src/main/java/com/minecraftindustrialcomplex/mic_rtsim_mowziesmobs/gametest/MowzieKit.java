@@ -206,9 +206,17 @@ public final class MowzieKit {
         private long forcedAt = System.nanoTime(), forceNanos;
 
         public Far(GameTestHelper helper, String test) {
+            this(helper, test, ConflictKit.farBase());
+        }
+
+        /** A place at the chunk-aligned block {@code base} ({x, z}) instead of a random far one: the sweep tests (MZB-951) choose their own coordinates. */
+        public Far(GameTestHelper helper, String test, int bx, int bz) {
+            this(helper, test, new int[] {bx, bz});
+        }
+
+        private Far(GameTestHelper helper, String test, int[] base) {
             level = helper.getLevel();
             dim = RtsimTests.dimension(helper);
-            int[] base = ConflictKit.farBase();
             bx = base[0];
             bz = base[1];
             k = bx >> 4;

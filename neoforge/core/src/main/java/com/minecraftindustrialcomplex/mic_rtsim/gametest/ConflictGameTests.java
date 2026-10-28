@@ -130,17 +130,23 @@ public final class ConflictGameTests {
     // ---- ledger 25: a band stack by stack --------------------------------------------------------
 
     /**
-     * Test 33 without its column (MOWZIE.md §8, ledger 25), at a place far from every earlier run's with
-     * forced chunks standing in for the simulation distance: a band of two stacks whose places are in
-     * chunks that do not tick entities is answered BAND_MATERIALIZED with none placed and never
-     * rejected; each stack is pending and is tested only when its place moves into other chunks or a
-     * chunk it waits on changes (counted: idle ticks test nothing). Each stack straddles a chunk edge,
-     * and is placed the tick its last chunk ticks entities, not before; the other stack, whose chunks did
-     * not change, is not tested. A member moved out of the ticking area while its place still ticks is
-     * moved back, the same body, and its stack stays placed (MZB-125); a stack whose chunk stops ticking
-     * goes back to pending, and the other stays; once its chunk ticks again it comes back, but not before
-     * {@link ConflictBridge#REQUEUE_COOLDOWN} ticks. A recall reports every living member, placed or
-     * pending, as a survivor. Chunks an earlier failed run left forced in the far area are released first.
+     * Ledger 25 with the column (MOWZIE.md §8, MZB-722), at a place far from every earlier run's with forced
+     * chunks standing in for the simulation distance. A band met on the march (radius 0, heading +x) with two
+     * entries of two makes two stacks of one row each: the front stack at the arc's centre, the rear one 1.5
+     * blocks behind it, each member 0.6 either side of its stack's line. The arc's centre is on a chunk row's
+     * edge (z), so each stack straddles two chunks across the heading, and the stacks wait on different chunks
+     * (x). A band whose places are in chunks that do not tick entities is answered BAND_MATERIALIZED with none
+     * placed and never rejected; each stack is pending and is tested only when its place moves into other
+     * chunks or a chunk it waits on changes (counted: idle ticks test nothing). A steer turns the column and
+     * walks both stacks 16 blocks east, each across one chunk edge: one move and one test each. A chunk of the
+     * front stack ticks: only that stack is tested, and it stays pending until its other chunk ticks, the tick
+     * it is placed; the rear stack, whose chunks did not change, is not tested. A member moved out of the
+     * ticking area while its place still ticks is moved back, the same body, and its stack stays placed
+     * (MZB-125); a stack whose chunk stops ticking goes back to pending, and the other stays; once its chunk
+     * ticks again it comes back, but not before {@link ConflictBridge#REQUEUE_COOLDOWN} ticks. A recall
+     * reports every living member, placed or pending, as a survivor. Chunks an earlier failed run left forced
+     * in the far area are released first. (The same test before M10 had one stack of four rows each; the
+     * column's rows are stacks of their own.)
      */
     @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "conflict_stacks")
     public static void aBandAppearsStackByStackAndAPendingStackIsTestedOnlyOnChange(GameTestHelper helper) {
@@ -153,10 +159,10 @@ public final class ConflictGameTests {
         int k = bx >> 4, z0 = bz >> 4;
         long agent = ConflictKit.newAgent();
         ConflictKit.Band band = ConflictKit.band(agent, ConflictKit.newFaction(), dim);
-        // Radius 0: both stacks at the arc's centre, 4 blocks apart across the heading (+x), so stack 0
-        // stands in chunk row z0 and stack 1 in z0 + 1; the front rows 16 blocks west of bx, the rear
-        // rows 1.5 behind.
-        band.arcX = bx - 15.5;
+        // Radius 0 and bearing 0: the column runs along +x from the head at (bx + 0.5, bz + 16). Stack 0 (the
+        // warriors) is the front row, stack 1 (the archers) 1.5 behind it. A row's two members stand 0.6 to
+        // either side of its line, in the z rows z0 (bz + 15.4) and z0 + 1 (bz + 16.6).
+        band.arcX = bx + 0.5;
         band.arcZ = bz + 16;
         band.targetX = bx + 1000;
         band.targetZ = bz + 16;
@@ -182,18 +188,20 @@ public final class ConflictGameTests {
 
         helper.startSequence()
                 .thenExecute(() -> ConflictKit.materialize(band, List.of(
-                        new ConflictKit.StackSpec(WARRIOR, 4, false), new ConflictKit.StackSpec(ARCHER, 4, false))))
+                        new ConflictKit.StackSpec(WARRIOR, 2, false), new ConflictKit.StackSpec(ARCHER, 2, false))))
                 .thenWaitUntil(waits.logic(() -> check("BAND_MATERIALIZED", !about(ConflictRecords.BAND_MATERIALIZED, agent).isEmpty())))
                 .thenExecute(() -> {
                     ScriptedEngine.Received m = about(ConflictRecords.BAND_MATERIALIZED, agent).get(0);
                     check("none placed now (" + m.aux() + ")", m.aux() == 0);
                     check("never rejected", about(ConflictRecords.BAND_SPAWN_REJECTED, agent).isEmpty());
                     ConflictBridge.Party p = party(agent);
-                    check("two stacks", p.stacks().size() == 2);
+                    check("two stacks, one row each (" + p.stacks().size() + ")", p.stacks().size() == 2);
                     for (int i = 0; i < 2; i++) {
                         st[i] = p.stacks().get(i);
                         check("stack " + i + " pending", st[i].state() == ConflictBridge.StackState.PENDING);
-                        Set<Long> want = Set.of(chunk(k - 1, z0 + i), chunk(k - 2, z0 + i));
+                        check("stack " + i + " is a row of two (" + st[i].slots().size() + ")", st[i].slots().size() == 2);
+                        // Stack 0 at x = bx + 0.5 (chunk k), stack 1 1.5 behind it at bx - 1.0 (chunk k - 1).
+                        Set<Long> want = Set.of(chunk(k - i, z0), chunk(k - i, z0 + 1));
                         Set<Long> got = st[i].chunksNow(level.getGameTime());
                         check("stack " + i + " straddles " + chunks(want) + ": " + chunks(got), got.equals(want));
                         tests[i] = st[i].tests();
@@ -205,94 +213,102 @@ public final class ConflictGameTests {
                     for (int i = 0; i < 2; i++)
                         check("stack " + i + " was not tested while nothing changed (" + st[i].tests() + " vs " + tests[i] + ")",
                                 st[i].tests() == tests[i] && st[i].moves() == moves[i]);
-                    // Walk 16 blocks east: the front rows into chunk k, the rear rows into k - 1.
+                    // Walk 16 blocks east: the head's steer turns the column's heading to +x again (the same), and each
+                    // stack crosses one chunk edge (stack 0 at x = bx + 16, stack 1 at x = bx).
                     arrive[0] = level.getGameTime() + 100;
-                    ConflictKit.steer(agent, 1, 0.8f, bx + 0.5, bz + 16, arrive[0], false);
+                    ConflictKit.steer(agent, 1, 0.8f, bx + 16.5, bz + 16, arrive[0], false);
                 })
                 .thenWaitUntil(waits.logic(() -> {
                     long now = level.getGameTime();
                     check("arrived", now > arrive[0] && bridge().steered > 0);
                     for (int i = 0; i < 2; i++) {
-                        Set<Long> want = Set.of(chunk(k - 1, z0 + i), chunk(k, z0 + i));
-                        check("stack " + i + " in " + chunks(want), st[i].chunksNow(now).equals(want));
+                        Set<Long> want = Set.of(chunk(k + 1 - i, z0), chunk(k + 1 - i, z0 + 1));
+                        check("stack " + i + " in " + chunks(want) + ": " + chunks(st[i].chunksNow(now)), st[i].chunksNow(now).equals(want));
                     }
                 }))
                 .thenExecute(() -> {
                     for (int i = 0; i < 2; i++) {
                         int dm = st[i].moves() - moves[i], dt = st[i].tests() - tests[i];
                         record(test, "stack " + i + " walking", dm + " moves into other chunks, " + dt + " tests");
-                        check("stack " + i + " moved chunks twice (" + dm + ")", dm == 2);
+                        check("stack " + i + " moved chunks once (" + dm + ")", dm == 1);
                         check("and was tested once per move (" + dt + ")", dt == dm);
                         check("still pending", st[i].state() == ConflictBridge.StackState.PENDING);
                         tests[i] = st[i].tests();
                     }
-                    force.accept(k, z0);
-                    force.accept(k, z0 + 1);
+                    // The front stack's first chunk ticks.
+                    force.accept(k + 1, z0);
                 })
                 .thenWaitUntil(waits.chunks(() -> {
-                    check("chunk k ticks entities in both rows", RtsimSession.entitiesTickAt(level, new BlockPos(bx + 8, 64, bz + 8))
-                            && RtsimSession.entitiesTickAt(level, new BlockPos(bx + 8, 64, bz + 24)));
-                    check("chunks k - 1 are loaded", level.hasChunk(k - 1, z0) && level.hasChunk(k - 1, z0 + 1));
+                    check("chunk (k + 1, z0) ticks entities", RtsimSession.entitiesTickAt(level, new BlockPos(bx + 24, 64, bz + 8)));
+                    check("its neighbours are loaded, where the stacks stand", level.hasChunk(k, z0) && level.hasChunk(k, z0 + 1)
+                            && level.hasChunk(k + 1, z0 + 1) && level.hasChunk(k + 2, z0));
                 }))
-                .thenWaitUntil(waits.logic(() -> {
-                    for (int i = 0; i < 2; i++)
-                        check("stack " + i + " tested on its chunk's change", st[i].tests() == tests[i] + 1);
-                }))
+                .thenWaitUntil(waits.logic(() -> check("stack 0 tested on its chunk's change (" + (st[0].tests() - tests[0]) + ")",
+                        st[0].tests() == tests[0] + 1)))
                 .thenIdle(10)
                 .thenExecute(() -> {
-                    for (int i = 0; i < 2; i++) {
-                        check("stack " + i + " tested once (" + (st[i].tests() - tests[i]) + ")", st[i].tests() == tests[i] + 1);
-                        check("and still pending: its rear rows do not tick", st[i].state() == ConflictBridge.StackState.PENDING);
-                        tests[i] = st[i].tests();
-                    }
+                    check("stack 0 tested once (" + (st[0].tests() - tests[0]) + ")", st[0].tests() == tests[0] + 1);
+                    check("and still pending: its other chunk does not tick", st[0].state() == ConflictBridge.StackState.PENDING);
+                    check("stack 1 not tested: none of its chunks changed (" + (st[1].tests() - tests[1]) + ")", st[1].tests() == tests[1]);
+                    tests[0] = st[0].tests();
                     check("never rejected", about(ConflictRecords.BAND_SPAWN_REJECTED, agent).isEmpty());
-                    platform(level, bx - 4, bx + 3, bz + 11, bz + 21);
-                    force.accept(k - 1, z0);
+                    platform(level, bx + 12, bx + 21, bz + 11, bz + 21);
+                    force.accept(k + 1, z0 + 1);
                 })
-                .thenWaitUntil(waits.chunks(() -> check("chunk (k - 1, z0) ticks entities",
-                        RtsimSession.entitiesTickAt(level, new BlockPos(bx - 8, 64, bz + 8)))))
+                .thenWaitUntil(waits.chunks(() -> check("chunk (k + 1, z0 + 1) ticks entities",
+                        RtsimSession.entitiesTickAt(level, new BlockPos(bx + 24, 64, bz + 24)))))
                 .thenWaitUntil(waits.logic(() -> {
-                    check("stack 0 placed", st[0].state() == ConflictBridge.StackState.PLACED && st[0].bodies().size() == 4);
+                    check("stack 0 placed (" + st[0].state() + ")", st[0].state() == ConflictBridge.StackState.PLACED && st[0].bodies().size() == 2);
                     pin(st[0]);
                 }))
                 .thenExecute(() -> {
                     check("stack 1 still pending", st[1].state() == ConflictBridge.StackState.PENDING);
                     check("stack 1 not tested: none of its chunks changed (" + (st[1].tests() - tests[1]) + ")", st[1].tests() == tests[1]);
-                    check("stack 0 placed once", st[0].placings() == 1);
+                    check("stack 0 tested once more, and placed once (" + (st[0].tests() - tests[0]) + ", " + st[0].placings() + ")",
+                            st[0].tests() == tests[0] + 1 && st[0].placings() == 1);
                     for (Mob m : st[0].bodies())
                         check("a warrior is a vindicator", m.getType() == EntityType.VINDICATOR && RtsimApi.isPuppet(m));
-                    force.accept(k - 1, z0 + 1);
+                    force.accept(k, z0);
                 })
-                .thenWaitUntil(waits.chunks(() -> check("chunk (k - 1, z0 + 1) ticks entities",
-                        RtsimSession.entitiesTickAt(level, new BlockPos(bx - 8, 64, bz + 24)))))
+                .thenWaitUntil(waits.chunks(() -> check("chunk (k, z0) ticks entities", RtsimSession.entitiesTickAt(level, new BlockPos(bx + 8, 64, bz + 8)))))
+                .thenWaitUntil(waits.logic(() -> check("stack 1 tested on its chunk's change (" + (st[1].tests() - tests[1]) + ")",
+                        st[1].tests() == tests[1] + 1)))
+                .thenIdle(10)
+                .thenExecute(() -> {
+                    check("stack 1 tested once (" + (st[1].tests() - tests[1]) + ")", st[1].tests() == tests[1] + 1);
+                    check("and still pending: its other chunk does not tick", st[1].state() == ConflictBridge.StackState.PENDING);
+                    tests[1] = st[1].tests();
+                    force.accept(k, z0 + 1);
+                })
+                .thenWaitUntil(waits.chunks(() -> check("chunk (k, z0 + 1) ticks entities", RtsimSession.entitiesTickAt(level, new BlockPos(bx + 8, 64, bz + 24)))))
                 .thenWaitUntil(waits.logic(() -> {
-                    check("stack 1 placed", st[1].state() == ConflictBridge.StackState.PLACED && st[1].bodies().size() == 4);
+                    check("stack 1 placed (" + st[1].state() + ")", st[1].state() == ConflictBridge.StackState.PLACED && st[1].bodies().size() == 2);
                     pin(st[1]);
                 }))
                 .thenExecute(() -> {
                     for (Mob m : st[1].bodies())
                         check("an archer is a pillager", m.getType() == EntityType.PILLAGER);
                     check("never rejected", about(ConflictRecords.BAND_SPAWN_REJECTED, agent).isEmpty());
-                    record(test, "placed", "stack 0 when chunk (" + (k - 1) + ", " + z0 + ") ticked, stack 1 when ("
-                            + (k - 1) + ", " + (z0 + 1) + ") did; tests " + st[0].tests() + ", " + st[1].tests());
-                    // A member strays (moved into chunk k - 2, loaded but not ticking entities) while its place ticks.
+                    record(test, "placed", "stack 0 when chunk (" + (k + 1) + ", " + (z0 + 1) + ") ticked, stack 1 when (" + k + ", " + (z0 + 1)
+                            + ") did; tests " + st[0].tests() + ", " + st[1].tests());
+                    // A member strays (moved into chunk k + 2, loaded but not ticking entities) while its place ticks.
                     requeued[0] = bridge().requeued;
                     strays[0] = bridge().strays;
                     out[0] = st[0].bodies().get(0);
-                    out[0].moveTo(bx - 19.5, out[0].getY(), out[0].getZ());
+                    out[0].moveTo(bx + 40.5, out[0].getY(), out[0].getZ());
                 })
                 .thenWaitUntil(waits.logic(() -> check("the stray moved back", bridge().strays > strays[0])))
                 .thenExecute(() -> {
                     record(test, "stray", "moved back to (" + out[0].getX() + ", " + out[0].getZ() + ")");
                     check("once (" + (bridge().strays - strays[0]) + ")", bridge().strays == strays[0] + 1);
-                    check("into the ticking chunks", out[0].getX() > bx - 16 && !out[0].isRemoved());
-                    check("the same body", st[0].bodies().contains(out[0]) && st[0].bodies().size() == 4);
+                    check("into the ticking chunks (x " + out[0].getX() + ")", out[0].getX() < bx + 32 && !out[0].isRemoved());
+                    check("the same body", st[0].bodies().contains(out[0]) && st[0].bodies().size() == 2);
                     check("stack 0 stayed placed, not requeued", st[0].state() == ConflictBridge.StackState.PLACED
                             && st[0].placings() == 1 && bridge().requeued == requeued[0]);
                     check("stack 1 stayed in", st[1].state() == ConflictBridge.StackState.PLACED && st[1].placings() == 1);
-                    // Its rear chunk stops ticking entities: stack 1 goes back to pending.
-                    ConflictKit.force(level, k - 1, z0 + 1, false);
-                    forced.remove(chunk(k - 1, z0 + 1));
+                    // One of stack 1's chunks stops ticking entities: stack 1 goes back to pending.
+                    ConflictKit.force(level, k, z0 + 1, false);
+                    forced.remove(chunk(k, z0 + 1));
                 })
                 .thenWaitUntil(waits.chunks(() -> check("stack 1 pending again", st[1].state() == ConflictBridge.StackState.PENDING)))
                 .thenExecute(() -> {
@@ -301,9 +317,9 @@ public final class ConflictGameTests {
                     check("its bodies are gone", st[1].bodies().isEmpty());
                     check("stack 0 stayed in", st[0].state() == ConflictBridge.StackState.PLACED && st[0].placings() == 1);
                     // The chunk ticks again at once; the stack waits out its cooldown.
-                    force.accept(k - 1, z0 + 1);
+                    force.accept(k, z0 + 1);
                 })
-                .thenWaitUntil(waits.chunks(() -> check("its chunk ticks again", RtsimSession.entitiesTickAt(level, new BlockPos(bx - 8, 64, bz + 24)))))
+                .thenWaitUntil(waits.chunks(() -> check("its chunk ticks again", RtsimSession.entitiesTickAt(level, new BlockPos(bx + 8, 64, bz + 24)))))
                 // Half the cooldown after it went, however long the chunk took in ticks.
                 .thenWaitUntil(waits.logic(() -> check("half the cooldown passed", level.getGameTime() >= pendingAt[0] + ConflictBridge.REQUEUE_COOLDOWN / 2)))
                 .thenExecute(() -> check("not back within the cooldown (" + (level.getGameTime() - pendingAt[0]) + " ticks)",
@@ -314,7 +330,7 @@ public final class ConflictGameTests {
                     pin(st[1]);
                     record(test, "requeued", "stack 1 back " + after + " ticks after it went (cooldown " + ConflictBridge.REQUEUE_COOLDOWN + ")");
                     check("after the cooldown (" + after + ")", after >= ConflictBridge.REQUEUE_COOLDOWN - 1);
-                    check("placed twice, all of it", st[1].placings() == 2 && st[1].bodies().size() == 4);
+                    check("placed twice, all of it", st[1].placings() == 2 && st[1].bodies().size() == 2);
                     ConflictKit.recall(agent, 1, ConflictRecords.RECALL_DONE, 0, bx - 200, bz + 16);
                 })
                 .thenWaitUntil(waits.logic(() -> check("BAND_DEMATERIALIZED", !about(ConflictRecords.BAND_DEMATERIALIZED, agent).isEmpty())))
@@ -323,7 +339,7 @@ public final class ConflictGameTests {
                     Map<String, Integer> s = ConflictKit.survivors(d);
                     record(test, "recalled", "survivors " + s);
                     check("reason: the command", d.aux() == ConflictRecords.Dematerialized.COMMAND);
-                    check("every living member, placed or pending, survives: " + s, s.equals(Map.of(WARRIOR, 4, ARCHER, 4)));
+                    check("every living member, placed or pending, survives: " + s, s.equals(Map.of(WARRIOR, 2, ARCHER, 2)));
                     check("the party is gone", bridge().party(agent) == null);
                     check("and its bodies", st[0].bodies().isEmpty() && st[1].bodies().isEmpty());
                     check("never rejected", about(ConflictRecords.BAND_SPAWN_REJECTED, agent).isEmpty());
@@ -349,10 +365,12 @@ public final class ConflictGameTests {
     // ---- a raid party: steer, losses, loot, recall ---------------------------------------------
 
     /**
-     * A raid band of two stacks in the arena (ledger 25 with every chunk ticking): each stack is placed
-     * at once, the war chief as an extra body at the rear of its stack (MZB-109), every body a tagged,
-     * persistent stand-in. BAND_STEER moves every stack's place; a member far from its place walks back
-     * to it (MZB-106). Each loss is journaled with who did it: a player's kill (BAND_CASUALTIES kind 1,
+     * A raid band of three warriors, three archers and a war chief in the arena (ledger 25 with every chunk
+     * ticking), met on the march: the column makes five stacks, a row of two and a row of one for each kind
+     * and the chief alone at the rear (MZB-722), each placed at once, the war chief an extra body of the
+     * warriors' kind (MZB-109), every body a tagged, persistent stand-in. BAND_STEER moves every stack's
+     * place, each keeping its row in the column (its end is the steer's point less its distance behind the
+     * head); a member far from its place walks back to it (MZB-106). Each loss is journaled with who did it: a player's kill (BAND_CASUALTIES kind 1,
      * the player, the body), a death with no killer (0), a mob's kill (2), a removal by something else
      * (3, no killer), and the chief killed by a player (CHIEF_KILLED kind 1 with a Java op id); the drops
      * carry their record. BAND_LOOTED has a Java op id. BAND_STATE counts the bodies present. A recall
@@ -365,7 +383,8 @@ public final class ConflictGameTests {
         Vec3 c = RtsimTests.centre(helper);
         long agent = ConflictKit.newAgent();
         ConflictKit.Band band = ConflictKit.band(agent, ConflictKit.newFaction(), RtsimTests.dimension(helper));
-        band.arcX = c.x + 0.5;
+        // The head 2 blocks east of the centre: the column's rear (the chief, 6 behind) stays on the 11-block floor.
+        band.arcX = c.x + 2.0;
         band.arcZ = c.z;
         band.targetX = c.x + 100;
         band.targetY = c.y;
@@ -377,7 +396,10 @@ public final class ConflictGameTests {
             if (player[0] != null)
                 FakePlayers.remove(player[0]);
         });
-        ConflictBridge.Stack[] st = new ConflictBridge.Stack[2];
+        // The column: the warriors' rows (2, 1), the archers' (2, 1) and the chief, each this far behind the head.
+        ConflictBridge.Stack[] st = new ConflictBridge.Stack[5];
+        double[] behind = {0.0, 1.5, 3.0, 4.5, 6.0};
+        int[] bodiesIn = {2, 1, 2, 1, 1};
         Mob[] strayed = new Mob[1];
         long[] arrive = {0};
         long[] statesBefore = {0};
@@ -386,7 +408,7 @@ public final class ConflictGameTests {
         helper.startSequence()
                 .thenWaitUntil(() -> {
                     ConflictBridge.Party p = party(agent);
-                    check("two stacks", p.stacks().size() == 2);
+                    check("five stacks (" + p.stacks().size() + ")", p.stacks().size() == 5);
                     for (ConflictBridge.Stack s : p.stacks())
                         check("stack " + s.index + " placed", s.state() == ConflictBridge.StackState.PLACED);
                     // Journaled at the placing; it reaches received() at the next hand-over.
@@ -394,21 +416,22 @@ public final class ConflictGameTests {
                 })
                 .thenExecute(() -> {
                     ConflictBridge.Party p = party(agent);
-                    st[0] = p.stacks().get(0);
-                    st[1] = p.stacks().get(1);
+                    for (int i = 0; i < 5; i++)
+                        st[i] = p.stacks().get(i);
                     ScriptedEngine.Received m = about(ConflictRecords.BAND_MATERIALIZED, agent).get(0);
                     check("BAND_MATERIALIZED counts every body placed, the chief too (" + m.aux() + ")", m.aux() == 7);
-                    check("4 and 3 bodies", st[0].bodies().size() == 4 && st[1].bodies().size() == 3);
-                    int chiefs = 0;
-                    for (ConflictBridge.Slot s : st[0].slots())
-                        if (s.chief) {
-                            chiefs++;
-                            for (ConflictBridge.Slot o : st[0].slots())
-                                check("the chief walks at the rear", o.chief || o.entity().getX() > s.entity().getX());
-                        }
-                    check("one chief, in stack 0", chiefs == 1);
-                    for (ConflictBridge.Slot s : st[1].slots())
-                        check("no chief in stack 1", !s.chief);
+                    for (int i = 0; i < 5; i++)
+                        check("stack " + i + " holds " + bodiesIn[i] + " (" + st[i].bodies().size() + ")", st[i].bodies().size() == bodiesIn[i]);
+                    check("the chief's stack is the chief alone", st[4].slots().size() == 1 && st[4].slots().get(0).chief);
+                    for (int i = 0; i < 4; i++)
+                        for (ConflictBridge.Slot s : st[i].slots())
+                            check("no chief in stack " + i, !s.chief);
+                    // The head faces +x, so the rear is the least x: the chief's body is behind every other body.
+                    Mob chiefBody = st[4].slots().get(0).entity();
+                    for (int i = 0; i < 4; i++)
+                        for (ConflictBridge.Slot o : st[i].slots())
+                            check("the chief walks at the rear (" + chiefBody.getX() + " against " + o.entity().getX() + ")",
+                                    o.entity().getX() > chiefBody.getX());
                     for (ConflictBridge.Stack s : st)
                         for (ConflictBridge.Slot sl : s.slots()) {
                             Mob b = sl.entity();
@@ -418,11 +441,17 @@ public final class ConflictGameTests {
                     player[0] = FakePlayers.add(level, c.add(0, 0, 0), "conflict_raid_watcher");
                     player[0].setGameMode(GameType.CREATIVE);
                     arrive[0] = level.getGameTime() + 40;
-                    ConflictKit.steer(agent, 1, 0.1f, c.x + 2.5, c.z, arrive[0], false);
+                    ConflictKit.steer(agent, 1, 0.1f, c.x + 4.0, c.z, arrive[0], false);
                 })
-                .thenWaitUntil(() -> check("steered", st[0].target()[0] == c.x + 2.5 && st[1].target()[0] == c.x + 2.5))
+                .thenWaitUntil(() -> {
+                    for (int i = 0; i < 5; i++)
+                        check("steered: stack " + i + " ends at x " + st[i].target()[0] + ", " + (c.x + 4.0 - behind[i]) + " expected",
+                                Math.abs(st[i].target()[0] - (c.x + 4.0 - behind[i])) < 1e-6);
+                })
                 .thenExecute(() -> {
-                    check("each stack keeps its side", st[0].target()[1] == c.z - 2.0 && st[1].target()[1] == c.z + 2.0);
+                    for (int i = 0; i < 5; i++)
+                        check("each stack keeps its row in the column: stack " + i + " ends at z " + st[i].target()[1] + " (" + c.z + ")",
+                                Math.abs(st[i].target()[1] - c.z) < 1e-6);
                     // A warrior pushed to the far corner, more than LEASH blocks from its place.
                     strayed[0] = st[0].slots().get(0).entity();
                     strayed[0].moveTo(c.x - 4.0, strayed[0].getY(), c.z + 4.0);
@@ -438,14 +467,13 @@ public final class ConflictGameTests {
                             + " blocks from its place");
                     check("the strayed warrior is still placed, not requeued", st[0].placings() == 1 && st[0].slots().get(0).entity() == strayed[0]);
                     // Every kind of loss.
-                    Mob archerByPlayer = st[1].slots().get(0).entity();
-                    Mob archerRemoved = st[1].slots().get(1).entity();
+                    // Stack 0 is two warriors, stack 2 two archers; the warrior of stack 1, the archer of stack 3 and the
+                    // chief (stack 4) are the rest: the chief and the two lone bodies are what the losses leave or take.
+                    Mob archerByPlayer = st[2].slots().get(0).entity();
+                    Mob archerRemoved = st[2].slots().get(1).entity();
                     Mob warriorNone = st[0].slots().get(0).entity();
                     Mob warriorByMob = st[0].slots().get(1).entity();
-                    Mob chief = null;
-                    for (ConflictBridge.Slot sl : st[0].slots())
-                        if (sl.chief)
-                            chief = sl.entity();
+                    Mob chief = st[4].slots().get(0).entity();
                     archerByPlayer.setDropChance(EquipmentSlot.MAINHAND, 2.0f); // always drops its crossbow
                     archerByPlayer.hurt(level.damageSources().playerAttack(player[0]), 1000f);
                     archerRemoved.discard();
@@ -489,11 +517,12 @@ public final class ConflictGameTests {
                         if (drop.hasData(RtsimAttachments.PENDING))
                             carrying++;
                     check("the drops carry their record (" + carrying + ")", carrying >= 1);
-                    check("one body left in each stack", st[0].bodies().size() == 1 && st[1].bodies().size() == 1);
-                    check("both still placed", st[0].state() == ConflictBridge.StackState.PLACED && st[1].state() == ConflictBridge.StackState.PLACED);
+                    check("the rows that lost every member hold no body", st[0].bodies().isEmpty() && st[2].bodies().isEmpty() && st[4].bodies().isEmpty());
+                    check("one body left in each lone row", st[1].bodies().size() == 1 && st[3].bodies().size() == 1);
+                    check("both still placed", st[1].state() == ConflictBridge.StackState.PLACED && st[3].state() == ConflictBridge.StackState.PLACED);
                     record(test, "losses", "kinds 1, 0, 2, 3 and the chief by " + player[0].getUUID() + "; " + carrying + " drops carry their record");
                     // Loot: what a member carried off.
-                    Mob looter = st[0].bodies().get(0);
+                    Mob looter = st[1].bodies().get(0);
                     check("loot from a member", bridge().looted(looter, List.of(new ItemStack(Items.BREAD, 3), ItemStack.EMPTY)));
                     check("none from anything else", !bridge().looted(player[0], List.of(new ItemStack(Items.BREAD, 3))));
                     statesBefore[0] = ConflictKit.states(agent).size();
@@ -530,7 +559,10 @@ public final class ConflictGameTests {
                     record(test, "recalled", "after " + (RtsimTests.gameTimeOf(d) - recalledAt[0]) + " ticks, survivors " + s);
                     check("before the timeout", RtsimTests.gameTimeOf(d) - recalledAt[0] < 400);
                     check("the two left, never the chief: " + s, s.equals(Map.of(WARRIOR, 1, ARCHER, 1)));
-                    check("their bodies are gone", st[0].bodies().isEmpty() && st[1].bodies().isEmpty() && bridge().party(agent) == null);
+                    boolean gone = true;
+                    for (ConflictBridge.Stack rows : st)
+                        gone &= rows.bodies().isEmpty();
+                    check("their bodies are gone", gone && bridge().party(agent) == null);
                 })
                 .thenSucceed();
     }

@@ -103,7 +103,8 @@ import static com.minecraftindustrialcomplex.mic_rtsim_create.gametest.glass.Gla
  * Mowzie class. The tests wait with plain {@code thenWaitUntil(Runnable)} steps, one purpose each, and a hard
  * failure is {@link Line#stop} (a wait swallows the failures of its check until the timeout).
  *
- * <p>The track is {@value #LENGTH} blocks of real track along x at a far base (its chunks forced, a stone floor
+ * <p>The track is {@value #LENGTH} blocks of real track along x at a base within 231,000 blocks of the origin
+ * ({@link ConflictKit#nearBase}, not the far bases: a Frostmaw's path sweep runs away beyond ~500,000 blocks, MZB-950; its chunks forced, a stone floor
  * under it and the air cleared above, all taken out again at the end so Create's saved graph holds nothing of
  * it), a station in the middle on the south side, and the train built beside the station as
  * {@code RailFixtureGameTests} builds its own: two small bogeys, controls on the first, a chest on the second,
@@ -278,7 +279,8 @@ public final class RailFrostmawGameTests {
             this.level = helper.getLevel();
             this.side = side;
             this.northRows = northRows;
-            int[] base = ConflictKit.farBase();
+            // Not farBase(): a Frostmaw walks a path here, and the jar's float sweep of it runs away beyond ~500,000 blocks (PathSafeBase)
+            int[] base = ConflictKit.nearBase();
             x0 = base[0];
             z0 = base[1] + 8; // the middle of a chunk, with the station's block beside the track in it
             stations.add(STATION_AT);

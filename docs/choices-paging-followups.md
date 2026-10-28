@@ -145,8 +145,8 @@ the modules themselves.
   store reopens in place (docs/choices-leg-purge.md LP10).
 - **Ordinary saves confirm at WORLD_SAVED** (slice U-h): a world save commits as a pending
   generation, confirmed when Java's journal file holds it. Done: docs/choices-leg-purge.md LP12,
-  docs/choices-journal-barrier.md "Slice U-h". A test's SaveAtNextStep and the stop's final save
-  still confirm at once.
+  docs/choices-journal-barrier.md "Slice U-h". A test's SaveAtNextStep still confirms at once; the
+  stop's final save confirms at once only if the journal's file holds it (slice U-i).
 - **The world model's link** (`worldmodel`) still writes its own pages whole.
 - **The row budget is a placeholder**, and a step's changes come on top of it: a long catch-up
   step that touches every row holds them all until the save after it.
