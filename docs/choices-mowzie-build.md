@@ -11766,6 +11766,13 @@ rounds of phase 2 are the check, and what they found is recorded after them.
   went (838883, 0, 838883)": band B's recall tick was read from `party.recalling()`, but every body of B goes in the recall's own tick,
   so its party is gone before the hook looks and the tick stayed 0. A missing party after the recall is now the recall's tick, the same
   tick the puppet went. Band A's, whose puppet stands for the timeout, is read as before. Not run yet.
+- **MZB-916** (round 2, test 31s `anAloftUmvuthiReadsAndTurns`; MZB-813, MZB-814): "the third turn is due ... since 114360 ticks ago",
+  which is `dueAfter[2]` still 0: the way never came 55 degrees off the facing in 198 ticks. The third leg's target x was estimated as
+  `x0 + 56 - 0.3 * (ticks since the second steer)`, which passes the west end (`x0 + 4`) where the anchor stops, so the target ran west
+  of the lane and the anchor went west-north-west: with the puppet east of it and closing at 0.1, its way stays within 46 degrees of
+  west for the 198 ticks. The x is clamped at the west end, so the leg is due north and the way is 55 degrees off its facing after
+  about 85 ticks. The check's message also names what it saw (`dueAfter`, the puppet's position, yaw, facing, lag and re-pairs). Not
+  run yet.
 
 ## M12 S9
 
