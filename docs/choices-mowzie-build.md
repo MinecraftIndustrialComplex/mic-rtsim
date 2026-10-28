@@ -8176,6 +8176,314 @@ counter and a no-cascade test.
 - **The command count.** `take_commands` returns more commands now. Tests that count them, or index into
   them, need the march records filtered out.
 
+## MZB-760 Grove tribute parking
+
+Slice fix/grove-tribute-park, from fix/slice-u-b at a7616f51 (the U-b merge). RP-210's "Left" row
+(docs/choices-journal-barrier.md): the Umvuthana grove's tribute stack answered NOT_LOADED is parked
+under its op id, as the dragons' (RP-210). Rust only; no GameTest, no Java.
+
+- **MZB-760** (a grove's tribute stack answered NOT_LOADED stays in flight under its op id):
+  - **What was double.** U-b's merge took NOT_LOADED as FAILED for the grove (`tribute_failed`): the
+    stack's goods went back to the grove's stock, the chest was forgotten, and the next stack went under
+    a new op id (`tribute_op` of the camp's `stacks` counter). NOT_LOADED means Java did not look in the
+    chest's chunk, and that chunk may have been written ahead of the journal, holding the stack and its
+    APPLIED record (`PendingRecords`). Its REASSERT then found no placing to book, and the stack went
+    again under the new op: the nuggets were in the chest twice.
+  - **The failing numbers.** The test
+    `conflict::a_groves_tribute_stack_in_a_chunk_saved_ahead_of_the_journal_is_placed_once`
+    (crates/rtsim-jni/tests/protocol.rs, modelled on the dragons'), committed failing as 242f031a, on
+    a7616f51: seven gold blocks are 567 nuggets owed, the first stack of 64 is
+    sent and put in the chest, the chunk keeps it and the journal loses its APPLIED, and the restart
+    answers NOT_LOADED. It fails first at "still in flight under its op id": (owed, in flight, stacks)
+    is (567, 0, 1) for (567, 1, 1). With that check off, after the chunk's REASSERT it is (567, 0, 1)
+    for (503, 0, 1) (the REASSERT booked nothing), and at the end the chest holds 631 nuggets for 567
+    (the 64 twice) and the books read (0, 0, 10) for (0, 0, 9): a tenth stack, under a new op.
+  - **The fix** (rtsim-conflict `engine.rs` and `engine/camp.rs`; rtsim-jni `engine/conflict.rs`). The
+    `Conflict` has a per-session `parked` set of op ids beside `placing`. `tribute_not_loaded(op)` keeps the
+    stack in `placing` and parks it; the grove's chest is forgotten only if it is still the stack's own
+    (the same dimension and place), so a chest named since, elsewhere, is kept. `placings_to_send()` leaves
+    parked stacks out and `write_tribute` writes only those, so a parked stack is not written every step.
+    `place_tribute` sends nothing while the grove has a placing, parked or not, so a parked stack holds the
+    next back. HAVEN_CHEST (`haven_chest`) lets the grove's parked stack go again, to the chest its
+    placing keeps (the one it went to first), not the one just named. APPLIED, DUPLICATE_OP and a chunk's
+    REASSERT take it out like any placing (`tribute_placed`), and FAILED takes it out and puts the goods
+    back (`tribute_failed`): `unplace` clears its parking. `after_core` calls `tribute_not_loaded` for
+    NOT_LOADED and `tribute_failed` for FAILED only.
+  - **Outcomes.** A stack in the chest's chunk saved ahead of the journal (direction B): placed once,
+    EXACT (the same test, 567 in the chest and (0, 0, 9) in the books; it was DUPE). A give-up (the
+    chunk from before, with no coin): LOSS, as the dragons' (the engine took APPLIED, and the chunk has
+    nothing). A grove whose chest is never named again keeps its stack parked until the next session
+    start, which sends it again once (the dragons' too), unless the replayed part of the journal holds
+    a NOT_LOADED answer for it: that parks it again, and the session start sends nothing (MZB-761,
+    MZB-763's test).
+  - **Nothing is saved**, as for the dragons: `parked` is in memory only. The pages' format is the same.
+  - **Amendment, with slice U-c merged (RP-292).** A grove stack's answer heard while the conflict is
+    off is kept on the conflict's kept page and applied at the switch-on, at its own tick
+    (`keep_answer`, `apply_kept`; docs/choices-journal-barrier.md, RP-292). Both ways in go to one body,
+    `answer_tribute`, which holds the NOT_LOADED arm, so a kept NOT_LOADED parks the stack exactly as a
+    live one does: in flight under its op id, its goods not back in the stock, the chest forgotten if it
+    is still the stack's own, no taint and no command taken. The switch-on's reset runs `begin_replay`
+    first (which clears `parked`), then the kept answers, so the park is made after the clear and holds.
+    The stack is not sent before the plugin names its chest again, and then goes once under its own op.
+    The kept answer survives a crash on the kept page, and the new session parks it again at the
+    switch-on (parking itself is unsaved). U-c's own test of this case expected FAILED (the goods back in
+    the stock, nothing in flight, a new op for them): that is the double-placement path above, so it now
+    expects the park (`conflict::a_groves_tribute_stack_answered_not_loaded_with_the_conflict_off_is_parked_at_the_switch_on`,
+    the helper's `Answer::NotLoaded` arm), and
+    `conflict::a_groves_tribute_stack_answered_not_loaded_with_the_conflict_off_survives_a_crash_parked`
+    is the same with a save while off, a crash and a restart with the conflict still off.
+    Mutation, a kept NOT_LOADED applied as FAILED (`tribute_failed` when `State::applying_kept`): both
+    tests fail at "parked, in flight under its op id", (owed, in flight, stacks) (567, 0, 1) for
+    (567, 1, 1); the live-answer parking test still passes, so the mutation reaches the kept path only.
+    At the merge, before the test was changed, U-c's version of the test failed the same way against
+    the merged code ((567, 1, 1) for its (567, 0, 1)): the merge already parked a kept answer.
+- **MZB-761** (forks, each the dragons' unless said):
+  - **`placings()` is still every stack in flight.** The brief said `placings()` leaves parked stacks out.
+    It would make "in flight" read 0 for a parked stack in every test that counts them, and the dragons'
+    own `placing()` lists all of them with `placing_to_send()` leaving the parked out. So the grove has
+    `placings_to_send()` for the link and `placings()` is all.
+  - **A session start clears `parked`** in `begin_replay`, where the dragons clear theirs, before the
+    replay's own records park again what they answered NOT_LOADED. The stack in the pages is sent once at
+    the restart and parked again by its answer.
+  - **CAMP_OUT lets the grove's parked stack go again**, since it forgets the chest there. The chunk may
+    be loaded still, and if not the stack is answered NOT_LOADED again and parked again: one command, not
+    a loop. (The dragons have no CAMP_OUT.)
+  - **A replayed NOT_LOADED for a stack no placing holds books nothing** (RP-134, the stack the session
+    decided after the pages' save): `replayed_failed` is not taken for it, since it passes the camp's
+    count and forgets the chest, and the stack may be in its chest. The census after the replay decides
+    the stack again as the same op (the same index, good and amount), which Java answers DUPLICATE_OP if
+    the chunk holds it. Test: `a_replayed_not_loaded_for_a_stack_after_the_save_books_nothing`
+    (crates/rtsim-conflict/tests/grove.rs).
+  - **The status match keeps a last `_` arm.** A COMMAND_RESULT status is a `u32`, so the compiler
+    cannot check a match over it for exhaustiveness. `after_core` names APPLIED, DUPLICATE_OP, FAILED and
+    NOT_LOADED, and NOT_FREE and VANILLA_KNOWS (other commands' answers) as no tribute stack's, and a last
+    `_` covers a status it does not know. Amended (MZB-765): the grove's site matches a typed
+    `CommandStatus` and has no `_` arm.
+  - **NOT_LOADED taints nothing**: it changes no state the pages hold (the chest and the parking are not
+    saved), so `after_core` neither taints the world nor takes commands for it.
+  - **Tests.** Engine: `an_unloaded_stack_is_parked_under_its_op_until_the_chest_is_named_again`,
+    `an_unloaded_stack_forgets_only_its_own_chest` (the dragons' name),
+    `a_parked_stack_is_answered_like_any_stack_and_goes_again_at_camp_out_and_a_session_start` and the
+    replay test above (crates/rtsim-conflict/tests/grove.rs). Link (crates/rtsim-jni/tests/protocol.rs):
+    U-b's `conflict::a_groves_tribute_stack_answered_not_loaded_goes_back_to_its_stock` is reworked into
+    `conflict::a_groves_tribute_stack_answered_not_loaded_is_parked_under_its_op_id_until_the_next_haven_chest`,
+    and `conflict::a_groves_parked_stack_goes_to_its_own_chest_and_the_chest_named_since_gets_the_rest`
+    is new. Mutation: NOT_LOADED back to FAILED fails the three
+    link tests that park (the parking test, the own-chest test and the ahead-of-the-journal test); writing
+    parked stacks again every step fails the parking test ("parked: not sent again every step", 11
+    commands for 7).
+
+## MZB-762 Review fixes to MZB-760 (grove tribute parking)
+
+Review of fix/grove-tribute-park at 7e1183ef (the build lead's findings P2-1, P2-2, P3-1, P3-4, P3-5 and
+the docs). Rust and docs only; no GameTest, no Java. One record per fix, MZB-762 to MZB-766. A second
+review, of 76f5ecb4 (one P2 and the doc slips), adds MZB-767 and MZB-768.
+
+- **MZB-762** (P2-1: a FAILED stack forgets the chest only if it is the stack's own):
+  - **The stall.** `tribute_failed` set `camp.chest = None` whatever chest the grove held. A stack s to
+    chest X answered NOT_LOADED is parked; the grove comes in with X full or broken and GroveChests
+    names Y; `haven_chest` unparks s and sends it to its own chest X, whose chunk is loaded and carries
+    no op, so the insert fails (FAILED); the engine forgot Y. Java names Y again only on a change
+    (`GroveChests.containerTransferred` re-checks only the chest it last named, and the 200-tick scan
+    sends only on a change), so the grove stalled. The same holds without a parking: a stack in flight
+    to X when Y is named, and then FAILED.
+  - **The fix.** The chest is forgotten only if it is the stack's own (the same dimension and place), as
+    `tribute_not_loaded` does. Engine test `a_failed_stack_forgets_only_its_own_chest`
+    (crates/rtsim-conflict/tests/grove.rs): parked at X, Y named, the stack goes again to X, FAILED; the
+    camp still holds Y, and the failed goods go as a new stack to Y. On 7e1183ef it failed at "only the
+    stack's own chest is forgotten" (None for Y).
+  - **Fork: the next stack goes at once.** With Y kept nothing sent the failed goods again before the
+    next payment or census (`place_tribute` runs at a payment, a census, a HAVEN_CHEST and an APPLIED),
+    a stall of its own. So `tribute_failed` ends with `place_tribute`, as `tribute_placed` does. It sends
+    nothing when the chest was forgotten (the usual FAILED, as before), and a chest that fails again is
+    its stack's own and is forgotten then, so it cannot loop. The dragons' call runs only while the
+    dragons run (MZB-767).
+  - **The dragons have the same line** (`Dragons::tribute_failed` took `chests.remove` whatever the
+    chest). The sequence reaches it: a stack parked at X, `LairChest` Y reported (it unparks the lair's
+    stacks and sends them to their own chests), the stack answered FAILED forgot Y, and its coin sat
+    unplaced until Lairs reported a chest again (the plugin reports on a change only: a chest gone,
+    full, or its chunk unloaded). The next season's payment did not help: its `place_tribute` needs
+    a chest, and Y, the one it needed, was the one forgotten. Same fix (forget only if `chests[lair] == p.chest`) and the
+    same `place_tribute(lair)` after it. Test `a_failed_stack_forgets_only_its_own_chest`
+    (crates/rtsim-ecology/tests/tribute.rs), failed first the same way on 7e1183ef (None for Y).
+- **MZB-763** (P2-2: two link tests, no behaviour change):
+  - **A replayed NOT_LOADED parks the stack again**
+    (`conflict::a_groves_stack_answered_not_loaded_after_the_save_is_parked_again_by_the_replay`,
+    crates/rtsim-jni/tests/protocol.rs). The pages hold a stack in flight (saved while Minecraft held
+    it), Java's NOT_LOADED answer to it is journaled after the save, a crash, a restart: the replay
+    hears the answer and parks the stack, and the session start writes no transfer; its chest named
+    later, it goes once under its own op and the 567 nuggets land once (9 stacks). The answer took the
+    stack's op out of the core outbox, so a stack the replay did not park would be written again by
+    `write_tribute`. Mutation: `tribute_not_loaded` not parking while `outbox.replaying()` fails it
+    at "the replay parked it again, and the session start sends nothing" (1 transfer for 0), and fails
+    the two U-c NOT_LOADED tests that park at the switch-on as well (their kept answer is applied in
+    a replay).
+  - **What the clear in `begin_replay` is for**
+    (`conflict::a_groves_parked_stack_is_sent_again_when_the_conflict_is_switched_off_and_on`). A
+    restart makes a new engine, with nothing parked, so the clear matters only for a session begun in
+    the same process: the conflict switched off and on (the reset runs `begin_replay`). A stack
+    parked live (NOT_LOADED) goes again at once at the switch-on, with no chest named, to its own
+    chest: one more transfer under the same op, answered, and booked placed ((503, 0, 1)). The
+    parking is the old session's. A stack kept parked across the reset would wait for the plugin to
+    name a chest: `GroveChests.endOfTick` clears what it sent while the conflict is off, so it names
+    its chest at its first scan with the camp in, and the stack would go then, later than the clear
+    sends it; only when no chest has room is none named, and the stack would wait for as long
+    (a full chest is told as free 0, which does not unpark it: MZB-764). With the clear removed only the engine
+    test `a_parked_stack_is_answered_like_any_stack_and_goes_again_at_camp_out_and_a_session_start`
+    failed; now this link test fails too, at "the new session sends the stack again" (1 transfer for
+    2), and no other link test does. Transfers are counted with `tribute_sends` (the
+    TRANSFER_TO_CONTAINER commands Java was given), not `j.commands.len()`: a switch-on writes
+    territory commands as well.
+- **MZB-764** (P3-1: a parked stack's own chest reported full does not send it again):
+  - **The loop.** After any answer for its chest, NOT_LOADED included, GroveChests looks at the chest
+    again; with the chunk gone it reports `HAVEN_CHEST(X, 0)`. `haven_chest` unparked the stack on it, the
+    stack was written again, answered NOT_LOADED again, and the plugin reported again: one send a step
+    until Camps' 20-tick poll sent CAMP_OUT.
+  - **The fix.** `haven_chest` does not unpark on a HAVEN_CHEST with free 0 that names the stack's own
+    chest (the same dimension and place as its placing). The chest is still recorded (full, so
+    `place_tribute` sends nothing). The stack goes again at a HAVEN_CHEST for its chest with room, or at
+    CAMP_OUT and back in (CAMP_OUT forgets the chest and unparks). Engine test
+    `a_parked_stack_waits_for_its_own_chest_reported_with_room` (crates/rtsim-conflict/tests/grove.rs),
+    failed first on the fix's parent at "still parked" (1 stack to send for 0). A full chest that is not
+    the stack's own still unparks it, as before (named in the test): it is news, and the stack goes to its
+    own chest once.
+  - **The dragons** have no equivalent: `LairChest` carries no free count, so a report never says "full".
+- **MZB-765** (P3-4: a typed COMMAND_RESULT status at the grove's site):
+  - **The gap.** The grove's status match (`answer_tribute`) ended in `NOT_FREE | VANILLA_KNOWS => false`
+    and `_ => false`, so a status added to the wire slipped by as "no tribute stack's" with no build error.
+  - **The type.** `wire::CommandStatus` (crates/rtsim-jni/src/wire.rs): Applied, DuplicateOp, Failed,
+    NotFree, VanillaKnows, NotLoaded and `Unknown(u32)` for a number it does not know; `from_wire(u32)`
+    and `wire()` (the inverse). The wire numbers are the same, and so is every behaviour: the grove's site
+    is `match CommandStatus::from_wire(rec.aux)` with no `_` arm, and `NotFree`, `VanillaKnows` and
+    `Unknown(_)` still take nothing. Unit test `wire::tests::a_command_status_names_every_wire_number_and_keeps_the_rest`
+    (every number maps to its variant and back, no two share one, 0 and 7 and up are `Unknown`, whole). It
+    failed first as a build error on 7e1183ef (no such type). Adding a variant to the enum stops the build
+    at the grove's site (E0004, checked with a throwaway variant).
+  - **Follow-up, with the replay pushes: the other readers still compare the number.** None is converted
+    here: `dragons::after_core` (crates/rtsim-jni/src/engine/dragons.rs, a `match rec.aux` with `_ => false`),
+    `world.rs` `apply_journaled` (`obs::COMMAND_RESULT`, a `match rec.aux` with `_ => {}`), `op_of`
+    (crates/rtsim-jni/src/engine.rs, APPLIED or DUPLICATE_OP by `==`), and industry's `command_result`,
+    `answered_again` and the kept-answer test in crates/rtsim-jni/src/engine/industry.rs (comparisons
+    with DUPLICATE_OP, FAILED and APPLIED). A status added to the wire must be read at each of them by
+    hand until they take a `CommandStatus`.
+- **MZB-766** (P3-5: U-c's NOT_LOADED test counts transfers):
+  - **The gap.** The renamed U-c test (`a_grove_stack_answered_with_the_conflict_off`, its NotLoaded arm,
+    crates/rtsim-jni/tests/protocol.rs) checked "a parked stack is not sent before its chest is named"
+    with `tribute_ops(&j) == first` in the non-crash variant: a set of op ids, which does not change when
+    the same stack is sent again under its own op.
+  - **The fix.** The test counts the transfers Java was given (`tribute_sends`, the TRANSFER_TO_CONTAINER
+    commands) before the switch-on and after the census, and asserts the count is the same, first, ahead
+    of the old assertions, which stay. Not `j.commands.len()` as the live parking test counts: the
+    switch-on writes territory and census commands too, so only the transfers are stable.
+  - **Mutation.** `tribute_not_loaded` not parking while the outbox replays (the kept NOT_LOADED then is not
+    parked at the switch-on, and the stack is sent again): the new assertion fails in both NotLoaded
+    variants, at "a parked stack is not sent before its chest is named again, under any op" (2
+    transfers for 1 without a crash, 1 for 0 with one). The op set is the same in the non-crash run
+    (the same op, sent twice), so only the old `owed_tribute` check, which sees Java's APPLIED
+    answer to the resend, caught it before.
+- **MZB-767** (re-check P2: a FAILED dragon stack answered with the dragons off makes no stack):
+  - **The hole.** MZB-762 ended `Dragons::tribute_failed` with `place_tribute(lair)`, so a FAILED that
+    kept a chest placed the failed coin again at once. The answer path (`dragons::after_core`) takes
+    tribute answers whatever the switch (RP-291), and the engine's `chests` map is cleared only in
+    `begin_replay`, not at a switch-off. Sequence: stack s to chest X; NOT_LOADED parks it;
+    `LAIR_CHEST` names Y (the lair's parked stacks go again, to X); ECOLOGY goes off; Java answers
+    FAILED. Y is kept, so `place_tribute` drew op ids and made stacks while the module was off; they
+    were saved, and at the switch-on, which had just forgotten Y, they went to Y. That broke the rule
+    that the switch gates only new decisions (docs/replay-gate.md 9.7) and RP-291's premise that the
+    answer decides nothing.
+  - **The fix.** `Dragons::tribute_failed(op, place)`. The books and the chest are as before (the coin
+    back to unplaced; the chest forgotten if it is the stack's own); `place` is whether the dragons run,
+    and only then does the coin go again at once. `after_core` passes `running(st)` (switched on, in
+    the world, not waiting for Java's dictionary), as does `write_tribute`'s never-written path. Off, no
+    stack is made and no op id is drawn (the lair's stack counter does not move); the next stack comes
+    with the lair's next `LAIR_CHEST` after the switch-on, as for any lair chest.
+  - **Conservative choice.** The coin waits for the report rather than the engine keeping the chest
+    across a switch-off: the switch-on forgets the chests on purpose (they are a session's, MSC48).
+  - **Tests.** `dragons::a_failed_tribute_stack_answered_with_the_dragons_off_makes_no_stack`
+    (crates/rtsim-jni/tests/protocol.rs): the sequence above, ECOLOGY off in the tick Java answers
+    FAILED. Off, `dragons_tribute` is `[1, 0, coins, 0]` and no new op was sent; back on, nothing is
+    sent; the chest reported again takes the coin once (`[1, coins, 0, 0]`, the chest holds 499), and
+    the ledger and the world's tribute hold every coin. With `after_core` passing `true` (the
+    behaviour before the fix) it failed at "off: the coin is booked back and no stack is made"
+    (`[1, 0, 0, 8]` for `[1, 0, 499, 0]`: 8 stacks made while off). Engine half,
+    `a_failed_stack_answered_with_the_dragons_off_makes_no_stack` (crates/rtsim-ecology/tests/tribute.rs):
+    `tribute_failed(op, false)` keeps the chest, books the coin back and moves no counter; with
+    `place` ignored it failed at its first look at the lair's unplaced coin (the coin had been placed
+    again, so the map held no entry).
+  - **The grove needs no gate.** Its answers heard off are not taken: `after_core` keeps them
+    (`keep_answer`, RP-292) and the switch-on applies them after `begin_replay`, at their own tick
+    (`apply_kept`, `answer_tribute`). By then every camp is out and its chest forgotten
+    (`camp_session_start`), and `place_tribute` needs a camp that is in with a chest, so a kept FAILED
+    moves nothing (the goods stay earmarked, MZB-930) and places nothing. Its other `tribute_failed` call, `fail_tribute` in
+    `write_tribute`, runs only with the conflict on. Agreed with the re-check.
+- **MZB-768** (re-check P3: doc slips; one code comment):
+  - **`replayed_failed`** (rtsim-conflict, camp.rs) still forgets the chest whatever it is, while the
+    live `tribute_failed` forgets it only if it is the stack's own (MZB-762). Its doc said "as the
+    session that went on did", which no longer held. Only the doc changed. The difference is harmless:
+    the replay decides nothing, a chest the live session kept was named by a HAVEN_CHEST that is
+    replayed or sent again, and `GroveChests` names its chest again after a restart or a switch-on
+    (it starts with nothing sent), before any stack goes, because a stack needs a camp that is in with
+    a chest.
+  - **Corrected text.** MZB-762's dragons claim (the coin waited for Lairs' next report, not the next
+    payment: the payment's `place_tribute` needs the forgotten chest); MZB-763's "a report that never
+    comes" and the test doc's "never names again" (`GroveChests.endOfTick` clears `sent` while the
+    conflict is off, so the chest is named at the first scan with the camp in; never only with no room);
+    docs/replay-gate.md section 4.4 and the RP-57 HAVEN_CHEST row (any HAVEN_CHEST unparks except one
+    naming the stack's own chest with free 0; another chest reported full also unparks, as MZB-764's
+    test asserts); HAVEN_CHEST listed twice in the RP-57 table (the second removed); and the dragon
+    text that said a FAILED only returns the coin and forgets the chest (docs/boundary.md section 4 and
+    6.4, MSC48, MSC54, MSC55, RP-291 and the "Never written" comments in rtsim-jni dragons.rs and
+    conflict.rs), now: a kept chest takes the coin at once while the dragons run, and nothing is placed
+    while they are off. boundary.md section 4 also said a stack answered while the module is off "goes
+    again and Java answers DUPLICATE_OP", which RP-291 had made false; it now says the answer is taken.
+
+## MZB-769 The grove tribute parking meets the earmark
+
+The merge of origin/main (the earmark, MZB-930 to MZB-934) into fix/grove-tribute-park (MZB-760 to
+MZB-768). Rust, docs and tests; no Java. The rule: the earmark's accounting wins (owed goods stay held
+until a placement is answered, and a FAILED moves nothing), and MZB-760's parking wins (NOT_LOADED parks
+the stack under its op id and does not fail it).
+
+- **MZB-769** (how the two meet):
+  - **`tribute_failed`** keeps MZB-762's own-chest check and its `place_tribute(f)` call (the next stack
+    goes at once to a chest named since). The `stock_from_players` call that MZB-760 had is gone: the
+    goods never left the earmark, so nothing goes back. `w` and `at` are unused and kept for the link's
+    one call shape with `tribute_placed`.
+  - **`place_tribute(f)`** reads no market (MZB-932). `haven_chest(h)` keeps MZB-764's own-chest-full rule
+    and unparks, then calls `place_tribute(f)`; `h` is its only parameter.
+  - **`tribute_not_loaded`** moves nothing either: the parked stack's goods stay earmarked all the while,
+    which is what the unloaded chunk needs (it may hold the stack already). A parked stack answered
+    APPLIED, DUPLICATE_OP or by a chunk's REASSERT is booked out of the earmark by `tribute_placed`, as
+    any stack.
+  - **The link** (`write_tribute`'s never-written path) fails the stack: the goods stay owed and earmarked,
+    and the chest is forgotten only if it is the stack's own (MZB-762).
+  - **`replayed_failed`** moves nothing in either model, as before; its doc now says the goods stay in the
+    earmark. The chest it forgets whatever chest it is (MZB-768).
+- **Tests whose expectation changed because of the other side.**
+  - Engine, crates/rtsim-conflict/tests/grove.rs. MZB-760's tests counted the market's line: a parked or
+    failed stack's goods were "out of the stock" or "back in" it. Under the earmark the line is never
+    touched, so they read the world's held instead. `an_unloaded_stack_is_parked_under_its_op_until_the_chest_is_named_again`
+    (the line was `held - 64`, now the line is unchanged and the earmark holds all 567),
+    `a_failed_stack_forgets_only_its_own_chest` (the line was `held - 64` with the next stack out and
+    `held` after the second FAILED; now the earmark holds all 567 throughout and the line is unchanged)
+    and `a_parked_stack_is_answered_like_any_stack_and_goes_again_at_camp_out_and_a_session_start` (the
+    line was "back"; now it was never read and the earmark is whole). Also the `TributeRec::NotLoaded`
+    arm that MZB-760 added is handled in the earmark's own replay test
+    (`a_replayed_stack_leaves_the_books_by_what_java_put_in_the_chest`), which matches every record.
+  - Link, crates/rtsim-jni/tests/protocol.rs. The earmark's rework of U-b's NOT_LOADED test expected the
+    stack to be taken as FAILED, owed with nothing in flight ((567, 0, 1)), the old behaviour that
+    MZB-760 replaces. The parking wins: `conflict::a_groves_tribute_stack_answered_not_loaded_is_parked_under_its_op_id_until_the_next_haven_chest`
+    keeps MZB-760's (567, 1, 1), still in flight and parked, and adds the earmark's `assert_earmarked(567)`
+    (the goods held, owed 567). Likewise the helper's NotLoaded arm for an answer heard with the conflict
+    off (`a_grove_stack_answered_with_the_conflict_off`, `Answer::NotLoaded`): (567, 1, 1), parked, and
+    `assert_earmarked(567)`. The helper's signature is main's (`Restart`, `Answer`), so MZB-760's
+    crash test (`..._survives_a_crash_parked`) now passes `Restart::Off`. Main's three tests of the
+    helper (the DICTs wait, the second answer, the second answer across a crash) are kept as they were.
+- **Docs.** docs/boundary.md section 9.6 now says FAILED moves nothing and NOT_LOADED parks the stack with
+  its goods earmarked; docs/replay-gate.md 4.4 and docs/choices-journal-barrier.md (RP-291's twin) say the
+  same where they said the goods went back to the stock; MZB-767's "the grove needs no gate" says a kept
+  FAILED moves nothing.
+
 ## M11 Aloft
 
 (none yet)
@@ -8762,7 +9070,9 @@ conservative option at its fork.
 | 0x080B BAND_LOOTED | the party's | `ingest`'s fold, before the op-id dedupe and the unheld fight's skip; a copy, `ingest_copy`'s |
 | 0x080D TRAIN_PASSED | the party's (the lurk table's) | Read since the M8 merge (`train_passed`, no longer a later kind, MZB-691): `ingest`'s fold while replaying, before `train_passed`'s stale check, which compares the party's epoch (RP-151, RP-152); a pass that is not stale is counted and rolls as live, at its journaled tick (since RP-187; RP-154's guard, which rolled nothing while replaying, is gone); a copy, `ingest_copy`'s fold, then the record is dropped (RP-150). Java journals it at once with no holder, so none is copied. Before the merge: a later kind, `ingest`'s fold before the `later` return; a copy went to `ingest_copy` from rtsim-jni's later-kind branch (changed here: it called `ingest`) |
 | 0x080F CAMP_CENSUS, 0x0812 CAMP_BODIES, 0x0813 CAMP_OUT | a camp's (u64) | Java's op id for the census, never an epoch the engine allocates, so it cannot name one the engine would issue again; `party_epoch` is None. M6's census body bit BODY_CRYSTAL names none either |
-| Every other conflict kind (FACTION_FOUND, TERRITORY_SIGNAL, POLLUTION, GIFT_GIVEN, CHIEF_STATE, HAVEN_CHEST, DIFFICULTY, RAIL_PASS, CAMP_DEATH, TRADED, NOTICE_SHOWN, CHIEF_PAID, HUNT_APPLIED) | none | Nothing to fold. `party_epoch` matches every `Obs` variant by name, so a new kind does not compile until it says. After the M6 merge: CHIEF_STATE is read and names a faction, held while replaying (RP-100); CAMP_DEATH's DEATH_CHIEF names a slot and generation, no epoch. After the M7 merge: RAIL_PASS is read (`rail_pass`, no longer a later kind) and names a faction, a train and an owner, no epoch; the industry's TRAIN_ARRIVED and TRAIN_UNWATCHED reach the conflict through `rail_call` with a train and a line only, so M7 adds nothing to fold (RP-102). After the M9 merge: HUNT_APPLIED (new, 0x0816) names a faction, a district and the hunt's op; HAVEN_CHEST (0x0817 now, journaled) a faction, a chest and its free slots; TRADED and CHIEF_PAID a faction and, for CHIEF_PAID, a camp slot and generation; none an epoch, and `party_epoch` names HUNT_APPLIED with the others. M9 changes no kind that names an epoch. A copy of any of them folds nothing; `ingest_copy` drops a HAVEN_CHEST copy (RP-130), and the others are skipped by op id (TRADED, CHIEF_PAID) or find no hunt (HUNT_APPLIED) |
+| 0x0817 HAVEN_CHEST (handling changed, MZB-764) | none | Nothing to fold. A grove's chest, free slots and place, latest wins. Changed: a HAVEN_CHEST with no free slot that names a parked stack's own chest no longer lets the stack go again (the plugin reports a chest full when it looks again after an answer and the chunk is gone). Every other HAVEN_CHEST lets a parked stack go again, to its own chest: a report with room, and a report of another chest, full or not (as the MZB-764 test asserts); so does CAMP_OUT |
+| 0x0111 COMMAND_RESULT of a tribute stack (handling changed, MZB-762, MZB-765, MZB-767) | none | Nothing to fold: a status for an op, not a party. Changed: a FAILED answer forgets the grove's chest and the lair's only if it is still the stack's own, and places the next stack at once if a chest is kept (`tribute_failed`, grove and dragons); the dragons place it only while they run, so a FAILED heard with ECOLOGY off books the coin back and makes no stack (RP-291, MZB-767), and the grove's answers heard off are kept and applied after the switch-on's reset (RP-292); the grove's status match is over `wire::CommandStatus`, with no `_` arm, and a status it does not know takes nothing, as before. NOT_LOADED is unchanged (MZB-760, MZB-761) |
+| Every other conflict kind (FACTION_FOUND, TERRITORY_SIGNAL, POLLUTION, GIFT_GIVEN, CHIEF_STATE, DIFFICULTY, RAIL_PASS, CAMP_DEATH, TRADED, NOTICE_SHOWN, CHIEF_PAID, HUNT_APPLIED) | none | Nothing to fold. `party_epoch` matches every `Obs` variant by name, so a new kind does not compile until it says. After the M6 merge: CHIEF_STATE is read and names a faction, held while replaying (RP-100); CAMP_DEATH's DEATH_CHIEF names a slot and generation, no epoch. After the M7 merge: RAIL_PASS is read (`rail_pass`, no longer a later kind) and names a faction, a train and an owner, no epoch; the industry's TRAIN_ARRIVED and TRAIN_UNWATCHED reach the conflict through `rail_call` with a train and a line only, so M7 adds nothing to fold (RP-102). After the M9 merge: HUNT_APPLIED (new, 0x0816) names a faction, a district and the hunt's op; HAVEN_CHEST (0x0817 now, journaled) a faction, a chest and its free slots; TRADED and CHIEF_PAID a faction and, for CHIEF_PAID, a camp slot and generation; none an epoch, and `party_epoch` names HUNT_APPLIED with the others. M9 changes no kind that names an epoch. A copy of any of them folds nothing; `ingest_copy` drops a HAVEN_CHEST copy (RP-130), and the others are skipped by op id (TRADED, CHIEF_PAID) or find no hunt (HUNT_APPLIED) |
 | A conflict record that does not decode | unknown | Skipped with a warning before any module code (rtsim-jni `journaled`), as before: its epoch cannot be read |
 | Any conflict record while the conflict is switched off (U10) | | Ignored whole, without its fold, as every journaled record is (MZB-30; rtsim-jni `engine/conflict.rs:565`). A residual, not built (the coordinator's ruling, fixes6 item 6; docs/boundary.md, the conflict's switch): a session crashes with the conflict on; the next start has it off and saves past the crashed window (the journal is trimmed); a later start turns it on, and that session can issue the crashed window's epochs again, from pages that never saw them. Not RG5 and RG6's old life (Java's, the whole directory, drawn only when the pages include no observation). The option not taken, no format change: the jni conflict module detects the gap at switch-on (its pages' `now` older than the journal's start) and raises every party's epoch past the window before it ingests |
 | Herds (HERD_*) | the herds' own | Built by slice H: RP-81 (every kind that names an epoch folds, `Obs::group_epoch`), RP-84 (the session's handle bound). |
