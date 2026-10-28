@@ -11778,7 +11778,12 @@ rounds of phase 2 are the check, and what they found is recorded after them.
   about 85 ticks. The check's message also names what it saw (`dueAfter`, the puppet's position, yaw, facing, lag and re-pairs). In the round at 8391671a it failed again and its own numbers contradict: `dueAfter`
   printed all 0, though the second turn's check before it needs `dueAfter[1]` not 0 and passed, and "since 160927 ticks ago" puts the game time at the
   tick after the second re-pair (160926), though the step waits 198 ticks after it. The message now also prints the game time, the tick the wait
-  began and the second steer's. Cause not known.
+  began and the second steer's. The round at 9cc86af5 showed why they contradict: it printed `now 201015` (the tick after the second re-pair) and a wait began at 0.
+  A failing `thenExecute` of vanilla's `GameTestSequence` is caught inside the step and the sequence goes on with the next events of the same tick,
+  so the failure logged is the LAST of the tick's, not the first (this holds for every message of every test of the round, as each is read): the second
+  turn's check failed first, on `dueAfter[1]` 0, its lines after the check never ran (so `at[5]` stayed 0 and the 198-tick wait passed at once), and
+  the third step's check failed after it. The test measured when a turn is due from the body's move in a tick, and the gate reads the way from the
+  body to its place. The measure is now the gate's own (the slot's `placeXZ`, read by reflection), so the two agree. Not run yet.
 - **MZB-917** (round 2, test 24 `theChiefsSummonsArePuppets`; MZB-816): "and the throne body's (0)": the puppet's warriors came (three or
   more tagged joins) and the throne body's, sent the same SPAWN message in the same step, made none, in 8,000 ticks. The cause is not
   known (the ability needs no target in the jar's `SpawnFollowersAbility`, and no join handler in the module or the core cancels a

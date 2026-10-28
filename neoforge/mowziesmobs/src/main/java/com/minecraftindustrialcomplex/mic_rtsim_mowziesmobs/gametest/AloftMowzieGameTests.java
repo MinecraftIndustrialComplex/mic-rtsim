@@ -2069,6 +2069,23 @@ public final class AloftMowzieGameTests {
         return back;
     }
 
+    /**
+     * The place (x, z) the engine reckons for a party's chief slot at this tick, by the slot's own {@code placeXZ} (package-private in the core, so read
+     * through reflection), or null with no slot or no such method.
+     */
+    private static double[] placeOf(long agent, ServerLevel level) {
+        ConflictBridge.Slot sl = chiefSlot(agent);
+        if (sl == null)
+            return null;
+        try {
+            java.lang.reflect.Method m = ConflictBridge.Slot.class.getDeclaredMethod("placeXZ", long.class);
+            m.setAccessible(true);
+            return (double[]) m.invoke(sl, level.getGameTime());
+        } catch (ReflectiveOperationException | RuntimeException e) {
+            return null;
+        }
+    }
+
     /** What the jar's ability gate says of one ability of a body: whether a cast would start, whether one runs, the cooldown left. */
     private static String abilityState(EntityUmvuthi u, com.bobmowzie.mowziesmobs.server.ability.AbilityType<?, ?> type) {
         com.bobmowzie.mowziesmobs.server.ability.Ability<?> a = com.bobmowzie.mowziesmobs.server.ability.AbilityHandler.INSTANCE.getAbility(u, type);
@@ -4056,6 +4073,8 @@ public final class AloftMowzieGameTests {
         final long[] fired = new long[5];
         /** The first tick after the n-th re-pair that the body's way was more than the turn's limit off its facing. */
         final long[] dueAfter = new long[8];
+        /** The body's place (x, z) by the engine's own reckoning, or null: the way the re-pair gate reads, which a tick's move does not always give (MZB-919). */
+        Supplier<double[]> place = () -> null;
         boolean armed;
         Vec3 prev;
         String before;
@@ -4158,9 +4177,14 @@ public final class AloftMowzieGameTests {
                     note("tick " + now + ": only " + rose + " of " + hearers.length + " hearers were sent an add");
                 repaired(now, at, moved, state);
             }
-            if (!repairs.isEmpty() && dueAfter[repairs.size()] == 0 && moved > 0.05
-                    && AloftRules.turn(body.getYRot(), AloftRules.wayYaw(at.x - prev.x, at.z - prev.z)) > AloftRules.TURN)
-                dueAfter[repairs.size()] = now;
+            if (!repairs.isEmpty() && dueAfter[repairs.size()] == 0) {
+                double[] pl = place.get();
+                // the gate's own way: from the body to its place; the tick's move only when the place is unknown
+                float way = pl != null ? AloftRules.wayYaw(pl[0] - at.x, pl[1] - at.z)
+                        : moved > 0.05 ? AloftRules.wayYaw(at.x - prev.x, at.z - prev.z) : Float.NaN;
+                if (!Float.isNaN(way) && AloftRules.turn(body.getYRot(), way) > AloftRules.TURN)
+                    dueAfter[repairs.size()] = now;
+            }
             still2 = still1;
             still1 = moved;
             prev = at;
@@ -4362,6 +4386,7 @@ public final class AloftMowzieGameTests {
                     check("it has Sunblock and Fire Resistance (" + u.getActiveEffects() + ")",
                             u.hasEffect(EffectHandler.SUNBLOCK) && u.hasEffect(MobEffects.FIRE_RESISTANCE));
                     Reading r = new Reading(level, u, hearer[0], hearer[0], hearer[1]);
+                    r.place = () -> placeOf(agent[0], level);
                     reading[0] = r;
                     for (int k = 0; k < r.fired.length; k++) {
                         int kind = k;
