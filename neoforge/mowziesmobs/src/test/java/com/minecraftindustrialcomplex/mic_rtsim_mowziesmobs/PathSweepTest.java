@@ -82,14 +82,27 @@ class PathSweepTest {
             return new int[] {(int) Math.floor(base[0]), (int) Math.floor(base[1]), (int) Math.floor(base[2])};
         }
 
-        /** The cells the box's swept volume spans, a block beyond each way (the walk's last slab is the first past the end). */
+        /**
+         * The cells the box's swept volume spans and two beyond each way: the walk reads the crossing into the cell past the end
+         * (the leading edge ends on a cell's boundary, a touch) and, as the jar's do-while does, the first crossing after the end.
+         */
         int[] bounds() {
             int[] b = new int[6];
             for (int i = 0; i < 3; i++) {
-                b[i] = (int) Math.floor(Math.min(base[i], base[i] + vec[i])) - 1;
-                b[3 + i] = (int) Math.floor(Math.max(max[i], max[i] + vec[i])) + 1;
+                b[i] = (int) Math.floor(Math.min(base[i], base[i] + vec[i])) - 2;
+                b[3 + i] = (int) Math.floor(Math.max(max[i], max[i] + vec[i])) + 2;
             }
             return b;
+        }
+
+        Sweep perturbed(SplittableRandom r, double d) {
+            double[] v = vec.clone(), bs = base.clone(), mx = max.clone();
+            for (int i = 0; i < 3; i++) {
+                v[i] += (r.nextDouble() * 2 - 1) * d;
+                bs[i] += (r.nextDouble() * 2 - 1) * d;
+                mx[i] += (r.nextDouble() * 2 - 1) * d;
+            }
+            return new Sweep(v, bs, mx);
         }
     }
 
@@ -100,28 +113,34 @@ class PathSweepTest {
     private static final Walk SHIPPED = PathSweep::sweep;
     private static final Walk JAR = JarFloatSweep::sweep;
 
+    /** A number in [lo, hi) as a multiple of 1 / perBlock, or any double when perBlock is 0. */
     private static double quantized(SplittableRandom r, double lo, double hi, int perBlock) {
-        return Math.round((lo + r.nextDouble() * (hi - lo)) * perBlock) / (double) perBlock;
+        double v = lo + r.nextDouble() * (hi - lo);
+        return perBlock == 0 ? v : Math.round(v * perBlock) / (double) perBlock;
     }
 
     /**
-     * A sweep as the jar's callers make one: a mob's box (feet on a block 50 times in 100, standing at a block's middle or
-     * anywhere), a path node at most 80 blocks off, a third of them level, level or up or down; every number a multiple of 2^-6,
-     * so that a float holds it exactly out to 2^17 blocks (the near-origin comparison needs the casts to lose nothing).
+     * A sweep as the jar's callers make one: a mob's box (feet on a block half the time, standing at a block's middle a third of
+     * the time), a path node at most 80 blocks off, a third of them level, a few along one axis. {@code perBlock} 64 makes every
+     * number a multiple of 2^-6, which a float and a double hold exactly out to 2^17 blocks (many edges then fall on a cell's
+     * boundary, as a mob's on a block's middle do); 0 makes them any double.
      */
-    private static Sweep random(SplittableRandom r, double cx, double cz) {
-        double w = quantized(r, 0.5, 5.0, 16), h = quantized(r, 0.5, 5.5, 16);
-        double x = r.nextInt(3) == 0 ? Math.floor(cx) + 0.5 : cx + quantized(r, 0, 1, 64);
-        double z = r.nextInt(3) == 0 ? Math.floor(cz) + 0.5 : cz + quantized(r, 0, 1, 64);
-        double y = r.nextBoolean() ? Math.floor(quantized(r, -60, 60, 1)) : quantized(r, -60, 60, 64);
+    private static Sweep random(SplittableRandom r, double cx, double cz, int perBlock) {
+        double w = quantized(r, 0.5, 5.0, perBlock == 0 ? 0 : 16), h = quantized(r, 0.5, 5.5, perBlock == 0 ? 0 : 16);
+        double x = r.nextInt(3) == 0 && perBlock != 0 ? Math.floor(cx) + 0.5 : cx + quantized(r, 0, 1, perBlock);
+        double z = r.nextInt(3) == 0 && perBlock != 0 ? Math.floor(cz) + 0.5 : cz + quantized(r, 0, 1, perBlock);
+        double y = r.nextBoolean() && perBlock != 0 ? Math.floor(quantized(r, -60, 60, 1)) : quantized(r, -60, 60, perBlock);
         double len = 1 + r.nextDouble() * 79, angle = r.nextDouble() * Math.PI * 2;
-        double vx = Math.round(Math.cos(angle) * len * 64) / 64.0;
-        double vz = Math.round(Math.sin(angle) * len * 64) / 64.0;
+        double vx = Math.cos(angle) * len, vz = Math.sin(angle) * len;
         double vy = switch (r.nextInt(3)) {
             case 0 -> 0;
-            case 1 -> quantized(r, -2, 2, 64);
-            default -> quantized(r, -6, 6, 64);
+            case 1 -> quantized(r, -2, 2, perBlock);
+            default -> quantized(r, -6, 6, perBlock);
         };
+        if (perBlock != 0) {
+            vx = Math.round(vx * perBlock) / (double) perBlock;
+            vz = Math.round(vz * perBlock) / (double) perBlock;
+        }
         if (r.nextInt(8) == 0)
             vz = 0;
         if (r.nextInt(8) == 0)
@@ -148,7 +167,7 @@ class PathSweepTest {
         if (v.cells.isEmpty())
             return null;
         int[] b = s.bounds();
-        if (v.minX < b[0] || v.minY < b[1] - 1 || v.minZ < b[2] || v.maxX > b[3] || v.maxY > b[4] || v.maxZ > b[5])
+        if (v.minX < b[0] || v.minY < b[1] || v.minZ < b[2] || v.maxX > b[3] || v.maxY > b[4] || v.maxZ > b[5])
             return "read outside the box and its target: x " + v.minX + " to " + v.maxX + ", y " + v.minY + " to " + v.maxY + ", z " + v.minZ + " to " + v.maxZ
                     + " beyond " + java.util.Arrays.toString(b);
         return null;
@@ -179,8 +198,7 @@ class PathSweepTest {
         List<String> faults = new ArrayList<>();
         for (int k = 0; k < 6_000; k++) {
             double x = -(500_000 + r.nextDouble() * 6_600_000), z = 500_000 + r.nextDouble() * 6_600_000;
-            // unquantized: the doubles a mob's position is
-            Sweep s = random(r, x, z);
+            Sweep s = random(r, x, z, 0); // any doubles: a mob's position is
             sweeps++;
             if (k < 1_500 && "ran away".equals(fault(JAR, true, s)))
                 ranAway++;
@@ -196,7 +214,7 @@ class PathSweepTest {
     void aBoxAndItsShiftByWholeBlocksFindTheSameCellsToSevenMillionBlocksOut() {
         SplittableRandom r = new SplittableRandom(951L);
         for (int k = 0; k < 4_000; k++) {
-            Sweep near = random(r, r.nextInt(-3000, 3000), r.nextInt(-3000, 3000));
+            Sweep near = random(r, r.nextInt(-3000, 3000), r.nextInt(-3000, 3000), 64);
             Visits n = walk(SHIPPED, near, false);
             double dx = -(3_000_000 + r.nextInt(4_100_000)), dz = 3_000_000 + r.nextInt(4_100_000);
             Visits f = walk(SHIPPED, near.shifted(dx, dz), false);
@@ -208,26 +226,87 @@ class PathSweepTest {
     // ---- near the origin -------------------------------------------------------------------------
 
     /**
-     * Within 3,000 blocks of the origin a float holds the box's edges exactly (the sweeps here are multiples of 2^-6) and the
-     * two walks read the same cells and the same columns. They are the same algorithm in two precisions, so a crossing the
-     * float's rounding makes a tie or breaks a tie the other way (a vector that meets a cell's corner) can read another
-     * corner cell; the walks are compared on a seeded set and the disagreements counted.
+     * The shipped walk and the jar's are the same algorithm in two precisions. A float near the origin is off by some
+     * hundred thousandths of a block (a ten thousandth at 1,000 blocks, a trailing edge's sum of 60 steps included), and a
+     * trailing edge that lies that close to a cell's boundary at a crossing is in one cell for the float and in the next for the
+     * double: a box's few edge cells then differ. So the two are compared on the sweeps whose cells do not depend on the last
+     * ten thousandth of a block: the double walk reads the same cells and columns under twelve random nudges of that size to the
+     * box and the vector (nine numbers). On those, within 16 blocks of the origin, the jar's float walk reads exactly the same
+     * cells and columns. Most sweeps are stable; the count is asserted so that the filter cannot be hiding a difference.
      */
     @Test
-    void nearTheOriginTheShippedWalkReadsTheJarsCells() {
-        SplittableRandom r = new SplittableRandom(1_021_951L);
-        int n = 20_000, differ = 0;
+    void nearTheOriginTheShippedWalkReadsTheJarsCellsWhereTheFloatIsExact() {
+        SplittableRandom r = new SplittableRandom(1_021_951L), nudges = new SplittableRandom(7L);
+        int n = 12_000, stable = 0, differ = 0;
         List<String> examples = new ArrayList<>();
         for (int k = 0; k < n; k++) {
-            Sweep s = random(r, r.nextInt(-3000, 3000), r.nextInt(-3000, 3000));
-            Visits jar = walk(JAR, s, true), shipped = walk(SHIPPED, s, false);
+            Sweep s = random(r, r.nextInt(-16, 16), r.nextInt(-16, 16), 0);
+            Visits shipped = walk(SHIPPED, s, false);
+            boolean robust = true;
+            for (int j = 0; j < 12 && robust; j++) {
+                Visits p = walk(SHIPPED, s.perturbed(nudges, 1.0E-4), false);
+                robust = shipped.cells.equals(p.cells) && shipped.columns.equals(p.columns);
+            }
+            if (!robust)
+                continue;
+            stable++;
+            Visits jar = walk(JAR, s, true);
             if (!jar.cells.equals(shipped.cells) || !jar.columns.equals(shipped.columns)) {
                 differ++;
                 if (examples.size() < 3)
                     examples.add(describe(s) + ": jar " + jar.cells.size() + " cells, shipped " + shipped.cells.size());
             }
         }
-        assertEquals(0, differ, differ + " of " + n + " sweeps differ, e.g. " + examples);
+        assertEquals(0, differ, differ + " of " + stable + " stable sweeps differ, e.g. " + examples);
+        assertTrue(stable > n * 0.7, "only " + stable + " of " + n + " sweeps were stable");
+    }
+
+    /**
+     * Farther out the float is coarser, and the same sweeps differ more: at 1,000 blocks 1 sweep in 30 or so has a trailing-edge
+     * cell or two the float puts in the next cell. Compared as they are, without the stability filter: most are the same, and a
+     * different one differs by a few cells in hundreds (cells the box's trailing edge just touches).
+     */
+    @Test
+    void atAThousandBlocksTheTwoWalksStillReadAlmostEveryCellTheSame() {
+        SplittableRandom r = new SplittableRandom(1_000_951L);
+        int n = 10_000, differ = 0, worstPermille = 0;
+        for (int k = 0; k < n; k++) {
+            Sweep s = random(r, r.nextInt(-1000, 1000), r.nextInt(-1000, 1000), 0);
+            Visits jar = walk(JAR, s, true), shipped = walk(SHIPPED, s, false);
+            if (jar.cells.equals(shipped.cells))
+                continue;
+            differ++;
+            Set<Long> sym = new HashSet<>(jar.cells);
+            sym.addAll(shipped.cells);
+            Set<Long> both = new HashSet<>(jar.cells);
+            both.retainAll(shipped.cells);
+            sym.removeAll(both);
+            worstPermille = Math.max(worstPermille, (int) (sym.size() * 1000L / shipped.cells.size()));
+        }
+        assertTrue(differ < n * 0.06, differ + " of " + n + " sweeps differ");
+        assertTrue(worstPermille < 60, "the worst difference is " + worstPermille + " cells in a thousand");
+    }
+
+    /**
+     * Where the arithmetic is exact in a float too (a box with edges on multiples of a half, a vector along one axis, all
+     * of them well away from 0), the two walks are the same walk to the last cell, with the box's edges on the cell boundaries
+     * that tell the jar's {@code floor} from the nudge its source names and its float never applies (a leading edge on an integer
+     * is in the cell above it, a trailing one in the cell it starts).
+     */
+    @Test
+    void anAxisAlignedSweepOnExactEdgesReadsTheSameCellsInBothWalks() {
+        SplittableRandom r = new SplittableRandom(950_951L);
+        for (int k = 0; k < 8_000; k++) {
+            double w = (1 + r.nextInt(9)) * 0.5, h = (1 + r.nextInt(11)) * 0.5;
+            double[] base = {100 + r.nextInt(600) * 0.5, 40 + r.nextInt(80) * 0.5, 100 + r.nextInt(600) * 0.5};
+            double[] max = {base[0] + w, base[1] + h, base[2] + w};
+            double[] vec = {0, 0, 0};
+            vec[r.nextInt(3)] = (r.nextBoolean() ? 1 : -1) * (1 + r.nextInt(120)) * 0.25;
+            Sweep s = new Sweep(vec, base, max);
+            Visits jar = walk(JAR, s, true), shipped = walk(SHIPPED, s, false);
+            assertEquals(jar.cells, shipped.cells, "cells of " + describe(s));
+            assertEquals(jar.columns, shipped.columns, "columns of " + describe(s));
+        }
     }
 
     @Test
