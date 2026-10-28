@@ -5546,6 +5546,39 @@ RP-150 to RP-153 the replay records.
     even coin, so it shows the fix does not break the class, not that the flake is gone; the wait records, per test,
     the track ticks still waiting when the station first joined and whether it was made anew since: 0 and false in all 13
     of that round).
+  - **MZB-950** (the heap of the full `create -PwithMowzie` run: out of memory at 4G and at 6G in the light engine
+    worker, "passes only at 10G"; not a leak, not the U-g, J6, U-h or M8 code). Measured at `-Xmx10G`
+    (jcmd class histograms after a full collection; `target/heap-NN.txt`, `target/dense/`): through the first 207
+    tests the live heap sat between 0.3 and 1.0 GB (1.0 GB at 180 tests with 5,600 chunks waiting in the chunk
+    IOWorker, 0.56 GB at 207), no class of ours growing, no `Journal$Entry` (17), `ChunkWriteBarrier$Note` (1) or
+    district structure above a few hundred objects; then, in `theIceBallHitRatesAgainstAMovingTrain`, the server thread
+    sat in one tick for 15 minutes with the live heap going 0.56, 5.4, 6.6, 7.9, 8.8, 9.8, 10.0 GB (round 1, base
+    -6,724,212 / 6,945,462) and 2.0, 4.3, 7.3 GB (round 2, base -3,797,620 / 4,715,190): 33,700 loaded chunks and
+    402,000 chunk holders after 5 minutes, 37,700 after 8 (`LevelChunkSection` 177,000 to 10.5 million, `PalettedContainer`
+    21 million), the line of chunks growing along one axis. Every thread dump of the server thread: `EntityFrostmaw.tick` to
+    `MMPathNavigateGround.followThePath`, `tryShortcut`, `sweep` (jar line 139, the `getBlockState` or `getPathType` of a
+    cell), the chunk loaded by `Level.getBlockState` on the server thread. A temporary mixin that named any path node more
+    than 300 blocks from its mob logged nothing: the path was an ordinary one. The cause is the jar's (Mowzie's Mobs
+    1.8.2): `sweep` steps a grid in `float`, and the world coordinates of the mob's box are the floats. Above 2^22 blocks a
+    float is a multiple of 0.5 (2^21: 0.25); the trailing edge, advanced by a sum of about 0.28 a step, rounds up to 0.5
+    every step and overtakes the leading edge by the box's width after some 15 to 30 cells, and
+    `for (int z = z0; z != z1; z += step)` then starts beyond its end and counts through the whole int range, loading a line of
+    chunks out to the world border and past it. A copy of the algorithm in plain Java (400,000 random sweeps of 10 to 80
+    blocks, boxes 3 to 5 wide, per size) runs away in 0 sweeps at 100,000 to 800,000 blocks from the origin, 2 at 1.0
+    million, 3,543 (0.9%) at 2.0 million, 4,259 at 3.0 million, 17,131 (4.3%) at 4.5 million, 16,540 at 6.5 million; for
+    boxes 0.6 to 2 wide 0 up to 340,000 blocks, 310 at 520,000 and 7,695 at 1.0 million. The GameTests' far bases
+    (`ConflictKit.farBase`: x from -3 to -7.1 million, z from 3 to 7.1 million) are all in the range, and a Frostmaw that
+    follows a path for 16,000 ticks at 40 sweeps a tick should not miss. Why the ice-rates test passed earlier at
+    -6,085,297 (MZB-938) is not known: the sweeps it met did not hit the band, or its Frostmaw followed no long path. **Test fix:** `RailFrostmawGameTests` builds at `ConflictKit.nearBase()` (`PathSafeBase`: x -100,000
+    to -231,000, z 100,000 to 231,000, inside 2^18 blocks, where the copy never ran away), and `releaseFarChunks` also
+    releases that area. `PathSafeBaseTest` keeps every slot, the strip built from it and the sweep beyond it inside the
+    limit. **Not changed, for the lead:** the jar's bug is a product one too (any Mowzie mob that follows a path
+    more than about 500,000 blocks from the origin can stall the server for minutes and load millions of chunks); a
+    mixin in this plugin that replaces `sweep` with a `double` one measured from the box (or bounds its loops) would remove
+    it, and the same applies to `MowzieKit`'s tests (`farBase`), which have not been seen to run away. Away from
+    the ice test the run's live heap stayed under 1.4 GB (the chunk IOWorker's backlog included).
+    **Heap default:** `create/build.gradle` is back to `-Xmx4G` for every run (the 6G for `-PwithMowzie`, set on
+    2026-10-27 on the reading that the merges outgrew 4G, is gone); the fix's 4G round passed 267 of 267.
 
 ## M9 Umvuthana
 
