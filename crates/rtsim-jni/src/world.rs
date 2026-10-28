@@ -155,7 +155,6 @@ pub struct World {
     /// Java's dictionary for this session (Java resends it at every session start): (kind, id) to name.
     pub java_dict: HashMap<(u32, u32), String>,
     pub players: HashMap<(u64, u64), (u32, [f64; 3])>,
-    pub module_mask: u32,
     pub game_time: i64,
     captured: Vec<Captured>,
     /// The captures of the last journaled event, after it applied: what a member held when it
@@ -203,9 +202,6 @@ impl World {
             }
             obs::TICK if rec.size() >= obs::tick::SIZE => {
                 self.game_time = wire::i64_at(b, obs::tick::GAME_TIME)
-            }
-            obs::MODULES if rec.size() >= obs::modules::SIZE => {
-                self.module_mask = wire::u32_at(b, obs::modules::MASK)
             }
             obs::PLAYER if rec.size() >= obs::player::SIZE => {
                 let key = (

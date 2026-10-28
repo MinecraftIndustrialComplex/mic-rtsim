@@ -418,16 +418,13 @@ fn kept_waiting(st: &State) -> bool {
 /// hears every territory again (the reset runs as soon as the conflict runs, now once every
 /// module's flag is set, `shared::resets`, or when switched on), and Java forgot the engine's
 /// dictionary.
-pub(super) fn session_start(st: &mut State, module_mask: u32) {
+pub(super) fn session_start(st: &mut State) {
     st.conflict.queue.clear();
     st.conflict.reported.clear();
-    // The first record of the engine's only session: what it holds is its pages as read, so a
-    // switch that is off from the start keeps exactly those (no save writes them).
-    st.conflict.enabled = module_mask & MODULE_CONFLICT != 0;
     st.conflict.reset_due = true;
 }
 
-/// MODULES (U10), the first pass (`shared::switch`): the switch, if it changed. Off: what the
+/// MODULE_SWITCH (U10), the first pass (`shared::switch`): the switch, if it changed. Off: what the
 /// conflict holds is written once more as it is now and then kept; queued commands are dropped
 /// (all per session). On: the reset is due, and runs in the second pass with every module's
 /// (`shared::resets`); the areas booked meanwhile are introduced to it after it. Returns whether
@@ -537,7 +534,7 @@ pub(super) fn gate_counts(st: &State) -> rtsim_conflict::GateCounts {
     st.conflict.engine.replay_gate_counts()
 }
 
-/// A record that is not journaled: the conflict's latest-wins kinds. MODULES goes to
+/// A record that is not journaled: the conflict's latest-wins kinds. MODULE_SWITCH goes to
 /// `shared::switch`, PLAYER positions to the shared interest areas (`engine/shared.rs`).
 pub(super) fn observe_state(st: &mut State, rec: &Rec<'_>) {
     let b = rec.bytes;

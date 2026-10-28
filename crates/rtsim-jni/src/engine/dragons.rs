@@ -339,18 +339,15 @@ pub(super) fn gate_counts(st: &State) -> rtsim_ecology::GateCounts {
 /// a record reaches them; every dragon the engine thought embodied is abstract again at the
 /// replay end, since puppets never outlive a session), and Java forgot the engine's dictionary.
 /// The reset runs once every module's flag is set (`shared::resets`).
-pub(super) fn session_start(st: &mut State, module_mask: u32) {
+pub(super) fn session_start(st: &mut State) {
     st.dragons.queue.clear();
     st.dragons.far.clear();
     st.dragons.java_species = None;
     st.dragons.items_defined.clear();
-    // The first record of the engine's only session: what it holds is its pages as read, so a
-    // switch that is off from the start keeps exactly those (no save writes them).
-    st.dragons.enabled = module_mask & MODULE_ECOLOGY != 0;
     st.dragons.reset_due = true;
 }
 
-/// MODULES (U10), the first pass (`shared::switch`): the switch, if it changed. Off: what the
+/// MODULE_SWITCH (U10), the first pass (`shared::switch`): the switch, if it changed. Off: what the
 /// dragons hold is written once more as it is now and then kept; queued commands are dropped (all
 /// per session, S11). On: the reset is due, and runs in the second pass with every module's
 /// (`shared::resets`). Returns whether the dragons came on.
@@ -443,7 +440,7 @@ fn end_replay(st: &mut State, clock: Tick) {
 }
 
 /// A record that is not journaled: Java's DICT entries (they may rename species and lairs) and
-/// DRAGON_STATE. MODULES goes to `shared::switch`, PLAYER positions to the shared interest areas
+/// DRAGON_STATE. MODULE_SWITCH goes to `shared::switch`, PLAYER positions to the shared interest areas
 /// (`engine/shared.rs`).
 pub(super) fn observe_state(st: &mut State, rec: &Rec<'_>) {
     let b = rec.bytes;

@@ -5,7 +5,7 @@
 //!
 //! The step calls in here at five points and nowhere else:
 //! - **observe** ([`observe_state`], [`session_start`], [`journaled`]): Java's DICT entries for
-//!   the dictionaries industry records use, the MODULES switch, the latest-wins industry kinds
+//!   the dictionaries industry records use, the MODULE_SWITCH switch, the latest-wins industry kinds
 //!   (0x0040 to 0x005F) and, once `Replay` admitted them, the journaled ones (0x0400 to 0x04FF)
 //!   and COMMAND_RESULTs for industry op ids, all through `rtsim_industry::wire`;
 //! - **simulate** ([`simulate`]): the engine advances to the hand-over's game time and its
@@ -72,7 +72,7 @@ pub const DICT_GOOD: u32 = 0x10;
 pub const DICT_NAME: u32 = 0x11;
 pub const DICT_BLOCK_STATE: u32 = 0x12;
 
-/// The bridge's `Module.INDUSTRY` bit in MODULES and SESSION_START (its ordinal, 7).
+/// The bridge's `Module.INDUSTRY` bit in MODULE_SWITCH and SESSION_START (its ordinal, 7).
 pub const MODULE_INDUSTRY: u32 = 1 << 7;
 
 /// Kind ranges (docs/industry-boundary.md §1, F1).
@@ -236,7 +236,7 @@ fn kept(c: &Cmd) -> bool {
 
 impl Link {
     /// A link with an empty engine (the core's `State::new`; [`Link::load`] replaces it at start).
-    /// Whether the industry module runs (MODULES): the dragons raid districts only then.
+    /// Whether the industry module runs (MODULE_SWITCH): the dragons raid districts only then.
     pub(super) fn enabled(&self) -> bool {
         self.enabled
     }
@@ -482,7 +482,7 @@ impl Link {
 
     /// Takes a command out of the queue, or out of the engine's commands not drained yet: Java
     /// answered its op. A kept command waits in the queue after it was written when the switch or
-    /// a session start with the module off moved it back (`set_enabled`, [`write_resends`]);
+    /// a session start with the module off moved it back (`set_enabled_at`, [`write_resends`]);
     /// written again, Java would apply it twice once its rings and its journal had forgotten the
     /// op at the answer's acknowledgement (RP-209, RP-285). The engine's own are searched too: one
     /// decided again under the op Java applied waits there until the module is on.
@@ -550,9 +550,8 @@ fn decode_link(b: &[u8]) -> rtsim_kernel::codec::Result<LinkPage> {
 /// journal has replayed (W19): run first, it would advance the engine to this session's game time
 /// and every replayed record would be taken as happening now, so a decision the pages had not
 /// reached would come out different from the one Java already applied.
-pub(super) fn session_start(st: &mut State, game_time: i64, module_mask: u32) {
+pub(super) fn session_start(st: &mut State, game_time: i64) {
     let l = &mut st.industry;
-    l.enabled = module_mask & MODULE_INDUSTRY != 0;
     // Answers an earlier session heard with the module off and saved with the pages are older
     // than anything the journal replays: booked first, at their own times (RP-285). Off, they wait
     // for the switch with those the replay brings.
@@ -565,7 +564,38 @@ pub(super) fn session_start(st: &mut State, game_time: i64, module_mask: u32) {
     l.session_start_at = Some(tick(game_time));
 }
 
-/// The switch changed in a session (MODULES, U10). Off: the engine is frozen where it stands (its
+/// The flag as the pages' mask (or SESSION_START's, when the pages hold none) leaves it, before any
+/// record (docs/choices-journal-barrier.md U-e6): no work of a switch, only the flag.
+pub(super) fn start_flag(st: &mut State, mask: u32) {
+    st.industry.enabled = mask & MODULE_INDUSTRY != 0;
+}
+
+/// MODULE_SWITCH (docs/choices-journal-barrier.md U-e4): the switch changed, at the record's tick.
+/// Going off, the engine first runs to that tick, inside the step (a replay is one step), so the
+/// clock it freezes at is the record's whatever hand-over carried it, live or replayed: the answers
+/// heard while off are booked at the later of their own tick and the engine's clock
+/// ([`book_kept_answers`]), so a clock frozen elsewhere would book them elsewhere and derive other
+/// op ids (J3). A record of this session ends the replay before it is dispatched, so the engine's
+/// own session start runs first, as for any record of the session's ([`journaled`]). Then
+/// [`set_enabled_at`].
+pub(super) fn switched(st: &mut State, rec: &Rec<'_>, on: bool) {
+    let at = tick(wire::i64_at(rec.bytes, obs::GAME_TIME));
+    let this_session = wire::u64_at(rec.bytes, obs::OBS_SEQ) >= st.session_first;
+    let replaying = st.replaying;
+    let l = &mut st.industry;
+    if l.enabled && !on {
+        if this_session {
+            l.begin_session();
+        }
+        if !replaying {
+            l.flush(Some(at));
+        }
+        l.engine.run_in_step(at);
+    }
+    set_enabled_at(st, on, at);
+}
+
+/// The switch changed in a session (MODULE_SWITCH, U10). Off: the engine is frozen where it stands (its
 /// queue and outbox wait, its clock stays, every record but Java's answers is ignored). Off, it
 /// still hears Java's answers to commands it already sent ([`keep_answer`], RP-285): an answer is
 /// not a new op. Java prunes its op rings at the engine's acknowledgement of a live answer, with
@@ -585,8 +615,7 @@ pub(super) fn session_start(st: &mut State, game_time: i64, module_mask: u32) {
 /// The chain writes the link held while off (queued, or kept in the outbox) go to Java now: the
 /// engine's session start awaits their answers from its game time (`Link::begin_session`,
 /// RP-294).
-fn set_enabled(st: &mut State, on: bool) {
-    let gt = tick(st.game_time);
+fn set_enabled_at(st: &mut State, on: bool, gt: Tick) {
     let l = &mut st.industry;
     let was = l.enabled;
     l.enabled = on;
@@ -608,7 +637,7 @@ fn set_enabled(st: &mut State, on: bool) {
     }
 }
 
-/// A record that is not journaled: Java's DICT entries, MODULES, and the latest-wins industry
+/// A record that is not journaled: Java's DICT entries, MODULE_SWITCH, and the latest-wins industry
 /// kinds. Anything else is not the industry's.
 pub(super) fn observe_state(st: &mut State, rec: &Rec<'_>) {
     let b = rec.bytes;
@@ -627,10 +656,6 @@ pub(super) fn observe_state(st: &mut State, rec: &Rec<'_>) {
             let name =
                 String::from_utf8_lossy(&b[obs::dict::NAME..obs::dict::NAME + len]).into_owned();
             java_name(l, kind, id, name);
-        }
-        obs::MODULES if rec.size() >= obs::modules::SIZE => {
-            let on = wire::u32_at(b, obs::modules::MASK) & MODULE_INDUSTRY != 0;
-            set_enabled(st, on);
         }
         k if LATEST.contains(&k) => {
             if !l.enabled {
@@ -875,7 +900,7 @@ fn keep_answer(l: &mut Link, rec: &Rec<'_>, replaying: bool) -> bool {
 /// while off. Each is booked by whether the replay brought it ([`KeptAnswer`], RP-313), not by
 /// whether the engine replays at the switch: a switch after the replay books answers the replay
 /// brought, whose copies must stay, and one inside it (a SESSION_START with the module on, a
-/// MODULES in a later hand-over of the replay) books them too.
+/// MODULE_SWITCH in a later hand-over of the replay) books them too.
 fn book_kept_answers(l: &mut Link) {
     while let Some(k) = l.answers.pop_front() {
         let Some(rec) = Records::new(&k.record).next() else {
@@ -959,7 +984,7 @@ fn take_answered(l: &mut Link, op: OpId, replayed: bool, applied: bool) -> Optio
 /// live answer prunes, and no replayed answer is live), and a train's ring that came back without
 /// the op applies it to the restored goods (J4, RP-196), which the replayed IND_CARRIAGE_RESULT
 /// booked already: taken out, the restored train never gets them. The copy goes at the first drain
-/// after the replay end, or later: a MODULES(off) in a later replay hand-over, a full buffer or a
+/// after the replay end, or later: a MODULE_SWITCH(off) in a later replay hand-over, a full buffer or a
 /// name wait (W21) can hold it past this session's first acknowledgement, which trims Java's
 /// journal op index. Then the second guards alone refuse it: the train ring, Diesel's oil ring,
 /// LEVEL_APPLIED_OPS, the port rings, the chunk carry and the reconcile epoch. Where the journal's
@@ -2089,12 +2114,18 @@ mod tests {
         resent.chain(queued_writes(st)).collect()
     }
 
+    /// The switch as the tests time it: at the step's game time.
+    fn set_enabled(st: &mut State, on: bool) {
+        let at = tick(st.game_time);
+        set_enabled_at(st, on, at);
+    }
+
     /// How the module comes back on in [`writes_after_a_held_write`].
     #[derive(Clone, Copy, PartialEq)]
     enum Back {
-        /// MODULES in the session, W still in the link's queue (the buffer was full).
+        /// A switch in the session, W still in the link's queue (the buffer was full).
         SwitchQueued,
-        /// MODULES in the session, W written before the switch-off and not answered.
+        /// A switch in the session, W written before the switch-off and not answered.
         SwitchWritten,
         /// A stop with the module off and a restart whose config has it on, W written and not
         /// answered: the restart resends it from the outbox.
@@ -2134,7 +2165,8 @@ mod tests {
             // The engine and the link as the pages saved at the stop hold them: frozen at the
             // switch-off, W in the outbox. Java applied nothing past sequence 40.
             st.industry.resume(40);
-            session_start(&mut st, on as i64, MODULE_INDUSTRY);
+            start_flag(&mut st, MODULE_INDUSTRY);
+            session_start(&mut st, on as i64);
         } else {
             set_enabled(&mut st, true);
         }
