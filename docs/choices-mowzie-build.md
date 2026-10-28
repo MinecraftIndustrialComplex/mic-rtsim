@@ -11823,7 +11823,7 @@ rounds of phase 2 are the check, and what they found is recorded after them.
   stood at y -33.0, 24 blocks over its floor (-57), with a lag of 47 blocks. The test's anchors outrun the puppets on purpose (0.2 and 0.3 a tick against the
   cap of 0.1), which is the stuck rule's case (MZB-811: no headway toward its place), so the rule raised the target 8 blocks a window, to 24, and a puppet that
   rises takes no step across (`AloftRules.mayStepAcross`: 240 ticks for 24 blocks at 0.1), so its way, from a puppet that did not move toward a place that
-  did, never came 55 degrees off. (The earlier rounds' numbers were this too: the second turn due at 141, 212 and 228294 - 228082 ticks were the raise.)
+  did, never came 55 degrees off.
   `UmvuthiAloft.clearStuck(memo)` starts the stuck machine over (its raise and its windows) and is called for each of the test's puppets in a per-tick
   hook of the test, so the rule does not act while the anchors outrun them. It is a method of the plugin's class with the memo's other test reads
   (`raised`, `target`, `settled`), and nothing in the game calls it; 23d, the rule's own test, does not. Not run yet.
