@@ -21,7 +21,6 @@ import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.phys.Vec3;
-import net.neoforged.neoforge.capabilities.Capabilities;
 import net.neoforged.neoforge.items.IItemHandler;
 import net.neoforged.neoforge.items.ItemHandlerHelper;
 
@@ -314,7 +313,10 @@ final class CommandDispatcher implements Handover.CommandSink {
             session.dropFromChunkWhenAcked(chunk, opId, dup.getLong(Obs.OBS_SEQ));
             return;
         }
-        IItemHandler handler = level.getCapability(Capabilities.ItemHandler.BLOCK, pos, null);
+        // StockAccess.items, as the sweeps and the reconciles read an inventory: a vanilla double chest's half in another
+        // chunk than its other half is its own 27 slots, so the stack goes into this chunk only, which carries the result
+        // (RP-215). The pair's capability would put it into either half and read the other half's chunk.
+        IItemHandler handler = com.minecraftindustrialcomplex.mic_rtsim.industry.StockAccess.items(level, pos);
         if (handler == null) {
             transferResult(cmdSeq, opId, Obs.CommandResult.FAILED, now, level, pos);
             return;
@@ -336,6 +338,7 @@ final class CommandDispatcher implements Handover.CommandSink {
             MicRtsim.LOGGER.warn("[mic_rtsim] transfer {} left {} x {} over at {}; dropped there", opId, rest.getCount(), item, pos);
             net.minecraft.world.Containers.dropItemStack(level, pos.getX() + 0.5, pos.getY() + 1, pos.getZ() + 0.5, rest);
         }
+        com.minecraftindustrialcomplex.mic_rtsim.industry.StockAccess.splitWritten(level, pos);
         session.carryInChunk(chunk, transferResult(cmdSeq, opId, Obs.CommandResult.APPLIED, now, level, pos));
     }
 

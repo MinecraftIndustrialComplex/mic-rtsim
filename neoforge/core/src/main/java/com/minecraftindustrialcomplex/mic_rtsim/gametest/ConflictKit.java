@@ -854,7 +854,17 @@ public final class ConflictKit {
     private static final int FAR_X = -3_000_000, FAR_Z = 3_000_000, FAR_SLOTS = 4_000, FAR_STEP = 1_024;
 
     /**
-     * Releases every chunk forced in the far-base area, with a slot's margin each side: forced chunks
+     * As {@link #farBase}, for a test in which a Mowzie's Mobs body follows a path: within 231,000 blocks of the origin
+     * ({@link PathSafeBase}), where the jar's float path sweep is exact. At the far bases it is not, and one sweep of 40
+     * blocks can load a line of chunks to the world border in a single tick (heap past 10 GB, the server thread stuck for
+     * minutes). A different area from {@link #farBase}'s, released by {@link #releaseFarChunks} too.
+     */
+    public static int[] nearBase() {
+        return PathSafeBase.pick(ThreadLocalRandom.current());
+    }
+
+    /**
+     * Releases every chunk forced in the far-base area ({@link #nearBase}'s too), with a slot's margin each side: forced chunks
      * persist in the reused world, so a run that failed before its own release leaves them ticking for
      * every later run. Call at the start of a test that forces chunks there (batches run one at a time).
      * The count released.
@@ -865,7 +875,8 @@ public final class ConflictKit {
         int n = 0;
         for (long c : level.getForcedChunks().toLongArray()) {
             int cx = ChunkPos.getX(c), cz = ChunkPos.getZ(c);
-            if (cx >= x0 && cx <= x1 && cz >= z0 && cz <= z1 && level.setChunkForced(cx, cz, false))
+            boolean far = cx >= x0 && cx <= x1 && cz >= z0 && cz <= z1;
+            if ((far || PathSafeBase.areaHas(cx, cz)) && level.setChunkForced(cx, cz, false))
                 n++;
         }
         return n;
