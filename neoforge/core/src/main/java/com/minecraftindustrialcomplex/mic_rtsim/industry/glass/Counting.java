@@ -4,6 +4,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.MicRtsim;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.District;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.Districts;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.Industry;
+import com.minecraftindustrialcomplex.mic_rtsim.industry.StockAccess;
 import it.unimi.dsi.fastutil.ints.Int2LongOpenHashMap;
 import it.unimi.dsi.fastutil.ints.IntArrayList;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
@@ -145,6 +146,8 @@ public final class Counting {
     long samplesSent;
     long samplesDropped;
     long movesCounted;
+    /** Moves at a half of a split vanilla double chest, credited to neither half (RP-215, residual 13). */
+    long splitMovesDiscarded;
     /** Count points that threw (logged, the move uncounted). */
     long failures;
 
@@ -186,7 +189,8 @@ public final class Counting {
      * A real move of {@code n} of {@code stack} by the block at {@code mover}, between it and the inventory
      * at {@code target}: into the store when {@code into}, else out of it. Simulated moves and client-side
      * ones are not moves: the caller does not report them (and a level that is not a {@link ServerLevel} is
-     * skipped here). Counted when the (mover, canonical inventory of target) pair is one the engine named.
+     * skipped here). Counted when the (mover, canonical inventory of target) pair is one the engine named, unless that
+     * store is a half of a split vanilla double chest ({@link #splitMovesDiscarded}).
      */
     public void moved(Level level, BlockPos mover, BlockPos target, ItemStack stack, int n, boolean into) {
         try {
@@ -202,9 +206,18 @@ public final class Counting {
             if (store == null)
                 return;
             long sp = store.asLong();
+            // A half of a vanilla double chest across a chunk border is its own store to the sim, but Create's movers
+            // put goods through the chest's handler, which is the whole pair's: the move may have changed the other
+            // half. Credited to this half it would disagree with the stocks, so it is credited to neither: discarded
+            // as a move the count cannot attribute, and counted apart (RP-215, residual 13).
+            boolean split = StockAccess.splitPair(serverLevel.getBlockState(store), store) != null;
             for (Key k : ks)
-                if (k.store == sp)
-                    count(k, stack, n, into);
+                if (k.store == sp) {
+                    if (split)
+                        splitMovesDiscarded++;
+                    else
+                        count(k, stack, n, into);
+                }
         } catch (RuntimeException e) {
             failed("a move at " + mover + " to " + target, e);
         }
@@ -494,6 +507,11 @@ public final class Counting {
     /** Moves counted (each real move at a counted pair). */
     public long movesCounted() {
         return movesCounted;
+    }
+
+    /** Moves not credited because the store is a half of a vanilla double chest across a chunk border. */
+    public long splitMovesDiscarded() {
+        return splitMovesDiscarded;
     }
 
     /** Pairs held now, in every district. */

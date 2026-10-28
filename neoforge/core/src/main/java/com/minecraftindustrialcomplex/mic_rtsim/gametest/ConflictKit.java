@@ -283,6 +283,70 @@ public final class ConflictKit {
     }
 
     /**
+     * BAND_MARCH (docs/boundary.md §9.3, MZB-468): the march of {@code agent} as the engine says it, latest by
+     * {@code revision}. {@code units} are body names with their counts, {@code waypoints} are {@code {x, z, tick}}
+     * in the route's chart, {@code flags} are {@link ConflictRecords.March#FLAG_CHIEF} and the like.
+     */
+    public record MarchSpec(long agent, int revision, String dimension, long faction, int kind, int phase, int flags, long musterEnd,
+                            Map<String, Integer> units, List<long[]> waypoints) {}
+
+    public static void march(MarchSpec m) {
+        script(out -> {
+            int dim = out.dict(Obs.DICT_DIMENSION, m.dimension());
+            int k = m.units().size();
+            int[] bodies = new int[k];
+            int j = 0;
+            for (String body : m.units().keySet())
+                bodies[j++] = out.dict(Obs.DICT_BODY, body);
+            int w = m.waypoints().size();
+            int at = out.reserve(ConflictRecords.BAND_MARCH, ConflictRecords.March.size(k, w), w);
+            if (at < 0)
+                return;
+            ByteBuffer b = out.buffer();
+            b.putLong(at + ConflictRecords.March.AGENT, m.agent());
+            b.putInt(at + ConflictRecords.March.REVISION, m.revision());
+            b.putInt(at + ConflictRecords.March.DIM, dim);
+            b.putLong(at + ConflictRecords.March.FACTION, m.faction());
+            b.put(at + ConflictRecords.March.KIND, (byte) m.kind());
+            b.put(at + ConflictRecords.March.PHASE, (byte) m.phase());
+            b.put(at + ConflictRecords.March.FLAGS, (byte) m.flags());
+            b.putLong(at + ConflictRecords.March.MUSTER_END, m.musterEnd());
+            b.putInt(at + ConflictRecords.March.UNITS, k);
+            int u = at + ConflictRecords.March.UNIT_LIST;
+            j = 0;
+            for (int count : m.units().values()) {
+                b.putInt(u + ConflictRecords.March.U_BODY, bodies[j++]);
+                b.putInt(u + ConflictRecords.March.U_COUNT, count);
+                u += ConflictRecords.March.UNIT;
+            }
+            for (long[] p : m.waypoints()) {
+                b.putInt(u + ConflictRecords.March.W_X, (int) p[0]);
+                b.putInt(u + ConflictRecords.March.W_Z, (int) p[1]);
+                b.putLong(u + ConflictRecords.March.W_TICK, p[2]);
+                u += ConflictRecords.March.WAYPOINT;
+            }
+        });
+    }
+
+    /** Members the trim has cut this session (MZB-473); the walk-ins and the clamps of a stopped band (MZB-472). */
+    public static long trimmed() {
+        return bridge().trimmed;
+    }
+
+    public static long walkIns() {
+        return bridge().walkIns;
+    }
+
+    public static long clamps() {
+        return bridge().clamps;
+    }
+
+    /** Losses of members of a party the engine had already ended (MZB-466's Java half). */
+    public static long unbookedHomeDeaths() {
+        return bridge().unbookedHomeDeaths;
+    }
+
+    /**
      * OWED_HUNT, as the engine sends a debt of animals a raid on an unwatched district left (docs/boundary.md §9.4):
      * {@code count} animals within {@code radius} of the centre, or {@code rest} when {@code replaced} is the op last applied.
      */
@@ -736,11 +800,20 @@ public final class ConflictKit {
         return out;
     }
 
-    /** The name of a body id of Java's dictionary (one of this kit's). */
+    /**
+     * The name of a body id of Java's dictionary: one of this kit's, else whatever name the dictionary holds for the id (a plugin's
+     * bodies, which the Mowzie tests compare by name; the id alone, "body 59", never equals one: MZB-941).
+     */
     public static String bodyName(int id) {
         for (String n : List.of(WARRIOR, ARCHER, EMISSARY))
             if (RtsimTests.session().dictId(Obs.DICT_BODY, n) == id)
                 return n;
+        var journal = RtsimTests.session().boundary().journal();
+        if (id >= 1 && id <= journal.dictSize()) {
+            var entry = journal.dictEntry(id);
+            if (entry.kind() == Obs.DICT_BODY)
+                return entry.name();
+        }
         return "body " + id;
     }
 
@@ -781,7 +854,17 @@ public final class ConflictKit {
     private static final int FAR_X = -3_000_000, FAR_Z = 3_000_000, FAR_SLOTS = 4_000, FAR_STEP = 1_024;
 
     /**
-     * Releases every chunk forced in the far-base area, with a slot's margin each side: forced chunks
+     * As {@link #farBase}, for a test in which a Mowzie's Mobs body follows a path: within 231,000 blocks of the origin
+     * ({@link PathSafeBase}), where the jar's float path sweep is exact. At the far bases it is not, and one sweep of 40
+     * blocks can load a line of chunks to the world border in a single tick (heap past 10 GB, the server thread stuck for
+     * minutes). A different area from {@link #farBase}'s, released by {@link #releaseFarChunks} too.
+     */
+    public static int[] nearBase() {
+        return PathSafeBase.pick(ThreadLocalRandom.current());
+    }
+
+    /**
+     * Releases every chunk forced in the far-base area ({@link #nearBase}'s too), with a slot's margin each side: forced chunks
      * persist in the reused world, so a run that failed before its own release leaves them ticking for
      * every later run. Call at the start of a test that forces chunks there (batches run one at a time).
      * The count released.
@@ -792,7 +875,8 @@ public final class ConflictKit {
         int n = 0;
         for (long c : level.getForcedChunks().toLongArray()) {
             int cx = ChunkPos.getX(c), cz = ChunkPos.getZ(c);
-            if (cx >= x0 && cx <= x1 && cz >= z0 && cz <= z1 && level.setChunkForced(cx, cz, false))
+            boolean far = cx >= x0 && cx <= x1 && cz >= z0 && cz <= z1;
+            if ((far || PathSafeBase.areaHas(cx, cz)) && level.setChunkForced(cx, cz, false))
                 n++;
         }
         return n;

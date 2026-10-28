@@ -52,6 +52,10 @@ struct Run {
     /// The player stands at the refinery (observed every 1,200 ticks) while this is set.
     watch: bool,
     next_obs: Tick,
+    /// With [`Run::watch`], the player's area is routed too (a band is met on its march, as
+    /// `Conflict::observe_player` does). Clear, only the player's report is made: a band that
+    /// arrives finds a watcher it was never met by, so its fight starts from an abstract band.
+    sight: bool,
     /// Java refuses this band's fights: in [`run_journaled`], each BAND_MATERIALIZED the plugin
     /// answers at the epoch the band fights at is a BAND_SPAWN_REJECTED (1, not ticking).
     refuse: Option<Handle<Party>>,
@@ -77,6 +81,7 @@ impl Run {
             cmds: Vec::new(),
             watch: false,
             next_obs: Tick::ZERO,
+            sight: true,
             refuse: None,
             refuse_wave0_only: false,
         }
@@ -123,6 +128,24 @@ impl Run {
         self.c.ingest(&mut self.w, &mut NoInfrastructure, &o, at);
     }
 
+    /// The player's report from the refinery at `at` (and, with [`Run::sight`], the sightings
+    /// it routes).
+    fn observe(&mut self, at: Tick) {
+        if self.sight {
+            self.c
+                .observe_player(&mut self.w, synth::PLAYER, synth::REFINERY_POS, at);
+        } else {
+            self.c
+                .observe_presence(&mut self.w, synth::PLAYER, synth::REFINERY_POS, at);
+            self.w.observe_area(
+                synth::PLAYER,
+                synth::REFINERY_POS,
+                at,
+                self.c.tun.view_radius,
+            );
+        }
+    }
+
     /// The engine, the plugin and the player to `to`.
     fn run(&mut self, to: Tick) {
         let mut t = self.c.now();
@@ -142,8 +165,7 @@ impl Run {
             }
             self.c.run_until(&mut self.w, &mut NoInfrastructure, next);
             if self.watch && next >= self.next_obs {
-                self.c
-                    .observe_player(&mut self.w, synth::PLAYER, synth::REFINERY_POS, next);
+                self.observe(next);
                 self.next_obs = next + 1_200;
             }
             self.flush(next);
@@ -1691,8 +1713,11 @@ fn a_blow_from_another_player_is_their_insult_and_leaves_the_demand_alone() {
     );
 }
 
-/// A raid band on the way, ordered at `Tick(20)` after two killings.
+/// A raid band on the way, ordered at `Tick(20)` after two killings. The run's player is not
+/// routed ([`Run::sight`]): its raid is never met on its march, and starts its fight from an
+/// abstract band at the arrival, as the replay-gate tests below read it.
 fn raid_band(r: &mut Run) -> Handle<Party> {
+    r.sight = false;
     r.kill(2.0, Tick(10));
     r.c.order_party(
         &mut r.w,
@@ -1725,10 +1750,14 @@ fn a_fight_with_its_first_wave_refused() -> (u32, u64, u32, u32, Vec<u32>) {
     let (alive, counted) = (r.c.parties[band].alive(), r.c.stats.casualties);
     r.watch = true;
     r.next_obs = r.c.now();
-    let end = arrival + r.c.tun.watched_fight_ticks + 600;
+    let fight_end = arrival + r.c.tun.watched_fight_ticks + 600;
+    // The band walks home in its bodies after the fight (MZB-456) and is recalled when it gets
+    // there: run until its row is gone.
+    let end = Tick(fight_end.0 + day(2.0).0);
     let (mut fight, mut reported, mut recalled) = (None, 0, Vec::new());
+    let (mut counted_at_end, mut alive_at_end) = (None, None);
     let mut t = r.c.now();
-    while t < end {
+    while t < end && r.c.parties.contains(band) {
         let next = [
             r.c.next_due(),
             r.plugin.next_due(),
@@ -1750,7 +1779,7 @@ fn a_fight_with_its_first_wave_refused() -> (u32, u64, u32, u32, Vec<u32>) {
         }
         r.c.run_until(&mut r.w, &mut NoInfrastructure, next);
         if r.watch && next >= r.next_obs {
-            r.c.observe_player(&mut r.w, synth::PLAYER, synth::REFINERY_POS, next);
+            r.observe(next);
             r.next_obs = next + 1_200;
         }
         let mut to_plugin = Vec::new();
@@ -1776,13 +1805,18 @@ fn a_fight_with_its_first_wave_refused() -> (u32, u64, u32, u32, Vec<u32>) {
         }
         r.plugin.apply(to_plugin, next);
         t = next;
+        if counted_at_end.is_none() && t >= fight_end {
+            counted_at_end = Some(r.c.stats.casualties - counted);
+            alive_at_end = r.c.parties.get(band).map(|x| x.alive());
+        }
     }
     assert!(fight.is_some(), "the band's fight began");
+    assert!(!r.c.parties.contains(band), "the band walked home");
     (
         reported,
-        r.c.stats.casualties - counted,
+        counted_at_end.unwrap(),
         alive,
-        r.c.parties[band].alive(),
+        alive_at_end.unwrap(),
         recalled,
     )
 }
@@ -1799,9 +1833,10 @@ fn a_fight_whose_first_wave_was_refused_counts_its_later_waves_deaths() {
         (counted, reported),
         "every death the plugin reported is counted against the band"
     );
+    // The band is not met on its march ([`raid_band`]), so the fight is its first epoch.
     assert_eq!(
         recalled,
-        vec![2],
+        vec![1],
         "the fight's end recalls the later waves' bodies"
     );
 }
@@ -3220,7 +3255,7 @@ fn run_journaled(
         }
         r.c.run_until(&mut r.w, infra, next);
         if r.watch && next >= r.next_obs {
-            r.c.observe_player(&mut r.w, synth::PLAYER, synth::REFINERY_POS, next);
+            r.observe(next);
             r.next_obs = next + 1_200;
         }
         r.flush(next);
@@ -3281,6 +3316,23 @@ fn a_raid_arriving_after_the_save(
     journal.clear();
     r.watch = watched;
     r.next_obs = r.c.now();
+    if straggler {
+        // The band is met on its march (epoch 1), and the player logs out: its bodies are
+        // recalled, and the player back at the arrival, the band fights at the next epoch, with
+        // the bodies of the first as the older epoch's.
+        let from = r.c.now();
+        r.sight = true;
+        run_journaled(&mut r, &mut walls, from + 600, &mut journal);
+        assert!(r.c.parties[band].embodied, "met on its march");
+        r.watch = false;
+        r.w.forget_player_pos(r.p);
+        r.c.player_left(&mut r.w, r.p);
+        r.flush(from + 600);
+        assert!(!r.c.parties[band].embodied, "recalled");
+        r.sight = false;
+        r.watch = true;
+        r.next_obs = from + 1_200;
+    }
     let mut end = arrival;
     let mut straggled = !straggler;
     while r.c.parties.get(band).is_some() {
@@ -3369,8 +3421,10 @@ fn a_raid_arriving_after_the_save(
 /// unseen, its arrival in view of the player, and Java refusing every wave of its fight
 /// ([`Run::refuse`]). The session that went on fights unembodied to the fight's end, then walks
 /// home. `crash`: a restart from the pages replays the records, which hold the arrival. Read
-/// 600 ticks past the fight's end, the replay still running: the band's phase, whether embodied,
-/// epoch, phase end, fights watched since the save, and abstract raids since the save.
+/// 600 ticks past the fight's end, the replay still running: the band's phase, whether embodied
+/// before its walk home (a live band walks home in the bodies its books hold, MZB-456; a
+/// replayed one is recalled, as no body of the session stands yet), epoch, phase end, fights
+/// watched since the save, and abstract raids since the save.
 fn a_refused_fight_after_the_save(crash: bool) -> (Phase, bool, u32, Tick, u64, Vec<Tick>) {
     let mut r = Run::new(36, quiet_goblins());
     let band = raid_band(&mut r);
@@ -3399,7 +3453,7 @@ fn a_refused_fight_after_the_save(crash: bool) -> (Phase, bool, u32, Tick, u64, 
         let raids = walls.raids.range(saved_at + 1..).copied().collect();
         (
             x.phase,
-            x.embodied,
+            x.embodied && x.phase != Phase::Home,
             x.epoch,
             x.until,
             c.stats.raids_watched - watched,
@@ -3441,9 +3495,6 @@ enum Records {
     /// Java's journal stalls at the fight's first record: it and every record after it come
     /// later than the session that went on had them, the fight's at the held arrival + this.
     FightAt(u64),
-    /// The band's sighting, decided the tick before its arrival, journaled in the fight's step:
-    /// its record at the fight's tick, just before it (RP-56's case B).
-    SightingWithTheFight,
     /// Java refuses the fight's first wave (`every_wave`: and every later one; else they are
     /// placed), and its journal stalls at that refusal: it and every record after it come later
     /// than the session that went on had them, the refusal at the held arrival + `at`.
@@ -3551,7 +3602,7 @@ fn a_held_arrivals_fight(watch: u64, records: Records) -> HeldFight {
         })
         .unwrap_or(journal.len());
     assert_eq!(fight < journal.len(), placed, "the fight's record");
-    let mut late = 0;
+    let late;
     match records {
         Records::FightAt(at) => {
             late = (arrival.0 + at)
@@ -3578,23 +3629,6 @@ fn a_held_arrivals_fight(watch: u64, records: Records) -> HeldFight {
             for (t, _) in &mut journal[refused..] {
                 *t += late;
             }
-        }
-        Records::SightingWithTheFight => {
-            let (seen, (at, o)) = journal[..fight]
-                .iter()
-                .enumerate()
-                .rev()
-                .find(|(_, (_, o))| matches!(o, Obs::Materialized(m) if m.agent == Party::agent(band)))
-                .expect("seen on its road");
-            assert!(
-                matches!(o, Obs::Materialized(m) if m.flags & u32::from(boundary::BAND_FIGHT) == 0),
-                "a sighting's record"
-            );
-            assert!(
-                *at >= arrival && seen + 1 == fight,
-                "seen the tick before the arrival: {at:?}, the arrival {arrival:?}"
-            );
-            journal[seen].0 = journal[fight].0;
         }
     }
     journal.push((end + late, fillers_casualty()));
@@ -3720,22 +3754,6 @@ fn a_held_arrivals_fight_refused_whole_and_recorded_after_the_slack_counts_as_un
     assert_resolved_at_the_slack(&h);
 }
 
-/// fixes4 item 2 (RP-56, the lead's case B): the band seen the tick before its arrival, the
-/// arrival watched, both journaled in one step, so the sighting's record and the fight's come
-/// at the same tick inside the hold, the sighting's first. The sighting only embodies and keeps
-/// the hold; the fight's record ends it: one fight, its casualties and loot counted once, as in
-/// the session that went on, and no abstract raid. Ending the hold at the sighting (resolving
-/// the arrival unwatched there) would have raided as well as fought.
-#[test]
-fn a_sighting_journaled_with_a_held_arrivals_fight_is_no_double() {
-    let h = a_held_arrivals_fight(1, Records::SightingWithTheFight);
-    assert!(
-        h.live.raids.is_empty() && h.live.watched == 1 && h.live.casualties > 0 && h.live_loot > 0,
-        "{h:?}"
-    );
-    h.assert_as_live();
-}
-
 /// Whether `band` fights, its fight's BAND_MATERIALIZED journaled.
 fn fight_materialized(r: &Run, band: Handle<Party>, journal: &[(Tick, Obs)]) -> bool {
     let x = &r.c.parties[band];
@@ -3790,9 +3808,9 @@ fn fillers_casualty() -> Obs {
 /// fixes4 item 1 (RP-51): the largest gap between a live watched fight's decision
 /// (`start_fight`) and its first BAND_MATERIALIZED, the data RP-48's slack is set from
 /// (`ConflictStats::fight_record_gap_max`). A raid on the refinery, the player there from 3,000
-/// ticks before its arrival: the band is seen on its road (a sighting, not measured) and fought
-/// at its arrival, and the plugin answers each command a tick after it. A later record of the
-/// fight's epoch measures nothing: only the first answers the decision.
+/// ticks before its arrival: the band is fought at its arrival, and the plugin answers each
+/// command a tick after it. A later record of the fight's epoch measures nothing: only the first
+/// answers the decision.
 #[test]
 fn a_watched_fights_record_gap_is_measured_from_its_decision() {
     let mut r = Run::new(36, quiet_goblins());
@@ -3831,12 +3849,13 @@ fn a_watched_fights_record_gap_is_measured_from_its_decision() {
             _ => None,
         })
         .collect();
-    assert!(records[0].0 < epoch, "seen on its road first: {records:?}");
-    let fought = records
-        .iter()
-        .find(|(e, _)| *e == epoch)
-        .expect("the fight's record")
-        .1;
+    // Not met on its march ([`raid_band`]): the fight's record is the band's first, and it
+    // answers the decision.
+    assert_eq!(
+        records[0].0, epoch,
+        "the fight is the first record: {records:?}"
+    );
+    let fought = records[0].1;
     assert!(fought > decided, "{records:?}, decided at {decided}");
     assert_eq!(r.c.stats.fight_record_gap_max, fought - decided);
     r.ingest(materialized(band, epoch, 1, 0), Tick(decided + 5_000));
@@ -4159,6 +4178,7 @@ fn a_held_raids_hunt(gaps: &[u64], answer: Option<u64>, save_after: bool, end: H
         cmds: Vec::new(),
         watch: false,
         next_obs: Tick::ZERO,
+        sight: r.sight,
         refuse: None,
         refuse_wave0_only: false,
     };
@@ -4361,9 +4381,10 @@ fn patient_goblins() -> Cultures {
     Cultures::from_json(&[&serde_json::to_string(&d).unwrap()]).unwrap()
 }
 
-/// A siege as [`a_siege_held_then`] reads it: its phase, whether it is embodied and at which
-/// epoch, when its phase ends, the fights watched since the save, and the abstract raids since
-/// the save (by when).
+/// A siege as [`a_siege_held_then`] reads it: its phase, whether it is embodied (before its walk
+/// home: a live band walks home in the bodies its books hold, a replayed one is recalled, as no
+/// body of the session stands yet, MZB-456) and at which epoch, when its phase ends, the fights
+/// watched since the save, and the abstract raids since the save (by when).
 #[derive(Debug)]
 struct SiegeAt {
     phase: Phase,
@@ -4379,7 +4400,7 @@ impl SiegeAt {
         let x = &c.parties[band];
         SiegeAt {
             phase: x.phase,
-            embodied: x.embodied,
+            embodied: x.embodied && x.phase != Phase::Home,
             epoch: x.epoch,
             until: x.until,
             watched: c.stats.raids_watched - watched,
@@ -4418,8 +4439,8 @@ enum Then {
     Sighting,
     /// The same 300 ticks after the decision: its record inside the hold's slack (RP-56).
     SightingInSlack,
-    /// A player stands at the refinery from 600 ticks before the band's next round on: seen
-    /// there, and the round fought.
+    /// A player stands at the refinery from 600 ticks before the band's next round on, not
+    /// routed ([`Run::sight`]): the round is fought from the waiting band.
     Fight,
 }
 
@@ -4501,6 +4522,10 @@ fn a_siege_held_then(round: bool, then: Then, crash: bool) -> (SiegeAt, Tick) {
         }
         Then::Fight => {
             assert!(next + 6_000 < r.c.parties[band].bored_at, "a next round");
+            // Not routed: the band waits at its quota, so a sighting would place all of it and
+            // the fight would be a walk-in's (MZB-461, MZB-492), its record an empty one
+            // (MZB-700), not the arrival of an abstract band that this case replays.
+            r.sight = false;
             r.watch = true;
             r.next_obs = Tick(next.0 - 600);
             run_journaled(&mut r, &mut walls, next + 600, &mut journal);
@@ -5456,6 +5481,7 @@ fn a_restart_in_the_middle_of_peaceful_then_leaving_it_goes_on_as_the_run_that_k
         cmds: Vec::new(),
         watch: false,
         next_obs: Tick::ZERO,
+        sight: a.sight,
         refuse: None,
         refuse_wave0_only: false,
     };
@@ -6690,6 +6716,42 @@ fn paged_open(
     .unwrap()
 }
 
+/// MZB-706: the epoch ranges of the fights a party's held arrival resolved unwatched are in its
+/// row, whole and paged (RTC11, META 10), so a copy that comes sessions later is dropped too.
+#[test]
+fn the_unwatched_epoch_ranges_of_a_party_survive_a_save_whole_and_paged() {
+    let mut r = Run::new(36, quiet_goblins());
+    let band = raid_band(&mut r);
+    r.c.parties[band].unwatched = vec![(1, 2), (5, 5), (9, u32::MAX)];
+    let other = r.c.order_party(
+        &mut r.w,
+        synth::CAMP,
+        PartyKind::Raid,
+        Target::District(synth::REFINERY, synth::REFINERY_POS),
+        Some(r.p),
+        Tick(30),
+    );
+    let whole = Conflict::load(r.c.tun.clone(), r.c.cultures.clone(), &r.c.save()).unwrap();
+    assert_eq!(
+        whole.parties[band].unwatched,
+        vec![(1, 2), (5, 5), (9, u32::MAX)]
+    );
+    assert!(
+        whole.parties[band].resolved_unwatched(2) && !whole.parties[band].resolved_unwatched(3)
+    );
+    assert_eq!(whole.state_hash(), r.c.state_hash());
+    let s = paged_store("unwatched");
+    paged_save(&mut r.c, &s);
+    let paged = paged_open(&r, &s);
+    assert_eq!(
+        paged.parties[band].unwatched,
+        vec![(1, 2), (5, 5), (9, u32::MAX)]
+    );
+    if let Some(o) = other {
+        assert!(paged.parties[o].unwatched.is_empty());
+    }
+}
+
 /// MZB-589: the slot is free at a paged save (the old party ended); after open_paged the next
 /// party takes it under the bumped generation, and the old agent's copy does nothing.
 #[test]
@@ -6752,6 +6814,432 @@ fn a_casualty_copy_of_an_ended_party_does_nothing_across_a_paged_save() {
         "the old agent's copy does nothing"
     );
     assert_eq!(c.stats.casualties, cas);
+}
+
+/// The raid of `a_raid_arriving_after_the_save`, but the player's area is routed from the save
+/// on, so the band is met on its road and walks into its fight in its bodies (MZB-461, MZB-492).
+/// Every member is placed by then, so the fight's one record is the walk-in's empty BAND_FIGHT
+/// one (MZB-700): the held arrival of a restart's replay finds it and the fight is not resolved
+/// again (MZB-491). `crash`: a restart from the pages replays the journal.
+fn a_raid_met_on_its_road_after_the_save(crash: bool) -> Arrival {
+    let mut r = Run::new(36, quiet_goblins());
+    r.plugin.fight = Some(synth::Fight {
+        kill_share: 0.25,
+        after: 1_500,
+        kill_chief: false,
+        only_at_base: true,
+    });
+    let band = raid_band(&mut r);
+    r.c.feud_mut(r.f, r.p).unwrap().step = Step::Raid;
+    let f = r.f;
+    let now = r.c.now();
+    r.c.factions[f as usize].pool = 10.0;
+    r.c.factions[f as usize].pool_at = now;
+    let arrival = *r.c.parties[band].times.last().unwrap();
+    let mut walls = Walls::default();
+    let mut journal = Vec::new();
+    run_journaled(&mut r, &mut walls, Tick(arrival.0 - 3_000), &mut journal);
+    let (pages, world) = (r.c.save(), r.w.save());
+    let (casualties, raids_watched) = (r.c.stats.casualties, r.c.stats.raids_watched);
+    journal.clear();
+    r.watch = true;
+    r.sight = true;
+    r.next_obs = r.c.now();
+    let mut end = arrival;
+    while r.c.parties.get(band).is_some() {
+        end += 600;
+        assert!(end < day(8.0), "the band comes home");
+        run_journaled(&mut r, &mut walls, end, &mut journal);
+    }
+    // Met on its road: the band's first record after the pages is the sighting's (unflagged),
+    // and the walk-in's is the fight's: flagged, with no member to place (MZB-700).
+    let flags: Vec<u32> = journal
+        .iter()
+        .filter_map(|(_, o)| match o {
+            Obs::Materialized(m) if m.agent == Party::agent(band) => Some(m.flags),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        flags[0] & u32::from(boundary::BAND_FIGHT),
+        0,
+        "a sighting: {flags:?}"
+    );
+    let fights: Vec<usize> = r
+        .cmds
+        .iter()
+        .filter_map(|(_, c)| match c {
+            Cmd::Materialize(m)
+                if m.agent == Party::agent(band) && m.flags & boundary::BAND_FIGHT != 0 =>
+            {
+                Some(m.members.len())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(fights, [0], "the walk-in's empty fight record");
+    journal.push((end, fillers_casualty()));
+    let arrival_of = |c: &Conflict, walls: &Walls| Arrival {
+        raids: walls.raids.iter().copied().collect(),
+        casualties: c.stats.casualties - casualties,
+        watched: c.stats.raids_watched - raids_watched,
+        pool: f64::NAN,
+    };
+    if !crash {
+        let a = arrival_of(&r.c, &walls);
+        eprintln!("live: {a:?}");
+        return a;
+    }
+    let mut w = world_from(36, &world);
+    w.forget_player_pos(r.p);
+    let tun = r.c.tun.clone();
+    let cultures = r.c.cultures.clone();
+    let mut back = Conflict::load(tun, cultures, &pages).unwrap();
+    back.begin_replay(true);
+    let mut walls = Walls::default();
+    for (at, o) in &journal {
+        back.run_until(&mut w, &mut walls, *at);
+        back.ingest(&mut w, &mut walls, o, *at);
+        let _ = back.take_commands();
+    }
+    back.resend_notices();
+    assert!(!back.replaying());
+    back.run_until(&mut w, &mut walls, end + 2 * TICKS_PER_DAY);
+    let a = arrival_of(&back, &walls);
+    eprintln!("crash: {a:?}");
+    a
+}
+
+#[test]
+fn a_walked_in_fight_in_the_replayed_window_is_resolved_once() {
+    let live = a_raid_met_on_its_road_after_the_save(false);
+    assert!(
+        live.raids.is_empty(),
+        "fought in its bodies, not raided: {live:?}"
+    );
+    assert_eq!(live.watched, 1, "{live:?}");
+    let crash = a_raid_met_on_its_road_after_the_save(true);
+    assert_eq!(
+        crash.raids, live.raids,
+        "no abstract raid on top of the fight"
+    );
+    assert_eq!(crash.watched, live.watched);
+    assert_eq!(crash.casualties, live.casualties);
+}
+
+/// What a walk-in's replay came to when a holder's copies of its deaths follow (MZB-706).
+struct WalkedHeld {
+    /// The band's members at the pages.
+    start: u32,
+    /// The deaths the live session's fight cost (the copies', summed).
+    deaths: u32,
+    /// The copies a holder carries: the live session's BAND_CASUALTIES records of the band.
+    copies: Vec<(Tick, Obs)>,
+    /// The members left after the replay and the arrival (resolved abstractly, or honoured as
+    /// the watched fight it was), before any copy.
+    before: u32,
+    /// The members left after every copy was applied once, and after a second time.
+    after: u32,
+    again: u32,
+    /// The abstract raids the replay made, and the log notes of copies dropped.
+    raids: usize,
+    dropped: usize,
+    /// The engine, the world and the band, for what a test asks next.
+    c: Conflict,
+    w: World,
+    walls: Walls,
+    band: Handle<Party>,
+}
+
+/// The walk-in of `a_raid_met_on_its_road_after_the_save` against a district that costs the raid
+/// units (`Walls` with `rout`: every raider held at the walls, half of them fallen), the crash
+/// cutting the journal before the walk-in's echo (`echo` false: the order the journal alone
+/// cannot make exact, MZB-705) or just after it (`echo` true: the arrival answered, watched).
+/// The replay clock goes `past` the arrival: inside the hold's slack (the replay end resolves it)
+/// or beyond (the hold ended inside the replay, RP-48), or stops before it (`None`: the journal
+/// ended before the arrival, which the first run after the end decides, live, in the window the
+/// replay did not reach). The session's present is `present` ticks from the arrival, as the host
+/// tells it. Then the copies of the live fight's deaths, which a holder carried apart from the
+/// journal, come as `ingest_copy`, twice.
+fn a_walk_in_then_copies(echo: bool, past: Option<u64>, present: i64) -> WalkedHeld {
+    let mut r = Run::new(36, quiet_goblins());
+    r.plugin.fight = Some(synth::Fight {
+        kill_share: 0.25,
+        after: 1_500,
+        kill_chief: false,
+        only_at_base: true,
+    });
+    let band = raid_band(&mut r);
+    r.c.feud_mut(r.f, r.p).unwrap().step = Step::Raid;
+    let f = r.f;
+    let now = r.c.now();
+    r.c.factions[f as usize].pool = 10.0;
+    r.c.factions[f as usize].pool_at = now;
+    let arrival = *r.c.parties[band].times.last().unwrap();
+    let mut walls = Walls {
+        rout: true,
+        ..Walls::default()
+    };
+    let mut journal = Vec::new();
+    run_journaled(&mut r, &mut walls, Tick(arrival.0 - 3_000), &mut journal);
+    let (pages, world) = (r.c.save(), r.w.save());
+    let start = r.c.parties[band].alive();
+    journal.clear();
+    r.watch = true;
+    r.sight = true;
+    r.next_obs = r.c.now();
+    let mut end = arrival;
+    while r.c.parties.get(band).is_some() {
+        end += 600;
+        assert!(end < day(8.0), "the band comes home");
+        run_journaled(&mut r, &mut walls, end, &mut journal);
+    }
+    let agent = Party::agent(band);
+    let echo_at = journal
+        .iter()
+        .position(|(_, o)| {
+            matches!(o, Obs::Materialized(m) if m.agent == agent
+                && m.flags & u32::from(boundary::BAND_FIGHT) != 0)
+        })
+        .expect("the walk-in's echo");
+    let copies: Vec<(Tick, Obs)> = journal
+        .iter()
+        .filter(|(_, o)| matches!(o, Obs::Casualties(cs) if cs.agent == agent))
+        .cloned()
+        .collect();
+    let deaths: u32 = copies
+        .iter()
+        .map(|(_, o)| match o {
+            Obs::Casualties(cs) => cs.count,
+            _ => 0,
+        })
+        .sum();
+    assert!(deaths > 0, "the fight cost the band members: {copies:?}");
+    // The crash: the journal ends at the echo or just before it.
+    let kept = &journal[..echo_at + usize::from(echo)];
+    let mut w = world_from(36, &world);
+    w.forget_player_pos(r.p);
+    let tun = r.c.tun.clone();
+    let cultures = r.c.cultures.clone();
+    let mut back = Conflict::load(tun, cultures, &pages).unwrap();
+    back.log_enabled = true;
+    back.begin_replay(true);
+    let mut walls = Walls {
+        rout: true,
+        ..Walls::default()
+    };
+    for (at, o) in kept {
+        back.run_until(&mut w, &mut walls, *at);
+        back.ingest(&mut w, &mut walls, o, *at);
+        let _ = back.take_commands();
+    }
+    // The replay's clock goes on past the arrival (a later record of another agent carries it).
+    if let Some(past) = past {
+        back.run_until(&mut w, &mut walls, arrival + past);
+    }
+    back.resend_notices();
+    assert!(!back.replaying());
+    back.replay_present(Tick(arrival.0.saturating_add_signed(present)));
+    // The poll that follows the replay end, or the arrival itself, decides it live.
+    back.run_until(&mut w, &mut walls, arrival + 3_000);
+    let before = back.parties[band].alive();
+    let raids = walls.raids.len();
+    let at = back.now();
+    for (_, o) in &copies {
+        back.ingest_copy(&mut w, &mut walls, o, at);
+    }
+    let after = back.parties[band].alive();
+    for (_, o) in &copies {
+        back.ingest_copy(&mut w, &mut walls, o, at);
+    }
+    let again = back.parties[band].alive();
+    let dropped = back.log.iter().filter(|l| l.kind == "unwatched").count();
+    WalkedHeld {
+        start,
+        deaths,
+        copies,
+        before,
+        after,
+        again,
+        raids,
+        dropped,
+        c: back,
+        w,
+        walls,
+        band,
+    }
+}
+
+/// MZB-706 (the build lead's decision after MZB-705): a walk-in whose echo the crash cut from the
+/// journal is resolved unwatched, as an abstract raid, at the hold's end. When the district
+/// costs the raid units, the abstract resolve takes the fight's losses, and a holder's copy of
+/// the deaths Minecraft saw (their records are in the entities' pending store, apart from the
+/// journal) took them again. The party books that its held arrival was resolved unwatched, at
+/// the walk-in's epoch and the fight's next one, and a copy naming either counts nothing. The
+/// band's losses are the abstract resolve's alone. Replayed to the slack's end (the hold ended
+/// inside the replay) and to the replay end inside the slack (the hold is let go by
+/// `replay_done`), both paths book it.
+#[test]
+fn a_holders_copies_of_an_unanswered_walk_in_add_nothing_to_the_abstract_resolve() {
+    for past in [None, Some(100), Some(700)] {
+        let h = a_walk_in_then_copies(false, past, 1_500);
+        let what = format!("replay clock {past:?} ticks past the arrival");
+        eprintln!(
+            "{what}: {} members, {} left after the resolve, {} after the copies of {} deaths",
+            h.start, h.before, h.after, h.deaths
+        );
+        assert_eq!(h.raids, 1, "{what}: the arrival resolved as one raid");
+        assert!(
+            h.before < h.start,
+            "{what}: the raid on a district costs the band: {} of {}",
+            h.before,
+            h.start
+        );
+        assert!(
+            h.start - h.before > h.deaths || h.deaths <= 1,
+            "{what}: the abstract resolve cost the band {} against the fight's {}",
+            h.start - h.before,
+            h.deaths
+        );
+        assert_eq!(
+            (h.after, h.again),
+            (h.before, h.before),
+            "{what}: the copies of the fight's {} deaths add nothing to the resolve's loss",
+            h.deaths
+        );
+        assert_eq!(h.dropped, 2 * h.copies.len(), "{what}: each copy is noted");
+        assert!(
+            h.c.parties[h.band].resolved_unwatched(h.c.parties[h.band].epoch),
+            "{what}: booked at the band's epoch"
+        );
+        // The booking is in the pages, so a holder's copy that comes in a later session (the
+        // entity's chunk loaded after another restart) is dropped too (RTC11).
+        let mut h = h;
+        let pages = h.c.save();
+        let (tun, cultures) = (h.c.tun.clone(), h.c.cultures.clone());
+        let mut later = Conflict::load(tun, cultures, &pages).unwrap();
+        assert_eq!(
+            later.parties[h.band].unwatched,
+            h.c.parties[h.band].unwatched
+        );
+        let at = later.now();
+        for (_, o) in &h.copies {
+            later.ingest_copy(&mut h.w, &mut h.walls, o, at);
+        }
+        assert_eq!(
+            later.parties[h.band].alive(),
+            h.before,
+            "{what}: a copy in a later session adds nothing"
+        );
+    }
+}
+
+/// MZB-706's control: the arrival answered. The journal holds the walk-in's echo, the fight is
+/// honoured as the watched fight it was, nothing is resolved abstractly, and the holder's copies
+/// of its deaths count, exactly once (a second copy is the same op).
+#[test]
+fn a_holders_copies_of_an_answered_walk_in_still_count_once() {
+    for past in [None, Some(100), Some(700)] {
+        let h = a_walk_in_then_copies(true, past, 1_500);
+        let what = format!("replay clock {past:?} ticks past the arrival");
+        assert_eq!(h.raids, 0, "{what}: the fight was watched, not raided");
+        assert_eq!(h.before, h.start, "{what}: nothing lost before the copies");
+        assert_eq!(
+            h.after,
+            h.start - h.deaths,
+            "{what}: the copies count the fight's deaths"
+        );
+        assert_eq!(h.again, h.after, "{what}: a second copy counts nothing");
+        assert_eq!(h.dropped, 0, "{what}: no copy dropped as unwatched");
+        assert!(
+            h.c.parties[h.band].unwatched.is_empty(),
+            "{what}: nothing booked unwatched"
+        );
+    }
+}
+
+/// MZB-706: a live record (not a copy) of such a fight counts nothing either, and for another
+/// reason. After the replay end no party is in its bodies, so a live BAND_CASUALTIES of an epoch
+/// the engine did not mark `embodied` and `walk_off` is a straggler (its DEMATERIALIZED
+/// counted the survivors): the same before the fix. The booking changes only the copies.
+#[test]
+fn a_live_record_of_an_unanswered_walk_in_counts_nothing_after_the_replay_end() {
+    let mut h = a_walk_in_then_copies(false, Some(100), 1_500);
+    let before = h.c.parties[h.band].alive();
+    let epoch = h.c.parties[h.band].epoch;
+    let at = h.c.now();
+    for (_, o) in &h.copies {
+        let Obs::Casualties(cs) = o else { continue };
+        for e in [cs.epoch, epoch, epoch + 1] {
+            let live = Obs::Casualties(boundary::BandCasualties {
+                epoch: e,
+                op: next_op(),
+                ..*cs
+            });
+            h.c.ingest(&mut h.w, &mut h.walls, &live, at);
+        }
+    }
+    assert_eq!(
+        h.c.parties[h.band].alive(),
+        before,
+        "stragglers count nothing"
+    );
+}
+
+/// MZB-706: only the window the replay did not reach is the last session's. An arrival after the
+/// session's present is this session's own: no fight of the last session can be behind it, so
+/// nothing is booked, and (the walk-in's epoch being the party's, which the end made abstract) no
+/// copy of an epoch it names is dropped on its account.
+#[test]
+fn an_arrival_after_the_sessions_present_books_nothing() {
+    let h = a_walk_in_then_copies(false, None, -100);
+    assert!(
+        h.c.parties[h.band].unwatched.is_empty(),
+        "booked: {:?}",
+        h.c.parties[h.band].unwatched
+    );
+    assert_eq!(h.dropped, 0);
+}
+
+/// MZB-702 (MZB-457 on envoys): an envoy refused in view of its player goes home recalled
+/// (MZB-456: an envoy never walks home in bodies), and the same player, still watching, met it
+/// again on its way home: `seen` no longer skipped Home, and `materialize_envoy` then sent a
+/// demand of nothing to nobody (the feud was cleared by `go_home`), which Java reads as a
+/// settlers' demand. An envoy on its way home is not met.
+#[test]
+fn a_refused_envoy_is_not_met_again_on_its_way_home() {
+    let mut r = Run::new(36, quiet_goblins());
+    let e = envoy_met(&mut r);
+    let at = r.c.now() + 5;
+    answer_from(
+        &mut r,
+        e.agent,
+        e.epoch,
+        boundary::ANSWER_REFUSED,
+        synth::PLAYER,
+        at,
+    );
+    let from = r.cmds.len();
+    r.run(at + TICKS_PER_DAY / 4);
+    let after: Vec<String> = r.cmds[from..]
+        .iter()
+        .filter_map(|(t, c)| match c {
+            Cmd::Envoy(x) if x.agent == e.agent => Some(format!(
+                "{}: envoy epoch {} player {:?} flags {} count {}",
+                t.0, x.epoch, x.player, x.demand_flags, x.tribute_count
+            )),
+            Cmd::Recall(x) if x.agent == e.agent => Some(format!(
+                "{}: recall epoch {} reason {}",
+                t.0, x.epoch, x.reason
+            )),
+            _ => None,
+        })
+        .collect();
+    eprintln!("{after:#?}");
+    assert!(
+        !after.iter().any(|l| l.contains(": envoy ")),
+        "met again on its way home: {after:#?}"
+    );
 }
 
 // ---- RP-135: a hold ended before an older one keeps the live ops' order -------------------------
@@ -6874,6 +7362,7 @@ fn holds_ended_out_of_order(replay: bool, end: FirstEnd) -> HuntRun {
         cmds: Vec::new(),
         watch: false,
         next_obs: Tick::ZERO,
+        sight: r.sight,
         refuse: None,
         refuse_wave0_only: false,
     };
@@ -6954,6 +7443,7 @@ fn restarted_after(
         cmds: Vec::new(),
         watch: false,
         next_obs: Tick::ZERO,
+        sight: like.sight,
         refuse: None,
         refuse_wave0_only: false,
     };

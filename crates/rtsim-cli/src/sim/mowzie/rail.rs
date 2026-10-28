@@ -243,8 +243,7 @@ fn drive(seed: u64, spec: &Spec) -> Trace {
     let (mut pops_before, mut busiest_day) = (0, 0);
     let infra = &mut NoInfrastructure;
     for (t, what) in timeline {
-        c.run_until(&mut w, infra, t);
-        let _ = c.take_commands();
+        let _ = rtsim_conflict::synth::march::advance(&mut c, &mut w, infra, t);
         match what {
             At::Found(i) => {
                 let (key, pos, _) = spec.dens[i];

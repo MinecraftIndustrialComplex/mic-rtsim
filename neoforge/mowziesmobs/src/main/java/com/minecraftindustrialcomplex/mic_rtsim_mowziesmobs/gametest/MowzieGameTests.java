@@ -881,8 +881,8 @@ public final class MowzieGameTests {
     }
 
     /**
-     * A player 50 blocks east of the grove's centre, removed when the test ends (MZB-591): within the recall's
-     * {@value ConflictBridge#OUT_OF_VIEW} blocks of the band, so a HAND_BACK's recall does not despawn the band's
+     * A player 50 blocks east of the grove's centre, removed when the test ends (MZB-591): within the recall's sight
+     * ({@link ConflictBridge#sightRange}, 128 blocks) of the band, so a HAND_BACK's recall does not despawn the band's
      * other puppets as unseen, and beyond a warrior's sight. It holds no ticket and loads nothing.
      */
     private static ServerPlayer watcher(GameTestHelper helper, Grove g, String name) {
@@ -891,31 +891,41 @@ public final class MowzieGameTests {
         return p;
     }
 
-    /** Inside {@code thenWaitUntil}: the band's one stack is placed and every member is embodied; the puppets. */
+    /**
+     * Inside {@code thenWaitUntil}: the band's stacks (the column's rows: two warriors a row, a raptor a stack of its
+     * own, MZB-722) are all placed and every member is embodied; the puppets, in stack order.
+     */
     private static Mob[] bandStands(long agent, int n) {
         ConflictBridge.Party p = ConflictKit.party(agent);
-        check("one stack", p.stacks().size() == 1);
-        ConflictBridge.Stack st = p.stacks().get(0);
-        check("placed (" + st.state() + ")", st.state() == ConflictBridge.StackState.PLACED);
+        check("a stack", !p.stacks().isEmpty());
         Mob[] out = new Mob[n];
-        int stand = 0;
-        for (ConflictBridge.Slot s : st.slots())
-            if (s.entity() != null && !s.entity().isRemoved() && stand < n)
-                out[stand++] = s.entity();
+        int stand = 0, members = 0;
+        for (ConflictBridge.Stack st : p.stacks()) {
+            check("stack " + st.index + " placed (" + st.state() + ")", st.state() == ConflictBridge.StackState.PLACED);
+            for (ConflictBridge.Slot s : st.slots()) {
+                members++;
+                if (s.entity() != null && !s.entity().isRemoved() && stand < n)
+                    out[stand++] = s.entity();
+            }
+        }
+        check(n + " members (" + members + ")", members == n);
         check(n + " puppets stand (" + stand + ")", stand == n);
         return out;
     }
 
     /**
      * A HAND_BACK whose body another mod's join handler cancels (In Control and the like) loses nothing
-     * (MZB-236): the body is added before the puppet goes, so the line is STALE and the puppet stands, still
-     * the band's, with nothing taken off the party and no recall. With the handler gone, the same line
-     * again is DONE: the body is the camp's, the puppet is gone, the other puppet still stands.
+     * (MZB-236): the body is added before the puppet goes, so the line is STALE and the camp holds no body.
+     * A STALE books nothing, so the engine's slot stays Owed with no party, and its next order is a SPAWN
+     * (never the same HAND_BACK again). The band is still walked home with the rest of its homecoming (MZB-751):
+     * keeping it would hold a party the engine has ended, and its puppet would stand beside the spawned body.
+     * So after the STALE the party is sent home; the SPAWN of slot 0 is DONE; the party is gone, both puppets
+     * are gone, and exactly one body stands for slot 0.
      */
     @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "mowzie_handback_cancelled", skyAccess = true)
-    public static void aHandBackWhoseJoinAnotherModCancelsKeepsThePuppetAndIsStale(GameTestHelper helper) {
+    public static void aHandBackWhoseJoinAnotherModCancelsIsStaleAndTheBandStillWalksHomeToOneBody(GameTestHelper helper) {
         ChunkWait waits = ChunkWait.of(helper, 2000);
-        String test = "aHandBackWhoseJoinAnotherModCancelsKeepsThePuppetAndIsStale";
+        String test = "aHandBackWhoseJoinAnotherModCancelsIsStaleAndTheBandStillWalksHomeToOneBody";
         Far far = new Far(helper, test);
         Grove grove = new Grove(far, far.k, far.z0);
         long[] agent = new long[1], op = new long[2], handed = new long[1];
@@ -944,25 +954,31 @@ public final class MowzieGameTests {
                 .thenWaitUntil(waits.logic(() -> MowzieKit.answered(grove.faction, op[0], 1)))
                 .thenExecute(() -> {
                     MowzieKit.allOutcomes("HAND_BACK with the join cancelled", ConflictKit.outcomes(grove.faction, op[0]), STALE);
-                    check("the puppet still stands", puppet[0][0].isAlive() && !puppet[0][0].isRemoved() && RtsimApi.isPuppet(puppet[0][0]));
-                    check("and is still the band's slot (" + ConflictKit.party(agent[0]).stacks().get(0).slots().get(0).entity() + ")",
-                            ConflictKit.party(agent[0]).stacks().get(0).slots().get(0).entity() == puppet[0][0]);
                     check("nothing handed back", MowzieKit.camps().handedBack == handed[0]);
                     check("the camp holds no body", MowzieKit.held(grove.faction).isEmpty());
-                    check("the party is not sent home", !ConflictKit.party(agent[0]).recalling());
+                    // bridge().party, not ConflictKit.party: that one throws for a party that is gone, which is one of the answers (MZB-941).
+                    ConflictBridge.Party party = ConflictKit.bridge().party(agent[0]);
+                    check("the band is walked home all the same", party == null || party.recalling());
+                    // The engine's slot is Owed with no party: its next order is a SPAWN, the join no longer cancelled.
                     MowzieKit.cancelCampJoins = false;
                     op[1] = MowzieKit.reconcile(grove.faction, grove.site().epoch(), List.of(
-                            CampLine.party(0, 1, MowzieKit.WARRIOR, HAND_BACK, 0, agent[0], ConflictKit.party(agent[0]).epoch)));
+                            CampLine.of(0, 1, MowzieKit.WARRIOR, SPAWN, 0)));
                 })
                 .thenWaitUntil(waits.logic(() -> MowzieKit.answered(grove.faction, op[1], 1)))
                 .thenExecute(() -> {
-                    MowzieKit.allOutcomes("HAND_BACK again", ConflictKit.outcomes(grove.faction, op[1]), DONE);
-                    List<Entity> held = MowzieKit.held(grove.faction, 0, 1);
-                    check("one body is the camp's (" + held.size() + ")", held.size() == 1 && MowzieKit.held(grove.faction).size() == 1);
+                    MowzieKit.allOutcomes("the SPAWN of slot 0", ConflictKit.outcomes(grove.faction, op[1]), DONE);
+                    check("one body stands for slot 0 (" + MowzieKit.held(grove.faction, 0, 1).size() + ")",
+                            MowzieKit.held(grove.faction, 0, 1).size() == 1);
+                })
+                .thenWaitUntil(waits.logic(() -> {
+                    check("the party is gone", ConflictKit.bridge().party(agent[0]) == null); // ConflictKit.party throws for a gone one (MZB-941)
                     check("the first puppet is gone", puppet[0][0].isRemoved());
-                    check("the second still stands", puppet[0][1].isAlive() && !puppet[0][1].isRemoved());
-                    check("one handed back (" + (MowzieKit.camps().handedBack - handed[0]) + ")", MowzieKit.camps().handedBack == handed[0] + 1);
-                    record(test, "cancelled join", "STALE and the puppet stayed; the same line without the handler was DONE");
+                    check("the second puppet is gone", puppet[0][1].isRemoved());
+                }))
+                .thenExecute(() -> {
+                    List<Entity> held = MowzieKit.held(grove.faction, 0, 1);
+                    check("exactly one body for slot 0 (" + held.size() + ")", held.size() == 1 && MowzieKit.held(grove.faction).size() == 1);
+                    record(test, "cancelled join", "STALE, the band walked home and went, the SPAWN made the one body of slot 0");
                 })
                 .thenSucceed();
     }
@@ -2502,8 +2518,9 @@ public final class MowzieGameTests {
                         check("a follower carries the band's tag", RtsimAttachments.isTagged(f) && RtsimAttachments.tag(f).agent() == agent[0]);
                         check("a follower has its leader", f.getLeaderUUID().isPresent());
                     }
-                    for (ConflictBridge.Slot s : ConflictKit.party(agent[0]).stacks().get(0).slots())
-                        check("each slot holds its 4 extras (" + s.extras().size() + ")", s.extras().size() == 4);
+                    for (ConflictBridge.Stack rows : ConflictKit.party(agent[0]).stacks())
+                        for (ConflictBridge.Slot s : rows.slots())
+                            check("each slot holds its 4 extras (" + s.extras().size() + ")", s.extras().size() == 4);
                     // The recall walks them toward spot.x - 200, out of the area before they go: the wait is on
                     // the objects, not on the area (MZB-673).
                     taken[0] = puppet[0][0];

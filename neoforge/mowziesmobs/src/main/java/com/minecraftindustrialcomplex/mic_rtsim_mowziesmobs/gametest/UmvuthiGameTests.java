@@ -645,8 +645,8 @@ public final class UmvuthiGameTests {
                     for (int i = 0; i < 2; i++)
                         op[i] = MowzieKit.reconcile(g[i].faction, epochOf(g[i]), List.of(CampLine.of(CHIEF_SLOT, 1, UMVUTHI, action[i], CHIEF)));
                 })
-                .thenIdle(5)
-                .thenExecute(stillHeld)
+                // the engine's answer comes in wall time: under load 5 ticks can pass first (MZB-920)
+                .thenWaitUntil(waits.logic(stillHeld))
                 .thenIdle(Camps.HOLD_MAX + 100)
                 .thenExecute(() -> {
                     stillHeld.run();
@@ -697,8 +697,10 @@ public final class UmvuthiGameTests {
      * clause; MZB-433). Two scripted groves with no body, a throne at 6 blocks and direction 3, a chief SPAWN each and
      * a player 100 blocks off in z: both lines are held (two more held spawns, no body, no answer). C's player steps
      * to 170 blocks: C's line is DONE with a tagged Umvuthi at the throne facing 3 and the held-spawn counter
-     * unchanged. D's player stays: D is still unanswered 5,900 ticks after the reconcile, and answered within a few
-     * ticks of 6,000 (the Umvuthi is made with the player still within 160 blocks).
+     * unchanged. D's player stays: D is still unanswered 5,900 ticks after the hold began, and answered within a few
+     * ticks of 6,000 (the Umvuthi is made with the player still within 160 blocks). The hold's start is the first
+     * tick the counter shows both lines held: the engine answers in wall time, so a loaded server can run many
+     * ticks between the reconcile and the hold (MZB-920).
      */
     @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "umvuthi_hold_spawn", skyAccess = true)
     public static void aChiefSpawnWaitsForThePlayerToLeaveOrSixThousandTicks(GameTestHelper helper) {
@@ -733,16 +735,17 @@ public final class UmvuthiGameTests {
                 .thenWaitUntil(waits.logic(censused(g)))
                 .thenExecute(() -> {
                     spawns0[0] = MowzieKit.camps().heldSpawns;
-                    t0[0] = level.getGameTime();
                     for (int i = 0; i < 2; i++) {
                         throne[i] = g[i].at(6, 0);
                         op[i] = MowzieKit.reconcile(g[i].faction, epochOf(g[i]), throne[i], 3f,
                                 List.of(CampLine.of(CHIEF_SLOT, 1, UMVUTHI, SPAWN, CHIEF)));
                     }
                 })
-                .thenIdle(5)
-                .thenExecute(() -> {
+                .thenWaitUntil(waits.logic(() -> {
                     check("two more held spawns (" + (MowzieKit.camps().heldSpawns - spawns0[0]) + ")", MowzieKit.camps().heldSpawns == spawns0[0] + 2);
+                    t0[0] = level.getGameTime();
+                }))
+                .thenExecute(() -> {
                     for (int i = 0; i < 2; i++) {
                         check("line " + i + " has no answer", unanswered(g[i].faction, op[i]));
                         check("no Umvuthi stands in grove " + i, MowzieKit.held(g[i].faction).isEmpty());
@@ -761,7 +764,7 @@ public final class UmvuthiGameTests {
                     check("the held-spawn counter did not move again", MowzieKit.camps().heldSpawns == spawns0[0] + 2);
                     check("D is still held", unanswered(g[1].faction, op[1]) && MowzieKit.held(g[1].faction).isEmpty());
                 })
-                .thenWaitUntil(waits.logic(() -> check("5,900 ticks after the reconcile (" + (level.getGameTime() - t0[0]) + ")", level.getGameTime() >= t0[0] + 5900)))
+                .thenWaitUntil(waits.logic(() -> check("5,900 ticks after the hold began (" + (level.getGameTime() - t0[0]) + ")", level.getGameTime() >= t0[0] + 5900)))
                 .thenExecute(() -> {
                     check("D is still unanswered with no body", unanswered(g[1].faction, op[1]) && MowzieKit.held(g[1].faction).isEmpty());
                     check("its player is still within 160 blocks of the throne", p[1].distanceToSqr(throne[1]) < 160 * 160);
@@ -769,13 +772,13 @@ public final class UmvuthiGameTests {
                 .thenWaitUntil(waits.logic(() -> check("D is answered", answeredAt[0] != 0)))
                 .thenExecute(() -> {
                     long after = answeredAt[0] - t0[0];
-                    check("D was answered 6,000 ticks after the reconcile, give or take a few (" + after + ")", after >= 5990 && after <= 6040);
+                    check("D was answered 6,000 ticks after the hold began, give or take a few (" + after + ")", after >= 5990 && after <= 6040);
                     MowzieKit.allOutcomes("D's SPAWN", ConflictKit.outcomes(g[1].faction, op[1]), DONE);
                     List<Entity> held = MowzieKit.held(g[1].faction, CHIEF_SLOT, 1);
                     check("an Umvuthi, tagged (faction, -1, 1) (" + held.size() + ")", held.size() == 1);
                     check("made with the player still near (" + p[1].distanceToSqr(throne[1]) + ")", p[1].distanceToSqr(throne[1]) < 160 * 160);
                     check("the held-spawn counter is unchanged", MowzieKit.camps().heldSpawns == spawns0[0] + 2);
-                    record(test, "hold", "C played when its player left; D played " + after + " ticks after the reconcile with its player near");
+                    record(test, "hold", "C played when its player left; D played " + after + " ticks after the hold began with its player near");
                 })
                 .thenSucceed();
     }
@@ -823,9 +826,9 @@ public final class UmvuthiGameTests {
                             CampLine.of(CHIEF_SLOT, 1, UMVUTHI, TAKE, CHIEF),
                             CampLine.of(CHIEF_SLOT, 2, UMVUTHI, SPAWN, CHIEF)));
                 })
-                .thenIdle(5)
+                .thenWaitUntil(waits.logic(() -> check("two more held lines (" + (MowzieKit.camps().heldLines() - lines0[0]) + ")",
+                        MowzieKit.camps().heldLines() == lines0[0] + 2)))
                 .thenExecute(() -> {
-                    check("two more held lines (" + (MowzieKit.camps().heldLines() - lines0[0]) + ")", MowzieKit.camps().heldLines() == lines0[0] + 2);
                     check("no answer", unanswered(g.faction, op[1]));
                     far.releaseRect(g.cx - 2, g.cz - 2, g.cx + 2, g.cz + 2);
                 })
@@ -916,9 +919,9 @@ public final class UmvuthiGameTests {
                     for (int i = 0; i < 2; i++)
                         remove[i] = MowzieKit.reconcile(g[i].faction, epochOf(g[i]), List.of(CampLine.of(CHIEF_SLOT, 1, UMVUTHI, REMOVE, CHIEF)));
                 })
-                .thenIdle(5)
+                .thenWaitUntil(waits.logic(() -> check("two more held lines (" + (MowzieKit.camps().heldLines() - lines0[0]) + ")",
+                        MowzieKit.camps().heldLines() == lines0[0] + 2)))
                 .thenExecute(() -> {
-                    check("two more held lines (" + (MowzieKit.camps().heldLines() - lines0[0]) + ")", MowzieKit.camps().heldLines() == lines0[0] + 2);
                     for (int i = 0; i < 2; i++) {
                         check(name[i] + "'s REMOVE has no answer", unanswered(g[i].faction, remove[i]));
                         check(name[i] + "'s Umvuthi is a second body", MowzieKit.camps().secondBody(u[i]));

@@ -5,7 +5,8 @@ MZB-#, and each slice takes ids from its own range so slices built side by side 
 M1 1 to 49, M2 50 to 99, M3 100 to 149, M4 150 to 199, M5 200 to 249, M6 250 to 299, M7 300 to 349,
 M8 350 to 399, M9 400 to 449, M10 450 to 499, M11 500 to 549, M12 550 to 599. Each slice writes only
 under its own heading. MZB-589 is lent from M12's range to M6 (the BAND_CASUALTIES op id, which rides with
-M6's branch); M12 skips it.
+M6's branch); M12 skips it. MZB-700 to 719 are M10's review fixes (its range was full).
+MZB-720 to 749 are M10b's and M10c's.
 
 ## M1 Records
 
@@ -5520,17 +5521,112 @@ RP-150 to RP-153 the replay records.
     beyond. Test only: the passes turn `ICE_ENDS` (24) from the track's ends, 16 for the lookahead, 2 for a tick's travel
     and slack. Passed in m8-r7-dbg2 (hits 4/4, 3/4, 1/4, 0/4 at 0.5, 1.0, 1.4 and 2.0, a rate, no gate).
   - **MZB-939** (`aRestoredBufferWhoseChunkOutlivedTheTracksTakesAPackageOnce`, "one package in the buffer, primed, the
-    op in its ring": not found, not fixed). Nothing of M8's or of the Mowzie plugin is on its path (PortRing,
-    WritePackages, TrainRing and the station mixins are main's, unchanged by M8). It failed in both `-PwithMowzie` rounds
-    at the same batch order (r6; r7 at ed1d23b1, "packages 0, primed false, the op in the ring false, answers [1]": the
-    write was answered APPLIED, and the port the test reads, the one it put in its station, got nothing), passed in the
-    same head's `-Psec1fx` round (257 of 257), where the batch runs one place later, and passed in r8 (261 of 262) and in r9 at the final head (262 of 262). So
-    the write went to some other port: `WritePackages.port` takes the first port at the postbox's position in any
-    graph's station, and the postbox's chunk is the station's plus 7300 chunks, a position another test's station
-    can reach (the GameTest grid's cells are placed by the batch order, which `-PwithMowzie` shifts by one). Not
-    shown, because the diagnostic that would show it (`portsAt`: every station's port at the position, named MINE or
-    OTHER, with its buffer, `primed` and ring) came after the failing runs and the test passed with it. It is in the
-    check's message now, with the buffer's packages, `primed`, the ring and the answers heard.
+    op in its ring"; test only, found and fixed). Not a wrong-port write and not another test's station: the failing
+    message of the round with the extended diagnostic lists one station with the port at the postbox, at (-10361743, -59,
+    13842531), which is exactly the test's own station position (the test's origin plus 16, the floor, plus 29), marked
+    OTHER, with `packages 1, primed true, op in ring true` (the write went where it should), and "the test's station is one
+    of them: false". The postbox lies 7300 chunks (116,800 blocks) from the station in x and z, by the test's own
+    arithmetic, so the listed postbox position is the test's frame, not a neighbour's. So the station object the test kept
+    from its first look is no longer on any graph, and the station on the graph at the same block is a new one. Create makes
+    a station's edge point anew when the track beside it is propagated again: `TrackBlock.tick` (one scheduled tick for each
+    block of the 30-block track) calls `TrackPropagator.onRailAdded`, which removes the graph nodes next to the block and with
+    them the edge points on their edges (`TrackGraph.removeNode`, `invalidate`), and the station's block entity makes a new
+    `GlobalStation` from the old one's migration data (ports and rings included, `GlobalStation.read` and the ring mixin
+    read them). A block's tick waits for its chunk to tick with its entities loaded (`ServerLevel.isPositionTickingWithEntitiesLoaded`),
+    which on the unthrottled GameTest server is real time, and the track crosses a chunk border, so the station (joined
+    from its own chunk's ticks) can be on the graph before the other chunk's blocks have ticked. `-PwithMowzie` shifts the
+    load and the order of chunk work, which is why it showed in half of those rounds and not in `-Psec1fx` ones.
+    Reproduced deterministically by `aRestoredBufferTakesAPackageOnceThoughCreateMadeItsStationAnewBeforeTheWrite` (the same
+    test with `TrackPropagator.onRailAdded` called on the track under the station before the write): it failed with the
+    message above (one station, "OTHER", the test's own position) on the test's old code. Fix, in `PortRingGameTests`:
+    every test waits (`settled`, paced) for the station on the graph and for no scheduled tick left on its track, and looks
+    the station up in its block entity at each use (`Station.get`). Production is unaffected: the new station keeps the
+    port, its package and its ring, and `WritePackages.port` finds it on the graph. Run: the debug copy of the class
+    (`mic_rtsim_create_dbg`, the old and the new text side by side, stub engine) failed the variant on the old text and
+    passed everything on the new; `create -PwithMowzie` at the fix passed 268 of 268 (a round is one draw of a roughly
+    even coin, so it shows the fix does not break the class, not that the flake is gone; the wait records, per test,
+    the track ticks still waiting when the station first joined and whether it was made anew since: 0 and false in all 13
+    of that round).
+  - **MZB-950** (the heap of the full `create -PwithMowzie` run: out of memory at 4G and at 6G in the light engine
+    worker, "passes only at 10G"; not a leak, not the U-g, J6, U-h or M8 code). Measured at `-Xmx10G`
+    (jcmd class histograms after a full collection; `target/heap-NN.txt`, `target/dense/`): through the first 207
+    tests the live heap sat between 0.3 and 1.0 GB (1.0 GB at 180 tests with 5,600 chunks waiting in the chunk
+    IOWorker, 0.56 GB at 207), no class of ours growing, no `Journal$Entry` (17), `ChunkWriteBarrier$Note` (1) or
+    district structure above a few hundred objects; then, in `theIceBallHitRatesAgainstAMovingTrain`, the server thread
+    sat in one tick for 15 minutes with the live heap going 0.56, 5.4, 6.6, 7.9, 8.8, 9.8, 10.0 GB (round 1, base
+    -6,724,212 / 6,945,462) and 2.0, 4.3, 7.3 GB (round 2, base -3,797,620 / 4,715,190): 33,700 loaded chunks and
+    402,000 chunk holders after 5 minutes, 37,700 after 8 (`LevelChunkSection` 177,000 to 10.5 million, `PalettedContainer`
+    21 million), the line of chunks growing along one axis. Every thread dump of the server thread: `EntityFrostmaw.tick` to
+    `MMPathNavigateGround.followThePath`, `tryShortcut`, `sweep` (jar line 139, the `getBlockState` or `getPathType` of a
+    cell), the chunk loaded by `Level.getBlockState` on the server thread. A temporary mixin that named any path node more
+    than 300 blocks from its mob logged nothing: the path was an ordinary one. The cause is the jar's (Mowzie's Mobs
+    1.8.2): `sweep` steps a grid in `float`, and the world coordinates of the mob's box are the floats. Above 2^22 blocks a
+    float is a multiple of 0.5 (2^21: 0.25); the trailing edge, advanced by a sum of about 0.28 a step, rounds up to 0.5
+    every step and overtakes the leading edge by the box's width after some 15 to 30 cells, and
+    `for (int z = z0; z != z1; z += step)` then starts beyond its end and counts through the whole int range, loading a line of
+    chunks out to the world border and past it. A copy of the algorithm in plain Java (400,000 random sweeps of 10 to 80
+    blocks, boxes 3 to 5 wide, per size) runs away in 0 sweeps at 100,000 to 800,000 blocks from the origin, 2 at 1.0
+    million, 3,543 (0.9%) at 2.0 million, 4,259 at 3.0 million, 17,131 (4.3%) at 4.5 million, 16,540 at 6.5 million; for
+    boxes 0.6 to 2 wide 0 up to 340,000 blocks, 310 at 520,000 and 7,695 at 1.0 million. The GameTests' far bases
+    (`ConflictKit.farBase`: x from -3 to -7.1 million, z from 3 to 7.1 million) are all in the range, and a Frostmaw that
+    follows a path for 16,000 ticks at 40 sweeps a tick should not miss. Why the ice-rates test passed earlier at
+    -6,085,297 (MZB-938) is not known: the sweeps it met did not hit the band, or its Frostmaw followed no long path. **Test fix:** `RailFrostmawGameTests` builds at `ConflictKit.nearBase()` (`PathSafeBase`: x -100,000
+    to -231,000, z 100,000 to 231,000, inside 2^18 blocks, where the copy never ran away), and `releaseFarChunks` also
+    releases that area. `PathSafeBaseTest` keeps every slot, the strip built from it and the sweep beyond it inside the
+    limit. **Not changed here, for the lead (done in MZB-951):** the jar's bug is a product one too (any Mowzie mob that follows a path
+    more than about 500,000 blocks from the origin can stall the server for minutes and load millions of chunks); a
+    mixin in this plugin that replaces `sweep` with a `double` one measured from the box removes it (MZB-951, PATCHES.md
+    row 97), and with it the same applies to `MowzieKit`'s tests (`farBase`), which have not been seen to run away. Away from
+    the ice test the run's live heap stayed under 1.4 GB (the chunk IOWorker's backlog included).
+    **Heap default:** `create/build.gradle` is back to `-Xmx4G` for every run (the 6G for `-PwithMowzie`, set on
+    2026-10-27 on the reading that the merges outgrew 4G, is gone); the fix's 4G round passed 267 of 267.
+  - **MZB-951** (the fix of MZB-950: a mixin that makes the jar's path sweep exact far from the origin; PATCHES.md row 97;
+    Ben approved it as a slice on `diag/gametest-heap`). **What:** `MMPathNavigateGroundMixin` is an `@Inject` at the head of
+    the jar's private `MMPathNavigateGround.sweep(Vec3, Vec3, Vec3)Z` (1.8.2; `require 1`, `allow 1`, cancellable) that always
+    answers, from `PathSweep.sweep`: the jar's grid walk in `double`, in a pure class with no Minecraft type, so the unit tests
+    run the code that ships. `PathColumns` reads the world for one column as the jar's loop body does (every cell of the column
+    pathfindable by land; the block under its first cell not water, lava or open air; the cell at it a malus of 0 up to 8 and not
+    fire or damage). Read from the jar (vineflower on `MMPathNavigateGround.class`): `followThePath` calls `tryShortcut`,
+    `tryShortcut` calls `sweep` once per path node from the path's far end down to the next node, and `EntityFrostmaw`,
+    `EntityWroughtnaut` and `EntityGrottol` make this navigation. **The walk:** the jar's algorithm, two changes. (1) Every
+    number is a `double` measured from the integer cell the box's low corner stands in (the cells are added back when a column
+    is handed over), so the arithmetic is on numbers a few blocks wide wherever the mob is: the same box moved by whole blocks
+    reads the same cells, to the bit when its edges are exact in a double. (2) The three cell loops end by direction (`x < x1`
+    for a step of +1, `x > x1` for -1) in place of `!=`: a range that starts past its end is empty, and cannot count through the
+    int range; and a walk ends, blocked, after as many crossings as its vector has cell boundaries (their sum, 8 more), a bound the
+    maths does not need and a bad input might. A NaN or a number past 1.0E9 is blocked with nothing read (the mob then walks its
+    path node by node, as it does when a shortcut is refused). **Why not only bound the loops:** that stops the runaway and leaves
+    the answer wrong: at 4.5 million blocks the float's trailing edge is off by up to a block, so a slab of the walk can come out
+    empty or in the wrong cells, and a shortcut through a wall can be approved. **Why `@Inject` and not `@Overwrite`:** the same
+    effect, and another mod's mixin on the method does not conflict with it; the jar's body stays in the class and is never run.
+    **What stays the jar's:** the order of crossings, the slab at each, and the first crossing after the vector's end, which the
+    jar's `do ... while (t <= max_t)` reads before it stops (so cells up to two past the end are read: the bound the tests keep);
+    an edge on an integer is in the cell above it (`floor`: the jar's `1.0E-8` nudge is lost in a float beyond a quarter block
+    from the world origin, and the double walk does not apply it either; the one difference this leaves near the origin is a box
+    edge exactly on 0.0 (within 1.0E-8 of it), which the jar's float puts one cell lower). **Equivalence, measured**
+    (`PathSweepTest`, `./gradlew :mowziesmobs:test`, against `JarFloatSweep`, a copy of the jar's float walk with its loop body
+    behind an interface): within 16 blocks of the origin, 12,000 random sweeps (boxes 0.5 to 5 wide and 5.5 tall, vectors of 1
+    to 80 blocks), the 7,859 whose cells do not move under twelve nudges of a ten thousandth of a block to the box and the
+    vector read exactly the jar's cells and columns (0 differ; the rest are decided by the float's own rounding, about 1e-5 of a
+    block, and are not compared); 8,000 sweeps along one axis with every edge on a multiple of a half (the integer-edge cases),
+    all the same; at 1,000 blocks, where the float is off by a ten thousandth, 61 of 10,000 sweeps differ, the worst by 37 cells
+    in a thousand (cells the box's trailing edge just touches). **Far out:** 6,000 sweeps at 0.5 to 7.1 million blocks
+    read only cells within two of the box and its target, none ran away; the jar's copy ran away in 40 of the first 1,500;
+    MZB-950's known sweep (a box 3.5 by 4.5, a node 38.6 blocks off) counts past 400,000 cells in the copy and reads under
+    10,000 in the shipped walk; 4,000 sweeps near the origin and the same shifted by 3 to 7.1 million blocks read the same
+    cells and columns, bit for bit. **GameTests** (`PathSweepGameTests`, mowziesmobs, batches `mowzie_path_sweep_near` and
+    `_far`): the jar's real `sweep` called by reflection on a real Frostmaw's navigation over a stone floor, near the origin
+    and at x -3,797,664, z 4,715,168 (a place built round MZB-950's known sweep, `PathSweepRunaway`): clear, blocked by a
+    wall, blocked by a missing strip of floor, clear again, the known sweep, and 120 random ones. Chosen because a runaway
+    can be kept from running three ways, all in the test: it fails before the first call if the jar's class has no mixin
+    handler (a method named `...$sweep`, so a broken mixin cannot let the first far call count through the int range); every call
+    runs under a `PathSweep.Budget` (12,000 block reads, 5 s: the walk stops, blocked, when it is spent, and the test fails on
+    it); and the place is 6 by 6 chunks that no sweep leaves, with a check that no more than 300 chunks loaded. The budget is
+    a static the shipped walk reads once per column (null outside a test). **Uninstalling:** the mixin holds no state and writes
+    nothing; a world saved with it loads without it, and the jar's float walk, with its runaway, comes back. **Not done:**
+    `RailFrostmawGameTests` still build at `nearBase` (MZB-950's test fix stays; with this mixin they could use the far bases
+    again, which is for the lead); a Mowzie's Mobs newer than 1.8.2 that fixes its own sweep still gets this mixin (the
+    answers are the same); another mod's navigation with the same bug is not touched.
 
 ## M9 Umvuthana
 
@@ -7659,7 +7755,9 @@ section). The cause was in the engine, not the test.
   not in a column" is replaced by MZB-469 to MZB-472.
 - **MZB-484** (no M10 push while the session's replay catches up): under rtsim-jni, `take_commands` moves the
   whole outbox into the JNI queue after every ingest, so the engine's `outbox.retain` filters never see a
-  command pushed while `replaying`. Each M10 push is therefore gated where it is made:
+  command pushed while `replaying`. Each M10 push is therefore gated where it is made. (Since slice C, "at the
+  push" is also the outbox's `gate`, exhaustive over every kind, with a verdict per kind while replaying;
+  BAND_MARCH's is drop, MZB-486. The guards below stay: they keep the revision and the flags from moving.)
   - **BAND_MARCH.** `take_commands` builds no march record while `self.replaying`. It leaves `march_due` and
     the flags as they are. `home` pushes its ENDED record only when not replaying, though the flag and the
     row go either way.
@@ -8176,6 +8274,840 @@ counter and a no-cascade test.
 - **The command count.** `take_commands` returns more commands now. Tests that count them, or index into
   them, need the march records filtered out.
 
+### M10a build records (MZB-485 to MZB-499)
+
+What the implementation of the engine half (M10a) decided. The design's records are MZB-450 to MZB-484
+above; the replay gate's are RP-170 and up in docs/replay-gate.md.
+
+- **MZB-485** (the base; amends MZB-450): `feat/mowzie-m10` starts from `feat/mowzie-m8`'s merged head
+  (14c896ee: M8 with M7 and M9 at 7153b7fe, M6 and main at a11311aa's parents), not from M9 alone. M8 lands
+  before M10 and both change rtsim-conflict's engine and its persisted state, so M10 builds on the tree it
+  will merge into; MZB-450 asked for M9 plus M6, which M8's head carries. Step 1 then merged
+  `feat/mowzie-m9` at 42e8fcc3 (the M9 check's fixes: RP-133, RP-134, MZB-672 boxed hunts, MZB-673) and
+  `design/mowzie-m10`'s four design commits. MZB-672's pin: M8 adds no `Faction` field (MZB-690 to MZB-692), so
+  `FactionRow` is the M9 check's 216 (200 + 8 + 8), not the 232 M8's merge had pinned; tests/rail.rs asserts
+  216 and M8's RP-153 point 7 now says so. No `run-gametest/world` existed in any project of this worktree to
+  delete. The saved state is **RTC11 / META 10**, magic `RTCB` (M8's is `RTCA`; M10 lands after M8), no
+  migration.
+- **MZB-486** (BAND_MARCH's gate; amends MZB-484's "gated where it is made"): `Cmd::March` was already a kind
+  with a row in slice C's gate, with the verdicts drop and send (docs/replay-gate.md §4.4), before it had a push
+  site. M10 pushes it from two places, `take_commands` (the march records) and `home` (a band's end), and
+  guards both on `!replaying`. The outbox gate (outbox.rs `gate`, exhaustive, RP-170) is the backstop at the
+  push that MZB-484 asked for: its verdict is now **drop while replaying**, not send, since a record sent
+  from a replay would carry a stale revision and Java's map is a session's. Queued at the session start it
+  drops as well (the verdict was already drop). The verdict test's sample line and the §4.4 row move with it.
+  Fork taken: this changes an existing row, which the lead's brief did not name, and the conservative option
+  is the stricter one (nothing sent while replaying); the first take after the replay end sends every party
+  once (MZB-451), so nothing is lost.
+- **MZB-487** (the saved form of a party's march; MZB-453 built): `put_party` and `get_party` end with
+  `march_rev` (var u64), `march_due` (a bool) and `unseen_due` (a u64 tick), after `casualty_ops`. The magic is
+  `RTCB`, META_VERSION 10, with the history comments extended. `march_due` is saved, so a mark made before a
+  save survives it; `Conflict::rebuild_march_due` builds the unsaved list from the flags in handle order, at
+  the end of `load` and of `open_paged` (the parties are resident in both). `begin_replay` marks every party
+  again, so a saved flag and a replay's mark meet at one entry (`march_changed` pushes only a clear flag). The
+  revision is saved with the party: Java's per-session map takes any revision a session's first record
+  carries, and a restart's first record is one past the pages' last. Fork: a state hash now moves with a
+  take's flags, so two engines that took commands at different steps differ by hash; no existing test
+  compares such a pair.
+- **MZB-488** (the build order; amends the design's work split): the books' step (`lose_units`' clamp,
+  MZB-462; `camp_home` returning a bool and `home`'s fallback recall, MZB-463) was built and committed before the
+  walk home (MZB-456). The walk leaves a band embodied up to its row's end, so the fight-end tests that counted a
+  recall at the fight's end (lurk.rs, mowzie_records.rs) now meet the recall at `home`, and that recall exists
+  only with the fallback. `camp_home` returns true when it sent a HAND_BACK line or recalled (a camp that is in
+  with no hand-back line, a camp with no ledger, and a camp that is out with nothing embodied return false);
+  `home` recalls an embodied band with RECALL_DONE toward its camp when nothing handled it, for every kind. The
+  clamp keeps each `spawned` entry no larger than its unit's count while the band is embodied.
+- **MZB-489** (the walk home as built; MZB-456): `go_home` walks when the band is embodied, the reason is
+  RECALL_DONE, RECALL_BORED or RECALL_ROUTED, some `spawned` entry is above 0, the kind is not Envoy, the world is
+  not Peaceful and the outbox is not replaying; any other band is recalled toward its camp as before. The first
+  home segment is steered by `go_home` and each later one by `start_segment`, both through `steer_segment`, which
+  also owns the edge_stop seam rule (a segment that would cross a seam is recalled with RECALL_PASSING toward its
+  end) and books the watcher's unseen check. The home steer never carries STEER_ATTACK (only a war band's last
+  segment out does). The row's end at `home` is where the fallback recall of MZB-463 lands. Fork: the fight-end
+  tests in tests/mowzie_records.rs that read a band's `embodied` after a fight now read "embodied before its walk
+  home" (a replayed band is recalled while the live one walks, MZB-484), and the refused-fight helper runs on
+  until the band's row is gone so it meets the fallback recall's epoch. No test of a seam on the way home was
+  written: no engine test builds an edge_stop topology.
+- **MZB-490** (`seen` skips a band with nobody alive; amends MZB-457): `seen` no longer skips a Home band, and
+  it now also skips any band whose `alive()` is 0. A band wiped out on the road or in a fight is routed home
+  with its dead and walks the row home abstract (or in bodies that are all gone); materializing it would embody a
+  party with no member to place (`spawn_wave`'s fill is empty, the epoch moves and `spawned` is cleared), and
+  tests/frostmaw.rs's chief-killed-then-counted-out case met exactly that with the player's area still valid
+  after the fight. Before this step Home was skipped whole, so this guard did not exist; Out and Waiting bands
+  always have a member alive. `march_bearing` is MZB-457 as designed (Out and Home toward the segment's end, or
+  along the segment when standing on it; Waiting the way it came; else 0).
+- **MZB-491** (the replay reads a walked-in band's fight; amends RP-56's flag rule): a band that walked in
+  fights at the epoch it was met at (MZB-461), so its fight record is of its own epoch. `honour` takes a
+  BAND_MATERIALIZED flagged BAND_FIGHT as the fight when it is of a newer epoch (as before) or of the party's
+  own epoch with the party's arrival held (`held_since`); a flagged record of the own epoch with no hold is a
+  later wave of a fight in progress, and counts nothing new. A sighting's record (unflagged) only embodies
+  and keeps the hold, as RP-56 has it.
+- **MZB-492** (a walked-in fight may send no wave, so the fight leaves no record; closed by MZB-700 at the review): the arc
+  of `start_fight` on an embodied band sends only the members not placed yet (MZB-461), and a band met on
+  the road has all of them placed up to the quota already (`wave_fill`'s room is the quota less `spawned`,
+  and the sighting filled it; a band under the quota has everyone out). The arc wave is then empty and
+  `spawn_wave` sends nothing, so the fight's first BAND_MATERIALIZED, the record a replay's hold waits for
+  (RP-23, RP-48), comes only with a later wave after a death. Consequences, all kept as they fall: a restart
+  during such a held arrival resolves it unwatched at the slack (RP-48) while the session that went on fought
+  it, and the fight's casualties of that epoch count against the stacks the sighting's record rebuilt; and
+  `fights_unanswered` is not set for a walked-in band, since no first wave answers its decision (the stat
+  would otherwise take a wave interval). Conservative fork: the wire is left as designed. Two ways to close
+  it, both Java-side and so M10b's to design: a BAND_MATERIALIZE with no members flagged BAND_FIGHT that Java
+  echoes at once, or a record echoed for an attack steer. Tests that stood on a sighting's record followed
+  by the fight's in one step (RP-56's case B, `a_sighting_journaled_with_a_held_arrivals_fight_is_no_double`
+  and its `Records::SightingWithTheFight`) were removed with the gap. A walk-in with members left to send is
+  tested at the engine in tests/mowzie_march.rs (`spawned` set short by hand); no replay test covers it.
+- **MZB-493** (FakeConflict plays a walked-in fight; amends MZB-476's "steers stay ignored"): a BAND_STEER with
+  STEER_ATTACK and `arrive` 0 (the walk-in's attack order; a segment's own attack steer has an arrival time)
+  for a hostile body it holds at that epoch plays the scripted `fight` on what it holds, as it plays a wave.
+  The wave's fight and the steer's share `play_fight`, which also kills the chief once whenever a fight finds
+  one standing (a walked-in band placed it with its sighting, and `m.wave == 0` and BAND_CHIEF on the wave no
+  longer gate it). The command log's steer line adds ", attack" for an attack steer. MZB-476's march record
+  (latest revision per party, dropped on ENDED, the held body clamped to the record's counts) and a HAND_BACK
+  line ending the held body at its epoch (BAND_DEMATERIALIZED reason 1 after `leave_ticks`, its survivors)
+  are built as designed.
+- **MZB-494** (the test harness after the walk-in; forks): mowzie_records.rs's `Run` gains `sight` (default
+  true) and `observe`, which with `sight` clear makes the player's report and its area but routes no sighting.
+  `raid_band` clears it, so the replay-gate tests keep abstract arrivals (a band never met on its march fights
+  from the arrival at its own first epoch): the first-wave-refused test expects the recall of epoch 1, not 2,
+  and the record-gap test reads the fight's record as the band's first. The straggler variant now builds its
+  older epoch by meeting the band, logging the player out (the recall) and watching again at the arrival.
+  The siege's `Then::Fight` is unrouted, since a waiting siege met first sits at the quota (MZB-492). The
+  scenario test (tests/scenario.rs) accepts the director's arc waves or the walked-in attack steer as the
+  fight.
+- **MZB-495** (MZB-466's counter, as built; forks): `ConflictStats::unbooked_home_deaths` counts a
+  BAND_CASUALTIES or CHIEF_KILLED that names a party that is gone, at an epoch `home` sent HAND_BACK lines
+  for that Java has not answered. The open lines are `Conflict::home_open`, per party agent: the faction, the
+  epoch, the slots of the lines (for the log), when they went, and the ops already counted. In memory only;
+  a restart starts empty, and an entry older than a day is dropped when the next is made. `camp_home` makes
+  it when a HAND_BACK line goes (not for a recall or a spawn line, and nothing is made during a replay,
+  where nothing embodies). The band's BAND_DEMATERIALIZED at that epoch is the answer and clears it, whatever
+  came of the line (MZB-464). Each op counts once, so a copy, a reassert and a second ingest change nothing.
+  Booked nowhere: no casualty, no signal, no party, slot, pool or camp ledger touched; the log line (kind
+  `unbooked`, when the log is on) names the party's agent, the epoch and the camp slots of its lines. The
+  record names a body, not a slot, so the slots are the lines'. Java's matching log is M10b's. The no-cascade
+  test sits in tests/camp.rs (`a_puppet_killed_between_the_end_and_its_hand_back_is_counted_and_costs_nothing_else`),
+  where the grove harness is: a band walks home embodied, a casualty, a chief record and their copies reach
+  the engine after `home`, and the books (slots, parties, pool, stats less the counter) equal the same run
+  without them, the camp's audit agreeing.
+
+- **MZB-496** (the two rtsim-jni conflict tests that relied on arc waves for a band met on the road; forks):
+  `factions_take_notice_send_envoys_take_tribute_once_and_raid_in_waves_across_a_crash` and
+  `a_held_arrivals_replayed_fight_counts_its_casualties_once` assumed the old arrival: a band whose wave
+  came on an arc from the first record. After the sighting (MZB-461) the whole band under the quota is
+  placed in a column on its road and the arrival walks it in (STEER_ATTACK, the same epoch), so a fully
+  placed raid sends no arc wave at all. The first test now waits for the attack steer for the raid, for the
+  invasion's sighting plus its first arc wave (a day, since the wave comes after the arrival and the wave
+  interval), and checks the rout as a walk home (a steer with `arrive` > 0, no RECALL_ROUTED). The second
+  test's replay is the walked-in fight resolved unwatched: its sighting's BAND_MATERIALIZE is the one record
+  after the pages, no fight record exists to honour (MZB-492's gap, which M10b or the review may close with
+  an echo of the attack steer), and the casualties count once at the sighting's epoch; the band is Home,
+  abstract, at the replay end. Taken the conservative way: the tests pin what the engine does now and say
+  where it is a gap, rather than building a fight record the engine does not have. (MZB-700 closed the gap
+  and changed both tests: the walk-in sends an empty fight record.)
+
+- **MZB-497** (the four rtsim-jni protocol tests of M10, and where the `lose_units` one lives; forks): in
+  tests/protocol.rs's conflict module, beside the replayed-casualty tests, each with the live player out of
+  the band's view until the replay has caught up (MZB-484):
+  - `a_session_start_sends_each_party_its_march_after_the_replay_has_caught_up`: 4,000 fillers make the
+    replay several hand-overs on a minimum-size buffer; after each hand-over that leaves records to send,
+    no BAND_MARCH has been sent (`reopen_watching` steps one hand-over at a time with `Java::flush`, since
+    `idle` is two); then one record for every party, at the page's revision plus one, with the units the
+    replayed casualties left.
+  - `a_casualty_on_the_walk_home_across_a_restart_counts_once_and_the_next_march_carries_it`: a routed raid
+    walking home in bodies, a casualty journaled after the pages and the crash before any step, so its
+    march record was never built; the replay counts it once and the session's record carries it.
+  - `an_invasion_from_a_grove_that_comes_in_sends_no_march_and_keeps_the_cap` (test 28's engine half):
+    the grove comes in at the muster's end, the band's revision and record count stay put until its
+    arrival, which is a record, and a raid is refused while the invasion holds 8 of the grove's 9 and goes
+    once they are home; pool plus away never pass the cap. The band had no war chief in this harness (a
+    grove's strays carry no chief byte), so what the test pins is that no flag of the record changed;
+    run 11 and the GameTests carry the chief's cases.
+  - Fork, `lose_units` across a restart: the JNI harness has no village to raid (a village needs
+    `adopt`, a market and a player placed 170 blocks from it), so the test is the engine's, in
+    crates/rtsim-conflict/tests/mowzie_march.rs
+    (`the_dead_of_an_abstract_fight_in_bodies_are_counted_once_at_the_recall_and_across_a_restart`): a raid
+    walks to Ashby in bodies, a second player 170 blocks off re-binds it, the village's defence takes 4 of
+    12, `spawned` follows (8), the watcher leaves and the recall's stack is the 8; one dies on the walk off;
+    Java's despawn leaves 7, not the 3 an unclamped stack would leave. Its second arm saves the engine
+    after the recall and replays the despawn from the pages. It fails with the clamp removed. The
+    journal path of a restart is the same code (`Dematerialized` on a recalled stack), so the JNI
+    harness would add only the wire.
+  - No crash or reassert copy test is added: M10 adds no holder-carried record (MZB-467).
+
+- **MZB-498** (the march audit, run 13; forks): `rtsim_conflict::synth::march` (crates/rtsim-conflict/src/synth/march.rs)
+  is the map Java keeps of marches, built from the engine's own `Cmd::March` records, and held against the
+  engine, step by step. Design:
+  - **It lives beside `CampRun`, not in the engine.** A thread-local state, off unless a run turns it `on()`;
+    `advance(c, w, infra, to)` is `run_until` and `take_commands` when off (run 1, 5, 10 and 11 are what they
+    were), and 20-tick steps (`begin`, run, `took`, `end`) when on. `CampRun::run`, `flush` and `decide`
+    carry the same hooks, so a stepped run of CampRun is audited without a change of its script.
+  - **What a step checks.** A party unchanged across the step (same `plan` and `march_rev`, no mark pending) has
+    `BandMarch::chart_pos(t)` of the latest record equal `Conflict::party_chart_pos` at every tick of the step,
+    which is the shared position rule read from both ends (`party_chart_pos` is now `pub`). A changed party
+    is compared at the step's end: position, phase, the units' sum, the end of the route. A change of route,
+    phase, count or chief flag has a record taken in its step. A party that left the engine has no record
+    left in the map; a revision never goes down.
+  - **Fork: a party with no one alive and no chief.** The engine keeps the shell until it is reaped, but its
+    record says ENDED and Java drops it (`march_record`'s `alive() == 0 && !chief`). The audit expects no held
+    record for it and counts the shell-steps rather than comparing a position. Without this rule the first
+    run of the audit failed on every such shell.
+  - **Fork: a new engine.** A sim run builds many engines and Java's map starts empty for each (MZB-451). The
+    audit takes an engine whose clock is behind the last step's for a new one (`State::sync`) and
+    `restart_to_replay` calls `session()`. The conservative alternative, an explicit reset in every builder,
+    would have meant touching every sim run; the clock rule costs nothing to the runs that do not audit.
+  - **Fork: no position check while a replay runs.** No record is built then (MZB-484), so a party with a mark
+    pending is counted as `pending` and not compared.
+  - Run 13's other checks: no census ends a party (ten `camp_out`/`camp_in` cycles of an Invasion out send no
+    ENDED, and one is sent at its end), and the seams: on an x-wrapped world and on a glued (Petroff-Guyou)
+    one a band that crosses the seam and routs has its cell the fold of its block centre at every tick, no
+    jump out or home, a rout route that is `here` plus the road it came by without a lap, a first segment as
+    long as its walk, and the walk home as long as the engine says.
+
+- **MZB-499** (run 11, the grove's Invasion with its chief; forks): the run drives the engine the way the
+  host does and sets fields by hand only where a test must stand a band in bodies with nobody tracking it.
+  - Players are moved by `Conflict::observe_player` (the host's entry), not `set_player_pos`, and leave by
+    `player_left`. Where a case needs the band embodied with no one watching, the run sets `embodied`,
+    `epoch += 1` and `spawned = units` as a watched fight leaves them (tests/mowzie_march.rs does the same).
+  - The grove is `fast_grove`: six-day heir wait and a 12.0-day clock (`grove_cultures(6.0, 192.0, 6.0)`),
+    plunder off, nine found, so the chief's slot runs Left, Gone and freed inside one run. The led Invasion
+    draws the Umvuthi (strength 12.6 against the raid's 3.8), and its march record's kind byte is 4, not
+    5: the byte is `PartyKind`'s, not `Step`'s.
+  - A chief killed away routs the band (`chief_killed_by`): the record goes Home with no chief flag, the feud
+    steps Invasion to Scouts (`chief_rout_steps` 2), and the slot is Dead for a Left chief and freed for a
+    Gone one (`chief_died_away`); the heir comes due at 12.0 days.
+  - Where the muster ends before a camp comes in, the run goes to the muster's end first, so the chief is
+    Gone when the camp returns and the throne body is the held one.
+  - The held set-out is answered stale with one removal (the camp left while its set-out was held); the
+    seat waits on a fight past `HOLD_MAX` (6,000 ticks) and then sits; the three re-binds (walked off,
+    followed, logged out) send no recall and with nobody there one `RECALL_PASSING`.
+  - The arrival with the only player 170 blocks off is abstract and walked home; at 150 it is a fight.
+  - The abstract fight's dead are counted once: 8 of 12, 6 left, 5 after the despawn, the same across a
+    save/load restart.
+
+### M10a review fixes (MZB-700 to MZB-719)
+
+The Opus review of 16f853cc (one P1, two P2s, three P3s) and its fixes, one commit each, each with the
+reviewer's repro made into a test that failed before the fix. Ids here, since M10's range (MZB-450 to
+MZB-499) is full.
+
+- **MZB-700** (a walked-in fight always sends its BAND_FIGHT record, empty when every member is placed;
+  closes MZB-492; amends MZB-496): the P1 of the review. A band met on its road and placed by its sighting
+  walks into its fight (MZB-461) with nothing left to send, so `spawn_wave` sent no record, and a restart
+  from pages saved before the arrival replayed a held arrival that never met a BAND_FIGHT-flagged record
+  (MZB-491): the slack (RP-48) resolved it as an unwatched abstract raid, with loot, on top of the
+  casualties the Minecraft fight had already booked. Repro (`a_walked_in_fight_in_the_replayed_window_is_
+  resolved_once`, tests/mowzie_records.rs): before the fix the restart's run had the abstract raid at tick
+  55870 and no watched raid, where the live run had no raid and one watched; after it both agree.
+  - **The fix is the reviewer's sketch (e6b123c).** `start_fight` passes `walked_in` to `spawn_wave`, which
+    sends the BAND_MATERIALIZE flagged BAND_FIGHT (arc, bearing, epoch of the sighting, `wave` the
+    band's next) with no members when `wave_fill` is empty. Any other call with an empty fill still sends
+    nothing. The record is journaled by Java's echo; `honour` reads it as the walked-in fight (own epoch,
+    the hold present) and `fight_held` releases the hold, which is MZB-491's `held` rule at work.
+  - **Fork (the lead's, conservative): the empty record counts in neither `stats.waves` nor
+    `stats.materialized`,** which count bodies sent. `wave` does advance, since `honour` sets a replayed
+    band's wave to the record's plus one and the next wave of the live band must carry a number Java has
+    not seen (Java refuses a repeated one as ALREADY_EMBODIED). `fights_unanswered` is still not set for a
+    walk-in: RP-51's gap stat stays about the first wave of bodies.
+  - **The scripted plugin needs nothing:** it echoes every BAND_MATERIALIZE, and its fight on an empty
+    stack list does nothing (the walk-in's attack steer, sent first, played the fight).
+  - **The three tests that pinned the gap now expect the record.**
+    `a_band_walking_into_its_fight_sends_only_the_members_not_placed` (tests/mowzie_march.rs): a placed band
+    sends one flagged record at its own epoch with no members and the stats do not move (before: no record);
+    the unplaced arm is as it was, with the stats up by one. `a_held_arrivals_replayed_fight_counts_its_
+    casualties_once` (rtsim-jni): the walk-in sends one flagged empty record at the sighting's epoch (before:
+    no new epoch and no wave); the restart replays two records after the pages (the sighting's and the echo),
+    honours the fight (`raids_watched` is the live session's plus one, before: unchanged, unwatched), and the
+    band is Waiting and abstract at the replay end as any fighting band is (before: Home, abstract).
+    `factions_take_notice_send_envoys_take_tribute_once_and_raid_in_waves_across_a_crash`: the invasion's
+    walk-in is asserted as exactly one empty flagged record, and its wave list counts waves of bodies only
+    (before: the first "arc wave" came after the arrival and the casualties; the empty record is an arc record
+    sent at the arrival, so the list would have ended before the casualties).
+  - **For M10b (Java, later), a requirement written in docs/boundary.md:** Java must accept a BAND_FIGHT
+    BAND_MATERIALIZE with m = 0, spawn nothing, and echo BAND_MATERIALIZED with flags 8 and `spawned` 0.
+    `ConflictBridge.materialize` answers m <= 0 with BAND_SPAWN_REJECTED BAD_RECORD today, which a replay
+    reads as the fight's refusal (RP-54).
+
+- **MZB-701** (`exit_time` steps to the first tick the truncated position is outside; amends MZB-458): the first
+  P2 of the review. `exit_time` solved the continuous path for the tick it leaves the watcher's circle
+  (`view_radius + party_radius + 16`, 192), but `inside_now`, which `rebind_to` and `exit_time`'s own first check
+  share (MZB-458), reads the truncated chart position, up to sqrt 2 blocks off the path. Booked at the root, the
+  band's `unseen` found the same player still inside and booked a tick on, every tick, until the truncated
+  position left. Repro (`a_near_tangent_exit_is_not_rebooked_tick_after_tick`, tests/mowzie_march.rs): a road
+  400 blocks along +x and 1 along +z (integer waypoints make it near-axis), the watcher moved to where it is
+  tangent to the circle, on the lower-z side: 645 ticks of tick-on bookings in a row before the fix, each a wheel
+  event, a `rebind_to` scan of the players and an exit solve (and `enforce_budget` when paged), no wire bytes;
+  after it one re-bind and 2 events, the band recalled at the same tick (34620) as before.
+  - **The fix is the reviewer's sketch (fe642b6):** after the root, `t` steps on while `inside_now` is still
+    Some, capped at the segment's end (`b`, outside, so the loop ends there at the latest). The exit is still
+    decided by the one position rule, as MZB-458 has it.
+  - **The stepping's cost, and its worst case.** Each step is one `inside_now` (a chart position and a
+    topology image), no event, no allocation. The truncated position is outside once the path is sqrt 2 blocks
+    beyond the circle of radius R; on a chord that takes at most sqrt(2 sqrt 2 R + 2) blocks of walk past the
+    continuous exit, reached on a tangent. For R = 192 that is 23.3 blocks: 1,167 steps at 0.02 blocks a tick
+    (the slowest culture; 778 at 0.03), once per booking, against the same number of wheel events before.
+    A cap at the segment's end holds it for any speed; the test asserts the repro's 644 steps against this
+    figure. A non-tangent exit needs a handful of steps (the step needed is under 1.5 blocks of radial
+    walk over the speed's radial component).
+  - **Not done:** a binary search on the first outside tick (the predicate is not monotone near a tangent, the
+    truncated position can step back inside), and a separate cap on the steps (the segment's end is the cap).
+
+- **MZB-702** (`seen` skips an envoy on its way home; amends MZB-457 and MZB-490): the second P2 of the review.
+  MZB-490 made `seen` meet a band on its way home as one on its way out, skipping only a band with nobody alive.
+  An envoy refused in view of its player goes home recalled (MZB-456: an envoy never walks home in bodies) with
+  `go_home` clearing the feud it came for; the same player, still watching, met it again on that way, and
+  `materialize_envoy` then sent a demand of nothing to player (0, 0), which Java shows as a settlers' "<Culture>
+  Envoy" with the "other" line, recalled again (reason 4) where it walked off. Repro
+  (`a_refused_envoy_is_not_met_again_on_its_way_home`, tests/mowzie_records.rs): before the fix an ENVOY_MATERIALIZE
+  with epoch 2, player (0, 0), no flags and a count of 0 at tick 18616, and a second RECALL at 20004; after it
+  neither. The fix is the reviewer's sketch (5abaf42): `seen` returns for an Envoy whose phase is Home. A war band
+  on its way home is still met (MZB-482, MZB-490). The committed `sim-conflict.json` carried this envoy
+  (MZB-704).
+
+- **MZB-703** (the review's P3s; no behaviour change):
+  - **MZB-491's `held` rule is tested.** At 16f853cc a mutation of it (`held` read only for a newer epoch) failed
+    nothing. The P1 repro (MZB-700) is its test: with `held` mutated to `flagged && newer`, both
+    `a_walked_in_fight_in_the_replayed_window_is_resolved_once` (tests/mowzie_records.rs) and
+    `conflict::a_held_arrivals_replayed_fight_counts_its_casualties_once` (rtsim-jni) fail, since a walk-in's
+    fight record is of the band's own epoch and only the hold makes it the fight. In `honour` it is `held`,
+    not `fight`, that decides: mutating `fight` (`flagged && newer`) still passes, because `fight` only
+    routes a flagged record with no hold to `unheld_fights`, and `held` is read after it.
+  - **The `!replaying` guard on `home`'s BAND_MARCH ENDED push stays,** with a comment: the gate's Drop of
+    BAND_MARCH (docs/replay-gate.md §4.4) covers the send too (the review's mutation of the guard passed). The
+    guard keeps a replay from building a record for a row that goes, and from bumping `march_rev` on it.
+  - **The sims' explanation is corrected in MZB-704** (the re-met envoy and the `unseen` loop).
+
+- **MZB-704** (the sims regenerated on the review's fixes, and their differences explained; corrects the
+  explanation of aa37308a): `scenario/results/sim-conflict.json` and `sim-mowzie.json` regenerated at the head of
+  the fixes and compared with the files at 16f853cc, `wall_ms` filtered out. aa37308a's subject put the changes
+  down to "homebound bands materialized and steered" and the BAND_MARCH records; the review found two more causes
+  in what it committed, and the events count was one of them.
+  - **sim-conflict.json, events:** ignore 516 to 213, tribute 320 to 74, converter 295 to 183. These were the
+    `unseen` loop (MZB-701): bands left the player's view along the sims' near-axis roads, and each was re-booked
+    a tick on until its truncated position left. Before M10a the runs had 209, 73 and 182 (91b4887c); the few
+    left over (4, 1, 1) are M10a's own events (march records due, the stepped bookings).
+  - **seen, materialized, recalls, wire bytes:** ignore 7 to 6 of each, tribute 9 to 5, converter 5 to 3; wire
+    bytes tribute 5728 to 4384 (4 times 336) and converter 3440 to 2768 (2 times 336). These were envoys met
+    again on their way home (MZB-702): ENVOY_MATERIALIZE "demand 0 of item 0 or stop signal 0", a BAND_STEER and a
+    BAND_RECALL (reason 4, once 5), 1, 4 and 2 of them, none a homebound band in bodies. The log's "envoy seen
+    by a player" lines for them are gone with them.
+  - **The walk-in's empty record (MZB-700):** the ignore run gains two BAND_MATERIALIZE lines with 0 members, after
+    the attack steers, at 13.74 (the invasion, wave 1) and 20.96 (the raid, wave 1). Its wire bytes do not
+    move (one envoy fewer, 336, against two records of 168), and `waves` (5) and `materialized` do not count
+    them.
+  - **State hashes:** each run's first hash moves (ignore ca482f9e... to a3ca695d..., tribute 6f9db43c... to
+    440876fb..., converter 9b9d5856... to f8c87821...), and the restore check's two hashes agree with each other
+    (a3ca695d530b6e2e); the world hashes, the rungs, the casualties, the raids and every check are as they were.
+  - **sim-mowzie.json moves only in run 13's audit line.** Run 10: 3,536,041 steps to 3,524,449 and 11,882
+    shell-steps to 11,797; the stepped run takes a step for each wheel event off the 20-tick grid, so the loop's
+    events were most of it (with the stepping off, 3,535,821 steps; with the empty record off, 3,524,164; with
+    the envoy rule off, 3,524,472: the effects overlap). Run 11: 3,097,181 steps to 3,097,182, the walk-in's
+    echo (with the empty record off it is 3,097,181). Both audits pass; records, changes and ENDED counts are
+    the same.
+
+- **MZB-705** (the P1 fix across a crash, whichever record the journal ends at; the build lead's request after the
+  review): `conflict::a_walked_in_fight_is_settled_once_whichever_record_the_journal_ends_at` (rtsim-jni). S0 is
+  the held-arrival test's (pages older than the arrival, a walk-in with the whole band placed, 3 of 12 fallen in 2
+  BAND_CASUALTIES records); the world save's journal is cut after each of five records and a session opens on the
+  pages and the cut journal. The harness's world save keeps the journal only (`WorldSave`): see the Java stores below.
+  - **Cut before the walk-in's echo** (Java applied the walk-in, the echo comes a tick after the command and the
+    journal does not hold it): the replay holds the arrival (RP-23), nothing answers the hold and the replay end
+    resolves it unwatched, once (RP-48): the log's "finds nothing to raid", `raids_watched` unmoved, 12 of 12 alive,
+    then home. The fight's 3 deaths were in the lost tail: **a loss, not a double** (what is lost is that the
+    arrival was fought watched in S0 and is resolved unwatched here, and its deaths).
+  - **Cut at the echo, after the first casualty, among them, after every record:** the fight is honoured as
+    watched once (`raids_watched` +1, no unwatched resolve), the band 12, 10, 9, 9 alive, which is n minus the
+    deaths the journal holds, counted once; abstract (Waiting) after the replay, then home. Never below the
+    session that went on (9).
+  - **In all five orders:** no BAND_MATERIALIZE with members goes to Java in the replay's session or on the band's
+    way home, so the placed members are not spawned again; the fight is settled once, never both watched and
+    unwatched. With the P1 fix switched off the first precondition fails (the journal holds one echo after the
+    pages, not two: there is no echo to cut at); the full-journal replay's double is the held-arrival test's
+    failure (MZB-700).
+  - **Two Java stores sit outside the journal, and the exactness above does not cover them.** (a) The band's
+    bodies: persistence-required mobs saved with their chunks (`ConflictBodies.hold`). After a restart the world
+    can hold bodies beside a band the engine holds abstract; what the bridge does with them at load is M10b's and
+    is not tested here. (b) Holders' pending records (`RtsimAttachments.PENDING`, saved with the entity or chunk
+    that carries them): the REASSERT copies. `conflict::a_holders_copy_of_the_deaths_of_an_unanswered_walk_in_counts_once`
+    pins the cut-before-the-echo order with copies: the arrival resolved unwatched, then the copies count the
+    fight's 3 deaths once by op id (`casualty_ops`; a second copy is dropped): 12, then 9 alive.
+  - **The double that remained after MZB-705, closed by MZB-706:** in that order, an abstract resolve that costs
+    units (a district or a village that defends itself) cost them on top of the copied deaths, since
+    `casualties(copy)` takes by identity and did not ask whether the arrival was resolved unwatched. By the code,
+    not exercised in the harness (the camp's base has nothing to raid); MZB-706 exercises it at engine level and
+    fixes it. The jni test above now pins the closed order: the copies count nothing.
+
+- **MZB-706** (a holder's copy of the deaths of a fight the replay resolved unwatched counts nothing; the build
+  lead's decision after MZB-705: "lose, never double"). When an arrival (a war party's, or a siege's round) is
+  resolved unwatched because no record answered it, the party books it: `Party::unwatched`, a list of inclusive
+  epoch ranges, saved with the party. `casualties(copy)` and `release_before`'s Casualties guard drop a
+  BAND_CASUALTIES copy whose party and epoch fall in a range, with a log note ("unwatched"); the abstract resolve took
+  that fight's losses, so the copy adds nothing. The test of the double, at engine level
+  (`a_holders_copies_of_an_unanswered_walk_in_add_nothing_to_the_abstract_resolve`, mowzie_records.rs): the
+  walk-in of `a_raid_met_on_its_road_after_the_save` against a district that routs the raid (`Walls` with `rout`:
+  every raider held at the walls, half of them fallen, `abstract_loss_share`), the journal cut before the
+  walk-in's echo, the live session's 3 BAND_CASUALTIES records as a holder's copies. Band of 12: the abstract
+  resolve leaves 6; **before the fix the copies took 3 more (3 alive, the same fight counted twice: the
+  failing assertion reads `left: (3, 3) right: (6, 6)`)**, seen with the copy drop switched off for a hold let
+  go by the replay end and for one ended inside the replay, and with MZB-707's booking switched off for the
+  third shape; after the fix 6, and the second set of copies adds nothing. The control (`a_holders_copies_of_an_answered_walk_in_still_count_once`):
+  the journal ends at the echo, nothing is resolved abstractly, the copies count the 3 deaths, once.
+  - **Which copies reach `casualties`:** only `Obs::Casualties`. `ingest_copy` sends it to `release_before` and
+    `casualties(copy = true)`; `Materialized`, `RailPass`, `HavenChest` and `TrainPassed` do nothing beyond the
+    epoch fold, and every other kind goes to `ingest` (the arm that was there; a CHIEF_KILLED copy among them is
+    not a casualty and is not dropped, see MZB-708). No match was added, so there is no new arm to keep
+    exhaustive: the drop is a guard inside `casualties`, which the one arm reaches, and a second inside
+    `release_before`'s existing Casualties guard. A holder's REASSERT of a BAND_CASUALTIES is the one copy of a
+    fight's deaths.
+  - **The fields.** `Party::unwatched: Vec<(u32, u32)>` (bounded at `UNWATCHED_KEPT` = 8, the oldest first
+    out), the one new persisted field: a party row ends with its length and the pairs (var u64 each), inside
+    RTC11 (`RTCB`) and META 10 as they stand; **no version bump** (the brief). The booking cannot sit in `Held`:
+    `held` is in memory and a copy can come sessions later (the entity's chunk is loaded after another restart);
+    `the_unwatched_epoch_ranges_of_a_party_survive_a_save_whole_and_paged` pins whole and paged, and the engine
+    test applies the copies to a reloaded engine. The state hash moves with the field (sim-mowzie.json's seed
+    hashes). No new stat (a stat is a format change); the log note counts the drops for tests.
+  - **Which epochs.** The fight the last session may have run carried the party's own epoch when it walked in in
+    its bodies (`embodied`: MZB-461, `start_fight`'s `walked_in`), else the one its next body takes
+    (`next_epoch`: max of the epoch and the floor, plus 1). The party books `(epoch, fresh)` when it was in its
+    bodies at the arrival and `(fresh, fresh)` when it was not, so a copy of a death on the march at the party's
+    own epoch still counts when the band was not in view at the arrival. `next_epoch` cuts the ranges short at
+    the epoch it hands out (`r.1 = min(r.1, epoch - 1)`, dropped when empty): the engine's next body owns that
+    epoch and every later one, and a copy naming it is that body's own.
+  - **A live record for such an epoch counts nothing, and did not before.** After the replay end no party is in
+    its bodies (`replay_done` clears `embodied`, `spawned` and `recalled`), so a live BAND_CASUALTIES is a
+    straggler (`in_view` and `walk_off` both false), whatever the epoch: nothing changes and nothing is
+    booked for it. While replaying, a live record is the original of a death the session that went on
+    counted, and RP-59 ends the hold before it.
+    `a_live_record_of_an_unanswered_walk_in_counts_nothing_after_the_replay_end` pins it for the walk-in's
+    epoch, the next one and the party's own.
+
+- **MZB-707** (the lost window: an arrival the replay clock never reached). The jni test of MZB-705 does not
+  hold the arrival: the journal ends before it, the replay clock stops at the last record (before the arrival),
+  and the engine runs on from there to the hand-over's game time, where the arrival fires live at its own tick
+  with no player routed and resolves unwatched. That is the common crash, and booking only held arrivals missed it
+  (the jni test still saw the double). The engine now books **any** unwatched resolve of a war arrival or siege
+  round that happens after the replay end at a tick on or before the session's present, and the host tells it
+  the present: `Conflict::replay_present(Tick)`, called by rtsim-jni's `conflict::replay_end` right after
+  `replay_done` with the hand-over's game time (an in-memory field, `lost_until`; not a wire or page change).
+  An arrival after the present is this session's own and books nothing
+  (`an_arrival_after_the_sessions_present_books_nothing`). The three replay shapes the engine test covers are
+  the clock stopping before the arrival (this window), a hold let go by the replay end (`held_over`: the poll
+  may come after the present, so the hold keeps its own record of the plan and of whether the bodies were in
+  Minecraft), and a hold ended inside the replay at its slack (RP-48; `hold_ending`). `left_embodied` records
+  which parties were in their bodies at the end, because the end clears the flag before the arrival decides.
+  Fork taken: the engine learns the present through a new public method, not a changed `replay_done`
+  signature, so that the engine-level callers and the other modules are untouched; a caller that never tells
+  it keeps the held-arrival booking alone.
+  - **jni:** `conflict::a_holders_copy_of_the_deaths_of_an_unanswered_walk_in_counts_nothing_more` (the MZB-705
+    test, expectations changed: the books stay at n, 12, after the copies, which the host still finds new and
+    applies, once, `copies == (k, 0)` then `(k, k)`) and the control
+    `a_holders_copy_of_the_deaths_of_an_answered_walk_in_still_counts_once` (the journal cut at the echo:
+    `raids_watched` +1, no unwatched resolve, the copies take the books from 12 to 9, once).
+
+- **MZB-708** (what MZB-706 accepts as lost; the residual the build lead asked to record).
+  - **A unit that really died in Minecraft but survived the abstract resolve stays alive in the books.** The
+    resolve of an unwatched arrival and the fight Java ran are two different draws; the copy that would have
+    taken the real deaths is dropped, so a unit the fight killed and the resolve spared lives on in the
+    engine. A loss of realism, not a double (the band is never below what one account of the fight says; it
+    can be above what Minecraft saw). Added to replay-gate.md §6.1's "Losses accepted" (RP-171).
+  - **A copy of a death on the march, at the party's own epoch, is dropped** when the band was in its bodies at
+    the arrival: the range includes the walk-in's epoch, which is also the march's. The death was real and
+    is not booked. Lose, never double.
+  - **An epoch-reuse hole** if the engine's next body takes the lost fight's epoch before a copy arrives:
+    `next_epoch` cuts the ranges there, so a copy naming the fight's epoch counts as that body's. Needs a
+    holder to outlive an entire later fight of the same party; not guarded.
+  - **A CHIEF_KILLED copy is not dropped.** It reaches `chief_killed_by` through `ingest` (a boss band's chief
+    is reported as CHIEF_KILLED alone, never as BAND_CASUALTIES), guarded by the party's `chief` flag and the
+    op id. Whether an unwatched resolve that already took that unit leaves the flag set, so that a copy would
+    take the unit twice, is not examined here (the brief names the casualties copies); told to the lead.
+  - **Booked also when nothing was fought** (the unwatched arrival the last session also resolved unwatched):
+    no copy of that epoch exists then, so the booking costs nothing, except a march death of a band that was in
+    view (the item above).
+  - **Sims:** sim-mowzie.json moves in its hash details alone (the party row gained a field: the first seed
+    state of runs, the audit's lines "state ... against ...", 7 lines); sim-conflict.json moves in `wall_ms`
+    alone (its state hash, the restore check's two agree) and is left as committed.
+
+### M10b build records (MZB-720 to MZB-739)
+
+What the Java half of the march (M10b) decided, one commit per design step. The design's records are MZB-450 to
+MZB-484 and are not repeated. Everything here runs in `core`'s ConflictBridge; the plugin adds one method
+(`Maker.pack()`). The pure parts are plain classes (`MarchPath`, `MarchTable`, `MarchColumn`, `StopSquare`,
+`MarchTrim`) so JUnit runs them without a server; the bridge's own paths need a server and are M10c's GameTests.
+
+- **MZB-720** (`ConflictRecords.March` and `MarchPath`; step 1):
+  - The decode is `MarchPath.decode(buffer, at, size, waypoints, names)`. It returns null (the bridge counts
+    `malformed`) when the record is shorter than its own counts say (`72 + 8k + 16w`, computed in longs so a
+    hostile count cannot wrap), or when the phase is outside 1 to 5. A unit entry of a body the dictionary
+    does not name is left out, since no held body can carry that name; a dimension or culture the dictionary
+    does not name reads as null.
+  - Units are a `Map<String, Integer>` summed by body name, not fastutil: core's test classpath has no fastutil.
+  - `chartAt(t)` is MZB-454's rule and `at(t, topo)` folds the block centre (MZB-477). The interpolation runs in
+    doubles so a long segment cannot overflow an int difference; the result truncates toward zero as the
+    engine's `as i32` does.
+  - **MZB-479 as built:** the bridge uses `chartAt` as its frame (the head, the stop's distance tests) and
+    never maps through TP11's image. The frames agree away from a seam; across one the design's own trap
+    ("the seam gap") applies and M10c's moving test stays on a flat world.
+  - Pinned by `MarchPathTest` (10): the engine's bytes (`SAMPLE_MARCH_HEX` in `boundary.rs`, which has its own
+    Rust test), MZB-477's vectors, every phase's position, truncation, short records and bad phases.
+- **MZB-721** (the march map; step 2):
+  - `MarchTable` keeps the latest record per agent by unsigned revision; an equal or lower one is `STALE`; an
+    ENDED record drops the path, remembers the agent, and every later record of that agent is dropped (`ENDED`
+    outcome, `marchEnds`).
+  - It is cleared at a session start, at a session's end and while the conflict module is off. **The clear
+    on switch-off is not gated on `held`:** a march is kept with no party (the engine may say it before the
+    materialize that embodies the band), so a party-less table must still go. **Fork (recorded, not
+    built):** after a switch-off and on again the engine is not known to send every party again, so a band
+    still marching may have no map until its next change. It follows the lurks' and the design's convention
+    (nothing is saved); the cost is a column that does not turn and a stop that is not held until the next
+    record, and the trim's next run.
+  - Reads for GameTests: `march(agent)` and `marchEnded(agent)`, whether or not the party is embodied.
+  - Counters `marchRecords`, `marchStale`, `marchEnds`, `trimmed`, `walkIns`, `clamps`, reset at a session start.
+- **MZB-722** (the column; step 3):
+  - `MarchColumn.plan` splits each entry into stacks of at most two (a row), `ConflictBridge.ROW` (1.5) behind the
+    row before. A body whose maker says `pack()` (the raptor) gets one stack per member, a pair abreast at
+    plus and minus `PACK_SIDE` (3.0) and each pair `PACK_ROW` (6.0) behind the last. Both are PLACEHOLDERS.
+  - Met on the march (radius 0) the entries line up one behind the other in record order from the head, and the
+    war chief rides alone at the rear of all. The chief's stack flag is on the first entry of wave 0 only
+    (engine.rs); a later wave's entries never make a chief. On an arc each entry keeps its own column from its
+    arc point with its side the entry's spread, and its chief at the rear of its own rows.
+  - A stack's offset from the band's target is `-h * back + r * side`, `r = (-hz, hx)`. The heading at radius 0
+    is the record's bearing (MZB-457); on an arc it runs from the centroid of the arc points to the target.
+  - **A lurk keeps its rows' `back` and ignores their sides** (MZB-360 stands the stack at the spot). The steer
+    that follows a lurk's end is slightly imprecise (the offsets were zeroed while it held); accepted, since
+    the next steer lays the column out whole.
+  - `ConflictBodies.Maker.pack()` defaults to false (the interface stays functional) and `RaptorMaker` returns
+    true. `ConflictBodies.pack(body)` reads it. D4 holds: the plugin only says which body is a pack.
+  - Existing GameTests that count a band's stacks (ConflictGameTests, TalkNewsGameTests) see more stacks now;
+    fixing those assertions is M10c's.
+- **MZB-723** (the turns in `steer`; step 4): a steer takes the column's head as the front stack's anchor less
+  its offset (`frontStack`: the stack in play with the least `back`, the lower index on a tie), sets the
+  heading from the head to the new point (the old heading when the head is on the point), and gives every stack in
+  play its place in the turned column. `frontStack` is package-private so `Camps` can use it (MZB-726).
+- **MZB-724** (the stop; step 5): a band is stopped while the bridge holds a march of it in phase 3 or 4 in its own
+  level. On the 20-tick beat (`STOP_BEAT`, PLACEHOLDER) or at once when a record has just put it in the stop
+  (and when the band is first materialized):
+  - **The square** is two chunks inside (MZB-746; one when first built) the nearest player's entity-ticking edge
+    (`StopSquare.square`), from the server's simulation distance. **The nearest player** is the nearest non-spectator player in the level
+    within `STOP_REACH` (256) of the head. With no such player nothing is moved.
+  - **Walk-in** (pending stacks): a stack whose anchor is outside the square comes in where its line to the head
+    crosses it (Liang and Barsky; the head clamped into the square when the line never does), pulled half a
+    block inside, then walks on toward its old end clamped into the square. It is marked dirty for a test;
+    the square only picks the point, and it is placed only if the chunks it needs tick (MZB-471).
+  - **Clamp** (placed stacks): a stack whose walk end is outside its player's square has the end clamped into it
+    and walks on from where it stands, so it never walks out of the ticking area to be taken back to pending.
+  - A walk keeps the stack's arrival tick when it is still ahead (`st.t1`), else walks at the band's speed.
+  - Nothing is journaled (MZB-467). `StopSquareTest` (6) pins the geometry.
+- **MZB-725** (the trim; step 6; MZB-473 as built):
+  - A record that is not ENDED and not stale marks a held band `trimNow`. The trim runs at the end of that
+    tick, and on the 20-tick beat while the band is `trimDue`. `MarchTrim.pick` (pure, `MarchTrimTest` 6)
+    chooses the member.
+  - **Per body** (the war chief apart): `living` is the band's members that are alive, not dying, not removed,
+    over its stacks in play; `want` is the record's count for that body (0 when it lists none). The trim
+    cuts `living - want`, one at a time. Then the chief if the record lacks the chief flag.
+  - **Order of cuts:** a pending member first (it was never in the world), the rearmost stack's (by `back`,
+    then stack index, then slot index, each highest first); then, among placed stacks, the rearmost member
+    that no non-spectator player in the level is within `OUT_OF_VIEW` (64) of. A placed member with no body
+    (waiting for its refill) is unseen. When every member left to cut is in sight the band stays `trimDue`
+    and the trim tries again on the beat: nothing vanishes in front of a player.
+  - **A cut** is `despawn` (body, goals, lurk, extras), `alive` false, `trimmed` up by one; a stack left with
+    no member is unwatched and gone. It books nothing, is no survivor in a later BAND_DEMATERIALIZED, and
+    journals nothing.
+  - **Fork (conservative): the trim runs before the stop's walk-in and the placing, not after,** so a pending
+    member the books have lost is cut before it is placed, not placed in sight and then uncuttable.
+  - **Fork (conservative): a record whose dimension is not the band's, or is unnamed, trims nothing.**
+  - **A band cut to no member stays held** until the engine ends it, as a band whose members all died does:
+    `pass` marks its stacks gone, and no BAND_DEMATERIALIZED is sent by the trim (the engine sent the
+    record, so the engine knows).
+  - The trim is per member only on a record's arrival or on the beat while due (D1).
+- **MZB-726** (the homecoming; step 7; MZB-464 as built, and MZB-466's Java half):
+  - `Camps.reconcile` registers, before any line is played, every party a HAND_BACK line names whose party the
+    bridge holds at the line's epoch, whatever the line's outcome and whether the camp is in or declared at all.
+    The final `homeAt` loop no longer dereferences the site: with no site the band walks off from its front
+    stack's anchor, and a band with no stack in play (nothing to walk) is simply ended through `recallStep`.
+  - This closes a strand and a double: a band handed back to a camp that is not in answered every line stale,
+    and its puppets stood where they were for good (the engine had ended the party) beside the camp's body
+    the reconciler spawns when the camp comes in.
+  - **MZB-466's Java half:** `unbookedHomeDeaths` counts, and a debug log line names the body, party and epoch of,
+    each loss (casualty, chief, take) of a member of a band whose march the engine has ended while the bridge
+    still holds it and has not begun its homecoming. It books nothing more (the engine drops it).
+  - Needs a server to show; M10c's test list below covers it.
+  - **Amended by M10c (P3-1 of the M10b review):** a HAND_BACK whose `addFreshEntity` fails (another mod cancelled the
+    body's join) answers STALE and leaves the puppet standing, but the pre-pass still walked the band home, and the walk
+    despawned the puppet the line had kept. `Camps` now takes such a band out of the homecoming (`handBack` adds its
+    agent to a `staying` set that `reconcile` removes from the map before the `homeAt` loop). **Choice, the narrow form:**
+    only the failed add stays. Every other STALE with the camp in (no free place, Peaceful, a kind that made no body) is
+    a line with no puppet behind it, so nothing is stranded and the band still walks home; skipping the homecoming for
+    those would leave a band the engine has ended standing for good. The band that stays is the band of the next census's
+    orders (the existing `aHandBackWhoseJoinAnotherModCancelsKeepsThePuppetAndIsStale`, unchanged, asserts `!recalling()`).
+    **Wrong, reverted by MZB-751** (see "The M10 end review"): a STALE books nothing and the next order is a SPAWN, so the kept band was stranded.
+- **MZB-727** (`ConflictKit` for M10c; step 8): `march(MarchSpec)` scripts a BAND_MARCH (agent, revision, dimension,
+  faction, kind, phase, flags, muster end, units by body name, waypoints as `{x, z, tick}`); `trimmed()`,
+  `walkIns()`, `clamps()` and `unbookedHomeDeaths()` read the counters. It works on the stub and on the native engine.
+- **MZB-728** (the empty flagged BAND_MATERIALIZE; MZB-700's requirement): a BAND_FIGHT (8) record with m = 0 is
+  valid (`Materialize.emptyFight`, `MaterializeRecordTest` 4). The bridge places nothing, takes the wave as had on
+  a party at that epoch, ends no epoch (a new epoch's empty record does not capture the old party), and answers
+  BAND_MATERIALIZED with the command's flags and `spawned` 0. An empty record without the fight flag, or with
+  a negative count, is still BAND_SPAWN_REJECTED BAD_RECORD. **Fork (conservative):** the other refusals still
+  apply to an empty record (unknown dimension; a wave the party already had, a recalling party, or another
+  dimension: ALREADY_EMBODIED), since a repeat is a genuine repeat. The echo counts in `materialized`, the
+  bridge's own count of echoes.
+- **MZB-729** (the bodies at load; the question MZB-705 left to M10b): **nothing doubles or strands a puppet,
+  and M10 changes nothing there. No code was needed.**
+  - A puppet is persistence-required (`ConflictBodies.hold`) and carries an `AgentTag` (agent, epoch) that
+    is saved with it. The world can therefore hold puppets on disk: after a crash, or in a chunk that
+    unloaded while the session lived.
+  - Every tagged entity that joins a level is checked first (`BridgeEvents.onJoin`, highest priority,
+    "puppets never outlive a session"). With no session it is stale; with one, `ConflictBridge.admit` takes only
+    the exact live object of a live slot of a live party at that epoch (or an extra of one). Anything else is
+    cancelled, ejected and discarded, and counted in `staleDiscarded`. After a restart `byUuid` is empty, so
+    every saved puppet and every saved raptor follower is discarded as it loads. A saved copy of a puppet
+    the session despawned, requeued, trimmed or handed home (its `byUuid` entry is gone) is discarded the same way;
+    a saved copy of a puppet still in `byUuid` whose object was unloaded is not that object either.
+  - So the engine's book is the only account: a unit of a band the engine holds abstract is alive in the book and
+    has no body, and if the band is embodied again its bodies are new. A clean stop also leaves none (`capture`
+    despawns every puppet at `sessionStopping`).
+  - **The camp bodies are the other store, and are not puppets:** a camp's own bodies carry `CAMP_MEMBER`,
+    not `AgentTag`, are indexed on join (`Camps.onJoin`) and are reconciled by the census against the
+    ledger (M5, MZB-660, MZB-661). A slot set out whose body sat in an unloaded chunk is found by the next
+    census and taken by the ledger's TAKE or REMOVE line. M10's march sends no new line and creates no
+    new body, and the trim and the homecoming touch puppets only.
+  - **What M10 does touch, walked through** (a band killed or walked home while its puppets sat in an unloaded
+    chunk): the engine's HAND_BACK finds no live puppet (`puppetOf` wants a body that is in the world) and
+    plays the line as a spawn at the camp's edge (MZB-213); the party's remaining slots walk home or vanish
+    through `homeAt` and `recallStep` (despawning a removed body is guarded); the saved copy is discarded when
+    its chunk loads. One body of the unit results. A trimmed slot's saved copy is discarded the same way.
+  - **For M10c (not tested here):** a GameTest that builds a copy of a placed puppet from its saved NBT
+    (tag included) before (a) a trim cuts that slot, (b) a homecoming sends its band away, (c) the engine
+    ends its band, and then adds the copy to the level: it must be discarded (`staleDiscarded` up by one, no
+    entity with its UUID, the unit's count unchanged). `PuppetJoinGameTests` does this for a phase 1 group.
+- **MZB-730** (D1, D3, UR-1 and notices, audited): no per-member work was added to a tick handler. The march map costs a
+  decode and a put per record; the stop runs on the beat; the trim runs on a record and on the beat while due.
+  Two per-member loops exist from M3 and M5 and are not M10b's: `checkPlaced` visits a placed stack's members
+  each tick, and `pass` calls `watch` for each pending stack each tick (cheap while no member crosses a
+  chunk edge, one read per member). The column makes more stacks per band (nine members are about six
+  stacks), so the pending tests are per stack and per changed chunk, as before. No entity type and no
+  mixin was added (D3, MZB-474). Nothing new is saved anywhere (UR-1): the map and the counters are memory. No
+  chat, action-bar or title line is sent for any of it.
+- **MZB-731** (what M10c's GameTests must cover that M10b could not): tests 22 and 33 of the design, and:
+  - The column in the world: rows of two, a pack's pairs, the chief at the rear when met, the turns after a
+    steer (positions, not counters), placed only in ticking chunks and not flickering at a chunk edge.
+  - The stop: walk-in, clamp and a stack held inside the square for a player who stands still; the band's head
+    on the march's chart at a seam (kept on a flat world).
+  - The trim: nothing cut in sight, the cut on the beat once the hearer goes, pending first, a chief cut when the
+    record lacks one, an ENDED record trimming nothing, a record for another dimension trimming nothing.
+  - The homecoming: a HAND_BACK to a camp that is not in; a failed `addFreshEntity`; no site.
+  - The empty flagged BAND_MATERIALIZE: the echo (one BAND_MATERIALIZED, flags 8, aux 0, no BAND_SPAWN_REJECTED), then a
+    wave with the next number is accepted.
+  - MZB-729's saved-copy test, and MZB-466's counter in a GameTest.
+  - The existing stack-count assertions the column changes.
+
+### M10c build records (MZB-740 to MZB-749)
+
+What the march's GameTests (M10c) decided. The tests are in `core`'s `MarchGameTests` and `ConflictGameTests`, and
+in the Mowzie module's `MarchMowzieGameTests`; each logs what it compared on a `[gametest]` line.
+
+- **MZB-740** (fork; the branch's base): `feat/mowzie-m10` had no `ChunkWait` and no `tools/chunk_waits.py`; they are
+  on `origin/main` and on `feat/mowzie-m9`. Merging `feat/mowzie-m9` into the branch conflicts in `engine.rs` and
+  `mowzie_records.rs`, files M10c does not own, so that merge was not made (a `UU` in a file not edited is a stop).
+  **`origin/main` (d64f4eb8) was merged instead** (e94585ba): it conflicted only in this file (the design records), where
+  the branch's side was kept. The tests use `ChunkWait`'s two clocks as the brief says.
+- **MZB-741** (the stop's GameTests; step 3): the two stop tests run at simulation distance 8 and 4. A GameTest server's
+  simulation distance is changed for the test and restored when it ends, pass or fail. The square the tests compare
+  against is `ConflictBridge.stopSquare(pcx, pcz, simulationDistance)`, a public static that is the bridge's own
+  (`StopSquare.square`), so a change of the inset moves no test and the tests never restate the inset. `Stack` and `Party`
+  gained read-only accessors for the GameTests in step 2 (`trimDue()`, `back()`, `side()`, `chief()`, `anchorAt(now)`); none
+  of them changes a field.
+- **MZB-742** (the Mowzie march tests; step 8): four tests in `MarchMowzieGameTests`, all in a far place of their own
+  (`MowzieKit.Far`), none run by the implementer (the build rule). Test 32 is two methods, the in-view half
+  (`aBandWalksHomeInViewAndIsHandedBack`) and the out half
+  (`aGroveThatIsOutRecallsItsBandAndTheNextCensusSpawnsItsBodies`); test 28's Java half
+  (`aGroveThatComesInTakesWhatItsMarchLeft`) is one method with two groves 320 blocks apart (past Rule U's 160), one with a
+  player near when it comes in and one without, so the held removal and the free take are each proved in the same run;
+  test 22's march case is `aBandSetsOutAndComesHomeInPlainView`.
+- **MZB-743** (what "no body appears or vanishes" means in a test): a per-tick sampler (`MowzieKit.everyTick`, so at the end
+  of the tick) lists the jar's warriors of an area and its difference from the last tick. A vanishing and an appearance are
+  one swap when they are within two ticks and six blocks (a hand-off) of each other. The tests then say what each swap
+  must carry (health within 1.5, mask, weapon) and which events are left over (the taken or the spawned fourth body), and
+  that no event happens within 128 blocks of the player (test 22). The positions tolerances are four blocks for a body
+  handed back and six for a puppet made at a body's place (a puppet walks a tick between the two reads). If they prove too
+  tight on a first run the failure line holds the distance, so the tolerance can move on a measured value.
+- **MZB-744** (what could not be written, and why): the Umvuthi's puppet and its throne part are M11's, so no test here
+  puts the chief in a band that is handed back; test 28's engine half (the Invasion still reaches its target; pool plus
+  away stay at the cap) and the engine's count of the march belong to the rtsim-jni protocol tests; the "band met walking
+  home is embodied" variant of test 32 is covered in the engine by `tests/mowzie_march.rs`,
+  `a_band_met_on_the_road_either_way_is_placed_facing_its_march_and_steered` (its `home = true` pass), not by test 33
+  (core), whose `column()` sends no march record (corrected by MZB-755). Forms that move are driven by `ConflictKit.steer` at 0.2 blocks
+  a tick so the walk is in the test and the recall reads the real anchor; the stationary form is only written for the
+  out half's idle (40 ticks, about 8 blocks), where the puppets walk toward the centre over unloaded chunks.
+- **MZB-745** (sight; P2 and P3-4 of the Opus review of M10b): the trim (MZB-473) and the recall used one fixed 64 blocks
+  (`OUT_OF_VIEW`) as "a player can see it", so a band was cut, or sent home and gone, in plain view of a player 100 blocks
+  off (a warrior is tracked to 128). Both now ask one helper, `ConflictBridge.sightRange(entity, level)`:
+  `min(max(128, type.clientTrackingRange() * 16), serverViewDistance * 16)`, and a view distance of 0 or less (a GameTest
+  server's) is no bound. 128 is `SIGHT_FLOOR`: a warrior's and a raptor's tracking range, and vanilla's despawn distance.
+  `OUT_OF_VIEW` stays for what it also was, the distance at which a held puppet drops its target (`aim`).
+  - **Extras count.** A member is seen when its body or any of its extras (a raptor's four followers) is within the range
+    of a player: a leader out of sight with a follower in sight is not cut and not despawned.
+  - **Spectators are ignored on purpose** (P3-4), as vanilla's despawn ignores them (`getNearestPlayer` with no spectators):
+    a spectator beside a band does not keep it from being cut or recalled. The GameTest puts one 10 blocks from the band.
+  - The recall's `seen` and the trim's `inSight` are the same rule now; a recalled band stays while a player is anywhere
+    in the entity's sight, where it went at once for a player between 64 and 128 blocks off.
+  - GameTests (MarchMowzieGameTests): `theTrimAndTheRecallSeeAsFarAsTheServerSends` (a player at 100: nothing cut, still
+    due; a player at 170 and a spectator at 10: cut on the beat; a player at 100 and a BAND_RECALL: the band stays, goes
+    within a few ticks of the player's going) and `aRaptorWhoseFollowerAPlayerSeesIsNotCutAndIsOnceNoneIs` (leader at 140,
+    one follower held at 120, the others at 146: not cut; the follower moved out: cut on the beat with its pack). The
+    brief gave 100 and 160, and 66 against 50, for the old 64 rule; the numbers here are against the 128 the rule now is,
+    and the far player stands at 170 (past the 160 of the Umvuthi's tracking range of 10). The tests set the server's view
+    distance to 10 (restored when the test ends). No other band GameTest relies on a player between 64 and 128 blocks off
+    (the ones that recall use a one-tick timeout), so none is moved by the wider rule.
+- **MZB-746** (the stop's inset; P3-2 of the Opus review of M10b): the stop's square is **two chunks** inside the
+  entity-ticking edge, not one (`StopSquare.INSET`): chunks `pcx - r` to `pcx + r`, `r = max(0, s - 2)`. At a low
+  simulation distance a body a fight pushed a chunk off its place left the ticking area, and `checkPlaced` took the stack
+  back to pending (a flicker). The floor is the player's own chunk, so a simulation distance of 2 or less still leaves a
+  square (16 by 16 blocks). MZB-724's "one chunk inside" and the design texts' (`MOWZIE.md` §§4.16 and 7, the
+  ledger's MZ-17) are this record's now; `docs/boundary.md` is corrected. At the two distances the stop's GameTests
+  use, the square is 13 chunks across at 8 and 5 at 4. `StopSquareTest` (8) is rewritten for it, with the floor and
+  an every-distance check of the two-chunk margin; the stop's GameTest at 4 now asserts the east margin is exactly 32
+  blocks and the square's four sides are two chunks in (`aStoppedBandKeepsToTheSquareAtSimulationDistanceFour` is the
+  GameTest the review asked for), and the one at 8 asserts the same.
+
+- **MZB-747** (later waves fall in behind the column; P3-3 of the Opus review of M10b): `materialize` reset the party's
+  heading from the record's bearing and planned every wave from `back` 0, so a band's later wave met on the march
+  (radius 0) appeared on the first rows of the wave already out, bodies in bodies. Now a wave of a party that has a
+  stack still in play (not `GONE`, pending ones count) keeps the party's heading (`p.hdx`, `p.hdz`: a steer may have
+  turned it, and the rows out were laid by it) and its plan starts at `MarchColumn.after(rear.back, rearIsPack)`: one
+  `ROW` behind the rearmost stack, or one `PACK_ROW` when that is a raptor's. `MarchColumn.plan` has a fifth
+  argument, `start` (the old four-argument form is `start` 0), which moves the first row of a met plan and is not used
+  on an arc. Conservative choices: an arc wave is unchanged (each wave's stacks walk off their arc points on their own
+  and the existing GameTests place by them); the first wave's war chief stays at the rear of the first wave, not of
+  the whole band (the later wave's rows are behind it, and the chief is not moved); a gap behind stacks that died is
+  left (the rearmost is taken over every stack in play, not only the living, so a wave never lands on a dead
+  stack's rows). `MarchColumnTest` gains five tests (the next row after a grunt's and a raptor's, a later wave
+  starting behind the rows out, a later wave behind a raptor pair, a start of nothing and an arc ignoring it, every
+  unit kept with only the rows moved); no GameTest changes (`anEmptyFightWaveIsEchoedAndTheNextWaveComes` places a
+  second wave and asserts counts and states, not places).
+
+- **MZB-748** (the synthetic restarts tell the present; P3-5 of the Opus review of M10b): the host calls
+  `replay_present` right after `replay_done` (rtsim-jni's `replay_end`, MZB-707); the two synthetic restarts that end
+  a replay called `replay_done` alone, so the lost window (`lost_until`) stayed `Tick::ZERO` in them and a sim
+  could not see what the host's engine sees. `synth::CampRun::restart` and the CLI march sim's crash branch
+  (`sim/mowzie/march.rs`) now call `replay_present(now)` with the engine's own `now()` taken after the replay end:
+  with nothing to replay the hand-over's game time is the restart's own tick. `restart_to_replay` is left as it is
+  (the caller closes the replay and tells the present itself, as the engine tests do). Checked: `cargo test
+  --workspace --no-fail-fast` passes everywhere but three targets, `rtsim-host --test host`
+  (`gametest_worlds_open_in_the_host_with_their_saved_state`) and `rtsim-view --test fixtures` and `--test hashes`
+  (four tests), all on the committed GameTest saves under `crates/rtsim-view/tests/data`: "conflict: pages dropped",
+  "meta page version 7, this build reads 10". They are saves of an older format (the cause is the fixtures, not this
+  change, which touches no format or reader); regenerating them takes a GameTest run (M10a's page format moved META to 10), which this build does not do.
+  `cargo clippy -p rtsim-conflict -p rtsim-cli --all-targets -- -D warnings` is clean. `sim conflict` and `sim mowzie`
+  (all 13 runs, seed 7) regenerated to a scratch file and compared with `scenario/results/sim-conflict.json` and
+  `sim-mowzie.json`, `wall_ms` filtered out: **no difference**, so neither file is regenerated (an arrival after the
+  restart is after `now`, the present, and books nothing). Both runs exit 0 with every check ok. rustfmt was run
+  on the two files, both clean at HEAD.
+
+### The M10 merge of M8's head (MZB-750)
+
+- **MZB-750** (M10 at ed24fba4 merges feat/mowzie-m8 at d1570ea9). M8's head carries M9's check fixes (RP-133
+  to RP-136), M9's GameTest round fixes (MZB-675 to MZB-678), M8's chunk waits (MZB-693), and main at 4e694452
+  (slice N). Four files conflicted:
+  - `rtsim-conflict` `engine.rs`, the siege round's unwatched resolve. M10's `book_unwatched_hold` comes first,
+    then M9's `resolve` with the decision's tick (`self.hold_ending.unwrap_or(round)`, RP-136), as the
+    auto-merged arrival path already has it. `book_unwatched_hold` does not touch `hold_ending`.
+  - `tests/mowzie_records.rs`. Both sides appended tests at the end. M10's are kept, and M9's RP-135 and RP-136
+    block follows them. M9's two `Run` initializers take M10's `sight` from the run they copy (`r.sight`,
+    `like.sight`), as M10's own copies do.
+  - This file and docs/replay-gate.md. The newer M9 text is kept (RP-154, RP-155, the RP-134 bullet the M9
+    re-check corrected, and the M9 re-check section). In replay-gate.md's format table, M10's conflict row is kept
+    beside N's dragons row.
+
+  `cargo test -p rtsim-conflict` passes, and the Java compiles. `ConflictGameTests`'
+  `aNoticeWaitsForThePlayersNextEntryAcrossALogout` and `signalsInsideATerritoryAreCountedAndBatched` still have
+  unwrapped site-load waits, as they do on main. They are left as they are unless the round fails them.
+
+### The M10 end review (MZB-751 to MZB-759)
+
+An Opus review of M10's head (2443e915) found one P1, one P2 and seven P3s. Each fix is one commit; the lead owns P3-4
+(M11's design takes the deferrals that test list does not name).
+
+- **MZB-751** (P1-1: MZB-726's amendment was wrong, and is reverted). MZB-726 (P3-1 of the M10b review) took a band
+  whose HAND_BACK answered STALE out of the homecoming (`Camps.staying`, `removeAll(staying)`), on the reading that
+  the puppet stays, the next census orders "it" again, and the same line would then come once more. None of that is
+  how the engine behaves. A STALE books nothing (camp.rs, the answer loop: "a stale line books nothing"), the slot
+  stays Owed with no party (`go_home` cleared `s.party` and ended the party when it sent the HAND_BACKs), and the
+  next order for that slot is a SPAWN from `spawn_lines`, never the same HAND_BACK. The engine has no row for the
+  band any more and sends nothing more for it. So keeping the band stranded it:
+  - every puppet of the band stayed held in `byAgent` until the session ended, with no engine row (breaking MZB-463,
+    "no puppet outlives its band's row");
+  - the band's other slots were already handed back or spawned in the same reconcile, so the raptor pack and the
+    puppet stood beside the camp's bodies: a double in the same tick, and a second one when the next census spawned
+    the cancelled slot beside its own puppet;
+  - `home_open` never closed, so a stranded puppet's later death counted as unbooked.
+
+  `Camps` is back to the MZB-464 rule: every band a HAND_BACK names is walked home whatever the line's outcome (the
+  camp not in, a stale line, a failed `addFreshEntity`), the puppet whose join was cancelled with it. Nothing is lost:
+  the slot is Owed and the census respawns it (MZB-244). The commit that added `staying` (9f4197e5) changed only
+  `Camps.java` and this file, so the revert is its whole code change. **The GameTest** is renamed
+  `aHandBackWhoseJoinAnotherModCancelsKeepsThePuppetAndIsStale` to
+  `aHandBackWhoseJoinAnotherModCancelsIsStaleAndTheBandStillWalksHomeToOneBody` and says the true thing: after the
+  STALE it sends the SPAWN line for slot 0 the engine would send, then asserts the SPAWN is DONE, the party is gone
+  (`ConflictKit.party(agent)` null), both puppets are removed, and exactly one body (and one body in all) is held for
+  slot 0. Its waits are `waits.logic` on ChunkWait's tick clock (one `waits.chunks` for the site); no chunk
+  forcing is undone from a listener. **Why it fails at 2443e915** (read from the code, not run): the STALE puts the
+  band in `staying`, so `homeAt` never runs: the party stays in `byAgent` and `ConflictKit.party(agent)` is not null
+  ("the party is gone" never passes; the wait runs out its 2000 tick budget), and the puppets are not removed; the SPAWN
+  would also have made a body beside the standing puppet of slot 0. **Engine side:** nothing in camp.rs or
+  boundary.rs assumes the band stays after a STALE (`go_home` ends the party and zeroes `s.party` before any line is
+  sent, and a STALE answer is dropped by the answer loop); there is no Rust test of a STALE HAND_BACK to change.
+  The MZB-726 amendment above is corrected in place with a pointer here.
+- **MZB-752** (P2-1: the seam lap of `go_home`, MZB-456). No test failed when `go_home` took its start from
+  `party_pos` (the canonical cell) instead of `party_chart_pos` (the cell in the route's chart): all 812
+  rtsim-conflict and rtsim-jni tests passed. The CLI's `sim mowzie` seam check (`sim/mowzie/march.rs`) covers it, but it
+  is not a cargo test. `tests/mowzie_march.rs` now has
+  `a_band_routed_after_the_seam_walks_home_from_its_chart_position_not_a_lap_away`: an x-wrapped world (period 1200),
+  a raid whose target lies across the seam from the camp (x 900 to 100), the band walked out in 20 tick steps until its
+  chart cell and canonical cell differ, then routed by `chief_killed`; it asserts the way home is the chart cell then
+  the road it came by back to front, and its first segment is as long as the walk made. **Mutation:** with
+  `party_pos` at engine.rs:5025 the test fails, "the route home starts at the chart cell (1200, 1000), not the
+  canonical (0, 1000)": the route is `[(0, 1000), (900, 1000)]`, a first segment of 900 blocks for a walk
+  of 300 (the right route's first segment is the 300 blocks from (1200, 1000) back to the camp's x 900), and passes
+  with `party_chart_pos`.
+- **MZB-753** (P3-1: sight is horizontal). MZB-745's `seenBy` measured 3D (`pl.distanceToSqr(e)`). Vanilla's
+  tracking (`ChunkMap.TrackedEntity.updatePlayer`) uses the horizontal distance, so a player 150 blocks up and 50 out
+  still sees a band that the trim cut and the recall despawned. `seenBy` now asks `MarchTrim.withinSight(dx, dz,
+  range)`, `dx*dx + dz*dz <= range*range` on the ground plane (the one pure seam; `ConflictBridge` is not loadable in a
+  JUnit). `MarchTrimTest.sightIsMeasuredOnTheGroundPlaneNotInThreeDimensions` has the two cases: 50 out (a player high
+  above and close in horizontally) is in sight at 128, and 150 out at ground level is not; and the edge and a diagonal.
+  Not done (the review named it, the brief did not): each player's own view distance and the scaled tracking range
+  (`sightRange` still uses the server's view distance); visual only.
+- **MZB-754** (P3-3: the stop's inset in the design text). MZB-746 made the stop's square two chunks inside the
+  entity-ticking edge, and said the design texts were its now, but `MOWZIE.md` still said "one chunk inside" at
+  §2 (the custom-roll ledger's pending-stack row), §4.14's tunables table, §4.16's stop paragraph, §6's cost table, §7
+  test 34's walk-through, and the §8 MZ-17 row. All six now say two chunks. No other file keeps the old
+  inset: `docs/boundary.md` was corrected by MZB-746, and `StopSquare.java`'s comment is about why one chunk was not
+  enough.
+- **MZB-755** (P3-5: MZB-744's pointer was wrong). MZB-744 said test 32's "band met walking home is embodied"
+  variant is test 33. Test 33's `column()` sends no march record. The coverage is
+  `tests/mowzie_march.rs::a_band_met_on_the_road_either_way_is_placed_facing_its_march_and_steered`, whose `home = true`
+  pass meets a Home band, embodies it in one group and steers it along its segment. MZB-744's text is corrected in
+  place.
+- **MZB-756** (P3-6: a stale doc comment). The comment on `a_save_at_the_first_live_record_reads_no_held_raid_as_a_fight`
+  (`rtsim-jni/tests/protocol.rs`) said "A band going home is never seen"; MZB-457 made that false (`seen` meets a Home
+  band). The test still passes for the reason now written: `seen` waits for the replay end, and a sighting's
+  BAND_MATERIALIZE carries no BAND_FIGHT flag, so it is not read as the held raid's fight. Comment only. The file's
+  base is not rustfmt-clean, so it is not formatted.
+- **MZB-757** (P3-2 and P3-7, residuals, nothing built):
+  - *A later wave at radius 0* (MZB-747). The engine cannot reach it: `seen` always takes a new epoch, and that
+    epoch's materialize captures the old party. Only `ConflictKit` drives it, and only JUnit covers it. An arc wave
+    overwrites `p.hdx`/`p.hdz` of a party with stacks already out (ConflictBridge, in `materialize`); the next steer
+    recomputes the heading, so it is harmless. Not covered: a wave at radius 0 through a real engine, because no engine
+    path produces one.
+  - *Test 33's 150-block clause* (a fight whose target does not tick through to its end). Met in parts: the stop
+    GameTest's band C is clamped and holds at simulation distance 8 and at 4 (`MarchGameTests.aStoppedBandKeepsToThePlayersSquare`
+    and `...AtSimulationDistanceFour`). Not covered: a run in which the fight's target itself does not tick for the whole
+    fight, which needs a long GameTest with a player parked at the edge, and is left for the M10 acceptance round.
+  - The review's "not checked by tests, reasoned safe" items are unchanged: a HAND_BACK answer against the band's
+    BAND_DEMATERIALIZED cut with the camp in (only the camp-out case, camp.rs's `camp_out` path, is tested), a set-out
+    hand-off cut with a march, and CHIEF_KILLED copies after an unwatched resolve.
+
 ## MZB-760 Grove tribute parking
 
 Slice fix/grove-tribute-park, from fix/slice-u-b at a7616f51 (the U-b merge). RP-210's "Left" row
@@ -8483,6 +9415,168 @@ the stack under its op id and does not fail it).
   its goods earmarked; docs/replay-gate.md 4.4 and docs/choices-journal-barrier.md (RP-291's twin) say the
   same where they said the goods went back to the stock; MZB-767's "the grove needs no gate" says a kept
   FAILED moves nothing.
+
+## MZB-940 RP-318's second test fails by the IO lane's speed
+
+M10's merge head (49fef870, the slice merged with origin/main) failed
+`ack_never_resends::a_replayed_duplicate_refused_by_op_id_with_industry_off_leaves_the_queued_copy`
+(crates/rtsim-jni/tests/industry.rs, from slice R) when the whole `ack_never_resends` group ran serially
+in one process, at the final `conserves`: "world totals off by: create:crushed_raw_iron -224". It is not
+M10's, and no earlier test is needed. Rust, tests and docs; no Java.
+
+- **MZB-940** (the test saved its world where the IO lane's latency put the tick, and the off path of
+  an engine restart loses the station side of an odd number of exchanges):
+  - *Not M10, not the group.* The test alone, in a process of its own, failed 12 of 167 runs on this
+    branch. At origin/main's Rust (the mic-rtsim-uf worktree, no march records) it failed 2 of 15 runs
+    after `a_replayed_answer_acknowledged_is_sent_again_and_its_refusal_never_after`, the pair that first
+    looked guilty here; no pair is needed. The only state the tests share is the host (`host_with`,
+    crates/rtsim-host/src/java.rs:41, one `OnceLock` pool for the process), so a group run differs from a
+    single one only by IO lane latency, and a loaded machine makes that longer.
+  - *The harness.* After the loop that takes the pages at the step which writes X, the test waited with
+    `r.run("the pages", ...)`: it ticked the world until the engine confirmed the save, as many ticks as
+    the IO lane took (2,000 to 4,100 of them here), and only then saved the world (`w1`). The
+    P3-1 review of RP-259 had found this and fixed it for `lockstep_until_saved`
+    (its doc, tests/industry.rs, "Ticking until it was durable ran as many world ticks as the IO lane
+    took"); this rig did not have it. `w1` landed between ticks 50,400 and 52,600, so the window the two
+    restarts replay (X at 48,400 to `w1`) held two, or three, of train 1's station exchanges
+    (49,000: unload, 50,400: load, 51,800: unload, 53,200: load). Forcing `w1` later by idle ticks (80 runs,
+    0 to 7,900 of them, each run once): the books closed at every `w1` below 51,800 and failed at every one
+    from there on (51,800 twice, 51,900 twice), so for a given tick the result is the same.
+  - *The engine, not fixed.* With industry on in session 2 the same `w1` ticks close the books (the new
+    test `a_world_saved_after_three_later_exchanges_closes_its_books_with_industry_on`, `w1` 51,900): the
+    replay hears the train arrivals and decides each exchange again under its op, so the carriage result
+    meets its pending exchange. With industry off, `journaled` ignores every record but Java's answers
+    (crates/rtsim-jni/src/engine/industry.rs:701-706, `ignored` 8 to 18 in the link's stats), the
+    arrivals among them, so the engine decides none of the window's exchanges again, and the kept
+    IND_CARRIAGE_RESULT booked at the switch meets no pending exchange and returns
+    (crates/rtsim-industry/src/engine.rs:4157, `carriage_result`). The carriage side of each exchange is
+    in the world (the crashed session wrote it, the world applied it); the station side is the engine's
+    `held` booking (engine.rs:4022), kept in memory until the district's reconcile, and it is not
+    booked. An unload and a load of the same good cancel in the world's total, so a window of two
+    passes; an odd one leaves the world short by that exchange's request. In the failing runs the
+    mill's engine (district 2) shows `made_total` -6286 where the passing ones show -6510 (224 less
+    burned), no "station exchange with train 1" at 51,800 and "running" at 54,700 where the others
+    have 51,900. The 352 iron ingots of train 2's exchange at 52,800 leave `+352` the same way once it is in
+    the window. This is goods lost in the world, not a count: a carriage emptied and a chest never
+    credited. Nothing in M10 touches it.
+  - *The tests.* `wait_for_pages` (the wait `lockstep_until_saved` had, factored out) replaces the
+    ticking wait, so `w1` is the tick after X is answered whatever the load and the window holds no
+    exchange. The case moved into `twice` (tag, `late`, `off`); the RP-318 test is `twice(.., None,
+    true)`. The control above is `twice(.., Some(THIRD_EXCHANGE + 100), false)`. The off case at
+    the late tick, `a_world_saved_after_three_later_exchanges_closes_its_books_with_industry_off`, is
+    `#[ignore]`d with this id: run with `--ignored` it fails deterministically with the -224 above,
+    and it is the failing-first test of the engine fix below.
+  - *Open, for the build lead.* Whether the off replay keeps what the exchanges need (the
+    TrainArrived records and the state they decide against) the way it keeps answers (`KeptAnswer`, saved
+    with the link page, a page format change), or the engine books the station side from the carriage
+    result by remembering which district a train stood at, or an off restart over exchanges is accepted as
+    lossy (it is rare: the crash and the switch off at once, trains running between the last pages and the
+    crash). The first is the conservative one and the largest; none is made here.
+  - *Not checked.* Three other places wait for pages with `Rig::run("the pages", ...)`, ticking:
+    `replayed_answer`, `a_replayed_duplicate_leaves_the_copy_the_replay_decided_again_to_be_sent` and
+    `a_duplicate_restarted_off`. Each takes its pages at day 2 (tick 48,000) and then waits for an event
+    (a loot, X) before it saves the world, so the exchanges that fall inside the wait are in the window its
+    restarts replay, and the IO lane's speed could move them the way it moved this test's. The 24 other tests passed in
+    every serial group run on record, and their flake rates alone were not measured. Their wait cannot simply be
+    `wait_for_pages`: they ask for the save between ticks, so the engine has not taken it yet.
+  - *Checks.* The RP-318 test passed 40 of 40 alone and 120 of 120 in six processes at once (it failed 12 of
+    167 before); `cargo test -p rtsim-jni --test industry ack_never_resends -- --test-threads=1` passed twice (26
+    passed, 1 ignored, 54 and 63 s); the ignored test fails 5 of 5 with the -224. rustfmt is clean on tests/industry.rs.
+
+## MZB-941 Seven of M10c's march GameTests fail for the tests' own reasons
+
+M10's merge head (49fef870) failed seven core GameTests in `MarchGameTests`, all M10c's (MZB-741, MZB-742, MZB-744), in the
+core round on a fresh world (`target/m10m-core.log`): `themarchrecordmatchesthebodies`,
+`acolumnappearsinsidethetickingarea` and `...atten`, `astoppedbandkeepstotheplayerssquare` and `...atsimulationdistancefour`,
+`thependingarecutatonceandanendedorforeignrecordtrimsnothing` and `acolumnformsagainafterthemoduleisswitchedoffandon`. None is a
+fault of what main brought in (M8's lurk and held puppets, U-g, J6, U-h, MZB-760, the earmark). Java tests only; no production
+code changed, so there is no failing-first test: each is a wrong expectation of the test, and production does what its records say.
+
+- **MZB-941** (the first round the march tests ever ran in, read by the rows below):
+  - *They failed before the merge.* MZB-742 says the tests were written and "none run by the implementer (the build rule)", and
+    the records of M10 hold no round of them. The first rounds that ran them were M11c's, on M10's code plus M11's and none of main's
+    new changes (`feat/mowzie-m11` at 33d628e1, `MarchGameTests.java` identical to 1f200ee5's): `target/m11c-gt1-core.log` and
+    `m11c-gt2-core.log` there fail the same tests at the same checks, six of the seven both times (the pending test passed in
+    both). The 49fef870 round differs only in that one.
+  - *`theMarchRecordMatchesTheBodies`, "worst 1.60"* (the grid's position changes the figure only through the sign of an axis). The record's second leg began at tick
+    400, but the test sends its second steer at 460, after reading the turn: the column stood still for 60 ticks while the route
+    walked on, so the head trailed the chart by up to 1.2 blocks. The chart truncates toward zero (`MarchPath.chartAt`, "as the
+    engine's `as i32` does"), so on a negative axis its block leads the head by up to a block more, and the check measures to the
+    block's centre (0.5): 1.2 + 0.5 + the fraction read as 1.5 to 1.66 in three rounds (1.60, and 1.66 and 1.58 at M11c). The first leg,
+    on the negative x here, read 1.32 with no lag. Now the record holds the first leg's end from tick 400 to 460 (four waypoints, the
+    second at 460), as the steers do, and the tolerance is 1.75: 1.0 for the truncation, 0.5 for the centre, 0.25 for the ticks a steer
+    takes to be read (0.02 a tick, up to 7 ticks measured). With the lag gone the worst expected is about 1.3 on a negative axis and
+    0.6 on a positive one.
+  - *`aColumnAppearsInsideTheTickingArea` and `...AtTen`, "2 members moved back".* The check asked that no member be moved back
+    after the stacks came in. A body is placed 0.1 to 1 block inside the edge (the stack goes in the tick its last member is
+    inside, which the test also asserts), so any stroll or push takes one over it, and `checkPlaced` puts it back at its place in that
+    tick (`strays`, MZB-125: "a member out of it whose place still ticks is moved back"). Two bodies of twelve here, five and four at
+    M11c. What "stay in" means is that no stack goes back to pending: `flickers` (a placed stack seen not placed) and `requeued`
+    stay asserted at zero, each stack is still placed once, and the number moved back is logged (`members moved back`). The strays
+    count is not asserted. Everything in the test after that check has never run: the walk out and back in (each stack taken back
+    once, placed twice), the recalls and the envoy.
+  - *`aStoppedBandKeepsToThePlayersSquare` and `...AtSimulationDistanceFour`, "no place of W passed it either: -5168147.5".* W
+    appears outside the area and the square with its march not yet said, and its stacks are pending until the stop walks them in
+    (`walkIn` puts each anchor inside the square at the first beat: placed 3 ticks after the march). The sampler took the farthest east
+    from the tick the march was said, so it read W's own start, the chief's place `wx + 4.5` = -5168147.5, a place nobody walked to.
+    It now reads a stack's place once the stack has been placed (C's are all placed from the start, so its figure is unchanged,
+    -5168213.28 against the edge -5168208.0), and logs W's too (-3528784.50 against the edge -3528784.0 in the round on the fix: W's
+    walk-in puts the stacks at the square's edge, and the clamp keeps them off it by the half block of the chart; see the next
+    paragraph for what the round then found). The rest of the test after this check had not run (the casualty, the walk home).
+  - *The same two tests, the walk home ("stands 0.0 behind the point along the column (95.5 away)").* The first round on the fix
+    ran the tests on to this check, the first of a later part. The test sends the HOME march and the steer, then waits until each
+    stack of W has "arrived" (its place within 0.05 of its end), and reads the ends. The steer is read a step or more after it is
+    sent (2 to 7 ticks), and until then the stacks stand where the walk-in left them, which is arrived: the wait ended at once, on the
+    old ends, 95.5 blocks (31.5 at four) from the point. It now waits for the bridge's `steered` count to move first. The 0.02 the
+    check allows is the column's, and the test gives it nothing else to wait for.
+  - *`thePendingAreCutAtOnce...`, "7 ticks".* The check measured from the tick the record was sent to the tick the cut was seen,
+    and asserted at most 6. The cut is in the tick the record is read (the intake sets `trimNow` and the same tick's trim cuts a pending
+    member no one sees), but the read is the engine's: it comes a step after the order, and a step takes real time on a server that
+    ticks unthrottled: 2 ticks in each of M11c's two rounds (and 2 for the sibling test's chief in this round) and 7 in this one. `CutWatch`
+    samples every tick the tick the march count moved and the tick the cut count moved, and asserts they are the same tick. The
+    "no chief" check of `theTrimNeverCutsInSight...`, passing with 2 ticks, had the same fault (the same 6) and is changed the same way.
+  - *`aColumnFormsAgainAfterTheModuleIsSwitchedOffAndOn`, "the record was read (not within 6000 ticks)".* The test said a march
+    while the conflict module was off and waited for the bridge to read it, to prove it is not kept. The native engine never writes
+    it: `conflict::write_queue` (crates/rtsim-jni/src/engine/conflict.rs:1161, at 1f200ee5 as at 49fef870) clears the queue while the
+    module is off, as `NativeEngine.conflictCommand` says ("dropped unless the conflict module is on"), so no record reaches the
+    bridge and the count never moves. Only the stub engine writes it, and the bridge then reads it and `clearMarches` clears it that
+    tick. The wait is now 40 idle ticks and the check is the same, that no march is kept; the number of records read is logged (0
+    here, 1 on the stub). Production is right: an engine that has switched a module off decides and writes nothing for it. After that
+    wait the test had four steps left that have not run (the switch on, the column forming again, revision 1 kept, the recall).
+  - *The Mowzie module's round on the first fix commit (`target/m10fix-mowzie.log`, 80 tests, 6 failed) found the same kinds of fault in M10c's
+    and M10's tests there, none in production.* Core's helper, `ConflictKit.bodyName`, named only the goblin kit's three bodies, so a
+    survivor map of the Umvuthana read `{body 59=2}` and never equalled `Map.of(MowzieKit.WARRIOR, 2)`:
+    `aGroveThatIsOutRecalls...`, `theTrimAndTheRecallSeeAsFar...` and `aBandSetsOutAndComesHomeInPlainView` (also failed at M11c,
+    `{body 66=1}`). It now falls back to the name the journal's dictionary holds for the id. `aBandWalksHomeInViewAndIsHandedBack`
+    (also failed at M11c, 0.0 blocks; 2.08 here): the same unread steer as the stop test above, with a wait that "arrived" at the old
+    ends; it waits for `steered` to move first. `aHandBackWhoseJoinAnotherModCancels...` (also failed at M11c) ended by waiting for
+    `ConflictKit.party(agent) == null`, and `ConflictKit.party` throws when there is no party ("holds no party yet"): the gone party
+    that the wait is for made it fail; both reads there are `bridge().party` now (MZB-751's follow-up, which no round had run).
+    `aStrayInAHiddenChunkInsideTheRadiusIsListedOnceItsChunkShows` ("census 2 lists the stray as a chief (0)"): not explained, see
+    below.
+  - *Not explained.* That stray test lists no body in census 2. Main changed none of the Java under `conflict/`
+    (`git diff 44199d09 49fef870^2 -- neoforge/core/src/main/java/.../conflict` is empty), so the census and `Camps` are as they were at
+    M10; the test is M6's (MZB-660, MZB-661) and no round of M10's lineage is on record. It ran 24 s of wall time after its batch began
+    on a loaded machine (the create round of the lead's queue held 10 GB beside it). A census taken in the tick the chunk shows,
+    before its entities are listed, would clear `strayWatch` with nothing found (`Camps.java:981`); that is a guess, not seen. **It passed
+    in the Mowzie module's next round, on the fix head (9d123ab5, `target/m10m-mowziesmobs.log`: "All 80 required tests passed")**, with
+    nothing changed in what it exercises: a flake of load, not a fault the merge or M10 made, and still a flake until it has a cause.
+  - *Why production is right, in one line each.* The column and its bodies, the chart and the stop's square, the trim, and the
+    module switch did what their records say in all five; what each test asserted beyond that was the test author's guess, which the
+    first round could not have known (MZB-743 says as much of the tolerances: "if they prove too tight on a first run the failure
+    line holds the distance").
+  - *Not run.* Nothing past the first failed check of the five tests had ever run, so each could show a second fault in a later round;
+    two did (the stop tests' walk home above, and the Mowzie module's tests).
+  - *Rounds on the fix.* Core, fresh world, `target/m10fix-core2.log` at b7abd112: "All 154 required tests passed" (the first round on
+    the first fix commit, `m10fix-core-1.log`, failed the two stop tests at the walk home, 2 of 154, and passed the other five). The
+    figures it logged: the march walk's worst deviation 1.32 (was 1.60); members moved back 6 at simulation distance 10 and 1 at 8;
+    the cut in the tick the record was read (2 ticks after the send, both tests); W's farthest place once placed 0.5 inside the square's
+    edge, C's 5 inside it; the module switched off drops the order (0 records read in 40 ticks) and the column forms again. Mowzie's
+    Mobs, `target/m10fix-mowzie.log` on the first fix commit: 6 of 80 failed (above); `target/m10m-mowziesmobs.log` on 9d123ab5 (the
+    lead's queued round, which compiled the fix commits): "All 80 required tests passed". `cargo test -j 8 -p rtsim-conflict -p
+    rtsim-jni`: every binary passed; in the one run, `ack_never_resends::a_carried_answer_heard_with_industry_off_takes_its_queued_command`
+    hit its own 60 s wall-clock bound at load 38 (other sessions' builds) and passed alone in 3 s (MZB-940's family: a wall-clock
+    bound in a Rust rig, not touched here). `:core:test` passed.
 
 ## M11 Aloft
 
@@ -9337,6 +10431,20 @@ conservative option at its fork.
   `a_copy_of_a_rail_pass_counts_nothing` (the copy counts and holds nothing; the control, the same
   pass live, is counted and held; without the arm the copy counts 1).
 
+### A held line waited for, not five ticks (MZB-920)
+
+- **MZB-920** (a flake the SEC-1 lead found in U-b's mowziesmobs round on d59f00a4, carried by M10):
+  `UmvuthiGameTests.aChiefSpawnWaitsForThePlayerToLeaveOrSixThousandTicks` failed "two more held
+  spawns (0)". The check ran a fixed `thenIdle(5)` after the two reconciles, and that second the
+  server logged "Can't keep up! Running 51754ms or 1035 ticks behind" under outside load. The
+  reconcile's lines come back through the engine in wall time, so a server catching up runs its five
+  ticks before they arrive. The four places in the file that checked a held count five ticks after a
+  reconcile now wait for it (`ChunkWait.logic`, bounded by the test's tick budget): the chief SPAWN
+  hold, the held TAKE and REMOVE (`stillHeld`), the epoch's end and the REMOVE of a second body. The
+  SPAWN test's 6,000-tick clock starts at the tick both lines show held, not at the reconcile, since
+  `Camps.HOLD_MAX` counts from the hold: a late arrival would otherwise push D's answer past the
+  window. No source change.
+
 ### The M9 merge (RP-130 to RP-132)
 
 M9 (feat/mowzie-m9 at 2f3941d0) merged M6 at 1290d0b7 (788820c9), M7 at 39c819f1 (56c55d8d) and main;
@@ -9481,7 +10589,8 @@ MZB-690 to MZB-692 the build records.
     party's phase, kind and target (MZB-357).
   - Point 7. M8 adds nothing to `Faction`, so MZB-672's FactionRow pin followed M9's row: 200 + 24
     + 8 = 232 with M9's hunts unboxed (M9 at 7153b7fe), and since the second-pass merge of M9's
-    check fixes (42e8fcc3), which boxes them, 200 + 8 + 8 = 216 again (RP-155).
+    check fixes (42e8fcc3), which boxes them, 200 + 8 + 8 = 216 again (RP-155). M10 took the boxed
+    row at its step 1 merge (MZB-485).
 - **RP-154** (a replayed TRAIN_PASSED rolls nothing; the M8 fixes pass, P2; corrects RP-151): in
   `train_passed`, after the pass is counted (`passes`, and `passes_watched` when watched), `if
   self.outbox.replaying() { return; }` comes before the roll. A pass the replay brings back is

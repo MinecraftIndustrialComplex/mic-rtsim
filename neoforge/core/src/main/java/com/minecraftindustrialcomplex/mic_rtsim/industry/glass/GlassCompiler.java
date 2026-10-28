@@ -425,6 +425,8 @@ public final class GlassCompiler {
     private static boolean hasCapability(ServerLevel level, BlockEntity be) {
         BlockPos p = be.getBlockPos();
         BlockState s = be.getBlockState();
+        if (com.minecraftindustrialcomplex.mic_rtsim.industry.StockAccess.splitPair(s, p) != null)
+            return true; // a vanilla double chest's half across a chunk border: its own slots, and the chest's capability would read the other chunk (RP-215)
         if (level.getCapability(Capabilities.ItemHandler.BLOCK, p, s, be, null) != null
                 || level.getCapability(Capabilities.FluidHandler.BLOCK, p, s, be, null) != null
                 || level.getCapability(Capabilities.EnergyStorage.BLOCK, p, s, be, null) != null)
@@ -891,7 +893,10 @@ public final class GlassCompiler {
             if (level.getChunkSource().getChunkNow(pos.getX() >> 4, pos.getZ() >> 4) == null)
                 continue;
             Industry.GoodsCounter goods = ind.counter();
-            IItemHandler items = level.getCapability(Capabilities.ItemHandler.BLOCK, pos, null);
+            // A vanilla double chest's half across a chunk border is its own 27 slots (RP-215), as its node counts it.
+            IItemHandler items = com.minecraftindustrialcomplex.mic_rtsim.industry.StockAccess.splitHalf(level, pos);
+            if (items == null)
+                items = level.getCapability(Capabilities.ItemHandler.BLOCK, pos, null);
             if (items != null)
                 for (int s = 0; s < items.getSlots(); s++) {
                     var stack = items.getStackInSlot(s);
