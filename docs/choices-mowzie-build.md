@@ -11753,6 +11753,10 @@ rounds of phase 2 are the check, and what they found is recorded after them.
   ticks, and the rule had seen no player target for 400 ticks, so it rose at once and the target came 20 ticks after it. The player is
   now put back and waits to be the target while the flag is still set, and the flag drops after, so the rise waits on the target as the
   test's comment says. Not run yet.
+- **MZB-913** (round 2, test 36 of MZB-890 `aSecondPuppetsAnimationEndJournalsNothing`; MZB-890): "the puppet was gone (tick 823990) no later
+  than the BAND_DEMATERIALIZED (tick -1)". The wait saw S's BAND_DEMATERIALIZED and the next step read the tick the per-tick hook had
+  recorded for it, but the hook's listener may run after the sequence's in the tick the record is seen, so it was still -1. Two ticks are
+  waited before the read. The puppet was gone earlier, so "no later than" holds with the hook's tick. Not run yet.
 
 ## M12 S9
 
