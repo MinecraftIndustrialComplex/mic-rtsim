@@ -140,13 +140,24 @@ public final class BoundarySession {
      * same value). The engine acknowledges only pages a WORLD_SAVED confirmed, and WORLD_SAVED reports
      * {@code min(through, writtenThrough)}, so in the running game the clamp binds only on an
      * acknowledgement the engine takes without a world save (a test's, a stop's). The default is no
-     * clamp.
+     * clamp. The same value goes to the engine at the stop ({@link #closeEngine()}).
      */
     public void trimsClampedTo(java.util.function.LongSupplier writtenThrough) {
         this.writtenThrough = writtenThrough;
     }
 
     private java.util.function.LongSupplier writtenThrough = () -> Long.MAX_VALUE;
+
+    /**
+     * Ends the engine at a stop, naming what the journal's file on disk holds (the supplier of
+     * {@link #trimsClampedTo}, read now, after the stop's flush save has waited for the IO chain): the
+     * engine confirms its final save at once only if the file holds it, and leaves it pending otherwise,
+     * so that the restart from the older file rolls it back (slice U-i, docs/choices-journal-barrier.md
+     * U-i1). With no clamp set the file is taken to hold everything.
+     */
+    public void closeEngine() {
+        engine.close(writtenThrough.getAsLong());
+    }
 
     /** Called with each acknowledgement (the highest sequence the engine's saved pages include). */
     public void onAck(java.util.function.LongConsumer listener) {

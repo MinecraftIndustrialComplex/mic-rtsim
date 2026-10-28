@@ -195,6 +195,33 @@ class BoundaryProtocolTest {
     }
 
     /**
+     * Slice U-i (docs/choices-journal-barrier.md U-i1): the stop names what the journal's file on disk
+     * holds to the engine, from the same supplier the trim clamp uses, read at the stop and not before.
+     * The engine confirms its final save at once only if the file holds it; a stop whose last journal
+     * write was held names the older file's last sequence, and the final save stays pending.
+     */
+    @Test
+    void theStopNamesTheJournalsFileToTheEngine() {
+        StubEngine e = stub(StubEngine.Pages.EMPTY, StubEngine.DEFAULT_CAPACITY);
+        BoundarySession s = new BoundarySession(e, new Journal(), 0, time);
+        long[] onDisk = {0};
+        s.trimsClampedTo(() -> onDisk[0]);
+        assertEquals(Long.MIN_VALUE, e.closedWith(), "not closed yet");
+        onDisk[0] = 41; // the file landed after the clamp was set: the stop reads it when it stops
+        s.closeEngine();
+        assertEquals(41, e.closedWith(), "the file's last sequence, as the supplier gave it at the stop");
+    }
+
+    /** With no clamp set (a session with no journal file to name) the stop takes the file to hold everything: the final save is confirmed at once, as before U-i. */
+    @Test
+    void aStopWithNoJournalFileNamedTakesItToHoldEverything() {
+        StubEngine e = stub(StubEngine.Pages.EMPTY, StubEngine.DEFAULT_CAPACITY);
+        BoundarySession s = new BoundarySession(e, new Journal(), 0, time);
+        s.closeEngine();
+        assertEquals(Long.MAX_VALUE, e.closedWith());
+    }
+
+    /**
      * The session starts the engine with the world's next observation sequence, so the engine opens the
      * page generation the world's journal file holds (P29): the journal's {@code nextObsSeq} as it was
      * restored from the world's save.
