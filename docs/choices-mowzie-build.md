@@ -9388,6 +9388,66 @@ M10's, and no earlier test is needed. Rust, tests and docs; no Java.
     167 before); `cargo test -p rtsim-jni --test industry ack_never_resends -- --test-threads=1` passed twice (26
     passed, 1 ignored, 54 and 63 s); the ignored test fails 5 of 5 with the -224. rustfmt is clean on tests/industry.rs.
 
+## MZB-941 Seven of M10c's march GameTests fail for the tests' own reasons
+
+M10's merge head (49fef870) failed seven core GameTests in `MarchGameTests`, all M10c's (MZB-741, MZB-742, MZB-744), in the
+core round on a fresh world (`target/m10m-core.log`): `themarchrecordmatchesthebodies`,
+`acolumnappearsinsidethetickingarea` and `...atten`, `astoppedbandkeepstotheplayerssquare` and `...atsimulationdistancefour`,
+`thependingarecutatonceandanendedorforeignrecordtrimsnothing` and `acolumnformsagainafterthemoduleisswitchedoffandon`. None is a
+fault of what main brought in (M8's lurk and held puppets, U-g, J6, U-h, MZB-760, the earmark). Java tests only; no production
+code changed, so there is no failing-first test: each is a wrong expectation of the test, and production does what its records say.
+
+- **MZB-941** (the first round the march tests ever ran in, read by the rows below):
+  - *They failed before the merge.* MZB-742 says the tests were written and "none run by the implementer (the build rule)", and
+    the records of M10 hold no round of them. The first rounds that ran them were M11c's, on M10's code with none of main's
+    changes (`feat/mowzie-m11` at 33d628e1, `MarchGameTests.java` identical to 1f200ee5's): `target/m11c-gt1-core.log` and
+    `m11c-gt2-core.log` there fail the same tests at the same checks, six of the seven both times (the pending test passed in
+    both). The 49fef870 round differs only in that one.
+  - *`theMarchRecordMatchesTheBodies`, "worst 1.60"* (the grid's position changes the figure only through the sign of an axis). The record's second leg began at tick
+    400, but the test sends its second steer at 460, after reading the turn: the column stood still for 60 ticks while the route
+    walked on, so the head trailed the chart by up to 1.2 blocks. The chart truncates toward zero (`MarchPath.chartAt`, "as the
+    engine's `as i32` does"), so on a negative axis its block leads the head by up to a block more, and the check measures to the
+    block's centre (0.5): 1.2 + 0.5 + the fraction read as 1.5 to 1.66 in three rounds (1.60, and 1.66 and 1.58 at M11c). The first leg,
+    on the negative x here, read 1.32 with no lag. Now the record holds the first leg's end from tick 400 to 460 (four waypoints, the
+    second at 460), as the steers do, and the tolerance is 1.75: 1.0 for the truncation, 0.5 for the centre, 0.25 for the ticks a steer
+    takes to be read (0.02 a tick, up to 7 ticks measured). With the lag gone the worst expected is about 1.3 on a negative axis and
+    0.6 on a positive one.
+  - *`aColumnAppearsInsideTheTickingArea` and `...AtTen`, "2 members moved back".* The check asked that no member be moved back
+    after the stacks came in. A body is placed 0.1 to 1 block inside the edge (the stack goes in the tick its last member is
+    inside, which the test also asserts), so any stroll or push takes one over it, and `checkPlaced` puts it back at its place in that
+    tick (`strays`, MZB-125: "a member out of it whose place still ticks is moved back"). Two bodies of twelve here, five and four at
+    M11c. What "stay in" means is that no stack goes back to pending: `flickers` (a placed stack seen not placed) and `requeued`
+    stay asserted at zero, each stack is still placed once, and the number moved back is logged (`members moved back`). The strays
+    count is not asserted. Everything in the test after that check has never run: the walk out and back in (each stack taken back
+    once, placed twice), the recalls and the envoy.
+  - *`aStoppedBandKeepsToThePlayersSquare` and `...AtSimulationDistanceFour`, "no place of W passed it either: -5168147.5".* W
+    appears outside the area and the square with its march not yet said, and its stacks are pending until the stop walks them in
+    (`walkIn` puts each anchor inside the square at the first beat: placed 3 ticks after the march). The sampler took the farthest east
+    from the tick the march was said, so it read W's own start, the chief's place `wx + 4.5` = -5168147.5, a place nobody walked to.
+    It now reads a stack's place once the stack has been placed (C's are all placed from the start, so its figure is unchanged,
+    -5168213.28 against the edge -5168208.0), and logs W's too. The rest of the test after this check has not run either (the
+    casualty, the walk home).
+  - *`thePendingAreCutAtOnce...`, "7 ticks".* The check measured from the tick the record was sent to the tick the cut was seen,
+    and asserted at most 6. The cut is in the tick the record is read (the intake sets `trimNow` and the same tick's trim cuts a pending
+    member no one sees), but the read is the engine's: it comes a step after the order, and a step takes real time on a server that
+    ticks unthrottled: 2 ticks in each of M11c's two rounds (and 2 for the sibling test's chief in this round) and 7 in this one. `CutWatch`
+    samples every tick the tick the march count moved and the tick the cut count moved, and asserts they are the same tick. The
+    "no chief" check of `theTrimNeverCutsInSight...`, passing with 2 ticks, had the same fault (the same 6) and is changed the same way.
+  - *`aColumnFormsAgainAfterTheModuleIsSwitchedOffAndOn`, "the record was read (not within 6000 ticks)".* The test said a march
+    while the conflict module was off and waited for the bridge to read it, to prove it is not kept. The native engine never writes
+    it: `conflict::write_queue` (crates/rtsim-jni/src/engine/conflict.rs:1161, at 1f200ee5 as at 49fef870) clears the queue while the
+    module is off, as `NativeEngine.conflictCommand` says ("dropped unless the conflict module is on"), so no record reaches the
+    bridge and the count never moves. Only the stub engine writes it, and the bridge then reads it and `clearMarches` clears it that
+    tick. The wait is now 40 idle ticks and the check is the same, that no march is kept; the number of records read is logged (0
+    here, 1 on the stub). Production is right: an engine that has switched a module off decides and writes nothing for it. After that
+    wait the test had four steps left that have not run (the switch on, the column forming again, revision 1 kept, the recall).
+  - *Why production is right, in one line each.* The column and its bodies, the chart and the stop's square, the trim, and the
+    module switch did what their records say in all five; what each test asserted beyond that was the test author's guess, which the
+    first round could not have known (MZB-743 says as much of the tolerances: "if they prove too tight on a first run the failure
+    line holds the distance").
+  - *Not run.* Nothing past the first failed check of the five tests has ever run, so each may show a second fault in a later round.
+    The log of the 49fef870 round ends each test at its first.
+
 ## M11 Aloft
 
 (none yet)
