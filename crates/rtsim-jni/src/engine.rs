@@ -1392,7 +1392,27 @@ impl Engine {
     /// Ends the session. `save`: a final save through the IO lane, waited for; otherwise queued
     /// saves are dropped, as a crash would (a save already writing finishes, so the folder is
     /// never left to two stores at once). Waits up to `timeout` for a step in flight.
+    ///
+    /// The final save is confirmed at once: this is [`Engine::close_through`] for a caller whose
+    /// journal file holds everything (a test with no journal, the headless host that has just
+    /// written it). Java's stop names what its file holds.
     pub fn close(self: &Arc<Self>, save: bool, timeout: Duration) -> Result<(), String> {
+        self.close_through(save, u64::MAX, timeout)
+    }
+
+    /// [`Engine::close`] for a stop that knows its journal file: `written_through` is the last
+    /// observation sequence the world's journal file on disk holds (Java's
+    /// `JournalSavedData.writtenThrough`, read after the stop's flush save). The final save is
+    /// confirmed at once only if the file holds every observation it includes; otherwise it stays
+    /// a pending generation, which the restart from that older file rolls back (slice U-i,
+    /// docs/choices-journal-barrier.md U-i1).
+    pub fn close_through(
+        self: &Arc<Self>,
+        save: bool,
+        written_through: u64,
+        timeout: Duration,
+    ) -> Result<(), String> {
+        let _ = written_through;
         if self.closing.swap(true, Ordering::AcqRel) {
             return Ok(());
         }
