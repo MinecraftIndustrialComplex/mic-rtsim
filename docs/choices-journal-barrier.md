@@ -763,7 +763,22 @@ ignores its argument); the text of each failure is in U-i5.
 | U-i5 | **Failing first** (`09158f3e`: the tests and a `close_through` that ignores `written_through`; `fn close_kind` still returned `Script`). Three of the four new Rust tests failed (10 passed, 3 failed, with the other confirm.rs tests): `a_stop_whose_journal_write_was_held_leaves_its_final_save_pending` ("older-file: the final save is pending, not confirmed": current and confirmed were both `Generation { save_seq: 4, obs_seq: 11 }`, the stop's save confirmed at once); `a_restart_from_the_older_file_rolls_back_the_pages_of_a_stop_whose_journal_write_was_held` ("the start selected the generation the older journal file holds, not the final save's (11)": left 11, right 6, the pages ahead of the file, `EngineAhead`); `a_stop_of_a_new_world_whose_first_journal_write_was_held_rolls_back_to_empty_pages` (current and confirmed both `Generation { save_seq: 2, obs_seq: 6 }`). | The control tests (`..._confirms_it_at_once`, F8, F4) passed on that commit, as they should: they assert what U-h8 built and U-i keeps. |
 | U-i6 | **What it leaves, and what it costs (D1).** (1) **The viewer and the fork lag a held stop**: they read the confirmed generation, which is the last world save whose WORLD_SAVED came (as they lag one world save while running, U-h12). (2) **The restart after a held stop replays from the older file's save**: the same cost a crash in the hold has (U-h12's costs); the final save's own page writes (the IO of one save) are spent for nothing. (3) **A stop during the session's replay** still takes no save (the pages stay, RP-42), unchanged. (4) **A stop whose engine step did not finish in time** still saves nothing (the timeout path), unchanged. (5) A world older than both generations (a backup restored over a newer rtsim folder) is still `EngineAhead`, as before U-g. (6) Residual 11's other items stay: the unmarked files, an abandoned entry, NeoForge's IO chain (docs/replay-gate.md 9.6). | The hold only moves the journal's file; this moves the stop's pages with it. |
 
-{{RESULTS}}
+**Results (slice U-i on main at 8703d216, 2026-10-27 and 28).** The Rust workspace passes: 2,159 tests, 0 failed, 27 ignored (the
+four new `confirm.rs` tests among them, with F8 and the other 8 of that file), and clippy with `-D warnings` is clean. The first
+workspace run, made while the machine's load average was 45 to 65 with other sessions' rounds, had 9 failures, all in
+`industry.rs`'s `ack_never_resends` and all the same line, the test rig's own 60 s wall-clock limit ("the iron line's end: 60 s of
+wall clock", "the world's clock: 60 s of wall clock"); the module alone with 4 test threads passes (25 of 25), and the full run
+repeated on a quieter machine passes. Those tests restart with `close(true, ...)` and `close(false, ...)`, which name a file
+that holds everything, so U-i does not change their path. The core Java unit tests pass (313 test lines, 0 failed;
+`BoundaryProtocolTest`'s `theStopNamesTheJournalsFileToTheEngine` and `aStopWithNoJournalFileNamedTakesItToHoldEverything` among
+them). GameTests: core 144 passed (the pair `aStopWhoseJournalFileLacksItsFinalSaveLeavesItPending` and `aStopWhoseJournalFileHoldsItsFinalSaveConfirmsItAtOnce`
+among them: held, the next session opened pages through 2, the first save's, with the stop's through 3, and the engine's ledger
+was 5; landed, it opened pages through 3 and the ledger was 8), create 262 passed. **One round failed, and it was the test's
+fault:** the first core round had one failure, the held GameTest ("the start opened the pages of the older save, which the file
+holds: 0"): it took the older file before any world save had been made, so the pages it rolled back to were the empty ones and the
+engine was right. The test now makes a real first save (the same `RtsimTests.acknowledge` the other tests use) before the
+second transfer, and the round was run again. **No store or save format changed**, so the viewer's fixtures
+(crates/rtsim-view/tests/data) are unchanged and the viewer and host tests pass on them.
 
 ## RP-290: the switch as a journaled record, in its own slice U-e (slice U-c's design point)
 
