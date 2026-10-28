@@ -11757,6 +11757,11 @@ rounds of phase 2 are the check, and what they found is recorded after them.
   than the BAND_DEMATERIALIZED (tick -1)". The wait saw S's BAND_DEMATERIALIZED and the next step read the tick the per-tick hook had
   recorded for it, but the hook's listener may run after the sequence's in the tick the record is seen, so it was still -1. Two ticks are
   waited before the read. The puppet was gone earlier, so "no later than" holds with the hook's tick. Not run yet.
+- **MZB-914** (round 2, test 29b `aHeldTakeIsAnsweredStaleAsThePuppetComesHome`; MZB-823): "H's throne body has its own health still
+  (141.40073)". The throne body was set to 40, and the jar heals an Umvuthi out of battle 0.3 a tick (MZB-904): the puppet's walk home is
+  about 340 ticks, so the throne body came to 141 of 150, which `healthIs` (9 of slack) refused, and which could not be told from the
+  puppet's 150 that the merge writes. The throne bodies are now set to `THRONE_OWN` (10), the check is that H's is between that and 20
+  under the maximum (its own, healed on the way, not the merge's), and the merged check is unchanged. Not run yet.
 
 ## M12 S9
 
