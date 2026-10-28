@@ -94,7 +94,13 @@ public final class ArmBurnersDepotsFactory implements CorpusFactory {
         BlockPos chestA = at(h, 8, 7, 10), chestB = at(h, 10, 7, 10);
         BlockPos coalChest = at(h, 9, 2, 12);
         coalChute = at(h, 9, 1, 12);
-        BlockPos outLeft = at(h, 9, 2, 7), outRight = at(h, 8, 2, 7), funnel = at(h, 9, 2, 8);
+        BlockPos outLeft = at(h, 9, 2, 7), funnel = at(h, 9, 2, 8);
+        // The output pair is one store of 54 slots only inside one chunk (a vanilla pair across a chunk border is two
+        // inventories, RP-215, and a funnel's moves into a half are not counted): the yard lands at a random column of
+        // its chunk, so the right half goes on the side of outLeft that shares its chunk (SOUTH: x - 1, NORTH: x + 1).
+        boolean westIsOtherChunk = (outLeft.getX() >> 4) != (outLeft.getX() - 1 >> 4);
+        BlockPos outRight = westIsOtherChunk ? at(h, 10, 2, 7) : at(h, 8, 2, 7);
+        Direction outFacing = westIsOtherChunk ? Direction.NORTH : Direction.SOUTH;
         depotA = at(h, 8, 5, 10);
         depotB = at(h, 10, 5, 10);
         burnerA = at(h, 8, 4, 10);
@@ -120,7 +126,7 @@ public final class ArmBurnersDepotsFactory implements CorpusFactory {
         set(h, coalChute.below(), Blocks.STONE.defaultBlockState());
         smartChute(h, coalChute, Items.COAL, 1);
         // One store of 54 slots, listed as outLeft: the pair stays in one chunk (doubleChest asserts it, RP-215)
-        doubleChest(h, outLeft, outRight, Direction.SOUTH);
+        doubleChest(h, outLeft, outRight, outFacing);
         brassFunnel(h, funnel, Direction.SOUTH, Items.IRON_INGOT);
 
         cog(h, at(h, 8, 2, 10), Direction.Axis.Y);
