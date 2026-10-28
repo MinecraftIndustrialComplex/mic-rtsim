@@ -8,8 +8,9 @@
 //!   journaled records move them, so saves with none between them (the budget's pressure saves
 //!   while the world is quiet) share one.
 //! - **Open** (§10.5): after the pages are at the generation this session starts from, the archive
-//!   cuts every chunk tagged above that generation's serial before anything is written (a crash or
-//!   a rolled-back pressure save left them describing a past the journal replays), and the
+//!   cuts every chunk tagged above that generation's serial before anything is written (a crash,
+//!   a world save whose journal never landed or a rolled-back pressure save left them describing a
+//!   past the journal replays), and the
 //!   recorder starts from the stored dictionary, so numbers keep their meaning.
 //! - **Tapes** are turned on once every module has loaded: a module that restores by replaying its
 //!   inputs records nothing twice.

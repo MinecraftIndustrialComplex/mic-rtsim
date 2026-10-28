@@ -111,7 +111,11 @@ pub trait Infrastructure {
     /// An industry good's item name, for the prey table.
     fn good_name(&self, g: Good) -> Option<String>;
     /// Booked train legs in `regions` that overlap `[from, to]` (INDUSTRY.md §13.3: one lookup
-    /// per region, never a scan).
+    /// per region, never a scan), as booked at `from`: the caller decides at `from`, and a leg
+    /// that departed after it is not seen. Industry is not held while a raider replays its
+    /// window (docs/replay-gate.md §3.6), so its legs run ahead of the raider's clock; read as of
+    /// the decision, the replayed scan finds the train the live one found, and the raid keeps
+    /// its key (docs/choices-mowzie-build.md RP-181).
     fn trains_crossed(
         &mut self,
         _frame: u16,
@@ -523,7 +527,9 @@ impl Infrastructure for IndustryLink<'_> {
         let mut out: Vec<TrainSighting> = Vec::new();
         for &r in regions {
             for id in legs.in_region(u32::from(frame), r, from, to) {
+                // As booked at `from` (RP-181): a leg departed since is not seen.
                 if let Some(l) = legs.get(id)
+                    && l.depart <= from
                     && !out.iter().any(|s| s.train == l.train)
                 {
                     out.push(TrainSighting {

@@ -75,7 +75,7 @@ public interface SessionPlugin {
 
     /**
      * A TRANSFER_TO_CONTAINER of the engine was answered for the container at {@code pos} ({@code status} is
-     * {@code Obs.CommandResult}'s: APPLIED, DUPLICATE_OP or FAILED), after the answer was journaled and the items
+     * {@code Obs.CommandResult}'s: APPLIED, DUPLICATE_OP, NOT_LOADED or FAILED), after the answer was journaled and the items
      * went in. A plugin that told the engine about the container (the Umvuthana grove's chest, HAVEN_CHEST) tells it
      * how the container stands now. Called for every plugin, whoever sent the command.
      */

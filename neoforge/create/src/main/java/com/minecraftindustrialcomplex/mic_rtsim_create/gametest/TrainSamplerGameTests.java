@@ -298,6 +298,14 @@ public final class TrainSamplerGameTests {
                     ConflictKit.territoryRemoved(c.faction(), DIM);
             }
         });
+        // Create's RailwaySavedData cannot write a synthetic carriage (it has no contraption): an autosave while these
+        // trains run threw "MountedStorageManager is uninitialized" and crashed the server (RP-280). The overworld,
+        // whose data storage holds Create's railways, does not save until the trains are gone, as /save-off; this
+        // listener runs after the cleanup's, which takes them out.
+        var overworld = level.getServer().overworld();
+        boolean saving = overworld.noSave;
+        overworld.noSave = true;
+        ConflictKit.onEnd(helper, () -> overworld.noSave = saving);
         runs.add(new Run("curve at 1.4", 1.4, owner, false, base[0], base[1]));
         runs.add(new Run("curve at 2.0 with no owner", 2.0, null, false, base[0], base[1] + 250));
         runs.add(new Run("S-bend at 1.4", 1.4, owner, true, base[0], base[1] + 500));

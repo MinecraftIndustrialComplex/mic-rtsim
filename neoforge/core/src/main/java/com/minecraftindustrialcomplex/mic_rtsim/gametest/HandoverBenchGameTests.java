@@ -92,8 +92,8 @@ public final class HandoverBenchGameTests {
         }
 
         @Override
-        public SessionStart start(long lastAppliedCmdSeq) {
-            return delegate.start(lastAppliedCmdSeq);
+        public SessionStart start(long lastAppliedCmdSeq, long worldNextObsSeq) {
+            return delegate.start(lastAppliedCmdSeq, worldNextObsSeq);
         }
 
         @Override

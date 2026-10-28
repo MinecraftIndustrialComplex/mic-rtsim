@@ -49,6 +49,7 @@ public final class NativeEngine implements ScriptedEngine {
     static final int STAT_ACKED_SENT = 6;
     static final int STAT_NEXT_CMD_SEQ = 7;
     static final int STAT_ORDERS_PENDING = 8;
+    /** Saves confirmed: a world save counts at its WORLD_SAVED, not at its commit (P29, slice U-h); a test's save at once. */
     static final int STAT_SAVES_DONE = 9;
     static final int STAT_LAST_STEP_NANOS = 10;
     static final int STAT_AGENTS = 11;
@@ -56,7 +57,9 @@ public final class NativeEngine implements ScriptedEngine {
     static final int STAT_GAPS = 13;
     static final int STAT_COMMANDS_WRITTEN = 14;
     static final int STAT_SAVE_FAILURES = 15;
-    static final int STATS = 16;
+    /** Kept commands this session's start resent, every module's (RP-205). */
+    static final int STAT_RESEND_AT_START = 16;
+    static final int STATS = 17;
 
     // nPhase1Stats indexes.
     /** Phase 1 villages the engine knows. */
@@ -124,7 +127,7 @@ public final class NativeEngine implements ScriptedEngine {
     private static native ByteBuffer nBuffer(long handle, int which);
 
     /** out[0] = pagesObsSeq, out[1] = nextCmdSeq. 0 or a negative status (message: nLastError). */
-    private static native int nStart(long handle, long lastAppliedCmdSeq, long[] out);
+    private static native int nStart(long handle, long lastAppliedCmdSeq, long worldNextObsSeq, long[] out);
 
     /** Queues step {@code handover} on the background pool; returns at once. 0 or negative. */
     private static native int nSubmit(long handle, long handover);
@@ -145,7 +148,7 @@ public final class NativeEngine implements ScriptedEngine {
     /** The received log since the last drain ({@link NativeCodec}); an empty array if none, never null. */
     private static native byte[] nDrainReceived(long handle);
 
-    /** out.length >= 16; indexes STAT_*. */
+    /** out.length >= 17; indexes STAT_*. */
     private static native void nStats(long handle, long[] out);
 
     /** out.length >= PHASE1_STATS; indexes P1_*. */
@@ -354,9 +357,9 @@ public final class NativeEngine implements ScriptedEngine {
     // a call can never use a handle another thread is freeing.
 
     @Override
-    public synchronized SessionStart start(long lastAppliedCmdSeq) {
+    public synchronized SessionStart start(long lastAppliedCmdSeq, long worldNextObsSeq) {
         long[] out = new long[2];
-        check(nStart(live(), lastAppliedCmdSeq, out), "start");
+        check(nStart(live(), lastAppliedCmdSeq, worldNextObsSeq, out), "start");
         return new SessionStart(out[0], out[1]);
     }
 
@@ -946,6 +949,11 @@ public final class NativeEngine implements ScriptedEngine {
     @Override
     public long opDuplicates() {
         return stat(STAT_OP_DUPLICATES);
+    }
+
+    /** Kept commands this session's start resent, every module's: what Java's journal on disk did not hold (RP-205). */
+    public long resendAtStart() {
+        return stat(STAT_RESEND_AT_START);
     }
 
     @Override

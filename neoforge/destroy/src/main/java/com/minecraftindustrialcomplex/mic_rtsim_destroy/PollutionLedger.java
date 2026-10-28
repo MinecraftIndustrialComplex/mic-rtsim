@@ -4,6 +4,10 @@ import com.minecraftindustrialcomplex.mic_rtsim.MicRtsim;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.District;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.Industry;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.IndustryApi;
+import com.minecraftindustrialcomplex.mic_rtsim.industry.IndustryPlugin;
+import com.minecraftindustrialcomplex.mic_rtsim.journal.DurableOpRing;
+import com.minecraftindustrialcomplex.mic_rtsim.journal.DurableOpRings;
+import com.minecraftindustrialcomplex.mic_rtsim.journal.JournalDependent;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.HolderLookup;
 import net.minecraft.nbt.CompoundTag;
@@ -29,11 +33,21 @@ import java.util.TreeMap;
  * each total as a deposit the district produces (choice Q9), so the engine learns its rate as an output of
  * the box; a reconcile's delta writes the replayed pollution back ({@link DestroyPlugin#applyDeposit}).
  */
-public final class PollutionLedger extends SavedData {
+public final class PollutionLedger extends SavedData implements JournalDependent {
     public static final String FILE = "mic_rtsim_destroy_pollution";
 
     /** District id to (pollution type id to cumulative change). */
     final Map<Long, Map<ResourceLocation, Long>> totals = new HashMap<>();
+    /**
+     * The engine ops booked here, by op and good (docs/choices-journal-barrier.md RP-207): this file is not the file
+     * the pollution itself is in, so after a crash that kept one and lost the other the op is applied again, and
+     * the booking only if this file lacks it.
+     */
+    private DurableOpRing ring = new DurableOpRing();
+
+    PollutionLedger() {
+        ring.onChange(this::setDirty);
+    }
 
     private static final ThreadLocal<Deque<int[]>> BEFORE = ThreadLocal.withInitial(ArrayDeque::new);
     static long attributed;
@@ -109,10 +123,11 @@ public final class PollutionLedger extends SavedData {
     /**
      * Applies replayed pollution of {@code type} for a district: a level type to the level, a chunk type to
      * {@code chunk}. Returns what changed (Destroy clamps at each type's maximum and at 0), and books it to
-     * the district's total so the next sample agrees with the engine.
+     * the district's total so the next sample agrees with the engine, unless this file already booked
+     * {@code op} for {@code good} (RP-207).
      */
     @SuppressWarnings({"unchecked", "rawtypes"})
-    long apply(ServerLevel level, ChunkAccess chunk, long district, ResourceLocation typeId, long delta) {
+    long apply(ServerLevel level, ChunkAccess chunk, long district, ResourceLocation typeId, long delta, String good, IndustryPlugin.DepositOp op) {
         int n = (int) Math.max(Integer.MIN_VALUE, Math.min(Integer.MAX_VALUE, delta));
         PollutionType<Level> levelType = DestroyRegistries.LEVEL_POLLUTION_TYPES.get(typeId);
         long applied;
@@ -128,11 +143,52 @@ public final class PollutionLedger extends SavedData {
             PollutionHelper.changePollution(chunk, chunkType, n);
             applied = (long) PollutionHelper.getPollution(chunk, chunkType) - before;
         }
-        add(district, typeId, applied);
+        long key = op == null ? 0 : DurableOpRing.keyOf(op.id(), good);
+        if (op == null || !ring.contains(key)) {
+            add(district, typeId, applied);
+        } else {
+            rebooksRefused++;
+        }
+        if (op != null)
+            op.keepIn(ring, key);
         return applied;
     }
 
+    /**
+     * A resend of {@code op} that the deposit's ring refused: when this file booked it for {@code good}, the entry is
+     * kept again with the refusal's answer, as the deposit's ring keeps its own (RP-207).
+     */
+    void refused(String good, IndustryPlugin.DepositOp op) {
+        long key = DurableOpRing.keyOf(op.id(), good);
+        if (ring.contains(key)) {
+            restampedOnRefusal++;
+            op.keepIn(ring, key);
+        }
+    }
+
+    /** {@link #refused} entries stamped again. */
+    static long restampedOnRefusal;
+
+    /** {@link #restampedOnRefusal}, for the GameTests. */
+    public static long restampedOnRefusal() {
+        return restampedOnRefusal;
+    }
+
+    /** Bookings of an op this file already held (a crash kept it and lost the pollution): not booked again. */
+    static long rebooksRefused;
+
+    /** {@link #rebooksRefused}, for the GameTests. */
+    public static long rebooksRefused() {
+        return rebooksRefused;
+    }
+
     // ---- NBT ------------------------------------------------------------------------------------
+
+    /** Vanilla cleared the dirty flag before a write that failed: the next world save writes it again (docs/choices-journal-barrier.md U-g1). */
+    @Override
+    public void mic_rtsim$remark() {
+        setDirty();
+    }
 
     @Override
     public CompoundTag save(CompoundTag tag, HolderLookup.Provider registries) {
@@ -144,6 +200,7 @@ public final class PollutionLedger extends SavedData {
             ds.put(Long.toString(e.getKey()), t);
         }
         tag.put("districts", ds);
+        DurableOpRings.write(ring, tag);
         return tag;
     }
 
@@ -166,6 +223,8 @@ public final class PollutionLedger extends SavedData {
             }
             l.totals.put(id, m);
         }
+        l.ring = DurableOpRings.read(tag);
+        l.ring.onChange(l::setDirty);
         return l;
     }
 }
