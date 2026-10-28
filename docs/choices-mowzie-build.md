@@ -3987,6 +3987,14 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
   Handle<Party>) -> bool` is true for a war party (`kind.is_war()`) with a Track target in `Phase::Waiting`
   or `Phase::Fighting`. A player who comes on the lurk starts a watched fight there (`start_fight`, 3928,
   sets Fighting), and the lurk goes on through it: a train may pass mid-fight.
+  - Amendment (built, step 1): no engine path reaches Fighting with a Track target. `arrive`'s Track arm
+    comes before the arm that calls `start_fight`, and `wait_over` fights only a Siege. A player who comes on
+    a lurk is `seen` (the band is embodied and Waiting, its epoch bumped), not in a fight. `lurking` still
+    covers Fighting, as the design says, because it costs nothing and a later path to a fight there would
+    otherwise end no lurk; `tests/lurk.rs` forces the phase to test it. The conservative choice, taken
+    without asking.
+  - Amendment (built): the old arrive note "waits at the track by ..." is `lurk_start`'s note, "the raid
+    lies in wait by the track at (x, z)" (the party kind's name), so a Track arrival notes once.
 - **MZB-352** (ending a lurk): the same record with `AMBUSH_REMOVED`, sent first in `go_home` (3710) when
   `lurking(p)`, before it changes the phase or the target. Every end of a lurk passes through `go_home`, so
   that is the one place:
@@ -4000,8 +4008,21 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
 - **MZB-353** (resend): `resend_lurks()`, called from `resend_notices` (4625) after `replay_done`. It sends
   one AMBUSH_SPOT (flags 0) for each lurking party, in handle order. `session_start` drops agent commands,
   and Java's lurk table lives for one session, so a restart sends each lurk exactly once more.
+  - Amendment (built, step 1): `resend_lurks` first drops any AMBUSH_SPOT still queued (one a replayed
+    record made again), as `resend_notices` drops queued notices, so what is kept is what goes and a lurk
+    is never sent twice in a session. `lurk_start` and `lurk_end` are the only other pushers.
+  - Amendment (review A, P3): the host never reached that drop. `resend_notices_if_due` calls
+    `take_commands` first (rtsim-jni `conflict.rs`), which moves a replay-made AMBUSH_SPOT from the
+    engine's outbox into the link's queue, and the `retain` that followed dropped only Notices, so the
+    spot went out twice (harmless: same epoch, the later wins). The `retain` drops a queued
+    `Cmd::AmbushSpot` too (one that carries test names is a test's order and stays). The protocol test
+    is step 3's. `fix/replay-push`'s gate will also cover this (it holds the engine's commands until the
+    replay has caught up), but its `Outbox` has no `extend`, so when that branch merges `resend_lurks`
+    needs a push loop where it now calls `self.outbox.extend(lurks)`.
 - **MZB-354** (home): `home()`'s kept-row branch (about 3842) rewrites a Track target to `Pos(track)`, so a
   row kept after its party is home never reads as a lurk.
+  - Amendment (built, step 1): the removal went at `go_home`, so the kept row says nothing more. It keeps
+    phase Waiting with a bare-position target, and `lurking` is false for it.
 - **MZB-355** (TRAIN_PASSED): TrainPassed leaves `Conflict::later` for `train_passed(w, infra, tp, at)`.
   - The party is `Party::of_agent(tp.agent)`. It must exist, be `lurking`, and have `tp.epoch <=
     party.epoch`; otherwise `stats.stale`.
@@ -4011,11 +4032,55 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
     .below(1000) < ambush_milli` (500).
   - A hit calls `ambush` for `tp.train`. That is I24's attack (source Boss, strength 41.7, carry 64, cap
     10%, the industry's cooldown of 24,000 ticks per train per class, the loot destroyed).
-  - When it took more than 0 items, the engine sends `Cmd::TrainRobbed { faction: key, train }`.
+  - When it took more than 0 items (of any good: see MZB-356's review amendment), the engine sends
+    `Cmd::TrainRobbed { faction: key, train }`.
+  - Amendment (built, step 2): `ingest` passes `train_passed` the record's time as `at.max(now)`, and the
+    roll's stream slot takes that tick. The stale test is written as the design's: stale when the party
+    is gone, is not lurking, or `tp.epoch > party.epoch` (a watch bumps the party's epoch past the one
+    the spot carried, so an earlier epoch still counts). A Peaceful world never reaches the roll (its
+    bands are home, so the pass is stale), and `ambush`'s own `peace_held` arm stays as it was for the
+    on-the-way caller.
+  - Amendment (review B): the rtsim-jni protocol test
+    `a_pass_that_hits_robs_the_train_with_an_infrastructure_and_nothing_without_one` has the "with an
+    infrastructure" half back. A lurk is passed by 24 booked trains (1,280 of a declared good each) in a
+    session with the industry module on: 10 robberies, each of the party's carry (80, under a tenth of
+    1,280), 800 items in the industry's books, the engine's count and its TRAIN_ROBBED commands, and the
+    industry's cooldown on exactly the 10 trains robbed. The same passes in a session with the module off
+    are counted and rob nothing. With `with_infra` made to always hand `NoInfrastructure` the test fails at
+    "the roll hit on some of 24 passes, not all: 0". The good must be declared in Java's dictionary (an
+    undeclared one stalls the industry command queue, and the conflict queue behind it, so no
+    TRAIN_ROBBED goes out: found while writing the test).
 - **MZB-356** (ambush): `ambush` (3150) returns the items it took and takes the note's wording: "on the way"
   for the on-the-way caller, "by the track" for a lurk. Its Peaceful arm (`peace_held`) is unchanged.
+  - Amendment (built, step 2): `ambush` is `pub(crate)` and takes the wording as `how: &str`; it returns 0
+    for Peaceful and for no hit, so only a robbery of something sends TRAIN_ROBBED.
+  - Amendment (review A, P2): it returns the items of any good the cargo held, not those of the world's
+    goods alone. Cargo that maps to no good of the world's still goes to `ledger.unmapped` as before, and
+    still leaves the note's count and `items_from_districts` at the world's goods, but the train is short
+    and the roar goes (MOWZIE.md's cue is the cargo gone). `take_industry_loot` returns `(mapped, all)`;
+    the district raid reads `mapped`. A hit that found an empty cargo (0 items) sends none. The tests
+    are `a_robbery_of_nothing_sends_no_train_robbed` (skipped; empty cargo) and
+    `a_robbery_of_unmapped_goods_still_sends_train_robbed`.
 - **MZB-357** (persistence): nothing new. A lurk is derived from the party's phase, kind and target, and
   Track has been persisted since M7. The pages stay at M7's format.
+  - Amendment (built, step 2; review A adds the fifth): the new stats (`lurks`, `lurks_ended`, `passes`,
+    `passes_watched`, and `lurk_robberies`, the TRAIN_ROBBED sent) are appended to the saved stats list. That list is length-prefixed and read with `unwrap_or(0)`, so a page
+    written before them reads zeros and no reader breaks; the page layout is M7's, and a save is four
+    varints longer. Every state hash moves for that reason alone (stats are hashed with the state), so
+    `sim conflict` and `sim mowzie` regenerate with only their state hashes and the new stat fields
+    different.
+  - Amendment (built, steps 1 and 2): the Rust tests are `crates/rtsim-conflict/tests/lurk.rs`. The
+    design's `a_recall_does_not_end_a_lurk` and `a_lurk_goes_on_through_a_watched_fight` are one test
+    (`a_fight_at_the_track_is_still_a_lurk_and_a_session_turns_it_back_to_waiting`, the phase forced:
+    MZB-351's amendment). The cooldown test runs the real industry engine through `IndustryLink` with two
+    booked legs, so the 24,000 ticks per train per class are the industry's own.
+  - Amendment (review A, P3): three more lurk-end tests. `a_player_leaving_a_watched_lurk_recalls_it_
+    without_ending_it` (ledger 8: `player_left` on an embodied lurk, Waiting and forced Fighting, sends
+    one Recall and no removal). `a_seen_lurk_takes_passes_at_the_epoch_its_spot_carried` (a real
+    `Ev::Seen` from a player's area; passes at the spot's epoch and the band's count, one of a later epoch
+    is stale; the removal goes at the band's new epoch). `a_band_whose_bodies_die_at_the_camp_takes_its_
+    lurk_down_once` (the camp harness: a band at a track with every body left behind, killed by
+    CAMP_DEATH, ends through `member_died`'s `go_home`).
 - **MZB-358** (news): an ambush makes no news. An unwatched one has no witness (CL-D61). A watched one is
   seen in the world by its watcher, and the engine books no first-hand report for it, as it books none for
   a puppet's blows. The owner learns from the short train and the roar (MZB-366). A rout of a lurking party
@@ -4028,6 +4093,20 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
   - The table is cleared at session end.
   - The create plugin reads it through `RtsimApi.lurks()` (an unmodifiable view) and
     `RtsimApi.lurkBody(long agent)` (the live puppet, or null).
+  - Amendment (built, step 5): the table is a `LinkedHashMap<Long, Lurk>` by agent (iteration in begin
+    order), read through an unmodifiable view. It is dropped by agent, never by epoch (a `seen` lurk's passes
+    carry E against the party's E+1, MZB-371's list). It is cleared by `sessionStarted`, `sessionStopping`,
+    `sessionFailed`, `serverStopped` and `switchedOff`, and `idle()` counts it and the pending roars, so
+    the bridge does not sleep with either. The lurk's dimension is read from the names dictionary without
+    the level, so a spot for a level not loaded yet is kept. `lurkBody` answers a live puppet of a party that
+    is not recalling.
+  - Amendment (review C, item 4; compiled, not run): the bridge's `held` flag, which a switch-off reads to
+    decide whether there is anything to clear, was `!byAgent.isEmpty() || ...` without the lurks and the
+    pending roars. It is now `held = !idle()`, and `idle()` counts both (as the amendment above says it did), so
+    a module switched off with only a lurk or a pending roar left still runs `switchedOff`, which captures the
+    parties and calls `clearLurks()`. `trainCalled` returns at once when the conflict module is off (a module
+    that is off plays no roar for a train arriving). The `floors` map (a remembered floor y by agent) is
+    deleted with its three removals: nothing ever put into it or read it.
 - **MZB-360** (placement): a stack of a lurking agent's BAND_MATERIALIZE is placed at the spot, not on the
   arc.
   - Its y comes from a scan from track y + 4 down to track y - 8 for a block with a sturdy top face
@@ -4036,6 +4115,123 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
     z)`.
   - Then `restrictTo(spot, 2)` and the hold (MZB-361). A puppet already live when AMBUSH_SPOT comes is held
     at once and walks to the spot.
+  - Amendment (built, step 5): a lurking agent's stacks are anchored at the spot in `materialize` (the
+    anchor on the spot, offsets zeroed, the heading toward the track), not walked there. BAND_STEER is
+    ignored while the agent has a lurk. A new AMBUSH_SPOT for a live party re-anchors its stacks, and
+    releases and re-holds its puppets only if the spot moved.
+  - Amendment (the re-check's P2, the spot contract covered one geometry only; compiled and the JUnit run, the
+    GameTests not run): the engine's spot (`spot_toward`: 5 whole blocks along the line from the track point
+    to the den) is 5 from the rail and square to it only for a rail along an axis and a den square to it.
+    For a rail on a diagonal a due-north den puts it 3.5 off the rail; a den off the line by 4 puts it 4 off;
+    a den within a block of the line gives 5 along +x, which is on the rail for an east-west one. The numbers
+    of MZB-365's contract are about the body's distance to the rail's centre line, so Java now places the
+    body and the engine's spot only says which side of the rail:
+    - Core `RailAxes` (`Vec3 at(ServerLevel, Vec3 point)`: the rail's horizontal direction at the point, any
+      length or sign, or null), registered with `RtsimApi.registerRailAxes` (kept in `LurkSpots`). The core
+      cannot name Create; the create plugin registers `RailDirections`. Nothing registered, or null: the
+      engine's spot with the floor scan above, as before.
+    - `LurkGeometry.candidates` (pure doubles, so JUnit runs it: `LurkSpotsTest`) returns block centres, best
+      first. A body's centre can rest only on a block's centre (the navigation ends a wide body's path there,
+      the wide-body fix in MZB-361's amendment), so the point is the block centre whose distance to the rail's
+      centre line is within `LATERAL_SLACK` (0.4) of `SPOT_BLOCKS` and whose offset along the rail from the
+      track point is at most `ALONG_MAX` (1.5; the strike does not care where along the rail), nearest to both
+      first, ties by x then z. On the den's side first (the sign of the spot's offset from the line along the
+      normal `(-az, ax)`), then the other. A spot within `ON_LINE` (0.5) of the line takes the left-hand
+      normal first. Why 0.4: the block centres of a diagonal's side lie on lines `1/sqrt 2` = 0.707 apart,
+      so the nearest is up to 0.354 off for a line that misses the lattice (a JUnit test sweeps the track
+      point's fraction). Create's own rails run through block centres, so the real figures are exact: 5.0
+      for XO and ZO, 4.95 (7/sqrt 2) for PD and ND.
+    - `ConflictBridge.holdPoint` takes the first candidate that is standable (`standAt`: the column's chunk
+      ticks entities, a block with a sturdy top face between the track's y + 4 and y - 8 with the body's box
+      free above it, no heightmap fallback) plus the slot's offset in its stack. It is used at spawn
+      (`spawn` makes the body there: no walk) and by `holdLurks` for a body that has no hold point yet.
+      `Slot.holdAt` is set at spawn; `Slot.place` and `Slot.lag` use it, so `ConflictFollowGoal` (LEASH
+      6.0) does not walk a member back to the engine's spot. `ConflictKit.lurkHold(agent)` reads it (GameTests only; it was on `RtsimApi` until the second re-check).
+    - Refused: neither side has a standable candidate. At spawn `spawn` returns false, the stack is tried
+      again after `RETRY_FAILED` (100) ticks, and `lurksRefused` counts each; at `holdLurks` the body is
+      despawned and the stack waits `REQUEUE_COOLDOWN` (200). There was no refusal before: the choice is
+      new (a lurk with no floor beside the rail costs the party its ambush, as a stack with no floor costs
+      it its placing).
+    - Create's `RailDirections` scans the 3 x 3 x 3 blocks about the track point for `ITrackBlock`
+      pieces (`TrackShape.getAxes()`: XO, ZO, PD, ND, the slopes and the portal shapes have one axis, the
+      `CR_*` crossings two) and takes the line through a block's centre nearest the point, its horizontal
+      direction; null when the nearest line is farther than `ON_RAIL` (0.75), when a crossing is within it,
+      when two lines of different directions are as near as each other (`TIE` 0.05), or the chunk is not
+      loaded. Known gap: a bezier curve's middle has no block of its own, so a lurk on a curve keeps the
+      engine's spot (the contract holds there only as far as the engine's spot happens to be square to
+      the rail); a lurk at a curve's end piece uses that piece's axis.
+    - Tests (written and compiled, not run): `LurkSpotsTest` (JUnit, run: nine cases: square, oblique, on
+      the line, both diagonals over a sweep of fractions, order, no axis), `FrostmawGameTests` (an oblique
+      den, a den on the line, the den's side without a floor, neither side with a floor then the south laid
+      again: four tests with a stub `RailAxes` for an east-west rail), `RailDirectionsGameTests` (real
+      track blocks of each shape), and test 9's three variants in `RailFrostmawGameTests` (MZB-370).
+    - Forks: the hold point is the nearest block centre within 0.4 of 5.0, not exactly 5.0 (a body cannot
+      rest between blocks); "refused" is as above; the diagonal is covered by the JUnit geometry and the
+      provider's GameTest, not by a pass of test 9 on a diagonal rail (a diagonal fixture is a larger
+      (the contract is for the first body).
+  - Amendment (the second re-check's P3, embankments and cuttings, a curve's middle, a diagonal's corner;
+    compiled and the JUnit run, the GameTests not run):
+    - `standAt` takes a floor within `STAND_RISE` (2.0) of the rail's y, not the search of y + 4 down to y - 8:
+      a floor whose top is 3 or more above or below the rail is the rim of a cutting or the crown of an
+      embankment, a long walk from the rail and out of the strike's reach in the vertical (the swipe is 3D, and
+      the gate's 6.0 horizontal absorbs |dy| up to 2.5 only). Such a column is no candidate, so the other side
+      is tried, and with neither the lurk is refused as before. The no-axis path keeps `floorAt` (the heightmap
+      fallback of M5's placing), since there is no rail to be level with.
+    - With no axis known (a curve's middle, a crossing, no create plugin), `holdPoint` asks `RailAxes.trackNear(level,
+      point, radius)` (a default method, false) about the engine's spot at the track's height, with the radius the body's
+      half-width plus `LurkGeometry.RAIL_CLEARANCE` (1.5): 3.5 for the 4-wide Frostmaw, the least at which its box
+      could reach the rail's clearance. A rail within that is refused (the same refusal as a side with no floor);
+      none, and the engine's spot stands, so the no-plugin case works as before. Create's `RailDirections.trackNear`
+      scans the blocks within the radius (centre to point, horizontal) and 3 blocks of height for an `ITrackBlock`
+      or a `FakeTrackBlock`, the block Create fills a curve's span with (a bezier piece has an `ITrackBlock` only
+      at its two ends). The refusal is a fork: the alternative, placing a body near a curve by the nearest track
+      segment's direction, needs the bezier's tangent per segment (not read here), and a refused lurk is retried
+      (`RETRY_FAILED`) and only costs the party its ambush at that point of the line.
+    - A diagonal rail's centre line meets the corner of a square box, not its side, so the Frostmaw's 2.0 half-width
+      is 2.83 against the rail. The candidate window is asymmetric for a rail not along an axis: far slack 0.4
+      (unchanged), near slack `OBLIQUE_NEAR_SLACK` (0.17): 5.0 - 0.17 - 0.5 - 2.83 = 1.50, the clearance, by
+      construction rather than by the 4.95 the block lattice happens to give (1.61 clear). `LurkGeometry.nearSlack(axis)`
+      is the pick; an axis rail keeps the 0.4 both sides. Off Create's lattice (the track point not on the rail's
+      line) the den's side may have no block centre in the narrower window; the other side, the mirror lattice,
+      always has one (a JUnit sweep checks it), so the body goes there and the lurk is not refused for it.
+    - Tests (written and compiled, not run): `LurkSpotsTest` (the sweep above, three diagonal cases, `nearSlack`),
+      `FrostmawGameTests` (a cutting on the den's side stands the body on the other; no axis and a rail near is
+      refused with the radius and point asserted, then the engine's spot once none is near), `RailDirectionsGameTests`
+      (`trackNear` at a crossing, the corner of two lines, a fake track block, 3 blocks of height and bare ground).
+  - Amendment (the second re-check's P3, a refusal after the claim; compiled, not run): `spawn` computed the hold point
+    only in the branch with no camp body to hand off, and after `reconciler.claim`. A refusal there left the SET_OUT
+    it had claimed (the current slot's, when the claimed body was not a `Mob`) marked done for the tick, and the
+    hand-off branch never asked for a hold point at all: a camp Frostmaw a player can see was handed to a puppet,
+    which `holdLurks` then found no point for and discarded (its camp body already removed with its records on a
+    marker). Now `spawn` asks `holdPoint` first for every slot of a lurking party, and refuses the whole stack
+    (`lurksRefused`, the made bodies discarded, the earlier slots' claims released, `RETRY_FAILED`) before it claims a
+    camp body. The SET_OUT is then unclaimed, and the tick's end resolves it as the take it is for a line no
+    materialize claimed (§4.9: the engine gets fresh puppets when the party is seen later). The camp body a player
+    can see is still removed: taken, with its records on a marker, not handed to a puppet that is then discarded
+    unseen. (The third check found the first wording of this amendment, "nothing discarded", wrong.) The residual is
+    what a take loses against a hand-off: the body's health and crystal state (the fresh puppet starts whole); the
+    engine takes any found body of a `Left` slot whose party is not mustering (camp.rs, the census reconcile), so
+    only an engine check of the hold point before the set-out would leave the body in its camp. That is backlog; M8
+    makes no engine change. A hand-off with a lurk
+    sets the hold point at spawn (the puppet starts where the camp body stood and the hold walks it to the point).
+    `holdLurks` keeps its own refusal for a body that stood before its lurk was known (or whose spot moved), a body
+    a player may see as well; it despawns and requeues as before (the lurk arriving after a placed party is not a
+    case the engine makes: AMBUSH_SPOT precedes BAND_MATERIALIZE). Fork: the take instead of the hand-off is the
+    only outcome a refused hold can have, since the camp body cannot both stay in the camp and be handed over; the
+    alternative, keeping the SET_OUT claimed and answering it later, would hold the camp's count open for the
+    retry. Test (written and compiled, not run): `MowzieGameTests.aLurkRefusedAtItsPlacingClaimsNoCampBodyAndTheSetOutIsATake`
+    (no hand-off made, one taken, the camp holds nothing, no puppet stands, the refusal counted).
+  - Amendment (the third check's P3, `trackNear` refused falsely; compiled and the JUnit run, the GameTests not run):
+    `RailAxes.trackNear` took the point at the track's height and looked 3 blocks above and 3 below it, so a body that
+    stands on an embankment or a bank 2 or 3 above a lower line (or beside a lower line on a cutting's far side) was
+    refused for a rail it could not touch. It is now `trackNear(level, point, radius, height)`: `point` is the body's
+    feet, as `holdPoint` asks it (the floor `floorAt` finds at the engine's spot, no longer the track's y), and the
+    blocks that count are those from the feet's block up to `height` above it (the body's height: 4.0 for a Frostmaw);
+    a rail below the feet or above the head is not near. Radius unchanged (half the width and the rail clearance, 3.5).
+    `RailDirections.NEAR_HEIGHT` is gone. For the flat ground the tests lay the floor's top is the track's y, so the
+    point is the same one as before. Tests (written and compiled, not run): `RailDirectionsGameTests` (a rail at the
+    head's block counts, one above the head, one below the feet, and the fixture's own track 3 blocks under the feet,
+    do not), `FrostmawGameTests` (the point and the height asked).
 - **MZB-361** (Lurker): a new core interface, registered per entity type id with
   `RtsimApi.registerLurker(String entityType, Lurker l)` (an id string, as `BodyKinds.registerStandIn`
   takes, so it can be called in the plugin's constructor before the registries freeze). The core looks
@@ -4043,7 +4239,7 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
   ```java
   public interface Lurker {
       void hold(Mob mob, Vec3 spot);      // each server tick while it lurks
-      boolean strike(Mob mob, Vec3 at);   // start a strike at a carriage point; false if busy
+      boolean strike(Mob mob, Vec3 at, Vec3 motion); // start a strike at a carriage point that moves by motion a tick; false if busy
       void release(Mob mob);              // the lurk ended or the body left it
       void roar(Mob mob);                 // a train it robbed is gone
   }
@@ -4058,20 +4254,170 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
     - while a strike's swing runs (`getAnimation() == SWIPE_ANIMATION` and `getAnimationTick() <= 9`), it
       sets `yBodyRot`, `yRot` and `yHeadRot` to the strike's bearing.
   - `strike`: only in `NO_ANIMATION`. It records the bearing, turns the body, and calls
-    `AnimationHandler.INSTANCE.sendAnimationMessage(frostmaw, EntityFrostmaw.SWIPE_ANIMATION)`.
+    `AnimationHandler.INSTANCE.sendAnimationMessage(frostmaw, EntityFrostmaw.SWIPE_ANIMATION)`. The bearing
+    is toward where the point will be when the swing lands (MZB-365's second amendment), so it takes the
+    point's motion.
   - `release`: `setAlwaysActive(false)` and `clearRestriction()`.
   - `roar`: in `NO_ANIMATION`, `sendAnimationMessage(frostmaw, EntityFrostmaw.ROAR_ANIMATION)`. The jar
     plays its own roar sound in that animation.
   - Calling the jar's own animation is what MOWZIE.md §4.4 asks; the hold is new because the restriction
     does not hold an awake Frostmaw with a target (see the jar facts).
+  - Amendment (built, steps 5 and 7): the hold runs in `ConflictBridge.endOfTick` after the placings. A
+    slot's hold spot (`Slot.holdAt`) is set at its first hold from the placed x and z and the floor scan
+    (MZB-360). The core's `Lurkers.DEFAULT` restricts to the spot once (radius 2) and walks back beyond 4
+    blocks, strikes nothing and roars nothing. `FrostmawLurker` also sets `yBodyRotO` with the bearing and
+    keeps the strike's bearing in a `WeakHashMap`; it stops its navigation in any animation, so a swipe or a
+    roar is not walked out of. Registered in the plugin's constructor as
+    `RtsimApi.registerLurker("mowziesmobs:frostmaw", new FrostmawLurker())`.
+  - Amendment (review C, item 3; the GameTest is written and compiled, not run): the strike's bearing was
+    removed only in `release`, so it outlived its swing. `hold` pins the body to it during any plain swipe up
+    to tick 9, which includes the Frostmaw's own swipes at a player (the jar's `AnimationAreaAttackAI.tick`
+    turns the body to its target by up to 30 degrees a tick until the hit frame, and its area attack reads
+    `yBodyRot`): after one strike by a train, every later plain swipe at a player was held to the old
+    carriage's bearing and its 135 degree arc missed the player. Now `hold` removes the bearing as soon as the
+    animation is not a swipe, or is past `SWIPE_HIT_TICK`. A swipe-twice is not pinned and never was.
+    `aStrikesBearingDoesNotTurnTheFrostmawsOwnLaterSwipes` (mowziesmobs, batch `frostmaw_lurk_bearing`): a held
+    puppet strikes at a point east of it (yaw -90), the swing ends, a player (1000 health) stands 4 blocks west,
+    and at tick 8 or 9 of the first plain swipe at the player the body's `yBodyRot` is more than 90 degrees from
+    the strike's. Expected on the unfixed code: it stays at -90, and the test fails with "the swipe at the player
+    turned away from the strike's bearing -90.0 (yBodyRot -90.0, 0.0 degrees off it)" (pinned at the hold, or 30
+    degrees on at the worst before it). The 90 degree line is a guess at how far the jar's lookAt gets the body
+    in eight ticks: the 180 degree geometry makes the unfixed code fail by 60 degrees or more, and a fixed body
+    short of it would fail the test falsely; if the round shows that, lower it.
+  - Amendment (review C, item 4, D1; compiled, not run): the walk-back called `getNavigation().moveTo(spot)`
+    at every hold while the body was beyond `STAND`, a path search a tick for a body that was already on its
+    way. Now `hold` calls `moveTo`
+    only when the navigation is done, or its `getTargetPos()` is more than a block (squared distance 2.0) from
+    the spot's block, so one search serves the whole walk. A private `stop(Mob)` stops the navigation in the
+    swipe, other-animation and within-`STAND` branches as before (behaviour unchanged) and counts a live path it
+    drops (`nav.isDone()` false before the stop). `FrostmawLurker` keeps two counters, `searches` and `dropped`, and the core `Lurker` gains two
+    default methods, `pathSearches()` and `pathsDropped()` (zero for a Lurker that keeps no count), so the create
+    project's test reads them through `Lurkers.of(mob)` without naming a Mowzie class. The counters are
+    plugin-wide, not per body; the one test that reads them differences them over its hold. Test 9 logs the
+    held puppet's path searches and dropped paths per second (MZB-370's item 4 amendment). The body's own
+    goals search besides, and the jar's navigation (`MMPathNavigateGround`) may restart a path of its own: the
+    counters measure what the hold asked for, not the pathfinder's total. No threshold: a count, not a check.
+  - Amendment (the build lead's spot-distance choice, with a wide-body fix found writing it; compiled, not run):
+    - `STAND` is 0.5 (it was 1.5): the contract in MZB-365's fourth amendment. `Lurker.stand()` returns it.
+    - The walk-back aimed the navigation at the spot, and a wide body does not end a path on its target. A path's
+      last node is the box's corner and vanilla puts the body's centre `(int) (width + 1) * 0.5` past it
+      (`Path.getEntityPosAtNode`): 2.5 blocks for the 4-wide Frostmaw, against a spot at a block's centre. So a
+      walk back to the spot ended 2.0 blocks east and 2.0 south of it (toward the rail where the spot lies north
+      of the rail, as in test 9, and 2.8 blocks from the spot in any case). `hold` now aims at `spot - nodeOffset` on both axes (`(int) (width + 1) * 0.5 - 0.5`: 2.0 for the
+      Frostmaw, 0 for a body under a block wide), with accuracy 0 (`moveTo(x, y, z, 0, speed)`, the node itself,
+      not one short). The D1 test (no search while the navigation heads there) compares the navigation's target
+      block with that aimed block.
+    - A body that cannot get within `STAND` would search every tick. By my reading of the sources, not measured:
+      the Mowzie navigation finishes a path when the body is within 0.5 on each axis of the node's position (up to
+      0.71 off in a corner), its move control turns 7 degrees a tick (`new MMEntityMoveHelper(this, 7.0f)`) at a
+      speed attribute of 0.3, so it does not stop on a point and 0.5 is below what a walk leaves it at. A walk-back
+      is therefore searched at most once in `RESEARCH_TICKS` (10) ticks of one body (a game-time stamp by body, in
+      a weak map, dropped in `release`), and the figure test 9 logs (searches per second) shows the rate.
+    - Test 9 asserts where the body rests, not that it rests within `STAND` (MZB-370's amendment).
+  - Amendment (the re-check's P1, the hold lost to the jar's chase; compiled, not run): the core's `aim` gives a
+    held puppet the nearest player within 50 blocks, and the jar's `EntityFrostmaw.tick` then walks it to that
+    target every tick it is more than 5.5 blocks off (`getNavigation().moveTo(target, 1.0)`, 0.95 in the slam),
+    replacing the hold's path, while the hold looked again once in `RESEARCH_TICKS` (10): the puppet followed a
+    player to the rail. Inside the stand the jar's `getNavigation().stop()` each tick cleared the hold's path
+    and a fresh A* ran each tick. Fix: `EntityFrostmawMixin` wraps the three `PathNavigation.moveTo(Entity, double)`
+    and the three `PathNavigation.stop()` calls in `tick()` (counted in the jar by javap and cfr, `require = 3,
+    allow = 3`) with `@WrapOperation`; for a body that `FrostmawLurker.holds(f)` the chase is not made and the
+    stop is not made (`moveTo` returns false, as the jar reads a failed path). `holds` is a game-time stamp the
+    hold sets each tick it runs, good for 3 ticks (`HELD_FRESH`) and dropped in `release`, so a hold that lapses
+    without a release (a plugin or lurk table reset) frees the jar's chase again within three ticks, and a body
+    that is not held is never touched. While held the Frostmaw's `RandomStrollGoal` and `MoveTowardsRestrictionGoal`
+    are taken out of its goal selector (kept with their priority in the body's `Lurker.Memo`, put back by `release`; the second re-check's P2 below moved them from a weak map): the
+    stroll walks a body up to its restriction radius (2) from the spot's block, which is past `STAND` and toward
+    the rail. Not taken out: the jar's attack animations and their turn toward the target (a swipe at a player in
+    reach is the jar's own; the strike's bearing is MZB-361's amendment above). The 10 tick throttle stays: with
+    the chase gated it only limits repeated tiny searches when the body rests just beyond `STAND` (the navigation
+    ends a path within 0.5 on each axis, so a rest at 0.55 to 0.7 is possible; the round decides whether a rest
+    within `STAND` is reliable, and the steady-stretch check allows `STEADY_PATHS` = 2 new paths).
+  - Amendment (the re-check's P2; see MZB-360's): the `spot` the hold is given is the hold point, not the
+    engine's spot (`Slot.holdAt`, set at spawn), so the restriction, the walk-back and the leash are about the
+    place Java chose beside the rail.
+    `aHeldPuppetWalksBackToItsSpotAndDoesNotChaseItsTarget` (mowziesmobs, batch `frostmaw_lurk_chase`): a held
+    puppet with no crystal is moved 2 blocks north of its spot and set on a hovering 1000 health player 8
+    blocks west (past the jar's 5.5 and 6.5); it must be within `STAND` of the spot within 200 ticks, never
+    nearer the player than the spot is less `STAND`, and then for 100 ticks stay within `STAND` and be given at
+    most 2 new paths (a new non-null `getPath()` instance, polled each tick). Expected on the unfixed code: the
+    jar's chase runs nine ticks in ten and the puppet walks west: "back within 0.5 blocks of its spot in 200
+    ticks (... the closest it came to the spot ...)" fails first, or if it stands the later checks (nearest
+    approach, new paths) fail. The figures are recorded (`back`, `steady`).
+  - Amendment (the second re-check's P2, the dodge leap; compiled, not run): a player within the jar's 4-block
+    dodge range dealing 16 damage (the jar sums `damage`, a sum that loses 1 every 7 ticks), or any lava damage,
+    starts `DODGE_ANIMATION`, and at its tick 6 the jar does `setDeltaMovement(m.x, 0.6, m.z)` with `m` the body's
+    motion plus 1.7 blocks a tick at `dodgeYaw`: a 10 to 14 block leap off the spot, which the six chase calls did not
+    cover. Choice (a fork the lead may flip): wrap the call, do not block the dodge. `EntityFrostmawMixin` wraps the
+    `EntityFrostmaw.setDeltaMovement(DDD)V` calls of `tick()` (`require = 2, allow = 2`: the dodge's, cfr line 430, and
+    the asleep branch's, line 592, which a held body never runs), and for a body `FrostmawLurker.holds` it passes the
+    body's own current x and z and the call's y (0.6): the body hops in place and lands where it was, and the jar's
+    animation state stays what the jar has it (the dodge runs its 15 ticks and ends on its timer, its
+    `wantsToIceBreathAfterDodging` is still consumed, the dodge cooldown is set). Blocking the dodge instead would
+    need a wrap of `hurt` to keep the jar's `shouldDodgeMeasure` and `wantsToIceBreathAfterDodging` from being set
+    on some of its paths and not others, and a lava hurt starts the dodge before the measure is read. Two tests
+    (mowziesmobs, batches `frostmaw_lurk_dodge_player` and `frostmaw_lurk_dodge_lava`): a held puppet without a crystal is hurt once
+    (20 damage by a player 3 blocks west whom it targets; 1 damage of lava), the dodge is seen to pass tick 7, and for
+    40 ticks it is never more than `STAND` from its hold point. Expected on the unfixed code: "the puppet never left
+    its stand while it dodged: strayed 11.9 of 0.5" (or more).
+  - Amendment (the second re-check's P2, `taken` leaks and pins the server; compiled, not run): the plugin kept the
+    walking goals it took out of a held body in a `WeakHashMap<Mob, List<...>>`, and each goal holds its body (the
+    goal's `mob` field), so the value reached the key and the entry never cleared: a puppet that left the world by any
+    way but a release (`despawn` at a requeue, a recall or `capture`, or a death settled after the body was removed)
+    was held with its level until the server stopped. Fix (the core `Slot` keeps it, as `stripped` is kept):
+    `Lurker.hold(mob, spot, memo)` and `Lurker.release(mob, memo)` get a `Lurker.Memo`, a one-object holder the bridge
+    creates at a slot's first hold and keeps in `Slot.lurkMemo`; `FrostmawLurker` keeps its `Taken(goals)` record in
+    it and empties it in `release`. The bridge empties the memo in `releaseLurk`, which now asks the Lurker for every
+    body it holds, removed from the world or not (it skipped removed ones), and `despawn` calls it first, so a
+    discarded body's stamp, bearing and search time (weak maps whose values do not reach the body, which stay) go too.
+    The interface change touches only `FrostmawLurker` and `Lurkers.DEFAULT` (nothing else implements `Lurker`).
+    `FrostmawLurker.tracked(mob)` (a stamp, a bearing or a search time) is the GameTests' view. Tests: the module-off
+    test also asserts `!tracked(body)` after the discard, and `aKilledHeldPuppetLeavesNothingInTheLurker` (batch
+    `frostmaw_lurk_killed`) kills a held puppet, waits for the casualty and the removal, and asserts that nothing is
+    tracked and the bridge has no member for it. A session stop proper is not made in a GameTest (the session is
+    shared); the module switched off runs the same `capture`.
+    - Correction (the third check's P3): the killed test does not fail on 86f97f99: `settleDeaths` released the dying
+      body while it was still in the world (`isDeadOrDying`, not yet removed), so the old release ran. It stays as a
+      guard. The leaks are driven by `aHeldPuppetRemovedBySomethingElseLeavesNothingInTheLurker` (batch
+      `frostmaw_lurk_discarded`: a held body discarded from outside, `left` with reason DISCARDED, `gone`, `forget`, whose
+      release was skipped for a removed body: fails on 86f97f99 by reading, the plugin still tracking the body) and by
+      the module-off test (a session stop's `capture`, whose `despawn` never asked the Lurker on 86f97f99: fails there
+      by reading). A requeue (`holdLurks` refusing, `despawn`) takes the same `despawn`. None has run; `tracked` is new
+      in this range, so the old build does not compile them and "fails before" is a reading of its code.
+  - Amendment (the third check's P3, the second `noLeap` wrap and lava; compiled, not run): the wrap on
+    `EntityFrostmaw.setDeltaMovement(DDD)V` matched both calls of `tick()` (`require = 2, allow = 2`); the second, cfr
+    line 592 (bytecode offset 2954), is the asleep and waking branch's `setDeltaMovement(0, y, 0)`, which stills the body
+    and which a hold wants too, and a held body that is waking (the ACTIVATE animations) does run it. Wrapping it kept
+    the body's own horizontal motion through a stilling. Now the wrap is pinned to `ordinal = 0` (the dodge's, offset
+    1017, the first of the two by javap of the 1.8.2 jar), `require = 1, allow = 1`. Fork: this gives up the earlier
+    "a jar with any other count fails to load" (a third call, or the dodge's call moving behind another, is no longer
+    caught); the alternative, two wraps with an ordinal each, would keep a check on the second at the cost of a
+    second hook that does nothing, and the pin is the tighter match. And a held body in lava (`isInLava()`) is let leap:
+    the original velocity goes through whole, so the dodge carries it out of the lava instead of hopping it in place
+    until it burns. The lava dodge test hurts the body with a lava damage source, not in lava, so it still dodges in
+    place; a body standing in lava has no test.
 - **MZB-362** (the target): the restriction gates targeting (M6's MZB-279), so a restricted Frostmaw never
   picks a player up itself. Every 20 ticks of the hold, a puppet with no target gets
   `level.getNearestPlayer(TargetingConditions.forCombat().range(50), mob)` (its follow range).
+  - Amendment (built, step 5): before taking the nearest player, the rule drops a target that is dead, in
+    another level, or beyond `OUT_OF_VIEW` (64 blocks), so a held puppet is not left on a player who left.
 - **MZB-363** (TRAIN_PASSED from the sampler): at each sample, for each lurk in the train's dimension, the
   segment's distance to the track point at or within `reach` sends TRAIN_PASSED.
   - It is sent once per approach, and armed again when the train is beyond 64 blocks of the point.
   - `RtsimApi.trainPassed(long agent, int epoch, boolean watched, int carriage, long train)` writes it with
     `beginJournaled`, carrying the table's epoch.
+  - Amendment (built, step 6): the distance is three-dimensional, from the track point to the sample's
+    segment (the rig's `LurkTable` is horizontal), so a rail above or below a lurk is not beside it. A
+    train's approach to a lurk is `Approach{lurk, armed, struck}` in a map by agent, made when a pass or a
+    strike first needs one. It is valid only while its `lurk` is the table's instance (identity), so a lurk
+    begun again by its agent (a replay resend, a moved spot) starts armed; entries of lurks that are gone or
+    replaced are pruned at each 20-tick rebucket, and an entry is dropped when the train is beyond 64
+    blocks. The sampler now runs when a lurk waits even if no territory minds the rail
+    (`anyMinding(SIGNAL) || !lurks().isEmpty()`), and clears its near set with its states. The sampler sends a
+    pass the moment a sample meets the lurk and keeps no pending pass, so REMOVED (the table entry gone) stops
+    the next sample's pass at once, and the approach left over is pruned within a second (MZB-371's list: the
+    rig's drop of a pending pass). `RtsimApi.trainPassed` needs the
+    session up and returns whether it wrote.
 - **MZB-364** (watched): `PASSED_WATCHED` when `lurkBody(agent)` is live. `carriage` is the index of the
   carriage whose leading point is nearest the track point, computed only when sending.
 - **MZB-365** (near a puppet): a train whose last sample is within 64 blocks of a live lurk puppet joins a
@@ -4080,6 +4426,177 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
     puppet calls `RtsimApi.strike(agent, point)` once per carriage per approach.
   - The swipe moves no cargo: the cargo comes from the TRAIN_PASSED roll. It is real for riders, since the
     jar's area attack strikes living entities in its arc.
+  - Amendment (built, step 6): the near set holds a train when the segment of its sample is within 64
+    blocks of the lurk's track point and the lurk has a live puppet (the puppet stands within the restriction
+    of the spot, a few blocks from the track point); the design's wording was "of the puppet". A
+    refused strike (a busy puppet) does not mark the carriage struck: it is tried again each tick while the
+    point stays in reach, so a carriage is struck at most once and a refusal loses nothing (the design
+    marked it on the call). `RtsimApi.strike` picks the nearest held puppet of the agent. The near set drops a
+    train that is invalid, derailed or without a graph.
+  - Second amendment (found writing test 9, step 8; the design's geometry could not land a blow). The swing
+    lands at animation tick 9, so 9 or 10 ticks after the call, and a carriage point at 1.0 blocks a tick has
+    moved 9 or 10 blocks by then. The jar's area attack (`AnimationAreaAttackAI.hitEntities`) takes living
+    entities whose 3D `distanceTo` (feet to feet) is within range + half their width (6.5 + 0.3 for a zombie),
+    then keeps those whose horizontal distance less half their width is within 6.5 and whose bearing is within
+    67.5 degrees of `yBodyRot`. With the design's spot 5 blocks off the rail and a strike at the first tick
+    the point is 6.5 blocks away (along the rail 4.15 from the closest approach), the point is 4.85 past the
+    closest approach when the swing lands: 6.96 blocks horizontally, and 84 degrees off the bearing the body
+    was turned to. Both miss. Three changes:
+    - `Lurker.strike(mob, at, motion)` and `RtsimApi.strike(agent, at, motion)` (and `ConflictBridge.strike`)
+      take the point's displacement a tick, and `FrostmawLurker` turns to `at + motion * 9`
+      (`SWIPE_HIT_TICK`), where the point will be at the landing. `TrainSampler.motionOf` is the track's
+      direction at the point (a 0.25-block step along its edge, never across a node) times `train.speed`, zero
+      for a stopped train.
+    - The test's spot is 4 blocks off the rail (`LATERAL`), so the point is within the swing's range when it
+      lands: 5.6 to 6.3 blocks horizontally, from a strike at the first tick within 6.5.
+    - The test's rider sits on a seat directly on the first bogey (rail + 2), the least a seat can be, which
+      keeps the 3D distance short (about 6.1 to 6.7 against the limit of 6.8 at worst). The figures are
+      predictions: nothing has run. If the round shows the landing a tick off, `SWIPE_HIT_TICK` and
+      `LATERAL` are the two numbers to move.
+    A real player on a train passing a lurk at speed is struck in the same way; a train at a standstill in
+    reach is struck at once, with a zero motion.
+    (The last sentence was false as built; see the third amendment: the gate looked at where the carriage was,
+    not where it would be.)
+  - Third amendment (review C, item 2; written and compiled, not run): the gate and the aim at speed. As built,
+    the strike fired when a bogey point was within 6.5 blocks (horizontal) of the puppet now, and aimed at that
+    point plus its motion. At 1.0 blocks a tick the swing lands 9 ticks later with the carriage 9 blocks on. The
+    engine's spot is `SPOT_BLOCKS` (5) off the rail (rail.rs: whole blocks toward the den, written as block +
+    0.5), so a point first in reach at 6.5 is 4.15 along from the closest approach and lands 4.85 past it: 6.96
+    blocks horizontally from a puppet 5 off, out of the swipe's 6.5. The test passed only because it laid the
+    spot 4 off (`LATERAL`), which the engine never does. A real player at speed was not struck. Now:
+    - The gate is on the landing point. `TrainSampler.landingOf` is where a bogey point will be `SWING_TICKS`
+      (9) ticks on at the train's present speed: Create's own `TravellingPoint.getPositionWithOffset(graph,
+      speed * 9, false)` while the point stays on its edge (curves included), and straight on from the edge
+      end's tangent (`TrackEdge.getDirectionAt`) past an edge end. A carriage is struck when that landing is
+      within `STRIKE_REACH` = 6.0 blocks (horizontal) of the puppet: the swipe's 6.5 less what its 3D
+      feet-to-feet filter (6.5 + half the width, so 6.8 for a zombie) takes for a rider seated about 2 above the
+      puppet's floor (6.0 horizontal is about 6.3 in 3D). A cheap first test (`STRIKE_REACH + 9 * |speed| + 4`
+      plus the carriage's `bogeySpacing`, from a bogey point now) skips the carriages that cannot be in reach, so
+      the landing is computed only for the few that can.
+    - The aim is at a living rider if the carriage carries one (`CarriageContraptionEntity.getPassengers()`, the
+      first that will be in reach; it is taken to move as the bogey nearer to it does), since the swipe hits
+      living entities and a bogey point misses a rider at the middle or the rear of a long carriage. A carriage
+      with a living rider that will not be in reach is not struck. A carriage with no living rider is struck at
+      its leading bogey's point, else its trailing one's. The motion passed is the landing less the position,
+      over 9, so the plugin's `at + motion * 9` is the landing.
+    - The prediction follows the track within one edge. Past a node it goes straight on, and a bend beyond the
+      node makes the aim err by about the part of the 9 ticks past the node squared over twice the bend's radius
+      (a train at 1.4 blocks a tick covers 12.6 blocks in the swing; a tight Create curve is a few blocks of
+      error). That is the recorded bound, not a fix: the swipe's 67.5 degree arc and its 6.5 reach absorb part of
+      it. A train that changes speed during the swing (a station stop, a signal) errs by the change. Neither is
+      tested.
+    - Test 9 runs at the engine's own spot, 5 blocks off (`LATERAL` 5), at 0.5, 1.0 and 1.4 blocks a tick
+      (`rail_frostmaw_lurk_slow`, `rail_frostmaw_lurk`, `rail_frostmaw_lurk_fast`: the same body with the speed
+      passed in; the slow and the fast skip the bait, the hold's checks and the hearer, which the 1.0 run
+      covers), each asserting that the rider is hit. Expected on the unfixed code: the 0.5 run probably hits
+      (the swing lands 4.5 on, 0.35 past the closest approach: 5.0 horizontal), while the 1.0 and 1.4 runs miss
+      (landing 6.96 and about 9.8 horizontally) and fail with "the zombie was hurt at <speed> (health 1000.0
+      of 1000.0)". Nothing has run.
+  - Fourth amendment (the build lead's choice after review C; written and compiled, not run): the spot-distance
+    contract. The gate's 6.0 left a puppet resting 1.5 off its spot (the old `STAND`) on the far side from the
+    rail 6.5 from the track: inside the jar's reach (a target is hit when its horizontal centre distance less its
+    half-width is at most 6.5, so a player at about 6.8 from the Frostmaw's centre) and outside the gate, so such
+    a puppet never struck. The choice, reversible: keep `STRIKE_REACH` at 6.0, which leaves about 0.5 for the
+    prediction's error (see the correction below), and shrink the hold's `STAND` to 0.5 (MZB-361's amendment). The rule is one check in two
+    inequalities, `TrainSampler.spotContract(stand, halfWidth)`:
+    - `SPOT_BLOCKS + stand <= STRIKE_REACH`: 5.0 + 0.5 = 5.5 <= 6.0, a margin of 0.5.
+    - `SPOT_BLOCKS - stand - halfWidth >= RAIL_CLEARANCE`: 5.0 - 0.5 - 2.0 = 2.5 >= 1.5, a margin of 1.0.
+    `TrainSampler.SPOT_BLOCKS` (5.0) mirrors rail.rs's constant beside `STRIKE_REACH`, with a comment naming
+    rail.rs, and `RAIL_CLEARANCE` (1.5) is the clearance test 9 already asserted. The Rust side pins its own
+    number: `the_spots_distance_is_the_one_the_java_plugin_mirrors` (`crates/rtsim-conflict/tests/lurk.rs`;
+    compiled and run, it passes), whose message names what else moves with it. `Lurker.stand()` (default
+    `Lurkers.STRAY`, 4.0, a body that never strikes) exposes the number so create's test reads it without naming
+    a Mowzie class. Test 9 in every variant records the figures and fails if the rule does not hold for the
+    Lurker's stand and the live body's half-width (`getBbWidth() / 2`); `LATERAL` is `(int)
+    TrainSampler.SPOT_BLOCKS`, so the test lays the engine's spot by construction. A fourth variant pins the
+    puppet at the far side of its stand and asserts the strike at 1.4 blocks a tick (MZB-370's amendment).
+    A Lurker of another body kind registers its own `stand()`, and its own gate if its reach differs.
+  - Correction (the re-check's P3): the margin the 6.0 gate leaves is about 0.5, not 0.8. The jar's area attack
+    (`AnimationAreaAttackAI.hitEntities`) has two cuts on a target: the horizontal centre distance less its
+    half-width at most 6.5 (6.8 for a 0.6-wide target), and the 3D feet-to-feet distance at most 6.5 plus its
+    half-width (6.8). A rider is about 2 above the puppet's feet (a seat on the bogey, or a floor one block above
+    it), so the 3D cut allows sqrt(6.8^2 - 2^2) = 6.5 horizontally, and the binding cut is the 3D one. The gate's
+    6.0 leaves 0.5 for the prediction's error. The
+    contract's own inequalities are unchanged; it is the room the gate has for the prediction that is smaller
+    than quoted.
+  - Amendment (the re-check's P2; compiled, not run): the contract is about the hold point's distance to the rail's
+    centre line, which Java now sets (MZB-360's amendment), within `LurkSpots.LATERAL_SLACK` (0.4) of
+    `SPOT_BLOCKS`. `spotContract` counts the slack: `SPOT_BLOCKS + slack + stand <= STRIKE_REACH` (5.0 + 0.4 + 0.5
+    = 5.9 <= 6.0) and `SPOT_BLOCKS - slack - stand - halfWidth >= RAIL_CLEARANCE` (5.0 - 0.4 - 0.5 - 2.0 = 2.1 >=
+    1.5). The slack is the worst case; Create's rails put the body at exactly 5.0 (XO, ZO) or 4.95 (PD, ND), so
+    the real far side is 5.5 (5.45). A lurk on a curve keeps the engine's spot (no axis there) and so only the
+    engine's own geometry.
+  - Amendment (the re-check's P2, a standing rider was ignored; compiled, the GameTests not run): `aimAt` took
+    only the carriage's seated passengers (`getPassengers()`) as riders, so a living entity standing at the middle
+    or the rear of a long carriage was no rider: with no seated one the carriage was struck at its leading bogey's
+    point, up to a carriage length ahead of the entity, and the swing missed it. Now `TrainSampler.ridersOf(entity,
+    body)` returns, in order, the seated passengers; the living entities in the carriage's `collidingEntities`
+    (Create's server collision registers mobs and the like that stand on it, each for three ticks); and the living
+    entities found by a search about the carriage whose feet stand on a block of it, by Create's own test (the
+    position 0.2 below the feet, in the carriage's frame, is a key of `getContraption().getBlocks()`;
+    `ContraptionCollider.worldToLocalPos`, which its client mixin uses). `aimAt` tries them in that order and takes
+    the first that will be in reach when the swing lands; a carriage with any rider that will not be is still not
+    struck, and one with none is struck at a bogey point as before.
+    - Why a search and not `collidingEntities` alone (the brief's mechanism): a real player standing on a carriage
+      is never in it on the server. `ContraptionCollider.collideEntities` reaches `registerColliding` only after
+      `if (playerType == PlayerType.SERVER) continue;`, and the only other caller is a mixin in
+      `foundation/mixin/client`. Read in Create's sources, not run; the riders GameTest records whether the player
+      is in the set. Mobs are in it, so they are covered either way.
+    - The search box is a circle about the contraption's anchor (`Contraption.bounds` is in the carriage's frame;
+      the entity's own bounding box is not turned with it, so it is not used) of the bounds' largest horizontal
+      reach plus `RIDER_MARGIN` (3.0), and as high as its largest vertical reach plus 3.0. Who counts is Create's
+      `AbstractContraptionEntity.canCollideWith` (no spectator, no `noPhysics`, nothing already riding, no hanging
+      entity, seat or projectile). The aim moves as the bogey nearer to the rider does, as for a seated one.
+    - Cost: one entity search per carriage per tick while it is in the cheap range of a lurk's puppet and
+      unstruck (about twenty ticks a pass at one block a tick), against a box a few blocks across. Not measured.
+    - Known gap: a player standing at the edge of a platform beside a carriage is not a rider (his feet are over no
+      block of it); one standing on a carriage that Create has not yet told the server of is, as the server
+      sees his position. A bystander mob that stands on the carriage (a villager in it) is a rider and the carriage
+      waits for it.
+  - Amendment (the second re-check's P3, an armor stand was a rider; compiled, not run): `ridersOf` took any
+    living entity, and an `ArmorStand` is one that collides with a contraption (it is no seat, projectile or hanging
+    entity), so one standing on a carriage drew a strike off the bogey point and a carriage with one was not struck at
+    its bogey when the stand was out of reach. A rider is now a living entity that is alive and a `Mob` or a `Player`
+    (`TrainSampler.rides`), in all three of its sources. Nothing else in vanilla is a living non-mob except the
+    stand; a mod's decoration that extends `Mob` is a mob by every other rule here.
+  - Amendment (the second re-check's P3, a rider on the next carriage, a rider's height, a diagonal's corner;
+    compiled, not run):
+    - `strikeAt` looks at the riders of every unstruck carriage in the cheap range before it aims at any bogey. A
+      first pass takes each carriage's riders (once, kept) and strikes the first whose landing is in reach; a second
+      pass strikes a carriage that has no rider, at its bogey, only when the first struck nothing. Before, the
+      loop went carriage by carriage, so a riderless carriage in front took the swing at its bogey (the puppet then
+      busy for the swing) while a rider on the next carriage, in reach a tick later, was refused. The loop returns
+      at the first strike that starts: the puppet is busy, so a second would be refused. A carriage with a rider that
+      is not in reach is still not struck.
+    - A rider's reach is the swipe's own, in 3D: `TrainSampler.reachesRider` takes the landing point's distance to the
+      body's feet in three dimensions against `SWIPE_RANGE` (6.5) plus half the rider's width (6.8 for a player),
+      the jar's 3D cut. The horizontal `STRIKE_REACH` (6.0) stays for a bogey point, which has no height of its own.
+      So a rider on a carriage floor 2 above the body, or the body 2 below on a bank, is struck when 3D-near, and
+      one the horizontal gate would have passed at 6.0 and the 3D cut refuses (|dy| above 3.2) is not.
+    - `spotContract(stand, halfWidth, diagonal)`: for a diagonal rail the box's corner meets the rail, so the reach is
+      `halfWidth * sqrt(2)` and the near slack `OBLIQUE_NEAR_SLACK` (MZB-360's amendment); the rule holds by
+      itself, 5.0 - 0.17 - 0.5 - 2.83 = 1.50 >= 1.5 (it rested on the 4.95 the lattice gives before). Test 9 asserts
+      it for an axis rail and for a diagonal.
+    - The ordering of the two passes had no test: it needs a train of two carriages, one with a rider, in front of a
+      puppet, which the riders test's one-carriage line does not lay (the third check's P3 adds one: the next
+      amendment).
+  - Amendment (the third check's P3, the bogey pass, the gate and the test of the order; compiled, not run):
+    - `strikeAt` skips its second pass (the bare bogeys) whenever any carriage in the cheap range has a rider, struck
+      or not in reach: a riderless carriage 0's bogey must not spend the swing (`SWING_TICKS`, the puppet busy) while
+      carriage 1's rider is still outside `riderAim`'s window and will be inside it a tick or two on. A train none of
+      whose gated carriages has a rider is struck at its bogeys as before.
+    - The gate is built from the longest reach: `far = SWIPE_RANGE + 1.0 + SWING_TICKS * |speed| + BODY_SLACK`, not
+      from the horizontal `STRIKE_REACH`, so a rider at a long carriage's overhang (up to 6.8 in 3D, a block or so
+      more than the bogey's 6.0) is not gated out before `riderAim` is asked.
+    - Test (written and compiled, not run): `RailFrostmawGameTests.theSwingGoesToARiderOnTheNextCarriageBeforeABareBogeyInFront`
+      (batch `rail_frostmaw_riders_first`). A stopped train of a short carriage and a long one with a plank floor
+      (`mixedCars`); the puppet two blocks past carriage 0's bogey, 5 off the rail. A zombie (AI on, goals out, feet
+      on the plank) first on the far plank of carriage 1, out of the swipe's 3D reach with the carriage gated in: no
+      strike in the 40 ticks after the sampler has seen the train (fails with the bogey pass left running). Then on the
+      near plank, in reach: the puppet's yaw at the first strike is within 20 degrees of the bearing to the zombie
+      and more than 20 off the bearing to the bogey, the two being 35 or more apart (fails on the carriage-by-carriage
+      order of the second re-check, where the bogey of carriage 0 is struck first). The premises (the bogey in reach,
+      the planks' 3D distances against the range, the bearings apart) are checked in the test.
 - **MZB-366** (the roar at a station):
   - TRAIN_ROBBED adds `(train, faction)` to a per-session pending map in `ConflictBridge`, capped at 256
     with the oldest dropped.
@@ -4093,13 +4610,86 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
     `play` is split so both use one `playToward(faction, dimension, x, z, player)`.
   - The entry is dropped only once a player heard it, so an arrival with nobody near keeps it for the next.
   - No chat, action-bar or title line.
+  - Amendment (built, steps 5 and 6): `trainCalled` is public on `RtsimApi` and plays to non-spectator
+    players that are not `FakePlayer`s within 64 blocks (three-dimensional) of the station. The level comes
+    from `ServerLifecycleHooks.getCurrentServer()` and the station's dimension. A camp with no sound still
+    gets the raid horn (`playToward`'s fallback), so the roar needs a declared camp with a sound
+    (MZB-367).
 - **MZB-367** (the den's sound): `DenKind.sound()` returns `MMSounds.ENTITY_FROSTMAW_ROAR`. So a den's
   notices roar too, instead of the raid horn: both are in-world sounds.
 - **MZB-368** (the puppet roars): on TRAIN_ROBBED, a live lurk puppet of that faction is told `roar`.
+  - Amendment (built, step 5): only held puppets (a live slot with a hold spot) of lurks of that faction
+    are told; a puppet not yet placed hears nothing, and the pending entry stays for the station.
 - **MZB-369** (UR-1 and D1): puppets are never saved (M3), and the lurk table and the pending roars are per
   session, so nothing stays in the world. The sampler's lurk work is a list scan per sample over the lurks
   (at most one per lurking party). The every-tick reads are for trains within 64 blocks of a live puppet
   only, and the hold is one call per live puppet a tick.
+  - Amendment (review C, item 1; the GameTest is written and compiled, not run): "nothing stays in the world"
+    was false for a take. `gone(keepBody=true)` (a player's Carry On pickup, or anything else's take) left the
+    body in the world as an ordinary mob, and `forget` cleared the slot's hold spot without asking the
+    `Lurker`, so the body kept `restrictTo(spot, 2)` and its `alwaysActive` true for good (it is in the
+    Frostmaw's NBT), which breaches UR-1. `forget` now calls `releaseLurk(sl)`, which asks the Lurker to undo
+    the hold and clears the spot, and `take` returns before Carry On saves the body, so the saved NBT is the
+    released one. The other paths that clear a hold or drop a slot were read and need nothing: `despawn`
+    (a requeue, a recall, `capture` at a session's end or the module's switching off, a hand-back) discards
+    the body, so no hold outlives it (the second re-check found the Lurker's own state did: `despawn` now calls
+    `releaseLurk` first, MZB-361's last amendment); a death or a removal by something else leaves a dead or removed body
+    (`forget` now releases a dying one too, which is harmless); a recall or a moved or ended lurk already
+    called `releaseLurk`. (Corrected by the re-check's P3; the first draft said a body unloaded with its chunk
+    is saved held and the join check discards it as a stale copy. A held body is never saved: it carries the
+    core's `mic_rtsim:agent` tag, and `EntitySaveMixin` makes `shouldBeSaved` false for a tagged entity, which is
+    the filter every chunk save applies, and `saveAsPassenger` false, so a body riding something or saved by
+    `Entity.save` is left out too. Its chunk is written without it.)
+    Three GameTests in the mowziesmobs project (`FrostmawGameTests`, written and compiled, not run), sharing one
+    fixture (`Held`: a one-unit Frostmaw band lurking at a spot, held), because the brief made this a UR-1 break
+    and so its test must uninstall and reinstall:
+    - `aLurkPuppetTakenByAPlayerIsLetGoLikeAnyOrdinaryFrostmaw` (batch `frostmaw_lurk_taken`, the mock player's
+      `PICKUP`) and `aLurkPuppetTakenByNoPlayerIsLetGoLikeAnyOrdinaryFrostmaw` (batch `frostmaw_lurk_taken_other`,
+      `TakeReason.PLUGIN`, no player). At once after the take: no puppet, no restriction, not always-active,
+      `alwaysActive` false in the saved NBT, and the same of a body made from that NBT. Then the engine's
+      BAND_CASUALTIES (by player, or by other) is waited for, `requestSaveAtNextStep` has it acknowledged, and the
+      body's `mic_rtsim:pending` record drops (it is the one thing of mic_rtsim on the body until then, so the
+      first save is checked for the hold only). The uninstall is the module switch the other GameTests use
+      (`RtsimConfig.Test.setModule(Module.CONFLICT, false)` and `BridgeEvents.moduleSwitchesChanged`, as
+      `IndustryGameTests` and `ModuleSwitchGameTests` do; no GameTest removes a mod, and none is named for an
+      uninstall. The uninstall emulation is the NBT round trip below, not the switch: a taken body has left the
+      bridge, so the module going off discards nothing of it, and the saved-NBT checks stand for the mod's
+      removal (the re-check's P3)):
+      the saved NBT of the acknowledged body has no `neoforge:attachments` key of `mic_rtsim:`, no
+      `NeoForgeData` key and no tag with `mic_rtsim`, no word of `mic_rtsim` anywhere in its string form, and
+      `alwaysActive` false, which is what a world without mic_rtsim and the plugin reads (NeoForge skips an
+      unknown attachment; there is none to skip). The body stays after 40 ticks with the module off, alive and
+      ordinary (no restriction, not always-active, not the bridge's). The reinstall is the module on again and a
+      copy of the saved NBT, with a new UUID, added as a chunk would add it: after 60 ticks both bodies are
+      ordinary Frostmaws, nothing is held by the lurk (`lurkBody` null), and the lurk is ended and leaves the
+      table. The mock player (`PICKUP`) is not a `FakePlayer`, so the casualty is by a player.
+    - Expected on the unfixed code, both: the first check to trip is the saved NBT's, "the taken body, before the
+      engine has the casualty,: alwaysActive false in its saved NBT" (it is true there). This replaces the first
+      draft's "the taken body has no restriction (true)", which was the first to trip on the unfixed code and so
+      stood in front of the UR-1 check (the re-check's condition 2; see the amendment below).
+    - `aLurkPuppetHeldWhenTheModuleSwitchesOffLeavesNothingInTheWorld` (batch `frostmaw_lurk_off`) is the other end
+      of the uninstall, a puppet still held when the module goes off: the body is discarded, the lurk has no body,
+      and 60 ticks after the module is on again no Frostmaw stands within 24 blocks of the spot. It passes on the
+      unfixed code too (a guard that the release does not change what the switch-off does, which discards the
+      body). The test restores the switch when it ends, passed or failed.
+  - Known gap, outside M8 (the re-check's P3; recorded, not fixed): a held puppet is kept out of every chunk save,
+    but `EntitySaveMixin` leaves `saveWithoutId` alone on purpose, because a dimension change copies an entity
+    through it and the copy must keep its tag so the join check knows it. So a third party that captures a
+    mob by calling `saveWithoutId` on it directly (a capture item that does not go through `Entity.save`, which
+    the mixin does cover) would write the held body's NBT, `alwaysActive` true among it, and the released body
+    would come out of that item holding. Carry On's pickup does not: `take` releases the hold first (above). Left
+    open for the dimension copies; closing it means telling a dimension copy from a capture in `saveWithoutId`,
+    which nothing in M8 needs. The same goes for any other plugin's puppet kind.
+  - Amendment (the re-check's condition 2; the test is rewritten and compiled, not run): the take test's checks
+    run in the order of the claim they make. A body made from the saved NBT is what a world without the mod
+    reads, so the saved NBT is saved and read first (`h.saveOrdinary`, then the copy's `alwaysActive`), then
+    the live body's (no restriction, not always-active). The copy's "has no restriction" check is dropped: a
+    restriction is never in NBT, so it was true on any code and checked nothing. The expected failing value on
+    the code before the fix is the saved NBT's `alwaysActive` ("the taken body, before the engine has the
+    casualty,: alwaysActive false in its saved NBT"). The fail-first run is a worktree at 875ac2bd (the head before
+    review C) with only the test file changed, on the throwaway branch `test/m8-ur1-failfirst`, for the lead to run
+    with `gametest.sh mowziesmobs`; the two take tests are the ones expected to fail there, the
+    `..._LeavesNothingInTheWorld` one to pass.
 - **MZB-370** (test choices):
   - Test 8's rider is `helper.makeMockPlayer(GameType.SURVIVAL)` added with `addFreshEntity`, as M6's thief
     (MZB-281), so the ice ball's `getEntitiesOfClass` sees it. It is seated with `addSittingPassenger`.
@@ -4111,17 +4701,284 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
   - `FakePlayers.Hearer` gains `sounds` (each `ClientboundSoundPacket`) and `titles` (title, subtitle and
     action-bar packets). `hearing` builds its `ServerGamePacketListenerImpl` as a subclass whose
     `send(Packet<?>)` records them.
+  - Amendment (built, step 5): `ConflictKit.trainsPassed(agent)` reads the TRAIN_PASSED records the
+    scripted engine received (the bridge keeps no per-agent counter), and `lurkStrikes()` the bridge's
+    strike counter.
+  - Amendment (built, step 8; nothing run): `RailFrostmawGameTests` has one fixture, `Line` (the far chunks,
+    the cleared box and floor, a 150-block track, the stations, the train, and its restoring), which test 10
+    runs on unchanged in behaviour, and four tests in four batches.
+    - Test 8 is two tests. `anIceBallUnseatsARiderFromACarriage` (batch `rail_frostmaw_ice`) is the static
+      form. `theIceBallHitRatesAgainstAMovingTrain` (batch `rail_frostmaw_ice_rates`, 16,000 ticks) is the
+      moving form, split off because its 16 passes and their cooldowns take thousands of ticks and the
+      static form should not wait on them, and because it is a measurement: it logs
+      `[gametest] ice ball v=<v>: <hits>/4` and fails only if the rider is on two vehicles. The design's "within
+      60 ticks of the freeze ending the rider has no vehicle" is a wait for no vehicle, with the freeze itself
+      failing the test if it holds the rider 200 ticks (the jar's is 50).
+    - The riders are health 1000, so a swipe or a freeze cannot kill one. The mock player is a plain `Player`
+      (`GameTestHelper.makeMockPlayer`: not a `ServerPlayer`, `isLocalPlayer` true), added with
+      `addFreshEntity`; `FakePlayers` players (the bait and the hearer) are in `level.players()` only. The
+      Frostmaw's target is set again at every poll (the restriction gates targeting, MZB-362, and a target
+      once dropped is not found again), in the hold phase too.
+    - Test 9 lays its lurk 40 blocks ahead of the train on the 150-block line (not a 96-block straight with
+      the lurk at its middle), its second station 60 blocks along from the first on the side the train goes,
+      the spot 4 blocks off (MZB-365's second amendment), and the camp's sound is the registry holder
+      `mowziesmobs:frostmaw.roar` (the plugin's `DenKind.sound()` is a `DeferredHolder`; the create project
+      names no Mowzie class). The hold's checks are: within 2 blocks of the spot, the near edge at least 0.5
+      off the rail's centre line (the spot's is 2.0; the Frostmaw stands within 1.5 of it, and away from the
+      rail while it has the bait), `alwaysActive` true, a target at some poll. The bait walks 0.05 blocks a
+      tick away from the rail, 30 blocks off to begin with.
+    - The yBodyRot check is the puppet's `yBodyRot` against the bearing from the puppet to the zombie at the
+      first poll that finds the zombie's health down (the swing landed in the tick before, the zombie moved
+      at most a block: 14 degrees at 4 blocks off, inside the 30 allowed).
+    - The roar part is in the other order than the design's: TRAIN_ROBBED, then `Train.arriveAt` the second
+      station with nobody within 64 blocks (nothing plays; the entry stays), then `arriveAt` the first with
+      the hearer 20 blocks off (one sound packet, the roar's, and nothing in `raw`, `overlay` or `titles`;
+      the entry gone). The entry goes once a player has heard it, so the arrival with nobody near has to be
+      first. `Train.arriveAt(GlobalStation)` is public and safe to repeat, and is what `TrainMixin` hooks, so
+      the test drives the real path without moving the train. The hearer stands 20 blocks behind the first
+      station, away from the lurk, so it is about 61 blocks from the puppet (not a target, 50; out of the
+      puppet's own sounds) and 80 from the second station.
+    - Amendment (review C, item 2; written and compiled, not run): test 9 is three tests, one body at three
+      speeds (MZB-365's third amendment). Its spot is 5 blocks off the rail, the engine's own `SPOT_BLOCKS`, not
+      the 4 above (which the engine never lays), and the train runs at 0.5, 1.0 and 1.4 blocks a tick with
+      `manualTick` and a set `speed`, so it moves exactly that a tick. Each asserts that the rider is hurt. The
+      1.0 run (`rail_frostmaw_lurk`) keeps the whole test; the other two (`_slow`, `_fast`) skip the bait, the
+      hold's checks and the hearer and end after the TRAIN_PASSED check. The rider is still the seated zombie, so
+      the 3D filter is the one MZB-365's third amendment gates on.
+    - Amendment (review C, item 4; written and compiled, not run):
+      - Test 9's clearance gate is a near edge at least 1.5 blocks off the rail's centre line (it was 0.5). The
+        puppet's edge is its distance to the centre line less 2; the spot is `LATERAL` = 5 off, so the edge is 3.0
+        at the spot and 1.5 at the nearest the hold lets it stand (within `STAND` = 1.5 of the spot). The margin at
+        that nearest legal stand is nil, so a puppet pushed to the rail side of its stand fails exactly on the
+        line; it normally drifts away from the rail with the bait as its target, and the wall of the test is the
+        one place a failure would show it.
+      - Test 9's hold phase logs the hold's path searches and dropped paths per second
+        (`Lurkers.of(puppet).pathSearches()` and `pathsDropped()`, differenced over the hold; MZB-361's D1
+        amendment). A record, not a check; the first run's figure is the baseline.
+      - Test 8's moving half (`theIceBallHitRatesAgainstAMovingTrain`) now fails when no pass at the slowest
+        speed (0.5 blocks a tick) froze the rider, with "at least one pass at 0.5 blocks a tick froze the rider
+        (0/4, balls thrown at it: n)". It stays a measurement for the other speeds. This is a new gate on a
+        test that had none, so there is no earlier failing value to quote; the first run decides whether one pass
+        in four at the slowest speed is a fair floor.
+    - Amendment (the build lead's spot-distance choice; written and compiled, not run), superseding the 1.5 stand
+      in the item 4 amendment above:
+      - With `STAND` at 0.5 the near edge is 2.5 at the nearest the hold lets the body rest (5.0 - 0.5 - 2.0),
+        against the 1.5 clearance: a margin of 1.0, where the 1.5 stand had none. The clearance check reads the
+        body's width (`getBbWidth() / 2`) and `TrainSampler.RAIL_CLEARANCE`.
+      - Every variant records the spot, stand, half-width, reach and clearance, and fails if
+        `TrainSampler.spotContract(Lurkers.of(puppet).stand(), halfWidth)` is not null, or if `LATERAL` is not the
+        sampler's `SPOT_BLOCKS`.
+      - The full test also records where the puppet rests 60 ticks after the bait goes, and fails if that is more
+        than `STRIKE_REACH - SPOT_BLOCKS` (1.0) from the spot: the strike gate's margin, not `STAND`, because the
+        body may rest beyond its stand (MZB-361's amendment). That check can fail on the first run; if it does,
+        the figure it prints is what the hold really leaves, and the contract's numbers move to it.
+        (Superseded by the re-check's P3: the check is that the body rests within `Lurkers.of(puppet).stand()` of
+        its hold point, the rest point of the `Den`, which is what the contract counts on and what `STAND` 0.5
+        makes the hold keep; the 1.0 bound let a body rest 0.5 beyond the stand and still pass, and the
+        contract's far side is the stand's. The figure is still recorded, with the strike gate's margin beside it.)
+      - `aLurkingFrostmawAtTheFarSideOfItsStandStillSwipesAtOnePointFourBlocksATick` (batch
+        `rail_frostmaw_lurk_far`, 2400 ticks): the 1.4 pass without the bait, the hold's checks or the hearer, with
+        `LurkRun.pin()` setting the puppet at `stand - 0.001` from the spot on the line away from the rail, with no
+        horizontal motion, at the rider's setup and every poll until the zombie's health first drops. It asserts
+        what the other passes do: a strike, the zombie hurt, the bearing within 30 degrees, no carriage box in
+        the puppet's, the block counts unchanged, one TRAIN_PASSED. With the old stand (1.5) the contract check
+        fails first ("the far side of the stand is 6.5 blocks from the track point, past the strike reach (6.0)"),
+        and without it the pinned puppet, 6.5 from the rail, would see the landing no nearer than 6.5 and never
+        strike ("the lurk struck at 1.4 (0)"). With the stand at 0.5 the landing comes to 5.5 at the nearest,
+        inside the gate.
+    - Amendment (the re-check's P2; written and compiled, not run): test 9 takes a `Den` (where the den lies, so
+      the engine's spot) and a rest point (where the hold must stand the body): `SQUARE` is the earlier test
+      (spot 5 north, rest the spot); `OBLIQUE`, the den 4 east and 4 north (spot +4, -4; rest 5 north of the
+      track point); `ON_LINE`, the den on the rail (spot 5 along +x; rest 5 south, the left-hand side). Every
+      run checks that `ConflictKit.lurkHold(agent)` is the rest point and the body was made within its stand of it.
+      The hold phase's stray, clearance, pin and bait use the rest point (the bait is placed on the body's side
+      of the rail, `away()`). Two new tests for the oblique den (`rail_frostmaw_lurk_oblique`, speed 1.0, and
+      `_oblique_far`, 1.4 with the body pinned at the far side of its stand) and one for the den on the line
+      (`_online`, 1.0); they skip the bait, hold and hearer as the other short runs do.
+    - Amendment (the re-check's P2, a standing rider; written and compiled, not run): test 9 takes a `Rider`
+      (`SEATED`, the earlier tests; `MIDDLE` and `REAR`), and `Line` a `longCar` flag. A long carriage
+      (`longCars`) is one carriage of two small bogeys `LONG_SPAN` (8) blocks apart on the station's track, a
+      floor of seven oak planks on the blocks between them, controls on the first bogey, all glued, and no
+      second carriage: a second one behind it would be struck at its own bogey point, which the old code could
+      also land on a rider at the rear (it passes 5 blocks behind the zombie), and the test would not tell the
+      old code from the new. Create's assembler needs the first bogey at the first block past the station, bogeys
+      at least 3 apart, and the second in the first's glue group; read from `StationBlockEntity.assemble`, not run.
+      - `Line.stand` puts a zombie on the plank in the middle (`MIDDLE`) or the one next to the rear bogey (`REAR`),
+        planks ordered along the way the train goes, at the plank's top (plus 0.01 before the second re-check), and checks that Create's own
+        standing test finds a block of the carriage under it. The zombie is a mob because Create's server
+        collision carries mobs and does not carry a player. The drive ramps up to the speed over ten ticks from
+        the tick the zombie is put on, so a jolt from rest does not leave it behind; if it still slips, the first
+        failure is the hit check, not a setup check, which is a defect of the test.
+      - `aLurkingFrostmawSwipesARiderStandingAtTheMiddleOfALongCarriage` (`rail_frostmaw_lurk_standing_middle`)
+        and `...AtTheRearOfALongCarriage` (`rail_frostmaw_lurk_standing_rear`), speed 1.0, the engine's own spot,
+        pass only (no bait, hold or hearer): the same assertions as the seated pass (a strike, the zombie hurt,
+        the bearing within 30 degrees, no carriage box touching the puppet's, the block counts unchanged, one
+        TRAIN_PASSED). On the code before the fix the strike is aimed at the leading bogey's point, 5 (middle) or
+        8 (rear) blocks ahead of the zombie, so the zombie's landing is about 9.7 or 12.4 blocks from the
+        puppet when the gate opens (the point's is 6.0): out of the swipe's 6.5, and the carriage is marked struck, so the expected failure is "the zombie was hurt
+        at 1.0 (health 1000.0 of 1000.0)".
+      - `aStandingPlayerAndAStandingMobAreRidersOfACarriageAndABystanderIsNot` (`rail_frostmaw_riders`): a mock
+        player (a plain `Player`, the kind Create's server skips) and a zombie stand on the stopped long
+        carriage's floor, a second mock player 3 blocks beside it; `TrainSampler.ridersOf` returns the first two
+        and not the third. A player is not carried by Create, so the train does not move in this test; the
+        moving tests use a mob.
+    - Amendment (the second re-check's P2 and P3s in the riders and standing tests; compiled, not run):
+      - The riders test's mock players fell: a mock player is a plain `Player`, which Create's server collision does
+        not hold up, so it fell through the carriage in the five idle ticks before `ridersOf` was read, and the
+        bystander too. `Line.stand` now gives a player `setNoGravity(true)` and zero motion (the bystander likewise).
+      - A zombie standing on a carriage (the riders test and the `MIDDLE` and `REAR` passes) was `noAi`, which has no
+        travel and so no gravity, and hovered 0.01 above the plank where Create may never have registered it as
+        colliding. `Line.stand` now leaves a mob's AI on with every goal and target goal removed (it walks nowhere
+        and attacks nothing), and puts its feet exactly on the plank's top, so gravity presses it onto the floor as
+        it does a real rider and Create carries it. The seated zombie stays `noAi` (it is a passenger).
+      - The bystander stands level with the floor 1.6 blocks beside the player on it (it was 3.0), 1.1 past the
+        plank's edge, and an armor stand stands on the floor with the player: `ridersOf` returns neither.
+      - The second re-check's P3 tests of placement are listed in MZB-360's amendment (a cutting, a curve's middle,
+        `trackNear`); the spot contract is checked for a diagonal as well as an axis rail (MZB-365's amendment).
+      - The chase test (`aHeldPuppetWalksBackToItsSpotAndDoesNotChaseItsTarget`) fails when the puppet is back later than
+        `BACK_TICKS` (200): the wait ended whenever it was back, within the test's own longer timeout, so the budget
+        was named in the message and never enforced.
+    - Cleanup: a recall (RECALL_DONE) and a wait for BAND_DEMATERIALIZED on a pass, a removal and a recall
+      on a failure; the train, its glue, the track, the stations and the box are put back as they were
+      (`TrainWatch.forget` too).
+  - Amendment (the third check's P3; written and compiled, not run): three test changes. (1)
+    `RailFrostmawGameTests.theSwingGoesToARiderOnTheNextCarriageBeforeABareBogeyInFront` (batch
+    `rail_frostmaw_riders_first`; MZB-365's amendment) on a new fixture, `Line.mixed` / `mixedCars` (a short
+    single-bogey carriage in front of a long one with a plank floor), `Line.planks` and `Line.standOn` (the riders
+    test's `stand` is now `planks` and `standOn`). It reads the strike's aim off the puppet's yaw, which the Lurker sets
+    at the strike, and the absence of a strike off `lurkStrikes`; the sampler's sight of the train off TRAIN_PASSED.
+    (2) `FrostmawGameTests.aHeldPuppetRemovedBySomethingElseLeavesNothingInTheLurker` (batch
+    `frostmaw_lurk_discarded`) drives the leak the killed-puppet test does not reach (MZB-361's third-check
+    correction): a held body discarded without the death path, the memo gone from the Lurker after. The killed-puppet
+    test passes on 86f97f99 (`settleDeaths` released first) and is kept as a guard, its "fails before" claim dropped;
+    the discard test and the module-off test fail there by reading (`FrostmawLurker.tracked` is new). (3) The
+    `trackNear` assertions of `RailDirectionsGameTests` and the curve test of `FrostmawGameTests` take the body's
+    height and the floor-up count (MZB-360's amendment).
 - **MZB-371** (run 1's ambush half):
   - The synth's rail lines also run as booked legs in a FakeWorld industry through `IndustryLink`, so
     `raid_train` finds the leg and its cargo.
   - Its Java emulation keeps the lurk table from AMBUSH_SPOT. It sends TRAIN_PASSED when a train of a line
     passes within 8 blocks of a lurk's track point, at the tick its timetable puts it there.
+  - Amended at step 4 (the build, `rtsim-cli/src/sim/mowzie/lurk.rs` and `rtsim-conflict/src/synth.rs`):
+    - **The legs.** `synth::rail_legs(lines, seed, jitter, to)` is the list `rail_events` is now written
+      over (the events are byte-identical for a line with `trains: 0`). `RailLine.trains` (0 = a fresh train
+      id per leg, as in M7; n = n trains that take the legs in turn, train `k` going again `DWELL_TICKS`
+      (600) after it arrives, so a train never overlaps its own leg). A leg runs out on the line's path and
+      back on the next lap of its train, and carries its `RailLeg { train, depart, duration }`.
+    - **The table's lag.** Java hears each command `LAG` (100) ticks after the engine says it (one command
+      drain, a placeholder). A pass in the few ticks between a lurk's end and Java hearing of it is the one
+      stale TRAIN_PASSED the engine may count, so "no pass is stale except just after a lurk ended" is checked
+      against the lurk's end, not against the table: a stale pass must fall in `[end, end + LAG]`. (With only
+      the lower bound, a table that kept a removed lurk's passes, by not dropping them on REMOVED, still
+      passed with 4953 stale passes at 12 legs a day and 12238 at 24; with the upper bound it fails with
+      those numbers.)
+    - **`synth::pass_tick(lines, leg, spot)`** is the first sampler tick (every 20 ticks, at the trains'
+      1.4 blocks a tick) at or after the polyline's nearest approach to the spot's track point, when that
+      is within the spot's reach.
+    - **The cargo.** Each line's two trains carry 1280 and 320 of one good a leg, so the Frostmaw's 64-item
+      carry binds on the first (a tenth of 1280 is 128) and the industry's 10% theft cap on the second
+      (32); two trains over a 2-day wait lose at most 64 + 32 each time they are robbed, 192 over the wait,
+      under §4.4's 256. (At 640 and 320 the first train's tenth was 64, the carry itself, so a carry of 1000
+      or no cap at all gave the same theft.) The run checks that every robbery takes `min(64, cargo / 10)`
+      of its train, and that each train's robberies all take the one value. Mutated, the carry at 1000
+      fails that check (59 of 119 robberies off at 12 legs a day, 48 of 96 at 24; the 1280-item train loses
+      128), the day and wait limits too (128 over 64; a wait of 320 over 256); with no cap (`theft_cap_ppm`
+      at 1,000,000) only that check fails (60 of 119, 48 of 96; the 320-item train loses 64).
+    - **The share.** `ambush_milli` rolls on every pass, but the industry's per-train cooldown
+      (`cooldown_ticks` 24,000) turns a hit into `attacks_skipped` when the train was robbed in the last
+      day. So the share is judged on the first pass of a train in each day of a wait that the cooldown
+      leaves open (not skipped, and the industry's own cooldown on the train over when the pass came: the
+      rig reads it with `Engine::train_cooldown_until(train)`, the latest of the train's per-class
+      cooldowns, so a robbery on a band's march, 16 of the 112 ambushes of the 24-a-day line, closes it
+      too), pooled over the two trains and both lines and 8 seeds; the roll's own rate over every counted
+      pass is checked against the same band as a second figure, and reported per line.
+    - **The roll's independence.** The rate of the roll on the counted pass that follows a miss of the same
+      lurk and train, and on the one that follows a hit, are each held to the same band (12 legs a day: 53%
+      of 325 after a miss, 51% of 363 after a hit; 24: 49% of 437, 53% of 450). Mutated to a roll keyed by
+      the train alone (`slot(train)` for `slot(train ^ at.rotate_left(32))` in the engine's roll), it fails
+      at 0% of 254 after a miss and 100% of 434 after a hit at 12 legs a day, 0% of 297 and 100% of 590 at
+      24; the share check fails too then (64%), but only by chance before.
+    - **Legs a day.** The detail line says what the trains made: 11.9 legs a day on the 12-a-day line and
+      23.9 on the 24-a-day line, so the two trains with a 600-tick dwell do keep the named rate (a
+      line's lap is well under 1,800 ticks in the rig's scene).
+    - **The three counts of a robbery.** The engine's `stats.lurk_robberies`, the TRAIN_ROBBED commands the
+      rig heard (the train and the tick of each) and the industry's own `books.stolen` delta for each pass
+      must agree pass for pass: the same trains at the same ticks, and the items the engine counted for a
+      pass equal the ones the industry booked. (The check was the engine's counter against the rig's count
+      of the engine's own command, one site: it could not disagree.)
+    - **What the emulation does not model (review B; documented, no engine outcome moves).** Each
+      divergence from MZB-363's sampler is a place where Java's pass can differ from the rig's by a few
+      ticks or by one pass, never by a rule:
+      - *Sample times.* `pass_tick` counts its 20-tick samples from the leg's departure; Java's sampler
+        samples a train every 20 ticks of its own phase (the server tick), not of the departure. A pass
+        can come up to 19 ticks earlier or later than the rig's.
+      - *One pass per leg.* The rig sends one TRAIN_PASSED for a leg, at the polyline's nearest approach.
+        Java re-arms an approach once the train is more than 64 blocks from the track point, so a leg that
+        runs by the point, away beyond 64 blocks and back within reach would send two. A rig leg is a
+        straight run and passes a lurk's point once.
+      - *The dimension* is ignored: the rig has one, and Java skips a lurk in another dimension from the
+        train's.
+      - *No TrainArrived reaches the industry.* The legs are booked as departed and never arrive there, so
+        a leg's cargo is not delivered and no stock moves except what a lurk takes. Cooldowns, theft caps
+        and the books are the industry's own all the same.
+      - *Curves.* The rig takes the polyline's nearest approach to the point against the spot's reach;
+        Java tests the chord of each 20-tick sample against it. On a curve a chord cuts across the bend,
+        so Java can read a nearer or a farther distance than the polyline's, and a point just inside or
+        outside the reach can differ. The rig's lines are one straight run each (`straight(x)`), where the
+        chord and the polyline agree, so no number here depends on it.
+    - **What Java must match when it lands (steps 5 and 6; these do move engine outcomes).** The rig's
+      table (`synth::LurkTable`, `hear` in `lurk.rs`) is the specification, and run 1's stale-pass check
+      (a stale pass only in `[end, end + LAG]`) fails for a Java that does not:
+      - *Drop by agent.* AMBUSH_REMOVED removes the lurk by agent, not by epoch. A lurk the engine saw
+        (`seen`) has its passes carry epoch E against the party's E+1, and its REMOVED goes out at E+1.
+      - *Latest wins.* A second AMBUSH_SPOT for an agent (a session start's resend, a watch's new epoch)
+        replaces the first; the table holds one lurk for each agent.
+      - *Clear at session end.* The table is per session and is empty at a new one; the engine sends each
+        lurk again once (MZB-353).
+      - *Drop the sampler's pending work on REMOVED.* The rig drops the agent's scheduled passes
+        (`self.due.retain(|_, tp| tp.agent != s.agent)`, `lurk.rs`) as it hears the removal, and again on a
+        new spot of the agent. In Java that is the sampler's approach state for the agent (MZB-363's
+        `approaches`) and any pass the same sample was about to send: a removed lurk sends nothing from
+        the tick Java hears it, and a lurk begun again by the agent starts armed.
 - **MZB-372** (run 8): save and restore, blob and paged, at four points: mid-lurk, in a cowed time, in a
   meter's decay (a booked `Ev::Rail` and held passes), and with a reconcile in flight.
   - Each is compared with an uninterrupted control: the outbox (by bytes, in order), the stats, and each
     feud's grievance by `to_bits` must be identical.
   - A session restart at each point sends exactly one more AMBUSH_SPOT per lurking party, and the next
     census orders the reconcile's lines again (M4).
+  - Amended at step 4 (the three lurk points are `lurk::trips`; the reconcile point is M4's
+    `reconcile_in_flight`, unchanged), each run on seeds 0 and 1 of the 12-a-day line:
+    - **Mid-lurk**: two dens' bands (the second den at (1200, 1000)) lie in wait at once, each with a
+      pass behind it; if the second never lurks while the first does, one band with two passes will do.
+    - **Cowed**: two dens lurk on the line; once the first den's band has a pass behind it, its chief is
+      killed (`chief_killed`, as run 7 does). A day later, inside the 6-day cowed time, a Killing signal of
+      twice the Raid rung's threshold provokes the first den's feud again, and the save or restart comes
+      right after it (in that order, the signal and then the trip). The control must be cowed at the trip,
+      and the second den must begin a lurk after it (the tail that is compared). The first den stays empty
+      for the rest of the run, and that is the rig's limit, not the engine's: the rig founds its dens with
+      `add_faction`, which makes no camp ledger (FACTION_FOUND is what makes it in the pack, `camp_found`),
+      and `plan_arrival` (a renewal culture's next member: the Frostmaw has no recruits,
+      `recruits_per_day` 0, so its next body is the renewal wait's, 6 days a first kill, 12 for a player's)
+      returns early for a faction with no ledger, so no arrival is ever booked and the feud climbs, waits
+      out the cowed time and blocks on the empty pool. Founding the dens by FACTION_FOUND would give them
+      ledgers, but a ledger camp draws its bodies from the camp world (`bodies_ready` is BLOCKED while
+      `drawable()` is short), so the rig would need the plugin's answers (run 6's `CampRun` has them);
+      that is not a small change to this rig. (Without the provocation the first den's feud sits at Notice
+      for the 56 days after, flat at its grievance: the meter's pressure alone does not climb back to
+      Raid.)
+    - **Decay**: the line runs 24 legs a day and is cut to 4 on day 7; the point is the first tick from
+      then with a band lurking, a held pass and a booked rail event (about day 9.3 in seeds 0 and 1, with
+      one lurk). So the meter is decaying and a lurk is in wait, its table and its passes among what is
+      saved. No lurk begins after the trip (the meter no longer climbs), which is why the lurk is compared
+      by the restart arms (one spot said again) and not by a new start. (The 12-a-day line cut on day 10
+      had no lurk at its point: the claim then covered the meter and the held passes only.)
+    - **The tapes.** Each arm leaves the same tape: the commands in wire order, the stats, the hourly
+      grievance by bits, the lurk table's own commands (`lurk_wire`) and the state hash. Blob and Paged
+      must equal the control's tape whole. The restart arm is compared by its lurk stream, its grievances and
+      the lurk and pass stats (the command stream differs only by the one resent spot per lurking party,
+      which is checked as `resent == lurking`). A second restart arm, `Trip::PagedRestart`, opens the engine
+      from its pages and then starts the session, as the host does after a crash or a clean shutdown (a
+      few lines on the same `restart` step); it is held to the same comparison and to no load drift.
 - **MZB-373** (what M8 needs):
   - From M7: `Target::Track` and the arrival's Track arm, the sampler with its per-train state, and
     RAIL_PASS live.
@@ -4131,6 +4988,26 @@ M8 is AMBUSH_SPOT, TRAIN_PASSED, TRAIN_ROBBED, the swipe and the roar (MOWZIE.md
   - M6 adds no `alwaysActive` and no lurk restriction, so M8 adds `Lurker`.
 - **MZB-374** (boundary.md): TRAIN_PASSED is live (the "come later" list, boundary.md:1752). AMBUSH_SPOT's
   spot y is the track's, with Java finding the floor. TRAIN_ROBBED's roar is a sound only.
+  - Amendment (review C, item 4): boundary.md's AMBUSH_SPOT section now states the spot-distance contract:
+    rail.rs `SPOT_BLOCKS` (5.0) against `AMBUSH_REACH` (8.0, the TRAIN_PASSED radius only), the sampler's
+    `STRIKE_REACH` (6.0, horizontal, on the landing point `SWING_TICKS` = 9 ticks on) and the Lurker's stand
+    (1.5 at the time; now 0.5, below) and restriction radius (2); the margin is 1.0 at the spot and was
+    nil-to-negative at the far side of a stand of 1.5, so the numbers move together. Its TRAIN_ROBBED section says who hears the station roar: a non-spectator
+    player in range who is not a NeoForge `FakePlayer` (`ConflictBridge.trainCalled` skips those; the
+    GameTests' `FakePlayers` hearer is a plain `ServerPlayer`, so it hears).
+  - Amendment (the build lead's spot-distance choice): boundary.md's contract paragraph is rewritten as the
+    checked rule of MZB-365's fourth amendment: `SPOT_BLOCKS + stand <= STRIKE_REACH` and `SPOT_BLOCKS - stand -
+    halfWidth >= RAIL_CLEARANCE`, with the stand 0.5, `SPOT_BLOCKS` mirrored in the sampler and pinned in Rust,
+    and the body's real rest looked at by the GameTest rather than assumed.
+  - Amendment (the re-check's P2): boundary.md's AMBUSH_SPOT section says where Java stands the body (the rail's
+    normal through `track`, `SPOT_BLOCKS` off the rail's centre line, the spot giving the side; refused when
+    neither side is standable; the engine's spot when no rail direction is known), and the contract's two
+    inequalities count `LATERAL_SLACK` (MZB-360's and MZB-365's amendments). The wire is unchanged: `spot` is
+    still the engine's point.
+  - Amendment (the second re-check's P3): boundary.md's contract block takes the diagonal's corner (`halfWidth *
+    sqrt 2` and the near slack 0.17), the floor within 2 of the rail's y, and the refusal when no direction is known
+    and a rail is within the body's half-width plus the rail clearance of the engine's spot (MZB-360's and MZB-365's
+    amendments). The wire is unchanged.
 
 ### M8 design for the implementer
 
@@ -4326,6 +5203,8 @@ each at its own far base, scripted engine):
      nothing. A second arrival with nobody near plays nothing, and the entry stays (`pendingRoars()`).
    - A scripted REMOVED: `alwaysActive` is false, `hasRestriction()` is false, and the agent is gone from
      `RtsimApi.lurks()`.
+   - Built at step 8, not run: the spot is 4 blocks off, the line 150 blocks and test 8 two tests (MZB-365's
+     second amendment, MZB-370's last).
 
 **Rust tests** (`crates/rtsim-conflict/tests/lurk.rs`):
 - The lurk's life: `a_raid_on_a_track_sends_its_ambush_spot`,
@@ -4339,22 +5218,35 @@ each at its own far base, scripted engine):
   `the_cooldown_bounds_a_train_to_one_robbery_a_day` (a FakeWorld industry).
 - News and persistence: `an_ambush_makes_no_news`, `a_lurk_survives_a_save_mid_wait` (blob and paged),
   `the_on_the_way_note_keeps_its_wording`.
-- rtsim-jni's protocol test: TRAIN_PASSED is live, not deferred, and reaches the engine with an
-  infrastructure.
+- rtsim-jni's protocol tests (`crates/rtsim-jni/tests/protocol.rs`, module `conflict`):
+  `a_train_passed_is_live_and_meets_the_lurk_of_its_own_time` (TRAIN_PASSED is live, `deferred` does not
+  count it; a pass stamped inside the wait meets a live lurk although the hand-over is past the patience, one
+  stamped after the end is stale; the lurk's start and removal reach the plugin once each, in Java's
+  dictionary) and `a_lurk_goes_to_the_plugin_once_after_each_session_start` (a lurk a replayed record made
+  goes once after a crash restart, not twice; the clean restart resends it once; fails with two spots when
+  the `retain` of MZB-353's amendment does not drop the queued AMBUSH_SPOT). The host's own catch-up
+  (`shared::catch_up`) is for the other modules: `Conflict::ingest` runs the conflict to the record's time
+  itself, so mutating the catch-up out changes neither test.
 
 **Sim runs** (`rtsim-cli sim mowzie`, MZB-330's seeds and tolerances):
-- **Run 1, the ambushes** (RUNS row 1's "ambushes M8"; MZB-371): the 12- and 24-a-day lines, each with two
-  trains.
+- **Run 1, the ambushes** (built at step 4; MZB-371): the 12- and 24-a-day lines, each with two trains,
+  over 8 seeds and 45 days.
   - Every Raid on a track sends AMBUSH_SPOT at its arrival and REMOVED when it ends.
   - At most 64 items are robbed per train per day, and at most 256 over a middling 2-day wait with two
     trains.
-  - The share of each train's first daily pass that robs is between 35% and 65% over the 8 seeds
-    (`ambush_milli` 500).
-  - The robbed goods are in the ledger's destroyed share (ledger 10). `stats.ambushes` equals the
-    TRAIN_ROBBED count.
-  - No TRAIN_PASSED is stale except after a lurk ended.
-- **Run 8, save and restore** (MZB-372): the four points, each blob and paged, against the control; then
-  the session restarts at each.
+  - Each robbery takes `min(64, cargo / 10)` of its train (cargo 1280 and 320: 64 and 32).
+  - The share of each train's first open pass of a day of the wait (the industry's cooldown on the train
+    clear) that robs is between 35% and 65% (`ambush_milli` 500), pooled over the trains and seeds; the
+    roll's rate over every counted pass is held to the same band, and so is its rate on the pass after a
+    miss and the one after a hit (independence).
+  - The robbed goods are in the ledger's destroyed share (ledger 10), and the industry's `books.stolen`
+    equals them. The engine's `stats.lurk_robberies`, the TRAIN_ROBBED commands heard and the industry's
+    books per pass agree (review A, P3: `stats.ambushes` also counts the on-the-way ambushes, which send
+    no roar, so it is the larger).
+  - No TRAIN_PASSED is stale except in the `LAG` ticks after a lurk ended.
+- **Run 8, save and restore** (built at step 4; MZB-372): the three lurk points (the Decay point with a
+  band lurking), each blob and paged, against the control; then the session restarts at each, plain and
+  after a load from pages. The fourth, a reconcile in flight, is M4's.
 
 **Work split** (in order; each step's tests green and committed before the next):
 0. Branch (MZB-350).
@@ -4414,6 +5306,231 @@ each at its own far base, scripted engine):
 - `start_fight` and `seen` bump the party's epoch, so the lurk table's epoch is older than the party's
   after a watch: TRAIN_PASSED is stale only on a later epoch (`<=`), never on an unequal one
   (`party_of`'s filter).
+- A SEEN lurk's passes carry epoch E (the spot's, which is what Java's table holds) against the party's
+  E+1, and they pass; but the REMOVED goes out at E+1. Java must drop a lurk by agent, never by an epoch
+  match (a table keyed or checked by epoch keeps the lurk of a band that was watched). Review C checks
+  this on the Java side (MZB-359).
+- `resend_lurks` says a lurk once per drain of the queue; once per SESSION is the host's `notices_due`
+  flag. A host that calls `resend_notices` twice in a session sends it twice.
+
+### The M8 merge (MZB-690 to MZB-692)
+
+M8 (feat/mowzie-m8 at 959ada91) merged M7 at 39c819f1 (a64599d6), M9 at 7153b7fe (74dd20ae) and main at
+5a45b9e6 (1885aa7d); docs/replay-gate.md §2.7 "The M8 merge" has the conflicts and §4.4 the gate rows;
+RP-150 to RP-153 the replay records.
+
+- **MZB-690** (the formats: RTC10 and META 9; the M8 merge): M8 appends its five stats (`lurks`,
+  `lurks_ended`, `passes`, `passes_watched`, `lurk_robberies`) to the saved stats list and kept M7's
+  format, since the list is length-prefixed and an older page reads zeros (MZB-357's amendment). On the
+  merged head M8 lands after M9 (RTC9, META 8), and a layout that changes at all takes a number of its
+  own, as M7's and M9's did: the blob is RTC10 and the meta page 9. The stats are M9's three
+  (`tribute_stacks`, `hunts_owed`, `hunts_killed`), then M7's seven, then M8's five; save and load
+  read the same fields in the same order. No migration: an RTC9 blob or a META 8 page is refused, as
+  every older one is ("meta page version 8, this build reads 9"). The magic is one little-endian
+  `u32` of four bytes and "RTC10" is five, so it is `RTCA` (A for ten, as in hex), written as RTC10 in
+  persist.rs's history; the 'RTC' prefix and one version byte stay, as in RTC2 to RTC9. Not taken: a
+  second magic word, or a version field after the magic (a blob layout change for a number). MZB-357's
+  "the pages stay at M7's format" holds for M8 alone, not on the merged head.
+- **MZB-691** (`Conflict::later` kept, empty; the M8 merge): M8 took TRAIN_PASSED out of `later` and
+  M9 took its grove kinds, so on the merged head `later` names nothing and returns false. It stays, with
+  its call in `ingest` and rtsim-jni's deferred branch, for a later slice's new record (MZB-23).
+  rtsim-jni's later-kinds test becomes
+  `no_record_is_deferred_and_each_reaches_the_engine`: `deferred` is 0, a CHIEF_PAID spends its op id
+  as before, and a TRAIN_PASSED for no party reaches `train_passed` and counts `stale`. Not taken:
+  deleting `later` and the deferred path (a design change for the slice that next needs it, not the
+  merge's).
+- **MZB-692** (a lurk refused at its placing discards the extras too; the M8 merge, ConflictBridge
+  `spawn`): M8 refuses a lurk whose hold point has no standable floor before any camp body is claimed,
+  discarding the bodies already made for the stack and unclaiming the hand-offs (the second re-check's
+  P3). M9 makes extras with a body (a raptor's pack, MZB-428), kept in `madeExtras` and discarded on
+  M9's own failure path. Without the merge's line the refusal left a made body's extras standing with
+  no puppet to follow. The refusal now discards `madeExtras` as M9's failure path does. A Frostmaw has
+  no extras, so no test of either branch reaches it; compiled, not run. The comment over the refusal
+  says, beside M8's "the camp body is still removed", that a grove's take waits while a player is near
+  (Rule U, MZB-433) and a den's goes at once.
+- **MZB-693** (the third-pass merge: M9's GameTest round fixes and slice N): M8 merged feat/mowzie-m9 at
+  c1bd6472, which carries M9's round fixes (MZB-675 to MZB-678) and main at 4e694452 (slice N, the nest
+  renewal serial, RTD8 and RTN8). The merge was clean. `tools/chunk_waits.py` then put the site-load
+  waits of M8's own GameTests on ChunkWait's two clocks: six tests in FrostmawGameTests and
+  `aLurkRefusedAtItsPlacingClaimsNoCampBodyAndTheSetOutIsATake` in MowzieGameTests. M8's rail
+  GameTests (RailDirectionsGameTests, RailFrostmawGameTests) needed no change.
+- **MZB-694** (the held puppets' waits on ChunkWait's clocks; M8's round fixes): M8's merged round failed 10
+  mowziesmobs GameTests under load (concurrent workspace cargo tests). Seven came from one test bug:
+  FrostmawGameTests' `Held` helper made its own waits, which `tools/chunk_waits.py` could not see, so their tick
+  budget counted from the test's start and a slow chunk load spent it ("not within 1500 ticks of the last chunk
+  wait", chunks not ready). `Held` now takes the test's `ChunkWait`, and its lurk and stand waits are chunk waits.
+  The nine tick-bound batches (the lurk taken, the dodges and the placings) carry `ChunkWait.NO_TICK_TIMEOUT`, as
+  the kit's other chunk-waiting tests do, and `taken`, `dodged` and `placedAt` make their own `ChunkWait` of 1,500
+  ticks. `chunk_waits.py --dry-run` reports the file unchanged.
+- **MZB-695** (the camp-body marker test runs with saving off): `aCampBodysDeathIsBookedOnAMarkerAndAStraysIsNot`
+  failed at "the Frostmaw carries its adopt answer" because vanilla's autosave (every 6,000 ticks, a few seconds
+  on an unthrottled GameTest server) came in the middle: the save asks the engine for one, its ack drops the
+  pending record, and the marker the test reads is gone. The test turns `ServerLevel.noSave` on for its span, as
+  /save-off does, and restores it however it ends (`ConflictKit.onEnd`). Its check now names the records it saw
+  and their generations. The other two failures of the round (a masked player targeted, a hidden stray counted
+  as a chief) are judged on a rerun on a quiet machine.
+- **MZB-696** (M9's grove world tests wait on the right clock): `tools/chunk_waits.py`'s default chunk patterns
+  are anchored (`^far\.ready\(`), so a wait on `st.far.ready()` was never seen as a chunk wait. In
+  UmvuthanaWorldGameTests, `aMaskedPlayerIsNotTargetedByTheBand` (2,400 ticks) and `raptorsHuntTheBasesAnimals`
+  (5,000) kept a tick timeout over their site load, and the masked player test failed in M8's round under load at
+  its last check. The script now converts both with `--chunk '^st\.far\.ready\('`. Two converted tests had
+  `waits.logic(st.far.ready())`, a chunk wait on the logic clock, and the chest test's HAVEN_CHEST wait loaded a 5
+  by 5 rect inside its logic wait; those are now `waits.chunks(...)`, the chest's split into a chunk wait and then
+  the logic wait for the record.
+- **MZB-697** (the masked player strikes from beside the warrior): on the rerun after MZB-696,
+  `aMaskedPlayerIsNotTargetedByTheBand` failed its reach check, "26.378878 of 26.36": after 100 ticks of walking
+  toward the bare player, even the warrior nearest the masked player stood past the hurt-by goal's reach of where
+  the masked player had stood (MZB-678 picked the nearest warrior, which was not enough). A player who strikes a
+  warrior stands within a blow's reach of it, so the masked player now steps to 3 blocks east of the struck
+  warrior (away from the bare one) before the blow. The reach check and the 20-tick answer stay.
+- **MZB-698** (the chase test measures from the hold point): `aHeldPuppetWalksBackToItsSpotAndDoesNotChaseItsTarget`
+  failed in both M8 runs the same way, "the closest it came to the spot 2.0, the closest it came to the player
+  6.441193965241448". The test was written before MZB-361's amendment moved the hold to the point Java chooses
+  beside the rail (`Slot.holdAt`), and still pushed the body off, and measured it from, the engine's spot: the
+  body walked back to its hold point, which is not the spot, so it never came nearer the spot than the push left
+  it. The dodge tests already read the hold point (`ConflictKit.lurkHold`). The chase test now does too: it checks
+  the body rests within `STAND` of the hold point, stands the player 8 blocks west of it, pushes the body 2 blocks
+  off it along z toward the floor's middle (so on the floor), and measures every distance and the floor of the
+  "never walked after the player" check from it.
+  - Amended by MZB-770: the reading was wrong. No rail direction is known on the mowziesmobs server, so the hold
+    point there is the engine's spot, and the move changed no number. The cause is MZB-770's.
+- **MZB-699** (train_passed_replay.rs takes the ring as well as the journal; the M8 merge with slice T, RP-187):
+  /tmp/mzbuild/rp-t-m8-test.rs, the draft of tests/train_passed_replay.rs, built unchanged against this head
+  (its `Conflict` API calls and the shared harness all matched). Two of its three tests passed; its third,
+  the J1 to J4 table, failed at J3 (64, not 128): the draft was written when the harness modelled only slice
+  T's journal index, where goods on disk without the journal doubled (J3) and the journal without the goods
+  duped (J4). The harness now models T2's ring too (`Dedup`, RP-190, RP-191), under which J3 and J4 give once,
+  as the dragons' and the ambush's tests have it. The code is right and the draft was stale: the third test is
+  now `which_of_javas_saves_landed_by_the_ring_and_by_the_journal`, the same table as rtsim-ecology's
+  train_raid_replay.rs (ring: once in all four cases; journal: J3 twice, J4 never), run through
+  `across_a_crash_on` for both, with the draft's assertions kept for the journal's rows and one added
+  assertion that the replayed pass robs again (`lurk_robberies` 1) in every row. The module doc no
+  longer says it is for a later merge. Nothing else of the draft changed but rustfmt's wrapping.
+- **MZB-770** (a held Frostmaw turns 90 degrees a tick on its walk back, as vanilla turns any mob; the chase
+  test's failure). The id: MZB-700 to 708 are M10's review fixes (291272be and after, on feat/mowzie-m10 and the
+  branches built on it), and 709 to 719 are in the range M10's brief claims, so this takes the first id no brief
+  claims and no branch uses.
+  - The failure: `aHeldPuppetWalksBackToItsSpotAndDoesNotChaseItsTarget`, the same in m8-gt1b and m8-gt7, "back
+    within 0.5 blocks of its spot in 200 ticks (1501 gone, the closest it came to the spot 2.0, the closest it
+    came to the player 6.441193965241448)". The body never came nearer its spot than the push left it and ended
+    1.88 blocks west, toward the player.
+  - Not the hold point: no plugin registers `RailAxes` on the mowziesmobs server and the test registers none, so
+    `holdPoint` takes the engine's spot and `ConflictKit.lurkHold` is the spot (MZB-698 amended). Not the jar's
+    chase: MZB-361's wraps hold (the three `moveTo(Entity, double)` calls of `EntityFrostmaw.tick` do nothing for a
+    held body).
+  - The cause, from the jar (cfr of mowziesmobs-1.21.1-1.8.2.jar, the build's): `EntityFrostmaw`'s constructor sets
+    `moveControl = new MMEntityMoveHelper(this, 7.0f)`, and `MMEntityMoveHelper.tick`'s `MOVE_TO` branch sets
+    `setYRot(rotlerp(getYRot(), f9, maxRotate))` and then `setSpeed(...)` every tick, whatever the angle: a
+    Frostmaw turns at most 7 degrees a tick while it walks on at full speed (vanilla `MoveControl` turns 90).
+    The bridge places a lurk puppet facing its track point (yaw 180 here, north), and the test's push went 2 blocks
+    north (`home.z < spot.z` was false with the hold point on the spot), on along its facing, so its spot was
+    straight behind it. From 180 the wrap turns it through 90, west: the walk back is a loop about 0.9 blocks in
+    radius toward the player 8 blocks west. In about 16 ticks the body is within the jar's swipe range of its
+    target (`targetDistance`, the distance less half the target's width, at most 6.5): `tick()` sends SWIPE or
+    SWIPE_TWICE whenever the body has no animation, so a new swipe starts in the tick the last one ends, before the
+    hold runs on `ServerTickEvent.Post`, and the hold yields to every animation (`FrostmawLurker.hold`: stop and
+    return). It never walked again while the player stood there. A planar model of the move control, vanilla
+    ground travel on stone and the swipe threshold gives the swipe at tick 16 and 6.41 from the player.
+  - Not the test's doing: the game puts a held puppet with its spot behind it (a camp body handed to its puppet
+    where it stands, with its own yaw, which the hold walks to the hold point; a body that leapt out of lava; one
+    that swung at a player and was moved), and the loop carries a body 2 blocks or more aside, toward the rail as
+    well as a player.
+  - The fix: `MMEntityMoveHelperMixin`, a `@ModifyArg` on the one `rotlerp(FFF)F` call in `MMEntityMoveHelper.tick`
+    (offset 388; its third argument is the `maxRotate` read at 385): for a Frostmaw that `FrostmawLurker.holds`, on
+    the server, it is `max(maxRotate, FrostmawLurker.TURN)`, 90. Other mobs that use the helper, and a Frostmaw not
+    held, keep the jar's turn. In the planar model the body is back within `STAND` in 10 ticks, at most 0.16 aside
+    of the straight way, never nearer the player than 7.9.
+  - The test: it now sets the body 2 blocks from the hold point toward the track point and faces it at the track
+    as the bridge does, so the spot is straight behind it on purpose (not by the placement's facing surviving the
+    look goals), and it checks the walk back keeps within `STAND` of the straight way (`aside`) besides the old
+    checks. Its comments no longer say the hold point lies beside the rail here. In m8-gt9 (all 73 mowziesmobs
+    tests passed) it was back within `STAND` in 20 ticks, at most 0.160 aside of the way, never nearer the player
+    than 7.948, and stood 100 ticks within the stand with no new path.
+  - Left as it is, for the lead: a held puppet off its spot with a player within the jar's swipe reach swipes
+    back to back and is not walked back while the player stays. The hold yields to animations by design (MZB-361);
+    with the turn fixed the walk back no longer carries a puppet toward a player.
+  - The other line of m8-gt7, "a per-tick hook failed ... conflict agent 4300d1607fa84c12 holds no party yet" in
+    `aMaskedPlayerIsNotTargetedByTheBand`: `MowzieKit`'s Post listener catches a hook's `RuntimeException`, logs it
+    and keeps the hook, which runs again the next tick until the test ends (not dropped, not retried within the
+    tick). `everyone` tests for a null party, but `ConflictKit.party` throws instead, so the watch hook threw once,
+    in the tick between the recall's removal of the party and the test's success. Its checks were made before
+    (the unprovoked watch, which "a body went for the bare player" shows saw the band): not vacuous, left as it is.
+
+- **MZB-935 to MZB-939** (the rail GameTests' first run: `create -PwithMowzie` at da5aea80, 6 of 262 failed). The
+  rail tests 8 and 9 (`RailFrostmawGameTests`: the ice ball, the lurk and its variants) were written over M8's
+  re-checks "compiled, not run" (their records say so), and this is the first round of them on record. Five of the
+  six failures are theirs, one is a port-ring test. The causes were found with a temporary copy of the 13 rail tests in a
+  namespace of their own (`mic_rtsim_create_dbg`, so a round ran them alone, 5 minutes) with a log line a tick of the
+  puppet, the carriage and the strike (m8-r7-dbg; not committed), and the fixes were run on the same copy (m8-r7-dbg2,
+  13 of 13) before the full rounds.
+  - **MZB-935** (a carriage's entity box is not the carriage: `aLurkingFrostmawSwipesARiderStandingAtTheMiddleOfALongCarriage`
+    and `...AtTheRearOfALongCarriage`, "no carriage box touched the puppet's"). The pass itself was right (a strike, the
+    zombie hurt, 7.8e-7 degrees off the bearing, `overlapped true` the only fault). `LurkRun.sampleSwipe` took the carriage
+    entity's `getBoundingBox()`, which is the contraption's bounds moved to its anchor
+    (`AbstractContraptionEntity.setPos`), and Create's assembly widens those bounds to a square about the anchor, as far as
+    the farthest block and two more (`StationBlockEntity` calls `Contraption.expandBoundsAroundAxis`), whatever the yaw.
+    The 9-block carriage's bounds were `[-9, 0, -9]` to `[10, 2, 10]`: an entity box 19 blocks square, reaching the puppet's
+    box, whose near edge is 3 blocks from the rail's centre line; the seated tests' carriages are short, and only the two
+    long-carriage tests failed. Test only: `touches` asks whether a block of the contraption, where it stands in the world
+    (`toGlobalVector`), touches the puppet's box. The rear test passes with it (m8-r7-dbg, dbg2); no block of any carriage
+    touched a puppet in any run. `TrainSampler.RAIL_CLEARANCE`'s "clear of the carriages' boxes" reads as the carriages'
+    blocks (the sampler never asks for the entity box).
+  - **MZB-936** (the riders-first test's premise was out of its own margin:
+    `theSwingGoesToARiderOnTheNextCarriageBeforeABareBogeyInFront`, "the near plank is inside the swipe's reach
+    (6.708203932499369 of 6.800000011920929)"). The track point two blocks past carriage 0's bogey put the near plank
+    4 along, 5 across and 2 up from the puppet, 6.708 in 3D, and the test wants it 0.3 inside the swipe's 6.8. Nothing
+    of M8's code was involved: the premise was wrong from the start. The point is now three blocks past: the bogey 5.83
+    from the puppet (inside the strike reach, 6.0), the near plank 6.164, the far plank 10.488, the two bearings 61.9
+    degrees apart (m8-r7-dbg). With the premises right the test then met MZB-937 (a roar pushed the zombie off the
+    plank), and passes with it fixed: the first strike 2.9e-8 degrees off the zombie, 61.9 off the bogey (m8-r7-dbg2).
+  - **MZB-937** (an awake Frostmaw roars on its own, and a roaring puppet refuses its strike:
+    `aLurkingFrostmawForAnObliqueDenStandsOnTheRailsNormalAndSwipes`, "the lurk struck at 1.0 (0)"; in m8-r7-dbg the
+    same message in four of the nine pass tests, and the riders-first test's first strike at the bare bogey). Not
+    oblique-specific: a rerun passed the oblique test and failed others. The per-tick log of the failing passes shows the
+    puppet in one 76-tick animation (the same object in each, from 7, 27, 26 and 1 ticks on when the log began until the
+    end, none in a passing run, which shows no animation and then the swipe's 28 ticks), so `FrostmawLurker.strike`
+    (`getAnimation() != NO_ANIMATION`) refused every call while the rider was in reach. A puppet without a target
+    starts one animation by itself: the jar's ambient roar. cfr of mowziesmobs-1.21.1-1.8.2.jar:
+    `EntityFrostmaw.tick` sets `active` every tick for an always-active body (line 384), `Mob.baseTick` rolls
+    `nextInt(1000) < ambientSoundTime++` (the timer counts up from -80), and `playAmbientSound` (line 333), for an
+    active body, sends `ROAR_ANIMATION` (76 ticks) one time in four. That is about one tick in 500, so by that
+    arithmetic a swipe window of a few ticks is lost to a roar that began in the 76 ticks before it about one pass in
+    seven (r6 saw one in eleven, m8-r7-dbg four in nine). The roar's
+    `doRoarEffects` also pushes every living entity within 10 blocks away (with the crystal): in the riders-first run it
+    carried the standing zombie 1 block and off the plank (`riders 0`), and the strike after the roar went to the bogey.
+    It is not a change M8 made, but a gap in M8's hold: the Lurker's job is to hold the body awake and swipe, and a
+    lurking body that roars at random gives itself away, spoils the one roar that means something (MZB-366's, after a
+    robbery) and loses its swing. The fix is in the hold, `FrostmawLurker.hold`: a body in hand has its
+    `ambientSoundTime` put at -1 whenever it is 0 or more, which the roll never beats; the core holds once a tick after
+    every level ticked, so the roll never sees it above 0. The body keeps its other behaviour (its idle breath, its own
+    swipes at a player, a roar by `roar`). A choice that is easy to undo; the lead may prefer the test alone to be quiet
+    (set `ambientSoundTime` in the GameTests). The test is `aHeldPuppetsAmbientSoundTimerStaysBelowZero` (the timer put
+    at 700, the hold run, the timer below 0; before the fix the hold left it at 700, read not run: the rail tests' roared
+    passes are the old code's failing run, m8-r7-dbg 6 of 13 failed, m8-r7-dbg2 13 of 13 with the fix).
+  - **MZB-938** (Create holds a train with a player aboard at a chunk it cannot see ahead:
+    `theIceBallHitRatesAgainstAMovingTrain`, "the front reached the east end (-6085297.5)", on the first pass). The
+    train stood at x0 + 14.5, where its approach to the west end had ended, for the test's 16,000 ticks. m8-r7-dbg's log
+    shows `train.speed -0.5` with the lead not moving and `Train.carriageWaitingForChunks` set (to a carriage's id).
+    cfr of create-1.21.1-6.0.10.jar: `Carriage.DimensionalCarriageEntity.alignEntity`, for a carriage with a
+    `Player` passenger within 32 blocks, looks 16 blocks ahead of the carriage along the way it moves and, when that
+    point is not in an entity-ticking chunk (`CarriageEntityHandler.isActiveChunk`), sets the field and returns before it
+    moves the entity, so the lookahead never changes; `Train.tick` takes the field as zero distance. The ice rider is a mock
+    player (the other tests' riders are mobs, and the static ice test does not move). The forced chunks end where the
+    track does, the approach turned at x0 + 15 (a tick at 2 blocks, so x0 + 14.5), and 16 blocks on lies in the chunk
+    beyond. Test only: the passes turn `ICE_ENDS` (24) from the track's ends, 16 for the lookahead, 2 for a tick's travel
+    and slack. Passed in m8-r7-dbg2 (hits 4/4, 3/4, 1/4, 0/4 at 0.5, 1.0, 1.4 and 2.0, a rate, no gate).
+  - **MZB-939** (`aRestoredBufferWhoseChunkOutlivedTheTracksTakesAPackageOnce`, "one package in the buffer, primed, the
+    op in its ring": not found, not fixed). Nothing of M8's or of the Mowzie plugin is on its path (PortRing,
+    WritePackages, TrainRing and the station mixins are main's, unchanged by M8). It failed in both `-PwithMowzie` rounds
+    at the same batch order (r6; r7 at ed1d23b1, "packages 0, primed false, the op in the ring false, answers [1]": the
+    write was answered APPLIED, and the port the test reads, the one it put in its station, got nothing), passed in the
+    same head's `-Psec1fx` round (257 of 257), where the batch runs one place later, and passed in r8 (261 of 262) and in r9 at the final head (262 of 262). So
+    the write went to some other port: `WritePackages.port` takes the first port at the postbox's position in any
+    graph's station, and the postbox's chunk is the station's plus 7300 chunks, a position another test's station
+    can reach (the GameTest grid's cells are placed by the batch order, which `-PwithMowzie` shifts by one). Not
+    shown, because the diagnostic that would show it (`portsAt`: every station's port at the position, named MINE or
+    OTHER, with its buffer, `primed` and ring) came after the failing runs and the test passed with it. It is in the
+    check's message now, with the buffer's packages, `primed`, the ring and the answers heard.
 
 ## M9 Umvuthana
 
@@ -7951,7 +9068,7 @@ conservative option at its fork.
 | 0x0808 ENVOY_ANSWER | the envoy's | `ingest`'s fold; a copy, `ingest_copy`'s |
 | 0x0809 TRIBUTE_PAID | the envoy's (agent 0: at the camp, no party) | `ingest`'s fold, before the op-id dedupe; agent 0 names no party, so nothing to fold |
 | 0x080B BAND_LOOTED | the party's | `ingest`'s fold, before the op-id dedupe and the unheld fight's skip; a copy, `ingest_copy`'s |
-| 0x080D TRAIN_PASSED | the party's | A later kind: `ingest`'s fold comes before the `later` return; a copy goes to `ingest_copy` from rtsim-jni's later-kind branch (changed here: it called `ingest`) |
+| 0x080D TRAIN_PASSED | the party's (the lurk table's) | Read since the M8 merge (`train_passed`, no longer a later kind, MZB-691): `ingest`'s fold while replaying, before `train_passed`'s stale check, which compares the party's epoch (RP-151, RP-152); a pass that is not stale is counted and rolls as live, at its journaled tick (since RP-187; RP-154's guard, which rolled nothing while replaying, is gone); a copy, `ingest_copy`'s fold, then the record is dropped (RP-150). Java journals it at once with no holder, so none is copied. Before the merge: a later kind, `ingest`'s fold before the `later` return; a copy went to `ingest_copy` from rtsim-jni's later-kind branch (changed here: it called `ingest`) |
 | 0x080F CAMP_CENSUS, 0x0812 CAMP_BODIES, 0x0813 CAMP_OUT | a camp's (u64) | Java's op id for the census, never an epoch the engine allocates, so it cannot name one the engine would issue again; `party_epoch` is None. M6's census body bit BODY_CRYSTAL names none either |
 | 0x0817 HAVEN_CHEST (handling changed, MZB-764) | none | Nothing to fold. A grove's chest, free slots and place, latest wins. Changed: a HAVEN_CHEST with no free slot that names a parked stack's own chest no longer lets the stack go again (the plugin reports a chest full when it looks again after an answer and the chunk is gone). Every other HAVEN_CHEST lets a parked stack go again, to its own chest: a report with room, and a report of another chest, full or not (as the MZB-764 test asserts); so does CAMP_OUT |
 | 0x0111 COMMAND_RESULT of a tribute stack (handling changed, MZB-762, MZB-765, MZB-767) | none | Nothing to fold: a status for an op, not a party. Changed: a FAILED answer forgets the grove's chest and the lair's only if it is still the stack's own, and places the next stack at once if a chest is kept (`tribute_failed`, grove and dragons); the dragons place it only while they run, so a FAILED heard with ECOLOGY off books the coin back and makes no stack (RP-291, MZB-767), and the grove's answers heard off are kept and applied after the switch-on's reset (RP-292); the grove's status match is over `wire::CommandStatus`, with no `_` arm, and a status it does not know takes nothing, as before. NOT_LOADED is unchanged (MZB-760, MZB-761) |
@@ -8287,6 +9404,120 @@ docs/replay-gate.md §2.7 "The M9 merge" has the conflicts and §4.4 the gate ro
     the chief slot (slot and generation), and an Umvuthi that leads a party has no stack in it
     (MZB-414), so no chief death goes through `casualty_ops`.
 
+### The M8 merge (RP-150 to RP-153)
+
+M8 (feat/mowzie-m8 at 959ada91) merged M7 at 39c819f1 (a64599d6), M9 at 7153b7fe (74dd20ae) and main at
+5a45b9e6 (1885aa7d); docs/replay-gate.md §2.7 "The M8 merge" has the conflicts and §4.4 the gate rows;
+MZB-690 to MZB-692 the build records.
+
+- **RP-150** (a copied TRAIN_PASSED; the M8 merge, point 2): TRAIN_PASSED (0x080D) names the lurk's
+  agent and the epoch of the lurk table's entry, with no op id, and no holder carries it:
+  `ConflictBridge.trainPassed` journals it at once. Until the merge it was a later kind: rtsim-jni's
+  later-kind branch sent a copy to `ingest_copy`, which folded its epoch and passed it to `ingest`,
+  where `later` dropped it. With `later` empty (MZB-691) a copy would reach `train_passed` and roll
+  again, at the copy's tick and so in a new slot (`train ^ at.rotate_left(32)`), and could rob the train a second
+  time (I25's cooldown aside). Java never sends one; as RP-104 does for RAIL_PASS, `ingest_copy` no
+  longer trusts that: it folds the copy's epoch (RP-57, as for every kind) and drops the record.
+  Test: tests/lurk.rs `a_copied_train_passed_is_dropped_and_robs_nothing` (a copy at `ambush_milli`
+  1000 counts no pass and no robbery, asks no threat and leaves the band lurking; the control, the
+  same pass ingested, counts (1, 1) and robs train 7; without the arm the copy counts (1, 1), checked
+  and undone).
+- **RP-151** (TRAIN_PASSED while replaying; the M8 merge, points 1 to 3; §4.4's M8 paragraph;
+  corrected by RP-154, which replaces its roll): with `later` empty a replayed TRAIN_PASSED reaches
+  `train_passed`. `ingest` folds its epoch first (RP-57), then the party must exist, lurk and not be
+  of an older epoch than the record's, else `stale`. A pass that is not stale is counted
+  (`passes`, `passes_watched`) and, while replaying, rolls nothing (RP-154). This record first read
+  that it rolled as live (the same key, slot and game time) and took the goods from industry at
+  industry's present, as M7's `Ev::Ambush` does while replaying, on the reasoning that the conflict
+  and industry pages are saved in one batch, so a robbery after the save is in neither. That was
+  wrong for a pass the live session robbed: industry is not held (§3.6, RP-24; decided by the
+  coordinator, 2026-10-24), and `attack_train` derives its op from industry's present, so the replay's
+  robbery is a different op from the live one and Java removes the goods a second time (RP-154).
+  Its TRAIN_ROBBED would have dropped at the gate in any case (the roar is lost, RP-12). The lurk
+  itself is state: `lurk_start` and `lurk_end` run while replaying as live, their AMBUSH_SPOTs drop
+  at the gate, and `resend_lurks` says each lurk still standing at the replay end, at its epoch after
+  the floors (§4.4). No ambush spot is chosen from a pass: the spot is the target's
+  (`Target::Track`), fixed when the raid set out. Nothing is decided while replaying that §5 or §6
+  would hold: a seen lurk embodies through BAND_MATERIALIZE's early returns, and sightings wait (§6).
+  No change beyond RP-154's. (Since the M8 merge with slice T, RP-187: RP-154's guard is gone, so a
+  replayed pass that is not stale rolls as live and its robbery is the live op, answered DUPLICATE;
+  the text above stands as it was written.)
+- **RP-152** (a pass stale while replaying after two crashes; the M8 merge, point 2; a residual, not
+  built): `train_passed` compares the record's epoch with the party's, not with the floor, since
+  `ingest`'s fold has put the record's epoch in the floor already (a check on the floor would pass
+  every record). After a crash the party's epoch rises to its floor only at `replay_done`, and the
+  AMBUSH_SPOT `resend_lurks` sends carries that epoch. So with pages at epoch E, records of E+1
+  journaled after them, and a second crash before the next page save, every pass the second
+  session journaled (epoch E+1, the table's) up to its world save W2, not one train's, finds the
+  party at E when the third session replays it, paged, and is stale. Those passes robbed live. The
+  replay robs nothing of them, as it robs nothing of any replayed pass since RP-154, stale or not;
+  what staleness costs is their count (`passes` and `passes_watched` miss them, `stale` gets them).
+  Losing is the right direction (lose, never double), bounded by one world-save interval of passes.
+  The option not taken: read the party's floor as it was before the record's fold (a per-record
+  snapshot in `ingest`), for a case that needs two crashes inside one page interval and, since
+  RP-154, buys only the count. (RP-187 dropped RP-154's guard: a pass that is not stale rolls again
+  in the replay, keyed as live, so Java answers DUPLICATE for the goods the live robbery took.
+  A stale pass still rolls nothing, so its goods stay taken once and the count is still all it
+  costs.)
+- **RP-153** (the rest of the eight points; the M8 merge, points 3 to 7; no change):
+  - Point 3, the camp claim. A lurk's puppet takes a camp body only through `Camps.claim`, which
+    matches this hand-over's SET_OUT lines by agent, epoch and body, for a camp that is in at the
+    line's epoch. A lurk begins at the track after the march, so a lurking party is never placed in
+    the hand-over of its own set-out; and no SET_OUT goes while replaying (the Reconcile row's
+    "never", every camp out from `begin_replay`). A set-out no materialize claims, or one a refused
+    lurk unclaims (`spawn`'s hold-point refusal comes before the claim), resolves at the tick's end
+    as a take (`resolveSetOuts`), which waits while a player is near for a kind that holds removals
+    (a grove's, Rule U, MZB-433) and goes at once for a den. MZB-224's hold and M6's recount hold
+    (`c.recount`, `strayHold`) hold SPAWN lines only, and no lurk makes one; MowzieGameTests'
+    `aLurkRefusedAtItsPlacingClaimsNoCampBodyAndTheSetOutIsATake` pins the refusal.
+  - Point 4 (RP-66). M8's protocol tests drive the lurk through `with_conflict_mut` and the engine's
+    own orders, not `Order::ConflictCommand`, so the wait for the replay end changes none of them.
+  - Point 5 (MZB-589). M8's one BAND_CASUALTIES literal (tests/lurk.rs) carries `op: next_op()`;
+    no M8 test counts hand-overs, so `ONE_HAND_OVER` is not needed.
+  - Point 6. `arrive`'s arm order is M7's (Envoy, Scouts, peaceful, Track, then the hold, §6.1);
+    M8's `lurk_start` is in the Track arm, before the hold, so a lurking arrival is never held, and
+    on Peaceful a band at a track goes home without lurking. M7's `rail_held` (RAIL_PASSes held per
+    train for a line) and M8's lurk do not meet: the lurk has no held state, it is derived from the
+    party's phase, kind and target (MZB-357).
+  - Point 7. M8 adds nothing to `Faction`, so MZB-672's FactionRow pin followed M9's row: 200 + 24
+    + 8 = 232 with M9's hunts unboxed (M9 at 7153b7fe), and since the second-pass merge of M9's
+    check fixes (42e8fcc3), which boxes them, 200 + 8 + 8 = 216 again (RP-155).
+- **RP-154** (a replayed TRAIN_PASSED rolls nothing; the M8 fixes pass, P2; corrects RP-151): in
+  `train_passed`, after the pass is counted (`passes`, and `passes_watched` when watched), `if
+  self.outbox.replaying() { return; }` comes before the roll. A pass the replay brings back is
+  counted and never rolls: no `ambush`, no `raid_train`, no TRAIN_ROBBED, `lurk_robberies` unchanged.
+  Why: the roll is keyed by train and the record's `at`, so a pass the live session robbed hits
+  again in the replay; industry is not held (§3.6, RP-24) and `attack_train` (rtsim-industry
+  `engine.rs`) derives its IND_CARRIAGE_DELTA op from industry's present `now`, so the op differs
+  from the live one and Java (`TrainWatch`, `opApplied`) removes the goods a second time. Lose,
+  never double: a robbery the live session never made (the pass came after the pages and the
+  industry save) is lost too, bounded by one world-save interval of passes; the cargo stays on the
+  train. The option not taken: derive industry's attack op from the threat's `at` and the train
+  id, so that Java answers DUPLICATE_OP for a replayed robbery and the replay may roll as live;
+  main's `Ev::Ambush` shares the root (it too robs at industry's present while replaying), so the
+  lead asked the coordinator, and this guard is the conservative option until that answer comes.
+  `stats.lurk_robberies` counts only the robberies told to Java, so only a live session's (its
+  doc at `Stats` says so). Test: tests/lurk.rs `a_replayed_train_passed_is_counted_and_never_rolls`
+  (`begin_replay`, a pass at `ambush_milli` 1000, which hits when it rolls: counted (1, 1 watched),
+  no threat asked, no loot, no ambush note, no TRAIN_ROBBED, `lurk_robberies` 0; the control, after
+  `replay_done` the same pass live robs train 7; without the guard the test fails at "no attack on
+  the train was asked", checked and undone). RP-151, RP-152, RP-57's 0x080D row, replay-gate.md
+  §4.4 and boundary.md §9.3 say a replayed pass rolls nothing.
+  **Amendment (the M8 merge with slice T, RP-187).** The guard is gone. What it protected against
+  was the replayed robbery being a different op from the live one (industry's attack op came from
+  its present). Slice T's keyed op (RP-180, `attack_key`: the threat's id, source and class, and
+  the train) is the same op, so the replayed pass is ingested at its journaled tick, rolls the slot
+  it rolled live (`train ^ at`) and its threats carry the live ids: Java answers DUPLICATE and the
+  goods leave the train once. The option RP-154 did not take is the one that landed (A's keyed op,
+  RP-180). The loss RP-154 accepted, a robbery the live session never made, is gone with the
+  guard: the replayed pass makes it. `lurk_robberies` counts a replayed pass that robs again, as
+  the live session counted it; its TRAIN_ROBBED drops at the gate while replaying (a roar,
+  RP-12), so the counter can exceed the TRAIN_ROBBED told to Java (`Stats`'s doc says so). The
+  test `a_replayed_train_passed_is_counted_and_never_rolls`, whose first half asserted the guard,
+  is deleted; tests/train_passed_replay.rs replaces it (three tests, RP-187, MZB-699). The text
+  above is as the M8 fixes pass wrote it; RP-151, RP-152 and RP-57's 0x080D row carry the
+  correction, and so do replay-gate.md §4.4 and boundary.md §9.3.
+
 ### The M9 check (RP-133 to RP-134)
 
 The Opus check of the M9 merge (feat/mowzie-m9 at 7153b7fe) found one P2 and four P3s; P3-3 and
@@ -8414,6 +9645,44 @@ pointer above; P3-4 is the RP-134 wording above. No format change: RTC9 / META 8
     session 3 was sent the hunt again; after, session 2 sends session 1's op and session 3 nothing.
   - Residual: `resolve`'s industry threat ids still hash the poll's tick (an observation only, never
     sent), as RP-133 said.
+
+### The M8 second-pass merges (RP-155 to RP-156)
+
+The M8 fixes pass (RP-154, rail.rs's guard, af4c72d1 and its format commit) came first; then each
+merge, its own commit, with feat/mowzie-m8 as the first parent.
+
+- **RP-155** (feat/mowzie-m9 at 42e8fcc3: RP-133 hunt ops of held raids, RP-134 tribute stacks,
+  MZB-672 amended, MZB-673; the FactionRow pin). Two conflicts. rtsim-jni engine/conflict.rs's
+  module doc: M9's HAVEN_CHEST sentence ("latest wins, and has no op id, so `Conflict::ingest_copy`
+  drops a copy, RP-130") over M8's, and M8's `later` sentence (none since M8's TRAIN_PASSED and M9's
+  grove kinds) over M9's "TRAIN_PASSED": both facts kept, no code. This file: both sections kept
+  (the M8 merge's, with RP-154, then M9's check). Everything else merged without a conflict, and
+  `later` stays empty. The pin: M8's first merge raised tests/rail.rs's
+  `a_world_with_no_rail_keeps_base_layout_but_for_pointers` to 200 + 24 + 8 = 232 because M9's
+  `Faction.hunts` was an unboxed Vec; M9's check boxes it (`Option<Box<Vec<Hunt>>>`, MZB-672
+  amended) and changes the same line to 200 + 8 + 8 = 216. One test, one value: M9's side is taken
+  (the 232 side would fail), M8 adding no `Faction` field, so the row is M9's 216 plus nothing
+  (re-derived: the test passes at 216 in the merged tree). M9's new tests (`mowzie_records.rs`,
+  `grove.rs`, protocol.rs's stack tests) run beside M8's lurk tests and pass.
+- **RP-156** (origin/main at a11311aa: M6 landed with its P3s, its fixtures at RTC7 / META 6, slice S
+  and SEC-1 S6). No conflict, and the merge changes only rtsim-view's `fixtures.rs` and its fixture
+  data (the saves of 1290d0b7, conflict meta page 6): the rest of main had come with the earlier
+  merges of it. `cargo test --workspace`: the five fixture tests fail as on every earlier merge,
+  since this build reads META 9 (rtsim-view `fixtures`:
+  `the_core_gametest_save_draws_every_layer_and_writes_nothing` and
+  `the_create_gametest_save_draws_every_layer_and_writes_nothing`; `hashes`:
+  `every_gametest_save_carries_and_matches_each_modules_hash` and `a_hash_that_differs_is_flagged`;
+  rtsim-host `host`: `gametest_worlds_open_in_the_host_with_their_saved_state`). A sixth,
+  rtsim-cli `view`'s `at_100000_districts_a_full_world_request_keeps_the_budget_and_the_sidecar_its_cap`,
+  failed once in the loaded full run (its district card carried the note "Its machines are read
+  from the world as the card is opened: 0 of its 2 chunks so far", a timing note) and passes alone:
+  a load flake, not the merge's. The sims regenerated on the merged head (`sim conflict` and `sim
+  mowzie`, every check of every run ok) are the committed files but for `wall_ms`: they came in
+  unchanged, M6's changes were in M8's sims already, and neither M9's check fixes nor RP-154 moves
+  a run (no sim replays a pass). Against main (a11311aa) the differences are M7's, M8's and M9's
+  and the same as the M8 merge listed: sim-conflict's three stat sets and the conflict state hash;
+  sim-mowzie's runs built by M7, M8 and M9, M8's lurk checks, M9's grove checks and plunder at node
+  4 (0 items spare, not 1), and the state hashes in its save checks.
 
 ### Slice H (herds)
 
@@ -9415,6 +10684,12 @@ TRAIN_PASSED test is written for the M8 merge (RP-187).
   keys, DUPLICATE, the goods once. Its three tests mirror the dragons': both orders, industry
   holding the robbery, and the J1 to J4 table. Main's `Ev::Ambush` was given no guard: A is its
   fix, as the coordinator ruled.
+  **Done** (feat/mowzie-m8, the M8 merge with slice T): the guard, its comment and the lurk.rs
+  test are gone and the fn and `Stats` docs say what is true (258b9a14); tests/train_passed_replay.rs
+  is added (dae325da; MZB-699 says what was changed from the draft); the docs are de2436bd (RP-154's
+  amendment, RP-151, RP-152, the RP-57 row, replay-gate.md, boundary.md).
+  Without the guard the new tests pass; with it put back, two of the three fail on
+  `lurk_robberies` (0, not 1: the pass is counted and does not roll).
 - **RP-188** (the pirates' `defer`; the brief's question 4): `Outbox::defer()` is true while the
   outbox replays, and `coast_raid` returns at its top, counted deferred and never retried (RP-95).
   So a coast raid the live session made is either inside the replayed window, where the replay
