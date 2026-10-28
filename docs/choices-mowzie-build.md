@@ -11778,6 +11778,11 @@ rounds of phase 2 are the check, and what they found is recorded after them.
   known (the ability needs no target in the jar's `SpawnFollowersAbility`, and no join handler in the module or the core cancels a
   stray Umvuthana before the test's listener, at its highest priority, sees it). The check's message now names the throne body (alive,
   removed, puppet, its ability, no AI, position) so the next round says whether the cast ran, and nothing else is changed.
+- **MZB-918** (round at 8391671a, test 29b `aHeldTakeIsAnsweredStaleAsThePuppetComesHome`; MZB-823): after MZB-914's check it failed at "the held line is
+  gone (1)". `Camps.handBack` holds the HAND_BACK of every chief puppet that floats aloft until it is home (MZB-822), and grove C's HAND_BACK
+  was sent in the step before H's walk home, with C's puppet 45 blocks off at 0.1 a tick, which is longer than H's walk to within
+  TAKE_STALE of its throne: so one line is held when H's take is answered, C's own. The check counts it (one while C's hand-back is
+  unanswered, none after) and names both. Not run yet.
 
 ## M12 S9
 

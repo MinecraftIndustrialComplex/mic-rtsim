@@ -2625,7 +2625,11 @@ public final class AloftMowzieGameTests {
                     // it has healed 0.3 a tick out of battle in the walk home (MZB-914): its own, from THRONE_OWN, and well short of the puppet's
                     check("H's throne body has its own health still, healed from " + THRONE_OWN + " and short of the puppet's (" + throne[0].getHealth() + ")",
                             throne[0].getHealth() >= THRONE_OWN - 1.0e-3f && throne[0].getHealth() < throne[0].getMaxHealth() - 20f);
-                    check("the held line is gone (" + (MowzieKit.camps().heldLines() - was[2]) + ")", MowzieKit.camps().heldLines() == was[2]);
+                    // C's own HAND_BACK is held while its puppet floats home (Camps.handBack holds every chief puppet that floats: MZB-822), 45 blocks
+                    // at 0.1 a tick, longer than H's walk: it is the one held line left (MZB-918)
+                    int cHeld = ConflictKit.outcomes(g[1].faction, handBack[1]).isEmpty() ? 1 : 0;
+                    check("H's held line is gone (" + (MowzieKit.camps().heldLines() - was[2]) + " held, C's hand-back held " + cHeld + ")",
+                            MowzieKit.camps().heldLines() == was[2] + cHeld);
                     // the engine's own home sends the chief's HAND_BACK, with its memory of a chief at home (no player named)
                     ConflictKit.chiefBody(g[0].faction, epochOf(g[0]), 180f, List.of());
                     handBack[0] = MowzieKit.reconcile(g[0].faction, epochOf(g[0]), g[0].spot, 3f, List.of(
