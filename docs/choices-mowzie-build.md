@@ -11743,6 +11743,11 @@ rounds of phase 2 are the check, and what they found is recorded after them.
   blocked, the push is nil, and the knockback event still fires. The puppet's "did not move" check passed for the same reason (and the
   count of one, since the event fires), so it tested nothing either. The blasts now stand two blocks beside each body at the height of
   its middle, in the lane's air, so the control is pushed and the puppet's equality is a test of the hook. Not run yet.
+- **MZB-911** (round 2, test 23d `aStuckUmvuthiRisesThenIsMoved`; MZB-811): its check "each is under the ceiling (-43.0, -43.0 under
+  -57.2)" failed. The room under the ceiling was `top + 6 - height` = -57.2 (a box 3.2 tall) and a floating puppet's foot is 3 over the
+  floor, at -57.0, so the ceiling's bottom face was inside the puppet's box from the start: vanilla's `move` ignores a block the box
+  already overlaps, the puppets rose through the stone, and both stood at the raised target over it (-43.0 = the ceiling's top, 7 over
+  the floor, + 2 + 8). The ceiling is now 8 over the floor, 1.8 blocks of room, with the rest of the test unchanged. Not run yet.
 
 ## M12 S9
 

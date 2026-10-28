@@ -1178,7 +1178,8 @@ public final class AloftMowzieGameTests {
     /**
      * A puppet that cannot rise is raised, held and moved to its place (test 23d; MZB-811). Three lanes, one band each, all steered
      * 60 blocks on: A's, whose masked player stands 30 blocks off with a clear line; B's, with no player within 160; and the control's,
-     * clear. Once each puppet floats, a stone ceiling is laid over A's and B's, 3 blocks over the foot (30 long, a lane wide): the
+     * clear. Once each puppet floats, a stone ceiling is laid over A's and B's, 8 blocks over the floor (the puppet's foot floats 3 over it and its
+     * box is 3.2 tall, so the room under the ceiling is 1.8 blocks; a ceiling at 6 over the floor, laid first, was inside the box, MZB-911) (30 long, a lane wide): the
      * rule sees it and aims over it, the puppet cannot rise through it and takes no step across while its target is high, so
      * neither makes headway.
      * <ol>
@@ -1215,7 +1216,7 @@ public final class AloftMowzieGameTests {
         double[] place = new double[2];
         long[] moves = {0};
         long[] buried = {0};
-        int ceiling = 6;
+        int ceiling = 8;
 
         MowzieKit.seq(helper)
                 .thenExecute(() -> {
