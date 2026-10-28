@@ -9399,8 +9399,8 @@ code changed, so there is no failing-first test: each is a wrong expectation of 
 
 - **MZB-941** (the first round the march tests ever ran in, read by the rows below):
   - *They failed before the merge.* MZB-742 says the tests were written and "none run by the implementer (the build rule)", and
-    the records of M10 hold no round of them. The first rounds that ran them were M11c's, on M10's code with none of main's
-    changes (`feat/mowzie-m11` at 33d628e1, `MarchGameTests.java` identical to 1f200ee5's): `target/m11c-gt1-core.log` and
+    the records of M10 hold no round of them. The first rounds that ran them were M11c's, on M10's code plus M11's and none of main's
+    new changes (`feat/mowzie-m11` at 33d628e1, `MarchGameTests.java` identical to 1f200ee5's): `target/m11c-gt1-core.log` and
     `m11c-gt2-core.log` there fail the same tests at the same checks, six of the seven both times (the pending test passed in
     both). The 49fef870 round differs only in that one.
   - *`theMarchRecordMatchesTheBodies`, "worst 1.60"* (the grid's position changes the figure only through the sign of an axis). The record's second leg began at tick
@@ -9448,6 +9448,22 @@ code changed, so there is no failing-first test: each is a wrong expectation of 
     tick. The wait is now 40 idle ticks and the check is the same, that no march is kept; the number of records read is logged (0
     here, 1 on the stub). Production is right: an engine that has switched a module off decides and writes nothing for it. After that
     wait the test had four steps left that have not run (the switch on, the column forming again, revision 1 kept, the recall).
+  - *The Mowzie module's round on the fix (`target/m10fix-mowzie.log`, 80 tests, 6 failed) found the same kinds of fault in M10c's
+    and M10's tests there, none in production.* Core's helper, `ConflictKit.bodyName`, named only the goblin kit's three bodies, so a
+    survivor map of the Umvuthana read `{body 59=2}` and never equalled `Map.of(MowzieKit.WARRIOR, 2)`:
+    `aGroveThatIsOutRecalls...`, `theTrimAndTheRecallSeeAsFar...` and `aBandSetsOutAndComesHomeInPlainView` (also failed at M11c,
+    `{body 66=1}`). It now falls back to the name the journal's dictionary holds for the id. `aBandWalksHomeInViewAndIsHandedBack`
+    (also failed at M11c, 0.0 blocks; 2.08 here): the same unread steer as the stop test above, with a wait that "arrived" at the old
+    ends; it waits for `steered` to move first. `aHandBackWhoseJoinAnotherModCancels...` (also failed at M11c) ended by waiting for
+    `ConflictKit.party(agent) == null`, and `ConflictKit.party` throws when there is no party ("holds no party yet"): the gone party
+    that the wait is for made it fail; both reads there are `bridge().party` now (MZB-751's follow-up, which no round had run).
+    `aStrayInAHiddenChunkInsideTheRadiusIsListedOnceItsChunkShows` ("census 2 lists the stray as a chief (0)"): not explained, see
+    below.
+  - *Not explained.* That stray test lists no body in census 2. Main changed none of the Java under `conflict/`
+    (`git diff 44199d09 49fef870^2 -- neoforge/core/src/main/java/.../conflict` is empty), so the census and `Camps` are as they were at
+    M10; the test is M6's (MZB-660, MZB-661) and no round of M10's lineage is on record. It ran 24 s of wall time after its batch began
+    on a loaded machine (the create round of the lead's queue held 10 GB beside it). A census taken in the tick the chunk shows,
+    before its entities are listed, would clear `strayWatch` with nothing found (`Camps.java:981`); that is a guess, not seen.
   - *Why production is right, in one line each.* The column and its bodies, the chart and the stop's square, the trim, and the
     module switch did what their records say in all five; what each test asserted beyond that was the test author's guess, which the
     first round could not have known (MZB-743 says as much of the tolerances: "if they prove too tight on a first run the failure

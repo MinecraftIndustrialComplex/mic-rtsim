@@ -956,7 +956,8 @@ public final class MowzieGameTests {
                     MowzieKit.allOutcomes("HAND_BACK with the join cancelled", ConflictKit.outcomes(grove.faction, op[0]), STALE);
                     check("nothing handed back", MowzieKit.camps().handedBack == handed[0]);
                     check("the camp holds no body", MowzieKit.held(grove.faction).isEmpty());
-                    ConflictBridge.Party party = ConflictKit.party(agent[0]);
+                    // bridge().party, not ConflictKit.party: that one throws for a party that is gone, which is one of the answers (MZB-941).
+                    ConflictBridge.Party party = ConflictKit.bridge().party(agent[0]);
                     check("the band is walked home all the same", party == null || party.recalling());
                     // The engine's slot is Owed with no party: its next order is a SPAWN, the join no longer cancelled.
                     MowzieKit.cancelCampJoins = false;
@@ -970,7 +971,7 @@ public final class MowzieGameTests {
                             MowzieKit.held(grove.faction, 0, 1).size() == 1);
                 })
                 .thenWaitUntil(waits.logic(() -> {
-                    check("the party is gone", ConflictKit.party(agent[0]) == null);
+                    check("the party is gone", ConflictKit.bridge().party(agent[0]) == null); // ConflictKit.party throws for a gone one (MZB-941)
                     check("the first puppet is gone", puppet[0][0].isRemoved());
                     check("the second puppet is gone", puppet[0][1].isRemoved());
                 }))
