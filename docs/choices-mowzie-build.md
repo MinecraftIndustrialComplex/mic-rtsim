@@ -11774,8 +11774,10 @@ rounds of phase 2 are the check, and what they found is recorded after them.
   `x0 + 56 - 0.3 * (ticks since the second steer)`, which passes the west end (`x0 + 4`) where the anchor stops, so the target ran west
   of the lane and the anchor went west-north-west: with the puppet east of it and closing at 0.1, its way stays within 46 degrees of
   west for the 198 ticks. The x is clamped at the west end, so the leg is due north and the way is 55 degrees off its facing after
-  about 85 ticks. The check's message also names what it saw (`dueAfter`, the puppet's position, yaw, facing, lag and re-pairs). Not
-  run yet.
+  about 85 ticks. The check's message also names what it saw (`dueAfter`, the puppet's position, yaw, facing, lag and re-pairs). In the round at 8391671a it failed again and its own numbers contradict: `dueAfter`
+  printed all 0, though the second turn's check before it needs `dueAfter[1]` not 0 and passed, and "since 160927 ticks ago" puts the game time at the
+  tick after the second re-pair (160926), though the step waits 198 ticks after it. The message now also prints the game time, the tick the wait
+  began and the second steer's. Cause not known.
 - **MZB-917** (round 2, test 24 `theChiefsSummonsArePuppets`; MZB-816): "and the throne body's (0)": the puppet's warriors came (three or
   more tagged joins) and the throne body's, sent the same SPAWN message in the same step, made none, in 8,000 ticks. The cause is not
   known (the ability needs no target in the jar's `SpawnFollowersAbility`, and no join handler in the module or the core cancels a
