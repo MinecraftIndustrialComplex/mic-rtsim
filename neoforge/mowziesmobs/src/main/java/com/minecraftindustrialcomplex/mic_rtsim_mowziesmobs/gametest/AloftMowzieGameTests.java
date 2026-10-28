@@ -4267,10 +4267,17 @@ public final class AloftMowzieGameTests {
             Integer direction = null;
             Byte flags = null;
             java.util.TreeSet<String> sent = new java.util.TreeSet<>();
-            int run = 0;
-            for (int i = k + 1; i < ps.size() && BUNDLED.contains(ps.get(i).getClass()); i++) {
+            int run = 0, complex = 0;
+            // The complex spawn payload comes second in the bundle, right after the add (ServerEntity.sendPairingData asks the entity for its own pairing
+            // data before the synched data), because the jar's MowzieEntity is an IEntityWithComplexSpawn, and the re-pair lets it through (MZB-873). A
+            // run that stopped at it read no direction, no flag byte and no effect (MZB-959).
+            for (int i = k + 1; i < ps.size() && (BUNDLED.contains(ps.get(i).getClass()) || isComplexSpawn(ps.get(i))); i++) {
                 run++;
                 net.minecraft.network.protocol.Packet<?> q = ps.get(i);
+                if (isComplexSpawn(q)) {
+                    complex++;
+                    continue;
+                }
                 if (q instanceof ClientboundSetEntityDataPacket d && d.id() == id) {
                     for (SynchedEntityData.DataValue<?> v : d.packedItems()) {
                         if (v.id() == directionId && v.value() instanceof Integer n)
@@ -4282,8 +4289,12 @@ public final class AloftMowzieGameTests {
                     sent.add(e.getEffect().getRegisteredName() + "/" + e.getEffectAmplifier());
                 }
             }
-            if (direction == null || direction != body.getDirectionData())
-                note("tick " + now + ": the bundle carries direction " + direction + ", the body's is " + body.getDirectionData());
+            if (direction == null || direction != body.getDirectionData()) {
+                StringBuilder after = new StringBuilder();
+                for (int i = k + 1; i < ps.size() && i <= k + 6; i++)
+                    after.append(' ').append(ps.get(i).getClass().getSimpleName());
+                note("tick " + now + ": the bundle carries direction " + direction + ", the body's is " + body.getDirectionData() + " (after the add:" + after + ")");
+            }
             if (flags == null || (flags & 0x40) == 0)
                 note("tick " + now + ": the bundle's flag byte is " + flags + ": no glowing bit");
             java.util.TreeSet<String> have = new java.util.TreeSet<>();
@@ -4292,7 +4303,12 @@ public final class AloftMowzieGameTests {
             if (!sent.equals(have))
                 note("tick " + now + ": the bundle's effects are " + sent + ", the body's " + have);
             if (hearer == 0)
-                facts.add(String.format("tick %d: yaw %.1f (old %.1f, way %.1f), %d packets after the add", now, yaw, old, way, run));
+                facts.add(String.format("tick %d: yaw %.1f (old %.1f, way %.1f), %d packets after the add, %d of them the complex spawn payload", now, yaw, old, way, run, complex));
+        }
+
+        private static boolean isComplexSpawn(net.minecraft.network.protocol.Packet<?> q) {
+            return q instanceof net.minecraft.network.protocol.common.ClientboundCustomPayloadPacket c
+                    && c.payload() instanceof net.neoforged.neoforge.network.payload.AdvancedAddEntityPayload;
         }
     }
 

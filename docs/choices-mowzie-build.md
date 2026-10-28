@@ -11852,7 +11852,8 @@ rounds of phase 2 are the check, and what they found is recorded after them.
   one running after it is the ROAR (`getActiveAbilityType() == ROAR_ABILITY`). The check of 20 ticks stays (the jar's ROAR is 70) and so does everything the test
   asks of the module: no add while an ability is active, the re-pair 2 to 12 ticks after it ended, after two ticks held. The per-tick hook that clears the stuck
   machine (MZB-955) ran before the parties were made and logged an error for each of the first ticks (`conflict agent ... holds no party yet`); it skips an agent
-  with no party. Not run yet.
+  with no party. In the round at 53934bdc (before the merge of U-e) the ROAR checks passed, and so did the two re-pair windows, the third turn
+  (MZB-955's hook works: it was due) and the kill; 31s then failed at the last step (MZB-959).
 - **MZB-958** (round at 6e912760, test 24 `theChiefsSummonsArePuppets`; MZB-816, MZB-956; a test expectation, not a production fault; the cause is read from the code,
   not seen): "the warrior's animation has ended (not within 8000 ticks of the last chunk wait)". The kill came about 180 ticks after the chunk wait and the wait
   ran to its bound, 7,800 ticks (the progress bar prints a line each 20 ticks: 402 lines from the chunk wait to the failure). A warrior's death ends in
@@ -11867,8 +11868,19 @@ rounds of phase 2 are the check, and what they found is recorded after them.
   entities (`RtsimSession.entitiesTickAt`) and, with none, teleports the first to the lane's middle, as the bridge puts back a stray; a record line says how many
   of the warriors stood in a ticking chunk, and the wait's message gives the killed warrior's state (removed, dying, death time, health, ability, position, whether
   its chunk ticks entities, ticks lived), so a failure with the chunk ticking is a different finding. What the test asks of the module is as before: a warrior
-  killed by a player books no BAND_CASUALTIES and no CHIEF_KILLED, the band keeps its members, the puppet stays the chief's, and none of the summons is saved. Not
-  run yet.
+  killed by a player books no BAND_CASUALTIES and no CHIEF_KILLED, the band keeps its members, the puppet stays the chief's, and none of the summons is saved.
+  Passed in the round at 53934bdc (the record line of that round says how many of the warriors stood in a ticking chunk).
+- **MZB-959** (round at 53934bdc, test 31s `anAloftUmvuthiReadsAndTurns`; MZB-813, MZB-873; a test expectation): "the server's body and the packets agreed in every re-pair:
+  [the bundle carries direction null, ... no glowing bit, ... the bundle's effects are []]", for both hearers at both re-pairs. The last step of the test was reached for
+  the first time (no round before it got past the third turn). `Reading.packets` read the run of packets after the re-pair's add packet while their class was one of
+  `BUNDLED`, and the second packet of a Mowzie body's pairing is not one: `ServerEntity.sendPairingData` asks the entity for its own pairing data right after the add
+  and before the synched data, and the jar's `MowzieEntity` is an `IEntityWithComplexSpawn`, so NeoForge adds a `ClientboundCustomPayloadPacket` carrying an
+  `AdvancedAddEntityPayload` there, which `Repairs` lets through on purpose (MZB-873) and the `Hearer` keeps (it records the packets of a bundle before it drops the
+  payloads from what it sends on). The run ended at once with nothing read. The module's bundle is as designed: the add, the payload, the synched data (the direction,
+  the flag byte), the attributes and the effects. The run now goes past a complex spawn payload (and no other custom payload), counts them, and the record line says how
+  many of the packets after the add were one; the note for a missing direction names the classes that follow the add, so a bundle that really lacks the data says what it
+  has instead. Not run yet.
+
 
 ## M12 S9
 
