@@ -11747,7 +11747,10 @@ rounds of phase 2 are the check, and what they found is recorded after them.
   -57.2)" failed. The room under the ceiling was `top + 6 - height` = -57.2 (a box 3.2 tall) and a floating puppet's foot is 3 over the
   floor, at -57.0, so the ceiling's bottom face was inside the puppet's box from the start: vanilla's `move` ignores a block the box
   already overlaps, the puppets rose through the stone, and both stood at the raised target over it (-43.0 = the ceiling's top, 7 over
-  the floor, + 2 + 8). The ceiling is now 8 over the floor, 1.8 blocks of room, with the rest of the test unchanged. Not run yet.
+  the floor, + 2 + 8). The ceiling is now 8 over the floor, 1.8 blocks of room, with the rest of the test unchanged. In the round at 8391671a the two checks under the ceiling passed and the test failed at "B's raise read 8,
+  16 and 24 (337417, 0, 0)": B's raise read 8 once and then 0 again (which the test reads as B moved) without 16 or 24 coming and with no hold. The
+  stuck machine resets for headway (0.5 blocks nearer its place in 100 ticks) or for coming within 8 blocks of it. Cause not known: the check now
+  names the most raise read, the tick B moved, the stuck-move count, B's position, its place and the ceiling's room.
 - **MZB-912** (round 2, test 23b `anAloftUmvuthiSettlesAndRises`; MZB-809, MZB-812): "it rose no sooner than 200 ticks after its last
   player target (-20)". The flag was dropped and the player put back in view in one tick, but the jar picks its target only every few
   ticks, and the rule had seen no player target for 400 ticks, so it rose at once and the target came 20 ticks after it. The player is
