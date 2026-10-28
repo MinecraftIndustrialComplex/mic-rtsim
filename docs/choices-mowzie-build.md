@@ -5520,17 +5520,32 @@ RP-150 to RP-153 the replay records.
     beyond. Test only: the passes turn `ICE_ENDS` (24) from the track's ends, 16 for the lookahead, 2 for a tick's travel
     and slack. Passed in m8-r7-dbg2 (hits 4/4, 3/4, 1/4, 0/4 at 0.5, 1.0, 1.4 and 2.0, a rate, no gate).
   - **MZB-939** (`aRestoredBufferWhoseChunkOutlivedTheTracksTakesAPackageOnce`, "one package in the buffer, primed, the
-    op in its ring": not found, not fixed). Nothing of M8's or of the Mowzie plugin is on its path (PortRing,
-    WritePackages, TrainRing and the station mixins are main's, unchanged by M8). It failed in both `-PwithMowzie` rounds
-    at the same batch order (r6; r7 at ed1d23b1, "packages 0, primed false, the op in the ring false, answers [1]": the
-    write was answered APPLIED, and the port the test reads, the one it put in its station, got nothing), passed in the
-    same head's `-Psec1fx` round (257 of 257), where the batch runs one place later, and passed in r8 (261 of 262) and in r9 at the final head (262 of 262). So
-    the write went to some other port: `WritePackages.port` takes the first port at the postbox's position in any
-    graph's station, and the postbox's chunk is the station's plus 7300 chunks, a position another test's station
-    can reach (the GameTest grid's cells are placed by the batch order, which `-PwithMowzie` shifts by one). Not
-    shown, because the diagnostic that would show it (`portsAt`: every station's port at the position, named MINE or
-    OTHER, with its buffer, `primed` and ring) came after the failing runs and the test passed with it. It is in the
-    check's message now, with the buffer's packages, `primed`, the ring and the answers heard.
+    op in its ring"; test only, found and fixed). Not a wrong-port write and not another test's station: the failing
+    message of the round with the extended diagnostic lists one station with the port at the postbox, at (-10361743, -59,
+    13842531), which is exactly the test's own station position (the test's origin plus 16, the floor, plus 29), marked
+    OTHER, with `packages 1, primed true, op in ring true` (the write went where it should), and "the test's station is one
+    of them: false". The postbox lies 7300 chunks (116,800 blocks) from the station in x and z, by the test's own
+    arithmetic, so the listed postbox position is the test's frame, not a neighbour's. So the station object the test kept
+    from its first look is no longer on any graph, and the station on the graph at the same block is a new one. Create makes
+    a station's edge point anew when the track beside it is propagated again: `TrackBlock.tick` (one scheduled tick for each
+    block of the 30-block track) calls `TrackPropagator.onRailAdded`, which removes the graph nodes next to the block and with
+    them the edge points on their edges (`TrackGraph.removeNode`, `invalidate`), and the station's block entity makes a new
+    `GlobalStation` from the old one's migration data (ports and rings included, `GlobalStation.read` and the ring mixin
+    read them). A block's tick waits for its chunk to tick with its entities loaded (`ServerLevel.isPositionTickingWithEntitiesLoaded`),
+    which on the unthrottled GameTest server is real time, and the track crosses a chunk border, so the station (joined
+    from its own chunk's ticks) can be on the graph before the other chunk's blocks have ticked. `-PwithMowzie` shifts the
+    load and the order of chunk work, which is why it showed in half of those rounds and not in `-Psec1fx` ones.
+    Reproduced deterministically by `aRestoredBufferTakesAPackageOnceThoughCreateMadeItsStationAnewBeforeTheWrite` (the same
+    test with `TrackPropagator.onRailAdded` called on the track under the station before the write): it failed with the
+    message above (one station, "OTHER", the test's own position) on the test's old code. Fix, in `PortRingGameTests`:
+    every test waits (`settled`, paced) for the station on the graph and for no scheduled tick left on its track, and looks
+    the station up in its block entity at each use (`Station.get`). Production is unaffected: the new station keeps the
+    port, its package and its ring, and `WritePackages.port` finds it on the graph. Run: the debug copy of the class
+    (`mic_rtsim_create_dbg`, the old and the new text side by side, stub engine) failed the variant on the old text and
+    passed everything on the new; `create -PwithMowzie` at the fix passed 268 of 268 (a round is one draw of a roughly
+    even coin, so it shows the fix does not break the class, not that the flake is gone; the wait records, per test,
+    the track ticks still waiting when the station first joined and whether it was made anew since: 0 and false in all 13
+    of that round).
 
 ## M9 Umvuthana
 
