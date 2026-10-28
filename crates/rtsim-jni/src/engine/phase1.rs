@@ -350,8 +350,8 @@ pub(super) struct Link {
     /// after the shared modules' catch-up to its tick, at the switch-on, at the next `simulate`
     /// when on, and before a viewer module runs the shared clock past them ([`shared::run_to`]).
     kept: VecDeque<Logged>,
-    /// Phase 1 came on in a MODULES record whose switch-on drain has not run yet, with what the
-    /// window held when it came on ([`SwitchOn`]): set by [`set_enabled`] (none when nothing was
+    /// Phase 1 came on in a MODULE_SWITCH record whose switch-on drain has not run yet, with what the
+    /// window held when it came on ([`SwitchOn`]): set by [`switched`] (none when nothing was
     /// kept), taken by `shared::resets` ([`drain_when_due`]), after the viewer modules that came
     /// on in the same record have applied the records they kept (RP-300, the joint switch-on).
     /// Not saved.
@@ -1090,19 +1090,24 @@ pub(super) fn catalog_item(st: &State, g: GoodId) -> Option<&'static str> {
 // ---- hooks: session and latest-wins records -------------------------------------------------------
 
 /// SESSION_START: puppets never outlive a session, and Java forgot the latest-wins snapshots.
-pub(super) fn session_start(st: &mut State, module_mask: u32) {
+pub(super) fn session_start(st: &mut State) {
     let l = &mut st.phase1;
     l.puppets.clear();
     l.players.clear();
     l.markets_sent.clear();
     l.spawn_near.clear();
     l.queue.retain(|c| c.kept_op().is_some());
-    l.enabled = phase1_on(module_mask);
     l.last_interest = i64::MIN;
     l.last_market = i64::MIN;
 }
 
-/// The switch changed (MODULES; U10, Ben: "Ignore everything"). **Off:** every phase 1 puppet is
+/// The flag as the pages' mask (or SESSION_START's, when the pages hold none) leaves it, before any
+/// record (docs/choices-journal-barrier.md U-e6): no work of a switch, only the flag.
+pub(super) fn start_flag(st: &mut State, mask: u32) {
+    st.phase1.enabled = phase1_on(mask);
+}
+
+/// The switch changed (MODULE_SWITCH; U10, Ben: "Ignore everything"). **Off:** every phase 1 puppet is
 /// captured back, one last write, so no caravan trades or is robbed in game while the sim ignores
 /// it; what was queued for this session (MARKET, MERCHANT_OFFERS, SENTIMENT, spawns, steering)
 /// is dropped. Commands the bridge answers by op id (gossip, houses, residents) decided before the
@@ -1112,12 +1117,12 @@ pub(super) fn session_start(st: &mut State, module_mask: u32) {
 /// a trade, a taken member, a house placed, an adoption, a report...) are still heard: kept at
 /// their own ticks while off ([`Link::kept`], RP-300). **On:** the kept inputs are applied in
 /// time order, each at its own tick ([`drain_kept`]), by [`drain_when_due`] in the reset step of
-/// the same MODULES record (`shared::switch`), not here: a viewer module that comes on in that
+/// the same MODULE_SWITCH record (`shared::switch`), not here: a viewer module that comes on in that
 /// record (ECOLOGY, the conflict) has records of its own kept from the same window, and each of
 /// them must meet the world at its own tick, between phase 1's inputs, not after all of them
 /// (the joint switch-on). Then the world runs to now at the next simulate (its missed events at
 /// once) and materializes again.
-fn set_enabled(st: &mut State, on: bool) {
+pub(super) fn switched(st: &mut State, on: bool) {
     let l = &mut st.phase1;
     let was = l.enabled;
     l.enabled = on;
@@ -1154,7 +1159,7 @@ fn set_enabled(st: &mut State, on: bool) {
 }
 
 /// What phase 1's window held when it came on, for the line of its switch-on drain
-/// ([`switch_on_drain`]): taken when the MODULES record is heard, because on a joint switch-on the
+/// ([`switch_on_drain`]): taken when the MODULE_SWITCH record is heard, because on a joint switch-on the
 /// viewers' kept records drain part of the window (each one's catch-up applies the inputs up to
 /// its own tick) before the drain itself runs, and a line counted at the drain would cover only
 /// the rest, or none of it.
@@ -1185,12 +1190,12 @@ impl SwitchOn {
     }
 }
 
-/// The switch-on's drain, if [`set_enabled`] made it due: the third step of the resets
-/// `shared::resets` runs for a MODULES record, after the viewer modules that came on with
+/// The switch-on's drain, if [`switched`] made it due: the third step of the resets
+/// `shared::resets` runs for a MODULE_SWITCH record, after the viewer modules that came on with
 /// phase 1 have applied the records they kept (each after the catch-up that already applied
 /// phase 1's inputs up to its own tick, `shared::run_to`) and before their replay ends. What is
 /// left is the rest of the window: phase 1's inputs after the viewers' last kept record (none, if
-/// a viewer's record was the later). It runs at that MODULES record also when no viewer came on
+/// a viewer's record was the later). It runs at that MODULE_SWITCH record also when no viewer came on
 /// with it. Logs the line of [`switch_on_drain`], which covers the whole window, once.
 pub(super) fn drain_when_due(st: &mut State) {
     if let Some(line) = switch_on_drain(st) {
@@ -1231,9 +1236,6 @@ fn switch_on_drain(st: &mut State) -> Option<String> {
 pub(super) fn observe_state(st: &mut State, rec: &Rec<'_>) {
     let b = rec.bytes;
     match rec.kind {
-        obs::MODULES if rec.size() >= obs::modules::SIZE => {
-            set_enabled(st, phase1_on(wire::u32_at(b, obs::modules::MASK)));
-        }
         obs::PLAYER if rec.size() >= obs::player::SIZE => {
             let key = (
                 wire::u64_at(b, obs::player::UUID_MOST),
@@ -3657,22 +3659,12 @@ mod tests {
         b
     }
 
-    /// MODULES as phase 1 alone hears it (`observe_state`).
+    /// A MODULE_SWITCH as phase 1 alone hears it (`switched`).
     fn hear_modules(st: &mut State, mask: u32) {
-        let b = record(obs::MODULES, obs::modules::SIZE, 0, |b| {
-            wire::put_u32(b, obs::modules::MASK, mask)
-        });
-        observe_state(
-            st,
-            &Rec {
-                kind: obs::MODULES,
-                aux: 0,
-                bytes: &b,
-            },
-        );
+        switched(st, phase1_on(mask));
     }
 
-    /// A MODULES record's phase 1 side: phase 1 hears the mask, and the resets the engine runs for
+    /// A MODULE_SWITCH record's phase 1 side: phase 1 hears the mask, and the resets the engine runs for
     /// it after every flag is set (`shared::resets`) take the switch-on's drain, if it is due
     /// (RP-300). The other modules' flags are left as the test set them: [`switch_all`] sets them
     /// too.
@@ -4537,7 +4529,7 @@ mod tests {
         assert_eq!(st.phase1.kept_len(), 1);
     }
 
-    /// The engine's MODULES step as the lib sees it: phase 1 hears the mask, then the four
+    /// The engine's MODULE_SWITCH step as the lib sees it: phase 1 hears the mask, then the four
     /// modules switch together (`shared::switch`: every flag, then the resets).
     fn switch_all(st: &mut State, mask: u32) {
         hear_modules(st, mask);
@@ -4566,7 +4558,7 @@ mod tests {
     /// (without phase 1's bit, every viewer off too) are switched off together; phase 1 hears a
     /// village at tick 1,000, `keep` has a viewer module keep a record of tick 2,000 (journal it
     /// off), and phase 1 hears another village at tick 3,000. Then everything is switched on in
-    /// one MODULES record. Returns the state with what each kept record of a viewer met when it
+    /// one MODULE_SWITCH record. Returns the state with what each kept record of a viewer met when it
     /// was applied (`State::kept_probe`).
     fn a_joint_window(on: u32, keep: impl FnOnce(&mut State)) -> State {
         const OFF: u32 = 0b0_0111;
@@ -4605,7 +4597,7 @@ mod tests {
         st
     }
 
-    /// RP-300, the joint switch-on (review P2): phase 1 and ECOLOGY, which share a MODULES, come
+    /// RP-300, the joint switch-on (review P2): phase 1 and ECOLOGY, which share a MODULE_SWITCH, come
     /// on in one record, after a window off in which phase 1 heard a village (tick 1,000), the
     /// dragons heard a death (tick 2,000), and phase 1 heard another village (tick 3,000). The
     /// death meets the world at its own tick: the village before it is in, the one after it is
@@ -4733,7 +4725,7 @@ mod tests {
     }
 
     /// A switch-on of phase 1 alone (no viewer module comes on with it, so no reset begins) still
-    /// drains in its MODULES record, in the resets' step for it, not before: phase 1 hearing the
+    /// drains in its MODULE_SWITCH record, in the resets' step for it, not before: phase 1 hearing the
     /// record leaves the inputs kept, and the drain takes them in time order, each at its own
     /// tick.
     #[test]
@@ -4764,7 +4756,7 @@ mod tests {
     }
 
     /// A reset a module runs in the middle of a session (a first record of its own, applied while
-    /// the kept records of a joint switch-on go in) is not the MODULES record's resets: it must
+    /// the kept records of a joint switch-on go in) is not the MODULE_SWITCH record's resets: it must
     /// not take phase 1's drain, which would run before the kept records that follow it.
     #[test]
     fn a_modules_own_reset_inside_a_kept_record_does_not_take_phase_1s_drain() {

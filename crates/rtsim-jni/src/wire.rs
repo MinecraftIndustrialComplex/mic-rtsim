@@ -77,7 +77,7 @@ pub mod obs {
     pub const SESSION_START: u16 = 0x0001;
     pub const DICT: u16 = 0x0002;
     pub const TICK: u16 = 0x0003;
-    pub const MODULES: u16 = 0x0004;
+    // 0x0004 was MODULES, a latest-wins copy of the module mask: retired by U-e (MODULE_SWITCH), never reused.
     pub const WORLD_SAVED: u16 = 0x0005;
     pub const PLAYER: u16 = 0x0010;
     pub const PUPPET_STATE: u16 = 0x0011;
@@ -113,6 +113,7 @@ pub mod obs {
         pub const LAST_APPLIED_CMD_SEQ: usize = 16;
         pub const JOURNAL_FIRST_OBS_SEQ: usize = 24;
         pub const WORLD_NEXT_OBS_SEQ: usize = 32;
+        /// The mask the session starts in: the engine's starting mask when its pages hold none.
         pub const MODULE_MASK: usize = 40;
         pub const SIZE: usize = 48;
     }
@@ -125,11 +126,6 @@ pub mod obs {
 
     pub mod tick {
         pub const GAME_TIME: usize = 8;
-        pub const SIZE: usize = 16;
-    }
-
-    pub mod modules {
-        pub const MASK: usize = 8;
         pub const SIZE: usize = 16;
     }
 
