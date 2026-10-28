@@ -2191,8 +2191,9 @@ its files on disk, the rest from the save before. Two directions:
    the next written save: exact, by the rings. A hold has no round limit. The engine's pages are held with
    it since slice U-h (P29): its save for that world save is a pending generation that WORLD_SAVED never
    confirms, so a restart from the older file rolls it back with the journal (docs/choices-journal-barrier.md
-   U-h1 to U-h3). Not for a stop: `close(save = true)` confirms its final save at once, so a stop with a
-   write outstanding leaves the pages ahead of the older file (residual 11, slice U-i's).
+   U-h1 to U-h3). A stop with a write outstanding is held the same way since slice U-i: `nClose` carries
+   the journal file's `writtenThrough`, and the engine's final save is confirmed at once only if the file
+   holds it, else it stays pending and the restart from the older file rolls it back (U-i1 to U-i3).
 6. A given-up note (RP-205): A for that chunk (residual 2).
 
 **The rows, after slice U** (the audit's row ids; "exact" means the dedup is saved with the effect):
@@ -2347,11 +2348,15 @@ its files on disk, the rest from the save before. Two directions:
       the deposit deltas (inferred, not run) `Industry` checks the journal's applied index before the
       ring, so a resent deposit op the journal holds is refused DUPLICATE on either side of the pages;
       the sign follows the delta: a draw stays in the ground while the engine books it drawn, a dupe.
-    - A stop with a write outstanding keeps the older journal file (U-g7), and the pages the stop
-      saves are ahead of it: `close(save = true)` confirms its final save at once (U-h8). Slice U-i's:
-      `nClose` carries `writtenThrough` and the engine confirms only through it. The data whose level
-      was dropped is abandoned and the journal goes on without it (U-g5), and a file given up on (U-g12)
-      no longer holds it: A for each of them, logged.
+    - ~~**A stop with a write outstanding** keeps the older journal file (U-g7), and the pages the stop
+      saves are ahead of it.~~ **Closed by slice U-i** (docs/choices-journal-barrier.md U-i1 to U-i6): the
+      stop's final save was confirmed at once (U-h8); `nClose` now carries the journal file's
+      `writtenThrough` and the engine confirms the final save only through it, so a stop whose last
+      journal write was held leaves the save pending and the restart from the older file rolls it back,
+      as it does a world save whose WORLD_SAVED never came (rtsim-jni `tests/confirm.rs`,
+      `a_restart_from_the_older_file_rolls_back_the_pages_of_a_stop_whose_journal_write_was_held`).
+    - The data whose level was dropped is abandoned and the journal goes on without it (U-g5), and a
+      file given up on (U-g12) no longer holds it: A for each of them, logged.
 12. **A Create vault, and other multi-block storages, across a chunk border** (I1, found in slice U-f, not
    fixed). In Create 6.0.10 (`ItemVaultBlockEntity`, read from the jar's bytecode, there is no sources jar) every
    vault block entity keeps its own `ItemStackHandler` and saves it with its own chunk (`write`, offsets 95 to
