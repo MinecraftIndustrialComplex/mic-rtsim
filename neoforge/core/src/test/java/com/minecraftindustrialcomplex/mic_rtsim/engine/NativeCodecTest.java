@@ -506,8 +506,8 @@ class NativeCodecTest {
     @Test
     void receivedLogDecodesKindAuxSequenceAndSkip() {
         byte[] transfer = record(Obs.TRANSFER, Obs.Transfer.SIZE, Obs.Transfer.GENERIC, 17);
-        byte[] modules = record(Obs.MODULES, Obs.Modules.SIZE, 0, 0b101);
-        byte[] log = concat(entry(3, 17, NativeCodec.RECEIVED_SKIPPED, transfer), entry(4, 0, 0, modules));
+        byte[] tick = record(Obs.TICK, Obs.Tick.SIZE, 0, 5_000);
+        byte[] log = concat(entry(3, 17, NativeCodec.RECEIVED_SKIPPED, transfer), entry(4, 0, 0, tick));
 
         List<ScriptedEngine.Received> got = NativeCodec.decodeReceived(log);
         assertEquals(2, got.size());
@@ -521,17 +521,17 @@ class NativeCodecTest {
         assertEquals(17, t.view().getLong(Obs.OBS_SEQ), "the view reads the record little-endian");
         ScriptedEngine.Received m = got.get(1);
         assertEquals(4, m.handover());
-        assertEquals(Obs.MODULES, m.kind());
+        assertEquals(Obs.TICK, m.kind());
         assertEquals(0, m.obsSeq(), "latest-wins records carry no sequence");
         assertFalse(m.skipped());
-        assertEquals(0b101, m.view().getInt(Obs.Modules.MASK));
+        assertEquals(5_000, m.view().getLong(Obs.Tick.GAME_TIME));
 
         assertTrue(NativeCodec.decodeReceived(new byte[0]).isEmpty());
     }
 
     @Test
     void aMalformedReceivedLogFailsLoudly() {
-        byte[] good = entry(1, 0, 0, record(Obs.MODULES, Obs.Modules.SIZE, 0, 1));
+        byte[] good = entry(1, 0, 0, record(Obs.TICK, Obs.Tick.SIZE, 0, 1));
         byte[] truncated = new byte[good.length - 1];
         System.arraycopy(good, 0, truncated, 0, truncated.length);
         assertThrows(IllegalStateException.class, () -> NativeCodec.decodeReceived(truncated));

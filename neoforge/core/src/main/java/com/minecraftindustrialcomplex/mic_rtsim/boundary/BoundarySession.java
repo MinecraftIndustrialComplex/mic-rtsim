@@ -184,6 +184,11 @@ public final class BoundarySession {
         return plainRecommits;
     }
 
+    /** Test shim on main's behaviour: the game time is ignored (the switch is not journaled yet). */
+    public void setModuleMask(int mask, long gameTime) {
+        setModuleMask(mask);
+    }
+
     public void setModuleMask(int mask) {
         if (mask != moduleMask) {
             moduleMask = mask;
