@@ -1,0 +1,252 @@
+package com.minecraftindustrialcomplex.mic_rtsim_mowziesmobs;
+
+import com.bobmowzie.mowziesmobs.server.entity.frostmaw.EntityFrostmaw;
+import com.ilexiconn.llibrary.server.animation.AnimationHandler;
+import com.ilexiconn.llibrary.server.animation.IAnimatedEntity;
+import com.minecraftindustrialcomplex.mic_rtsim.conflict.Lurker;
+import net.minecraft.core.BlockPos;
+import net.minecraft.world.entity.Mob;
+import net.minecraft.world.entity.ai.goal.Goal;
+import net.minecraft.world.entity.ai.goal.MoveTowardsRestrictionGoal;
+import net.minecraft.world.entity.ai.goal.RandomStrollGoal;
+import net.minecraft.world.entity.ai.goal.WrappedGoal;
+import net.minecraft.world.entity.ai.navigation.PathNavigation;
+import net.minecraft.world.phys.Vec3;
+
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
+import java.util.WeakHashMap;
+
+/**
+ * How a Frostmaw lies in wait by a rail (M8, MZB-361): it holds its spot awake, swipes the riders of a
+ * carriage that comes within its reach, and roars when a train its party robbed has gone. The jar does the
+ * rest: the swipe is {@link EntityFrostmaw#SWIPE_ANIMATION} with its own area attack (135 degrees, 6.5 blocks,
+ * at animation tick 9) and the roar its {@link EntityFrostmaw#ROAR_ANIMATION}; both are public animations, sent
+ * as the jar sends them.
+ *
+ * <p>An awake Frostmaw with a target walks at it every tick, after its goals ran; the core calls
+ * {@link #hold} once every level ticked, so the path set here is the one followed next. The restriction
+ * keeps it to the spot (and gates its targeting, so the core gives a held puppet a target, MZB-362).
+ */
+public final class FrostmawLurker implements Lurker {
+    /** The restriction radius round the spot (blocks). */
+    public static final int RADIUS = 2;
+    /**
+     * Within this many blocks of its spot it stands; beyond, it walks back. It is the number the spot-distance
+     * contract is written in (MZB-374): the engine's spot distance plus this stays under the create sampler's strike
+     * reach, and the spot distance less this and the body's half-width stays off the rail.
+     */
+    public static final double STAND = 0.5;
+    /** Ticks between two walk-back searches of one body (a body that cannot get closer does not search every tick). */
+    public static final int RESEARCH_TICKS = 10;
+    /** The swipe hits at this animation tick (AnimationAreaAttackAI damage frame): the body faces the strike until then. */
+    public static final int SWIPE_HIT_TICK = 9;
+    /**
+     * The most a held body turns a tick as the hold walks it (degrees): vanilla {@code MoveControl}'s, not the jar's 7,
+     * which walks a Frostmaw round a loop to a spot behind it ({@code MMEntityMoveHelperMixin}, MZB-770).
+     */
+    public static final float TURN = 90.0F;
+
+    /** Path searches the hold asked for, and live paths it dropped (D1 diagnostics, {@link Lurker#pathSearches}). */
+    private long searches, dropped;
+
+    /** The bearing (yaw) of a strike in progress, by body: dropped in {@link #hold} once its swing is past the hit frame. */
+    private final Map<Mob, Float> bearings = new WeakHashMap<>();
+
+    /** The game time of a body's last walk-back search, by body. */
+    private final Map<Mob, Long> searched = new WeakHashMap<>();
+
+    /**
+     * The bodies the hold has in hand, by the game time of its last hold: the one thing that moves a held puppet is
+     * the hold (MZB-361). The jar's own chase of its target is switched off for them in {@code EntityFrostmawMixin}
+     * ({@link #holds}), and its goals that walk a body about (a stroll, the pull back into a restriction) are taken
+     * out while it is held and put back on release. The jar's move control turns it at {@link #TURN} degrees a tick
+     * while it is held, not its own 7 ({@code MMEntityMoveHelperMixin}, MZB-770). Synchronised: the mixins read it on
+     * the server thread only, but the map is shared by the class.
+     */
+    private static final Map<Mob, Long> HELD = Collections.synchronizedMap(new WeakHashMap<>());
+
+    /**
+     * The walking goals taken out of a held body, with the priority each had (put back in {@link #release}). Kept in
+     * the body's {@link Lurker.Memo}, on the core's slot, and not in a map by body: each goal holds its body as
+     * {@code mob}, so even a weak map keyed by the body never lets go of it (the second re-check's P2).
+     */
+    private record Taken(List<Object[]> goals) {}
+
+    /**
+     * Whether the plugin has anything for this body: a hold stamp, a strike's bearing or a search time. None once the
+     * core has released it, which it does for a body killed, despawned or taken as well as one let go (GameTests).
+     */
+    public boolean tracked(Mob f) {
+        return HELD.containsKey(f) || bearings.containsKey(f) || searched.containsKey(f);
+    }
+
+    /**
+     * Whether the hold has this body in hand: it held it on the tick just gone (or this one). A body the hold stopped
+     * holding without a release (the core drops a lurk, a chunk unloads) is the jar's again within a few ticks.
+     */
+    public static boolean holds(Mob f) {
+        Long at = HELD.get(f);
+        return at != null && f.level().getGameTime() - at <= HELD_FRESH;
+    }
+
+    /** Ticks a hold stays fresh: the core holds once a tick, after the levels ticked, so the jar's tick reads the last tick's. */
+    private static final int HELD_FRESH = 3;
+
+    @Override
+    public void hold(Mob mob, Vec3 spot, Memo memo) {
+        if (!(mob instanceof EntityFrostmaw f) || !f.isAlive())
+            return;
+        // Awake for good (the jar skips its sleep and its waking roar for an always-active Frostmaw)
+        if (!f.isAlwaysActive())
+            f.setAlwaysActive(true);
+        // And quiet: an awake Frostmaw's ambient sound is a ROAR animation one time in four (EntityFrostmaw.playAmbientSound),
+        // 76 ticks in which a strike is refused and whose roar effects push everything within 10 blocks away, a rider included.
+        // The timer stays below zero, which the vanilla roll (nextInt(1000) < timer) never beats; the core holds once a tick
+        // after every level ticked, so the roll never sees it above zero (MZB-937)
+        if (f.ambientSoundTime >= 0)
+            f.ambientSoundTime = -1;
+        BlockPos centre = BlockPos.containing(spot);
+        if (!f.hasRestriction() || !centre.equals(f.getRestrictCenter()) || f.getRestrictRadius() != RADIUS)
+            f.restrictTo(centre, RADIUS);
+        HELD.put(f, f.level().getGameTime());
+        if (memo.get(Taken.class) == null)
+            memo.set(takeOutWalkingGoals(f));
+
+        if (f.getAnimation() == EntityFrostmaw.SWIPE_ANIMATION && f.getAnimationTick() <= SWIPE_HIT_TICK) {
+            Float yaw = bearings.get(f);
+            if (yaw != null) {
+                // Its swipe turns toward its target (the nearest player) until the hit frame; the strike wins
+                f.yBodyRot = yaw;
+                f.yBodyRotO = yaw;
+                f.setYRot(yaw);
+                f.setYHeadRot(yaw);
+            }
+            stop(f);
+            return;
+        }
+        // The strike's swing is over (any other animation, or past the hit frame): its bearing must not turn the
+        // Frostmaw's own swipes at a player later (MZB-361)
+        bearings.remove(f);
+        if (f.getAnimation() != IAnimatedEntity.NO_ANIMATION) {
+            stop(f);
+            return;
+        }
+        double dx = spot.x - f.getX(), dz = spot.z - f.getZ();
+        if (dx * dx + dz * dz <= STAND * STAND) {
+            stop(f);
+            return;
+        }
+        // Walk back: one search when the navigation is not already on its way to the spot, not one a tick (D1), and
+        // not again within RESEARCH_TICKS of the last (a body that cannot get closer to the spot than the path's end
+        // would search every tick). The jar's move control walks the path, turning the held body TURN degrees a tick
+        // (MZB-770: at its own 7 a spot behind the body was a loop that carried it 2 blocks aside)
+        PathNavigation nav = f.getNavigation();
+        double off = nodeOffset(f);
+        double ax = spot.x - off, az = spot.z - off;
+        BlockPos heading = nav.getTargetPos();
+        if (!nav.isDone() && heading != null && heading.distSqr(BlockPos.containing(ax, spot.y, az)) <= 2.0)
+            return;
+        long now = f.level().getGameTime();
+        Long last = searched.get(f);
+        if (last != null && now - last < RESEARCH_TICKS && now >= last)
+            return;
+        searched.put(f, now);
+        searches++;
+        // Accuracy 0: the path ends on the aimed node itself, not a node short of it
+        nav.moveTo(ax, spot.y, az, 0, 1.0);
+    }
+
+    /**
+     * Takes out the goals that walk a body about on their own, a stroll and the pull back into a restriction (a
+     * Frostmaw has both, priorities 7 and 5): the stroll wanders it up to its restriction's radius (2) about the
+     * spot's block, which is beyond {@link #STAND}, and the pull paths to a point that a wide body ends two blocks
+     * off. The hold is the one thing that walks a held puppet. Returned to be kept in the body's memo, to put back in
+     * {@link #release}.
+     */
+    private Taken takeOutWalkingGoals(EntityFrostmaw f) {
+        List<Object[]> out = new ArrayList<>();
+        for (WrappedGoal w : new ArrayList<>(f.goalSelector.getAvailableGoals())) {
+            Goal g = w.getGoal();
+            if (g instanceof RandomStrollGoal || g instanceof MoveTowardsRestrictionGoal)
+                out.add(new Object[] {w.getPriority(), g});
+        }
+        for (Object[] o : out)
+            f.goalSelector.removeGoal((Goal) o[1]);
+        return new Taken(out);
+    }
+
+    /**
+     * How far past the aimed block's corner a path's last node leaves a body's centre, less the half block a spot
+     * already has: a body walking a path stands at its last node plus {@code (int) (width + 1) / 2} blocks
+     * (vanilla {@code Path.getEntityPosAtNode}), so to end on the spot the path is aimed that far before it. Zero for
+     * a body under a block wide; 2.0 for the Frostmaw (4 wide), which would otherwise end 2 blocks east and south of
+     * its spot.
+     */
+    static double nodeOffset(Mob f) {
+        return (int) (f.getBbWidth() + 1.0F) * 0.5 - 0.5;
+    }
+
+    /** Stops the navigation (a swing or a roar is not walked out of, and within its stand it stays), counting a live path it drops. */
+    private void stop(Mob f) {
+        PathNavigation nav = f.getNavigation();
+        if (!nav.isDone())
+            dropped++;
+        nav.stop();
+    }
+
+    @Override
+    public double stand() {
+        return STAND;
+    }
+
+    @Override
+    public long pathSearches() {
+        return searches;
+    }
+
+    @Override
+    public long pathsDropped() {
+        return dropped;
+    }
+
+    @Override
+    public boolean strike(Mob mob, Vec3 at, Vec3 motion) {
+        if (!(mob instanceof EntityFrostmaw f) || !f.isAlive() || f.getAnimation() != IAnimatedEntity.NO_ANIMATION)
+            return false;
+        // The swing lands SWIPE_HIT_TICK ticks from now, and a carriage moves meanwhile: aim where the point will be
+        Vec3 aim = at.add(motion.scale(SWIPE_HIT_TICK));
+        float yaw = (float) (Math.atan2(aim.z - f.getZ(), aim.x - f.getX()) * 57.29577951308232 - 90.0);
+        bearings.put(f, yaw);
+        f.yBodyRot = yaw;
+        f.setYRot(yaw);
+        f.setYHeadRot(yaw);
+        AnimationHandler.INSTANCE.sendAnimationMessage(f, EntityFrostmaw.SWIPE_ANIMATION);
+        return true;
+    }
+
+    @Override
+    public void release(Mob mob, Memo memo) {
+        bearings.remove(mob);
+        searched.remove(mob);
+        HELD.remove(mob);
+        Taken out = memo.get(Taken.class);
+        memo.set(null);
+        if (!(mob instanceof EntityFrostmaw f))
+            return;
+        // A body that is already out of the world gets its goals back too: harmless, and nothing of it is kept
+        if (out != null)
+            for (Object[] o : out.goals())
+                f.goalSelector.addGoal((Integer) o[0], (Goal) o[1]);
+        f.setAlwaysActive(false);
+        f.clearRestriction();
+    }
+
+    @Override
+    public void roar(Mob mob) {
+        if (mob instanceof EntityFrostmaw f && f.isAlive() && f.getAnimation() == IAnimatedEntity.NO_ANIMATION)
+            AnimationHandler.INSTANCE.sendAnimationMessage(f, EntityFrostmaw.ROAR_ANIMATION);
+    }
+}
