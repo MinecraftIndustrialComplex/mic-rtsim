@@ -156,8 +156,16 @@ pub struct Java {
     pub written_through: Option<u64>,
     /// The FAILED flag was seen on a command buffer.
     pub failed_seen: bool,
-    /// SESSION_START's module mask (the bridge's `Module` bits).
+    /// The module mask (the bridge's `Module` bits): the session's own, set after [`Java::open`]
+    /// as the bridge's constructor takes it, and then the current one ([`Java::modules`]).
+    /// The session's own switch is journaled when the session first needs it (its first
+    /// hand-over or the first record it journals), with the mask as it stands then
+    /// ([`Java::settle_switch`]).
     pub module_mask: u32,
+    /// The session's own MODULE_SWITCH is not journaled yet (U-e).
+    pub switch_pending: bool,
+    /// The mask the session's own MODULE_SWITCH carried, which SESSION_START names too.
+    pub start_mask: u32,
     /// Phase 1 commands applied, in order: (kind, record bytes).
     pub p1: Vec<(u16, Vec<u8>)>,
     /// TALK_FACTS records applied, in order (their records).
@@ -320,6 +328,8 @@ impl Java {
             written_through: None,
             failed_seen: false,
             module_mask: 0,
+            switch_pending: false,
+            start_mask: 0,
             p1: Vec::new(),
             talk_facts: Vec::new(),
             no_free_plot: false,
@@ -350,6 +360,9 @@ impl Java {
         j.journal(obs::JOURNAL_GEN, obs::journal_gen::SIZE, 0, |r| {
             wire::put_u64(r, obs::journal_gen::GEN, g)
         });
+        // The session's own switch follows it (BoundarySession's constructor), journaled once
+        // the test has set the mask (`settle_switch`).
+        j.switch_pending = true;
         Ok(j)
     }
 
@@ -453,6 +466,7 @@ impl Java {
         aux: u32,
         body: impl FnOnce(&mut [u8]),
     ) -> u64 {
+        self.settle_switch();
         let len = wire::align8(size);
         let mut r = vec![0u8; len];
         wire::put_u16(&mut r, wire::R_KIND, kind);
@@ -475,6 +489,7 @@ impl Java {
     /// record's bytes as first journaled, after `nonce`, the generation they were journaled in.
     /// Returns the copy's sequence.
     pub fn reassert(&mut self, nonce: u64, original: &[u8]) -> u64 {
+        self.settle_switch();
         let len = obs::reassert::INNER + original.len();
         let mut r = vec![0u8; len];
         wire::put_u16(&mut r, wire::R_KIND, obs::REASSERT);
@@ -536,13 +551,14 @@ impl Java {
     }
 
     pub fn preamble(&mut self) -> bool {
+        self.settle_switch();
         if self.session_start_pending {
             let (gt, la, jf, wn, mask) = (
                 self.game_time,
                 self.last_applied_cmd,
                 self.journal_first_at_start,
                 self.world_next_at_start,
-                self.module_mask,
+                self.start_mask,
             );
             let Some(r) = self.reserve(obs::SESSION_START, obs::session_start::SIZE, 0) else {
                 return false;
@@ -591,14 +607,35 @@ impl Java {
         true
     }
 
-    /// The server config's module switches changed (C25): a MODULES record in the open buffer,
-    /// and the mask a later session start sends.
-    pub fn modules(&mut self, mask: u32) {
+    /// The session's own MODULE_SWITCH, right after its JOURNAL_GEN, if it is not journaled yet:
+    /// the mask the bridge's constructor was given, which tests set as `module_mask` after
+    /// [`Java::open`]. SESSION_START names the same mask (the fallback of a start with no mask
+    /// in its pages, docs/choices-journal-barrier.md U-e6).
+    pub fn settle_switch(&mut self) {
+        if !self.switch_pending {
+            return;
+        }
+        self.switch_pending = false;
+        self.start_mask = self.module_mask;
+        self.commit_switch(self.module_mask);
+    }
+
+    fn commit_switch(&mut self, mask: u32) -> u64 {
+        self.journal(obs::MODULE_SWITCH, obs::module_switch::SIZE, 0, |r| {
+            wire::put_u32(r, obs::module_switch::MASK, mask)
+        })
+    }
+
+    /// The server config's module switches changed (C25): a MODULE_SWITCH journaled at its place
+    /// among the records (`BoundarySession.setModuleMask`, docs/choices-journal-barrier.md U-e3).
+    /// A mask equal to the current one journals nothing. Returns the record's sequence, or 0.
+    pub fn modules(&mut self, mask: u32) -> u64 {
+        self.settle_switch();
+        if mask == self.module_mask {
+            return 0;
+        }
         self.module_mask = mask;
-        let r = self
-            .reserve(obs::MODULES, obs::modules::SIZE, 0)
-            .expect("room for MODULES");
-        wire::put_u32(r, obs::modules::MASK, mask);
+        self.commit_switch(mask)
     }
 
     /// The end of a server tick: apply finished commands, hand over, submit if allowed.
