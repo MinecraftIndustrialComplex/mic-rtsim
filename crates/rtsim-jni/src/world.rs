@@ -149,7 +149,7 @@ pub struct World {
     pub ledger: BTreeMap<u64, i64>,
     /// Engine op ids Minecraft reported applied (COMMAND_RESULT applied or duplicate).
     pub done_ops: BTreeSet<u64>,
-    /// Engine op ids Minecraft reported failed.
+    /// Engine op ids Minecraft reported failed (FAILED, or NOT_LOADED: not applied this time).
     pub failed_ops: BTreeSet<u64>,
     // ---- not saved: per session ----
     /// Java's dictionary for this session (Java resends it at every session start): (kind, id) to name.
@@ -448,7 +448,9 @@ impl World {
                         }
                         self.failed_ops.remove(&op);
                     }
-                    obs::command_result::FAILED if !self.done_ops.contains(&op) => {
+                    obs::command_result::FAILED | obs::command_result::NOT_LOADED
+                        if !self.done_ops.contains(&op) =>
+                    {
                         self.failed_ops.insert(op);
                     }
                     _ => {}

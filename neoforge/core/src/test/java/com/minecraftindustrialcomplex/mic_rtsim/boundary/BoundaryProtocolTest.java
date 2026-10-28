@@ -155,6 +155,68 @@ class BoundaryProtocolTest {
         assertEquals(e.pages().obsSeq(), sink.lastAck);
     }
 
+    /**
+     * JB9 (docs/choices-journal-barrier.md): the engine's acknowledgement never trims the journal past
+     * what the journal's file on disk holds. A header's acknowledgement is clamped to {@code writtenThrough}
+     * before it trims the journal and reaches the ack listener; once the file catches up, the next header
+     * trims.
+     */
+    @Test
+    void theTrimStopsAtTheJournalOnDisk() {
+        StubEngine e = stub(StubEngine.Pages.EMPTY, StubEngine.DEFAULT_CAPACITY);
+        BoundarySession s = new BoundarySession(e, new Journal(), 0, time);
+        long[] onDisk = {0};
+        s.trimsClampedTo(() -> onDisk[0]);
+        List<Long> acked = new ArrayList<>();
+        s.onAck(acked::add);
+        Sink sink = new Sink(s);
+        transfer(s, 7, 5);
+        tick(s, sink, e);
+        tick(s, sink, e);
+        assertEquals(2, s.journal().size(), "applied but not on the engine's disk: still journaled");
+        e.requestSaveAtNextStep();
+        tick(s, sink, e); // the step saves its pages and acknowledges in its command header
+        tick(s, sink, e); // Java reads that header
+        long pages = e.pages().obsSeq();
+        assertTrue(pages > 0);
+        assertEquals(pages, sink.lastAck, "the engine acknowledged its pages");
+        assertEquals(2, s.journal().size(), "the journal's file holds nothing yet: nothing is trimmed");
+        assertTrue(acked.isEmpty(), "and the holders hear no acknowledgement: " + acked);
+
+        onDisk[0] = pages - 1;
+        tick(s, sink, e);
+        assertEquals(onDisk[0], acked.get(acked.size() - 1), "only what the file holds");
+        assertEquals(1, s.journal().size(), "trimmed to the file, not to the acknowledgement");
+
+        onDisk[0] = pages;
+        tick(s, sink, e);
+        assertEquals(pages, acked.get(acked.size() - 1));
+        assertEquals(0, s.journal().size());
+    }
+
+    /**
+     * The session starts the engine with the world's next observation sequence, so the engine opens the
+     * page generation the world's journal file holds (P29): the journal's {@code nextObsSeq} as it was
+     * restored from the world's save.
+     */
+    @Test
+    void theSessionStartsTheEngineWithTheWorldsNextSequence() {
+        StubEngine e1 = stub(StubEngine.Pages.EMPTY, StubEngine.DEFAULT_CAPACITY);
+        BoundarySession s1 = new BoundarySession(e1, new Journal(), 0, time);
+        assertEquals(1, e1.startedWithWorldNext(), "a fresh world: its journal's next sequence is 1");
+        Sink k1 = new Sink(s1);
+        transfer(s1, 7, 5);
+        tick(s1, k1, e1);
+        Journal.Snapshot worldSave = s1.journal().snapshot();
+
+        Journal restored = Journal.restore(worldSave);
+        long next = restored.nextObsSeq();
+        assertTrue(next > 1);
+        StubEngine e2 = stub(e1.pages(), StubEngine.DEFAULT_CAPACITY);
+        new BoundarySession(e2, restored, 0, time);
+        assertEquals(next, e2.startedWithWorldNext(), "the world's next sequence, before the session journals its own");
+    }
+
     @Test
     void aSimResetIsSeenAsLostObservationsAndARestartIsNot() {
         // Session 1: a record reaches the engine, its pages are saved and the journal trimmed behind them.

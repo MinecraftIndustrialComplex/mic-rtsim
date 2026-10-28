@@ -4,8 +4,28 @@
 //! copied without its `rtsim/archive` (the event timeline): `events.rs` needs a real save with no
 //! archive and writes its own archive onto a copy of this one. The create save keeps its archive.
 //!
-//! - `tests/data/core`: neoforge/core's GameTest world, a fresh one, run from commit c934042f
-//!   (replay-gate slice N, the nest renewal serial, on slice D and merged with main bc669502; N's
+//! - `tests/data/core`: neoforge/core's GameTest world, a fresh one, run from commit 9d123ab5
+//!   (Mowzie's Mobs M10, the march, merged with main 8703d216, which carries U-g, J6, U-h and
+//!   MZB-760, plus the march GameTests' fixes, MZB-941; M10's formats: the conflict's pages are
+//!   RTC11 (magic `RTCB`) with meta version 10, a party's row ending with its march revision, its
+//!   due flag, its unseen tick and its unwatched epoch ranges, MZB-453, MZB-706);
+//!   before that, da5aea80
+//!   (Mowzie's Mobs M8, the lurk by the track, merged with main 589d5f82, which carries slice R;
+//!   M8's formats: the conflict's pages are RTC10 (magic `RTCA`) with meta version 9, the stats
+//!   ending with the lurk's five counters, MZB-690; the later merges of U-g, J6 and U-h change no
+//!   format); before that, 8e3eda72
+//!   (replay-gate slice R, the industry op window, merged with main ad04337a, which carries slices
+//!   U-b, U-c and U-d; R's formats: the industry globals are IGB2, `decided` after `now`, and an
+//!   industry district page starts with IDS5, its reconcile epochs per chunk, each pending
+//!   reconcile's round and the packages written per postbox, RP-259); before that, abe7bad3
+//!   (replay-gate slice U-d, the joint switch-on, on slice U-c, which carries slice U-b and main
+//!   6be65f2c; U-d's formats: phase 1's meta page RTP1 is version 5, the inputs kept while phase 1
+//!   was off following its queue, RP-300); before that, c1bd6472 (Mowzie's Mobs M9, the chiefs' heirs, trade memory, tribute and hunts, merged with main
+//!   4e694452, which carries slice N; M9's formats: the conflict's pages are RTC9 with meta
+//!   version 8, a camp's ledger going on with its heir, its chief's trade memory, the tribute it
+//!   owes and is placing and the heir's pair in flight, a faction ending with its owed hunts, the
+//!   wheel's events may be a camp heir, and the resident state ends with the tribute stacks being
+//!   placed, MZB-437, MZB-448); before that, c934042f (replay-gate slice N, the nest renewal serial, on slice D and merged with main bc669502; N's
 //!   formats: the dragons' pages are RTD8, each nest row ending with its renewal serial, and their
 //!   meta page RTN8, RP-230 to RP-239); before that, 4f152abc
 //!   (Mowzie's Mobs M7, the rail: 32726818, M7 merged with main a11311aa, which carries M6 and
@@ -58,8 +78,13 @@
 //!   when the server stops: 6638edc's save had one, while both runs of 98d6d34 and main's 7e4042a
 //!   had every herd staying put. So the route layer is not required here; it still has to draw or
 //!   say why.
-//! - `tests/data/create`: neoforge/create's GameTest world, run from c934042f (the core save's
-//!   formats); before that, 32726818 (the core save's
+//! - `tests/data/create`: neoforge/create's GameTest world, run from 49fef870 with `-Psec1fx`
+//!   (M10 merged with main 8703d216; the core save's formats, M10's); before that, da5aea80
+//!   (the core save's formats, M8's); before that, 2acae5ba (8e3eda72 merged
+//!   with main 13051753, the grove tribute earmark, which changes no format: the core save's
+//!   formats, R's); before that, 012f1fa2 (abe7bad3 merged
+//!   with main 4b3c2343, which adds pages only: the core save's formats, U-d's); before that,
+//!   c1bd6472 (M9's formats); before that, c934042f (slice N's formats); before that, 32726818 (the core save's
 //!   formats before slice N and before its merge with main 588b229c; before that, 1290d0b7, M6's, and fe87a92, S5-2
 //!   merged with main f66cb73, b643465, 37a34e40 as part of the plain `./gametest.sh core create
 //!   mowziesmobs` round, 8188cc0, cee946f, S4c1, edbb390, 5d648ce, ec57cd7, 21e57d2 and S3's arm

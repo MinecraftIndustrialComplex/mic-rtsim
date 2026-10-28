@@ -667,10 +667,13 @@ pub struct ConflictStats {
     pub rail_stale: u64,
     /// The lurk (MOWZIE.md §4.4, M8): lurks begun at a track (an AMBUSH_SPOT sent) and ended
     /// (its REMOVED sent), and the trains that passed one (TRAIN_PASSED taken), those of them
-    /// watched by a player, and the robberies that were told (TRAIN_ROBBED sent: only a lurk's
-    /// ambush sends it, so `ambushes` also counts the on-the-way ones and is not this). A pass
-    /// the replay brings back counts in `passes` and rolls nothing (RP-154), so `lurk_robberies`
-    /// counts only robberies told to Java, by a live session.
+    /// watched by a player, and the robberies that took anything (`train_passed` pushes
+    /// TRAIN_ROBBED for each: only a lurk's ambush sends it, so `ambushes` also counts the
+    /// on-the-way ones and is not this). A pass the replay brings back rolls again (RP-187): it
+    /// counts in `passes` and, when it robs, in `lurk_robberies` a second time, as the live
+    /// session counted it, and Java answers the robbery DUPLICATE. Its TRAIN_ROBBED is dropped at
+    /// the gate while replaying (a roar is lost, RP-12), so `lurk_robberies` can exceed the
+    /// TRAIN_ROBBED told to Java.
     pub lurks: u64,
     pub lurks_ended: u64,
     pub passes: u64,
@@ -991,6 +994,13 @@ pub struct Conflict {
     /// the factions' rows. An entry whose camp's record was pruned (its slot's generation freed)
     /// goes at the next lookup of its agent, and every entry at the replay end.
     pub chief_ended: BTreeMap<u64, u32>,
+    /// The stacks in `placing` whose chest's chunk was not loaded when Java read them (NOT_LOADED,
+    /// MZB-760, as the dragons' `parked`, RP-210): kept in flight under their op ids and not sent
+    /// again until their grove's chest is reported (HAVEN_CHEST). The chunk may already hold the
+    /// stack, written ahead of the journal and carrying its APPLIED record. In memory only,
+    /// emptied at a session start: a new session sends them again, but for a stack whose NOT_LOADED
+    /// answer is in the replayed part of the journal, which parks it again (MZB-761).
+    pub(crate) parked: BTreeSet<u64>,
     /// The factions whose camps owe tribute in the session's replay (RP-134): those that owed at
     /// its start and those a replayed payment made owe, which a replayed answer to a stack no
     /// placing holds is looked up in. In memory only, emptied at the replay end.
@@ -1182,6 +1192,7 @@ impl Conflict {
             notice_serial: 0,
             placing: Vec::new(),
             chief_ended: BTreeMap::new(),
+            parked: BTreeSet::new(),
             tribute_owing: Vec::new(),
             replay_from_pages: false,
             floors: BTreeMap::new(),
@@ -3002,11 +3013,13 @@ impl Conflict {
             return false;
         };
         let node = self.factions[f as usize].node;
-        let stocked = w.stock_from_players(node, goods, at);
-        for (&g, &a) in &stocked {
+        // What a grove owes its chest is earmarked first, out of the market's reach; the rest is
+        // stocked at the haven (MZB-930).
+        let (earmarked, rest) = self.owe_tribute(w, f, goods);
+        let stocked = w.stock_from_players(node, &rest, at);
+        for (&g, &a) in earmarked.iter().chain(&stocked) {
             add(&mut self.ledger.tribute, g, a);
         }
-        self.owe_tribute(w, f, &stocked, at);
         let settlers = self.settlers(w);
         // The envoy it was paid to names the demand; at the camp, the payer's own, then the
         // settlers'.
@@ -3055,11 +3068,11 @@ impl Conflict {
             return;
         };
         let node = self.factions[f as usize].node;
-        let stocked = w.stock_from_players(node, goods, at);
-        for (&g, &a) in &stocked {
+        let (earmarked, rest) = self.owe_tribute(w, f, goods);
+        let stocked = w.stock_from_players(node, &rest, at);
+        for (&g, &a) in earmarked.iter().chain(&stocked) {
             add(&mut self.ledger.gifts, g, a);
         }
-        self.owe_tribute(w, f, &stocked, at);
         self.gift_value(w, f, giver, goods, at);
     }
 
@@ -6288,6 +6301,9 @@ impl Conflict {
         for p in ids {
             self.march_changed(p);
         }
+        // A new session sends the stacks parked in the last one again (MZB-760), unless a replayed
+        // NOT_LOADED parks one again (MZB-761).
+        self.parked.clear();
         // Every faction's territory, once a session: page by page, keeping to the budget (PM-C8).
         let per = crate::tables::FACTIONS_PER_PAGE as u32;
         for f in 0..self.factions.len() as u32 {
@@ -6720,7 +6736,7 @@ impl Conflict {
             Obs::NoticeShown(n) => self.notice_shown(n),
             Obs::RailPass(rp) => self.rail_pass(w, rp, at),
             Obs::TrainPassed(tp) => self.train_passed(w, infra, tp, at),
-            Obs::HavenChest(h) => self.haven_chest(w, h, at),
+            Obs::HavenChest(h) => self.haven_chest(h),
             Obs::Traded(t) => self.trade_booked(w, t, at),
             Obs::ChiefPaid(c) => self.chief_paid(w, c, at),
             Obs::ChiefState(c) => self.chief_state(c, at),
@@ -7720,6 +7736,24 @@ impl Conflict {
             if h > w.outside.held.get(g).copied().unwrap_or(0) {
                 return Err(format!(
                     "good {}: parties hold more than the world's held",
+                    g.0
+                ));
+            }
+        }
+        // The earmark (MZB-930): what the groves owe their chests is held in the world's books,
+        // beside what the parties carry, until Java puts it down.
+        let mut kept = held;
+        for f in 0..self.factions.len() {
+            let owed = self.camp(f as u32).map_or(&[][..], |c| &c.owed_tribute[..]);
+            for &(g, a) in owed {
+                let good = GoodId(u16::try_from(g).unwrap_or(u16::MAX));
+                *kept.entry(good).or_default() += i128::from(a);
+            }
+        }
+        for (g, k) in &kept {
+            if *k > w.outside.held.get(g).copied().unwrap_or(0) {
+                return Err(format!(
+                    "good {}: parties and the groves' earmarks hold {k}, more than the world's held",
                     g.0
                 ));
             }

@@ -25,9 +25,13 @@
 //!   at 0x4410 to 0x4416, a save writing the pages changed since the last one. The
 //!   dragons share the phase 1 world, so while there is any dragon or lair the phase 1 link takes a
 //!   snapshot at every save (S4), and both are written in one commit.
-//! - **The switch** (C25, U10): `Module.ECOLOGY` (bit 4). Off, the dragons ignore their records,
-//!   run nothing, write nothing and keep the page they had; on again, the bodies of before are
-//!   gone (their session reset) and they run on from where they stopped.
+//! - **The switch** (C25, U10 as RP-292 amends it): `Module.ECOLOGY` (bit 4). Off, the dragons
+//!   run nothing, write nothing and keep the page they had; the journaled records they hear are
+//!   kept (a page beside the meta page, `paging::Kept`) and applied at the switch-on, in the
+//!   resets every module's run in (`shared::resets`) before the replay ends, each after its own
+//!   catch-up and at its own tick (docs/replay-gate.md 9.7: the switch gates only new decisions). A tribute stack's answer is taken at once whatever the
+//!   switch (RP-291). On again, the bodies of before are gone and they run on from where they
+//!   stopped.
 //!
 //! **The Ice and Fire plugin** (`mic_rtsim_iceandfire`, `neoforge/iceandfire`, docs/boundary.md
 //! §6.5 and §6.6) sends these records and applies these commands; its GameTests order dragon
@@ -49,8 +53,9 @@ use rtsim_kernel::journal::OpId;
 use rtsim_kernel::page::{PageKey, SaveBatch};
 use rtsim_kernel::rows::PageSource;
 
-use super::paging::{self, Live, Pager};
-use super::{State, TransferCmd, log_error, log_info, shared};
+use super::paging::{self, Kept, Live, Pager};
+use super::shared::{self, Module};
+use super::{State, TransferCmd, log_error, log_info, log_warn};
 use crate::wire::{self, Rec, RecordWriter, cmd, obs};
 
 /// The dragons' pages: table 0x4400 ('D'), next to the industry engine's 0x4900 and phase 1's
@@ -60,7 +65,8 @@ pub const TABLE: u16 = 0x4400;
 pub const KEY_DRAGONS: PageKey = PageKey::new(TABLE, 0);
 
 /// Java's module bit the dragons run under (`config/Module.java`: ECOLOGY is ordinal 4). With it
-/// off the dragons are frozen (U10): no records, no runs, no commands, their page kept.
+/// off the dragons are frozen (U10): no runs, no commands, their page kept, the records they hear
+/// kept for the switch-on (RP-292).
 pub const MODULE_ECOLOGY: u32 = 1 << 4;
 
 /// The dragons' seed. PLACEHOLDER: the bridge does not send the Minecraft world's (as phase 1's).
@@ -107,8 +113,12 @@ pub(super) struct Link {
     /// The last load read back dragons whose state hash is not the one saved: (saved, read).
     pub(super) restore_diverged: Option<(u64, u64)>,
     pub(super) records: u64,
-    /// Records ignored while the dragons were switched off.
+    /// Records heard while the dragons were switched off: not applied then, kept for the switch-on
+    /// ([`Link::kept`]).
     pub(super) ignored: u64,
+    /// The records heard while switched off, applied at the switch-on (RP-292, docs/replay-gate.md
+    /// 9.7): saved beside the meta page (`paging::kept_key`).
+    pub(super) kept: Kept,
     pub(super) commands_written: u64,
     /// FAR_LEG records not written yet (per session; docs/boundary.md §12).
     far: VecDeque<FarLeg>,
@@ -156,6 +166,7 @@ impl Link {
             restore_diverged: None,
             records: 0,
             ignored: 0,
+            kept: Kept::default(),
             commands_written: 0,
             far: VecDeque::new(),
             far_written: 0,
@@ -182,10 +193,18 @@ impl Link {
         let unreadable = |why: &str| when_pages_unreadable(why, source, budget);
         match source.read(KEY_DRAGONS) {
             Err(e) => return unreadable(&format!("cannot read the dragons' meta page: {e}")),
-            Ok(None) if paging::holds_pages(&**source, paging::tables(TABLE)) => {
+            Ok(None) if paging::holds_pages_besides_kept(&**source, KEY_DRAGONS) => {
                 return unreadable("dragon pages without their meta page");
             }
-            Ok(None) => return Ok(Link::fresh(source, budget)),
+            Ok(None) => {
+                // Switched off before their first save, they may have kept records all the same.
+                let mut l = Link::fresh(source, budget);
+                l.kept = match Kept::load(&**source, KEY_DRAGONS) {
+                    Ok(k) => k,
+                    Err(e) => return unreadable(&e),
+                };
+                return Ok(l);
+            }
             Ok(Some(_)) => {}
         }
         if !world_restored {
@@ -217,10 +236,15 @@ impl Link {
             engine.pending_events(),
             hash.map_or(String::new(), |h| format!(", state {h:016x}"))
         ));
+        let kept = match Kept::load(&**source, KEY_DRAGONS) {
+            Ok(k) => k,
+            Err(e) => return unreadable(&e),
+        };
         let mut l = Link::empty();
         l.engine = engine;
         l.restore_diverged = diverged;
         l.from_pages = true;
+        l.kept = kept;
         Ok(l)
     }
 
@@ -234,9 +258,18 @@ impl Link {
     }
 }
 
-/// Whether the dragons run: switched on and in the world.
+/// Whether the dragons run: switched on and in the world, and not waiting with kept records for
+/// Java's dictionary ([`kept_waiting`]).
 pub(super) fn running(st: &State) -> bool {
-    st.dragons.enabled && st.dragons.active()
+    st.dragons.enabled && st.dragons.active() && !kept_waiting(st)
+}
+
+/// The dragons hold records kept while switched off, and a session start has not had Java's
+/// dictionary yet (`State::dict_wait`): the records name its ids (a lair's structure, an untagged
+/// body's species, a robbed hoard's items), so the reset that applies them waits for the first
+/// record after the DICTs ([`dict_ready`]), and the dragons do not run meanwhile.
+fn kept_waiting(st: &State) -> bool {
+    st.dict_wait && !st.dragons.kept.is_empty()
 }
 
 // ---- dictionaries -----------------------------------------------------------------------------------
@@ -305,6 +338,7 @@ pub(super) fn gate_counts(st: &State) -> rtsim_ecology::GateCounts {
 /// SESSION_START: the dragons' reset is due (their engine's replay begins as soon as they run or
 /// a record reaches them; every dragon the engine thought embodied is abstract again at the
 /// replay end, since puppets never outlive a session), and Java forgot the engine's dictionary.
+/// The reset runs once every module's flag is set (`shared::resets`).
 pub(super) fn session_start(st: &mut State, module_mask: u32) {
     st.dragons.queue.clear();
     st.dragons.far.clear();
@@ -314,12 +348,13 @@ pub(super) fn session_start(st: &mut State, module_mask: u32) {
     // switch that is off from the start keeps exactly those (no save writes them).
     st.dragons.enabled = module_mask & MODULE_ECOLOGY != 0;
     st.dragons.reset_due = true;
-    reset_if_due(st);
 }
 
-/// The switch changed (MODULES, U10). Off: what the dragons hold is written once more as it is now and then kept;
-/// queued commands are dropped (all per session, S11). On: the reset is due.
-fn set_enabled(st: &mut State, on: bool) {
+/// MODULES (U10), the first pass (`shared::switch`): the switch, if it changed. Off: what the
+/// dragons hold is written once more as it is now and then kept; queued commands are dropped (all
+/// per session, S11). On: the reset is due, and runs in the second pass with every module's
+/// (`shared::resets`). Returns whether the dragons came on.
+pub(super) fn switched(st: &mut State, on: bool) -> bool {
     let was = st.dragons.enabled;
     st.dragons.enabled = on;
     if was && !on {
@@ -334,31 +369,61 @@ fn set_enabled(st: &mut State, on: bool) {
     if on && !was {
         st.dragons.reset_due = true;
     }
-    reset_if_due(st);
+    on && !was
 }
 
-/// The session's reset, once the dragons run (docs/replay-gate.md §3.2): their engine's replay
-/// begins (`begin_replay`, told whether it came back from its pages, RP-31) and its end is due.
-/// With no replay running (a switch-on) that end runs at once, at the hand-over's time.
+/// The dragons' reset alone, if due (`shared::reset_these`): a first lair or dragon in the
+/// middle of a session.
 fn reset_if_due(st: &mut State) {
-    if st.dragons.reset_due && running(st) {
-        reset(st);
-    }
+    shared::reset_these(st, &[Module::Dragons]);
 }
 
-/// [`reset_if_due`] for the dragons as they are: a record reaches an engine nothing has made
-/// active yet, and the gate must hold from the record that does (docs/replay-gate.md §4.1).
-fn reset(st: &mut State) {
+/// The session's reset, once the dragons run (docs/replay-gate.md §3.2), its first step
+/// (`shared::resets`): their engine's replay begins (`begin_replay`, told whether it came back
+/// from its pages, RP-31) and its end is due. With no replay running (a switch-on) that end runs
+/// in the reset's last step, at the hand-over's time ([`end_reset`]). Records kept while off make
+/// it due with no dragon or lair too: they are applied between the two (RP-292, [`apply_kept`]).
+/// Returns whether it began.
+pub(super) fn begin_reset(st: &mut State) -> bool {
+    let l = &st.dragons;
+    if !(l.reset_due && l.enabled && (l.active() || !l.kept.is_empty()) && !kept_waiting(st)) {
+        return false;
+    }
+    begin(st);
+    true
+}
+
+fn begin(st: &mut State) {
     st.dragons.reset_due = false;
     let from_pages = st.dragons.from_pages;
     st.dragons.engine.begin_replay(from_pages);
     st.dragons.replay_end_due = true;
     st.phase1.taint();
     take_commands(st);
-    if !st.replaying {
-        let at = shared::hand_over_target(st);
-        end_replay(st, at);
-    }
+}
+
+/// The reset's last step with no replay running: the replay end at the hand-over's time.
+pub(super) fn end_reset(st: &mut State) {
+    let at = shared::hand_over_target(st);
+    end_replay(st, at);
+}
+
+/// [`reset_if_due`] for the dragons as they are: a record reaches an engine nothing has made
+/// active yet, and the gate must hold from the record that does (docs/replay-gate.md §4.1).
+fn reset(st: &mut State) {
+    begin(st);
+    shared::end_resets(st, &[Module::Dragons]);
+}
+
+/// One record the dragons heard while switched off (RP-292, docs/replay-gate.md 9.7), applied in
+/// the reset after `begin_replay` and before the replay end, where a restart's replay of the same
+/// record applies it, in the order `shared::resets` merges every module's kept records: as it
+/// came (a copy as a copy), after its own catch-up (`shared::catch_up`), so the events due before
+/// it fire first, the herds' among them as the dragons' prey, and at its own tick
+/// (`shared::floor`): a dragon a player killed or tamed in the switch's tick is dead from that
+/// tick, before the replay end could resume it.
+pub(super) fn apply_kept(st: &mut State, rec: &Rec<'_>) {
+    apply(st, rec);
 }
 
 /// The dragons' replay end at `clock`: bodies of an earlier session (or of before a switch-off)
@@ -377,8 +442,8 @@ fn end_replay(st: &mut State, clock: Tick) {
     take_commands(st);
 }
 
-/// A record that is not journaled: Java's DICT entries (they may rename species and lairs),
-/// MODULES and DRAGON_STATE. PLAYER positions go to the shared interest areas
+/// A record that is not journaled: Java's DICT entries (they may rename species and lairs) and
+/// DRAGON_STATE. MODULES goes to `shared::switch`, PLAYER positions to the shared interest areas
 /// (`engine/shared.rs`).
 pub(super) fn observe_state(st: &mut State, rec: &Rec<'_>) {
     let b = rec.bytes;
@@ -386,10 +451,6 @@ pub(super) fn observe_state(st: &mut State, rec: &Rec<'_>) {
         obs::DICT => {
             st.dragons.java_species = None;
             st.dragons.items_defined.clear();
-        }
-        obs::MODULES if rec.size() >= obs::modules::SIZE => {
-            let on = wire::u32_at(b, obs::modules::MASK) & MODULE_ECOLOGY != 0;
-            set_enabled(st, on);
         }
         k if STATE_KINDS.contains(&k) => {
             if !st.dragons.enabled {
@@ -423,11 +484,20 @@ pub(super) fn op_of(rec: &Rec<'_>) -> u64 {
     }
 }
 
-/// A dragon record `Replay` admitted. Switched off, the dragons ignore it (U10).
+/// A dragon record `Replay` admitted. Switched off, the dragons keep it for the switch-on
+/// (RP-292, docs/replay-gate.md 9.7: the switch gates only new decisions; every record of what
+/// already happened is heard), saved with their pages.
 pub(super) fn journaled(st: &mut State, rec: &Rec<'_>) {
     if !st.dragons.enabled {
         st.dragons.ignored += 1;
-        // Ignored, but the epoch it names is taken all the same (docs/replay-gate.md §5.3, RP-57,
+        if let Some(w) = st
+            .dragons
+            .kept
+            .push(st.applying_copy, rec.bytes, "the dragons")
+        {
+            log_warn(&w);
+        }
+        // The epoch it names is taken at once all the same (docs/replay-gate.md §5.3, RP-57,
         // RP-75): the dragons' next body, once they run again, is above it.
         let dict = java_species(st);
         if let Ok((_, _, _, o)) = boundary::decode_obs(rec.bytes, &dict) {
@@ -435,6 +505,11 @@ pub(super) fn journaled(st: &mut State, rec: &Rec<'_>) {
         }
         return;
     }
+    apply(st, rec);
+}
+
+/// A dragon record applied: as it comes with the dragons on, or kept while off ([`apply_kept`]).
+fn apply(st: &mut State, rec: &Rec<'_>) {
     // Everything before it happens first: the ships, the dragons and the world, in time order.
     shared::catch_up(st, rec);
     let dict = java_species(st);
@@ -459,41 +534,53 @@ pub(super) fn journaled(st: &mut State, rec: &Rec<'_>) {
 
 /// A COMMAND_RESULT `Replay` admitted (the core's records, after phase 1's): the answer to a
 /// stack of tribute coin sent to a lair's chest (SINK.md §4.6). Applied or a duplicate, the
-/// coin is in the chest; failed, it waits for the chest to be reported again.
+/// coin is in the chest; failed, it waits for the chest to be reported again; not loaded, the
+/// stack waits under its op id for its lair's next chest report (RP-210).
+///
+/// Taken whatever the switch (RP-291, docs/replay-gate.md 9.7's rule: the switch gates only new
+/// decisions). The core took the stack out of the outbox at this answer, and Java forgets its op
+/// (the journal's op index, the chest's chunk carry) at the engine's acknowledgement, so a stack
+/// still `placing` at the switch on would be written again under the same op and put in the
+/// chest a second time. Applied at once, not kept for the switch: none of `tribute_placed`,
+/// `tribute_failed` and `tribute_unloaded` reads the clock (a failed stack's next op comes from
+/// the lair's own counter, MSC47), and no decision reads a lair's `placed`. Off, the dragons'
+/// pages hold the change at the next save (`save_due`).
 pub(super) fn after_core(st: &mut State, rec: &Rec<'_>) {
     if rec.kind != obs::COMMAND_RESULT || rec.size() < obs::command_result::SIZE {
         return;
     }
-    if !st.dragons.enabled {
-        // U10: ignored. The stack left the outbox, so it goes again once they are back on and
-        // Java answers it DUPLICATE_OP if it is already in the chest (`answered_again`).
-        return;
-    }
     let op = wire::u64_at(rec.bytes, obs::command_result::OP_ID);
-    match rec.aux {
+    let taken = match rec.aux {
         obs::command_result::APPLIED | obs::command_result::DUPLICATE_OP => {
-            st.dragons.engine.tribute_placed(op);
+            st.dragons.engine.tribute_placed(op)
         }
+        // Off, the answer decides nothing (RP-291, MZB-767): the coin is booked back and no
+        // stack is made, for the switch on forgets the chest it would go to.
         obs::command_result::FAILED => {
-            st.dragons.engine.tribute_failed(op);
+            let place = running(st);
+            st.dragons.engine.tribute_failed(op, place)
         }
-        _ => {}
+        obs::command_result::NOT_LOADED => st.dragons.engine.tribute_unloaded(op),
+        _ => false,
+    };
+    if taken && !st.dragons.enabled {
+        st.dragons.pager.save_due = true;
     }
 }
 
 /// A COMMAND_RESULT for an op `Replay` already admitted: a tribute stack sent again after the
-/// pages lost its first answer (the dragons were off, or a crash came before a save). Java
-/// answered it DUPLICATE_OP: it is in the chest.
+/// pages lost its first answer (a crash came before a save). Java answered it DUPLICATE_OP: it
+/// is in the chest. Taken whatever the switch, as [`after_core`].
 pub(super) fn answered_again(st: &mut State, rec: &Rec<'_>) {
-    if rec.kind != obs::COMMAND_RESULT
-        || rec.size() < obs::command_result::SIZE
-        || !st.dragons.enabled
-    {
+    if rec.kind != obs::COMMAND_RESULT || rec.size() < obs::command_result::SIZE {
         return;
     }
     let op = wire::u64_at(rec.bytes, obs::command_result::OP_ID);
     if st.dragons.engine.tribute_placed(op) {
         st.outbox.complete(OpId(op));
+        if !st.dragons.enabled {
+            st.dragons.pager.save_due = true;
+        }
     }
 }
 
@@ -531,7 +618,13 @@ fn ingest(st: &mut State, o: &Obs, at: Tick) {
     if st.dragons.reset_due && st.dragons.enabled {
         reset(st);
     }
-    let at = at.max(st.dragons.engine.now()).max(st.phase1.world.now());
+    let at = at.max(shared::floor(st, st.dragons.engine.now()));
+    // Phase 1's kept inputs up to the tick the engine is about to run the shared world to go in
+    // first, each at its own tick (RP-300): a latest-state record applies at the hand-over's time,
+    // which the engine's `run_until` reaches whether or not the dragons run yet. The floor again
+    // after them: the drain may have run the world (and the dragons) on.
+    super::phase1::drain_before_run(st, at);
+    let at = at.max(shared::floor(st, st.dragons.engine.now()));
     // A copy (REASSERT) of an ended session's record is applied by identity, never against a
     // body (docs/replay-gate.md §2.3, §5.7, RP-8, RP-9).
     let copy = st.applying_copy.is_some();
@@ -580,7 +673,7 @@ pub(super) fn run_engine(st: &mut State, t: Tick) {
     if !running(st) || t < st.dragons.engine.now() {
         return;
     }
-    let t = t.max(st.phase1.world.now());
+    let t = t.max(shared::floor(st, st.dragons.engine.now()));
     if super::herds::running(st) && t >= st.herds.engine.now() {
         // The herds are prey (PLAN.md §10.2): their events run in the dragons' time order, and
         // hungry dragons weigh and hunt them (`Dragons::run_until_with_herds`, Y7).
@@ -767,7 +860,11 @@ fn write_far(st: &mut State, w: &mut RecordWriter<'_>) -> (u64, bool) {
         let dim_name = if r.state == FarState::Gone {
             None
         } else {
-            match st.world.java_dict.get(&(wire::DICT_DIMENSION, u32::from(r.frame))) {
+            match st
+                .world
+                .java_dict
+                .get(&(wire::DICT_DIMENSION, u32::from(r.frame)))
+            {
                 Some(n) => Some(n.clone()),
                 None => {
                     // A dimension Java never named has no players to draw it for.
@@ -806,15 +903,15 @@ fn write_far(st: &mut State, w: &mut RecordWriter<'_>) -> (u64, bool) {
 }
 
 /// Writes the tribute stacks the dragons send to lairs' chests (SINK.md §4.6) that are not in
-/// the core outbox yet. Each joins it under its own op id, so a restart sends it again and Java
-/// answers a stack it already put DUPLICATE_OP. Returns the highest sequence written and whether
-/// some wait for the next buffer.
+/// the core outbox yet and not parked (their chunk was not loaded, RP-210). Each joins it under
+/// its own op id, so a restart sends it again and Java answers a stack it already put
+/// DUPLICATE_OP. Returns the highest sequence written and whether some wait for the next buffer.
 fn write_tribute(st: &mut State, w: &mut RecordWriter<'_>) -> (u64, bool) {
     let sent: BTreeSet<u64> = st.outbox.after(0).map(|(_, op, _)| op.0).collect();
     let todo: Vec<(u64, Placing)> = st
         .dragons
         .engine
-        .placing()
+        .placing_to_send()
         .filter(|(op, _)| !sent.contains(op))
         .map(|(op, p)| (op, *p))
         .collect();
@@ -830,12 +927,15 @@ fn write_tribute(st: &mut State, w: &mut RecordWriter<'_>) -> (u64, bool) {
             Item::Industry(_) => None,
         };
         let (Some(dimension), Some(item)) = (dimension, item) else {
-            // Never written: the coin waits for the chest to be reported again.
+            // Never written: the coin goes back to its lair's unplaced. A chest the lair reported
+            // since, elsewhere, takes it at once while the dragons run (MZB-762, MZB-767); else it
+            // waits for the chest to be reported again.
             log_error(&format!(
                 "a tribute stack (op {op:#x}) to a chest in dimension {} Java never named, or of a good no item stands for; back to its lair",
                 p.chest.dimension
             ));
-            st.dragons.engine.tribute_failed(op);
+            let place = running(st);
+            st.dragons.engine.tribute_failed(op, place);
             continue;
         };
         let t = TransferCmd {
@@ -877,7 +977,7 @@ pub(super) fn save(
         take_commands(st);
     }
     let l = &mut st.dragons;
-    let out = paging::save(
+    let mut out = paging::save(
         &mut l.engine,
         &mut l.pager,
         l.enabled,
@@ -888,6 +988,7 @@ pub(super) fn save(
     if out.0.is_some() {
         l.dropped_pages = false;
     }
+    l.kept.save(KEY_DRAGONS, batch, &mut out.1);
     out
 }
 
@@ -918,7 +1019,8 @@ impl super::Engine {
         )
     }
 
-    /// How many dragon records the link ignored while the dragons were switched off (U10).
+    /// How many dragon records the link heard while the dragons were switched off: not applied
+    /// then, the journaled ones kept for the switch-on (RP-292).
     pub fn dragons_ignored(&self) -> u64 {
         super::lock(&self.state).dragons.ignored
     }

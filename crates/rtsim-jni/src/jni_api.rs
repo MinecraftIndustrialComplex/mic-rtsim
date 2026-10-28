@@ -156,8 +156,10 @@ pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_Nat
     .resolve::<ThrowRuntimeExAndDefault>()
 }
 
-/// `static native int nStart(long handle, long lastAppliedCmdSeq, long[] out)`: out[0] the
-/// observation sequence the pages include, out[1] the next command sequence.
+/// `static native int nStart(long handle, long lastAppliedCmdSeq, long worldNextObsSeq, long[] out)`:
+/// out[0] the observation sequence the pages include, out[1] the next command sequence.
+/// `worldNextObsSeq` is the world's journal's `nextObsSeq`: the engine opens the page generation the
+/// journal's file holds (P29, docs/choices-leg-purge.md LP12).
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_NativeEngine_nStart<
     'l,
@@ -166,6 +168,7 @@ pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_Nat
     _class: JClass<'l>,
     handle: jlong,
     last_applied: jlong,
+    world_next_obs_seq: jlong,
     out: JLongArray<'l>,
 ) -> jint {
     env.with_env(|env| -> Result<jint, JniError> {
@@ -175,7 +178,7 @@ pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_Nat
             set_last_error("nStart needs a long[2]");
             return Ok(abi::MIC_ERR_INVALID_ARGUMENT);
         }
-        match e.start(last_applied as u64) {
+        match e.start(last_applied as u64, world_next_obs_seq as u64) {
             Ok((pages, next)) => {
                 out.set_region(env, 0, &[pages as jlong, next as jlong])?;
                 Ok(abi::MIC_OK)

@@ -910,11 +910,20 @@ public final class ConflictKit {
         return out;
     }
 
-    /** The name of a body id of Java's dictionary (one of this kit's). */
+    /**
+     * The name of a body id of Java's dictionary: one of this kit's, else whatever name the dictionary holds for the id (a plugin's
+     * bodies, which the Mowzie tests compare by name; the id alone, "body 59", never equals one: MZB-941).
+     */
     public static String bodyName(int id) {
         for (String n : List.of(WARRIOR, ARCHER, EMISSARY))
             if (RtsimTests.session().dictId(Obs.DICT_BODY, n) == id)
                 return n;
+        var journal = RtsimTests.session().boundary().journal();
+        if (id >= 1 && id <= journal.dictSize()) {
+            var entry = journal.dictEntry(id);
+            if (entry.kind() == Obs.DICT_BODY)
+                return entry.name();
+        }
         return "body " + id;
     }
 

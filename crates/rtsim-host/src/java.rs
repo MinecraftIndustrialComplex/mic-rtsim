@@ -143,9 +143,17 @@ pub struct Java {
     pub hold_commands: bool,
     /// The op ids of transfers read while holding.
     pub held_ops: Vec<u64>,
+    /// The transfers read while holding, whole: (cmdSeq, op id, container, count), for a test
+    /// that applies them later ([`Java::apply_held_transfers`]).
+    pub held_transfers: Vec<(u64, u64, [i32; 3], i32)>,
     /// Leave acknowledgements unapplied (the journal untrimmed): the world save a test takes next
     /// is one the bridge wrote before it read the acknowledgement.
     pub hold_acks: bool,
+    /// The journal file's `writtenThrough` as the bridge last had it (JB9, docs/choices-journal-
+    /// barrier.md): set by [`Java::save_world`], and the header's acknowledgement never trims
+    /// past it. `None`: no world save yet, so no clamp (a test that never saves the world sees the
+    /// old rule).
+    pub written_through: Option<u64>,
     /// The FAILED flag was seen on a command buffer.
     pub failed_seen: bool,
     /// SESSION_START's module mask (the bridge's `Module` bits).
@@ -157,9 +165,16 @@ pub struct Java {
     /// Answer every new PLACE_HOUSE NOT_FREE (no plot), as HouseBuilder does when its search
     /// finds none.
     pub no_free_plot: bool,
-    /// Answer every new TRANSFER_TO_CONTAINER FAILED (the container's chunk not loaded, or no
-    /// room), as CommandDispatcher does.
+    /// Answer every new TRANSFER_TO_CONTAINER FAILED (no container there, or no room), as
+    /// CommandDispatcher does.
     pub fail_transfers: bool,
+    /// The containers' chunks are not loaded: answer every new TRANSFER_TO_CONTAINER as
+    /// CommandDispatcher answers one whose chunk `getChunkNow` does not hold.
+    pub unloaded_transfers: bool,
+    /// The next hand-over ends right after the session's DICTs, as `BoundarySession.flushPreamble`
+    /// does when the buffer is full there (it returns false, and `handOver` still submits): no
+    /// TICK, no journal entries. Cleared by that hand-over.
+    pub end_after_dicts: bool,
     /// Players reported every tick: (UUID, dimension id, position).
     pub players: Vec<((u64, u64), u32, [f64; 3])>,
     /// The industry world this Java plays (rtsim-industry's fake world in remote mode), if any.
@@ -246,7 +261,7 @@ impl Java {
     /// of one world write the same pages; every other session is random, as the bridge's are.
     pub fn try_open_as(e: Arc<Engine>, save: WorldSave, nonce: u64) -> Result<Java, String> {
         assert_ne!(nonce, 0, "generation 0 is a record from before generations");
-        let (pages_obs, next_cmd_seq) = e.start(save.last_applied_cmd)?;
+        let (pages_obs, next_cmd_seq) = e.start(save.last_applied_cmd, save.next_obs)?;
         if next_cmd_seq <= save.last_applied_cmd {
             return Err(format!(
                 "the engine's nextCmdSeq {next_cmd_seq} is not above the journal's lastAppliedCmdSeq {}",
@@ -300,13 +315,17 @@ impl Java {
             stale_commands: 0,
             hold_commands: false,
             held_ops: Vec::new(),
+            held_transfers: Vec::new(),
             hold_acks: false,
+            written_through: None,
             failed_seen: false,
             module_mask: 0,
             p1: Vec::new(),
             talk_facts: Vec::new(),
             no_free_plot: false,
             fail_transfers: false,
+            unloaded_transfers: false,
+            end_after_dicts: false,
             players: Vec::new(),
             mc: None,
             ind_cmd_seq: HashMap::new(),
@@ -342,6 +361,36 @@ impl Java {
             last_applied_cmd: self.last_applied_cmd,
             dict: self.dict.clone(),
         }
+    }
+
+    /// WORLD_SAVED (`BridgeEvents`' save hook, once the journal's file is written): the world's
+    /// save holds every observation through `durable_obs_seq`. A record in the open buffer, so
+    /// the engine hears it at the next hand-over, in the same one as the world's save request if
+    /// no hand-over came between.
+    pub fn world_saved(&mut self, durable_obs_seq: u64) {
+        // The session start and the dictionary go first, as for any record; the hand-over's TICK
+        // stays the hand-over's own (a server counts the TICKs a buffer holds to know the engine
+        // fell behind).
+        let marked = std::mem::replace(&mut self.tick_marked, self.game_time);
+        assert!(self.preamble(), "room for the preamble before WORLD_SAVED");
+        self.tick_marked = marked;
+        let r = self
+            .reserve(obs::WORLD_SAVED, obs::world_saved::SIZE, 0)
+            .expect("room for WORLD_SAVED");
+        wire::put_u64(r, obs::world_saved::DURABLE_OBS_SEQ, durable_obs_seq);
+    }
+
+    /// One world save as the bridge runs it (`BridgeEvents`): the engine is asked for pages
+    /// through the journal's end, the journal is written (the returned [`WorldSave`] is that
+    /// file), and WORLD_SAVED follows with the file's `writtenThrough`. The save the engine takes
+    /// is confirmed only by that WORLD_SAVED (docs/choices-leg-purge.md LP12).
+    pub fn save_world(&mut self) -> WorldSave {
+        let through = self.next_obs - 1;
+        self.e.request_save(through);
+        let file = self.world_save();
+        self.written_through = Some(through);
+        self.world_saved(through);
+        file
     }
 
     pub fn obs_buf(&self, i: u64) -> &Buf {
@@ -455,6 +504,28 @@ impl Java {
             .map(|(_, r)| r.clone())
     }
 
+    /// Applies the transfers read while holding, as CommandDispatcher would have: each goes into
+    /// its container and its COMMAND_RESULT(APPLIED) is journaled. Returns those records' bytes,
+    /// which the containers' chunks carry (`mic_rtsim:pending`) and REASSERT at their next load.
+    pub fn apply_held_transfers(&mut self) -> Vec<Vec<u8>> {
+        let mut carried = Vec::new();
+        for (seq, op, pos, count) in std::mem::take(&mut self.held_transfers) {
+            *self.containers.entry(pos).or_insert(0) += count;
+            let at = self.journal(
+                obs::COMMAND_RESULT,
+                obs::command_result::SIZE,
+                obs::command_result::APPLIED,
+                |r| {
+                    wire::put_u64(r, obs::command_result::CMD_SEQ, seq);
+                    wire::put_u64(r, obs::command_result::OP_ID, op);
+                },
+            );
+            carried.push(self.journaled(at).expect("just journaled"));
+            self.last_applied_cmd = self.last_applied_cmd.max(seq);
+        }
+        carried
+    }
+
     pub fn transfer(&mut self, op: u64, from: u64, to: u64, amount: i64) -> u64 {
         self.journal(obs::TRANSFER, obs::transfer::SIZE, 1, |r| {
             wire::put_u64(r, obs::transfer::OP_ID, op);
@@ -494,6 +565,10 @@ impl Java {
             wire::put_u32(r, obs::dict::NAME_LEN, name.len() as u32);
             r[obs::dict::NAME..obs::dict::NAME + name.len()].copy_from_slice(name.as_bytes());
             self.dict_sent += 1;
+        }
+        if self.end_after_dicts {
+            self.end_after_dicts = false;
+            return false;
         }
         if self.tick_marked != self.game_time {
             let gt = self.game_time;
@@ -630,7 +705,10 @@ impl Java {
                 self.failed_seen = true;
             }
             let highest = c.get_u64(wire::H_WORD_C);
-            self.pending_ack = ack.min(self.sent_obs.max(self.pages_obs));
+            // JB9: never past the journal's file on disk, as `BoundarySession.onHeader` clamps.
+            self.pending_ack = ack
+                .min(self.sent_obs.max(self.pages_obs))
+                .min(self.written_through.unwrap_or(u64::MAX));
             // SAFETY: the step published k; it does not touch this buffer until Java stores
             // consumed = k (and submits k + 2).
             let area = unsafe { c.area(used) }.to_vec();
@@ -656,8 +734,19 @@ impl Java {
                 max_seq = max_seq.max(seq);
                 if self.hold_commands {
                     if rec.kind == cmd::TRANSFER_TO_CONTAINER {
-                        self.held_ops
-                            .push(wire::u64_at(rec.bytes, cmd::transfer_to_container::OP_ID));
+                        let b = rec.bytes;
+                        let op = wire::u64_at(b, cmd::transfer_to_container::OP_ID);
+                        self.held_ops.push(op);
+                        self.held_transfers.push((
+                            seq,
+                            op,
+                            [
+                                wire::i32_at(b, cmd::transfer_to_container::X),
+                                wire::i32_at(b, cmd::transfer_to_container::Y),
+                                wire::i32_at(b, cmd::transfer_to_container::Z),
+                            ],
+                            wire::i32_at(b, cmd::transfer_to_container::COUNT),
+                        ));
                     }
                     if (0x8400..=0x84FF).contains(&rec.kind)
                         && let Ok(Some((_, c))) = iw::decode_cmd(rec.bytes)
@@ -709,6 +798,8 @@ impl Java {
                         }
                         let status = if self.applied_cmd_ops.contains(&op) {
                             obs::command_result::DUPLICATE_OP
+                        } else if self.unloaded_transfers {
+                            obs::command_result::NOT_LOADED
                         } else if self.fail_transfers {
                             obs::command_result::FAILED
                         } else {
@@ -829,7 +920,9 @@ impl Java {
     ///   materializations and adoptions, with their own SPAWN_REJECTED kinds;
     /// - every despawn, departure or recall answers not embodied (reason 6) with nothing captured,
     ///   as the bridge and its plugins answer one for a body they do not have;
-    /// - every command that carries an op id is answered COMMAND_RESULT failed (3): transfers,
+    /// - a transfer is answered COMMAND_RESULT not loaded (6), as CommandDispatcher answers one
+    ///   whose container's chunk is not loaded;
+    /// - every other command that carries an op id is answered COMMAND_RESULT failed (3):
     ///   gossip, houses, residents, industry commands, ship cargo, and a dragon discard (op 0);
     /// - latest-wins commands (markets, offers, sentiment, steering, timetables, territories,
     ///   notices, habitat) need no answer, nor do the dragons' lair placements and oil surveys,
@@ -840,21 +933,24 @@ impl Java {
         use rtsim_ecology::herds::boundary as hb;
         use rtsim_ships::boundary as sb;
         *self.refused.entry(kind).or_default() += 1;
-        let failed = |j: &mut Java, op: u64| {
+        let answer = |j: &mut Java, op: u64, status: u32| {
             j.journal(
                 obs::COMMAND_RESULT,
                 obs::command_result::SIZE,
-                obs::command_result::FAILED,
+                status,
                 |r| {
                     wire::put_u64(r, obs::command_result::CMD_SEQ, seq);
                     wire::put_u64(r, obs::command_result::OP_ID, op);
                 },
             );
         };
+        let failed = |j: &mut Java, op: u64| answer(j, op, obs::command_result::FAILED);
         match kind {
-            cmd::TRANSFER_TO_CONTAINER => {
-                failed(self, wire::u64_at(b, cmd::transfer_to_container::OP_ID))
-            }
+            cmd::TRANSFER_TO_CONTAINER => answer(
+                self,
+                wire::u64_at(b, cmd::transfer_to_container::OP_ID),
+                obs::command_result::NOT_LOADED,
+            ),
             cmd::WRITE_GOSSIP => failed(self, wire::u64_at(b, cmd::write_gossip::OP_ID)),
             cmd::PLACE_HOUSE => failed(self, wire::u64_at(b, cmd::place_house::OP_ID)),
             cmd::SPAWN_RESIDENT => failed(self, wire::u64_at(b, cmd::spawn_resident::OP_ID)),

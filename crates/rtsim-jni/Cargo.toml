@@ -44,5 +44,7 @@ proptest.workspace = true
 mic-native-host.workspace = true
 # The fake Java side the tests drive the engine with, shared with the headless host.
 rtsim-host = { path = "../rtsim-host" }
+# The save viewer mirrors the industry link's page tables; tests/tables.rs compares them.
+rtsim-view.workspace = true
 # The view tap test checks each part's CRC.
 crc32fast.workspace = true

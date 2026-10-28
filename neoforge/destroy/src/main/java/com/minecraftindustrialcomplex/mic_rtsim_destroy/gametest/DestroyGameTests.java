@@ -56,6 +56,7 @@ public final class DestroyGameTests {
         BlockPos outside = inChunk(helper, 8, 8).offset(-48, 0, -48);
         long[] id = {0};
         long[] greenhouse0 = {0};
+        long[] tick0 = {0};
         long op = engineOp();
         ResourceLocation gh = ResourceLocation.parse("destroy:greenhouse"), smog = ResourceLocation.parse("destroy:smog");
         helper.startSequence()
@@ -75,6 +76,7 @@ public final class DestroyGameTests {
                 .thenExecute(() -> {
                     check("pollution is on in Destroy's config", PollutionHelper.isPollutionEnabled());
                     greenhouse0[0] = PollutionHelper.getPollution(helper.getLevel(), DestroyPollutionTypes.GREENHOUSE.get());
+                    tick0[0] = helper.getTick();
                     PollutionHelper.changePollution(helper.getLevel(), chest, DestroyPollutionTypes.GREENHOUSE.get(), 40);
                     PollutionHelper.changePollution(helper.getLevel(), chest, DestroyPollutionTypes.SMOG.get(), 12);
                     PollutionHelper.changePollution(helper.getLevel(), outside, DestroyPollutionTypes.SMOG.get(), 9);
@@ -120,7 +122,15 @@ public final class DestroyGameTests {
                     Map<ResourceLocation, Long> t = PollutionLedger.get(helper.getLevel()).totals(id[0]);
                     record("pollutionIsAttributedAndCrudeOilIsADeposit", "after", "greenhouse " + greenhouse0[0] + " -> " + ghNow + ", totals " + t
                             + ", crude " + oil.getAmount());
-                    check("the level took 50 greenhouse in all", ghNow - greenhouse0[0] == 50);
+                    // Level greenhouse decays by chance every tick it is above 0 (Destroy's Pollution.tick: at most
+                    // ceil(decayChancePerTick) a tick), whatever the batch before left: the level took 50, less
+                    // at most that decay over the ticks since the baseline.
+                    float chance = helper.getLevel().getData(DestroyAttachmentTypes.LEVEL_POLLUTION.get())
+                            .getProperties(DestroyPollutionTypes.GREENHOUSE.get()).decayChancePerTick();
+                    long decay = (helper.getTick() - tick0[0]) * (long) Math.ceil(chance);
+                    long took = ghNow - greenhouse0[0];
+                    check("the level took 50 greenhouse in all, less at most " + decay + " decay: took " + took,
+                            took <= 50 && took >= 50 - decay);
                     check("totals 50 and 17", t.getOrDefault(gh, 0L) == 50 && t.getOrDefault(smog, 0L) == 17);
                     check("900 crude oil left", oil.getAmount() == 900);
                 })

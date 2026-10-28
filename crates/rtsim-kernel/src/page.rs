@@ -724,7 +724,8 @@ impl PageStore {
     /// A missing file or a bad record (a writer folded the log or compacted a segment while the
     /// open read) reopens from the root, up to [`READ_ONLY_RETRIES`] times, then returns
     /// [`PageError::Busy`]. A folder that does not exist is an error: nothing is created.
-    /// [`PageStore::view_confirmed`] then shows the generation [`PageStore::rollback`] would keep.
+    /// [`PageStore::view_confirmed`] then shows the generation [`PageStore::rollback`] would keep
+    /// (one world save behind a save that waits for its WORLD_SAVED, slice U-h).
     pub fn open_read_only(dir: impl Into<PathBuf>) -> Result<PageStore> {
         let dir = dir.into();
         let meta = fs::metadata(&dir).map_err(io(&dir))?;
@@ -767,7 +768,7 @@ impl PageStore {
     }
 
     /// On a read-only store, shows the confirmed generation in memory only: what
-    /// [`PageStore::rollback`] would keep (the generation `Engine::start` opens), without writing
+    /// [`PageStore::rollback`] would keep, without writing
     /// the rollback. Returns false when nothing was pending. Errors on a writable store, whose
     /// disk would then disagree with its memory.
     pub fn view_confirmed(&mut self) -> Result<bool> {

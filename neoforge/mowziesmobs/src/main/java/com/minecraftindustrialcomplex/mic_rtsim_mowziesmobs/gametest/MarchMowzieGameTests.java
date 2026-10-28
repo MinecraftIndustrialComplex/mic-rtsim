@@ -263,7 +263,7 @@ public final class MarchMowzieGameTests {
         Far far = new Far(helper, test);
         ServerLevel level = far.level;
         Grove grove = new Grove(far, far.k, far.z0);
-        long[] agent = new long[1], op = new long[1], count = new long[2], tick = new long[2];
+        long[] agent = new long[1], op = new long[1], count = new long[2], tick = new long[2], steers = new long[1];
         ServerPlayer[] watcher = new ServerPlayer[1];
         Vec3[] head = new Vec3[1], last = new Vec3[3];
         Mob[] puppet = new Mob[3], raptor = new Mob[1];
@@ -311,9 +311,13 @@ public final class MarchMowzieGameTests {
                     check("the band is placed west of the centre, not yet walking: head at " + at(head[0]) + ", centre " + at(grove.spot),
                             head[0].x < grove.spot.x - 15);
                     // The engine steers the band to the grove's centre: every stack walks to its place beside it.
+                    steers[0] = ConflictKit.bridge().steered;
                     ConflictKit.steer(agent[0], party.epoch, WALK, grove.spot.x, grove.spot.z, 0, false);
                 })
                 .thenWaitUntil(waits.logic(() -> {
+                    // The steer is read a step or more after it is sent (2 to 7 ticks), and until then the stacks stand at their old ends,
+                    // which reads as arrived: the walk would be waited for at 0 blocks (MZB-941).
+                    check("the steer was read", ConflictKit.bridge().steered > steers[0]);
                     ConflictBridge.Party p = ConflictKit.party(agent[0]);
                     long now = level.getGameTime();
                     for (ConflictBridge.Stack st : p.stacks()) {

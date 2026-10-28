@@ -317,7 +317,8 @@ public final class IndustryCommands {
                         + ", read time " + s.readNanos / 1000 + " us (slowest inventory " + s.maxInventoryNanos / 1000 + " us), records "
                         + s.recordsSent + " sent, " + s.recordsDropped + " dropped",
                 "reconciles: " + r.applied + " applied, " + r.duplicates + " duplicates, " + r.held() + " held, " + r.shortfalls
-                        + " short deltas, " + r.blocksBroken + " blocks broken, " + r.blocksSkipped + " skipped, " + r.staleEpochs
+                        + " short deltas, " + r.blocksBroken + " blocks broken, " + r.blocksSkipped + " skipped, drops " + r.dropsKept
+                        + " kept until their chunks were written (" + r.dropsLost + " lost, " + r.dropsWaiting() + " batches waiting), " + r.staleEpochs
                         + " epochs of an earlier engine life dropped (engine life " + Long.toHexString(ind.engineLife()) + ")",
                 "ports: sessions " + p.sessionPorts + ", tosses " + p.tossPorts + ", pickups " + p.pickupPorts + ", broken stock " + p.brokenPorts
                         + ", unattributed sessions " + p.unattributed,
