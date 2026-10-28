@@ -1805,12 +1805,21 @@ public final class AloftMowzieGameTests {
                     throne[0].sendAbilityMessage(EntityUmvuthi.SPAWN_ABILITY);
                 })
                 .thenWaitUntil(waits.logic(() -> {
+                    // the jar drops a cast that cannot start (Ability.canUse) without a word, and a first round saw none come in 8,000 ticks:
+                    // the message is sent again every 40 ticks to a body whose cast has not made its three (MZB-917)
+                    if (level.getGameTime() % 40 == 0) {
+                        if (joins.stream().filter(j -> j.tag() != null).count() < 3 && puppet[0].getActiveAbility() == null)
+                            puppet[0].sendAbilityMessage(EntityUmvuthi.SPAWN_ABILITY);
+                        if (joins.stream().filter(j -> j.tag() == null).count() < 3 && throne[0].getActiveAbility() == null)
+                            throne[0].sendAbilityMessage(EntityUmvuthi.SPAWN_ABILITY);
+                    }
                     check("the puppet's warriors have come (" + joins.stream().filter(j -> j.tag() != null).count() + " tagged of " + joins.size()
                                     + " joins; adopted +" + (ConflictKit.summonsAdopted() - was[0]) + ", refused +" + (ConflictKit.summonsRefused() - was[1])
                                     + "; the puppet's ability " + puppet[0].getActiveAbilityType() + ", alive " + puppet[0].isAlive() + ", removed " + puppet[0].isRemoved()
-                                    + ", gravity " + !puppet[0].isNoGravity() + ", slot " + chiefSlot(agent).alive() + ")",
+                                    + ", gravity " + !puppet[0].isNoGravity() + ", slot " + chiefSlot(agent).alive() + "; " + abilityState(puppet[0], EntityUmvuthi.SPAWN_ABILITY) + ")",
                             joins.stream().filter(j -> j.tag() != null).count() >= 3);
-                    check("and the throne body's (" + joins.stream().filter(j -> j.tag() == null).count() + " untagged joins; the throne body alive " + throne[0].isAlive()
+                    check("and the throne body's (" + joins.stream().filter(j -> j.tag() == null).count() + " untagged joins; " + abilityState(throne[0], EntityUmvuthi.SPAWN_ABILITY)
+                                    + "; the throne body alive " + throne[0].isAlive()
                                     + ", removed " + throne[0].isRemoved() + ", puppet " + RtsimApi.isPuppet(throne[0]) + ", ability " + throne[0].getActiveAbilityType()
                                     + ", no AI " + throne[0].isNoAi() + ", at " + throne[0].position() + ")",
                             joins.stream().filter(j -> j.tag() == null).count() >= 3);
@@ -1821,6 +1830,12 @@ public final class AloftMowzieGameTests {
                     throne[0].sendAbilityMessage(EntityUmvuthi.SPAWN_SUNBLOCKERS_ABILITY);
                 })
                 .thenWaitUntil(waits.logic(() -> {
+                    if (level.getGameTime() % 40 == 0) { // sent again to a body whose cast has not made its three, as above (MZB-917)
+                        if (joins.stream().filter(j -> j.tag() != null && j.crane()).count() < 3 && puppet[0].getActiveAbility() == null)
+                            puppet[0].sendAbilityMessage(EntityUmvuthi.SPAWN_SUNBLOCKERS_ABILITY);
+                        if (joins.stream().filter(j -> j.tag() == null && j.crane()).count() < 3 && throne[0].getActiveAbility() == null)
+                            throne[0].sendAbilityMessage(EntityUmvuthi.SPAWN_SUNBLOCKERS_ABILITY);
+                    }
                     check("the puppet's cranes have come (" + joins.stream().filter(j -> j.tag() != null && j.crane()).count() + ")",
                             joins.stream().filter(j -> j.tag() != null && j.crane()).count() >= 3);
                     check("and the throne body's (" + joins.stream().filter(j -> j.tag() == null && j.crane()).count() + ")",
@@ -2048,6 +2063,12 @@ public final class AloftMowzieGameTests {
         };
         ConflictKit.onEnd(helper, back);
         return back;
+    }
+
+    /** What the jar's ability gate says of one ability of a body: whether a cast would start, whether one runs, the cooldown left. */
+    private static String abilityState(EntityUmvuthi u, com.bobmowzie.mowziesmobs.server.ability.AbilityType<?, ?> type) {
+        com.bobmowzie.mowziesmobs.server.ability.Ability<?> a = com.bobmowzie.mowziesmobs.server.ability.AbilityHandler.INSTANCE.getAbility(u, type);
+        return a == null ? "no such ability" : "can use " + a.canUse() + ", using " + a.isUsing() + ", cooldown " + a.getCooldownTimer();
     }
 
     /** Health an Umvuthi out of battle heals in the ticks between a test's set and its read: 0.3 a tick (the jar's, once its timer ran out). */
