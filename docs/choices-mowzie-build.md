@@ -11748,6 +11748,11 @@ rounds of phase 2 are the check, and what they found is recorded after them.
   floor, at -57.0, so the ceiling's bottom face was inside the puppet's box from the start: vanilla's `move` ignores a block the box
   already overlaps, the puppets rose through the stone, and both stood at the raised target over it (-43.0 = the ceiling's top, 7 over
   the floor, + 2 + 8). The ceiling is now 8 over the floor, 1.8 blocks of room, with the rest of the test unchanged. Not run yet.
+- **MZB-912** (round 2, test 23b `anAloftUmvuthiSettlesAndRises`; MZB-809, MZB-812): "it rose no sooner than 200 ticks after its last
+  player target (-20)". The flag was dropped and the player put back in view in one tick, but the jar picks its target only every few
+  ticks, and the rule had seen no player target for 400 ticks, so it rose at once and the target came 20 ticks after it. The player is
+  now put back and waits to be the target while the flag is still set, and the flag drops after, so the rise waits on the target as the
+  test's comment says. Not run yet.
 
 ## M12 S9
 
