@@ -2411,6 +2411,37 @@ fn a_restart_replays_the_window_before_a_switch_off_with_the_module_on() {
     assert_eq!(mask, ON);
 }
 
+/// U-e14 (review of U-e, PR 16): a save taken before the first SESSION_START does not know the
+/// mask, and says so. The engine is started and stopped before any hand-over, so the stop's final
+/// save has no SESSION_START behind it; the next start has no mask in its pages, so SESSION_START's
+/// is its first. At cdd6aa4c the page recorded the unknown mask as 0, "every module off", and the
+/// next start took it as known: the replay ran with every module off and SESSION_START's mask was
+/// ignored (the session's own switch then moved the modules on, as a switch-on from nothing).
+#[test]
+fn a_save_before_the_first_session_start_leaves_the_mask_unknown() {
+    let dir = tmpdir("mask-unknown");
+    let e = engine(&dir, wire::MIN_CAPACITY);
+    let first = Java::open(e.clone(), WorldSave::fresh()); // started, no hand-over yet
+    e.close(true, Duration::from_secs(5)).unwrap();
+    drop(first);
+    let e = engine(&dir, wire::MIN_CAPACITY);
+    let mut j = Java::open(e.clone(), WorldSave::fresh());
+    assert!(!e.module_mask_known(), "the stop's pages knew no mask");
+    j.module_mask = 0b1_0101;
+    j.idle();
+    j.idle();
+    assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+    assert!(e.module_mask_known(), "SESSION_START's mask is the first");
+    assert_eq!(e.module_mask(), 0b1_0101);
+    // And a save taken after it knows the mask: the next start finds it in the pages.
+    e.close(true, Duration::from_secs(5)).unwrap();
+    let e = engine(&dir, wire::MIN_CAPACITY);
+    let _j = Java::open(e.clone(), WorldSave::fresh());
+    assert!(e.module_mask_known(), "the pages of a started session know it");
+    assert_eq!(e.module_mask(), 0b1_0101);
+    e.close(true, Duration::from_secs(5)).unwrap();
+}
+
 /// U-e5. The pages hold the mask as of their sequence: a save taken with phase 1 off, and a
 /// restart, finds the engine in that mask before any step, whatever the session's config says;
 /// the session's own switch then moves it.

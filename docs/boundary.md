@@ -524,7 +524,8 @@ Now MODULE_SWITCH (0x0132) is a journaled kind: the prefix (`obsSeq`, `gameTime`
   `u32` after the outbox). A start sets every module's flag from it, before any record, and the
   replay runs in it. SESSION_START no longer sets `enabled`; its `moduleMask` is the mask the session
   starts in (the constructor's), read only when the pages hold no mask (a new world, or pages
-  deleted), as the starting mask.
+  deleted, or a save taken before the first SESSION_START, whose page says `u32::MAX`: no mask yet),
+  as the starting mask.
 - **A restart whose config differs from the journal's last mask** is that session's own switch: the
   session's record comes after its JOURNAL_GEN, so the replay has ended when it arrives, and it is a
   live switch. The replay itself is the crashed session's.

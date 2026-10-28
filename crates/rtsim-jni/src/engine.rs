@@ -243,19 +243,25 @@ impl Decode for TransferCmd {
     }
 }
 
-fn encode_meta(replay: &Replay, outbox: &Outbox<TransferCmd>, mask: u32) -> Vec<u8> {
+/// The meta page's mask field when the engine knew no mask yet: a save taken before the first
+/// SESSION_START (the stop of an engine that never had a hand-over). Module bits are one per
+/// module, never 32 of them, so no mask is this (docs/choices-journal-barrier.md U-e14).
+const MASK_UNKNOWN: u32 = u32::MAX;
+
+fn encode_meta(replay: &Replay, outbox: &Outbox<TransferCmd>, mask: Option<u32>) -> Vec<u8> {
     let mut w = Writer::with_capacity(256);
     w.u32(META_MAGIC);
     w.u16(META_VERSION);
     replay.encode(&mut w);
     outbox.encode(&mut w);
-    w.u32(mask);
+    w.u32(mask.unwrap_or(MASK_UNKNOWN));
     w.into_bytes()
 }
 
 /// The engine's meta page: its replay state, its outbox and the module mask the records applied
-/// through `applied_through` left it in.
-type Meta = (Replay, Outbox<TransferCmd>, u32);
+/// through `applied_through` left it in (None: the engine had none yet, so the next start takes
+/// SESSION_START's).
+type Meta = (Replay, Outbox<TransferCmd>, Option<u32>);
 
 fn decode_meta(b: &[u8]) -> codec::Result<Meta> {
     let mut r = Reader::new(b);
@@ -272,7 +278,7 @@ fn decode_meta(b: &[u8]) -> codec::Result<Meta> {
     let outbox = Outbox::decode(&mut r)?;
     let mask = r.u32()?;
     r.finish()?;
-    Ok((replay, outbox, mask))
+    Ok((replay, outbox, (mask != MASK_UNKNOWN).then_some(mask)))
 }
 
 /// One observation record the engine read (TEST mode), for `nDrainReceived`.
@@ -1048,6 +1054,12 @@ impl Engine {
         lock(&self.state).mask
     }
 
+    /// Whether the engine knows its mask yet: the pages' at a start, else SESSION_START's. Takes
+    /// the state lock: tests only.
+    pub fn module_mask_known(&self) -> bool {
+        lock(&self.state).mask_known
+    }
+
     /// How many inputs phase 1 heard while it was switched off and has not applied yet (RP-300).
     /// Takes the state lock: tests only.
     pub fn phase1_kept(&self) -> usize {
@@ -1195,9 +1207,7 @@ impl Engine {
             .map_err(|e| format!("cannot read the engine's world page: {e}"))?;
         let (mut replay, outbox, mask) = match meta {
             Some(b) => {
-                let (r, o, m) =
-                    decode_meta(&b).map_err(|e| format!("the engine's meta page: {e}"))?;
-                (r, o, Some(m))
+                decode_meta(&b).map_err(|e| format!("the engine's meta page: {e}"))?
             }
             None => (Replay::new(ObsSeq(0)), Outbox::new(), None),
         };
@@ -2282,7 +2292,7 @@ impl Engine {
         let obs_seq = st.replay.applied_through().0;
         // The events up to the state this save holds (§10.3).
         let events = archive::take(st, &self.stats);
-        let meta = encode_meta(&st.replay, &st.outbox, st.mask);
+        let meta = encode_meta(&st.replay, &st.outbox, st.mask_known.then_some(st.mask));
         let world = st.world.to_bytes();
         let ind = industry::save(st);
         let mut whole = ind.put;
@@ -3002,8 +3012,13 @@ mod tests {
             },
             OpId(4242),
         );
-        let (mut r, o, mask) = decode_meta(&encode_meta(&replay, &outbox, 0b1010_0111)).unwrap();
-        assert_eq!(mask, 0b1010_0111, "the module mask as of the pages (U-e5)");
+        let (mut r, o, mask) =
+            decode_meta(&encode_meta(&replay, &outbox, Some(0b1010_0111))).unwrap();
+        assert_eq!(mask, Some(0b1010_0111), "the module mask as of the pages (U-e5)");
+        let (_, _, none) = decode_meta(&encode_meta(&replay, &outbox, None)).unwrap();
+        assert_eq!(none, None, "no mask known yet (U-e14)");
+        let (_, _, zero) = decode_meta(&encode_meta(&replay, &outbox, Some(0))).unwrap();
+        assert_eq!(zero, Some(0), "every module off is a mask");
         assert_eq!(r.closed_expected(), GEN_BLOCK + 2);
         for k in 0..r.closed_expected().div_ceil(GEN_BLOCK) {
             r.load_closed_block(&replay.closed_block(k)).unwrap();
@@ -3024,7 +3039,7 @@ mod tests {
     fn a_meta_page_without_the_mask_is_refused() {
         let replay = Replay::new(ObsSeq(0));
         let outbox: Outbox<TransferCmd> = Outbox::new();
-        let mut page = encode_meta(&replay, &outbox, 7);
+        let mut page = encode_meta(&replay, &outbox, Some(7));
         page[4..6].copy_from_slice(&2u16.to_le_bytes());
         page.truncate(page.len() - 4);
         let err = decode_meta(&page).expect_err("version 2 is not read");
