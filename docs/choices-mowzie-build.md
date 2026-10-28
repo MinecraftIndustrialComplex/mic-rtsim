@@ -11707,6 +11707,38 @@ rounds of phase 2 are the check, and what they found is recorded after them.
 - **MZB-906** (round 1; commit a69bff6d): the retired hand-back test read its band's epoch from the party after the puppet's death, when the party
   may be gone ("holds no party yet"). It reads the epoch while the band lives. The line's answer does not depend on the party.
 
+- **MZB-907** (the merge of feat/mowzie-m10 at 125ad528 into M11c at 33d628e1, commit aec7918b): M10's head carries main at 8703d216
+  (M8, MZB-760's grove tribute parking, the tribute earmark MZB-930, U-g, J6, U-h) and the march GameTests' fixes (MZB-940, MZB-941) and
+  fixtures. M11 was cut from M10 at 1c2644af, so the march itself is on both sides unchanged; what M10 added since is main's work.
+  - Two files conflicted, both keep-both. `rtsim-conflict` `engine.rs`: M11's `chief_ended` (the camps whose `Camp::ended` stands, by the
+    ended band's agent, MZB-853, saved in the meta page) and M10's `parked` (the tribute stacks parked on NOT_LOADED, MZB-760, in memory
+    only) were both added after `placing` in the `Conflict` struct and in `Conflict::new`'s initializer: both are kept, `chief_ended`
+    first (it sits with the saved fields), `parked` after it. `mic_rtsim_mowziesmobs.mixins.json`: M11's `EntityUmvuthiAccessor` and
+    `UmvuthiSummonsMixin` and M10's `MMEntityMoveHelperMixin` (the march's steering) are all listed, in alphabetical order.
+  - Nine files changed on both sides and merged without a conflict (MOWZIE.md, docs/boundary.md, docs/choices-mowzie-build.md,
+    docs/replay-gate.md, `engine/camp.rs`, `persist.rs`, `rtsim-jni/tests/protocol.rs`, `BridgeEvents.java`, `ConflictKit.java`). The
+    two places where the slices touch one function are `camp.rs` (M10's earmark rewrote `owe_tribute`, `place_tribute`, `tribute_placed`
+    and `tribute_failed`; M11 added the camp's `ended` and the chief's band end around them) and `ConflictKit.java` (M10's `bodyName`
+    reads the journal's dictionary, MZB-941; M11 added its counters and `chiefBody` with an agent): the edits are in different functions
+    and both behaviours stand, so no design choice was needed where the march and the aloft meet (M11's design already says how they
+    combine: the chief's stack walks at the column's rear and its puppet floats, MZB-805 to MZB-809, MZB-822).
+  - Record ids: no MZB id is defined on both sides (M11 adds 800 to 906; M10 and main add 694 to 699, 760 to 770, 920 and 930 to 941),
+    so none was renumbered.
+  - Save format: M11 follows M10's RTC11 / meta version 10 (magic `RTCB`) with RTC12 / meta version 11 (magic `RTCC`, MZB-853), and M10's
+    side changed no format after the common base (`parked` is not saved), so the merged format is M11's RTC12 / meta 11 and takes no
+    further bump. The viewer fixtures were RTC11 and unreadable ("meta page version 10, this build reads 11"): MZB-908.
+- **MZB-908** (the viewer fixtures, commit 5ef29843): `rtsim-view/tests/data/core` is a fresh core GameTest round's `rtsim` (no archive)
+  and `data/mic_rtsim_journal.dat`, `data/create` a fresh `create -Psec1fx` round's `rtsim` with its archive and journal, both run from
+  aec7918b (RTC12, conflict meta version 11); the header of `tests/fixtures.rs` names the runs. `rtsim-host` and `rtsim-view` pass with
+  them.
+- **MZB-909** (the full `create -PwithMowzie` round at aec7918b ran out of memory; no change, MZB-950's): the round ran at 6G (the heap this
+  branch carried) and the server hung in `theIceBallHitRatesAgainstAMovingTrain`, test 208 of 267, after the OutOfMemoryError in the
+  light engine's worker (a thread dump: the server thread in `EntityFrostmaw.tick`, `MMPathNavigateGround.followThePath`, `tryShortcut`,
+  `sweep`, `Level.getBlockState` loading a chunk; a class histogram: 315,000 chunk holders). That is MZB-950's float sweep of the jar
+  far from the origin, fixed on main's side by M10's head 36634dd2 (the rail tests at `nearBase`, the sweep mixin MZB-951, the heap back
+  to 4G). The round is not rerun on this branch before that merge; M10's earlier pass at 6G on the same test did not meet a sweep that
+  ran away. The server was stopped by hand and no heap was raised.
+
 ## M12 S9
 
 (none yet)
