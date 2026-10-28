@@ -9377,10 +9377,16 @@ M10's, and no earlier test is needed. Rust, tests and docs; no Java.
     result by remembering which district a train stood at, or an off restart over exchanges is accepted as
     lossy (it is rare: the crash and the switch off at once, trains running between the last pages and the
     crash). The first is the conservative one and the largest; none is made here.
-  - *Checks.* Three other tests wait for pages by ticking
-    (`a_crash_before_the_page_save_that_covers_an_answer_may_send_its_op_again` family,
-    `a_duplicate_restarted_off` and the train raid's loop): each saves its world at the tick of an event it
-    waits for after the pages (X written, the raid's loot), so the IO lane's speed moves the event, not the window.
+  - *Not checked.* Three other places wait for pages with `Rig::run("the pages", ...)`, ticking:
+    `replayed_answer`, `a_replayed_duplicate_leaves_the_copy_the_replay_decided_again_to_be_sent` and
+    `a_duplicate_restarted_off`. Each takes its pages at day 2 (tick 48,000) and then waits for an event
+    (a loot, X) before it saves the world, so the exchanges that fall inside the wait are in the window its
+    restarts replay, and the IO lane's speed could move them the way it moved this test's. The 24 other tests passed in
+    every serial group run on record, and their flake rates alone were not measured. Their wait cannot simply be
+    `wait_for_pages`: they ask for the save between ticks, so the engine has not taken it yet.
+  - *Checks.* The RP-318 test passed 40 of 40 alone and 120 of 120 in six processes at once (it failed 12 of
+    167 before); `cargo test -p rtsim-jni --test industry ack_never_resends -- --test-threads=1` passed twice (26
+    passed, 1 ignored, 54 and 63 s); the ignored test fails 5 of 5 with the -224. rustfmt is clean on tests/industry.rs.
 
 ## M11 Aloft
 
