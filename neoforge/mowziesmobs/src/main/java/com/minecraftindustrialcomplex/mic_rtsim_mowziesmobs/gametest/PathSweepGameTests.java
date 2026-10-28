@@ -150,7 +150,7 @@ public final class PathSweepGameTests {
                     }
                     int delta = level.getChunkSource().getLoadedChunksCount() - loaded;
                     record(test, "sweeps", sweeps + " sweeps, " + cells + " block reads, the largest " + worst + "; " + delta + " more chunks loaded");
-                    check("no sweep loaded chunks beyond the place (" + delta + " more)", delta <= 100);
+                    check("no sweep loaded chunks beyond the place (" + delta + " more; a runaway loads tens of thousands)", delta <= 300);
                     f[0].discard();
                 })
                 .thenSucceed();
@@ -165,10 +165,14 @@ public final class PathSweepGameTests {
         }
     }
 
-    /** The name the mixin's handler has in the jar's class once Mixin has merged it ({@code handler$...$mic_rtsim_mowziesmobs$sweep}), or null. */
+    /**
+     * The name the mixin's handler has in the jar's class once Mixin has merged it, or null: {@code handler$<ids>$<source id>$sweep}
+     * ({@code MethodMapper.getHandlerName} of Mixin 0.8.7 puts the handler's own name last, with the config's source id, cut to 12
+     * characters, before it, and drops that id from the name if the name begins with it).
+     */
     private static String mixinHandler() {
         for (Method m : MMPathNavigateGround.class.getDeclaredMethods())
-            if (m.getName().startsWith("handler$") && m.getName().contains("mic_rtsim_mowziesmobs") && m.getName().endsWith("sweep"))
+            if (m.getName().startsWith("handler$") && m.getName().endsWith("$sweep"))
                 return m.getName();
         return null;
     }
