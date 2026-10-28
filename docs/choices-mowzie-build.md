@@ -9470,8 +9470,18 @@ code changed, so there is no failing-first test: each is a wrong expectation of 
     module switch did what their records say in all five; what each test asserted beyond that was the test author's guess, which the
     first round could not have known (MZB-743 says as much of the tolerances: "if they prove too tight on a first run the failure
     line holds the distance").
-  - *Not run.* Nothing past the first failed check of the five tests has ever run, so each may show a second fault in a later round.
-    The log of the 49fef870 round ends each test at its first.
+  - *Not run.* Nothing past the first failed check of the five tests had ever run, so each could show a second fault in a later round;
+    two did (the stop tests' walk home above, and the Mowzie module's tests).
+  - *Rounds on the fix.* Core, fresh world, `target/m10fix-core2.log` at b7abd112: "All 154 required tests passed" (the first round on
+    the first fix commit, `m10fix-core-1.log`, failed the two stop tests at the walk home, 2 of 154, and passed the other five). The
+    figures it logged: the march walk's worst deviation 1.32 (was 1.60); members moved back 6 at simulation distance 10 and 1 at 8;
+    the cut in the tick the record was read (2 ticks after the send, both tests); W's farthest place once placed 0.5 inside the square's
+    edge, C's 5 inside it; the module switched off drops the order (0 records read in 40 ticks) and the column forms again. Mowzie's
+    Mobs, `target/m10fix-mowzie.log` on the first fix commit: 6 of 80 failed (above); `target/m10m-mowziesmobs.log` on 9d123ab5 (the
+    lead's queued round, which compiled the fix commits): "All 80 required tests passed". `cargo test -j 8 -p rtsim-conflict -p
+    rtsim-jni`: every binary passed; in the one run, `ack_never_resends::a_carried_answer_heard_with_industry_off_takes_its_queued_command`
+    hit its own 60 s wall-clock bound at load 38 (other sessions' builds) and passed alone in 3 s (MZB-940's family: a wall-clock
+    bound in a Rust rig, not touched here). `:core:test` passed.
 
 ## M11 Aloft
 
