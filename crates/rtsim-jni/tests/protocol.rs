@@ -2506,8 +2506,8 @@ fn a_restart_that_replays_an_off_window_makes_the_world_a_run_that_never_had_it_
         .filter(|(_, r)| wire::u16_at(r, wire::R_KIND) == obs::MODULE_SWITCH)
         .count();
     assert!(
-        switches >= 2,
-        "the session's own switch and the window's: {switches}"
+        switches >= 1,
+        "the window's switch (the session's own was acknowledged and trimmed): {switches}"
     );
     let time = j.game_time;
     let _ = j.crash();
