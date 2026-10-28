@@ -9425,8 +9425,15 @@ code changed, so there is no failing-first test: each is a wrong expectation of 
     (`walkIn` puts each anchor inside the square at the first beat: placed 3 ticks after the march). The sampler took the farthest east
     from the tick the march was said, so it read W's own start, the chief's place `wx + 4.5` = -5168147.5, a place nobody walked to.
     It now reads a stack's place once the stack has been placed (C's are all placed from the start, so its figure is unchanged,
-    -5168213.28 against the edge -5168208.0), and logs W's too. The rest of the test after this check has not run either (the
-    casualty, the walk home).
+    -5168213.28 against the edge -5168208.0), and logs W's too (-3528784.50 against the edge -3528784.0 in the round on the fix: W's
+    walk-in puts the stacks at the square's edge, and the clamp keeps them off it by the half block of the chart; see the next
+    paragraph for what the round then found). The rest of the test after this check had not run (the casualty, the walk home).
+  - *The same two tests, the walk home ("stands 0.0 behind the point along the column (95.5 away)").* The first round on the fix
+    ran the tests on to this check, the first of a later part. The test sends the HOME march and the steer, then waits until each
+    stack of W has "arrived" (its place within 0.05 of its end), and reads the ends. The steer is read a step or more after it is
+    sent (2 to 7 ticks), and until then the stacks stand where the walk-in left them, which is arrived: the wait ended at once, on the
+    old ends, 95.5 blocks (31.5 at four) from the point. It now waits for the bridge's `steered` count to move first. The 0.02 the
+    check allows is the column's, and the test gives it nothing else to wait for.
   - *`thePendingAreCutAtOnce...`, "7 ticks".* The check measured from the tick the record was sent to the tick the cut was seen,
     and asserted at most 6. The cut is in the tick the record is read (the intake sets `trimNow` and the same tick's trim cuts a pending
     member no one sees), but the read is the engine's: it comes a step after the order, and a step takes real time on a server that
