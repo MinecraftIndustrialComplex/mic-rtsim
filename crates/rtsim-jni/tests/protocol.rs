@@ -2324,7 +2324,14 @@ mod module_switch {
     /// A caravan session whose pages hold the caravan (the module on), and the stack to rob.
     pub fn caravan(tag: &str) -> (std::path::PathBuf, std::sync::Arc<Engine>, Java, u32, String) {
         let (dir, e, mut j, cargo) = caravan_session(tag, AGENT);
-        let (member, item, _) = stack_to_rob(&cargo);
+        // The biggest stack that is not a coin: two single-item robberies leave it whole.
+        let (member, item, _) = cargo
+            .iter()
+            .filter(|(_, i, _)| i != EMERALD)
+            .max_by_key(|(_, _, n)| *n)
+            .or_else(|| cargo.iter().max_by_key(|(_, _, n)| *n))
+            .cloned()
+            .expect("a stack");
         save_durable(&e, &mut j);
         (dir, e, j, member, item)
     }
@@ -2383,6 +2390,7 @@ fn a_record_before_a_switch_off_is_heard_on_and_one_after_it_is_kept() {
 fn a_restart_replays_the_window_before_a_switch_off_with_the_module_on() {
     use module_switch::*;
     use p1_off::*;
+    use p1_off_fork::Crashed;
     let (dir, e, mut j, member, item) = caravan("msw-replay");
     rob(&mut j, member, &item, 0x7e11);
     j.modules(OFF);
@@ -2410,6 +2418,7 @@ fn a_restart_replays_the_window_before_a_switch_off_with_the_module_on() {
 fn the_pages_hold_the_mask_as_of_their_sequence() {
     use module_switch::*;
     use p1_off::*;
+    use p1_off_fork::copy_dir;
     let (dir, e, mut j, member, item) = caravan("msw-pages");
     j.modules(OFF);
     rob(&mut j, member, &item, 0x7e21);
