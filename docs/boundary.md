@@ -104,7 +104,7 @@ quota), it does not submit the step that would overwrite them; the sim slows rat
 | `start(lastAppliedCmdSeq, worldNextObsSeq) -> (pagesObsSeq, nextCmdSeq)` | once, at server start, before hand-over 1 | may (startup) |
 | `submit(h)` | at most once per tick | **never** |
 | `requestSave(throughObsSeq)` | Minecraft's overworld save event | never (a signal) |
-| `close()` | server stopped | may, briefly |
+| `close(writtenThrough)` | server stopped | may, briefly |
 
 `start` loads the pages and zeroes the four buffers' `published` and `consumed` words (Java refuses
 buffers that are not fresh: hand-overs restart at 1 every session). `pagesObsSeq` is the highest
@@ -136,6 +136,16 @@ after that buffer's commands are applied, so a command in the same buffer that r
 op is still caught. In the running game the second clamp never binds on a world save's acknowledgement
 (WORLD_SAVED reports `min(through, writtenThrough)` and the engine confirms through it); it binds on an
 acknowledgement the engine takes without a world save (a test's, a stop's).
+
+`close(writtenThrough)` (slice U-i): `writtenThrough` is the last observation sequence the world's journal
+file on disk holds (`JournalSavedData.writtenThrough`, read at the stop after the flush save has waited
+for the IO chain; `BoundarySession.closeEngine`, from the supplier of the trim clamp). The engine's final
+save, taken at the stop, is confirmed at once if the file holds every observation it includes, which a
+clean stop always does; if the stop's last journal write was held, the final save stays a pending
+generation, and the restart from the older file rolls it back and replays what it lacks, as it does a
+world save whose WORLD_SAVED never came. No WORLD_SAVED can reach a closed engine, so this argument is
+the stop's only word on the file. `NativeEngine.close()` with no argument names a file that holds
+everything (a test with no journal). The stub keeps one generation and ignores it.
 
 ## 2. Records
 
@@ -416,10 +426,12 @@ RP-212), and a reconcile's drops join the level only once the chunks its breaks 
 **P29 is closed for a held or failed journal write (slice U-h).** A world save's pages stay a pending
 generation until WORLD_SAVED, which reports `min(through, writtenThrough)`: a held or failed write leaves
 the generation pending, the older one confirmed, and a restart from the older file rolls the pending one
-back (docs/choices-journal-barrier.md JB1, JB6, JB9, the U-h records). **Still open:** a stop whose last
-journal write was held: `close(save = true)` confirms its final save at once, so the pages are ahead of the
-older file (slice U-i: `nClose` carries `writtenThrough`); and a world older than both generations, which
-`start` answers with `EngineAhead` as before.
+back (docs/choices-journal-barrier.md JB1, JB6, JB9, the U-h records). **A stop whose last journal write
+was held (slice U-i)** is the same: `nClose` carries `writtenThrough`, and the engine's final save is
+confirmed at once only if the file holds it, else it stays pending and the restart from the older file
+rolls it back (docs/choices-journal-barrier.md U-i1 to U-i6). **Still open:** a world older than both
+generations (a backup restored over a newer rtsim folder), which `start` answers with `EngineAhead` as
+before.
 
 ### 3.2 Generations and copies (SEC-1 S4p, DECISIONS.md)
 
