@@ -4302,7 +4302,7 @@ public final class AloftMowzieGameTests {
      * the bundle's data carries the new direction, the glowing bit and every effect.</li>
      * <li>The server's body is the same across the tick (id, UUID, health, health lost, effects, glowing, kill credit, target, the boss
      * bar's players), the map holds one tracker for it, and none of join, leave, start or stop tracking, or death fired in it.</li>
-     * <li>A second turn 100 ticks later (west at 0.3) is due before 200 ticks have passed, and the second re-pair comes 200 or more ticks
+     * <li>A second turn 60 ticks later (west at 0.3) is due before 200 ticks have passed, and the second re-pair comes 200 or more ticks
      * after the first. A third turn is due when the body is killed 198 ticks after the second re-pair: nothing is sent for the dying body.</li>
      * </ol>
      * The control, lane C, turns 40 degrees at 0.2 a tick, so the puppet lags and its way is 40 degrees off its facing for 400 ticks and
@@ -4466,7 +4466,9 @@ public final class AloftMowzieGameTests {
                     check("it is facing south now (" + puppet[0].getDirectionData() + ")", puppet[0].getDirectionData() == 1);
                     at[2] = r1;
                 })
-                .thenWaitUntil(waits.logic(() -> check("100 ticks after the re-pair", level.getGameTime() >= at[2] + 100)))
+                // 60 ticks, not 100 (MZB-952): the way came 55 degrees off its facing 112 ticks after the west steer, so a steer 100 ticks after
+                // the re-pair had it due at 212, past the cooldown's end, and the test asks for a turn due before it
+                .thenWaitUntil(waits.logic(() -> check("60 ticks after the re-pair", level.getGameTime() >= at[2] + 60)))
                 .thenExecute(() -> {
                     long now = level.getGameTime();
                     double z = Math.min(a.z + 0.2 * (now - at[1]), a.z + 60); // where the anchor is on its way south

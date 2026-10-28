@@ -11809,6 +11809,12 @@ rounds of phase 2 are the check, and what they found is recorded after them.
   anchor outran the control's puppet as it did the stuck ones: the stuck rule counts no headway toward the puppet's place (the place moving away faster
   than it closes) as stuck whatever the cause, and the reset when the anchor stopped is what the test read as a move. The control is now steered at PACE
   (0.08), under the cap, so it stays within 8 blocks of its place and is never stuck. Not run yet.
+- **MZB-952** (round at 793c463c, test 31s `anAloftUmvuthiReadsAndTurns`; MZB-813; the M11c range, MZB-890 to MZB-919, is used up and MZB-920 to MZB-951 are
+  taken by M10 and main, so this is the next id above them): the gate's own way (MZB-916) showed the second turn first due 212 ticks after the first
+  re-pair (`dueAfter[1]` 228294 for a re-pair at 228082), past the cooldown's 200, where the test asks for a turn due before it; the re-pair came at 248.
+  The way came 55 degrees off the facing 112 ticks after the west steer, which was given 100 ticks after the first re-pair. The steer is now given 60
+  ticks after it, so the turn is due at about 172, with the cooldown ending the wait as the test means. The third leg's lag, 46 blocks, gives it due
+  148 ticks after its steer by the same measure, inside the 198 ticks. Not run yet.
 
 ## M12 S9
 
