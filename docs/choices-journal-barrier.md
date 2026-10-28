@@ -810,7 +810,9 @@ crash and a restart replayed a switched-off window as if the module had never be
 before answers Java gave while the module was still on. Now the switch is a journaled kind, MODULE_SWITCH (0x0132), in the journal at
 its real place; the engine applies it in the journaled dispatch, live and in a replay; the pages hold the mask as of their sequence.
 Rows marked **OPEN** are choices RP-290 does not settle and that are not easily reversed (a protocol shape or a format): each says
-what was recommended and built, and the report lists them for Ben. Everything else is reversible and was decided without asking.
+what was recommended and built. The coordinator took each recommendation (nothing is released, so each can still change
+before a release without compat work) and listed them for Ben on 2026-10-28; Ben may still change any of them. Everything else is
+reversible and was decided without asking.
 
 | Id | Choice | Why, test and cost |
 |---|---|---|
