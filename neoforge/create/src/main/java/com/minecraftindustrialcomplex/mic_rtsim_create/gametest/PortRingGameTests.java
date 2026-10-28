@@ -24,6 +24,7 @@ import com.simibubi.create.content.trains.station.GlobalPackagePort;
 import com.simibubi.create.content.trains.station.GlobalStation;
 import com.simibubi.create.content.trains.station.StationBlockEntity;
 import com.simibubi.create.content.trains.track.TrackBlock;
+import com.simibubi.create.content.trains.track.TrackPropagator;
 import com.simibubi.create.content.trains.track.TrackShape;
 import net.minecraft.core.BlockPos;
 import net.minecraft.gametest.framework.GameTest;
@@ -333,13 +334,24 @@ public final class PortRingGameTests {
      */
     @GameTest(template = IndustryKit.YARD, batch = "port_ring_8", timeoutTicks = 1200)
     public static void aRestoredBufferWhoseChunkOutlivedTheTracksTakesAPackageOnce(GameTestHelper helper) {
-        restored(helper, "aRestoredBufferWhoseChunkOutlivedTheTracksTakesAPackageOnce", true);
+        restored(helper, "aRestoredBufferWhoseChunkOutlivedTheTracksTakesAPackageOnce", true, false);
     }
 
     /** The same without the restore's carry: the resend writes the package a second time. */
     @GameTest(template = IndustryKit.YARD, batch = "port_ring_9", timeoutTicks = 1200)
     public static void withoutTheChunkChecksARestoredBufferWhoseChunkOutlivedTheTracksTakesAPackageTwice(GameTestHelper helper) {
-        restored(helper, "withoutTheChunkChecksARestoredBufferWhoseChunkOutlivedTheTracksTakesAPackageTwice", false);
+        restored(helper, "withoutTheChunkChecksARestoredBufferWhoseChunkOutlivedTheTracksTakesAPackageTwice", false, false);
+    }
+
+    /**
+     * The same with the station made anew by Create between the port's being put and the package's write (MZB-939): the
+     * track under the station is propagated again, as the scheduled tick of a track beside it does, which invalidates
+     * the station's edge point; the station's block entity makes a new GlobalStation from the old one's migration data
+     * (its ports and their rings written and read back), and that is the station the write finds on the graph.
+     */
+    @GameTest(template = IndustryKit.YARD, batch = "port_ring_13", timeoutTicks = 1200)
+    public static void aRestoredBufferTakesAPackageOnceThoughCreateMadeItsStationAnewBeforeTheWrite(GameTestHelper helper) {
+        restored(helper, "aRestoredBufferTakesAPackageOnceThoughCreateMadeItsStationAnewBeforeTheWrite", true, true);
     }
 
     /**
@@ -381,7 +393,7 @@ public final class PortRingGameTests {
         return sb.append(" of ").append(stations).append(" stations, the test's station is one of them: ").append(listed).toString();
     }
 
-    private static void restored(GameTestHelper helper, String test, boolean checks) {
+    private static void restored(GameTestHelper helper, String test, boolean checks, boolean rebuild) {
         fastConfig();
         // The stub engine acknowledges an answer within ticks, which a real engine does only once its durable save holds
         // it, and a real engine never sends that op again; the crash emulated here needs the op kept until its resend.
@@ -394,9 +406,10 @@ public final class PortRingGameTests {
         BlockPos stationPos = stationPos(helper, 28);
         // The postbox's chunk is not loaded at the write (a loaded chunk without its postbox is an orphan's), and is
         // forced loaded for the restore.
-        ChunkPos far = new ChunkPos((stationPos.getX() >> 4) + 7300 + (checks ? 0 : 4), (stationPos.getZ() >> 4) + 7300);
+        ChunkPos far = new ChunkPos((stationPos.getX() >> 4) + 7300 + (checks ? 0 : 4) + (rebuild ? 100 : 0), (stationPos.getZ() >> 4) + 7300);
         BlockPos postbox = new BlockPos(far.getMinBlockX() + 5, 70, far.getMinBlockZ() + 5);
         GlobalStation[] st = {null};
+        GlobalStation[] was = {null};
         CompoundTag[] before = {null};
         long[] carried = {0};
         // The answers the engine heard for the op before the resend.
@@ -415,8 +428,13 @@ public final class PortRingGameTests {
                     st[0].connectedPorts.put(postbox, port);
                     before[0] = saveStation(level, st[0]);
                     carried[0] = PortRing.chunkCountsForTest()[0];
-                    writePackage(op, 0, 0, postbox, "Mill", 1, copper);
+                    was[0] = st[0];
+                    if (rebuild)
+                        propagateAgain(helper, stationPos);
                 })
+                // The station's block entity makes the station anew at its next tick.
+                .thenWaitUntil(() -> check("Create made the station anew", !rebuild || joined(helper, stationPos) != was[0]))
+                .thenExecute(() -> writePackage(op, 0, 0, postbox, "Mill", 1, copper))
                 .thenWaitUntil(() -> check("applied offline", commandResults(op).equals(List.of(Obs.CommandResult.APPLIED))))
                 .thenExecute(() -> {
                     GlobalPackagePort port = st[0].connectedPorts.get(postbox);
@@ -792,6 +810,18 @@ public final class PortRingGameTests {
         tag.put("TargetTrack", NbtUtils.writeBlockPos(new BlockPos(0, 0, -1)));
         tag.putBoolean("TargetDirection", true);
         sbe.loadWithComponents(tag, helper.getLevel().registryAccess());
+    }
+
+    /**
+     * What a scheduled tick of a track beside the station does ({@code TrackBlock.tick}), called on the track under it:
+     * the graph nodes next to the track are removed, which invalidates the edge points on their edges. The station's
+     * block entity has no station until its next tick, which makes a new one from the old one's migration data.
+     */
+    private static void propagateAgain(GameTestHelper helper, BlockPos stationPos) {
+        ServerLevel level = helper.getLevel();
+        BlockPos track = stationPos.north();
+        TrackPropagator.onRailAdded(level, track, level.getBlockState(track));
+        check("Create dropped the station's edge point", ((StationBlockEntity) level.getBlockEntity(stationPos)).getStation() == null);
     }
 
     /** For a wait: the station on the track graph. */
