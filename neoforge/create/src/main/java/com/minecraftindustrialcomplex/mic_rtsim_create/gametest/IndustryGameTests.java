@@ -1423,7 +1423,7 @@ public final class IndustryGameTests {
                                     && !received(IndRecords.IND_LOAD_STATE, IndRecords.LoadState.DISTRICT, d.id).isEmpty());
                 }))
                 .thenExecute(() -> {
-                    // Off: the engine is told the switch (a MODULES record) and Java goes quiet.
+                    // Off: the engine is told the switch (a journaled MODULE_SWITCH record) and Java goes quiet.
                     RtsimConfig.Test.setModule(Module.INDUSTRY, false);
                     BridgeEvents.moduleSwitchesChanged(server);
                 })

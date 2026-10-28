@@ -363,7 +363,7 @@ public final class RtsimSession {
 
     public void onModulesChanged() {
         int mask = RtsimConfig.effectiveMask();
-        boundary.setModuleMask(mask);
+        boundary.setModuleMask(mask, gameTime());
         farLegs.setEnabled((mask & com.minecraftindustrialcomplex.mic_rtsim.config.Module.ECOLOGY.bit()) != 0);
     }
 

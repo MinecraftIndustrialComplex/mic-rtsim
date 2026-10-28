@@ -34,7 +34,8 @@ import static com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests.recor
  * A switch per module (C25, PLAN.md §5.4) and the trader veto it drives (C8a): while trade and travel
  * are on, the sim owns wandering traders and vanilla's {@code WanderingTraderSpawner} is cancelled by a
  * mixin; with either off the spawner runs as vanilla, and the bridge never writes the
- * {@code doTraderSpawning} gamerule. The switches also reach the engine as a MODULES record. Its own
+ * {@code doTraderSpawning} gamerule. The switches also reach the engine as a journaled MODULE_SWITCH record
+ * (docs/choices-journal-barrier.md U-e), under a sequence of its own, after the session's. Its own
  * batch: the switches, the gamerules and the level's trader fields are server-wide.
  */
 @GameTestHolder(MicRtsim.MODID)
@@ -62,8 +63,19 @@ public final class ModuleSwitchGameTests {
     }
 
     private static int lastModuleMask(ScriptedEngine engine) {
-        List<ScriptedEngine.Received> recs = engine.received(Obs.MODULES);
-        return recs.isEmpty() ? -1 : recs.get(recs.size() - 1).view().getInt(Obs.Modules.MASK);
+        List<ScriptedEngine.Received> recs = engine.received(Obs.MODULE_SWITCH);
+        return recs.isEmpty() ? -1 : recs.get(recs.size() - 1).view().getInt(Obs.ModuleSwitch.MASK);
+    }
+
+    /** The switch records the engine heard, in the order it heard them: each a journaled record, applied once. */
+    private static boolean switchesAreJournaledInOrder(ScriptedEngine engine) {
+        long last = 0;
+        for (ScriptedEngine.Received r : engine.received(Obs.MODULE_SWITCH)) {
+            if (r.obsSeq() <= last || r.skipped())
+                return false;
+            last = r.obsSeq();
+        }
+        return last > 0;
     }
 
     private static int wanderingTraders(ServerLevel level) {
@@ -243,7 +255,7 @@ public final class ModuleSwitchGameTests {
 
         helper.startSequence()
                 .thenExecute(() -> traderVeto(helper))
-                // The engine hears the switches (MODULES), whatever the veto does.
+                // The engine hears the switches (MODULE_SWITCH, journaled), whatever the veto does.
                 .thenExecute(() -> {
                     RtsimConfig.Test.setModule(Module.TRADE, false);
                     BridgeEvents.moduleSwitchesChanged(server);
@@ -251,6 +263,8 @@ public final class ModuleSwitchGameTests {
                 .thenWaitUntil(() -> check("the engine was told trade is off",
                         lastModuleMask(RtsimTests.engine()) == RtsimConfig.effectiveMask()
                                 && (lastModuleMask(RtsimTests.engine()) & Module.TRADE.bit()) == 0))
+                .thenExecute(() -> check("the switches are journaled records, in order, each applied once",
+                        switchesAreJournaledInOrder(RtsimTests.engine())))
                 .thenExecute(() -> {
                     RtsimConfig.Test.setModule(Module.TRADE, null);
                     BridgeEvents.moduleSwitchesChanged(server);

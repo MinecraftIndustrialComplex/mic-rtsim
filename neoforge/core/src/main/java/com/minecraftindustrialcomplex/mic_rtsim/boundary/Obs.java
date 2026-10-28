@@ -18,7 +18,7 @@ public final class Obs {
     public static final int SESSION_START = 0x0001;
     public static final int DICT = 0x0002;
     public static final int TICK = 0x0003;
-    public static final int MODULES = 0x0004;
+    // 0x0004 was MODULES, a latest-wins copy of the module mask: retired by U-e, never reused (MODULE_SWITCH).
     public static final int WORLD_SAVED = 0x0005;
     public static final int PLAYER = 0x0010;
     public static final int PUPPET_STATE = 0x0011;
@@ -99,6 +99,7 @@ public final class Obs {
         public static final int LAST_APPLIED_CMD_SEQ = 16;  // u64
         public static final int JOURNAL_FIRST_OBS_SEQ = 24; // u64, 0 when the journal is empty
         public static final int WORLD_NEXT_OBS_SEQ = 32;    // u64, as loaded from the world save
+        /** The mask the session starts in: the engine's starting mask when its pages hold none (U-e6). */
         public static final int MODULE_MASK = 40;           // u32
         // 44: u32 reserved
         public static final int SIZE = 48;
@@ -125,18 +126,14 @@ public final class Obs {
         public static final int SIZE = 16;
     }
 
-    /** MODULE_SWITCH (journaled), aux 0. The module switches (bit = {@code Module.ordinal()}) from this record on. */
+    /**
+     * MODULE_SWITCH (journaled), aux 0. The module switches (bit = {@code Module.ordinal()}) from this
+     * record on. Kind 0x0004 (MODULES, a latest-wins copy of the mask) is retired and never reused.
+     */
     public static final class ModuleSwitch {
         public static final int MASK = 24; // u32
         // 28: u32 reserved
         public static final int SIZE = 32;
-    }
-
-    /** MODULES. The module switches (bit = {@code Module.ordinal()}); sent at start and on change. */
-    public static final class Modules {
-        public static final int MASK = 8; // u32
-        // 12: u32 reserved
-        public static final int SIZE = 16;
     }
 
     /**

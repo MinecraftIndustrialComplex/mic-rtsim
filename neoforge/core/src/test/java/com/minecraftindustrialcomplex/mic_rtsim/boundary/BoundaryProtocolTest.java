@@ -744,16 +744,17 @@ class BoundaryProtocolTest {
         StubEngine e = stub(StubEngine.Pages.EMPTY, StubEngine.DEFAULT_CAPACITY);
         Journal j = new Journal();
         BoundarySession s = new BoundarySession(e, j, 0b101, time);
-        long before = transfer(s, 7, 5);
+        transfer(s, 7, 5);
         s.setModuleMask(0b001, time + 3);
-        long after = transfer(s, 7, 2);
+        transfer(s, 7, 2);
         List<Journal.Entry> all = entriesOf(j);
         assertEquals(List.of(Obs.JOURNAL_GEN, Obs.MODULE_SWITCH, Obs.TRANSFER, Obs.MODULE_SWITCH, Obs.TRANSFER),
                 all.stream().map(x -> kindOf(x.bytes())).toList());
         ByteBuffer sw = ByteBuffer.wrap(all.get(3).bytes()).order(Layout.ORDER);
         assertEquals(0b001, sw.getInt(Obs.ModuleSwitch.MASK));
         assertEquals(time + 3, sw.getLong(Obs.GAME_TIME));
-        assertTrue(before < all.get(3).seq() && all.get(3).seq() < after, "between the two transfers");
+        assertTrue(all.get(2).seq() < all.get(3).seq() && all.get(3).seq() < all.get(4).seq(),
+                "between the two transfers");
 
         tick(s, new Sink(s), e);
         List<Integer> heard = e.received().stream().map(ScriptedEngine.Received::kind)
