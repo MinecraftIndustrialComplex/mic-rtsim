@@ -9321,6 +9321,67 @@ the stack under its op id and does not fail it).
   same where they said the goods went back to the stock; MZB-767's "the grove needs no gate" says a kept
   FAILED moves nothing.
 
+## MZB-940 RP-318's second test fails by the IO lane's speed
+
+M10's merge head (49fef870, the slice merged with origin/main) failed
+`ack_never_resends::a_replayed_duplicate_refused_by_op_id_with_industry_off_leaves_the_queued_copy`
+(crates/rtsim-jni/tests/industry.rs, from slice R) when the whole `ack_never_resends` group ran serially
+in one process, at the final `conserves`: "world totals off by: create:crushed_raw_iron -224". It is not
+M10's, and no earlier test is needed. Rust, tests and docs; no Java.
+
+- **MZB-940** (the test saved its world where the IO lane's latency put the tick, and the off path of
+  an engine restart loses the station side of an odd number of exchanges):
+  - *Not M10, not the group.* The test alone, in a process of its own, failed 12 of 167 runs on this
+    branch. At origin/main's Rust (the mic-rtsim-uf worktree, no march records) it failed 2 of 15 runs
+    after `a_replayed_answer_acknowledged_is_sent_again_and_its_refusal_never_after`, the pair that first
+    looked guilty here; no pair is needed. The only state the tests share is the host (`host_with`,
+    crates/rtsim-host/src/java.rs:41, one `OnceLock` pool for the process), so a group run differs from a
+    single one only by IO lane latency, and a loaded machine makes that longer.
+  - *The harness.* After the loop that takes the pages at the step which writes X, the test waited with
+    `r.run("the pages", ...)`: it ticked the world until the engine confirmed the save, as many ticks as
+    the IO lane took (2,000 to 4,100 of them here), and only then saved the world (`w1`). The
+    P3-1 review of RP-259 had found this and fixed it for `lockstep_until_saved`
+    (its doc, tests/industry.rs, "Ticking until it was durable ran as many world ticks as the IO lane
+    took"); this rig did not have it. `w1` landed between ticks 50,400 and 52,600, so the window the two
+    restarts replay (X at 48,400 to `w1`) held two, or three, of train 1's station exchanges
+    (49,000: unload, 50,400: load, 51,800: unload, 53,200: load). Forcing `w1` later by idle ticks (80 runs,
+    0 to 7,900 of them, each run once): the books closed at every `w1` below 51,800 and failed at every one
+    from there on (51,800 twice, 51,900 twice), so for a given tick the result is the same.
+  - *The engine, not fixed.* With industry on in session 2 the same `w1` ticks close the books (the new
+    test `a_world_saved_after_three_later_exchanges_closes_its_books_with_industry_on`, `w1` 51,900): the
+    replay hears the train arrivals and decides each exchange again under its op, so the carriage result
+    meets its pending exchange. With industry off, `journaled` ignores every record but Java's answers
+    (crates/rtsim-jni/src/engine/industry.rs:701-706, `ignored` 8 to 18 in the link's stats), the
+    arrivals among them, so the engine decides none of the window's exchanges again, and the kept
+    IND_CARRIAGE_RESULT booked at the switch meets no pending exchange and returns
+    (crates/rtsim-industry/src/engine.rs:4157, `carriage_result`). The carriage side of each exchange is
+    in the world (the crashed session wrote it, the world applied it); the station side is the engine's
+    `held` booking (engine.rs:4022), kept in memory until the district's reconcile, and it is not
+    booked. An unload and a load of the same good cancel in the world's total, so a window of two
+    passes; an odd one leaves the world short by that exchange's request. In the failing runs the
+    mill's engine (district 2) shows `made_total` -6286 where the passing ones show -6510 (224 less
+    burned), no "station exchange with train 1" at 51,800 and "running" at 54,700 where the others
+    have 51,900. The 352 iron ingots of train 2's exchange at 52,800 leave `+352` the same way once it is in
+    the window. This is goods lost in the world, not a count: a carriage emptied and a chest never
+    credited. Nothing in M10 touches it.
+  - *The tests.* `wait_for_pages` (the wait `lockstep_until_saved` had, factored out) replaces the
+    ticking wait, so `w1` is the tick after X is answered whatever the load and the window holds no
+    exchange. The case moved into `twice` (tag, `late`, `off`); the RP-318 test is `twice(.., None,
+    true)`. The control above is `twice(.., Some(THIRD_EXCHANGE + 100), false)`. The off case at
+    the late tick, `a_world_saved_after_three_later_exchanges_closes_its_books_with_industry_off`, is
+    `#[ignore]`d with this id: run with `--ignored` it fails deterministically with the -224 above,
+    and it is the failing-first test of the engine fix below.
+  - *Open, for the build lead.* Whether the off replay keeps what the exchanges need (the
+    TrainArrived records and the state they decide against) the way it keeps answers (`KeptAnswer`, saved
+    with the link page, a page format change), or the engine books the station side from the carriage
+    result by remembering which district a train stood at, or an off restart over exchanges is accepted as
+    lossy (it is rare: the crash and the switch off at once, trains running between the last pages and the
+    crash). The first is the conservative one and the largest; none is made here.
+  - *Checks.* Three other tests wait for pages by ticking
+    (`a_crash_before_the_page_save_that_covers_an_answer_may_send_its_op_again` family,
+    `a_duplicate_restarted_off` and the train raid's loop): each saves its world at the tick of an event it
+    waits for after the pages (X written, the raid's loot), so the IO lane's speed moves the event, not the window.
+
 ## M11 Aloft
 
 (none yet)
