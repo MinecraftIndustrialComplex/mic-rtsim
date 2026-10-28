@@ -9482,6 +9482,19 @@ M10's, and no earlier test is needed. Rust, tests and docs; no Java.
   - *Checks.* The RP-318 test passed 40 of 40 alone and 120 of 120 in six processes at once (it failed 12 of
     167 before); `cargo test -p rtsim-jni --test industry ack_never_resends -- --test-threads=1` passed twice (26
     passed, 1 ignored, 54 and 63 s); the ignored test fails 5 of 5 with the -224. rustfmt is clean on tests/industry.rs.
+  - *Closed by slice U-e (RP-290, docs/choices-journal-barrier.md U-e11).* The "open, for the build lead"
+    question had a fourth answer: the off replay was wrong, not lossy. The module switch is a journaled
+    record now, the pages hold the mask as of their sequence, and `Engine::start` sets every module's
+    flag from it before the replay, so a restart whose config is off replays the crashed session's
+    window with industry on, as that session lived it, and applies the config as the session's own switch
+    after the replay. The replay hears the window's train arrivals and decides each exchange again, so
+    the carriage result meets its pending exchange and the station side is booked. `#[ignore]` is gone
+    from `a_world_saved_after_three_later_exchanges_closes_its_books_with_industry_off`: it passes 3 of
+    3 alone and in the serial `ack_never_resends` group (`-- --test-threads=1`, 29 passed, 0 ignored),
+    and U-e's own `a_window_of_exchanges_after_the_pages_makes_the_same_world_restarted_off_or_on`
+    (engine books and pages equal between the restart off and the restart on) covers the shape on its
+    own helpers. Failing first, on main's engine, U-e's test printed the same -224 as this one
+    (crushed_raw_iron -96 restarted on, +128 restarted off).
 
 ## MZB-941 Seven of M10c's march GameTests fail for the tests' own reasons
 
