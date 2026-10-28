@@ -78,6 +78,10 @@ import static com.minecraftindustrialcomplex.mic_rtsim.gametest.IndustryTestKit.
  * writes its files in.
  *
  * <p>Every test has its own batch: the fallback switch is server-wide.
+ *
+ * <p>The station is not a fixed object: Create makes a station's edge point anew when the track under it is propagated
+ * again (see {@link #settled}), so each test waits for its track's ticks and looks the station up in its block entity at
+ * each use ({@link Station}), and one test makes Create do it on purpose (MZB-939).
  */
 @GameTestHolder(MicRtsimCreate.MODID)
 @PrefixGameTestTemplate(false)
@@ -138,7 +142,7 @@ public final class PortRingGameTests {
         BlockPos stationPos = stationPos(helper, 10);
         long farChunk = ChunkPos.asLong((stationPos.getX() >> 4) + 7000, (stationPos.getZ() >> 4) + 7000);
         BlockPos postbox = new BlockPos(ChunkPos.getX(farChunk) * 16 + 5, 70, ChunkPos.getZ(farChunk) * 16 + 5);
-        GlobalStation[] st = {null};
+        Station st = new Station(helper, stationPos);
         District[] d = {null};
         CompoundTag[] before = {null}, after = {null};
         int[] logs = {0};
@@ -154,20 +158,20 @@ public final class PortRingGameTests {
                     check("the rings are " + (rings ? "on: their mixins applied and the probe passed" : "switched off"),
                             PortRing.available(level.getServer()) == rings);
                 })
-                .thenWaitUntil(() -> st[0] = joined(helper, stationPos))
+                .thenWaitUntil(settled(helper, stationPos, 10, test))
                 .thenExecute(() -> {
                     GlobalPackagePort port = new GlobalPackagePort();
                     port.address = ADDRESS;
-                    st[0].connectedPorts.put(postbox, port);
+                    st.get().connectedPorts.put(postbox, port);
                     d[0] = ind().districts().createForTest(level, farChunk);
-                    before[0] = saveStation(level, st[0]);
+                    before[0] = saveStation(level, st.get());
                     writePackage(op, d[0].id, 0, postbox, ADDRESS, 1, Map.of("i/64/minecraft:iron_ingot", 16L));
                 })
                 .thenWaitUntil(() -> check("applied", commandResults(op).equals(List.of(Obs.CommandResult.APPLIED))))
                 .thenExecute(() -> {
-                    GlobalPackagePort port = st[0].connectedPorts.get(postbox);
+                    GlobalPackagePort port = st.get().connectedPorts.get(postbox);
                     check("one package in the buffer, primed", packages(port.offlineBuffer) == 1 && port.primed);
-                    after[0] = saveStation(level, st[0]);
+                    after[0] = saveStation(level, st.get());
                     CompoundTag entry = portEntry(after[0]);
                     if (rings)
                         check("the tracks save holds the op in the port's buffer ring: " + Arrays.toString(entry.getLongArray(PortRing.KEY)),
@@ -180,8 +184,8 @@ public final class PortRingGameTests {
                     else
                         journal().forgetAppliedForTest(op);
                     check("the journal " + (journalSaved ? "knows" : "does not know") + " the op", ind().opApplied(op) == journalSaved);
-                    loadStation(level, st[0], tracksSaved ? after[0] : before[0]);
-                    GlobalPackagePort back = st[0].connectedPorts.get(postbox);
+                    loadStation(level, st.get(), tracksSaved ? after[0] : before[0]);
+                    GlobalPackagePort back = st.get().connectedPorts.get(postbox);
                     check("the port came back: a new object", back != null && back != port);
                     check("with " + (tracksSaved ? 1 : 0) + " packages", packages(back.offlineBuffer) == (tracksSaved ? 1 : 0));
                     writePackage(op, d[0].id, 0, postbox, ADDRESS, 1, Map.of("i/64/minecraft:iron_ingot", 16L));
@@ -189,7 +193,7 @@ public final class PortRingGameTests {
                 .thenWaitUntil(() -> check("the resend is answered", commandResults(op).size() == 2))
                 .thenExecute(() -> {
                     int second = commandResults(op).get(1);
-                    int got = packages(st[0].connectedPorts.get(postbox).offlineBuffer);
+                    int got = packages(st.get().connectedPorts.get(postbox).offlineBuffer);
                     record(test, kase + " on the " + dedup + ": second answer, packages in the buffer",
                             status(second) + ", " + got + (got == 1 ? " (exact)" : got > 1 ? " (a dupe)" : " (a loss)"));
                     boolean knows = rings ? tracksSaved : journalSaved;
@@ -202,7 +206,7 @@ public final class PortRingGameTests {
                     else
                         check("the fallback was logged once: " + (PortRing.fallbackLogsForTest() - logs[0]), PortRing.fallbackLogsForTest() == logs[0] + 1);
                     journal().forgetAppliedForTest(op);
-                    st[0].connectedPorts.remove(postbox);
+                    st.get().connectedPorts.remove(postbox);
                     PortRing.fallbackForTest(false);
                     TrainRing.holdPrunesForTest(false);
                 })
@@ -232,7 +236,7 @@ public final class PortRingGameTests {
         BlockPos postbox = inChunk(helper, 4, 4);
         BlockPos chest = inChunk(helper, 7, 4);
         BlockPos stationPos = stationPos(helper, 28);
-        GlobalStation[] st = {null};
+        Station st = new Station(helper, stationPos);
         long[] id = {0};
         int[] mirrored = {0};
         long op = engineOp(), orphan = engineOp();
@@ -251,32 +255,32 @@ public final class PortRingGameTests {
                     District d = IndustryKit.districtAt(helper, postbox);
                     check("the postbox's district", d != null && d.inventoryAt(postbox) != null);
                     id[0] = d.id;
-                    st[0] = joined(helper, stationPos);
                 })
+                .thenWaitUntil(settled(helper, stationPos, 28, test))
                 .thenExecute(() -> {
                     check("the rings are on", PortRing.available(level.getServer()));
                     GlobalPackagePort port = new GlobalPackagePort();
                     port.address = "Mill";
-                    st[0].connectedPorts.put(postbox, port);
-                    ((PostboxBlockEntity) level.getBlockEntity(postbox)).trackedGlobalStation = new WeakReference<>(st[0]);
+                    st.get().connectedPorts.put(postbox, port);
+                    ((PostboxBlockEntity) level.getBlockEntity(postbox)).trackedGlobalStation = new WeakReference<>(st.get());
                     writePackage(op, id[0], ind().district(id[0]).inventoryAt(postbox).index(), postbox, "Mill", 1, copper);
                 })
                 .thenWaitUntil(() -> check("applied", commandResults(op).equals(List.of(Obs.CommandResult.APPLIED))))
                 .thenExecute(() -> {
                     PostboxBlockEntity pb = (PostboxBlockEntity) level.getBlockEntity(postbox);
-                    GlobalPackagePort port = st[0].connectedPorts.get(postbox);
+                    GlobalPackagePort port = st.get().connectedPorts.get(postbox);
                     check("one package in the postbox", packages(pb.inventory) == 1);
                     check("Create mirrored it into the buffer, unprimed", packages(port.offlineBuffer) == 1 && !port.primed);
                     check("the op is in the postbox ring, not the buffer's", PortRing.wroteToPostbox(port, op) && !PortRing.wroteToBuffer(port, op));
-                    CompoundTag tracks = saveStation(level, st[0]);
+                    CompoundTag tracks = saveStation(level, st.get());
                     check("the tracks save holds it", Arrays.equals(portEntry(tracks).getLongArray(PortRing.POSTBOX_KEY), new long[] {op}));
                     // The crash: the tracks file is this one; the postbox's chunk and the journal are from before the write.
                     for (int s = 0; s < pb.inventory.getSlots(); s++)
                         pb.inventory.setStackInSlot(s, ItemStack.EMPTY);
                     dropCarried(level.getChunkAt(postbox), op);
                     journal().forgetAppliedForTest(op);
-                    loadStation(level, st[0], tracks);
-                    GlobalPackagePort back = st[0].connectedPorts.get(postbox);
+                    loadStation(level, st.get(), tracks);
+                    GlobalPackagePort back = st.get().connectedPorts.get(postbox);
                     check("the port came back with the mirror and the ring", back != port && packages(back.offlineBuffer) == 1
                             && !back.primed && PortRing.wroteToPostbox(back, op));
                     check("the chunk does not carry the op", !ind().chunkCarriesOp(level.getChunkAt(postbox), op));
@@ -289,7 +293,7 @@ public final class PortRingGameTests {
                     record(test, "loaded, chunk older than the tracks: second answer, packages in the postbox", status(second) + ", " + got);
                     check("written again into the loaded postbox: APPLIED, answered " + status(second), second == Obs.CommandResult.APPLIED);
                     check("one package: " + got, got == 1);
-                    GlobalPackagePort port = st[0].connectedPorts.get(postbox);
+                    GlobalPackagePort port = st.get().connectedPorts.get(postbox);
                     // The postbox gone, so the next resend takes the offline path.
                     PostboxBlockEntity pb = (PostboxBlockEntity) level.getBlockEntity(postbox);
                     for (int s = 0; s < pb.inventory.getSlots(); s++)
@@ -303,7 +307,7 @@ public final class PortRingGameTests {
                 .thenWaitUntil(() -> check("the offline resend is answered", commandResults(op).size() == 3))
                 .thenExecute(() -> {
                     int third = commandResults(op).get(2);
-                    GlobalPackagePort port = st[0].connectedPorts.get(postbox);
+                    GlobalPackagePort port = st.get().connectedPorts.get(postbox);
                     int got = packages(port.offlineBuffer);
                     record(test, "offline after a loaded write: third answer, packages in the buffer, primed", status(third) + ", " + got + ", " + port.primed);
                     check("the postbox ring refuses it: DUPLICATE, answered " + status(third), third == Obs.CommandResult.DUPLICATE_OP);
@@ -314,13 +318,13 @@ public final class PortRingGameTests {
                 .thenWaitUntil(() -> check("the new op is answered", commandResults(orphan).size() == 1))
                 .thenExecute(() -> {
                     int answer = commandResults(orphan).get(0);
-                    GlobalPackagePort port = st[0].connectedPorts.get(postbox);
+                    GlobalPackagePort port = st.get().connectedPorts.get(postbox);
                     int got = packages(port.offlineBuffer);
                     record(test, "a new op into the orphan port, its postbox's chunk loaded: answer, packages in the buffer, primed",
                             status(answer) + ", " + got + ", " + port.primed);
                     check("an orphan port takes no write: FAILED, answered " + status(answer), answer == Obs.CommandResult.FAILED);
                     check("nothing written into the buffer: " + got + " vs " + mirrored[0], got == mirrored[0] && !port.primed);
-                    st[0].connectedPorts.remove(postbox);
+                    st.get().connectedPorts.remove(postbox);
                     TrainRing.holdPrunesForTest(false);
                 })
                 .thenSucceed();
@@ -408,7 +412,7 @@ public final class PortRingGameTests {
         // forced loaded for the restore.
         ChunkPos far = new ChunkPos((stationPos.getX() >> 4) + 7300 + (checks ? 0 : 4) + (rebuild ? 100 : 0), (stationPos.getZ() >> 4) + 7300);
         BlockPos postbox = new BlockPos(far.getMinBlockX() + 5, 70, far.getMinBlockZ() + 5);
-        GlobalStation[] st = {null};
+        Station st = new Station(helper, stationPos);
         GlobalStation[] was = {null};
         CompoundTag[] before = {null};
         long[] carried = {0};
@@ -419,16 +423,16 @@ public final class PortRingGameTests {
         helper.startSequence()
                 .thenIdle(5)
                 .thenExecute(() -> placeStation(helper, 28))
-                .thenWaitUntil(() -> st[0] = joined(helper, stationPos))
+                .thenWaitUntil(settled(helper, stationPos, 28, test))
                 .thenExecute(() -> {
                     check("the rings are on", PortRing.available(level.getServer()));
                     check("the postbox's chunk is not loaded", level.getChunkSource().getChunkNow(far.x, far.z) == null);
                     GlobalPackagePort port = new GlobalPackagePort();
                     port.address = "Mill";
-                    st[0].connectedPorts.put(postbox, port);
-                    before[0] = saveStation(level, st[0]);
+                    st.get().connectedPorts.put(postbox, port);
+                    before[0] = saveStation(level, st.get());
                     carried[0] = PortRing.chunkCountsForTest()[0];
-                    was[0] = st[0];
+                    was[0] = st.get();
                     if (rebuild)
                         propagateAgain(helper, stationPos);
                 })
@@ -437,9 +441,9 @@ public final class PortRingGameTests {
                 .thenExecute(() -> writePackage(op, 0, 0, postbox, "Mill", 1, copper))
                 .thenWaitUntil(() -> check("applied offline", commandResults(op).equals(List.of(Obs.CommandResult.APPLIED))))
                 .thenExecute(() -> {
-                    GlobalPackagePort port = st[0].connectedPorts.get(postbox);
+                    GlobalPackagePort port = st.get().connectedPorts.get(postbox);
                     check("one package in the buffer, primed, the op in its ring (packages " + packages(port.offlineBuffer) + ", primed " + port.primed
-                            + ", the op in the ring " + PortRing.wroteToBuffer(port, op) + ", answers " + commandResults(op) + ")" + portsAt(postbox, port, st[0], op),
+                            + ", the op in the ring " + PortRing.wroteToBuffer(port, op) + ", answers " + commandResults(op) + ")" + portsAt(postbox, port, st.get(), op),
                             packages(port.offlineBuffer) == 1 && port.primed && PortRing.wroteToBuffer(port, op));
                     check("the engine has not acknowledged it", ind().opApplied(op));
                     // The postbox's chunk loads, and the postbox is placed and registers with its station: Create
@@ -457,13 +461,13 @@ public final class PortRingGameTests {
                 // hears it before the resend, so the resend's answer is the one after it.
                 .thenWaitUntil(() -> check("the carry's copy is heard", commandResults(op).size() == (checks ? 2 : 1)))
                 .thenExecute(() -> {
-                    GlobalPackagePort port = st[0].connectedPorts.get(postbox);
+                    GlobalPackagePort port = st.get().connectedPorts.get(postbox);
                     check(checks ? "the chunk still carries the op" : "the chunk does not carry the op",
                             ind().chunkCarriesOp(level.getChunkAt(postbox), op) == checks);
                     // The crash: the postbox's chunk reached disk after the restore; the tracks file and the journal are from before the write.
                     journal().forgetAppliedForTest(op);
-                    loadStation(level, st[0], before[0]);
-                    GlobalPackagePort back = st[0].connectedPorts.get(postbox);
+                    loadStation(level, st.get(), before[0]);
+                    GlobalPackagePort back = st.get().connectedPorts.get(postbox);
                     check("the port came back from before the write", back != port && packages(back.offlineBuffer) == 0
                             && !back.primed && !PortRing.wroteToBuffer(back, op));
                     heard[0] = commandResults(op).size();
@@ -489,7 +493,7 @@ public final class PortRingGameTests {
                     level.setBlock(postbox, Blocks.AIR.defaultBlockState(), 3);
                     level.setChunkForced(far.x, far.z, false);
                     journal().forgetAppliedForTest(op);
-                    st[0].connectedPorts.remove(postbox);
+                    st.get().connectedPorts.remove(postbox);
                     PortRing.chunkChecksForTest(false);
                     TrainRing.holdPrunesForTest(false);
                 })
@@ -509,7 +513,7 @@ public final class PortRingGameTests {
         BlockPos stationPos = stationPos(helper, 10);
         ChunkPos far = new ChunkPos((stationPos.getX() >> 4) + 7100 + (checks ? 0 : 4), (stationPos.getZ() >> 4) + 7100);
         BlockPos postbox = new BlockPos(far.getMinBlockX() + 5, 70, far.getMinBlockZ() + 5);
-        GlobalStation[] st = {null};
+        Station st = new Station(helper, stationPos);
         long[] counts = {0, 0, 0, 0, 0};
         long w = engineOp(), w2 = engineOp();
         Map<String, Long> copper = Map.of("i/64/minecraft:copper_ingot", 30L);
@@ -517,7 +521,7 @@ public final class PortRingGameTests {
         helper.startSequence()
                 .thenIdle(5)
                 .thenExecute(() -> placeStation(helper, 10))
-                .thenWaitUntil(() -> st[0] = joined(helper, stationPos))
+                .thenWaitUntil(settled(helper, stationPos, 10, test))
                 .thenExecute(() -> {
                     check("the rings are on", PortRing.available(level.getServer()));
                     check("the postbox's chunk is not loaded", level.getChunkSource().getChunkNow(far.x, far.z) == null);
@@ -525,17 +529,17 @@ public final class PortRingGameTests {
                     GlobalPackagePort port = new GlobalPackagePort();
                     port.address = ADDRESS;
                     port.offlineBuffer.setStackInSlot(0, box(Items.IRON_INGOT, 16));
-                    st[0].connectedPorts.put(postbox, port);
-                    CompoundTag tracks = saveStation(level, st[0]);
+                    st.get().connectedPorts.put(postbox, port);
+                    CompoundTag tracks = saveStation(level, st.get());
                     // The postbox's chunk, saved after it: P (copper) restored from W, carrying W; Q taken out.
                     ItemStackHandler inventory = new ItemStackHandler(18);
                     inventory.setStackInSlot(0, box(Items.COPPER_INGOT, 30));
                     level.getChunkSource().chunkMap.write(far, savedChunk(level, postbox, inventory, w)).join();
                     // The crash and the restart: Create reads its tracks file; the journal never knew W.
                     journal().forgetAppliedForTest(w);
-                    loadStation(level, st[0], tracks);
-                    check("the port came back with Q, unprimed", packages(st[0].connectedPorts.get(postbox).offlineBuffer) == 1
-                            && !st[0].connectedPorts.get(postbox).primed);
+                    loadStation(level, st.get(), tracks);
+                    check("the port came back with Q, unprimed", packages(st.get().connectedPorts.get(postbox).offlineBuffer) == 1
+                            && !st.get().connectedPorts.get(postbox).primed);
                     long[] now = PortRing.chunkCountsForTest();
                     System.arraycopy(now, 0, counts, 0, counts.length);
                     writePackage(w, 0, 0, postbox, ADDRESS, 1, copper);
@@ -543,7 +547,7 @@ public final class PortRingGameTests {
                 .thenWaitUntil(() -> check("the resend is answered", commandResults(w).size() == 1))
                 .thenExecute(() -> {
                     int first = commandResults(w).get(0);
-                    GlobalPackagePort port = st[0].connectedPorts.get(postbox);
+                    GlobalPackagePort port = st.get().connectedPorts.get(postbox);
                     long[] now = PortRing.chunkCountsForTest();
                     record(test, "resend of W, postbox unloaded: answer, packages in the buffer, primed, holds, reads",
                             status(first) + ", " + packages(port.offlineBuffer) + ", " + port.primed + ", "
@@ -562,7 +566,7 @@ public final class PortRingGameTests {
                 })
                 .thenWaitUntil(() -> check("the new op is answered", commandResults(w2).size() == 1))
                 .thenExecute(() -> {
-                    GlobalPackagePort port = st[0].connectedPorts.get(postbox);
+                    GlobalPackagePort port = st.get().connectedPorts.get(postbox);
                     int got = packages(port.offlineBuffer);
                     boolean q = holds(port.offlineBuffer, Items.IRON_INGOT);
                     long[] now = PortRing.chunkCountsForTest();
@@ -577,7 +581,7 @@ public final class PortRingGameTests {
                         check("Q, P and P2: Q comes back: " + got + ", " + q, got == 3 && q);
                     }
                     level.getChunkSource().chunkMap.write(far, null).join();
-                    st[0].connectedPorts.remove(postbox);
+                    st.get().connectedPorts.remove(postbox);
                     PortRing.chunkChecksForTest(false);
                     TrainRing.holdPrunesForTest(false);
                 })
@@ -656,32 +660,32 @@ public final class PortRingGameTests {
         BlockPos stationPos = stationPos(helper, 10);
         long farChunk = ChunkPos.asLong((stationPos.getX() >> 4) + 7200, (stationPos.getZ() >> 4) + 7200);
         BlockPos postbox = new BlockPos(ChunkPos.getX(farChunk) * 16 + 5, 70, ChunkPos.getZ(farChunk) * 16 + 5);
-        GlobalStation[] st = {null};
+        Station st = new Station(helper, stationPos);
         District[] d = {null};
         CompoundTag[] offFile = {null};
         long op = engineOp();
         helper.startSequence()
                 .thenIdle(5)
                 .thenExecute(() -> placeStation(helper, 10))
-                .thenWaitUntil(() -> st[0] = joined(helper, stationPos))
+                .thenWaitUntil(settled(helper, stationPos, 10, test))
                 .thenExecute(() -> {
                     check("the rings are on", PortRing.available(level.getServer()));
                     GlobalPackagePort port = new GlobalPackagePort();
                     port.address = ADDRESS;
-                    st[0].connectedPorts.put(postbox, port);
+                    st.get().connectedPorts.put(postbox, port);
                     d[0] = ind().districts().createForTest(level, farChunk);
                     writePackage(op, d[0].id, 0, postbox, ADDRESS, 1, Map.of("i/64/minecraft:iron_ingot", 16L));
                 })
                 .thenWaitUntil(() -> check("applied", commandResults(op).equals(List.of(Obs.CommandResult.APPLIED))))
                 .thenExecute(() -> {
-                    GlobalPackagePort port = st[0].connectedPorts.get(postbox);
+                    GlobalPackagePort port = st.get().connectedPorts.get(postbox);
                     check("one package in the buffer, primed", packages(port.offlineBuffer) == 1 && port.primed);
-                    CompoundTag on = portEntry(saveStation(level, st[0]));
+                    CompoundTag on = portEntry(saveStation(level, st.get()));
                     // The switch off, and the world save that follows it.
                     RtsimConfig.Test.setModule(Module.INDUSTRY, false);
                     try {
                         check("the industry module is off", !RtsimConfig.on(Module.INDUSTRY));
-                        offFile[0] = saveStation(level, st[0]);
+                        offFile[0] = saveStation(level, st.get());
                     } finally {
                         RtsimConfig.Test.setModule(Module.INDUSTRY, null);
                     }
@@ -692,8 +696,8 @@ public final class PortRingGameTests {
                     // The crash before the journal's write, and the restart with the module on.
                     journal().forgetAppliedForTest(op);
                     check("the journal does not know the op", !ind().opApplied(op));
-                    loadStation(level, st[0], offFile[0]);
-                    GlobalPackagePort back = st[0].connectedPorts.get(postbox);
+                    loadStation(level, st.get(), offFile[0]);
+                    GlobalPackagePort back = st.get().connectedPorts.get(postbox);
                     check("read back onto the port Create made", back != null && back != port && back.address.equals(ADDRESS)
                             && PortRing.wroteToBuffer(back, op));
                     check("with its package", packages(back.offlineBuffer) == 1);
@@ -702,12 +706,12 @@ public final class PortRingGameTests {
                 .thenWaitUntil(() -> check("the resend is answered", commandResults(op).size() == 2))
                 .thenExecute(() -> {
                     int second = commandResults(op).get(1);
-                    int got = packages(st[0].connectedPorts.get(postbox).offlineBuffer);
+                    int got = packages(st.get().connectedPorts.get(postbox).offlineBuffer);
                     record(test, "second answer, packages in the buffer", status(second) + ", " + got);
                     check("refused: DUPLICATE, answered " + status(second), second == Obs.CommandResult.DUPLICATE_OP);
                     check("one package for one op: " + got, got == 1);
                     journal().forgetAppliedForTest(op);
-                    st[0].connectedPorts.remove(postbox);
+                    st.get().connectedPorts.remove(postbox);
                     TrainRing.holdPrunesForTest(false);
                 })
                 .thenSucceed();
@@ -734,7 +738,7 @@ public final class PortRingGameTests {
         BlockPos stationPos = stationPos(helper, 10);
         long farChunk = ChunkPos.asLong((stationPos.getX() >> 4) + 7600, (stationPos.getZ() >> 4) + 7600);
         BlockPos postbox = new BlockPos(ChunkPos.getX(farChunk) * 16 + 5, 70, ChunkPos.getZ(farChunk) * 16 + 5);
-        GlobalStation[] st = {null};
+        Station st = new Station(helper, stationPos);
         long[] pruned0 = {0};
         long op = engineOp();
         helper.startSequence()
@@ -743,27 +747,27 @@ public final class PortRingGameTests {
                     placeStation(helper, 10);
                     check("the rings are on", PortRing.available(level.getServer()));
                 })
-                .thenWaitUntil(() -> st[0] = joined(helper, stationPos))
+                .thenWaitUntil(settled(helper, stationPos, 10, test))
                 .thenExecute(() -> {
                     GlobalPackagePort port = new GlobalPackagePort();
                     port.address = ADDRESS;
-                    st[0].connectedPorts.put(postbox, port);
+                    st.get().connectedPorts.put(postbox, port);
                     District d = ind().districts().createForTest(level, farChunk);
                     writePackage(op, d.id, 0, postbox, ADDRESS, 1, Map.of("i/64/minecraft:iron_ingot", 16L));
                 })
                 .thenWaitUntil(() -> check("applied", commandResults(op).equals(List.of(Obs.CommandResult.APPLIED))))
                 .thenExecute(() -> {
-                    long at = ((PortRingHolder) st[0].connectedPorts.get(postbox)).mic_rtsim$bufferOps().answerOf(op);
+                    long at = ((PortRingHolder) st.get().connectedPorts.get(postbox)).mic_rtsim$bufferOps().answerOf(op);
                     check("the buffer's ring holds the op with its answer's sequence: " + at, at > 0);
-                    CompoundTag saved = saveStation(level, st[0]);
+                    CompoundTag saved = saveStation(level, st.get());
                     CompoundTag entry = portEntry(saved);
                     long gen = RtsimSession.current().boundary().gen();
                     check("the tracks save holds the op, its answer and the session's generation: " + entry,
                             Arrays.equals(entry.getLongArray(PortRing.KEY), new long[] {op})
                                     && Arrays.equals(entry.getLongArray(AppliedOpRing.answersKey(PortRing.KEY)), new long[] {at})
                                     && entry.getLong(AppliedOpRing.genKey(PortRing.KEY)) == gen);
-                    loadStation(level, st[0], saved);
-                    GlobalPackagePort back = st[0].connectedPorts.get(postbox);
+                    loadStation(level, st.get(), saved);
+                    GlobalPackagePort back = st.get().connectedPorts.get(postbox);
                     check("read back: the op with the same answer",
                             back != null && ((PortRingHolder) back).mic_rtsim$bufferOps().answerOf(op) == at);
                     pruned0[0] = TrainRing.pruned();
@@ -772,17 +776,17 @@ public final class PortRingGameTests {
                 .thenWaitUntil(IndustryKit.paced(() -> {
                     com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests.acknowledge();
                     check("the engine acknowledged the answer and the op left the ring read back",
-                            !PortRing.wroteToBuffer(st[0].connectedPorts.get(postbox), op));
+                            !PortRing.wroteToBuffer(st.get().connectedPorts.get(postbox), op));
                 }))
                 .thenExecute(() -> {
                     check("counted: " + (TrainRing.pruned() - pruned0[0]), TrainRing.pruned() > pruned0[0]);
-                    CompoundTag entry = portEntry(saveStation(level, st[0]));
+                    CompoundTag entry = portEntry(saveStation(level, st.get()));
                     for (String k : new String[] {PortRing.KEY, AppliedOpRing.answersKey(PortRing.KEY), AppliedOpRing.genKey(PortRing.KEY),
                             PortRing.POSTBOX_KEY})
                         check("the save holds no " + k, !entry.contains(k));
-                    check("the package stays", packages(st[0].connectedPorts.get(postbox).offlineBuffer) == 1);
+                    check("the package stays", packages(st.get().connectedPorts.get(postbox).offlineBuffer) == 1);
                     record(test, "ops pruned", TrainRing.pruned() - pruned0[0]);
-                    st[0].connectedPorts.remove(postbox);
+                    st.get().connectedPorts.remove(postbox);
                 })
                 .thenSucceed();
     }
@@ -795,13 +799,16 @@ public final class PortRingGameTests {
         return new BlockPos(origin.getX() + 16, floorY(helper), origin.getZ() + dz + 1);
     }
 
+    /** The track {@link #placeStation} lays runs from this far into the yard (x) to that far, both ends in. */
+    private static final int LINE_FROM = 2, LINE_TO = 31;
+
     /** A straight track along x at {@code dz} into the yard, and a station beside it targeting it. */
     private static void placeStation(GameTestHelper helper, int dz) {
         int y = floorY(helper);
         BlockPos origin = helper.absolutePos(BlockPos.ZERO);
         int zr = origin.getZ() + dz;
         BlockState track = block("create:track").defaultBlockState().setValue(TrackBlock.SHAPE, TrackShape.XO);
-        for (int x = origin.getX() + 2; x <= origin.getX() + 31; x++)
+        for (int x = origin.getX() + LINE_FROM; x <= origin.getX() + LINE_TO; x++)
             helper.getLevel().setBlock(new BlockPos(x, y, zr), track, 3);
         BlockPos stationPos = stationPos(helper, dz);
         helper.getLevel().setBlock(stationPos, block("create:track_station").defaultBlockState(), 3);
@@ -829,6 +836,56 @@ public final class PortRingGameTests {
         StationBlockEntity sbe = (StationBlockEntity) helper.getLevel().getBlockEntity(stationPos);
         check("the station joined the track graph", sbe != null && sbe.getStation() != null);
         return sbe.getStation();
+    }
+
+    /**
+     * The test's station, looked up in its block entity at each use. Create makes a station's edge point anew whenever
+     * the track under it is propagated again ({@code TrackPropagator.onRailAdded} removes the graph nodes next to the
+     * track, which invalidates the edge points on their edges, and the block entity's next tick makes a new
+     * GlobalStation from the old one's migration data, ports and rings included), so a reference kept from the first
+     * look can be a station that is no longer on any graph, where IND_WRITE_PACKAGE finds ports (MZB-939).
+     */
+    private record Station(GameTestHelper helper, BlockPos pos) {
+        GlobalStation get() {
+            return joined(helper, pos);
+        }
+    }
+
+    /**
+     * For a wait after {@link #placeStation}: every block of its track has had its scheduled tick, and the station is on
+     * the graph. Create builds the graph at those ticks ({@code TrackBlock.tick}: {@code TrackPropagator.onRailAdded}, one
+     * for each block), and a block's tick waits for its chunk to tick, which on this unthrottled server is a matter of
+     * real time, not of ticks. The station, in its own chunk, can join before the tick of a track block in another one,
+     * and that tick removes the graph nodes beside the block and with them the station's edge point (MZB-939). Polled
+     * with a pause, so the chunks get the time. Records whether the station was made anew while it waited.
+     */
+    private static Runnable settled(GameTestHelper helper, BlockPos stationPos, int dz, String test) {
+        GlobalStation[] first = {null};
+        int[] pendingAtFirst = {-1};
+        return IndustryKit.paced(() -> {
+            StationBlockEntity sbe = (StationBlockEntity) helper.getLevel().getBlockEntity(stationPos);
+            GlobalStation now = sbe == null ? null : sbe.getStation();
+            int pending = pendingTrackTicks(helper, dz);
+            if (now != null && first[0] == null) {
+                first[0] = now;
+                pendingAtFirst[0] = pending;
+            }
+            check("the station joined the track graph", now != null);
+            check(pending + " blocks of the track still wait for their tick", pending == 0);
+            record(test, "track ticks waiting when the station first joined, station made anew since", pendingAtFirst[0] + ", " + (now != first[0]));
+        });
+    }
+
+    /** How many blocks of the track {@link #placeStation} laid at {@code dz} have a scheduled tick left. */
+    private static int pendingTrackTicks(GameTestHelper helper, int dz) {
+        ServerLevel level = helper.getLevel();
+        BlockPos origin = helper.absolutePos(BlockPos.ZERO);
+        net.minecraft.world.level.block.Block track = block("create:track");
+        int n = 0;
+        for (int x = origin.getX() + LINE_FROM; x <= origin.getX() + LINE_TO; x++)
+            if (level.getBlockTicks().hasScheduledTick(new BlockPos(x, floorY(helper), origin.getZ() + dz), track))
+                n++;
+        return n;
     }
 
     /** What EdgePointStorage.write writes for this station (with its palette), through a file's bytes. */
