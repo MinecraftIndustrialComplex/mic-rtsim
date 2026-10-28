@@ -3858,7 +3858,8 @@ public final class AloftMowzieGameTests {
                                 swaps[0]++;
                                 double d = u.position().distanceTo(prev[0]);
                                 most[1] = Math.max(most[1], d);
-                                if (d > 0.1 && broke.size() < 8)
+                                // 0.1 is the puppet's own step in the tick; the sum of doubles reads 0.10000000000000142 (MZB-954)
+                                if (d > 0.1 + 1.0e-6 && broke.size() < 8)
                                     broke.add("tick " + now + ": the swap moved it " + d + " blocks");
                             }
                         }

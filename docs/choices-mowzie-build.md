@@ -11816,6 +11816,9 @@ rounds of phase 2 are the check, and what they found is recorded after them.
   ticks after it, so the turn is due at about 172, with the cooldown ending the wait as the test means. The third leg's lag, 46 blocks, gives it due
   148 ticks after its steer by the same measure, inside the 198 ticks. In the round at feb803d7 the second turn came due 141 ticks after the first re-pair
   and the second re-pair 202 after it, as meant; the third turn was never due (MZB-955).
+- **MZB-954** (round at feb803d7, test 22-aloft `anUmvuthiSetsOutAndComesHomeInPlainView`; MZB-822, MZB-830): "[tick 67082: the swap moved it 0.10000000000000142
+  blocks]". The test allows a swap (the puppet's last position to the throne body's) of 0.1 blocks, which is the puppet's own step in that tick, and the sum of
+  two doubles read 0.1 + 1.4e-15. The limit is 0.1 + 1e-6. Not run yet.
 
 ## M12 S9
 
