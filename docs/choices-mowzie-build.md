@@ -5557,10 +5557,10 @@ RP-150 to RP-153 the replay records.
     -6,085,297 (MZB-938) is not known: the sweeps it met did not hit the band, or its Frostmaw followed no long path. **Test fix:** `RailFrostmawGameTests` builds at `ConflictKit.nearBase()` (`PathSafeBase`: x -100,000
     to -231,000, z 100,000 to 231,000, inside 2^18 blocks, where the copy never ran away), and `releaseFarChunks` also
     releases that area. `PathSafeBaseTest` keeps every slot, the strip built from it and the sweep beyond it inside the
-    limit. **Not changed, for the lead:** the jar's bug is a product one too (any Mowzie mob that follows a path
+    limit. **Not changed here, for the lead (done in MZB-951):** the jar's bug is a product one too (any Mowzie mob that follows a path
     more than about 500,000 blocks from the origin can stall the server for minutes and load millions of chunks); a
-    mixin in this plugin that replaces `sweep` with a `double` one measured from the box (or bounds its loops) would remove
-    it, and the same applies to `MowzieKit`'s tests (`farBase`), which have not been seen to run away. Away from
+    mixin in this plugin that replaces `sweep` with a `double` one measured from the box removes it (MZB-951, PATCHES.md
+    row 97), and with it the same applies to `MowzieKit`'s tests (`farBase`), which have not been seen to run away. Away from
     the ice test the run's live heap stayed under 1.4 GB (the chunk IOWorker's backlog included).
     **Heap default:** `create/build.gradle` is back to `-Xmx4G` for every run (the 6G for `-PwithMowzie`, set on
     2026-10-27 on the reading that the merges outgrew 4G, is gone); the fix's 4G round passed 267 of 267.
