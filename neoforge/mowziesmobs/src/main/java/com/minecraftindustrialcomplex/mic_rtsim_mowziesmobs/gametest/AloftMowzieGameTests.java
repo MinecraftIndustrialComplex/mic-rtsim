@@ -4427,7 +4427,9 @@ public final class AloftMowzieGameTests {
                     check("it is facing west now (" + puppet[0].getDirectionData() + ")", puppet[0].getDirectionData() == 2);
                     long now = level.getGameTime();
                     double z = anchor[0];
-                    double x = a.x0 + 56 - 0.3 * (now - at[3]);
+                    // the anchor stops at the west end, a.x0 + 4 (MZB-916: past it, the target ran west of the lane and the third leg went west-north-west,
+                    // with the puppet's way never 55 degrees off its facing)
+                    double x = Math.max(a.x0 + 4, a.x0 + 56 - 0.3 * (now - at[3]));
                     at[5] = r2;
                     // north, at 0.3: the third turn, due again before the cooldown ends
                     ConflictKit.steer(agent[0], ConflictKit.party(agent[0]).epoch, 0.3f, x, z - 60, 0, false);
@@ -4437,7 +4439,9 @@ public final class AloftMowzieGameTests {
                     Reading r = reading[0];
                     EntityUmvuthi u = puppet[0];
                     check("only two re-pairs so far (" + r.repairs + ")", r.repairs.size() == 2);
-                    check("the third turn is due: its way has been 55 degrees off its facing since " + (level.getGameTime() - r.dueAfter[2]) + " ticks ago",
+                    check("the third turn is due: its way has been 55 degrees off its facing since " + (level.getGameTime() - r.dueAfter[2]) + " ticks ago (due after "
+                                    + java.util.Arrays.toString(r.dueAfter) + ", at " + u.position() + ", yaw " + u.getYRot() + ", facing " + u.getDirectionData()
+                                    + ", lag " + chiefSlot(agent[0]).lag() + ", re-pairs " + r.repairs + ")",
                             r.dueAfter[2] != 0 && level.getGameTime() - r.dueAfter[2] >= 10);
                     check("the body is alive, with no ability (" + u.isDeadOrDying() + ", " + u.getActiveAbility() + ")", !u.isDeadOrDying() && u.getActiveAbility() == null);
                     r.removedBefore = (int) (hearer[0].removed(u.getId()) + hearer[1].removed(u.getId()));
