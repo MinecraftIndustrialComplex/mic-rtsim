@@ -522,6 +522,7 @@ public final class AloftMowzieGameTests {
                     ConflictKit.recall(agent[0], ConflictKit.party(agent[0]).epoch, ConflictRecords.RECALL_DONE, 40, g[0].spot.x, g[0].spot.z);
                 })
                 .thenWaitUntil(waits.logic(() -> check("S's band went (" + dematerialized(agent[0]).size() + ")", dematerialized(agent[0]).size() == 1)))
+                .thenIdle(2) // the per-tick hook reads the record on its own listener's turn, which may come after the wait's in the tick the record is seen (MZB-913)
                 .thenExecute(() -> {
                     check("the puppet was gone (tick " + tick[0] + ") no later than the BAND_DEMATERIALIZED (tick " + tick[1] + ")",
                             tick[0] >= 0 && tick[0] <= tick[1]);
