@@ -2052,6 +2052,13 @@ public final class AloftMowzieGameTests {
     private static final float HEAL_SLACK = 9f;
 
     /**
+     * The health a throne body is given in the held take's test (29b). Low, because the jar heals it 0.3 a tick out of battle while the
+     * puppet walks 60 blocks home (about 340 ticks, 100 points): from 40 it came to 141 of 150 and could not be told from the
+     * puppet's health that the merge writes (MZB-914).
+     */
+    private static final float THRONE_OWN = 10f;
+
+    /**
      * Whether an Umvuthi has the health it was given, to its maximum: the jar heals 0.3 a tick out of battle ({@code healsOutOfBattle}), so a read
      * a few ticks after the set is up to {@link #HEAL_SLACK} over it (a tick's heal showed as 77.3 for 77). Never under it.
      */
@@ -2503,7 +2510,7 @@ public final class AloftMowzieGameTests {
      * <li>The take is answered STALE no earlier than the puppet comes within {@link AloftRules#TAKE_STALE} blocks of the throne
      * (horizontally) and within two ticks of it, and the throne body stands.</li>
      * <li>The chief's HAND_BACK, sent with CHIEF_BODY home (naming no player) when the take is answered, floats the puppet to the spot.
-     * Then one Umvuthi stands on the throne: the throne body, merged, with the puppet's health in place of its own 40, the payer in
+     * Then one Umvuthi stands on the throne: the throne body, merged, with the puppet's health in place of its own (10, healed on the way), the payer in
      * its memory (it knew none), and no second body; the puppet is gone, the answer is NOTHING, and the bridge counted one merge.</li>
      * </ul>
      * The control, grove C, has no player within 160 blocks of its throne: the TAKE plays at once (DONE, the throne body gone), and
@@ -2554,7 +2561,7 @@ public final class AloftMowzieGameTests {
                 .thenExecute(() -> {
                     for (int i = 0; i < 2; i++) {
                         MowzieKit.allOutcomes("ADOPT " + i, ConflictKit.outcomes(g[i].faction, op[i]), DONE);
-                        throne[i].setHealth(40f);
+                        throne[i].setHealth(THRONE_OWN);
                     }
                     chiefBand(helper, g[0], agent[0], g[0].spot.x + 60, g[0].spot.z, 180f, List.of(), 1);
                     chiefBand(helper, g[1], agent[1], g[1].spot.x + 45, g[1].spot.z, 180f, List.of(), 1);
@@ -2613,7 +2620,9 @@ public final class AloftMowzieGameTests {
                     check("the puppet came within " + AloftRules.TAKE_STALE + " blocks at tick " + tick[0] + " and the take went at " + tick[1],
                             tick[0] >= 0 && tick[1] >= tick[0] && tick[1] - tick[0] <= 2);
                     check("H's throne body still stands, not second", throne[0].isAlive() && !MowzieKit.camps().secondBody(throne[0]));
-                    check("H's throne body has its own health still (" + throne[0].getHealth() + ")", healthIs(throne[0], 40f));
+                    // it has healed 0.3 a tick out of battle in the walk home (MZB-914): its own, from THRONE_OWN, and well short of the puppet's
+                    check("H's throne body has its own health still, healed from " + THRONE_OWN + " and short of the puppet's (" + throne[0].getHealth() + ")",
+                            throne[0].getHealth() >= THRONE_OWN - 1.0e-3f && throne[0].getHealth() < throne[0].getMaxHealth() - 20f);
                     check("the held line is gone (" + (MowzieKit.camps().heldLines() - was[2]) + ")", MowzieKit.camps().heldLines() == was[2]);
                     // the engine's own home sends the chief's HAND_BACK, with its memory of a chief at home (no player named)
                     ConflictKit.chiefBody(g[0].faction, epochOf(g[0]), 180f, List.of());
