@@ -5564,6 +5564,53 @@ RP-150 to RP-153 the replay records.
     the ice test the run's live heap stayed under 1.4 GB (the chunk IOWorker's backlog included).
     **Heap default:** `create/build.gradle` is back to `-Xmx4G` for every run (the 6G for `-PwithMowzie`, set on
     2026-10-27 on the reading that the merges outgrew 4G, is gone); the fix's 4G round passed 267 of 267.
+  - **MZB-951** (the fix of MZB-950: a mixin that makes the jar's path sweep exact far from the origin; PATCHES.md row 97;
+    Ben approved it as a slice on `diag/gametest-heap`). **What:** `MMPathNavigateGroundMixin` is an `@Inject` at the head of
+    the jar's private `MMPathNavigateGround.sweep(Vec3, Vec3, Vec3)Z` (1.8.2; `require 1`, `allow 1`, cancellable) that always
+    answers, from `PathSweep.sweep`: the jar's grid walk in `double`, in a pure class with no Minecraft type, so the unit tests
+    run the code that ships. `PathColumns` reads the world for one column as the jar's loop body does (every cell of the column
+    pathfindable by land; the block under its first cell not water, lava or open air; the cell at it a malus of 0 up to 8 and not
+    fire or damage). Read from the jar (vineflower on `MMPathNavigateGround.class`): `followThePath` calls `tryShortcut`,
+    `tryShortcut` calls `sweep` once per path node from the path's far end down to the next node, and `EntityFrostmaw`,
+    `EntityWroughtnaut` and `EntityGrottol` make this navigation. **The walk:** the jar's algorithm, two changes. (1) Every
+    number is a `double` measured from the integer cell the box's low corner stands in (the cells are added back when a column
+    is handed over), so the arithmetic is on numbers a few blocks wide wherever the mob is: the same box moved by whole blocks
+    reads the same cells, to the bit when its edges are exact in a double. (2) The three cell loops end by direction (`x < x1`
+    for a step of +1, `x > x1` for -1) in place of `!=`: a range that starts past its end is empty, and cannot count through the
+    int range; and a walk ends, blocked, after as many crossings as its vector has cell boundaries (their sum, 8 more), a bound the
+    maths does not need and a bad input might. A NaN or a number past 1.0E9 is blocked with nothing read (the mob then walks its
+    path node by node, as it does when a shortcut is refused). **Why not only bound the loops:** that stops the runaway and leaves
+    the answer wrong: at 4.5 million blocks the float's trailing edge is off by up to a block, a slab where a 3.5 wide box spans
+    four cells is read as none, and a shortcut through a wall can be approved. **Why `@Inject` and not `@Overwrite`:** the same
+    effect, and another mod's mixin on the method does not conflict with it; the jar's body stays in the class and is never run.
+    **What stays the jar's:** the order of crossings, the slab at each, and the first crossing after the vector's end, which the
+    jar's `do ... while (t <= max_t)` reads before it stops (so cells up to two past the end are read: the bound the tests keep);
+    an edge on an integer is in the cell above it (`floor`: the jar's `1.0E-8` nudge is lost in a float beyond a quarter block
+    from the world origin, and the double walk does not apply it either; the one difference this leaves near the origin is a box
+    edge exactly on 0.0 within a ten millionth, the jar's float then one cell lower). **Equivalence, measured**
+    (`PathSweepTest`, `./gradlew :mowziesmobs:test`, against `JarFloatSweep`, a copy of the jar's float walk with its loop body
+    behind an interface): within 16 blocks of the origin, 12,000 random sweeps (boxes 0.5 to 5 wide and 5.5 tall, vectors of 1
+    to 80 blocks), the 7,859 whose cells do not move under twelve nudges of a ten thousandth of a block to the box and the
+    vector read exactly the jar's cells and columns (0 differ; the rest are decided by the float's own rounding, about 1e-5 of a
+    block, and are not compared); 8,000 sweeps along one axis with every edge on a multiple of a half (the integer-edge cases),
+    all the same; at 1,000 blocks, where the float is off by a ten thousandth, 61 of 10,000 sweeps differ, the worst by 37 cells
+    in a thousand (cells the box's trailing edge just touches). **Far out:** 6,000 sweeps at 0.5 to 7.1 million blocks
+    read only cells within two of the box and its target, none ran away; the jar's copy ran away in 40 of the first 1,500;
+    MZB-950's known sweep (a box 3.5 by 4.5, a node 38.6 blocks off) counts past 400,000 cells in the copy and reads under
+    10,000 in the shipped walk; 4,000 sweeps near the origin and the same shifted by 3 to 7.1 million blocks read the same
+    cells and columns, bit for bit. **GameTests** (`PathSweepGameTests`, mowziesmobs, batches `mowzie_path_sweep_near` and
+    `_far`): the jar's real `sweep` called by reflection on a real Frostmaw's navigation over a stone floor, near the origin
+    and at x -3,797,664, z 4,715,168 (a place built round MZB-950's known sweep, `PathSweepRunaway`): clear, blocked by a
+    wall, blocked by a missing strip of floor, clear again, the known sweep, and 400 random ones. Chosen because a runaway
+    can be kept from running three ways, all in the test: it fails before the first call if the jar's class has no mixin
+    handler (a name `handler$...$sweep`, so a broken mixin cannot let the first far call count through the int range); every call
+    runs under a `PathSweep.Budget` (12,000 block reads, 5 s: the walk stops, blocked, when it is spent, and the test fails on
+    it); and the place is 6 by 6 chunks that no sweep leaves, with a check that no more than 300 chunks loaded. The budget is
+    a static the shipped walk reads once per column (null outside a test). **Uninstalling:** the mixin holds no state and writes
+    nothing; a world saved with it loads without it, and the jar's float walk, with its runaway, comes back. **Not done:**
+    `RailFrostmawGameTests` still build at `nearBase` (MZB-950's test fix stays; with this mixin they could use the far bases
+    again, which is for the lead); a Mowzie's Mobs newer than 1.8.2 that fixes its own sweep still gets this mixin (the
+    answers are the same); another mod's navigation with the same bug is not touched.
 
 ## M9 Umvuthana
 
