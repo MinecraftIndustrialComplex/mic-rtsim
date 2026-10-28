@@ -9448,7 +9448,7 @@ code changed, so there is no failing-first test: each is a wrong expectation of 
     tick. The wait is now 40 idle ticks and the check is the same, that no march is kept; the number of records read is logged (0
     here, 1 on the stub). Production is right: an engine that has switched a module off decides and writes nothing for it. After that
     wait the test had four steps left that have not run (the switch on, the column forming again, revision 1 kept, the recall).
-  - *The Mowzie module's round on the fix (`target/m10fix-mowzie.log`, 80 tests, 6 failed) found the same kinds of fault in M10c's
+  - *The Mowzie module's round on the first fix commit (`target/m10fix-mowzie.log`, 80 tests, 6 failed) found the same kinds of fault in M10c's
     and M10's tests there, none in production.* Core's helper, `ConflictKit.bodyName`, named only the goblin kit's three bodies, so a
     survivor map of the Umvuthana read `{body 59=2}` and never equalled `Map.of(MowzieKit.WARRIOR, 2)`:
     `aGroveThatIsOutRecalls...`, `theTrimAndTheRecallSeeAsFar...` and `aBandSetsOutAndComesHomeInPlainView` (also failed at M11c,
@@ -9463,7 +9463,9 @@ code changed, so there is no failing-first test: each is a wrong expectation of 
     (`git diff 44199d09 49fef870^2 -- neoforge/core/src/main/java/.../conflict` is empty), so the census and `Camps` are as they were at
     M10; the test is M6's (MZB-660, MZB-661) and no round of M10's lineage is on record. It ran 24 s of wall time after its batch began
     on a loaded machine (the create round of the lead's queue held 10 GB beside it). A census taken in the tick the chunk shows,
-    before its entities are listed, would clear `strayWatch` with nothing found (`Camps.java:981`); that is a guess, not seen.
+    before its entities are listed, would clear `strayWatch` with nothing found (`Camps.java:981`); that is a guess, not seen. **It passed
+    in the Mowzie module's next round, on the fix head (9d123ab5, `target/m10m-mowziesmobs.log`: "All 80 required tests passed")**, with
+    nothing changed in what it exercises: a flake of load, not a fault the merge or M10 made, and still a flake until it has a cause.
   - *Why production is right, in one line each.* The column and its bodies, the chart and the stop's square, the trim, and the
     module switch did what their records say in all five; what each test asserted beyond that was the test author's guess, which the
     first round could not have known (MZB-743 says as much of the tolerances: "if they prove too tight on a first run the failure
