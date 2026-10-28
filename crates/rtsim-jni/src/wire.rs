@@ -95,6 +95,9 @@ pub mod obs {
     /// A copy of a record a chunk or entity carried (docs/boundary.md §3.2): the record whole,
     /// after the generation it was first journaled in.
     pub const REASSERT: u16 = 0x0131;
+    /// A module switch (docs/choices-journal-barrier.md U-e, RP-290): the mask the bridge's
+    /// modules are in from this record on, at its place among the journaled records.
+    pub const MODULE_SWITCH: u16 = 0x0132;
 
     pub const fn is_journaled(kind: u16) -> bool {
         kind >= 0x0100 && kind < 0x8000
@@ -244,6 +247,12 @@ pub mod obs {
     /// JOURNAL_GEN: 24 u64 the session's nonce (random, never 0).
     pub mod journal_gen {
         pub const GEN: usize = 24;
+        pub const SIZE: usize = 32;
+    }
+
+    /// MODULE_SWITCH: 24 u32 the mask (bit = `Module.ordinal()`), 28 reserved.
+    pub mod module_switch {
+        pub const MASK: usize = 24;
         pub const SIZE: usize = 32;
     }
 

@@ -2307,6 +2307,232 @@ fn inputs_kept_while_phase1_is_off_survive_a_crash_and_are_applied_once() {
     e3.close(true, Duration::from_secs(5)).unwrap();
 }
 
+// ---- the module switch is a journaled record (docs/choices-journal-barrier.md U-e, RP-290) -----------
+
+mod module_switch {
+    use super::p1_off::*;
+    use super::p1_off_fork::{Crashed, copy_dir};
+    use super::*;
+
+    pub const AGENT: u64 = 0xCA4B;
+
+    /// A robbery of one `item` from `member`, under `op`.
+    pub fn rob(j: &mut Java, member: u32, item: &str, op: u64) -> u64 {
+        j.robbed(AGENT, 1, member, &[(item, 1)], wire::JAVA_OP_BIT | op)
+    }
+
+    /// A caravan session whose pages hold the caravan (the module on), and the stack to rob.
+    pub fn caravan(tag: &str) -> (std::path::PathBuf, std::sync::Arc<Engine>, Java, u32, String) {
+        let (dir, e, mut j, cargo) = caravan_session(tag, AGENT);
+        let (member, item, _) = stack_to_rob(&cargo);
+        save_durable(&e, &mut j);
+        (dir, e, j, member, item)
+    }
+
+    /// A restart of the crashed session on a copy of its pages, `mask` the config, and what it
+    /// booked and kept once the replay and the session's own switch are in, and the mask the
+    /// engine is in.
+    pub fn restarted(c: &Crashed, tag: &str, mask: u32) -> (u64, usize, u32) {
+        let dir = tmpdir(tag);
+        copy_dir(&c.dir, &dir);
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), c.saved.clone());
+        j.module_mask = mask;
+        j.game_time = c.time + 1;
+        j.idle();
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        let out = (p1_stat(&e, ROBBERIES), e.phase1_kept(), e.module_mask());
+        e.close(true, Duration::from_secs(5)).unwrap();
+        out
+    }
+}
+
+/// U-e1, U-e4. A record journaled before a switch-off is heard with the module on, and one after
+/// it with the module off: the switch is where the journal puts it, not ahead of the hand-over's
+/// records. Two robberies around the switch in one hand-over: the first is booked at once, the
+/// second kept for the switch-on.
+#[test]
+fn a_record_before_a_switch_off_is_heard_on_and_one_after_it_is_kept() {
+    use module_switch::*;
+    use p1_off::*;
+    let (_dir, e, mut j, member, item) = caravan("msw-live");
+    rob(&mut j, member, &item, 0x7e01);
+    j.modules(OFF);
+    rob(&mut j, member, &item, 0x7e02);
+    j.idle();
+    j.idle();
+    assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+    assert_eq!(
+        p1_stat(&e, ROBBERIES),
+        1,
+        "the robbery before the switch is booked, the one after it is not"
+    );
+    assert_eq!(e.phase1_kept(), 1, "the robbery after the switch is kept");
+    switch_on(&mut j);
+    assert_eq!(p1_stat(&e, ROBBERIES), 2, "and booked at the switch-on");
+    assert_eq!(e.phase1_kept(), 0);
+    e.close(true, Duration::from_secs(5)).unwrap();
+}
+
+/// U-e4, U-e7. The same window after a crash, restarted with the config off: the replay is the
+/// crashed session's, so the robbery journaled before the switch is booked (the module was on
+/// when it was heard) and the one after it is kept, as the live session had them. Restarted with
+/// the config on, the session's own switch-on books the second one.
+#[test]
+fn a_restart_replays_the_window_before_a_switch_off_with_the_module_on() {
+    use module_switch::*;
+    use p1_off::*;
+    let (dir, e, mut j, member, item) = caravan("msw-replay");
+    rob(&mut j, member, &item, 0x7e11);
+    j.modules(OFF);
+    rob(&mut j, member, &item, 0x7e12);
+    j.idle();
+    j.idle();
+    let saved = j.world_save();
+    let time = j.game_time;
+    let _ = j.crash();
+    let c = Crashed { dir, saved, time };
+    let (booked, kept, mask) = restarted(&c, "msw-replay-off", OFF);
+    assert_eq!(booked, 1, "the robbery before the switch is booked in the replay");
+    assert_eq!(kept, 1, "the one after it is kept, as it was live");
+    assert_eq!(mask, OFF);
+    let (booked, kept, mask) = restarted(&c, "msw-replay-on", ON);
+    assert_eq!(booked, 2, "the session's own switch-on books the kept one");
+    assert_eq!(kept, 0);
+    assert_eq!(mask, ON);
+}
+
+/// U-e5. The pages hold the mask as of their sequence: a save taken with phase 1 off, and a
+/// restart, finds the engine in that mask before any step, whatever the session's config says;
+/// the session's own switch then moves it.
+#[test]
+fn the_pages_hold_the_mask_as_of_their_sequence() {
+    use module_switch::*;
+    use p1_off::*;
+    let (dir, e, mut j, member, item) = caravan("msw-pages");
+    j.modules(OFF);
+    rob(&mut j, member, &item, 0x7e21);
+    j.idle();
+    j.idle();
+    save_durable(&e, &mut j);
+    j.idle();
+    j.idle();
+    assert_eq!(e.module_mask(), OFF);
+    let saved = j.world_save();
+    let time = j.game_time;
+    let _ = j.crash();
+    let dir2 = tmpdir("msw-pages-restart");
+    copy_dir(&dir, &dir2);
+    let e2 = engine(&dir2, 256 * 1024);
+    let mut j2 = Java::open(e2.clone(), saved);
+    j2.module_mask = ON;
+    j2.game_time = time + 1;
+    assert_eq!(
+        e2.module_mask(),
+        OFF,
+        "started from the pages' mask, before the session's switch"
+    );
+    j2.idle();
+    j2.idle();
+    assert_eq!(e2.module_mask(), ON, "the session's own switch-on");
+    assert_eq!(
+        p1_stat(&e2, ROBBERIES),
+        1,
+        "which booked the record kept in the pages"
+    );
+    e2.close(true, Duration::from_secs(5)).unwrap();
+}
+
+/// U-e's A/B (RP-290; RP-300's D1, RP-285's shape): a restart that replays an off window makes
+/// the world a run that never had the window makes. The crash's journal holds the window (a
+/// switch-off, a robbery, a trade and a taken member heard while off); B is the same journal with
+/// every switch patched to the mask the module was already in, so it was never off. Restarted
+/// on, A replays the window off (kept) and its own switch-on applies the kept records; B applies
+/// them as it replays. Books, tick, state hashes (at the session and four days on) and the op
+/// ids decided after must be equal.
+#[test]
+fn a_restart_that_replays_an_off_window_makes_the_world_a_run_that_never_had_it_makes() {
+    use module_switch::*;
+    use p1_off::*;
+    use p1_off_fork::*;
+    let (dir, e, mut j, cargo) = caravan_session("msw-ab", AGENT);
+    let (member, item, n) = stack_to_rob(&cargo);
+    let offer = selling_offer(&j, AGENT);
+    save_durable(&e, &mut j);
+    switch_then(&e, &mut j, OFF, |j| {
+        j.game_time += 20;
+        j.robbed(AGENT, 1, member, &[(&item, n)], wire::JAVA_OP_BIT | 0x7e31);
+        j.game_time += 37;
+        if let Some((cost, cn, result, rn)) = &offer {
+            j.trade_with(
+                AGENT,
+                1,
+                obs::trade::MERCHANT_SELLS,
+                (cost, *cn),
+                (result, *rn),
+                wire::JAVA_OP_BIT | 0x7e32,
+            );
+            j.game_time += 41;
+        }
+        let chest = chest_after(&cargo, member, &item, n);
+        let chest: Vec<(&str, i32)> = chest.iter().map(|(i, n)| (i.as_str(), *n)).collect();
+        member_state(j, AGENT, 1, member, &chest);
+        j.journal(obs::TAKEN, obs::taken::SIZE, 1, |r| {
+            wire::put_u64(r, obs::taken::AGENT, AGENT);
+            wire::put_u32(r, obs::taken::EPOCH, 1);
+            wire::put_u32(r, obs::taken::MEMBER, member);
+            wire::put_u64(r, obs::taken::PLAYER_MOST, PLAYER.0);
+            wire::put_u64(r, obs::taken::PLAYER_LEAST, PLAYER.1);
+            wire::put_u64(r, obs::taken::OP_ID, wire::JAVA_OP_BIT | 0x7e33);
+        });
+        j.game_time += 3;
+    });
+    j.idle();
+    j.idle();
+    let saved = j.world_save();
+    let switches = saved
+        .journal
+        .iter()
+        .filter(|(_, r)| wire::u16_at(r, wire::R_KIND) == obs::MODULE_SWITCH)
+        .count();
+    assert!(
+        switches >= 2,
+        "the session's own switch and the window's: {switches}"
+    );
+    let time = j.game_time;
+    let _ = j.crash();
+    let a = Crashed {
+        dir: dir.clone(),
+        saved: saved.clone(),
+        time,
+    };
+    // The same journal with every switch carrying the mask the module was already in.
+    let mut never = saved;
+    for (_, r) in never.journal.iter_mut() {
+        if wire::u16_at(r, wire::R_KIND) == obs::MODULE_SWITCH {
+            wire::put_u32(r, obs::module_switch::MASK, ON);
+        }
+    }
+    let b = Crashed {
+        dir,
+        saved: never,
+        time,
+    };
+    let a1 = restart(&a, "msw-ab-a", ON, false);
+    let b1 = restart(&b, "msw-ab-b", ON, false);
+    let b2 = restart(&b, "msw-ab-b2", ON, false);
+    eprintln!("A {a1:?}\nB {b1:?}");
+    assert_eq!(b1, b2, "A/A control: two restarts of one journal are equal");
+    assert_eq!(b1.booked[0], 1, "the robbery is booked");
+    assert_eq!(a1.booked, b1.booked, "booked once in both");
+    assert_eq!(a1.capture_mismatches, 0);
+    assert_eq!(a1.tick, b1.tick);
+    assert_eq!(a1.hash, b1.hash, "the same world at the same tick");
+    assert_eq!(a1.hash_later, b1.hash_later, "and four days on");
+    assert_eq!(a1.ops, b1.ops, "the op ids decided after are the same");
+}
+
 // ---- TALK (docs/boundary.md §13) -------------------------------------------------------------------
 
 mod talk {

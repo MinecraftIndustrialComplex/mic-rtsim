@@ -1026,6 +1026,12 @@ impl Engine {
         )
     }
 
+    /// The module mask the engine is in (docs/choices-journal-barrier.md U-e): the pages' at a
+    /// start, then each switch that has been applied. Takes the state lock: tests only.
+    pub fn module_mask(&self) -> u32 {
+        lock(&self.state).world.module_mask
+    }
+
     /// How many inputs phase 1 heard while it was switched off and has not applied yet (RP-300).
     /// Takes the state lock: tests only.
     pub fn phase1_kept(&self) -> usize {
