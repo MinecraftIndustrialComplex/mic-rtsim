@@ -7,7 +7,8 @@
     "ContainerUmvuthanaTradeSlotResultMixin",
     "EntityFrostmawMixin",
     "EntityUmvuthiMixin",
-    "MMEntityMoveHelperMixin"
+    "MMEntityMoveHelperMixin",
+    "MMPathNavigateGroundMixin"
   ],
   "injectors": {
     "defaultRequire": 1
