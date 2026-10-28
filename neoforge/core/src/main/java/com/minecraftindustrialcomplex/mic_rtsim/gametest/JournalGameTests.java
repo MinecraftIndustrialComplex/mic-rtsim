@@ -3,6 +3,7 @@ package com.minecraftindustrialcomplex.mic_rtsim.gametest;
 import com.minecraftindustrialcomplex.mic_rtsim.MicRtsim;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs;
 import com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession;
+import com.minecraftindustrialcomplex.mic_rtsim.engine.NativeEngine;
 import com.minecraftindustrialcomplex.mic_rtsim.engine.ScriptedEngine;
 import com.minecraftindustrialcomplex.mic_rtsim.journal.JournalSavedData;
 import net.minecraft.core.BlockPos;
@@ -179,5 +180,127 @@ public final class JournalGameTests {
                 done[0] = true;
         });
         helper.succeedWhen(() -> check("the journal test finished", done[0]));
+    }
+
+    /**
+     * Slice U-i (docs/choices-journal-barrier.md U-i1): a stop names what the journal's file holds to the engine
+     * ({@code RtsimSession.close} through {@code BoundarySession.closeEngine}, over the real {@code nClose}). The
+     * session's journal file is the older world save, so the stop's final save, which includes a transfer the file
+     * lacks, stays a pending generation, and the next session started from the older file opens the pages of that
+     * save and not the stop's: the engine's ledger is the file's. The control stops with the file landed (it holds
+     * everything the pages do): the stop's save is confirmed at once and the next session keeps it. Native engine
+     * only: the stub keeps one generation. The sessions are the test's own, like the crash test's.
+     */
+    private static final class StopRun {
+        final GameTestHelper helper;
+        final boolean landed;
+        int stage;
+        int wait;
+        RtsimSession session;
+        ScriptedEngine engine;
+        JournalSavedData older;
+        JournalSavedData stopped;
+        long olderThrough;
+        long stoppedThrough;
+
+        StopRun(GameTestHelper helper, boolean landed) {
+            this.helper = helper;
+            this.landed = landed;
+        }
+
+        void open(ScriptedEngine e, JournalSavedData journal) {
+            engine = e;
+            session = new RtsimSession(helper.getLevel().getServer(), engine, journal);
+        }
+
+        boolean tick() {
+            if (session != null)
+                session.endOfTick();
+            if (++wait > 400)
+                throw new GameTestAssertException("stop test stuck at stage " + stage);
+            switch (stage) {
+                case 0 -> {
+                    // Session 1: one transfer.
+                    open(RtsimTests.freshEngine(), JournalSavedData.fresh());
+                    session.journalTransfer(Obs.Transfer.GENERIC, 1, STORE, Items.EMERALD, 5);
+                    next();
+                }
+                case 1 -> {
+                    if (engine.ledger(STORE) == 5) {
+                        // The world's last save that landed: the journal's file holds this much. Then a second transfer.
+                        older = JournalSavedData.roundTrip(session.journal(), helper.getLevel().registryAccess());
+                        olderThrough = older.journal().nextObsSeq() - 1;
+                        session.journalTransfer(Obs.Transfer.GENERIC, 1, STORE, Items.EMERALD, 3);
+                        next();
+                    }
+                }
+                case 2 -> {
+                    if (engine.ledger(STORE) == 8) {
+                        stopped = JournalSavedData.roundTrip(session.journal(), helper.getLevel().registryAccess());
+                        stoppedThrough = stopped.journal().nextObsSeq() - 1;
+                        check("the stop's journal is past the older file", stoppedThrough > olderThrough);
+                        // The file on disk: the older save's, or, landed, the stop's own. The stop reads it.
+                        session.journal().fileLandedForTest(landed ? stoppedThrough : olderThrough);
+                        session.close();
+                        session = null;
+                        next();
+                    }
+                }
+                case 3 -> {
+                    // The next start, from the file that is on disk.
+                    String dir = ((NativeEngine) engine).pagesDir().toString();
+                    ScriptedEngine again = NativeEngine.open(java.nio.file.Path.of(dir), 0, NativeEngine.FLAG_TEST | NativeEngine.FLAG_NO_FSYNC);
+                    open(again, landed ? stopped : older);
+                    long pages = session.boundary().start().pagesObsSeq();
+                    record("journalStop", landed ? "landed" : "held", "pages through " + pages + ", older file " + olderThrough + ", stop's " + stoppedThrough);
+                    check("the start opened the pages of the " + (landed ? "stop's save, which the file holds" : "older save, which the file holds")
+                            + ": " + pages, pages == (landed ? stoppedThrough : olderThrough));
+                    next();
+                }
+                case 4 -> {
+                    // A few ticks of the replay: the held arm's older file replays nothing the pages lack.
+                    if (wait >= 10) {
+                        long want = landed ? 8 : 5;
+                        check("the engine's ledger is the file's: " + engine.ledger(STORE), engine.ledger(STORE) == want);
+                        record("journalStop", "ledger", "ledger " + engine.ledger(STORE));
+                        engine.close();
+                        session = null;
+                        return true;
+                    }
+                }
+                default -> throw new IllegalStateException();
+            }
+            return false;
+        }
+
+        void next() {
+            stage++;
+            wait = 0;
+        }
+    }
+
+    private static void stopTest(GameTestHelper helper, boolean landed) {
+        if (!(RtsimTests.engine() instanceof NativeEngine)) {
+            record("journalStop", "skipped", "the stub keeps one generation");
+            helper.succeed();
+            return;
+        }
+        StopRun run = new StopRun(helper, landed);
+        boolean[] done = {false};
+        helper.onEachTick(() -> {
+            if (!done[0] && run.tick())
+                done[0] = true;
+        });
+        helper.succeedWhen(() -> check("the stop test finished", done[0]));
+    }
+
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 600)
+    public static void aStopWhoseJournalFileLacksItsFinalSaveLeavesItPending(GameTestHelper helper) {
+        stopTest(helper, false);
+    }
+
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 600)
+    public static void aStopWhoseJournalFileHoldsItsFinalSaveConfirmsItAtOnce(GameTestHelper helper) {
+        stopTest(helper, true);
     }
 }
