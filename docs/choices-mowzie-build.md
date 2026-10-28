@@ -11762,6 +11762,10 @@ rounds of phase 2 are the check, and what they found is recorded after them.
   about 340 ticks, so the throne body came to 141 of 150, which `healthIs` (9 of slack) refused, and which could not be told from the
   puppet's 150 that the merge writes. The throne bodies are now set to `THRONE_OWN` (10), the check is that H's is between that and 20
   under the maximum (its own, healed on the way, not the merge's), and the merged check is unchanged. Not run yet.
+- **MZB-915** (round 2, test 29c-seam `anEdgeStopRecallReachesThePuppetAtItsTimeout`; MZB-827): "the recalls came and the control's puppet
+  went (838883, 0, 838883)": band B's recall tick was read from `party.recalling()`, but every body of B goes in the recall's own tick,
+  so its party is gone before the hook looks and the tick stayed 0. A missing party after the recall is now the recall's tick, the same
+  tick the puppet went. Band A's, whose puppet stands for the timeout, is read as before. Not run yet.
 
 ## M12 S9
 

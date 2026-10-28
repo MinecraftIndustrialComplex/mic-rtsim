@@ -2977,7 +2977,8 @@ public final class AloftMowzieGameTests {
                         long now = level.getGameTime();
                         for (int i = 0; i < 2; i++) {
                             ConflictBridge.Party p = ConflictKit.bridge().party(agent[i]);
-                            if (recalledAt[i] == 0 && p != null && p.recalling())
+                            // a band whose every body goes in the recall's own tick has no party left to read recalling (MZB-915: band B's)
+                            if (recalledAt[i] == 0 && (p == null || p.recalling()))
                                 recalledAt[i] = now;
                             if (goneAt[i] == 0 && puppet[i].isRemoved())
                                 goneAt[i] = now;
