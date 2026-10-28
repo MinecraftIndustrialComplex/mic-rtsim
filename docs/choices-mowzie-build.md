@@ -11804,6 +11804,11 @@ rounds of phase 2 are the check, and what they found is recorded after them.
   (`AloftRules.settles`): after its first raise B sank, its stuck machine was replaced, and the raise read back as 0, which the test takes for a move.
   The player is now put there after B has been moved, in the step that gives B the attack flag. Passed in the round at 793c463c up to its last
   checks, which then failed on the control (MZB-953).
+- **MZB-953** (round at 793c463c, test 23d `aStuckUmvuthiRisesThenIsMoved`; MZB-811): "the control's raise was never above 0 (16) and it was never moved
+  (451588)": the control, on a clear lane, was raised to 16 and then reset. All three bands were steered at 0.5 a tick, five times the puppet's cap, so the
+  anchor outran the control's puppet as it did the stuck ones: the stuck rule counts no headway toward the puppet's place (the place moving away faster
+  than it closes) as stuck whatever the cause, and the reset when the anchor stopped is what the test read as a move. The control is now steered at PACE
+  (0.08), under the cap, so it stays within 8 blocks of its place and is never stuck. Not run yet.
 
 ## M12 S9
 
