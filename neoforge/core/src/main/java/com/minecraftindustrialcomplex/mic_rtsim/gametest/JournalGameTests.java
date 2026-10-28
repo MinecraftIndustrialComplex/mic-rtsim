@@ -184,12 +184,14 @@ public final class JournalGameTests {
 
     /**
      * Slice U-i (docs/choices-journal-barrier.md U-i1): a stop names what the journal's file holds to the engine
-     * ({@code RtsimSession.close} through {@code BoundarySession.closeEngine}, over the real {@code nClose}). The
-     * session's journal file is the older world save, so the stop's final save, which includes a transfer the file
-     * lacks, stays a pending generation, and the next session started from the older file opens the pages of that
-     * save and not the stop's: the engine's ledger is the file's. The control stops with the file landed (it holds
-     * everything the pages do): the stop's save is confirmed at once and the next session keeps it. Native engine
-     * only: the stub keeps one generation. The sessions are the test's own, like the crash test's.
+     * ({@code RtsimSession.close} through {@code BoundarySession.closeEngine}, over the real {@code nClose}). One
+     * transfer is saved and acknowledged (the first world save, whose file landed), a second one follows, and the
+     * session stops. The journal's file on disk is the first save's, so the stop's final save, which includes the
+     * second transfer, stays a pending generation, and the next session started from that older file opens the
+     * first save's pages and not the stop's: the engine's ledger is the file's. The control stops with the file
+     * landed (it holds everything the pages do): the stop's save is confirmed at once and the next session keeps
+     * it. Native engine only: the stub keeps one generation. The sessions are the test's own, like the crash
+     * test's.
      */
     private static final class StopRun {
         final GameTestHelper helper;
@@ -202,6 +204,7 @@ public final class JournalGameTests {
         JournalSavedData stopped;
         long olderThrough;
         long stoppedThrough;
+        long firstPages;
 
         StopRun(GameTestHelper helper, boolean landed) {
             this.helper = helper;
@@ -227,37 +230,52 @@ public final class JournalGameTests {
                 }
                 case 1 -> {
                     if (engine.ledger(STORE) == 5) {
-                        // The world's last save that landed: the journal's file holds this much. Then a second transfer.
-                        older = JournalSavedData.roundTrip(session.journal(), helper.getLevel().registryAccess());
-                        olderThrough = older.journal().nextObsSeq() - 1;
-                        session.journalTransfer(Obs.Transfer.GENERIC, 1, STORE, Items.EMERALD, 3);
+                        // The first world save: the journal's file landed, and the engine saves its pages and
+                        // is acknowledged (a script save, confirmed at once).
+                        RtsimTests.acknowledge(session, engine);
                         next();
                     }
                 }
                 case 2 -> {
+                    engine.awaitIdle();
+                    firstPages = engine.pagesObsSeq();
+                    if (firstPages > 0) {
+                        // The file on disk is this save's. Then a second transfer, which no file holds.
+                        older = JournalSavedData.roundTrip(session.journal(), helper.getLevel().registryAccess());
+                        olderThrough = older.journal().nextObsSeq() - 1;
+                        check("the first save's pages are within the older file: " + firstPages + " <= " + olderThrough, firstPages <= olderThrough);
+                        session.journalTransfer(Obs.Transfer.GENERIC, 1, STORE, Items.EMERALD, 3);
+                        next();
+                    }
+                }
+                case 3 -> {
                     if (engine.ledger(STORE) == 8) {
                         stopped = JournalSavedData.roundTrip(session.journal(), helper.getLevel().registryAccess());
                         stoppedThrough = stopped.journal().nextObsSeq() - 1;
                         check("the stop's journal is past the older file", stoppedThrough > olderThrough);
-                        // The file on disk: the older save's, or, landed, the stop's own. The stop reads it.
-                        session.journal().fileLandedForTest(landed ? stoppedThrough : olderThrough);
+                        // The file on disk: the first save's, or, landed, the stop's own. The stop reads it.
+                        if (landed)
+                            session.journal().fileLandedForTest(stoppedThrough);
+                        check("the file on disk is " + (landed ? "the stop's" : "the first save's, short of the stop's"),
+                                (session.journal().writtenThrough() >= stoppedThrough) == landed);
                         session.close();
                         session = null;
                         next();
                     }
                 }
-                case 3 -> {
+                case 4 -> {
                     // The next start, from the file that is on disk.
                     String dir = ((NativeEngine) engine).pagesDir().toString();
                     ScriptedEngine again = NativeEngine.open(java.nio.file.Path.of(dir), 0, NativeEngine.FLAG_TEST | NativeEngine.FLAG_NO_FSYNC);
                     open(again, landed ? stopped : older);
                     long pages = session.boundary().start().pagesObsSeq();
-                    record("journalStop", landed ? "landed" : "held", "pages through " + pages + ", older file " + olderThrough + ", stop's " + stoppedThrough);
-                    check("the start opened the pages of the " + (landed ? "stop's save, which the file holds" : "older save, which the file holds")
-                            + ": " + pages, pages == (landed ? stoppedThrough : olderThrough));
+                    record("journalStop", landed ? "landed" : "held", "pages through " + pages + ", first save " + firstPages
+                            + ", older file " + olderThrough + ", stop's " + stoppedThrough);
+                    check("the start opened the pages of the " + (landed ? "stop's save, which the file holds" : "first save, which the file holds")
+                            + ": " + pages, landed ? pages > firstPages && pages <= stoppedThrough : pages == firstPages);
                     next();
                 }
-                case 4 -> {
+                case 5 -> {
                     // A few ticks of the replay: the held arm's older file replays nothing the pages lack.
                     if (wait >= 10) {
                         long want = landed ? 8 : 5;
