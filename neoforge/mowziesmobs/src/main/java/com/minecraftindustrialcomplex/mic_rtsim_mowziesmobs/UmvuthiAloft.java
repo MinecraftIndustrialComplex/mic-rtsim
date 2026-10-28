@@ -184,6 +184,18 @@ public final class UmvuthiAloft implements Traveller {
 
     // ---- test reads (the memo's, MZB-811) -------------------------------------------------------
 
+    /**
+     * GameTests only (MZB-955): starts the stuck machine over and drops its raise, so that a test which outruns a puppet on purpose is not
+     * raised by the rule. The rule has its own test (23d), which does not call this.
+     */
+    public void clearStuck(Memo memo) {
+        Aloft s = memo.get(Aloft.class);
+        if (s == null)
+            return;
+        s.stuck = new AloftRules.Stuck();
+        s.target = s.base;
+    }
+
     /** Blocks the stuck rule has raised this puppet's target height. */
     public int raised(Memo memo) {
         Aloft s = memo.get(Aloft.class);
