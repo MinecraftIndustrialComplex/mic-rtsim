@@ -61,6 +61,8 @@ public final class MicRtsimMowziesMobs {
         });
         RtsimApi.registerCampKind(DenKind.INSTANCE);
         RtsimApi.registerCampKind(GroveKind.INSTANCE);
+        // A Frostmaw party lies in wait by a rail awake, swipes a carriage's riders and roars at a robbed train's call (M8, MZB-361)
+        RtsimApi.registerLurker("mowziesmobs:frostmaw", new FrostmawLurker());
         RtsimApi.registerPlugin(GroveChests.INSTANCE); // HAVEN_CHEST (MZB-422): the chest a grove's tribute goes into
         IndustryApi.register(MowzieStrength.INSTANCE); // IND_FIGHT's attacker strength (MZB-435)
         IEventBus bus = NeoForge.EVENT_BUS;

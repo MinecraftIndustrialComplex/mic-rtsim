@@ -1,8 +1,15 @@
 package com.minecraftindustrialcomplex.mic_rtsim_mowziesmobs.mixin;
 
 import com.bobmowzie.mowziesmobs.server.entity.frostmaw.EntityFrostmaw;
+import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
+import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import com.minecraftindustrialcomplex.mic_rtsim.api.RtsimApi;
+import com.minecraftindustrialcomplex.mic_rtsim_mowziesmobs.FrostmawLurker;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.ai.navigation.PathNavigation;
+import net.minecraft.world.phys.Vec3;
 import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
@@ -20,6 +27,24 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  * refilled and robbed again (MOWZIE.md "Robbed Frostmaw"). And the camp reconciler reports CHIEF_STATE with
  * the crystal flag off, for a camp body or a chief puppet; any other Frostmaw is the jar's (MZB-277).
  * Rare (a few steals a world), so one injection costs nothing per tick (D1).
+ *
+ * <p>A lurk puppet is held where it stands by {@link FrostmawLurker} (MZB-361), and the jar's own chase must not
+ * move it: {@code tick()} paths to its target every tick it is more than 5.5 blocks off ({@code moveTo(target, ...)},
+ * three calls) and stops the navigation when it is not ({@code stop()}, three calls), so the hold's walk-back would
+ * lose to the chase about nine ticks in ten and the puppet would walk onto the rail after a player. For a body the
+ * hold has in hand, those six calls do nothing. The counts are the 1.8.2 jar's (cfr lines 423, 532, 552, 554, 557,
+ * 591); a jar that has others fails to load rather than leave a chase in.
+ *
+ * <p>The dodge is the other thing that moves it (the second re-check's P2): a player within 4 blocks that deals 16
+ * damage, or lava, starts {@code DODGE_ANIMATION}, and at its tick 6 the jar sets 1.7 blocks a tick sideways and 0.6
+ * up, a 10 to 14 block leap off the spot. The animation is left to play (the jar's state stays consistent: the dodge
+ * ends on its own timer, its ice breath after it is the jar's), and the dodge's {@code setDeltaMovement(DDD)V} call in
+ * {@code tick()} (line 430, bytecode offset 1017, the first of the two calls) keeps a held body's own horizontal motion
+ * and takes only the vertical part: it hops in place and lands where it was. A body in lava is let leap out (the third
+ * check's P3: the hold must not keep a body in lava until it burns). The second call (line 592, offset 2954) is the
+ * asleep and waking branch's {@code setDeltaMovement(0, y, 0)}, which stills the body, as a hold wants too, so it is
+ * not wrapped: the wrap is pinned to {@code ordinal = 0} (the third check's P3). The pin trades the earlier "any other
+ * count fails to load" for the dodge being the first call, which the 1.8.2 jar has.
  */
 @Mixin(EntityFrostmaw.class)
 public abstract class EntityFrostmawMixin {
@@ -34,5 +59,44 @@ public abstract class EntityFrostmawMixin {
         if (RtsimApi.isCampBody(self))
             self.setPersistenceRequired();
         RtsimApi.chiefState(self, 0);
+    }
+
+    /** The chase: a held puppet is not walked to its target by the jar. */
+    @WrapOperation(method = "tick()V", at = @At(value = "INVOKE",
+            target = "Lnet/minecraft/world/entity/ai/navigation/PathNavigation;moveTo(Lnet/minecraft/world/entity/Entity;D)Z"),
+            require = 3, allow = 3)
+    private boolean mic_rtsim_mowziesmobs$noChase(PathNavigation nav, Entity target, double speed, Operation<Boolean> original) {
+        return mic_rtsim_mowziesmobs$held() ? Boolean.FALSE : original.call(nav, target, speed);
+    }
+
+    /** The jar's stops (it stands still in range, in a dodge, asleep) would drop the hold's walk-back path every tick. */
+    @WrapOperation(method = "tick()V", at = @At(value = "INVOKE",
+            target = "Lnet/minecraft/world/entity/ai/navigation/PathNavigation;stop()V"),
+            require = 3, allow = 3)
+    private void mic_rtsim_mowziesmobs$noStop(PathNavigation nav, Operation<Void> original) {
+        if (!mic_rtsim_mowziesmobs$held())
+            original.call(nav);
+    }
+
+    /**
+     * The dodge's leap: a held puppet hops where it stands and is not carried off its spot (MZB-361), unless it is in
+     * lava, where the jar's own velocity goes through whole and the body leaps out of it (the third check's P3).
+     */
+    @WrapOperation(method = "tick()V", at = @At(value = "INVOKE",
+            target = "Lcom/bobmowzie/mowziesmobs/server/entity/frostmaw/EntityFrostmaw;setDeltaMovement(DDD)V", ordinal = 0),
+            require = 1, allow = 1)
+    private void mic_rtsim_mowziesmobs$noLeap(EntityFrostmaw self, double x, double y, double z, Operation<Void> original) {
+        if (mic_rtsim_mowziesmobs$held() && !self.isInLava()) {
+            Vec3 now = self.getDeltaMovement();
+            original.call(self, now.x, y, now.z);
+        } else {
+            original.call(self, x, y, z);
+        }
+    }
+
+    @Unique
+    private boolean mic_rtsim_mowziesmobs$held() {
+        EntityFrostmaw self = (EntityFrostmaw) (Object) this;
+        return !self.level().isClientSide() && FrostmawLurker.holds(self);
     }
 }

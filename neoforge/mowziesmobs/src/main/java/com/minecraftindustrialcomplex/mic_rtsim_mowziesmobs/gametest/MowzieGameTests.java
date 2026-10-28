@@ -17,6 +17,8 @@ import com.minecraftindustrialcomplex.mic_rtsim.conflict.CampMember;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.Camps;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictBridge;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictRecords;
+import com.minecraftindustrialcomplex.mic_rtsim.conflict.LurkSpots;
+import com.minecraftindustrialcomplex.mic_rtsim.conflict.RailAxes;
 import com.minecraftindustrialcomplex.mic_rtsim.engine.ScriptedEngine;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Layout;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.ChunkWait;
@@ -1685,9 +1687,15 @@ public final class MowzieGameTests {
             MowzieKit.discardRecordMarkers(level, den.area());
             MowzieKit.discardRecordMarkers(level, grove.area());
         });
+        // The premise: no page save acknowledges the adopt answer before the marker is checked. A world save asks for
+        // one, and vanilla's autosave (every 6,000 ticks, a few seconds of an unthrottled GameTest server) can come
+        // in the middle; it is off until then, as /save-off does, and back to what it was however the test ends.
+        boolean saving = level.noSave;
+        ConflictKit.onEnd(helper, () -> level.noSave = saving);
 
         MowzieKit.seq(helper)
                 .thenExecute(() -> {
+                    level.noSave = true;
                     den.force();
                     grove.force();
                 })
@@ -1771,8 +1779,10 @@ public final class MowzieGameTests {
                     // was saved with one: the marker that takes over its records keeps each one's generation
                     // (MZB-652), since a copy is judged by the generation that journaled the record.
                     PendingRecords had = f[0].getExistingDataOrNull(RtsimAttachments.PENDING);
-                    check("the Frostmaw carries its adopt answer, journaled in this session", had != null && had.entries().size() == 1
-                            && had.entries().get(0).gen() == RtsimSession.current().boundary().gen());
+                    long gen = RtsimSession.current().boundary().gen();
+                    check("the Frostmaw carries its adopt answer, journaled in this session (" + (had == null ? "no records"
+                            : had.entries().size() + " of generations " + had.entries().stream().map(e -> Long.toHexString(e.gen())).toList())
+                            + ", this session's " + Long.toHexString(gen) + ")", had != null && had.entries().size() == 1 && had.entries().get(0).gen() == gen);
                     f[0].setData(RtsimAttachments.PENDING, had.plusEntries(had.life(),
                             List.of(new PendingRecords.Entry(EARLIER_GEN, had.entries().get(0).bytes().clone()))));
                     fell[1] = f[0].position();
@@ -1806,6 +1816,7 @@ public final class MowzieGameTests {
                     // the chunk leaves, so this leg was not run against it. The leg is for the reload path: the
                     // generation surviving the save and the load, the REASSERT naming it, and the engine
                     // applying the copy that names it (MZB-655).
+                    level.noSave = saving;
                     den.release();
                 })
                 .thenWaitUntil(waits.chunks(MowzieKit.unloadedWithout(level, den.cx, den.cz, () -> deathMarkerObject[0])))
@@ -2583,6 +2594,101 @@ public final class MowzieGameTests {
                     check("no new epoch", den.site().in() && den.site().epoch() == was[3]);
                     record(test, "puppet", "the SET_OUT puppet joined at " + p.position() + " and the den neither watched nor recounted");
                 })
+                .thenSucceed();
+    }
+
+    // ---- M8: a refused lurk claims no camp body ----------------------------------------------------
+
+    /**
+     * A lurk refused at its placing claims no camp body (M8, the second re-check's P3): an adopted Frostmaw, an
+     * AMBUSH_SPOT for an agent, then in one hand-over a SET_OUT of its slot and a one-unit Frostmaw band for that
+     * agent, while the rail provider knows no direction and says a rail is near the spot, so {@code holdPoint}
+     * refuses. The refusal comes before the hand-off is claimed: the SET_OUT is not handed off (the counter does not
+     * move, no puppet stands), the tick's end resolves it as a take (DONE, one taken, the camp holds nothing and its
+     * body is gone with its records on a marker), and the bridge counted the refusal. The body a player can see is
+     * taken, not discarded unseen (its health and crystal state are lost against a hand-off; only an engine check of
+     * the hold point before the set-out would leave it in its camp, a backlog item). On the code before, the body
+     * was claimed and handed to a puppet (handedOff 1), which {@code holdLurks} then found no hold point for and
+     * discarded: "no hand-off was made (1)". Not run.
+     */
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "mowzie_lurk_refused", skyAccess = true)
+    public static void aLurkRefusedAtItsPlacingClaimsNoCampBodyAndTheSetOutIsATake(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 2000);
+        String test = "aLurkRefusedAtItsPlacingClaimsNoCampBodyAndTheSetOutIsATake";
+        Far far = new Far(helper, test);
+        ServerLevel level = far.level;
+        Den den = new Den(far, far.k, far.z0);
+        EntityFrostmaw[] f = new EntityFrostmaw[1];
+        long[] op = new long[2], agent = new long[1], was = new long[4];
+        RailAxes before = LurkSpots.axes();
+        LurkSpots.register(new RailAxes() {
+            @Override
+            public Vec3 at(ServerLevel lv, Vec3 point) {
+                return null;
+            }
+
+            @Override
+            public boolean trackNear(ServerLevel lv, Vec3 point, double radius, double height) {
+                return true;
+            }
+        });
+        ConflictKit.onEnd(helper, () -> LurkSpots.register(before));
+
+        helper.startSequence()
+                .thenExecute(() -> den.force())
+                .thenWaitUntil(waits.chunks(far.ready()))
+                .thenExecute(() -> {
+                    den.lay().declare();
+                    f[0] = MowzieKit.frostmaw(level, den.at(3, 0.5), true);
+                })
+                .thenWaitUntil(waits.logic(() -> check("census 1", MowzieKit.censusCount(den.faction) >= 1)))
+                .thenExecute(() -> op[0] = MowzieKit.reconcile(den.faction, MowzieKit.epoch(MowzieKit.census(den.faction, 1)),
+                        List.of(CampLine.of(0, 1, MowzieKit.FROSTMAW, ADOPT, CHIEF, f[0].getUUID()))))
+                .thenWaitUntil(waits.logic(() -> MowzieKit.answered(den.faction, op[0], 1)))
+                .thenExecute(() -> {
+                    MowzieKit.allOutcomes("ADOPT", ConflictKit.outcomes(den.faction, op[0]), DONE);
+                    agent[0] = ConflictKit.newAgent();
+                    ConflictKit.ambushSpot(agent[0], 1, den.faction, RtsimTests.dimension(helper),
+                            new double[] {den.spot.x, den.spot.y, den.spot.z - 4.0}, new double[] {den.spot.x, den.spot.y, den.spot.z}, 8.0f);
+                })
+                .thenWaitUntil(waits.chunks(io(() -> check("the lurk is in the table", RtsimApi.lurks().containsKey(agent[0])))))
+                .thenExecute(() -> {
+                    Camps c = MowzieKit.camps();
+                    was[0] = c.handedOff;
+                    was[1] = c.taken;
+                    was[2] = ConflictKit.bridge().lurksRefused;
+                    ConflictKit.Band b = ConflictKit.band(agent[0], den.faction, RtsimTests.dimension(helper));
+                    b.arcX = den.spot.x;
+                    b.arcZ = den.spot.z;
+                    b.targetX = den.spot.x;
+                    b.targetY = den.spot.y;
+                    b.targetZ = den.spot.z - 4.0;
+                    b.speed = 0f;
+                    ConflictKit.together(() -> {
+                        op[1] = MowzieKit.reconcile(den.faction, den.site().epoch(), List.of(
+                                CampLine.party(0, 1, MowzieKit.FROSTMAW, SET_OUT, CHIEF, agent[0], b.epoch)));
+                        ConflictKit.materialize(b, List.of(new ConflictKit.StackSpec(MowzieKit.FROSTMAW, 1, false)));
+                    });
+                })
+                .thenWaitUntil(waits.logic(() -> {
+                    MowzieKit.answered(den.faction, op[1], 1);
+                    check("the bridge refused the lurk (" + (ConflictKit.bridge().lurksRefused - was[2]) + " times)", ConflictKit.bridge().lurksRefused > was[2]);
+                }))
+                .thenExecute(() -> {
+                    MowzieKit.allOutcomes("SET_OUT", ConflictKit.outcomes(den.faction, op[1]), DONE);
+                    Camps c = MowzieKit.camps();
+                    check("no hand-off was made (" + (c.handedOff - was[0]) + ")", c.handedOff == was[0]);
+                    check("the unclaimed SET_OUT was a take (" + (c.taken - was[1]) + ")", c.taken - was[1] == 1);
+                    check("the camp holds nothing now", MowzieKit.held(den.faction).isEmpty());
+                    check("and its body is gone", f[0].isRemoved());
+                    check("no puppet of the agent stands", RtsimApi.lurkBody(agent[0]) == null);
+                    check("and no Frostmaw puppet is in the den's area", level.getEntitiesOfClass(EntityFrostmaw.class,
+                            new AABB(den.spot.x - 40, den.spot.y - 12, den.spot.z - 40, den.spot.x + 40, den.spot.y + 12, den.spot.z + 40),
+                            e -> RtsimApi.isPuppet(e) && !e.isRemoved()).isEmpty());
+                    record(test, "refused", "the lurk was refused " + (ConflictKit.bridge().lurksRefused - was[2]) + " times before the SET_OUT was claimed: taken, not handed off, no puppet made from the body and then discarded");
+                    ConflictKit.ambushRemoved(agent[0], 1, den.faction, RtsimTests.dimension(helper));
+                })
+                .thenWaitUntil(waits.chunks(io(() -> check("the lurk is gone from the table", !RtsimApi.lurks().containsKey(agent[0])))))
                 .thenSucceed();
     }
 

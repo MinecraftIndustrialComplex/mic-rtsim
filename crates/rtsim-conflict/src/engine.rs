@@ -614,6 +614,20 @@ pub struct ConflictStats {
     pub rail_calls: u64,
     /// Rail wakes that found no meter or another stamp, popped and dropped (also in `stale`).
     pub rail_stale: u64,
+    /// The lurk (MOWZIE.md §4.4, M8): lurks begun at a track (an AMBUSH_SPOT sent) and ended
+    /// (its REMOVED sent), and the trains that passed one (TRAIN_PASSED taken), those of them
+    /// watched by a player, and the robberies that took anything (`train_passed` pushes
+    /// TRAIN_ROBBED for each: only a lurk's ambush sends it, so `ambushes` also counts the
+    /// on-the-way ones and is not this). A pass the replay brings back rolls again (RP-187): it
+    /// counts in `passes` and, when it robs, in `lurk_robberies` a second time, as the live
+    /// session counted it, and Java answers the robbery DUPLICATE. Its TRAIN_ROBBED is dropped at
+    /// the gate while replaying (a roar is lost, RP-12), so `lurk_robberies` can exceed the
+    /// TRAIN_ROBBED told to Java.
+    pub lurks: u64,
+    pub lurks_ended: u64,
+    pub passes: u64,
+    pub passes_watched: u64,
+    pub lurk_robberies: u64,
 }
 
 /// Where goods went, per world good (thousandths).
@@ -3548,23 +3562,30 @@ impl Conflict {
 
     /// A war band falls on a train it crosses (C16, I24): one threat per class of unit, each with
     /// that class's count, strength and carry (MOWZIE.md ledger 9, MZB-53), as district raids
-    /// send them. One ambush however many classes took something.
-    fn ambush(
+    /// send them. One ambush however many classes took something. Returns the items it took, of
+    /// any good (0 when Peaceful holds it or nothing was robbed): goods the world has no name for
+    /// are taken too (they go to `ledger.unmapped`, and the note counts only the world's), so the
+    /// caller that tells the plugin of a robbery asks this, not the note's count (MZB-356);
+    /// `how` is the note's wording: "on the way" for a band that crosses the train on its march,
+    /// "by the track" for one that lies in wait there (MZB-356).
+    pub(crate) fn ambush(
         &mut self,
         infra: &mut dyn Infrastructure,
         p: Handle<Party>,
         train: u64,
         at: Tick,
         w: &mut World,
-    ) {
+        how: &str,
+    ) -> i64 {
         if self.peaceful {
             self.stats.peace_held += 1;
-            return;
+            return 0;
         }
         let f = self.parties[p].faction;
         let source = self.culture(f).def.source.threat();
         let mut hit = false;
         let mut got = 0;
+        let mut taken = 0;
         for (class, (count, strength, loads)) in self.strength_by_class(p) {
             let id = fnv1a64(
                 &[
@@ -3592,10 +3613,12 @@ impl Conflict {
                 continue;
             };
             hit = true;
-            got += self.take_industry_loot(w, infra, p, &loot);
+            let (mapped, all) = self.take_industry_loot(w, infra, p, &loot);
+            got += mapped;
+            taken += all;
         }
         if !hit {
-            return;
+            return 0;
         }
         self.stats.ambushes += 1;
         let (x, z) = self.party_pos(p, at);
@@ -3613,8 +3636,9 @@ impl Conflict {
             at,
             Some(f),
             "ambush",
-            format!("falls on train {train} on the way: {got} items"),
+            format!("falls on train {train} {how}: {got} items"),
         );
+        taken
     }
 
     /// Goods `a` (thousandths) of `g` taken from players by party `p`: carried home, or destroyed
@@ -3628,16 +3652,20 @@ impl Conflict {
         }
     }
 
-    /// Maps industry goods to the world's by name into the party's players' goods. Returns items.
+    /// Maps industry goods to the world's by name into the party's players' goods. Returns the
+    /// items of the world's goods and the items of all of them (goods the world has no name for
+    /// go to the unmapped ledger and count only in the second).
     fn take_industry_loot(
         &mut self,
         w: &World,
         infra: &mut dyn Infrastructure,
         p: Handle<Party>,
         loot: &rtsim_industry::ids::GoodVec,
-    ) -> i64 {
+    ) -> (i64, i64) {
         let mut got = 0;
+        let mut all = 0;
         for (g, n) in loot.iter() {
+            all += n.max(0);
             let name = infra
                 .good_name(g)
                 .unwrap_or_else(|| format!("good {}", g.0));
@@ -3651,7 +3679,7 @@ impl Conflict {
             }
         }
         self.stats.items_from_districts += got.max(0) as u64;
-        got
+        (got, all)
     }
 
     /// A party reaches its target.
@@ -3713,21 +3741,11 @@ impl Conflict {
                 self.go_home(w, p, boundary::RECALL_DONE, at);
             }
             _ if matches!(target, Target::Track { .. }) => {
-                // A band at a track waits for its patience to run out: nobody to fight and
-                // nothing to raid (M7; M8 makes it lie in wait there).
+                // A band at a track lies in wait there until its patience runs out: nobody to
+                // fight and nothing to raid, but a train that passes may be robbed (M8, MZB-351).
                 let bored = self.parties[p].bored_at;
+                self.lurk_start(p, at);
                 self.wait(w, p, bored, at);
-                self.note(
-                    at,
-                    Some(f),
-                    "track",
-                    format!(
-                        "the {} waits at the track by ({}, {})",
-                        kind.name(),
-                        tpos.x,
-                        tpos.z
-                    ),
-                );
             }
             _ => {
                 // While replaying no player is routed, so `watcher` would say no one watches:
@@ -4255,7 +4273,7 @@ impl Conflict {
             let lost = ((missing * self.tun.abstract_loss_share).round() as u32).min(count);
             self.lose_units(w, p, |c| c.threat() == class, lost, LossCause::Player);
             hunts = hunts.saturating_add(self.survivor_hunts(p, class));
-            let got = self.take_industry_loot(w, infra, p, &o.stolen);
+            let (got, _) = self.take_industry_loot(w, infra, p, &o.stolen);
             stolen_items += got;
             blocks += o.destroyed_blocks;
             self.stats.blocks_destroyed += u64::from(o.destroyed_blocks);
@@ -4654,6 +4672,11 @@ impl Conflict {
 
     /// Back to the camp along the road, from where it is now.
     fn go_home(&mut self, w: &mut World, p: Handle<Party>, reason: u32, at: Tick) {
+        // Every end of a lurk passes through here, before the phase or the target changes
+        // (MZB-352).
+        if self.lurking(p) {
+            self.lurk_end(p);
+        }
         let here = self.party_pos(p, at);
         let f = self.parties[p].faction;
         if self.parties[p].embodied {
@@ -4787,8 +4810,12 @@ impl Conflict {
             self.fights_unanswered.remove(&p);
         } else {
             // A haven with no storehouse (never, by construction): keep the row so the goods
-            // stay accounted for.
-            self.parties[p].phase = Phase::Waiting;
+            // stay accounted for. A kept row never reads as a lurk (MZB-354).
+            let x = &mut self.parties[p];
+            if let Target::Track { track, .. } = x.target {
+                x.target = Target::Pos(track);
+            }
+            x.phase = Phase::Waiting;
         }
         self.note(
             at,
@@ -5670,7 +5697,7 @@ impl Conflict {
                 if self.parties.get(party).is_none_or(|x| x.plan != plan) {
                     return;
                 }
-                self.ambush(infra, party, train, at, w);
+                self.ambush(infra, party, train, at, w, "on the way");
             }
             Ev::Plunder { faction, stamp } => {
                 if self.factions[faction as usize].plunder_stamp != stamp {
@@ -5827,6 +5854,8 @@ impl Conflict {
                 self.enforce_budget();
             }
         }
+        // The lurks go the same way: Java's lurk table lives for one session (MZB-353).
+        self.resend_lurks();
         self.enforce_budget();
     }
 
@@ -6095,12 +6124,13 @@ impl Conflict {
         m
     }
 
-    /// The records whose engine half is not built yet (MOWZIE.md §9's later slices): the lurking
-    /// party's. The camp reconciler's (CAMP_CENSUS, CAMP_OUT, CAMP_BODIES, CAMP_DEATH) are built
-    /// (M4), the chief's CHIEF_STATE with M6, the rail meter's RAIL_PASS with M7, the grove's
-    /// (TRADED, CHIEF_PAID, HAVEN_CHEST) with M9.
-    pub fn later(o: &Obs) -> bool {
-        matches!(o, Obs::TrainPassed(_))
+    /// The records whose engine half is not built yet (MOWZIE.md §9's later slices): none now.
+    /// The camp reconciler's (CAMP_CENSUS, CAMP_OUT, CAMP_BODIES, CAMP_DEATH) are built (M4), the
+    /// chief's CHIEF_STATE with M6, the rail meter's RAIL_PASS with M7, the lurk's TRAIN_PASSED
+    /// with M8 and the grove's (TRADED, CHIEF_PAID, HAVEN_CHEST) with M9. Kept for a later slice's
+    /// new record, which goes here until its engine half is built (MZB-23).
+    pub fn later(_o: &Obs) -> bool {
+        false
     }
 
     /// A record from the plugin, at its game time.
@@ -6126,8 +6156,8 @@ impl Conflict {
             Obs::Materialized(m) => self.materialized(w, m, at),
             Obs::Difficulty(d) => self.set_difficulty(w, d.difficulty),
             Obs::NoticeShown(n) => self.notice_shown(n),
-            Obs::TrainPassed(_) => {}
             Obs::RailPass(rp) => self.rail_pass(w, rp, at),
+            Obs::TrainPassed(tp) => self.train_passed(w, infra, tp, at),
             Obs::HavenChest(h) => self.haven_chest(h),
             Obs::Traded(t) => self.trade_booked(w, t, at),
             Obs::ChiefPaid(c) => self.chief_paid(w, c, at),
@@ -6546,6 +6576,11 @@ impl Conflict {
             // older chest or free count over a newer one. Dropped, as RP-104 drops RAIL_PASS
             // (RP-130).
             Obs::HavenChest(_) => {}
+            // A TRAIN_PASSED has no op id and Java never copies one (ConflictBridge journals it at
+            // once, with no holder): a copy, were one ever sent, would roll again at its own tick
+            // and could rob the train twice, so it is dropped after the fold, as RP-104 drops
+            // RAIL_PASS (RP-150).
+            Obs::TrainPassed(_) => {}
             _ => self.ingest(w, infra, o, at),
         }
     }

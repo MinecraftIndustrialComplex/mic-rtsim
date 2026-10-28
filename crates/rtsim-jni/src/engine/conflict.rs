@@ -19,11 +19,12 @@
 //!   modules and the world run to it first (the shared clock, `engine/shared.rs`); DIFFICULTY
 //!   among them (no war party leaves on Peaceful, MZB-17), and HAVEN_CHEST (M9, MZB-446: a replay
 //!   after a crash knows the chest the session knew; it names the chest's state, latest wins,
-//!   and has no op id, so `Conflict::ingest_copy` drops a copy, RP-130). The Mowzie kinds whose
+//!   and has no op id, so `Conflict::ingest_copy` drops a copy, RP-130). A Mowzie kind whose
 //!   engine half comes with a later
-//!   slice (`Conflict::later`: TRAIN_PASSED) are decoded, counted as deferred and given to the
-//!   conflict at its present, before the clock runs, so that it spends their op ids as `Replay`
-//!   does (MZB-23). RAIL_PASS is live (M7): its times are translated to world ticks and the
+//!   slice (`Conflict::later`, none since M8's TRAIN_PASSED and M9's grove kinds) is decoded,
+//!   counted as deferred and given to the conflict at its present, before the clock runs, so that
+//!   it spends its op id as `Replay` does (MZB-23). RAIL_PASS is live (M7): its times are
+//!   translated to world ticks and the
 //!   conflict holds it until its train's arrival; the industry module's journaled TRAIN_ARRIVED
 //!   and TRAIN_UNWATCHED then call [`rail_call`] with the line the train ran (MZB-312).
 //!   Java's ids are translated to the conflict's own first (C2-4): items to
@@ -501,7 +502,10 @@ pub(super) fn apply_kept(st: &mut State, rec: &Rec<'_>) {
 /// engine's `replay_done` (the bodies of the last session are gone), then the kept notices go
 /// to the plugin (MZB-31): a NOTICE_SHOWN journaled last session after the pages' save has
 /// cleared its notice by now. A notice a replayed record made again is dropped from the queue
-/// first: what is kept is what goes. Switched off, it stays due; the reset on switch-on runs it.
+/// first: what is kept is what goes. So is an AMBUSH_SPOT (a lurk a replayed record began or
+/// ended, MZB-353): Java's lurk table lives for one session, and `resend_lurks` (in
+/// `resend_notices`) says each lurk once. Switched off, it stays due; the reset on switch-on runs
+/// it.
 pub(super) fn replay_end(st: &mut State) {
     if !running(st) && !kept_waiting(st) {
         // The host's replay is over and no camp came back: nothing the held chiefs' states name.
@@ -514,14 +518,15 @@ pub(super) fn replay_end(st: &mut State) {
     st.conflict.replay_end_due = false;
     st.conflict.engine.replay_done();
     take_commands(st);
-    // The gate dropped every notice a replayed record made again (docs/replay-gate.md §4.4), and
-    // the session start cleared the queue: what is kept is what goes.
+    // The gate dropped every notice and every AMBUSH_SPOT a replayed record made again
+    // (docs/replay-gate.md §4.4), and the session start cleared the queue: what is kept is what
+    // goes.
     debug_assert!(
         !st.conflict
             .queue
             .iter()
-            .any(|q| q.names.is_none() && matches!(q.cmd, Cmd::Notice(_))),
-        "a conflict notice queued at the replay end"
+            .any(|q| q.names.is_none() && matches!(q.cmd, Cmd::Notice(_) | Cmd::AmbushSpot(_))),
+        "a conflict notice or lurk queued at the replay end"
     );
     st.conflict.engine.resend_notices();
     take_commands(st);
