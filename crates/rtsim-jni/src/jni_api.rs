@@ -234,9 +234,12 @@ pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_Nat
     .resolve::<ThrowRuntimeExAndDefault>()
 }
 
-/// `static native int nClose(long handle, boolean save, int timeoutMs)`: ends the session and
-/// frees the handle. 0, or a negative status with the reason in `nLastError()` (the handle is
-/// freed either way).
+/// `static native int nClose(long handle, boolean save, long writtenThrough, int timeoutMs)`: ends
+/// the session and frees the handle. `writtenThrough` is the last observation sequence the world's
+/// journal file holds (Java's `JournalSavedData.writtenThrough`); the final save is confirmed at
+/// once only if the file holds it, else it stays pending (slice U-i), and it is unused when `save`
+/// is false. 0, or a negative status with the reason in `nLastError()` (the handle is freed
+/// either way).
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_NativeEngine_nClose<
     'l,
@@ -245,6 +248,7 @@ pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_Nat
     _class: JClass<'l>,
     handle: jlong,
     save: jboolean,
+    written_through: jlong,
     timeout_ms: jint,
 ) -> jint {
     env.with_env(|_env| -> Result<jint, JniError> {
@@ -253,7 +257,11 @@ pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_Nat
         }
         // SAFETY: Java's contract: a live handle, closed once. The box is ours again.
         let e = unsafe { Box::from_raw(handle as usize as *mut Arc<Engine>) };
-        let r = e.close(save, Duration::from_millis(timeout_ms.max(0) as u64));
+        let r = e.close_through(
+            save,
+            written_through.max(0) as u64,
+            Duration::from_millis(timeout_ms.max(0) as u64),
+        );
         drop(e);
         Ok(match r {
             Ok(()) => abi::MIC_OK,
