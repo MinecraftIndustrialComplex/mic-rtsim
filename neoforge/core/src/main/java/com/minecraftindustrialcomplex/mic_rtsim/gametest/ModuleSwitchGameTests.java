@@ -67,15 +67,26 @@ public final class ModuleSwitchGameTests {
         return recs.isEmpty() ? -1 : recs.get(recs.size() - 1).view().getInt(Obs.ModuleSwitch.MASK);
     }
 
-    /** The switch records the engine heard, in the order it heard them: each a journaled record, applied once. */
+    /**
+     * The switch records the engine heard and applied, in the order it heard them: each a journaled record under
+     * its own sequence, applied once. A record the engine's pages already include comes back skipped (a restart's
+     * backlog) and is not counted.
+     */
     private static boolean switchesAreJournaledInOrder(ScriptedEngine engine) {
         long last = 0;
+        StringBuilder heard = new StringBuilder();
+        boolean ok = true;
         for (ScriptedEngine.Received r : engine.received(Obs.MODULE_SWITCH)) {
-            if (r.obsSeq() <= last || r.skipped())
-                return false;
+            heard.append(" seq ").append(r.obsSeq()).append(r.skipped() ? " skipped" : "")
+                    .append(" mask ").append(r.view().getInt(Obs.ModuleSwitch.MASK)).append(';');
+            if (r.skipped())
+                continue;
+            if (r.obsSeq() <= last)
+                ok = false;
             last = r.obsSeq();
         }
-        return last > 0;
+        record("modules", "switches heard", heard);
+        return ok && last > 0;
     }
 
     private static int wanderingTraders(ServerLevel level) {
