@@ -158,12 +158,13 @@ pub struct Java {
     pub failed_seen: bool,
     /// The module mask (the bridge's `Module` bits): the session's own, set after [`Java::open`]
     /// as the bridge's constructor takes it, and then the current one ([`Java::modules`]).
-    /// The session's own switch is journaled when the session first needs it (its first
-    /// hand-over or the first record it journals), with the mask as it stands then
-    /// ([`Java::settle_switch`]).
+    /// The session's own MODULE_SWITCH is journaled by `open` (right after the JOURNAL_GEN, as the
+    /// constructor does) and takes the mask as it stands when the session first talks to the
+    /// engine (its first hand-over, or the first [`Java::modules`]): [`Java::fix_start`].
     pub module_mask: u32,
-    /// The session's own MODULE_SWITCH is not journaled yet (U-e).
-    pub switch_pending: bool,
+    /// The sequence of the session's own MODULE_SWITCH, and whether its mask is final (U-e).
+    pub switch_seq: u64,
+    pub start_fixed: bool,
     /// The mask the session's own MODULE_SWITCH carried, which SESSION_START names too.
     pub start_mask: u32,
     /// Phase 1 commands applied, in order: (kind, record bytes).
@@ -179,6 +180,15 @@ pub struct Java {
     /// The containers' chunks are not loaded: answer every new TRANSFER_TO_CONTAINER as
     /// CommandDispatcher answers one whose chunk `getChunkNow` does not hold.
     pub unloaded_transfers: bool,
+    /// A module mask to journal as a switch (as [`Java::modules`] does) just before the next
+    /// TRANSFER_TO_CONTAINER is answered: the config changed in the tick between the engine's
+    /// step and Java's answers, so the switch is in the journal ahead of them
+    /// (docs/choices-journal-barrier.md U-e). Cleared when it is journaled.
+    pub switch_ahead_of_transfer_answers: Option<u32>,
+    /// The same for the industry world: (op, mask) journals the switch to `mask` at the front of
+    /// the tick of [`Java::mc_tick`] whose output holds the world's result for `op`, ahead of all
+    /// that tick's records. Cleared when it is journaled.
+    pub switch_ahead_of_result_of: Option<(u64, u32)>,
     /// The next hand-over ends right after the session's DICTs, as `BoundarySession.flushPreamble`
     /// does when the buffer is full there (it returns false, and `handOver` still submits): no
     /// TICK, no journal entries. Cleared by that hand-over.
@@ -230,6 +240,15 @@ pub struct Java {
     /// Under [`Policy::Refuse`]: module commands the reference codecs could not decode (skipped,
     /// unanswered).
     pub undecoded: u64,
+}
+
+/// Writes `mask` and the game time into the MODULE_SWITCH journaled at `seq`: the session's own
+/// switch, which the bridge's constructor journals with the game time of the session's start.
+fn patch_switch(journal: &mut VecDeque<(u64, Vec<u8>)>, seq: u64, mask: u32, game_time: i64) {
+    if let Some((_, r)) = journal.iter_mut().find(|(s, _)| *s == seq) {
+        wire::put_u32(r, obs::module_switch::MASK, mask);
+        wire::put_i64(r, obs::GAME_TIME, game_time);
+    }
 }
 
 /// What a "world save" keeps of the Java side: the journal SavedData.
@@ -328,13 +347,16 @@ impl Java {
             written_through: None,
             failed_seen: false,
             module_mask: 0,
-            switch_pending: false,
+            switch_seq: 0,
+            start_fixed: false,
             start_mask: 0,
             p1: Vec::new(),
             talk_facts: Vec::new(),
             no_free_plot: false,
             fail_transfers: false,
             unloaded_transfers: false,
+            switch_ahead_of_transfer_answers: None,
+            switch_ahead_of_result_of: None,
             end_after_dicts: false,
             players: Vec::new(),
             mc: None,
@@ -360,15 +382,25 @@ impl Java {
         j.journal(obs::JOURNAL_GEN, obs::journal_gen::SIZE, 0, |r| {
             wire::put_u64(r, obs::journal_gen::GEN, g)
         });
-        // The session's own switch follows it (BoundarySession's constructor), journaled once
-        // the test has set the mask (`settle_switch`).
-        j.switch_pending = true;
+        // The session's own switch follows it (BoundarySession's constructor); a test sets the mask
+        // after `open`, and `fix_start` writes it into this record before the engine hears it.
+        j.switch_seq = j.commit_switch(0);
         Ok(j)
     }
 
     pub fn world_save(&self) -> WorldSave {
+        let mut journal = self.journal.clone();
+        if !self.start_fixed {
+            // The mask the session will start in, as the bridge's constructor would have journaled it.
+            patch_switch(
+                &mut journal,
+                self.switch_seq,
+                self.module_mask,
+                self.game_time,
+            );
+        }
         WorldSave {
-            journal: self.journal.clone(),
+            journal,
             pinned_gen: self.pinned_gen.clone(),
             next_obs: self.next_obs,
             last_applied_cmd: self.last_applied_cmd,
@@ -466,7 +498,6 @@ impl Java {
         aux: u32,
         body: impl FnOnce(&mut [u8]),
     ) -> u64 {
-        self.settle_switch();
         let len = wire::align8(size);
         let mut r = vec![0u8; len];
         wire::put_u16(&mut r, wire::R_KIND, kind);
@@ -489,7 +520,6 @@ impl Java {
     /// record's bytes as first journaled, after `nonce`, the generation they were journaled in.
     /// Returns the copy's sequence.
     pub fn reassert(&mut self, nonce: u64, original: &[u8]) -> u64 {
-        self.settle_switch();
         let len = obs::reassert::INNER + original.len();
         let mut r = vec![0u8; len];
         wire::put_u16(&mut r, wire::R_KIND, obs::REASSERT);
@@ -551,7 +581,7 @@ impl Java {
     }
 
     pub fn preamble(&mut self) -> bool {
-        self.settle_switch();
+        self.fix_start();
         if self.session_start_pending {
             let (gt, la, jf, wn, mask) = (
                 self.game_time,
@@ -607,17 +637,19 @@ impl Java {
         true
     }
 
-    /// The session's own MODULE_SWITCH, right after its JOURNAL_GEN, if it is not journaled yet:
-    /// the mask the bridge's constructor was given, which tests set as `module_mask` after
-    /// [`Java::open`]. SESSION_START names the same mask (the fallback of a start with no mask
-    /// in its pages, docs/choices-journal-barrier.md U-e6).
-    pub fn settle_switch(&mut self) {
-        if !self.switch_pending {
+    /// Makes the session's own MODULE_SWITCH final: the mask the bridge's constructor was given,
+    /// which tests set as `module_mask` after [`Java::open`], is written into the record `open`
+    /// journaled (nothing has been sent, so the engine never saw another), and SESSION_START names
+    /// it too (the fallback of a start whose pages hold no mask, docs/choices-journal-barrier.md
+    /// U-e6). Done at the session's first hand-over and before its first [`Java::modules`].
+    pub fn fix_start(&mut self) {
+        if self.start_fixed {
             return;
         }
-        self.switch_pending = false;
+        self.start_fixed = true;
         self.start_mask = self.module_mask;
-        self.commit_switch(self.module_mask);
+        let (seq, mask, gt) = (self.switch_seq, self.module_mask, self.game_time);
+        patch_switch(&mut self.journal, seq, mask, gt);
     }
 
     fn commit_switch(&mut self, mask: u32) -> u64 {
@@ -630,7 +662,7 @@ impl Java {
     /// among the records (`BoundarySession.setModuleMask`, docs/choices-journal-barrier.md U-e3).
     /// A mask equal to the current one journals nothing. Returns the record's sequence, or 0.
     pub fn modules(&mut self, mask: u32) -> u64 {
-        self.settle_switch();
+        self.fix_start();
         if mask == self.module_mask {
             return 0;
         }
@@ -823,6 +855,9 @@ impl Java {
                 self.commands.push((k, rec.kind, op));
                 match rec.kind {
                     cmd::TRANSFER_TO_CONTAINER => {
+                        if let Some(mask) = self.switch_ahead_of_transfer_answers.take() {
+                            self.modules(mask);
+                        }
                         let b = rec.bytes;
                         for (kind, off) in [
                             (wire::DICT_DIMENSION, cmd::transfer_to_container::DIM),
@@ -1396,6 +1431,14 @@ impl Java {
             self.e
                 .order(vec![Order::IndustryThreat(th)])
                 .expect("a threat order");
+        }
+        if let Some((x, mask)) = self.switch_ahead_of_result_of
+            && out
+                .iter()
+                .any(|o| matches!(o, Outgoing::CommandResult { op, .. } if op.0 == x))
+        {
+            self.switch_ahead_of_result_of = None;
+            self.modules(mask);
         }
         for o in out {
             match o {

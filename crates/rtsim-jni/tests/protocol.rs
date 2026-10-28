@@ -340,10 +340,10 @@ fn acknowledgements_name_only_pages_on_disk_and_stop_at_the_world_save() {
     }
     j.idle();
     j.idle();
-    // The world saved with its journal at 11 (the session's JOURNAL_GEN, then ten transfers);
-    // ten more arrive in the same hand-over.
+    // The world saved with its journal at 12 (the session's JOURNAL_GEN and its module switch, then
+    // ten transfers); ten more arrive in the same hand-over.
     let through = j.next_obs - 1;
-    assert_eq!(through, 11);
+    assert_eq!(through, 12);
     e.request_save(through);
     for i in 0..10 {
         j.transfer(wire::JAVA_OP_BIT | (200 + i), 1, 2, 1);
@@ -377,7 +377,7 @@ fn acknowledgements_name_only_pages_on_disk_and_stop_at_the_world_save() {
     );
     assert_eq!(
         j.journal.front().map(|(s, _)| *s),
-        Some(12),
+        Some(13),
         "trimmed to the acknowledgement"
     );
     e.close(true, Duration::from_secs(5)).unwrap();
@@ -1511,7 +1511,7 @@ mod p1_off {
         }
     }
 
-    /// MODULES to `mask` handed over and heard by the engine (a step that writes the puppets'
+    /// MODULE_SWITCH to `mask` handed over and heard by the engine (a step that writes the puppets'
     /// despawns); then `window` journals its records, and only then does Java apply what that step
     /// wrote, so the despawn's answer (DEMATERIALIZED) comes after the window's records, as it does
     /// in game, where a despawn takes a tick or more to be carried out.
@@ -3177,8 +3177,7 @@ mod dragons {
 
     /// RP-291: a tribute stack answered with the dragons switched off is placed once. The lair's
     /// chest is reported and the dragons send their stacks; ECOLOGY goes off in the tick Java
-    /// applies them (MODULES ahead of their APPLIED in that hand-over, as BoundarySession's
-    /// preamble puts it). The core takes each APPLIED out of the outbox whatever the switch. Java
+    /// applies them (the switch journaled ahead of their APPLIED, U-e). The core takes each APPLIED out of the outbox whatever the switch. Java
     /// reads an ack past the answers: it trims its journal through them, and the journal's op
     /// index (`Journal.commandOpApplied`, `forgetOp`) and the chest's chunk carry forget the ops
     /// with it, so the test drops them from the fake's applied set as main's Java does. Back on,
@@ -3579,9 +3578,11 @@ mod dragons {
 
         // The lair's chest is reported elsewhere: the parked stacks go again, to the first chest,
         // and Java answers FAILED (loaded now, no room). ECOLOGY goes off before the answers are
-        // handed over.
+        // journaled, so the engine hears them after the switch (U-e: the switch is a record at
+        // its place, not a preamble ahead of the next hand-over).
         j.unloaded_transfers = false;
         j.fail_transfers = true;
+        j.switch_ahead_of_transfer_answers = Some(MODULES & !MODULE_ECOLOGY);
         j.dragon_obs(&report(other));
         for _ in 0..8 {
             j.flush();
@@ -3594,7 +3595,7 @@ mod dragons {
             2 * stacks,
             "each stack sent again"
         );
-        j.modules(MODULES & !MODULE_ECOLOGY);
+        assert_eq!(j.module_mask, MODULES & !MODULE_ECOLOGY, "the switch was journaled");
         j.idle();
         j.idle();
         assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
@@ -4320,7 +4321,7 @@ mod dragons {
 
     /// U-c's review, P1 (RP-292, docs/replay-gate.md 9.7: "a record applied while off goes in at
     /// its own tick"): the lair's own dragon, adopted and embodied, is killed by a player in the
-    /// switch-off's tick (journaled after the MODULES record), and the dragons are switched on
+    /// switch-off's tick (journaled after the MODULE_SWITCH record), and the dragons are switched on
     /// three days later with the player at the lair. The dragon stays dead, never materialized
     /// again, and its lair stands empty from the death's own tick, not from the switch-on's.
     /// Before: the record was booked no earlier than the world's present, so the switch-on ran
@@ -4402,7 +4403,7 @@ mod dragons {
     }
 
     /// The joint switch-on of U-d's review, P2, end to end (RP-300): phase 1 and ECOLOGY, which
-    /// share a MODULES record, go off together; in the window phase 1 hears a village, the
+    /// share a MODULE_SWITCH record, go off together; in the window phase 1 hears a village, the
     /// dragons hear their dragon killed by a player, and phase 1 hears another village; three
     /// days later both come on in one record. Phase 1's drain runs in that record's resets, after
     /// the dragons applied the death at its own tick: the dragon stays dead, its lair stands
@@ -6706,7 +6707,7 @@ mod herds {
     /// order the world is explored. A copy of the old herd's death (REASSERT, a generation no
     /// engine heard) that arrives after the new founding names the agent both share. `known`
     /// aims it at the saved herd instead (the control). `toggle`: the herds are switched off and
-    /// on again after the founding (a MODULES record), which begins their replay again.
+    /// on again after the founding (a MODULE_SWITCH record), which begins their replay again.
     /// Returns (the saved herd's killed count, the new herd's) after the copy, and the copies
     /// applied.
     fn a_copy_after_a_founding(name: &str, known: bool, toggle: bool) -> ((u64, u64), u64) {
@@ -7007,7 +7008,7 @@ mod herds {
     /// A herd of 20 sheep (under the group cap, so every group holds every sheep) in a player's
     /// view, its group embodied. The ecology module is switched off, and in the switch's tick, as
     /// `HerdBridge.endOfTick` does, the plugin settles a player's kill and then captures the
-    /// group: both journaled after the MODULES record, which the preamble writes ahead of them.
+    /// group: both journaled after the MODULE_SWITCH record.
     /// Then the herds are switched on again: in this session (`restart` false), or after a save
     /// that trimmed both from Java's journal and a clean restart with them on. Returns the
     /// herd's (alive, killed) and whether a group materialized after the switch-on holds the
@@ -7660,8 +7661,7 @@ mod conflict {
 
     /// The camp's envoy in a player's view. The conflict module is switched off, and in the
     /// switch's tick, as `ConflictBridge.switchedOff` settles its deaths, the player's kills of
-    /// the whole band are journaled after the MODULES record, which the preamble writes ahead of
-    /// them. Then the conflict is switched on again: in this session (`restart` false), or after a
+    /// the whole band are journaled after the MODULE_SWITCH record. Then the conflict is switched on again: in this session (`restart` false), or after a
     /// save that trimmed the kills from Java's journal and a clean restart with it on, and a day
     /// passes with the player in the territory. Returns (casualties booked by the switch-on, the
     /// envoy party's units left, 0 when it is gone, the envoy materialized again).
@@ -12172,21 +12172,35 @@ mod conflict {
         assert_eq!(epochs, vec![1, 2]);
     }
 
-    /// §9.1 test 7 (U10, docs/replay-gate.md §3.1): the conflict switched off at the session start
-    /// and on in the middle of the session. Its reset begins its replay, and with the session's
-    /// replay over, that replay ends at once. `long`, the control: switched on while the session's
-    /// replay still runs (4,000 fillers after the save), its replay ends with the session's.
+    /// §9.1 test 7 (U10, docs/replay-gate.md §3.1): the conflict switched on while the session's
+    /// replay is over (`long` false: the config of the session has it off, which is that
+    /// session's own switch at its start, and it goes on in the middle of the session; its reset
+    /// begins its replay, and with the session's replay over, that replay ends at once). `long`,
+    /// the control: since slice U-e (RP-290) the replay starts from the pages' mask and hears the
+    /// switches as the crashed session journaled them, so the conflict is off in the pages and a
+    /// switch-on is journaled in the window the next session replays (4,000 fillers after it):
+    /// the switch-on is heard inside the replay, its replay begins there and ends with the
+    /// session's.
     fn the_conflict_switched_on_mid_session(name: &str, long: bool) {
         let (dir, e, mut j) = camp(name);
-        save(&e, &mut j);
         if long {
+            j.modules(MODULES & !MODULE_CONFLICT);
+            j.idle();
+            save(&e, &mut j);
+            j.modules(MODULES);
             fillers(&mut j, 4_000);
+        } else {
+            save(&e, &mut j);
         }
         let gt = j.game_time;
         let saved = j.crash();
         let e = engine(&dir, wire::MIN_CAPACITY);
         let mut j = Java::open(e.clone(), saved);
-        j.module_mask = MODULES & !MODULE_CONFLICT;
+        j.module_mask = if long {
+            MODULES
+        } else {
+            MODULES & !MODULE_CONFLICT
+        };
         j.game_time = gt;
         j.flush();
         let conflict_replaying = |e: &Engine| e.with_conflict(|c, _| c.replaying());
@@ -12195,17 +12209,23 @@ mod conflict {
             u64::from(!long),
             "the session's replay end"
         );
-        assert!(
-            !conflict_replaying(&e),
-            "switched off: its replay has not begun"
-        );
-        j.modules(MODULES);
-        j.flush();
-        assert_eq!(
-            conflict_replaying(&e),
-            long,
-            "switched on: its replay ends with the session's"
-        );
+        if long {
+            assert!(
+                conflict_replaying(&e),
+                "switched on inside the replay: its replay is the session's"
+            );
+        } else {
+            assert!(
+                !conflict_replaying(&e),
+                "switched off: its replay has not begun"
+            );
+            j.modules(MODULES);
+            j.flush();
+            assert!(
+                !conflict_replaying(&e),
+                "switched on: its replay ends with the session's, which is over"
+            );
+        }
         hand_over_all(&mut j);
         assert_eq!(replay_counts(&e).0, 1, "one replay end a session");
         assert!(!conflict_replaying(&e), "the conflict's replay ended");
@@ -12697,13 +12717,23 @@ mod conflict {
         j.module_mask = MODULES;
         j.game_time = gt;
         j.players = players;
-        let first = j.next_obs - 1;
+        // The session's first record is its JOURNAL_GEN; its module switch follows it (U-e3).
+        let first = j.next_obs - 2;
         let back = j
             .journal
             .back()
             .map(|(s, r)| (*s, wire::u16_at(r, wire::R_KIND)));
         assert_eq!(
             back,
+            Some((first + 1, obs::MODULE_SWITCH)),
+            "the session's switch follows its first record"
+        );
+        assert_eq!(
+            j.journal
+                .iter()
+                .rev()
+                .nth(1)
+                .map(|(s, r)| (*s, wire::u16_at(r, wire::R_KIND))),
             Some((first, obs::JOURNAL_GEN)),
             "the session's first record"
         );
@@ -13182,10 +13212,20 @@ mod conflict {
         let mut j = Java::open(e.clone(), before);
         j.module_mask = MODULES;
         j.game_time = gt;
-        let first = j.next_obs - 1;
+        // The session's first record is its JOURNAL_GEN; its module switch follows it (U-e3).
+        let first = j.next_obs - 2;
         assert_eq!(
             j.journal
                 .back()
+                .map(|(s, r)| (*s, wire::u16_at(r, wire::R_KIND))),
+            Some((first + 1, obs::MODULE_SWITCH)),
+            "the session's switch follows its first record"
+        );
+        assert_eq!(
+            j.journal
+                .iter()
+                .rev()
+                .nth(1)
                 .map(|(s, r)| (*s, wire::u16_at(r, wire::R_KIND))),
             Some((first, obs::JOURNAL_GEN)),
             "the session's first record"
@@ -13223,7 +13263,11 @@ mod conflict {
             "the replay counts the copies once"
         );
         assert_eq!(copies(&e), (k, 0), "applied from the replay");
-        assert_eq!(replay_counts(&e), (1, 1, k), "the copies, replayed");
+        assert_eq!(
+            replay_counts(&e),
+            (1, 1, k + 1),
+            "the session's module switch (the pages end at its JOURNAL_GEN) and the copies, replayed"
+        );
         drop(j);
         e.close(true, Duration::from_secs(5)).unwrap();
     }
@@ -14429,7 +14473,8 @@ mod conflict {
     /// the conflict is switched off is taken once, at the switch-on. A grove's chest is reported
     /// and a player's seven gold blocks owed to it: the first of nine stacks goes out, Java puts it
     /// in the chest (or answers `answer`) at the end of the step, and the conflict goes off in the
-    /// next hand-over, ahead of the answer (as BoundarySession's preamble puts it). The core takes
+    /// same tick, ahead of the answer (`Java::switch_ahead_of_transfer_answers`: the switch is a
+    /// journaled record, U-e, in the journal before the answer). The core takes
     /// the answer out of its outbox whatever the switch. Java reads an ack past the answer, and
     /// forgets the op with its journal (`Journal.commandOpApplied`, `forgetOp`): the test drops it
     /// from the fake's applied set. Ignored while off, the stack stayed in flight with nothing
@@ -14445,6 +14490,9 @@ mod conflict {
         chest_report(&mut j, chest);
         j.idle();
         j.unloaded_transfers = answer == Answer::NotLoaded;
+        // The conflict goes off in the tick Java answers the first stack: the switch is journaled
+        // ahead of the answer, so the engine hears the answer while off (U-e).
+        j.switch_ahead_of_transfer_answers = Some(MODULES & !MODULE_CONFLICT);
         j.conflict_obs(&O::ChiefPaid(cb::ChiefPaid {
             faction: CAMP,
             slot: 0,
@@ -14474,7 +14522,7 @@ mod conflict {
         );
         j.unloaded_transfers = false;
         assert_earmarked(&e, 567);
-        j.modules(MODULES & !MODULE_CONFLICT);
+        assert_eq!(j.module_mask, MODULES & !MODULE_CONFLICT, "the switch is journaled");
         if answer == Answer::AppliedTwice {
             let op = *first.iter().next().unwrap();
             let seq = j
