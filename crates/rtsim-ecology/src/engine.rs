@@ -3861,11 +3861,18 @@ impl Dragons {
     }
 
     /// The plugin could not put a stack in its chest (FAILED): the coin waits as unplaced, and
-    /// the chest is forgotten until the plugin reports one again. Java answers FAILED with
-    /// nothing placed: before it looks at the chest (no such level, an unknown item, a count
+    /// the chest is forgotten until the plugin reports one again, if it is still this stack's own
+    /// ([`Dragons::tribute_unloaded`], MZB-762): a chest reported since, elsewhere, is kept, as the
+    /// plugin reports it again only on a change, and the coin goes to it now. Java answers FAILED
+    /// with nothing placed: before it looks at the chest (no such level, an unknown item, a count
     /// below 1), or with the chest's chunk loaded and not carrying the op (no chest there, or no
     /// room). The stack was never put there, so the coin may go again under a new op id.
-    pub fn tribute_failed(&mut self, op: u64) -> bool {
+    ///
+    /// `place`: whether the dragons run. Off, the answer is a record and decides nothing (RP-291,
+    /// MZB-767): the books and the chest are as above, but no stack is made and no op id is drawn,
+    /// for the switch on forgets the chest ([`Dragons::begin_replay`]) the stack would go to. The
+    /// next stack comes with the lair's next chest report after the switch on.
+    pub fn tribute_failed(&mut self, op: u64, place: bool) -> bool {
         let Some(p) = self.placing.remove(&op) else {
             return false;
         };
@@ -3873,7 +3880,12 @@ impl Dragons {
         if let Some(l) = self.lairs.get_mut(p.lair) {
             *l.unplaced.entry(p.item).or_default() += p.count;
         }
-        self.chests.remove(&p.lair);
+        if self.chests.get(&p.lair) == Some(&p.chest) {
+            self.chests.remove(&p.lair);
+        }
+        if place {
+            self.place_tribute(p.lair);
+        }
         true
     }
 

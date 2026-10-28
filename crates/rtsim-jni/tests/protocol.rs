@@ -2799,6 +2799,15 @@ mod dragons {
             .collect()
     }
 
+    /// How many transfers Java was given, a stack sent again under its op id included, which the
+    /// set of ops ([`transfer_ops`]) does not show.
+    fn transfer_sends(j: &Java) -> usize {
+        j.commands
+            .iter()
+            .filter(|(_, kind, _)| *kind == cmd::TRANSFER_TO_CONTAINER)
+            .count()
+    }
+
     /// Dragon tribute over the real boundary (SINK.md §4.5, §4.6): TRIBUTE_START makes a granted
     /// village the lair's tributary and it pays at once, but the coin waits for the lair's chest;
     /// LAIR_CHEST sends it as TRANSFER_TO_CONTAINER stacks; a FAILED stack comes back and waits
@@ -3263,6 +3272,136 @@ mod dragons {
         assert_eq!(j.containers.get(&other), None, "none into the other chest");
         assert_eq!(e.dragons_tribute(), [1, coins, 0, 0]);
         assert!(has_chest(&e), "the reported chest is kept for new coin");
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// MZB-767 (re-check P2): a FAILED answer for a dragon's stack, taken with the dragons off,
+    /// decides nothing (RP-291). A stack parked at chest X (NOT_LOADED), the lair's chest Y
+    /// reported, the stack sent to X again, ECOLOGY off in the tick Java answers FAILED: the coin
+    /// is booked back and Y is kept, but no stack is made and no op id is drawn, for the switch
+    /// on forgets Y and the stack would go to a chest the engine no longer holds. Before the fix
+    /// `tribute_failed` placed the coin again at once, so the engine held new stacks while off,
+    /// saved them, and wrote them to Y at the switch on. Back on, nothing is sent; the lair's
+    /// next chest report places the coin once, and the books hold every coin.
+    #[test]
+    fn a_failed_tribute_stack_answered_with_the_dragons_off_makes_no_stack() {
+        use rtsim_jni::engine::MODULE_ECOLOGY;
+        let dir = tmpdir("tribute-failed-off");
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        j.module_mask = MODULES;
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        let village = 0x0001_0000_0000_0001u64;
+        j.adopt(village, "minecraft:village_plains", "human", 90, 2900, 3000);
+        j.dragon_obs(&O::LairFound(db::LairFound {
+            lair: LAIR,
+            late: false,
+            dimension: dim,
+            species: Species::Fire,
+            kind: LairKind::Roost,
+            min: (HOME.0 - 30, 60, HOME.2 - 30),
+            max: (HOME.0 + 30, 140, HOME.2 + 30),
+            home: HOME,
+        }));
+        j.idle();
+        j.idle();
+        j.work_catalog(&test_works());
+        j.idle();
+        e.order(vec![
+            Order::WorksGrant {
+                village,
+                amount: 2_000_000,
+            },
+            Order::TributeStart {
+                village,
+                lair: LAIR,
+            },
+        ])
+        .unwrap();
+        j.idle();
+        j.idle();
+        let [_, _, coins, _] = e.dragons_tribute();
+        assert!(coins > 64, "more than one stack: {coins}");
+        let stacks = (coins + 63) / 64;
+        let report = |pos: [i32; 3]| {
+            O::LairChest(db::LairChest {
+                lair: LAIR,
+                dimension: dim,
+                pos: (pos[0], pos[1], pos[2]),
+            })
+        };
+        let first = [HOME.0 + 2, HOME.1 - 4, HOME.2 + 1];
+        let other = [HOME.0 + 20, HOME.1 - 4, HOME.2 + 20];
+
+        // Every stack goes to the first chest and is parked: its chunk is not loaded.
+        j.unloaded_transfers = true;
+        j.dragon_obs(&report(first));
+        j.idle();
+        j.idle();
+        let sent = transfer_ops(&j);
+        assert_eq!(sent.len() as i64, stacks);
+        assert_eq!(e.dragons_tribute(), [1, 0, 0, stacks], "parked, not failed");
+
+        // The lair's chest is reported elsewhere: the parked stacks go again, to the first chest,
+        // and Java answers FAILED (loaded now, no room). ECOLOGY goes off before the answers are
+        // handed over.
+        j.unloaded_transfers = false;
+        j.fail_transfers = true;
+        j.dragon_obs(&report(other));
+        for _ in 0..8 {
+            j.flush();
+            if transfer_sends(&j) as i64 >= 2 * stacks {
+                break;
+            }
+        }
+        assert_eq!(
+            transfer_sends(&j) as i64,
+            2 * stacks,
+            "each stack sent again"
+        );
+        j.modules(MODULES & !MODULE_ECOLOGY);
+        j.idle();
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        assert_eq!(
+            e.dragons_tribute(),
+            [1, 0, coins, 0],
+            "off: the coin is booked back and no stack is made"
+        );
+        assert_eq!(transfer_ops(&j), sent, "no new op id");
+
+        // Back on: the switch forgot the chest, so nothing is sent, and the coin waits.
+        j.modules(MODULES);
+        for _ in 0..4 {
+            j.idle();
+        }
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        assert_eq!(e.dragons_tribute(), [1, 0, coins, 0], "the coin waits");
+        assert_eq!(transfer_ops(&j), sent, "no stack goes to a forgotten chest");
+        assert_eq!(transfer_sends(&j) as i64, 2 * stacks);
+        assert!(j.containers.is_empty());
+
+        // The lair's chest is reported again: the coin goes once, and the books hold it.
+        j.fail_transfers = false;
+        j.dragon_obs(&report(other));
+        j.idle();
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        assert_eq!(j.containers.get(&other).copied(), Some(coins as i32));
+        assert_eq!(j.containers.get(&first), None, "none into the first chest");
+        assert_eq!(e.dragons_tribute(), [1, coins, 0, 0], "every coin placed");
+        let (ledger, world) = e.with_dragons(|d, w| {
+            (
+                d.ledger.tribute.values().sum::<i128>(),
+                w.works_totals().1.iter().map(|(_, a)| *a).sum::<i128>(),
+            )
+        });
+        assert_eq!(
+            ledger,
+            i128::from(coins) * 1000,
+            "the books hold every coin"
+        );
+        assert_eq!(world, ledger, "the world's tribute is the dragons'");
         e.close(true, Duration::from_secs(5)).unwrap();
     }
 
@@ -13189,6 +13328,33 @@ mod conflict {
             .collect()
     }
 
+    /// How many transfers Java was given, a stack sent again under its op id included, which the
+    /// set of ops ([`tribute_ops`]) does not show.
+    fn tribute_sends(j: &Java) -> usize {
+        j.commands
+            .iter()
+            .filter(|(_, kind, _)| *kind == cmd::TRANSFER_TO_CONTAINER)
+            .count()
+    }
+
+    /// Minecraft answers the transfers it read while holding NOT_LOADED, as CommandDispatcher does
+    /// for a chest whose chunk `getChunkNow` does not hold: each answer is journaled (and so saved
+    /// with the world), nothing is put in any chest.
+    fn answer_held_not_loaded(j: &mut Java) {
+        for (seq, op, _, _) in std::mem::take(&mut j.held_transfers) {
+            j.journal(
+                obs::COMMAND_RESULT,
+                obs::command_result::SIZE,
+                obs::command_result::NOT_LOADED,
+                |r| {
+                    wire::put_u64(r, obs::command_result::CMD_SEQ, seq);
+                    wire::put_u64(r, obs::command_result::OP_ID, op);
+                },
+            );
+            j.last_applied_cmd = j.last_applied_cmd.max(seq);
+        }
+    }
+
     /// What the grove still owes its chest (items of its tribute good), the stacks in flight and
     /// the stacks it has sent so far.
     fn owed_tribute(e: &Engine) -> (i64, usize, u32) {
@@ -13342,14 +13508,16 @@ mod conflict {
         e.close(true, Duration::from_secs(5)).unwrap();
     }
 
-    /// The U-b merge (RP-210 meets MZB-423): a grove's chest whose chunk is not loaded is answered
-    /// NOT_LOADED since U-b, where main answered FAILED. The COMMAND_RESULT takes the stack out of
-    /// the core outbox either way, so the grove must take it back too: the stack stays owed and
-    /// earmarked (MZB-930), the chest is forgotten, and a chest reported again gets a new stack. Ignored,
-    /// the stack would stay in flight with nothing left to answer it, and the grove would send no
-    /// more.
+    /// MZB-760 (RP-210 meets MZB-423): a grove's chest whose chunk is not loaded is answered
+    /// NOT_LOADED. The COMMAND_RESULT takes the stack out of the core outbox, so the engine keeps
+    /// it: in flight under its op id, parked, its goods still earmarked (MZB-930; the chunk may
+    /// hold it already), and the chest forgotten. It is not written again every step. The
+    /// grove's next HAVEN_CHEST sends it again under the same op, to the same chest, and the
+    /// stacks go on one after another until the tribute is paid, once, with no new op for the
+    /// first stack. (U-b took NOT_LOADED as FAILED, the stack owed and a new op for it.)
     #[test]
-    fn a_groves_tribute_stack_answered_not_loaded_goes_back_to_its_stock() {
+    fn a_groves_tribute_stack_answered_not_loaded_is_parked_under_its_op_id_until_the_next_haven_chest()
+     {
         let (_dir, e, mut j) = grove("grove-tribute-unloaded", 3);
         camp_in(&mut j);
         let block = j.dict_id(wire::DICT_ITEM, "minecraft:gold_block");
@@ -13378,20 +13546,23 @@ mod conflict {
         assert_eq!(unloaded.len(), 1, "one stack at a time");
         assert_eq!(
             owed_tribute(&e),
-            (567, 0, 1),
-            "NOT_LOADED: still owed, nothing in flight"
+            (567, 1, 1),
+            "NOT_LOADED: still in flight under its op id, its goods still earmarked"
         );
         assert_earmarked(&e, 567);
         assert!(j.containers.is_empty());
+        let chest_known = e.with_conflict(|c, _| {
+            let f = c.faction_of_key(CAMP).unwrap();
+            c.camp(f).unwrap().chest.is_some()
+        });
+        assert!(!chest_known, "the chest is forgotten until reported again");
+        let commands = j.commands.len();
         j.idle();
         j.idle();
-        assert_eq!(
-            tribute_ops(&j),
-            unloaded,
-            "the forgotten chest is sent nothing"
-        );
+        assert_eq!(j.commands.len(), commands, "parked: not sent again every step");
 
-        // Reported again with the chunk loaded: the stacks go one after another until all is paid.
+        // Reported again with the chunk loaded: the parked stack goes again under its op id, then
+        // the stacks go one after another until all is paid.
         j.unloaded_transfers = false;
         chest_report(&mut j, chest);
         for _ in 0..40 {
@@ -13400,13 +13571,325 @@ mod conflict {
                 break;
             }
         }
-        assert_eq!(owed_tribute(&e).0, 0, "all paid: {:?}", owed_tribute(&e));
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        assert_eq!(owed_tribute(&e), (0, 0, 9), "all paid, 9 stacks and no 10th");
+        assert!(
+            tribute_ops(&j).is_superset(&unloaded),
+            "the first stack went again under its op id"
+        );
+        assert_eq!(tribute_ops(&j).len(), 9, "9 ops for 9 stacks");
         assert_eq!(
             j.containers.get(&chest).copied(),
             Some(567),
             "every nugget in the chest, once"
         );
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// MZB-760: a parked stack goes only to the chest it went to first, whichever chest the
+    /// grove's next report names: only that chest's chunk could carry the record that it is
+    /// already there. The chest reported since is kept, and takes the stacks after it.
+    #[test]
+    fn a_groves_parked_stack_goes_to_its_own_chest_and_the_chest_named_since_gets_the_rest() {
+        let (_dir, e, mut j) = grove("grove-tribute-parked-own-chest", 3);
+        camp_in(&mut j);
+        let block = j.dict_id(wire::DICT_ITEM, "minecraft:gold_block");
+        j.conflict_obs(&O::ChiefPaid(cb::ChiefPaid {
+            faction: CAMP,
+            slot: 0,
+            generation: 0,
+            flags: cb::PAID_STRAY,
+            player: PLAYER,
+            op: (1 << 63) | 0x6005,
+            items: vec![cb::Item {
+                item: block,
+                count: 7,
+            }],
+        }));
+        j.idle();
+        j.idle();
+        let first = [CAMP_AT.0 + 3, 64, CAMP_AT.1 + 2];
+        let other = [CAMP_AT.0 - 5, 64, CAMP_AT.1 + 7];
+        j.unloaded_transfers = true;
+        chest_report(&mut j, first);
+        j.idle();
+        j.idle();
+        let unloaded = tribute_ops(&j);
+        assert_eq!(unloaded.len(), 1);
+        assert_eq!(owed_tribute(&e), (567, 1, 1), "parked");
+
+        // The plugin names another chest of the grove (the first one's chunk loaded meanwhile).
+        j.unloaded_transfers = false;
+        chest_report(&mut j, other);
+        for _ in 0..40 {
+            j.idle();
+            if owed_tribute(&e).0 == 0 && owed_tribute(&e).1 == 0 {
+                break;
+            }
+        }
         assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        assert!(tribute_ops(&j).is_superset(&unloaded), "the same op id, no new one");
+        assert_eq!(
+            j.containers.get(&first).copied(),
+            Some(64),
+            "the parked stack went to the chest it went to first"
+        );
+        assert_eq!(
+            j.containers.get(&other).copied(),
+            Some(567 - 64),
+            "the stacks after it, to the chest named since"
+        );
+        assert_eq!(owed_tribute(&e), (0, 0, 9));
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// MZB-763 (review P2-2, MZB-761's replay): the pages hold a grove's stack in flight, and
+    /// Java's NOT_LOADED answer to it is in the journal after the pages' save. The restart's replay
+    /// hears the answer and parks the stack again, so the session start does not send it (the answer
+    /// took its op out of the core outbox, and a stack not parked is written again): it waits, under
+    /// its op id, for its chest to be named, and then goes once and lands once.
+    #[test]
+    fn a_groves_stack_answered_not_loaded_after_the_save_is_parked_again_by_the_replay() {
+        let (dir, e, mut j) = grove("grove-tribute-replayed-unloaded", 3);
+        camp_in(&mut j);
+        let block = j.dict_id(wire::DICT_ITEM, "minecraft:gold_block");
+        j.conflict_obs(&O::ChiefPaid(cb::ChiefPaid {
+            faction: CAMP,
+            slot: 0,
+            generation: 0,
+            flags: cb::PAID_STRAY,
+            player: PLAYER,
+            op: (1 << 63) | 0x6006,
+            items: vec![cb::Item {
+                item: block,
+                count: 7,
+            }],
+        }));
+        j.idle();
+        j.idle();
+        // The chest is reported and the first stack read by Minecraft, which has not answered when
+        // the engine's pages are saved: they hold the stack in flight.
+        let chest = [CAMP_AT.0 + 3, 64, CAMP_AT.1 + 2];
+        j.hold_commands = true;
+        chest_report(&mut j, chest);
+        j.idle();
+        j.idle();
+        let sent: BTreeSet<u64> = j.held_ops.iter().copied().collect();
+        assert_eq!(sent.len(), 1, "one stack at a time");
+        assert_eq!(owed_tribute(&e), (567, 1, 1));
+        save_durable(&e, &mut j);
+        // Then the chunk is found not loaded: the answer is journaled and the world saved with it,
+        // and the pages are not saved again before the crash.
+        j.hold_commands = false;
+        answer_held_not_loaded(&mut j);
+        let saved = j.world_save();
+        let gt = j.game_time;
+        let _ = j.crash();
+
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), saved);
+        j.module_mask = MODULES;
+        j.game_time = gt;
+        assert_eq!(e.conflict_restore_check(), (None, false));
+        assert_eq!(owed_tribute(&e), (567, 1, 1), "the pages hold it in flight");
+        for _ in 0..6 {
+            j.idle();
+        }
+        assert_eq!(
+            tribute_sends(&j),
+            0,
+            "the replay parked it again, and the session start sends nothing"
+        );
+        assert_eq!(owed_tribute(&e), (567, 1, 1), "still in flight, not back");
+        assert!(j.containers.is_empty());
+
+        // Its chest is named: the stack goes under its op id, and every nugget lands once.
+        camp_in(&mut j);
+        chest_report(&mut j, chest);
+        for _ in 0..40 {
+            j.idle();
+            if owed_tribute(&e).0 == 0 && owed_tribute(&e).1 == 0 {
+                break;
+            }
+        }
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        assert!(tribute_ops(&j).is_superset(&sent), "its own op id");
+        assert_eq!(tribute_ops(&j).len(), 9, "9 ops for 9 stacks");
+        assert_eq!(j.containers.get(&chest).copied(), Some(567), "once");
+        assert_eq!(owed_tribute(&e), (0, 0, 9));
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// MZB-763 (review P2-2): `begin_replay` clears `parked`, because parking is a session's: its
+    /// answer, NOT_LOADED, was the chunk's state then. A stack parked live and a session begun in
+    /// the same process (the conflict switched off and on: the reset runs `begin_replay`) goes
+    /// again at once, to its own chest, with no chest named. A restart's new engine starts with
+    /// nothing parked, so the clear is what makes a reset like it. Without the clear the stack
+    /// waits parked until the plugin names a chest: it does at its first scan with the camp in
+    /// (`GroveChests.endOfTick` clears what it sent while the conflict is off), so later, and
+    /// never if no chest has room.
+    #[test]
+    fn a_groves_parked_stack_is_sent_again_when_the_conflict_is_switched_off_and_on() {
+        let (_dir, e, mut j) = grove("grove-tribute-parked-switch", 3);
+        camp_in(&mut j);
+        let block = j.dict_id(wire::DICT_ITEM, "minecraft:gold_block");
+        j.conflict_obs(&O::ChiefPaid(cb::ChiefPaid {
+            faction: CAMP,
+            slot: 0,
+            generation: 0,
+            flags: cb::PAID_STRAY,
+            player: PLAYER,
+            op: (1 << 63) | 0x6007,
+            items: vec![cb::Item {
+                item: block,
+                count: 7,
+            }],
+        }));
+        j.idle();
+        j.idle();
+        let chest = [CAMP_AT.0 + 3, 64, CAMP_AT.1 + 2];
+        j.unloaded_transfers = true;
+        chest_report(&mut j, chest);
+        j.idle();
+        j.idle();
+        let unloaded = tribute_ops(&j);
+        assert_eq!(unloaded.len(), 1);
+        assert_eq!(owed_tribute(&e), (567, 1, 1), "parked");
+        let sends = tribute_sends(&j);
+        j.idle();
+        j.idle();
+        assert_eq!(tribute_sends(&j), sends, "parked: not sent again");
+
+        // Switched off and on, a new session begins. The chunk loaded meanwhile.
+        j.unloaded_transfers = false;
+        j.modules(MODULES & !MODULE_CONFLICT);
+        j.idle();
+        j.idle();
+        assert_eq!(tribute_sends(&j), sends, "nothing goes out while off");
+        j.modules(MODULES);
+        for _ in 0..6 {
+            j.idle();
+        }
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        assert_eq!(
+            tribute_sends(&j),
+            sends + 1,
+            "the new session sends the stack again"
+        );
+        assert_eq!(tribute_ops(&j), unloaded, "under its own op id");
+        assert_eq!(j.containers.get(&chest).copied(), Some(64), "and it lands");
+        assert_eq!(owed_tribute(&e), (503, 0, 1), "booked placed, once");
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// MZB-760 (RP-210's Left, the grove's half): a crash in direction B, the engine's pages newer
+    /// than Java's journal, with the grove chest's chunk saved ahead of the journal. The stack
+    /// was sent and put in the chest after the save; the chunk holds the nuggets and carries the
+    /// stack's COMMAND_RESULT(APPLIED); the journal lost both. At the restart the outbox sends the
+    /// stack again while the chunk is not loaded, and Java answers NOT_LOADED. The chunk loads
+    /// later and REASSERTs the APPLIED record. The stack was put once: the chest holds the
+    /// tribute once, the stack is booked placed under its op id (the engine never sends the same
+    /// items again under a new one), and the books owe nothing.
+    #[test]
+    fn a_groves_tribute_stack_in_a_chunk_saved_ahead_of_the_journal_is_placed_once() {
+        let (dir, e, mut j) = grove("grove-tribute-chunk-ahead", 3);
+        camp_in(&mut j);
+        let block = j.dict_id(wire::DICT_ITEM, "minecraft:gold_block");
+        j.conflict_obs(&O::ChiefPaid(cb::ChiefPaid {
+            faction: CAMP,
+            slot: 0,
+            generation: 0,
+            flags: cb::PAID_STRAY,
+            player: PLAYER,
+            op: (1 << 63) | 0x6004,
+            items: vec![cb::Item {
+                item: block,
+                count: 7,
+            }],
+        }));
+        j.idle();
+        j.idle();
+        assert_eq!(owed_tribute(&e), (567, 0, 0), "owed, no chest yet");
+
+        // The chest is reported and the first stack written; Minecraft has not applied it yet when
+        // the engine's pages are saved, and the journal is saved at the same point.
+        let chest = [CAMP_AT.0 + 3, 64, CAMP_AT.1 + 2];
+        j.hold_commands = true;
+        chest_report(&mut j, chest);
+        j.idle();
+        j.idle();
+        let sent: BTreeSet<u64> = j.held_ops.iter().copied().collect();
+        assert_eq!(sent.len(), 1, "one stack at a time");
+        assert_eq!(owed_tribute(&e), (567, 1, 1));
+        save(&e, &mut j);
+        let saved = j.world_save();
+        let gen1 = j.nonce;
+        let gt = j.game_time;
+        // Then Minecraft applies it: 64 nuggets go into the chest, and the chest's chunk carries
+        // the stack's APPLIED record. That chunk is written on unload; the journal is not saved
+        // again before the crash.
+        j.hold_commands = false;
+        let carried = j.apply_held_transfers();
+        assert_eq!(j.containers.get(&chest).copied(), Some(64));
+        let _ = j.crash();
+
+        // The restart: the journal from the save, the chunk from after it.
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), saved);
+        j.module_mask = MODULES;
+        j.game_time = gt;
+        j.containers.insert(chest, 64);
+        assert_eq!(e.conflict_restore_check(), (None, false));
+        assert_eq!(owed_tribute(&e), (567, 1, 1), "the pages hold it in flight");
+        // The outbox sends it again at once, while the chest's chunk is not loaded.
+        j.unloaded_transfers = true;
+        for _ in 0..4 {
+            j.idle();
+        }
+        assert_eq!(tribute_ops(&j), sent, "the stack sent again under its op id");
+        assert_eq!(
+            j.containers.get(&chest).copied(),
+            Some(64),
+            "nothing put while the chunk is not loaded"
+        );
+        assert_eq!(
+            owed_tribute(&e),
+            (567, 1, 1),
+            "NOT_LOADED: still in flight under its op id, its goods still earmarked"
+        );
+
+        // The chunk loads: its carried record comes back as a copy of the first session's. The
+        // camp comes in and the plugin's next chest scan reports the chest in it.
+        j.unloaded_transfers = false;
+        for r in &carried {
+            j.reassert(gen1, r);
+        }
+        j.idle();
+        j.idle();
+        assert_eq!(
+            owed_tribute(&e),
+            (503, 0, 1),
+            "the carried APPLIED books the stack placed, once"
+        );
+        camp_in(&mut j);
+        chest_report(&mut j, chest);
+        for _ in 0..40 {
+            j.idle();
+            if owed_tribute(&e).0 == 0 && owed_tribute(&e).1 == 0 {
+                break;
+            }
+        }
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        assert_eq!(
+            j.containers.get(&chest).copied(),
+            Some(567),
+            "the tribute is in the chest once"
+        );
+        assert_eq!(
+            owed_tribute(&e),
+            (0, 0, 9),
+            "every stack of the 567 nuggets sent once: 8 full stacks and one of 55"
+        );
         e.close(true, Duration::from_secs(5)).unwrap();
     }
 
@@ -13855,6 +14338,11 @@ mod conflict {
             (e, j)
         };
 
+        // The transfers Java has been given by now: the first stack, unless a crash made a new
+        // Java. Counted, not read off the set of ops, which does not show a stack sent again
+        // under its own op id (MZB-766).
+        let sends = tribute_sends(&j);
+        assert_eq!(sends, if crash { 0 } else { 1 });
         j.modules(MODULES);
         j.idle();
         j.idle();
@@ -13862,15 +14350,28 @@ mod conflict {
         // census brings it in again, and only a camp that is in sends its stacks.
         camp_in(&mut j);
         if answer == Answer::NotLoaded {
+            // Parked (RP-210, MZB-760), as a live NOT_LOADED is: still in flight under its op
+            // id, its goods still earmarked, and nothing sent while no chest is named, not
+            // even the same stack again under its op.
+            assert_eq!(
+                tribute_sends(&j),
+                sends,
+                "a parked stack is not sent before its chest is named again, under any op"
+            );
             assert_eq!(
                 owed_tribute(&e),
-                (567, 0, 1),
-                "NOT_LOADED, heard while off: still owed and earmarked, nothing in flight"
+                (567, 1, 1),
+                "NOT_LOADED, heard while off: parked, in flight under its op id"
+            );
+            assert_eq!(
+                tribute_ops(&j),
+                if crash { BTreeSet::new() } else { first.clone() },
+                "a parked stack is not sent before its chest is named again"
             );
             assert_earmarked(&e, 567);
         }
         // The plugin names the chest again (a chest the answer forgot, and the next stack waits
-        // for a camp that is in).
+        // for a camp that is in; a parked stack goes to it under its own op).
         chest_report(&mut j, chest);
         for _ in 0..200 {
             j.idle();
@@ -13899,7 +14400,7 @@ mod conflict {
         assert_earmarked(&e, 0);
         assert_eq!(
             tribute_ops(&j).len() as u32,
-            if crash { stacks - 1 } else { stacks },
+            if crash && placed { stacks - 1 } else { stacks },
             "each stack written once"
         );
         assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
@@ -13959,13 +14460,28 @@ mod conflict {
         );
     }
 
-    /// A NOT_LOADED answer heard while off leaves the stack owed, and earmarked (MZB-930), at the
-    /// switch-on.
+    /// A NOT_LOADED answer heard while off is parked at the switch-on as a live one is (RP-210,
+    /// MZB-760): in flight under its op id, not failed (U-c took it as FAILED, the stack owed and
+    /// earmarked, MZB-930), not sent before its chest is named again, and then put in the chest
+    /// once.
     #[test]
-    fn a_groves_tribute_stack_answered_not_loaded_with_the_conflict_off_goes_back_to_its_stock() {
+    fn a_groves_tribute_stack_answered_not_loaded_with_the_conflict_off_is_parked_at_the_switch_on()
+     {
         a_grove_stack_answered_with_the_conflict_off(
             "grove-off-unloaded",
             Restart::No,
+            Answer::NotLoaded,
+        );
+    }
+
+    /// The same with a save while off, a crash and a restart with the conflict still off: the kept
+    /// NOT_LOADED answer is on the kept page, and at the switch-on it parks the stack. Parking is
+    /// unsaved: the new session sends the stack under its op when its chest is named.
+    #[test]
+    fn a_groves_tribute_stack_answered_not_loaded_with_the_conflict_off_survives_a_crash_parked() {
+        a_grove_stack_answered_with_the_conflict_off(
+            "grove-off-unloaded-crash",
+            Restart::Off,
             Answer::NotLoaded,
         );
     }

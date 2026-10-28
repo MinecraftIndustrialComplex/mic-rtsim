@@ -937,6 +937,13 @@ pub struct Conflict {
     /// one for each camp. Saved in the meta page, so the link never walks the factions' rows for
     /// them.
     pub placing: Vec<(u32, Placing)>,
+    /// The stacks in `placing` whose chest's chunk was not loaded when Java read them (NOT_LOADED,
+    /// MZB-760, as the dragons' `parked`, RP-210): kept in flight under their op ids and not sent
+    /// again until their grove's chest is reported (HAVEN_CHEST). The chunk may already hold the
+    /// stack, written ahead of the journal and carrying its APPLIED record. In memory only,
+    /// emptied at a session start: a new session sends them again, but for a stack whose NOT_LOADED
+    /// answer is in the replayed part of the journal, which parks it again (MZB-761).
+    pub(crate) parked: BTreeSet<u64>,
     /// The factions whose camps owe tribute in the session's replay (RP-134): those that owed at
     /// its start and those a replayed payment made owe, which a replayed answer to a stack no
     /// placing holds is looked up in. In memory only, emptied at the replay end.
@@ -1093,6 +1100,7 @@ impl Conflict {
             peaceful_since: Tick::ZERO,
             notice_serial: 0,
             placing: Vec::new(),
+            parked: BTreeSet::new(),
             tribute_owing: Vec::new(),
             replay_from_pages: false,
             floors: BTreeMap::new(),
@@ -5744,6 +5752,9 @@ impl Conflict {
         // notices go again from what is kept, after the replay (`resend_notices`). Every push is
         // gated from here to `replay_done`.
         self.outbox.begin_replay();
+        // A new session sends the stacks parked in the last one again (MZB-760), unless a replayed
+        // NOT_LOADED parks one again (MZB-761).
+        self.parked.clear();
         // Every faction's territory, once a session: page by page, keeping to the budget (PM-C8).
         let per = crate::tables::FACTIONS_PER_PAGE as u32;
         for f in 0..self.factions.len() as u32 {

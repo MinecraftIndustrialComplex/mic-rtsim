@@ -1356,18 +1356,19 @@ pub(super) fn write_queue(st: &mut State, w: &mut RecordWriter<'_>) -> (u64, boo
 }
 
 /// Writes the tribute stacks the groves send to their chests (MZB-423) that are not in the core
-/// outbox yet, as the dragons' lairs' are. Each joins it under its own op id, derived from the
-/// grove and a saved counter, so a restart sends it again and Java answers a stack it already put
-/// DUPLICATE_OP. Returns the highest sequence written and whether some wait for the next buffer.
+/// outbox yet and not parked (their chunk was not loaded, MZB-760), as the dragons' lairs' are.
+/// Each joins it under its own op id, derived from the grove and a saved counter, so a restart
+/// sends it again and Java answers a stack it already put DUPLICATE_OP. Returns the highest
+/// sequence written and whether some wait for the next buffer.
 fn write_tribute(st: &mut State, w: &mut RecordWriter<'_>) -> (u64, bool) {
-    if st.conflict.engine.placings().next().is_none() {
+    if st.conflict.engine.placings_to_send().next().is_none() {
         return (0, false);
     }
     let sent: BTreeSet<u64> = st.outbox.after(0).map(|(_, op, _)| op.0).collect();
     let todo: Vec<(u64, rtsim_conflict::engine::Placing)> = st
         .conflict
         .engine
-        .placings()
+        .placings_to_send()
         .filter(|(op, _)| !sent.contains(op))
         .collect();
     let mut highest = 0;
@@ -1379,8 +1380,9 @@ fn write_tribute(st: &mut State, w: &mut RecordWriter<'_>) -> (u64, bool) {
             .cloned();
         let item = phase1::catalog_item(st, GoodId(u16::try_from(p.good).unwrap_or(u16::MAX)));
         let (Some(dimension), Some(item)) = (dimension, item) else {
-            // Never written: taken as failed, the goods stay owed and earmarked (MZB-930), and
-            // the chest waits to be reported again.
+            // Never written: taken as failed, the goods stay owed and earmarked (MZB-930). The
+            // chest is forgotten if it is this stack's own, and waits to be reported again; one
+            // the camp holds since, elsewhere, takes the next stack at once (MZB-762).
             log_error(&format!(
                 "a tribute stack (op {op:#x}) to a chest in dimension {} Java never named, or of a good no item stands for; still owed by its grove",
                 p.dimension
@@ -1433,9 +1435,10 @@ fn fail_tribute(st: &mut State, op: u64) {
 /// of tribute sent to a grove's chest (MZB-423). Applied or a duplicate, the stack is in the
 /// chest and the next goes; failed, the goods stay owed and earmarked (MZB-930) and the chest is
 /// forgotten until the plugin reports one again. NOT_LOADED (the chest's chunk was not loaded,
-/// RP-210) is taken as FAILED, as Java answered it before RP-210: the answer takes the op out of
-/// the core outbox, so a stack left in flight would have nothing to answer it. Unlike the
-/// dragons, the grove does not park it under its op id (RP-210's Left).
+/// RP-210) parks the stack under its op id, as the dragons' (MZB-760): the chunk may already hold
+/// it, written ahead of the journal, so the goods stay earmarked (MZB-930) and the stack goes
+/// again, to the same chest, when the plugin next reports the grove's chest. The answer takes the op out
+/// of the core outbox, so the park is the engine's: `write_tribute` leaves a parked stack out.
 pub(super) fn after_core(st: &mut State, rec: &Rec<'_>) {
     if rec.kind != obs::COMMAND_RESULT || rec.size() < obs::command_result::SIZE {
         return;
@@ -1484,14 +1487,23 @@ fn answer_tribute(st: &mut State, rec: &Rec<'_>) {
     let op = wire::u64_at(rec.bytes, obs::command_result::OP_ID);
     let at = tribute_tick(st, wire::i64_at(rec.bytes, obs::GAME_TIME));
     let (c, w) = (&mut st.conflict.engine, &mut st.phase1.world);
-    let known = match rec.aux {
-        obs::command_result::APPLIED | obs::command_result::DUPLICATE_OP => {
+    let known = match wire::CommandStatus::from_wire(rec.aux) {
+        wire::CommandStatus::Applied | wire::CommandStatus::DuplicateOp => {
             c.tribute_placed(w, op, at)
         }
-        obs::command_result::FAILED | obs::command_result::NOT_LOADED => {
-            c.tribute_failed(w, op, at)
+        wire::CommandStatus::Failed => c.tribute_failed(w, op, at),
+        wire::CommandStatus::NotLoaded => {
+            // Nothing the pages hold changes: the stack stays in flight, and its chest is not
+            // saved.
+            c.tribute_not_loaded(op);
+            false
         }
-        _ => false,
+        // Answers to other commands (a house with no free plot, a gossip refused), and a status
+        // this link does not know: no tribute stack's. No `_` arm (MZB-765): a status added to
+        // `CommandStatus` stops the build here, to be named above if it answers a stack.
+        wire::CommandStatus::NotFree
+        | wire::CommandStatus::VanillaKnows
+        | wire::CommandStatus::Unknown(_) => false,
     };
     if known {
         st.phase1.taint();

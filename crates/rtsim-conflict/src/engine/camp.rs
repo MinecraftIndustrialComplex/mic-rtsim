@@ -1846,6 +1846,20 @@ impl Conflict {
             pos: h.pos,
             free: h.free,
         });
+        // The grove's parked stack goes again (MZB-760): to the chest it went to first, which its
+        // placing keeps, and not to the one named now. Only that chest's chunk carries the record
+        // that says it is already there. Not on its own chest reported full (MZB-764): the plugin
+        // looks at its chest again after every answer, and a chunk that is gone reports it full,
+        // so the stack would go at each report, answered NOT_LOADED each time. It goes when the
+        // chest is reported with room, or at CAMP_OUT.
+        let own_full = h.free == 0
+            && self
+                .placing
+                .iter()
+                .any(|(g, p)| *g == f && p.dimension == h.dimension && p.pos == h.pos);
+        if !own_full {
+            self.unpark(f);
+        }
         self.place_tribute(f);
     }
 
@@ -1895,15 +1909,30 @@ impl Conflict {
         ));
     }
 
-    /// The tribute stacks sent to chests and not yet answered, by op id (MZB-423).
+    /// The tribute stacks sent to chests and not yet answered, by op id (MZB-423): those parked
+    /// too ([`Conflict::tribute_not_loaded`]).
     pub fn placings(&self) -> impl Iterator<Item = (u64, Placing)> + '_ {
         self.placing.iter().map(|(_, p)| (p.op, *p))
     }
 
-    /// Takes the stack `op` out of those in flight: its faction and what it was.
+    /// The stacks the link writes: those in flight but the parked ones, which wait for their
+    /// grove's chest to be reported (MZB-760).
+    pub fn placings_to_send(&self) -> impl Iterator<Item = (u64, Placing)> + '_ {
+        self.placings().filter(|(op, _)| !self.parked.contains(op))
+    }
+
+    /// Takes the stack `op` out of those in flight, parked or not: its faction and what it was.
     fn unplace(&mut self, op: u64) -> Option<(u32, Placing)> {
         let i = self.placing.iter().position(|(_, p)| p.op == op)?;
+        self.parked.remove(&op);
         Some(self.placing.remove(i))
+    }
+
+    /// Lets the stack grove `f` has in flight go again, if it was parked (MZB-760).
+    fn unpark(&mut self, f: u32) {
+        if let Some((_, p)) = self.placing.iter().find(|(g, _)| *g == f) {
+            self.parked.remove(&p.op);
+        }
     }
 
     /// The plugin put a stack in its chest (APPLIED or DUPLICATE_OP): the goods leave the earmark
@@ -1938,16 +1967,54 @@ impl Conflict {
 
     /// The plugin could not put a stack in its chest (FAILED): the goods never left the earmark
     /// (MZB-930), so nothing moves; the tribute is still owed, and the chest is forgotten until the
-    /// plugin names one again. While replaying, an answer to a stack no placing holds is booked by
-    /// its op ([`Conflict::replayed_failed`], RP-134). `w` and `at` are kept for the link's one
-    /// call shape with [`Conflict::tribute_placed`].
+    /// plugin names one again, if it is still the stack's own (the same dimension and place, as
+    /// [`Conflict::tribute_not_loaded`], MZB-762): a chest named since, elsewhere, is kept, as the
+    /// plugin names it again only on a change, and the next stack goes to it now. While
+    /// replaying, an answer to a stack no placing holds is booked by its op
+    /// ([`Conflict::replayed_failed`], RP-134). `w` and `at` are kept for the link's one call
+    /// shape with [`Conflict::tribute_placed`].
     pub fn tribute_failed(&mut self, _w: &mut World, op: u64, _at: Tick) -> bool {
-        let Some((f, _)) = self.unplace(op) else {
+        let Some((f, p)) = self.unplace(op) else {
             return self.replayed_failed(op);
         };
-        if let Some(camp) = self.camp_mut(f) {
+        if let Some(camp) = self.camp_mut(f)
+            && camp
+                .chest
+                .is_some_and(|c| c.dimension == p.dimension && c.pos == p.pos)
+        {
             camp.chest = None;
         }
+        // A chest kept takes the next stack at once: nothing else sends it before the next payment.
+        self.place_tribute(f);
+        true
+    }
+
+    /// The plugin found the chest's chunk of a stack not loaded (NOT_LOADED, MZB-760, as the
+    /// dragons' `tribute_unloaded`, RP-210). It did not look for the stack in the chest, and the
+    /// chunk, written ahead of the journal, may already hold it and carry its APPLIED record, which
+    /// it copies when it loads. So the stack stays in flight under its op id, parked: it is not
+    /// written again every step, and goes again when the grove's chest is reported, to the chest it
+    /// went to first, where a copy of its APPLIED record is to be found (a DUPLICATE_OP answer) or
+    /// the stack is put. The goods stay in the earmark (MZB-930) all the while, as for a FAILED.
+    /// The grove's chest is forgotten only if it is still the stack's own (the
+    /// same dimension and place): a chest reported since, elsewhere, is kept for the next stack,
+    /// which a parked stack holds back ([`Conflict::place_tribute`]). False for an op that is no
+    /// stack in flight, as a replayed answer to a stack the session decided after the pages' save
+    /// (RP-134): it books nothing, not even the camp's count, so the census after the replay
+    /// decides the stack again as the same op, which Java answers DUPLICATE_OP if the chunk holds
+    /// it.
+    pub fn tribute_not_loaded(&mut self, op: u64) -> bool {
+        let Some(&(f, p)) = self.placing.iter().find(|(_, p)| p.op == op) else {
+            return false;
+        };
+        if let Some(camp) = self.camp_mut(f)
+            && camp
+                .chest
+                .is_some_and(|c| c.dimension == p.dimension && c.pos == p.pos)
+        {
+            camp.chest = None;
+        }
+        self.parked.insert(op);
         true
     }
 
@@ -2019,8 +2086,11 @@ impl Conflict {
     }
 
     /// A replayed FAILED for a stack no placing holds (RP-134): the camp's count passes the stack
-    /// and the chest is forgotten, as the session that went on did. The goods stay in the earmark
-    /// (MZB-930), and the tribute is still owed.
+    /// and the chest is forgotten, whatever chest it is. The live session forgets it only if it is
+    /// the stack's own (MZB-762), so a chest named since can differ here; harmless (MZB-768): the
+    /// replay decides nothing, and the plugin names its chest again after a restart or a
+    /// switch-on (`GroveChests` starts with nothing sent), before any stack goes. The goods stay in
+    /// the earmark (MZB-930), which the replay never took them from, and the tribute is still owed.
     fn replayed_failed(&mut self, op: u64) -> bool {
         let Some((f, n, _, _)) = self.replayed_stack(op) else {
             return false;
@@ -2053,6 +2123,9 @@ impl Conflict {
         camp.refill_at = None;
         camp.chest = None;
         camp.void();
+        // The chest is forgotten here, so a parked stack goes again (MZB-760): its chunk may be
+        // loaded still, and if not it is parked once more by its answer.
+        self.unpark(f);
         self.unblock(f, at);
     }
 
