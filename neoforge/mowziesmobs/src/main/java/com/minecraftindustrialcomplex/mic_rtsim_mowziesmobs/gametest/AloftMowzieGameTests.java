@@ -1810,7 +1810,9 @@ public final class AloftMowzieGameTests {
                                     + "; the puppet's ability " + puppet[0].getActiveAbilityType() + ", alive " + puppet[0].isAlive() + ", removed " + puppet[0].isRemoved()
                                     + ", gravity " + !puppet[0].isNoGravity() + ", slot " + chiefSlot(agent).alive() + ")",
                             joins.stream().filter(j -> j.tag() != null).count() >= 3);
-                    check("and the throne body's (" + joins.stream().filter(j -> j.tag() == null).count() + ")",
+                    check("and the throne body's (" + joins.stream().filter(j -> j.tag() == null).count() + " untagged joins; the throne body alive " + throne[0].isAlive()
+                                    + ", removed " + throne[0].isRemoved() + ", puppet " + RtsimApi.isPuppet(throne[0]) + ", ability " + throne[0].getActiveAbilityType()
+                                    + ", no AI " + throne[0].isNoAi() + ", at " + throne[0].position() + ")",
                             joins.stream().filter(j -> j.tag() == null).count() >= 3);
                     check("both abilities are over", puppet[0].getActiveAbility() == null && throne[0].getActiveAbility() == null);
                 }))

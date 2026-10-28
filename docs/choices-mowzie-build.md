@@ -11773,6 +11773,11 @@ rounds of phase 2 are the check, and what they found is recorded after them.
   west for the 198 ticks. The x is clamped at the west end, so the leg is due north and the way is 55 degrees off its facing after
   about 85 ticks. The check's message also names what it saw (`dueAfter`, the puppet's position, yaw, facing, lag and re-pairs). Not
   run yet.
+- **MZB-917** (round 2, test 24 `theChiefsSummonsArePuppets`; MZB-816): "and the throne body's (0)": the puppet's warriors came (three or
+  more tagged joins) and the throne body's, sent the same SPAWN message in the same step, made none, in 8,000 ticks. The cause is not
+  known (the ability needs no target in the jar's `SpawnFollowersAbility`, and no join handler in the module or the core cancels a
+  stray Umvuthana before the test's listener, at its highest priority, sees it). The check's message now names the throne body (alive,
+  removed, puppet, its ability, no AI, position) so the next round says whether the cast ran, and nothing else is changed.
 
 ## M12 S9
 
