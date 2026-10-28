@@ -11742,7 +11742,7 @@ rounds of phase 2 are the check, and what they found is recorded after them.
   one block over the stone floor, so the explosion's centre was inside the floor: vanilla's exposure rays start in a block and are
   blocked, the push is nil, and the knockback event still fires. The puppet's "did not move" check passed for the same reason (and the
   count of one, since the event fires), so it tested nothing either. The blasts now stand two blocks beside each body at the height of
-  its middle, in the lane's air, so the control is pushed and the puppet's equality is a test of the hook. Not run yet.
+  its middle, in the lane's air, so the control is pushed and the puppet's equality is a test of the hook. Passed in the round at 8391671a.
 - **MZB-911** (round 2, test 23d `aStuckUmvuthiRisesThenIsMoved`; MZB-811): its check "each is under the ceiling (-43.0, -43.0 under
   -57.2)" failed. The room under the ceiling was `top + 6 - height` = -57.2 (a box 3.2 tall) and a floating puppet's foot is 3 over the
   floor, at -57.0, so the ceiling's bottom face was inside the puppet's box from the start: vanilla's `move` ignores a block the box
@@ -11752,20 +11752,20 @@ rounds of phase 2 are the check, and what they found is recorded after them.
   player target (-20)". The flag was dropped and the player put back in view in one tick, but the jar picks its target only every few
   ticks, and the rule had seen no player target for 400 ticks, so it rose at once and the target came 20 ticks after it. The player is
   now put back and waits to be the target while the flag is still set, and the flag drops after, so the rise waits on the target as the
-  test's comment says. Not run yet.
+  test's comment says. Passed in the round at 8391671a.
 - **MZB-913** (round 2, test 36 of MZB-890 `aSecondPuppetsAnimationEndJournalsNothing`; MZB-890): "the puppet was gone (tick 823990) no later
   than the BAND_DEMATERIALIZED (tick -1)". The wait saw S's BAND_DEMATERIALIZED and the next step read the tick the per-tick hook had
   recorded for it, but the hook's listener may run after the sequence's in the tick the record is seen, so it was still -1. Two ticks are
-  waited before the read. The puppet was gone earlier, so "no later than" holds with the hook's tick. Not run yet.
+  waited before the read. The puppet was gone earlier, so "no later than" holds with the hook's tick. Passed in the round at 8391671a.
 - **MZB-914** (round 2, test 29b `aHeldTakeIsAnsweredStaleAsThePuppetComesHome`; MZB-823): "H's throne body has its own health still
   (141.40073)". The throne body was set to 40, and the jar heals an Umvuthi out of battle 0.3 a tick (MZB-904): the puppet's walk home is
   about 340 ticks, so the throne body came to 141 of 150, which `healthIs` (9 of slack) refused, and which could not be told from the
   puppet's 150 that the merge writes. The throne bodies are now set to `THRONE_OWN` (10), the check is that H's is between that and 20
-  under the maximum (its own, healed on the way, not the merge's), and the merged check is unchanged. Not run yet.
+  under the maximum (its own, healed on the way, not the merge's), and the merged check is unchanged. The round at 8391671a passed it, and 29b went on to fail at the next check (MZB-918).
 - **MZB-915** (round 2, test 29c-seam `anEdgeStopRecallReachesThePuppetAtItsTimeout`; MZB-827): "the recalls came and the control's puppet
   went (838883, 0, 838883)": band B's recall tick was read from `party.recalling()`, but every body of B goes in the recall's own tick,
   so its party is gone before the hook looks and the tick stayed 0. A missing party after the recall is now the recall's tick, the same
-  tick the puppet went. Band A's, whose puppet stands for the timeout, is read as before. Not run yet.
+  tick the puppet went. Band A's, whose puppet stands for the timeout, is read as before. Passed in the round at 8391671a.
 - **MZB-916** (round 2, test 31s `anAloftUmvuthiReadsAndTurns`; MZB-813, MZB-814): "the third turn is due ... since 114360 ticks ago",
   which is `dueAfter[2]` still 0: the way never came 55 degrees off the facing in 198 ticks. The third leg's target x was estimated as
   `x0 + 56 - 0.3 * (ticks since the second steer)`, which passes the west end (`x0 + 4`) where the anchor stops, so the target ran west
