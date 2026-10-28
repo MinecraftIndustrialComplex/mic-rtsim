@@ -1269,8 +1269,10 @@ public final class AloftMowzieGameTests {
                                 buried[0]++;
                         }
                     });
+                    // the control walks at PACE, under the puppet's cap (MZB-953): at 0.5 the anchor outran it as it outruns the stuck puppets, which
+                    // the stuck rule cannot tell from a puppet held by a ceiling (no headway toward its place), and it was raised to 16 and then moved
                     for (int i = 0; i < 3; i++)
-                        ConflictKit.steer(agent[i], ConflictKit.party(agent[i]).epoch, 0.5f, lane[i].x0 + end, lane[i].z, 0, false);
+                        ConflictKit.steer(agent[i], ConflictKit.party(agent[i]).epoch, i == 2 ? PACE : 0.5f, lane[i].x0 + end, lane[i].z, 0, false);
                 })
                 .thenIdle(160)
                 .thenExecute(() -> {
