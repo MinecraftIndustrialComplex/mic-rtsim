@@ -11750,7 +11750,8 @@ rounds of phase 2 are the check, and what they found is recorded after them.
   the floor, + 2 + 8). The ceiling is now 8 over the floor, 1.8 blocks of room, with the rest of the test unchanged. In the round at 8391671a the two checks under the ceiling passed and the test failed at "B's raise read 8,
   16 and 24 (337417, 0, 0)": B's raise read 8 once and then 0 again (which the test reads as B moved) without 16 or 24 coming and with no hold. The
   stuck machine resets for headway (0.5 blocks nearer its place in 100 ticks) or for coming within 8 blocks of it. Cause not known: the check now
-  names the most raise read, the tick B moved, the stuck-move count, B's position, its place and the ceiling's room.
+  names the most raise read, the tick B moved, the stuck-move count, B's position, its place and the ceiling's room. In the round at 9cc86af5 B stood at y -58.9 (set down on the floor), its raise had read 8 once and
+  it was "moved" 613 ticks on: MZB-919 found the cause.
 - **MZB-912** (round 2, test 23b `anAloftUmvuthiSettlesAndRises`; MZB-809, MZB-812): "it rose no sooner than 200 ticks after its last
   player target (-20)". The flag was dropped and the player put back in view in one tick, but the jar picks its target only every few
   ticks, and the rule had seen no player target for 400 ticks, so it rose at once and the target came 20 ticks after it. The player is
@@ -11785,12 +11786,12 @@ rounds of phase 2 are the check, and what they found is recorded after them.
   removed, puppet, its ability, no AI, position) so the next round says whether the cast ran. The round at 8391671a showed the cast is not reliable: this time the puppet's own cast made no join either
   (0 tagged of 0), where the earlier round had it make three. The wait now sends the message again every 40 ticks to a body that has made fewer
   than three (for the warriors and for the cranes), and the message names the jar's gate (`canUse`, `isUsing`, the cooldown left). Adoption is
-  asserted over what joined, so the resends change no check.
+  asserted over what joined, so the resends change no check. Passed in the round at 9cc86af5 (whether a resend was needed is not read).
 - **MZB-918** (round at 8391671a, test 29b `aHeldTakeIsAnsweredStaleAsThePuppetComesHome`; MZB-823): after MZB-914's check it failed at "the held line is
   gone (1)". `Camps.handBack` holds the HAND_BACK of every chief puppet that floats aloft until it is home (MZB-822), and grove C's HAND_BACK
   was sent in the step before H's walk home, with C's puppet 45 blocks off at 0.1 a tick, which is longer than H's walk to within
   TAKE_STALE of its throne: so one line is held when H's take is answered, C's own. The check counts it (one while C's hand-back is
-  unanswered, none after) and names both. Not run yet.
+  unanswered, none after) and names both. Passed in the round at 9cc86af5.
 
 ## M12 S9
 
