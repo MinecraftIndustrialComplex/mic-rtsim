@@ -5580,14 +5580,14 @@ RP-150 to RP-153 the replay records.
     int range; and a walk ends, blocked, after as many crossings as its vector has cell boundaries (their sum, 8 more), a bound the
     maths does not need and a bad input might. A NaN or a number past 1.0E9 is blocked with nothing read (the mob then walks its
     path node by node, as it does when a shortcut is refused). **Why not only bound the loops:** that stops the runaway and leaves
-    the answer wrong: at 4.5 million blocks the float's trailing edge is off by up to a block, a slab where a 3.5 wide box spans
-    four cells is read as none, and a shortcut through a wall can be approved. **Why `@Inject` and not `@Overwrite`:** the same
+    the answer wrong: at 4.5 million blocks the float's trailing edge is off by up to a block, so a slab of the walk can come out
+    empty or in the wrong cells, and a shortcut through a wall can be approved. **Why `@Inject` and not `@Overwrite`:** the same
     effect, and another mod's mixin on the method does not conflict with it; the jar's body stays in the class and is never run.
     **What stays the jar's:** the order of crossings, the slab at each, and the first crossing after the vector's end, which the
     jar's `do ... while (t <= max_t)` reads before it stops (so cells up to two past the end are read: the bound the tests keep);
     an edge on an integer is in the cell above it (`floor`: the jar's `1.0E-8` nudge is lost in a float beyond a quarter block
     from the world origin, and the double walk does not apply it either; the one difference this leaves near the origin is a box
-    edge exactly on 0.0 within a ten millionth, the jar's float then one cell lower). **Equivalence, measured**
+    edge exactly on 0.0 (within 1.0E-8 of it), which the jar's float puts one cell lower). **Equivalence, measured**
     (`PathSweepTest`, `./gradlew :mowziesmobs:test`, against `JarFloatSweep`, a copy of the jar's float walk with its loop body
     behind an interface): within 16 blocks of the origin, 12,000 random sweeps (boxes 0.5 to 5 wide and 5.5 tall, vectors of 1
     to 80 blocks), the 7,859 whose cells do not move under twelve nudges of a ten thousandth of a block to the box and the
