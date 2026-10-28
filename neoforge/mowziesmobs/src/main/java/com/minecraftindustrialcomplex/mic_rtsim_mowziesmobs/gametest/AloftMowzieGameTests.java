@@ -924,15 +924,19 @@ public final class AloftMowzieGameTests {
                 .thenIdle(400)
                 .thenExecute(() -> {
                     check("with the flag set it stayed down 400 ticks (" + rose[0] + " ticks aloft)", rose[0] == 0);
-                    Lane a = lane[0];
-                    phase[0] = 4;
-                    dropTick[0] = level.getGameTime();
-                    // the flag dropped, and the player is back in plain view: it is the target again, so the rise waits on it
-                    ConflictKit.steer(agent[0], ConflictKit.party(agent[0]).epoch, 0.5f, puppet[0].getX() + 11, a.z, 0, false);
+                    // the player is back in plain view with the flag still set, and is the target again before the flag drops (MZB-912: the
+                    // jar picks a target only every few ticks, and a flag dropped first let the puppet rise, with no player target for 400 ticks)
                     player[1].setInvisible(false);
                     player[1].setPos(puppet[0].getX() + 12, puppet[0].getY(), puppet[0].getZ());
                 })
                 .thenWaitUntil(waits.logic(() -> check("A's puppet targets the player again", puppet[0].getTarget() == player[1])))
+                .thenExecute(() -> {
+                    Lane a = lane[0];
+                    phase[0] = 4;
+                    dropTick[0] = level.getGameTime();
+                    // the flag dropped with the player the target: the rise waits on it
+                    ConflictKit.steer(agent[0], ConflictKit.party(agent[0]).epoch, 0.5f, puppet[0].getX() + 11, a.z, 0, false);
+                })
                 .thenIdle(20)
                 .thenExecute(() -> {
                     check("a player for target keeps it down with the flag gone", !puppet[0].isNoGravity());
