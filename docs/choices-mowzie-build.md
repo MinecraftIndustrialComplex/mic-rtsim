@@ -11777,7 +11777,10 @@ rounds of phase 2 are the check, and what they found is recorded after them.
   more tagged joins) and the throne body's, sent the same SPAWN message in the same step, made none, in 8,000 ticks. The cause is not
   known (the ability needs no target in the jar's `SpawnFollowersAbility`, and no join handler in the module or the core cancels a
   stray Umvuthana before the test's listener, at its highest priority, sees it). The check's message now names the throne body (alive,
-  removed, puppet, its ability, no AI, position) so the next round says whether the cast ran, and nothing else is changed.
+  removed, puppet, its ability, no AI, position) so the next round says whether the cast ran. The round at 8391671a showed the cast is not reliable: this time the puppet's own cast made no join either
+  (0 tagged of 0), where the earlier round had it make three. The wait now sends the message again every 40 ticks to a body that has made fewer
+  than three (for the warriors and for the cranes), and the message names the jar's gate (`canUse`, `isUsing`, the cooldown left). Adoption is
+  asserted over what joined, so the resends change no check.
 - **MZB-918** (round at 8391671a, test 29b `aHeldTakeIsAnsweredStaleAsThePuppetComesHome`; MZB-823): after MZB-914's check it failed at "the held line is
   gone (1)". `Camps.handBack` holds the HAND_BACK of every chief puppet that floats aloft until it is home (MZB-822), and grove C's HAND_BACK
   was sent in the step before H's walk home, with C's puppet 45 blocks off at 0.1 a tick, which is longer than H's walk to within
