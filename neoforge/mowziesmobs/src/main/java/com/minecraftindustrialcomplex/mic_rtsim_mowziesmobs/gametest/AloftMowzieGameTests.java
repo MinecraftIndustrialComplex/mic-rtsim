@@ -1292,7 +1292,9 @@ public final class AloftMowzieGameTests {
                 .thenWaitUntil(waits.logic(() -> check("B has been moved", movedAt[1] != 0)))
                 .thenExecute(() -> {
                     long a = raisedAt[1][0], b = raisedAt[1][1], c = raisedAt[1][2];
-                    check("B's raise read 8, 16 and 24 (" + a + ", " + b + ", " + c + ")", a > 0 && b > 0 && c > 0);
+                    check("B's raise read 8, 16 and 24 (" + a + ", " + b + ", " + c + "; the most read " + most[1] + ", moved at " + movedAt[1] + ", now "
+                            + level.getGameTime() + ", stuck moves " + (UmvuthiAloft.INSTANCE.stuckMoves - moves[0]) + ", B at " + puppet[1].position()
+                            + ", its place " + place[0] + ", " + place[1] + ", the ceiling's room " + ceilingRoom[0] + ")", a > 0 && b > 0 && c > 0);
                     check("100 ticks apart (" + (b - a) + " and " + (c - b) + ")", b - a == 100 && c - b == 100);
                     long wait = movedAt[1] - c;
                     check("B was moved at the first look after the next 100 ticks (" + wait + ")", wait >= 100 && wait <= 112);
