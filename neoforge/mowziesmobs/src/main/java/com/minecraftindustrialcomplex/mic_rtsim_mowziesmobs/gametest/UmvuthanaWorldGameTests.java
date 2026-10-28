@@ -290,8 +290,9 @@ public final class UmvuthanaWorldGameTests {
      * strikes a warrior (its mask is the fear one, which does not block): it, and so the band, answers within 20
      * ticks. A recall takes the band away.
      */
-    @GameTest(template = ARENA, timeoutTicks = 2400, batch = "umvuthana_mask", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "umvuthana_mask", skyAccess = true)
     public static void aMaskedPlayerIsNotTargetedByTheBand(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 2400);
         String test = "aMaskedPlayerIsNotTargetedByTheBand";
         Stage st = new Stage(helper, test);
         ServerLevel level = st.level;
@@ -304,17 +305,17 @@ public final class UmvuthanaWorldGameTests {
 
         helper.startSequence()
                 .thenExecute(() -> st.force(1))
-                .thenWaitUntil(st.far.ready())
+                .thenWaitUntil(waits.chunks(st.far.ready()))
                 .thenExecute(() -> {
                     st.lay();
                     agent[0] = band(helper, st, new ConflictKit.StackSpec(WARRIOR, 3, false), new ConflictKit.StackSpec(RAPTOR, 1, false));
                 })
-                .thenWaitUntil(() -> {
+                .thenWaitUntil(waits.logic(() -> {
                     ConflictBridge.Party p = ConflictKit.party(agent[0]);
                     check("the party stands", p != null && p.stacks().size() == 2);
                     check("the warriors are placed", p.stacks().get(0).state() == ConflictBridge.StackState.PLACED && p.stacks().get(0).bodies().size() == 3);
                     check("the raptor is placed", p.stacks().get(1).state() == ConflictBridge.StackState.PLACED && p.stacks().get(1).bodies().size() == 1);
-                })
+                }))
                 .thenIdle(10)
                 .thenExecute(() -> {
                     List<Mob> all = everyone(agent[0]);
@@ -349,7 +350,7 @@ public final class UmvuthanaWorldGameTests {
                     });
                     watching[0] = 1;
                 })
-                .thenWaitUntil(() -> check("a body went for the bare player", bareFirst[0] > 0))
+                .thenWaitUntil(waits.logic(() -> check("a body went for the bare player", bareFirst[0] > 0)))
                 .thenIdle(100)
                 .thenExecute(() -> {
                     record(test, "unprovoked", "the bare player was first targeted at tick " + bareFirst[0] + " of the watch");
@@ -361,6 +362,11 @@ public final class UmvuthanaWorldGameTests {
                                 && (struck[0] == null || w.distanceTo(masked[0]) < struck[0].distanceTo(masked[0])))
                             struck[0] = w;
                     check("a warrior to strike", struck[0] != null);
+                    // A blow is struck from beside the warrior: by now the band has walked toward the bare player,
+                    // and even its nearest warrior can stand past the hurt-by goal's reach of where the masked player
+                    // stood (MZB-697). The masked player steps to 3 blocks east of it, away from the bare one.
+                    Vec3 beside = struck[0].position().add(3, 0, 0);
+                    masked[0].moveTo(beside.x, beside.y, beside.z, 90f, 0f);
                     double hurtByReach = 1.7 * struck[0].getAttributeValue(Attributes.FOLLOW_RANGE);
                     check("it is within the hurt-by goal's reach (" + struck[0].distanceTo(masked[0]) + " of " + hurtByReach + ")",
                             struck[0].distanceTo(masked[0]) < hurtByReach);
@@ -395,7 +401,7 @@ public final class UmvuthanaWorldGameTests {
                     check("and no experience (" + orbs0[0] + " orbs before, " + orbs + " after)", orbs == orbs0[0]);
                     ConflictKit.recall(agent[0], 1, ConflictRecords.RECALL_DONE, 1, st.centre.x - 200, st.centre.z);
                 })
-                .thenWaitUntil(() -> check("BAND_DEMATERIALIZED", !ConflictKit.about(ConflictRecords.BAND_DEMATERIALIZED, agent[0]).isEmpty()))
+                .thenWaitUntil(waits.logic(() -> check("BAND_DEMATERIALIZED", !ConflictKit.about(ConflictRecords.BAND_DEMATERIALIZED, agent[0]).isEmpty())))
                 .thenSucceed();
     }
 
@@ -765,9 +771,9 @@ public final class UmvuthanaWorldGameTests {
                     check("only the middle chunk is loaded: the camp is out", !g.site().in());
                     g.far.forceRect(g.cx - 2, g.cz - 2, g.cx + 2, g.cz + 2);
                 })
+                .thenWaitUntil(waits.chunks(g.far.ready()))
                 .thenWaitUntil(waits.logic(() -> {
                     chests.scanNextTick();
-                    g.far.ready().run();
                     check("HAVEN_CHEST has come", !havens(g).isEmpty());
                 }))
                 .thenExecute(() -> {
@@ -934,8 +940,9 @@ public final class UmvuthanaWorldGameTests {
      * test waits for the first animal to die and asks that the one who last hurt it is an Umvuthana of the pack.
      * The band is then recalled.
      */
-    @GameTest(template = ARENA, timeoutTicks = 5000, batch = "umvuthana_raptor_hunt", skyAccess = true)
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "umvuthana_raptor_hunt", skyAccess = true)
     public static void raptorsHuntTheBasesAnimals(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 5000);
         String test = "raptorsHuntTheBasesAnimals";
         Stage st = new Stage(helper, test);
         ServerLevel level = st.level;
@@ -945,7 +952,7 @@ public final class UmvuthanaWorldGameTests {
 
         helper.startSequence()
                 .thenExecute(() -> st.force(1))
-                .thenWaitUntil(st.far.ready())
+                .thenWaitUntil(waits.chunks(st.far.ready()))
                 .thenExecute(() -> {
                     st.lay();
                     agent[0] = band(helper, st, new ConflictKit.StackSpec(RAPTOR, 1, false));
@@ -953,23 +960,23 @@ public final class UmvuthanaWorldGameTests {
                     prey[1] = animal(level, EntityType.COW, st.at(-5, 4));
                     prey[2] = animal(level, EntityType.SHEEP, st.at(0, -8));
                 })
-                .thenWaitUntil(() -> {
+                .thenWaitUntil(waits.logic(() -> {
                     ConflictBridge.Party p = ConflictKit.party(agent[0]);
                     check("the raptor stands", p != null && p.stacks().size() == 1 && p.stacks().get(0).state() == ConflictBridge.StackState.PLACED
                             && p.stacks().get(0).bodies().size() == 1);
                     check("it is the jar's raptor", p.stacks().get(0).bodies().get(0) instanceof EntityUmvuthanaRaptor);
-                })
+                }))
                 .thenIdle(20)
                 .thenExecute(() -> {
                     check("its pack stands (" + everyone(agent[0]).size() + ")", everyone(agent[0]).size() == 5);
                     start[0] = level.getGameTime();
                 })
-                .thenWaitUntil(() -> {
+                .thenWaitUntil(waits.logic(() -> {
                     boolean any = false;
                     for (Animal a : prey)
                         any |= !a.isAlive();
                     check("an animal has been hunted", any);
-                })
+                }))
                 .thenExecute(() -> {
                     int dead = 0;
                     for (Animal a : prey) {
@@ -982,7 +989,7 @@ public final class UmvuthanaWorldGameTests {
                     record(test, "hunted", dead + " of 3 animals in " + (level.getGameTime() - start[0]) + " ticks");
                     ConflictKit.recall(agent[0], 1, ConflictRecords.RECALL_DONE, 1, st.centre.x - 200, st.centre.z);
                 })
-                .thenWaitUntil(() -> check("BAND_DEMATERIALIZED", !ConflictKit.about(ConflictRecords.BAND_DEMATERIALIZED, agent[0]).isEmpty()))
+                .thenWaitUntil(waits.logic(() -> check("BAND_DEMATERIALIZED", !ConflictKit.about(ConflictRecords.BAND_DEMATERIALIZED, agent[0]).isEmpty())))
                 .thenSucceed();
     }
 
@@ -1025,7 +1032,7 @@ public final class UmvuthanaWorldGameTests {
 
         helper.startSequence()
                 .thenExecute(() -> st.force(2))
-                .thenWaitUntil(waits.logic(st.far.ready()))
+                .thenWaitUntil(waits.chunks(st.far.ready()))
                 .thenExecute(() -> {
                     st.lay();
                     for (int i = 0; i < eligible.length; i++) {
@@ -1083,7 +1090,7 @@ public final class UmvuthanaWorldGameTests {
                     check("held with every chunk out (" + hunts.heldCount() + ")", hunts.heldCount() == held0[0] + 1 && hunts.appliedHunts == applied0[0]);
                     st.force(1);
                 })
-                .thenWaitUntil(waits.logic(st.far.ready()))
+                .thenWaitUntil(waits.chunks(st.far.ready()))
                 .thenIdle(60)
                 .thenExecute(() -> {
                     check("still held with only the middle 3 x 3 loaded", hunts.heldCount() == held0[0] + 1 && hunts.appliedHunts == applied0[0]);

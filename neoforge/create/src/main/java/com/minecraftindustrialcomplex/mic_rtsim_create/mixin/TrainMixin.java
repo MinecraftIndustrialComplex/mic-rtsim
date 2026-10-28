@@ -1,5 +1,6 @@
 package com.minecraftindustrialcomplex.mic_rtsim_create.mixin;
 
+import com.minecraftindustrialcomplex.mic_rtsim_create.TrainSampler;
 import com.minecraftindustrialcomplex.mic_rtsim_create.TrainWatch;
 import com.simibubi.create.content.trains.entity.Train;
 import com.simibubi.create.content.trains.station.GlobalStation;
@@ -12,7 +13,8 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  * The station hooks of INDUSTRY.md §3.3 and §8.1 (PATCHES.md, Create rows): a train arriving at and
  * leaving a station. Create 6.0.10 has no event for either. {@code arriveAt} is hooked at its start (the
  * cargo the train brought, before Create's own mail transfer moves packages) and at its end (the
- * record); {@code leaveStation} at its start, while the station is still current.
+ * record); {@code leaveStation} at its start, while the station is still current. M8: the end of
+ * {@code arriveAt} also calls {@code TrainSampler.arrived}, for the roar of a train a lurk robbed (MZB-366).
  */
 @Mixin(value = Train.class, remap = false)
 public abstract class TrainMixin {
@@ -24,6 +26,7 @@ public abstract class TrainMixin {
     @Inject(method = "arriveAt", at = @At("TAIL"))
     private void mic_rtsim$arrived(GlobalStation station, CallbackInfo ci) {
         TrainWatch.arrived((Train) (Object) this, station);
+        TrainSampler.arrived((Train) (Object) this, station);
     }
 
     @Inject(method = "leaveStation", at = @At("HEAD"))

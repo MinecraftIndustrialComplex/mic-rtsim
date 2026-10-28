@@ -73,16 +73,19 @@ use crate::tunables::ConflictTunables;
 /// ledger goes on with its heir, its chief's trade memory, the tribute it owes and is placing and
 /// the heir's pair in flight, a faction ends with its owed hunts, the wheel's events may be a camp
 /// heir, and the resident state ends with the tribute stacks being placed after the held passes
-/// (M9, MZB-437, MZB-448).
-const MAGIC: u32 = u32::from_le_bytes(*b"RTC9");
+/// (M9, MZB-437, MZB-448). RTC10, whose four magic bytes are `RTCA` (A for ten): the stats end
+/// with the lurk's five (lurks, lurks_ended, passes, passes_watched, lurk_robberies), after M9's
+/// three and M7's seven (M8, MZB-690).
+const MAGIC: u32 = u32::from_le_bytes(*b"RTCA");
 /// The meta page of a paged save ([`Conflict::save_paged`]). 2: the indexes, parties and wheel
 /// are in pages of their own, their headers after the row counts (PF10). 3: the resident state
 /// ends with the Peaceful flag, its start and the last notice's serial. 4: the party pages' rows
 /// are RTC5's. 5: a faction row carries its camp (M4), so every page of rows and every wheel
 /// event may differ. 6: a camp carries its pressure and arrival (M6). 7: the rail meter (M7). 8: a
-/// camp carries its heir, memory and tribute, and a faction its hunts (M9, MZB-448).
+/// camp carries its heir, memory and tribute, and a faction its hunts (M9, MZB-448). 9: the
+/// resident state's stats end with the lurk's five (M8, MZB-690).
 const META_MAGIC: u32 = u32::from_le_bytes(*b"RTCM");
-const META_VERSION: u16 = 8;
+const META_VERSION: u16 = 9;
 
 /// Every page table the conflict owns when it pages: a meta key in none of them.
 pub const TABLES: [u16; 9] = [
@@ -1165,6 +1168,11 @@ fn stats_fields(s: &ConflictStats) -> Vec<u64> {
         s.rail_unknown,
         s.rail_calls,
         s.rail_stale,
+        s.lurks,
+        s.lurks_ended,
+        s.passes,
+        s.passes_watched,
+        s.lurk_robberies,
     ]);
     v
 }
@@ -1233,6 +1241,11 @@ fn stats_from(v: &[u64]) -> ConflictStats {
     s.rail_unknown = n();
     s.rail_calls = n();
     s.rail_stale = n();
+    s.lurks = n();
+    s.lurks_ended = n();
+    s.passes = n();
+    s.passes_watched = n();
+    s.lurk_robberies = n();
     s
 }
 
