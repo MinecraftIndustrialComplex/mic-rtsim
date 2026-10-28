@@ -11818,7 +11818,7 @@ rounds of phase 2 are the check, and what they found is recorded after them.
   and the second re-pair 202 after it, as meant; the third turn was never due (MZB-955).
 - **MZB-954** (round at feb803d7, test 22-aloft `anUmvuthiSetsOutAndComesHomeInPlainView`; MZB-822, MZB-830): "[tick 67082: the swap moved it 0.10000000000000142
   blocks]". The test allows a swap (the puppet's last position to the throne body's) of 0.1 blocks, which is the puppet's own step in that tick, and the sum of
-  two doubles read 0.1 + 1.4e-15. The limit is 0.1 + 1e-6. Not run yet.
+  two doubles read 0.1 + 1.4e-15. The limit is 0.1 + 1e-6. Passed in the round at 6e912760.
 - **MZB-955** (round at feb803d7, test 31s `anAloftUmvuthiReadsAndTurns`; MZB-813, MZB-814): the second turn passed (MZB-952), and the third was never due in the 198 ticks: the puppet
   stood at y -33.0, 24 blocks over its floor (-57), with a lag of 47 blocks. The test's anchors outrun the puppets on purpose (0.2 and 0.3 a tick against the
   cap of 0.1), which is the stuck rule's case (MZB-811: no headway toward its place), so the rule raised the target 8 blocks a window, to 24, and a puppet that
@@ -11826,7 +11826,16 @@ rounds of phase 2 are the check, and what they found is recorded after them.
   did, never came 55 degrees off.
   `UmvuthiAloft.clearStuck(memo)` starts the stuck machine over (its raise and its windows) and is called for each of the test's puppets in a per-tick
   hook of the test, so the rule does not act while the anchors outrun them. It is a method of the plugin's class with the memo's other test reads
-  (`raised`, `target`, `settled`), and nothing in the game calls it; 23d, the rule's own test, does not. Not run yet.
+  (`raised`, `target`, `settled`), and nothing in the game calls it; 23d, the rule's own test, does not. In the round at 6e912760 31s stopped earlier, at its first
+  ROAR check (below), so whether the third turn is now due is not read.
+- **MZB-956** (round at 6e912760: two tests failed, 102 of 104 passed, 23d and 22-aloft among them; not diagnosed, for the lead). Test 24
+  `theChiefsSummonsArePuppets` passed its summons checks (3 warriors and 3 cranes of the puppet tagged and listed, 6 strays of the throne body) and failed at
+  "the warrior's animation has ended (not within 8000 ticks of the last chunk wait)", the wait for a killed puppet's warrior to be removed, which it passed in the
+  three rounds before (MZB-917's resends do not change that step). Test 31s `anAloftUmvuthiReadsAndTurns` failed at "the ROAR was active for at least 20 ticks (17)": the
+  ROAR is a 70-tick animation ability of the jar and it was seen active for 17 ticks, so something cut it short; the same check passed in the three rounds before,
+  and the puppet's AI is on in that test (it can start abilities and targets). Neither failure is read as the merge's: neither code path is M10's or main's. What
+  the earlier rounds' messages meant is in MZB-916: the message of a failed test is the LAST failing check of its last tick, so a test's first failure can be one
+  of the checks before it; both tests were read that way here.
 
 ## M12 S9
 
