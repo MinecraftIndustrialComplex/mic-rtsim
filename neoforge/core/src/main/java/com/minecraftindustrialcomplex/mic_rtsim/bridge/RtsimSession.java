@@ -358,7 +358,7 @@ public final class RtsimSession {
 
     public void close() {
         industry.close();
-        engine.close();
+        boundary.closeEngine(); // the final save, confirmed through the journal's file (U-i)
     }
 
     public void onModulesChanged() {

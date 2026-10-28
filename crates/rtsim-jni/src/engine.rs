@@ -1392,7 +1392,26 @@ impl Engine {
     /// Ends the session. `save`: a final save through the IO lane, waited for; otherwise queued
     /// saves are dropped, as a crash would (a save already writing finishes, so the folder is
     /// never left to two stores at once). Waits up to `timeout` for a step in flight.
+    ///
+    /// The final save is confirmed at once: this is [`Engine::close_through`] for a caller whose
+    /// journal file holds everything (a test with no journal, the headless host that has just
+    /// written it). Java's stop names what its file holds.
     pub fn close(self: &Arc<Self>, save: bool, timeout: Duration) -> Result<(), String> {
+        self.close_through(save, u64::MAX, timeout)
+    }
+
+    /// [`Engine::close`] for a stop that knows its journal file: `written_through` is the last
+    /// observation sequence the world's journal file on disk holds (Java's
+    /// `JournalSavedData.writtenThrough`, read after the stop's flush save). The final save is
+    /// confirmed at once only if the file holds every observation it includes; otherwise it stays
+    /// a pending generation, which the restart from that older file rolls back (slice U-i,
+    /// docs/choices-journal-barrier.md U-i1).
+    pub fn close_through(
+        self: &Arc<Self>,
+        save: bool,
+        written_through: u64,
+        timeout: Duration,
+    ) -> Result<(), String> {
         if self.closing.swap(true, Ordering::AcqRel) {
             return Ok(());
         }
@@ -1423,7 +1442,18 @@ impl Engine {
             log_info("closed while the session's replay runs: the pages stay as they were");
         }
         if save && !replaying {
-            let save = self.take_save(&mut lock(&self.state), self.close_kind());
+            let save = {
+                let mut st = lock(&self.state);
+                let kind = self.close_kind(st.replay.applied_through().0, written_through);
+                if kind == SaveKind::World {
+                    log_warn(&format!(
+                        "the stop's final save includes observations through {} but the world's journal file holds only through {}: the save stays pending, and a restart from that file rolls it back and replays what it lacks",
+                        st.replay.applied_through().0,
+                        written_through.max(self.world_saved.load(Ordering::Acquire))
+                    ));
+                }
+                self.take_save(&mut st, kind)
+            };
             let this = Arc::clone(self);
             result = self.run_io_waiting(move || this.commit(save));
         } else {
@@ -1435,14 +1465,24 @@ impl Engine {
         result
     }
 
-    /// What the stop's final save is, in one place. Confirmed at once ([`SaveKind::Script`]): the
-    /// engine closes after the world's last save has been asked for, and the folder a viewer or the
-    /// next start reads holds it. A stop whose journal write was held (U-g's hold on a failed
-    /// SavedData write) then leaves pages ahead of the journal file: the start's both-ahead case,
-    /// logged as EngineAhead. Slice U-i changes this one line: `nClose` carries `writtenThrough` and
-    /// the save is [`SaveKind::World`] unless the file holds it.
-    fn close_kind(&self) -> SaveKind {
-        SaveKind::Script
+    /// What the stop's final save is, in one place. No WORLD_SAVED reaches a closed engine, so the
+    /// stop's own word on the journal's file decides (`nClose`'s `writtenThrough`, Java's
+    /// `JournalSavedData.writtenThrough` read after the flush save; slice U-i, U-h8's option C).
+    /// If the file holds every observation the save includes (`final_obs`, the engine's applied
+    /// sequence) the save is confirmed at once ([`SaveKind::Script`]): the folder a viewer or the
+    /// next start reads holds it, and a clean stop always lands here. Otherwise it is a pending
+    /// generation ([`SaveKind::World`]) that nothing confirms, so the restart from the older file
+    /// (a stop whose last journal write was held, U-g7) rolls it back and replays what it lacks,
+    /// as it does a held WORLD_SAVED, and no longer finds both generations ahead (EngineAhead).
+    /// A WORLD_SAVED the engine already heard says the same of the file, so the larger of the two
+    /// counts; for a pending save it confirms nothing more than the file holds.
+    fn close_kind(&self, final_obs: u64, written_through: u64) -> SaveKind {
+        let file = written_through.max(self.world_saved.load(Ordering::Acquire));
+        if file >= final_obs {
+            SaveKind::Script
+        } else {
+            SaveKind::World
+        }
     }
 
     fn run_io_waiting(&self, f: impl FnOnce() + Send + 'static) -> Result<(), String> {
@@ -2574,14 +2614,16 @@ impl Engine {
 enum SaveKind {
     /// A save Java asked for (`requestSave`, at a world save): a pending generation until the
     /// bridge's WORLD_SAVED says the journal's file holds every observation it includes. Neither
-    /// the acknowledgement, `saves_done` nor the archive's confirmed serial moves before.
+    /// the acknowledgement, `saves_done` nor the archive's confirmed serial moves before. The stop's
+    /// final save is one too when the journal's file lacks part of it ([`Engine::close_kind`]);
+    /// no WORLD_SAVED can come for it, so it stays pending.
     World,
     /// A save for a paged module's budget (PF15): a pending generation too, taken only when no
     /// world save waits for its WORLD_SAVED (or past the valve, [`BUDGET_HOLD_HANDOVERS`]). It is
     /// confirmed if the journal's file already holds its observations.
     Budget,
-    /// A test's SaveAtNextStep and the stop's final save ([`Engine::close_kind`]): committed
-    /// confirmed, with every generation under it.
+    /// A test's SaveAtNextStep and the stop's final save when the journal's file holds it
+    /// ([`Engine::close_kind`]): committed confirmed, with every generation under it.
     Script,
 }
 
