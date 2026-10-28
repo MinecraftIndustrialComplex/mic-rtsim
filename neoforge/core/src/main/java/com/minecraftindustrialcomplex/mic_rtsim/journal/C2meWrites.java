@@ -114,6 +114,11 @@ final class C2meWrites implements ChunkWriteBarrier.LevelWrites {
     }
 
     @Override
+    public Path folder() {
+        return ChunkWriteBarrier.folderOf(storage);
+    }
+
+    @Override
     public String kind() {
         return "c2me";
     }

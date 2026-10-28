@@ -67,7 +67,7 @@ public final class BoundarySession {
         this.gameTimeAtStart = gameTime;
         this.journalFirstAtStart = journal.firstSeq();
         this.worldNextAtStart = journal.nextObsSeq();
-        this.start = engine.start(journal.lastAppliedCmdSeq());
+        this.start = engine.start(journal.lastAppliedCmdSeq(), worldNextAtStart);
         this.observationsLost = observationsLost(start.pagesObsSeq(), journalFirstAtStart, worldNextAtStart);
         journal.reserveBeyond(start.pagesObsSeq());
         this.replayUpTo = journal.nextObsSeq() - 1;
@@ -132,6 +132,21 @@ public final class BoundarySession {
         long first = journalFirst == 0 ? worldNext : journalFirst;
         return first > pagesObsSeq + 1;
     }
+
+    /**
+     * Never trims past what the journal's file on disk holds (JB9): {@code writtenThrough} is read at
+     * each command header, and the header's acknowledgement is clamped to it before it trims the
+     * journal and reaches the ack listener (so the holders' pending records and the rings follow the
+     * same value). The engine acknowledges only pages a WORLD_SAVED confirmed, and WORLD_SAVED reports
+     * {@code min(through, writtenThrough)}, so in the running game the clamp binds only on an
+     * acknowledgement the engine takes without a world save (a test's, a stop's). The default is no
+     * clamp.
+     */
+    public void trimsClampedTo(java.util.function.LongSupplier writtenThrough) {
+        this.writtenThrough = writtenThrough;
+    }
+
+    private java.util.function.LongSupplier writtenThrough = () -> Long.MAX_VALUE;
 
     /** Called with each acknowledgement (the highest sequence the engine's saved pages include). */
     public void onAck(java.util.function.LongConsumer listener) {
@@ -331,8 +346,9 @@ public final class BoundarySession {
                 // buffer re-issues an op whose COMMAND_RESULT the acknowledgement covers, the op must
                 // still be in the journal's index when that command is checked. And never past what
                 // this session sent or the pages held at start: a bad acknowledgement must not drop
-                // entries the engine never saw.
-                pendingAck = Math.min(ackedObsSeq, Math.max(sentObsSeq, start.pagesObsSeq()));
+                // entries the engine never saw. Nor past the journal's file on disk (JB9): a trim past
+                // it would lose observations a crash needs from the older file.
+                pendingAck = Math.min(Math.min(ackedObsSeq, Math.max(sentObsSeq, start.pagesObsSeq())), writtenThrough.getAsLong());
                 sink.onHeader(h, ackedObsSeq, stepTime, flags);
             }
 

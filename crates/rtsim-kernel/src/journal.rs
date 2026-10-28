@@ -19,8 +19,10 @@
 //! Commands the engine sends to Minecraft go through an [`Outbox`]: numbered, each with an
 //! operation id, kept until the bridge reports them applied, and resent after a restart.
 //!
-//! What to do when a crash leaves the engine's pages *ahead* of the world save is Proposal P29,
-//! still open. [`Replay::reconcile`] only detects it.
+//! What to do when a crash leaves the engine's pages *ahead* of the world save is P29: the engine
+//! keeps a world save's pages pending until the world's own save has finished, and a start opens the
+//! generation the journal holds (`PageStore::select_for_journal`, docs/choices-journal-barrier.md,
+//! slice U-h). [`Replay::reconcile`] only detects what is left, when both generations are ahead.
 //!
 //! # Generations and copies (SEC-1 S4p, docs/boundary.md §3.2)
 //!

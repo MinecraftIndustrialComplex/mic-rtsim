@@ -111,7 +111,7 @@ public final class PendingRecordGameTests {
                         check("the chest got the diamonds once", diamonds(chest) == 3);
                         check("the reasserted result told the engine the op is done", e.opApplied(ENGINE_OP));
                         e.awaitIdle();
-                        e.requestSaveAtNextStep();
+                        RtsimTests.acknowledge(s, e);
                         stage[0]++;
                         wait[0] = 0;
                     }
@@ -125,6 +125,48 @@ public final class PendingRecordGameTests {
                 }
                 default -> throw new IllegalStateException();
             }
+        });
+        helper.succeedWhen(() -> check("finished", done[0]));
+    }
+
+    /**
+     * A transfer into a chunk that is not loaded is answered NOT_LOADED, never FAILED (RP-210): the chunk
+     * may hold the op already, written ahead of the journal, and only it can say so once it loads.
+     */
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 200)
+    public static void aTransferIntoAChunkNotLoadedIsAnsweredNotLoaded(GameTestHelper helper) {
+        ServerLevel level = helper.getLevel();
+        BlockPos far = helper.absolutePos(new BlockPos(5, 1, 5)).offset(100_000, 0, 100_000);
+        String dim = RtsimTests.dimension(helper);
+        long op = ENGINE_OP + 1;
+        Object[] st = new Object[2]; // session, engine
+        int[] wait = {0};
+        boolean[] done = {false};
+        helper.onEachTick(() -> {
+            if (done[0])
+                return;
+            if (st[0] == null) {
+                check("the far chunk is not loaded", level.getChunkSource().getChunkNow(far.getX() >> 4, far.getZ() >> 4) == null);
+                ScriptedEngine e = RtsimTests.freshEngine();
+                st[0] = new RtsimSession(level.getServer(), e, JournalSavedData.fresh());
+                st[1] = e;
+                e.transferToContainer(op, dim, far.getX(), far.getY(), far.getZ(), "minecraft:diamond", 3);
+                return;
+            }
+            RtsimSession s = (RtsimSession) st[0];
+            ScriptedEngine e = (ScriptedEngine) st[1];
+            s.endOfTick();
+            if (++wait[0] > 150)
+                throw new GameTestAssertException("no COMMAND_RESULT for the transfer");
+            List<Integer> got = e.received(Obs.COMMAND_RESULT).stream()
+                    .filter(r -> r.view().getLong(Obs.CommandResult.OP_ID) == op).map(r -> r.aux()).toList();
+            if (got.isEmpty())
+                return;
+            check("answered NOT_LOADED: " + got, got.equals(List.of(Obs.CommandResult.NOT_LOADED)));
+            check("nothing carried for it", !s.boundary().journal().commandOpApplied(op));
+            check("the chunk was not loaded for it", level.getChunkSource().getChunkNow(far.getX() >> 4, far.getZ() >> 4) == null);
+            e.close();
+            done[0] = true;
         });
         helper.succeedWhen(() -> check("finished", done[0]));
     }
@@ -173,7 +215,7 @@ public final class PendingRecordGameTests {
                     check("under a new sequence", copy.obsSeq() > t.get(0).obsSeq());
                     check("and dropped", copy.skipped());
                     check("so the take counts once", RtsimTests.engine().eventOpCount(t.get(0).view().getLong(Obs.Taken.OP_ID)) == 1);
-                    RtsimTests.engine().requestSaveAtNextStep();
+                    RtsimTests.acknowledge();
                 })
                 .thenWaitUntil(() -> check("both dropped their records once the engine acknowledged",
                         !e[0].hasData(RtsimAttachments.PENDING) && !e[1].hasData(RtsimAttachments.PENDING)))

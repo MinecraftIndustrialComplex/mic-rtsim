@@ -267,6 +267,9 @@ pub mod obs {
         pub const NOT_FREE: u32 = 4;
         /// WRITE_GOSSIP refused: vanilla records that act first-hand itself.
         pub const VANILLA_KNOWS: u32 = 5;
+        /// TRANSFER_TO_CONTAINER: the container's chunk is not loaded, so Java could not look for
+        /// the op in it (RP-210). Nothing was put; the op may be there already.
+        pub const NOT_LOADED: u32 = 6;
     }
 
     // ---- phase 1 (docs/boundary.md §4.1) ----------------------------------------------------------
@@ -473,6 +476,56 @@ pub mod obs {
         pub const ROTATION: usize = 84;
         pub const MIRROR: usize = 85;
         pub const SIZE: usize = 88;
+    }
+}
+
+/// A COMMAND_RESULT's status (its `aux`, [`obs::command_result`]), typed so that a `match` over it
+/// needs no `_` arm: the compiler then names the sites a new status must reach, which it cannot
+/// for a `u32`. A number this link does not know is `Unknown`, whole (MZB-765). Only the grove's
+/// tribute answer (`conflict::answer_tribute`) reads it so far; the other readers compare the
+/// number still.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CommandStatus {
+    Applied,
+    DuplicateOp,
+    Failed,
+    /// PLACE_HOUSE found no free plot.
+    NotFree,
+    /// WRITE_GOSSIP refused: vanilla records that act first-hand itself.
+    VanillaKnows,
+    /// TRANSFER_TO_CONTAINER: the container's chunk is not loaded (RP-210).
+    NotLoaded,
+    /// A number no variant above carries: a newer Java's, or a corrupt record's.
+    Unknown(u32),
+}
+
+impl CommandStatus {
+    /// The status a COMMAND_RESULT's `aux` names.
+    pub fn from_wire(n: u32) -> CommandStatus {
+        use obs::command_result as r;
+        match n {
+            r::APPLIED => CommandStatus::Applied,
+            r::DUPLICATE_OP => CommandStatus::DuplicateOp,
+            r::FAILED => CommandStatus::Failed,
+            r::NOT_FREE => CommandStatus::NotFree,
+            r::VANILLA_KNOWS => CommandStatus::VanillaKnows,
+            r::NOT_LOADED => CommandStatus::NotLoaded,
+            n => CommandStatus::Unknown(n),
+        }
+    }
+
+    /// The wire number, the inverse of [`CommandStatus::from_wire`].
+    pub fn wire(self) -> u32 {
+        use obs::command_result as r;
+        match self {
+            CommandStatus::Applied => r::APPLIED,
+            CommandStatus::DuplicateOp => r::DUPLICATE_OP,
+            CommandStatus::Failed => r::FAILED,
+            CommandStatus::NotFree => r::NOT_FREE,
+            CommandStatus::VanillaKnows => r::VANILLA_KNOWS,
+            CommandStatus::NotLoaded => r::NOT_LOADED,
+            CommandStatus::Unknown(n) => n,
+        }
     }
 }
 
@@ -906,6 +959,33 @@ impl<'a> RecordWriter<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// MZB-765: a COMMAND_RESULT's status is typed where a match must name every status. Each wire
+    /// number maps to its own variant (the numbers are Java's, `CommandStatus::wire` gives them
+    /// back), and a number this link does not know is `Unknown`, whole.
+    #[test]
+    fn a_command_status_names_every_wire_number_and_keeps_the_rest() {
+        use obs::command_result as r;
+        let known = [
+            (r::APPLIED, CommandStatus::Applied),
+            (r::DUPLICATE_OP, CommandStatus::DuplicateOp),
+            (r::FAILED, CommandStatus::Failed),
+            (r::NOT_FREE, CommandStatus::NotFree),
+            (r::VANILLA_KNOWS, CommandStatus::VanillaKnows),
+            (r::NOT_LOADED, CommandStatus::NotLoaded),
+        ];
+        for (n, status) in known {
+            assert_eq!(CommandStatus::from_wire(n), status, "status {n}");
+            assert_eq!(status.wire(), n, "{status:?} goes back to its number");
+        }
+        let numbers: std::collections::BTreeSet<u32> = known.iter().map(|k| k.0).collect();
+        assert_eq!(numbers.len(), known.len(), "no two statuses share a number");
+        // 0 is no answer, 7 and up are a newer Java's: kept, not folded into a known status.
+        for n in [0, 7, 8, 255, u32::MAX] {
+            assert_eq!(CommandStatus::from_wire(n), CommandStatus::Unknown(n));
+            assert_eq!(CommandStatus::Unknown(n).wire(), n);
+        }
+    }
 
     #[test]
     fn writer_and_reader_round_trip() {
