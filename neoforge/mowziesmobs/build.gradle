@@ -81,6 +81,20 @@ dependencies {
     // MZB-249: the camp reconciler's level poll is what C2ME leaves it, no ticket event). Off by default.
     if (project.hasProperty('c2me'))
         runtimeOnly files("${packMods}/${c2me_jar}")
+
+    // Pure-Java unit tests of the path sweep (PathSweep touches no Minecraft class; MZB-951): the shipped walk against a
+    // copy of the jar's float one. The test source set needs neither Minecraft nor the Mowzie jar.
+    testImplementation(platform("org.junit:junit-bom:${junit_version}"))
+    testImplementation('org.junit.jupiter:junit-jupiter')
+    testRuntimeOnly('org.junit.platform:junit-platform-launcher')
+}
+
+tasks.named('test', Test) {
+    useJUnitPlatform()
+    testLogging {
+        events 'passed', 'skipped', 'failed'
+        exceptionFormat 'full'
+    }
 }
 
 var generateModMetadata = tasks.register('generateModMetadata', ProcessResources) {
