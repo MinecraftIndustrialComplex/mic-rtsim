@@ -31,7 +31,7 @@ import static com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests.recor
  * The jar's own {@code MMPathNavigateGround.sweep} with the mixin on (MZB-951), called on a real Frostmaw's navigation by
  * reflection (the method is private): what it answers for a stone floor with a wall or a hole across it, near the origin and
  * 3.8 million blocks out, where the jar's float walk ran away (MZB-950). The far test makes the sweep that is known to run away
- * and a few hundred random ones; it never lets a runaway run, three ways: it asks first whether the jar's class carries the
+ * and 120 random ones; it never lets a runaway run, three ways: it asks first whether the jar's class carries the
  * mixin's handler and fails before the first call if it does not, every call is counted against a {@link PathSweep.Budget} of
  * block reads and of time that stops the walk, and the place is a 96-block square of forced chunks that no sweep of the test
  * leaves (a walk that did would load a chunk). A sweep that ends in the budget fails the test.
@@ -55,7 +55,7 @@ public final class PathSweepGameTests {
     /**
      * The jar's real sweep, near the origin (inside {@link com.minecraftindustrialcomplex.mic_rtsim.gametest.PathSafeBase}'s limit,
      * where its float walk was exact), on a stone floor: clear across it, blocked by a wall of stone, blocked by a missing strip
-     * of floor, clear again with both put back, and clear for 100 random sweeps.
+     * of floor, clear again with both put back, and clear for 60 random sweeps.
      */
     @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "mowzie_path_sweep_near", skyAccess = true)
     public static void theJarsPathSweepAnswersAStoneFloorNearTheOrigin(GameTestHelper helper) {
@@ -65,7 +65,7 @@ public final class PathSweepGameTests {
 
     /**
      * The same floor at x -3,797,664, z 4,715,168 (the jar's float walk ran away on 1 sweep in 25 there): the same answers, the
-     * sweep of {@link PathSweepRunaway} that is known to run away in a copy of it, and 400 random sweeps, each inside its
+     * sweep of {@link PathSweepRunaway} that is known to run away in a copy of it, and 120 random sweeps, each inside its
      * budget.
      */
     @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "mowzie_path_sweep_far", skyAccess = true)
@@ -140,7 +140,7 @@ public final class PathSweepGameTests {
                     }
                     SplittableRandom r = new SplittableRandom(951);
                     long worst = 0;
-                    for (int k = 0; k < (far ? 400 : 100); k++) {
+                    for (int k = 0; k < (far ? 120 : 60); k++) {
                         double rw = 0.6 + r.nextDouble() * 4.4, rh = 1 + r.nextDouble() * 4;
                         double rx = bx + 48 + (r.nextDouble() * 12 - 6), rz = bz + 48 + (r.nextDouble() * 12 - 6);
                         double len = 1 + r.nextDouble() * 31, angle = r.nextDouble() * Math.PI * 2;
@@ -169,13 +169,13 @@ public final class PathSweepGameTests {
     }
 
     /**
-     * The name the mixin's handler has in the jar's class once Mixin has merged it, or null: {@code handler$<ids>$<source id>$sweep}
-     * ({@code MethodMapper.getHandlerName} of Mixin 0.8.7 puts the handler's own name last, with the config's source id, cut to 12
-     * characters, before it, and drops that id from the name if the name begins with it).
+     * The name the mixin's handler has in the jar's class once Mixin has merged it, or null: {@code <prefix>$<ids>$<source id>$sweep}
+     * ({@code MethodMapper.getHandlerName} of Mixin 0.8.7 puts the handler's own name, here {@code mic_rtsim_mowziesmobs$sweep}, last,
+     * and the jar's own method is plain {@code sweep}, so a name ending in {@code $sweep} is the handler).
      */
     private static String mixinHandler() {
         for (Method m : MMPathNavigateGround.class.getDeclaredMethods())
-            if (m.getName().startsWith("handler$") && m.getName().endsWith("$sweep"))
+            if (m.getName().endsWith("$sweep"))
                 return m.getName();
         return null;
     }

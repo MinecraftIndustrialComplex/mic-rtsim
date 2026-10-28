@@ -5601,9 +5601,9 @@ RP-150 to RP-153 the replay records.
     cells and columns, bit for bit. **GameTests** (`PathSweepGameTests`, mowziesmobs, batches `mowzie_path_sweep_near` and
     `_far`): the jar's real `sweep` called by reflection on a real Frostmaw's navigation over a stone floor, near the origin
     and at x -3,797,664, z 4,715,168 (a place built round MZB-950's known sweep, `PathSweepRunaway`): clear, blocked by a
-    wall, blocked by a missing strip of floor, clear again, the known sweep, and 400 random ones. Chosen because a runaway
+    wall, blocked by a missing strip of floor, clear again, the known sweep, and 120 random ones. Chosen because a runaway
     can be kept from running three ways, all in the test: it fails before the first call if the jar's class has no mixin
-    handler (a name `handler$...$sweep`, so a broken mixin cannot let the first far call count through the int range); every call
+    handler (a method named `...$sweep`, so a broken mixin cannot let the first far call count through the int range); every call
     runs under a `PathSweep.Budget` (12,000 block reads, 5 s: the walk stops, blocked, when it is spent, and the test fails on
     it); and the place is 6 by 6 chunks that no sweep leaves, with a check that no more than 300 chunks loaded. The budget is
     a static the shipped walk reads once per column (null outside a test). **Uninstalling:** the mixin holds no state and writes
