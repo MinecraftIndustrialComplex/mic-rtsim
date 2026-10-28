@@ -4357,6 +4357,16 @@ public final class AloftMowzieGameTests {
                             if (h != null && !h.isRemoved())
                                 FakePlayers.pump(h);
                     });
+                    // The anchors outrun the puppets on purpose (0.2 and 0.3 a tick against their 0.1), which is the stuck rule's case: no headway toward its
+                    // place raised the target 8 blocks a window, and a puppet rising 24 blocks takes no step across for 240 ticks, so its way never turned
+                    // (MZB-955). The stuck machine is started over every tick here; the rule itself is 23d's.
+                    MowzieKit.everyTick(helper, () -> {
+                        for (long ag : agent) {
+                            ConflictBridge.Slot sl = chiefSlot(ag);
+                            if (sl != null && sl.travelMemo() != null)
+                                UmvuthiAloft.INSTANCE.clearStuck(sl.travelMemo());
+                        }
+                    });
                 })
                 .thenWaitUntil(waits.logic(() -> {
                     puppet[0] = puppet(agent[0]);
