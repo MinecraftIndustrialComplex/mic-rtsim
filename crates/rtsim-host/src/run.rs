@@ -547,12 +547,14 @@ impl Host {
     }
 
     /// Ends the session: the last step's commands answered, the journal written and the engine
-    /// closed with a final save.
+    /// closed with a final save. The file just written holds every observation sent, so the stop
+    /// names that as its `writtenThrough` (slice U-i) and the final save is confirmed at once.
     pub fn close(mut self) -> Result<(), String> {
         self.wait_step()?;
         self.j.apply_commands();
         self.write_world()?;
-        self.e.close(true, STEP_TIMEOUT)
+        let written_through = self.j.next_obs - 1;
+        self.e.close_through(true, written_through, STEP_TIMEOUT)
     }
 
     /// Ends the session as a crash would: no final save.
