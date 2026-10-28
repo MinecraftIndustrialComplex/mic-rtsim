@@ -83,7 +83,7 @@ fn a_world_save_is_acknowledged_only_after_its_world_saved() {
     transfers(&mut j, 100, 10);
     j.idle();
     let t = j.next_obs - 1;
-    assert_eq!(t, 11, "the session's JOURNAL_GEN, then ten transfers");
+    assert_eq!(t, 12, "the session's JOURNAL_GEN and its module switch, then ten transfers");
     e.request_save(t);
     settle(&e, &mut j, 1);
     assert_eq!(e.committed_obs_seq(), t, "the save holds the journal's end");
