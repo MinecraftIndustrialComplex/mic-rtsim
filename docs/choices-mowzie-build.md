@@ -11802,7 +11802,8 @@ rounds of phase 2 are the check, and what they found is recorded after them.
   step before B's move, while B still stood 58 blocks from that place: 38 blocks from the player with a clear line under the ceiling. That is a player B
   can see, so the stuck rule never found B unseen (which is B's point), and one the jar's AI targets, and a puppet settles on a player target in sight
   (`AloftRules.settles`): after its first raise B sank, its stuck machine was replaced, and the raise read back as 0, which the test takes for a move.
-  The player is now put there after B has been moved, in the step that gives B the attack flag. Not run yet.
+  The player is now put there after B has been moved, in the step that gives B the attack flag. Passed in the round at 793c463c up to its last
+  checks, which then failed on the control (MZB-953).
 
 ## M12 S9
 
