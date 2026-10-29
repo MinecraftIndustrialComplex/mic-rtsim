@@ -41,6 +41,14 @@ import static com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests.recor
  * materialized at the arena with the test order {@code P1_SPAWN_NEAR}, and days pass with
  * {@code P1_ADVANCE}, so the test takes seconds, not in-game days. Native engine only: the stub
  * decides nothing.
+ *
+ * <p>Every ask is a quarter day of the world's clock ({@code P1_ADVANCE}), and a caravan walks on that
+ * clock: a leg is about 4,000 ticks. So the ask that finds the caravan must be the last one: a second
+ * ask sent while the spawn is still on its way (the ticks run unthrottled, a step takes several of
+ * them) would carry the world past the end of the caravan's trip, its row would go home and be removed
+ * while its puppet still stands in the arena, and the robbery of that puppet is refused by the engine
+ * (no row to take the goods from): "the engine booked the robbery" failed in three core rounds that way
+ * (the two logs kept saw the group after 11 and 12 asks, where 9 is the usual count; MZB-1105).
  */
 @GameTestHolder(MicRtsim.MODID)
 @PrefixGameTestTemplate(false)
@@ -75,6 +83,8 @@ public final class LivePhase1GameTests {
         long agent = RtsimTests.newAgent();
         long[] base = e.phase1Stats();
         long[] ask = {0, 0}; // ticks waited since the last ask, asks
+        long[] askedAt = {Long.MIN_VALUE / 2, 0}; // the engine's steps done at the last ask, spawns it had sent then
+        long[] seenAt = {0}; // the phase 1 world's tick when the group was first seen
         boolean[] traded = {false};
         String[] robbed = {null};
         List<String> told = new ArrayList<>();
@@ -88,22 +98,31 @@ public final class LivePhase1GameTests {
                 .thenWaitUntil(() -> {
                     if (RtsimTests.group(agent) != null)
                         return;
-                    // One call a tick: ask again once the last ask had time to come back (a step, then
-                    // the spawn applied on a later tick).
-                    if (ask[0]++ % 10 == 0) {
+                    // One ask at a time, counted in the engine's steps, not in ticks (a tick is not a step
+                    // under load). The ask's orders are taken by the first step that starts after them, so
+                    // two steps done since the ask is an ask answered. If the answer was a spawn, the group
+                    // is on its way (applied within a few steps): no new ask until it has had ten steps, or
+                    // it would carry the world on past the caravan's trip (the class comment).
+                    long[] s = e.phase1Stats();
+                    long steps = e.steps();
+                    boolean answered = steps >= askedAt[0] + 2;
+                    boolean spawning = answered && s[NativeEngine.P1_SPAWNS_SENT] > askedAt[1] && steps < askedAt[0] + 10;
+                    if (answered && !spawning) {
                         check("a caravan with wares within 300 asks (75 days of world time)", ask[1] < 300);
                         // A quarter of a day on, then the caravan with wares nearest the villages, here.
                         e.phase1Advance(6_000);
                         e.phase1SpawnNear(agent, 1, dim, at.x, at.y, at.z, 2_000, ox + 150, oz + 150);
                         ask[1]++;
+                        askedAt[0] = steps;
+                        askedAt[1] = s[NativeEngine.P1_SPAWNS_SENT];
                     }
-                    long[] s = e.phase1Stats();
                     check("the engine materialized a caravan off its flows (asks " + ask[1] + ", world tick "
                             + s[NativeEngine.P1_WORLD_TICK] + ", spawns sent " + s[NativeEngine.P1_SPAWNS_SENT] + ", steps "
                             + e.steps() + ", orders pending " + e.scriptedPending() + ")", false);
                 })
                 .thenExecute(() -> {
                     PuppetGroup g = RtsimTests.group(agent);
+                    seenAt[0] = e.phase1Stats()[NativeEngine.P1_WORLD_TICK];
                     check("a human caravan (C25)", BodyKinds.HUMAN_CARAVAN.equals(g.kind.name()));
                     WanderingTrader trader = (WanderingTrader) RtsimTests.member(g, 0);
                     List<String> cargo = new ArrayList<>();
@@ -153,7 +172,11 @@ public final class LivePhase1GameTests {
                 })
                 .thenWaitUntil(() -> {
                     long[] s = e.phase1Stats();
-                    check("the engine booked the robbery", s[NativeEngine.P1_ROBBERIES] > base[NativeEngine.P1_ROBBERIES]);
+                    // The world's clock since the group was seen: a trip is about 4,000 ticks, and past its end the
+                    // engine has no row to take the goods from (the class comment); a clock far past that names the cause.
+                    check("the engine booked the robbery (the world's clock ran " + (s[NativeEngine.P1_WORLD_TICK] - seenAt[0])
+                            + " ticks since the group was seen, after " + ask[1] + " asks)",
+                            s[NativeEngine.P1_ROBBERIES] > base[NativeEngine.P1_ROBBERIES]);
                     check("and the trade", !traded[0] || s[NativeEngine.P1_CARAVAN_TRADES] > base[NativeEngine.P1_CARAVAN_TRADES]);
                 })
                 .thenWaitUntil(() -> {
