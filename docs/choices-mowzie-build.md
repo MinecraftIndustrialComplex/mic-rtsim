@@ -17441,4 +17441,8 @@ sweep mixin, the flake fixes MZB-1100 to MZB-1104) into this branch, commit 24fb
   round 1 flake, MZB-1041), `create -PwithMowzie` All 271 at 129de219 with the default heap and no out-of-memory, mowziesmobs All 112
   and iceandfire All 42 (first rounds at 129de219 had 4 and 1 failures: MZB-1043, MZB-1044, MZB-1042). The core and
   create rounds' code differs from the head only in the other projects' GameTests (committed after) and documents.
+- **MZB-1047** (the final rounds, head bed3838d: this branch with origin/main d6ac9341 merged, MZB-1105's test change): `cargo test
+  --workspace` 2275 passed, 0 failed, 27 ignored; clippy `-D warnings` clean; GameTests, each from a cleared world, core All 168 (and
+  `:core:test` 431 passed), `create -Psec1fx` All 266, `create -PwithMowzie` All 271 (default heap, no out-of-memory), mowziesmobs All
+  112, iceandfire All 42. None failed, so no flake this time.
 
