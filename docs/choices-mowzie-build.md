@@ -17352,14 +17352,15 @@ sweep mixin, the flake fixes MZB-1100 to MZB-1104) into this branch, commit 24fb
   The ledger file `data/mic_rtsim_sites.dat` is not part of the fixtures (the viewer reads the pages). `rtsim-view` and `rtsim-host`
   pass on them (`fixtures`, `hashes`, `host`).
 - **MZB-1040** (core `aColumnFormsAgainAfterTheModuleIsSwitchedOffAndOn`, "it was materialized and not rejected (materialized 0,
-  rejected 0)"): *a flake, not found.* It failed once in the first core round at 129de219 (`target/m12m-core.log`) and passed in the
-  rerun of the same code (`target/m12m-core-rerun.log`, All 168 required tests passed). The record M11 recorded as MZB-961's
-  neighbour in the same test (the march test's waits) is not this one: here the band's `BAND_MATERIALIZED` count after the switch-on
-  had not risen when the check ran, with the column placed (the wait before it passed). The test is M10c's and the merge touched
-  neither it nor the code it reads (`ConflictBridge`'s materialize path is M12a's `credit` and `journalFound` apart); nothing changed.
-- **MZB-1041** (create `-Psec1fx`, `glasscorpus.millstone_flour`: "measured 54.064/min, expected 46.154/min +- 7.894"): a timing
-  measure of the glass corpus under load (the round ran with other rounds' JVMs and cargo on the machine); S3 touches nothing of
-  industry or Create. See the rerun below.
+  rejected 0)"): *a flake, not found.* It failed once in the first core round at 129de219 (`target/m12m-core.log`, 1 of 168) and
+  passed in the rerun of the same code (`target/m12m-core-rerun.log`, All 168 required tests passed). The failing check follows a
+  wait that passed (the column placed again) and reads the band's BAND_MATERIALIZED count one past the count before the switch-on;
+  the log shows the switch-off half passing (reason 4, four survivors, no march kept). The test is M10c's, and the merge changed
+  neither it nor the materialize path it reads but for S3's `credit` and `journalFound`. Nothing changed.
+- **MZB-1041** (create `-Psec1fx`, `glasscorpus.millstone_flour`: "measured 54.064/min, expected 46.154/min +- 7.894"): *a flake,
+  not found.* A rate measured over game time against a band, the one failure of that round (1 of 267) at 129de219, and the same
+  code passed the rerun at 9c3a15a8 (`target/m12m-create-sec1fx-2.log`, All 266 required tests passed; S3 changed nothing of
+  industry or Create, and the later commits only touch GameTests of other projects). Nothing changed.
 - **MZB-1042** (iceandfire `aTamedOrFarAwayPuppetLeavesTheSim`, "no killer"): *the merge of S3's design with a test of the older one.*
   The test asserted a tamed dragon's DRAGON_DIED has no killer (the dragon records had no TAKEN, choice Z7); S3 gives a tame killer
   kind 4 with the tamer's UUID (MZB-1010, and the slice's own `tameIsAPlayerLoss` asserts it). The test now asserts the new
@@ -17383,4 +17384,9 @@ sweep mixin, the flake fixes MZB-1100 to MZB-1104) into this branch, commit 24fb
 - **MZB-1045** (the uninstall test's party, MZB-1016): *the gap stands.* `uninstallLeavesHomeBodies` still has no party out at the
   uninstall, since only the engine's own decision sends one and a GameTest cannot ask for it on the real engine; the Rust tests
   (`tests/camp.rs`, members away waiting the cap) cover it.
+- **MZB-1046** (the merge's rounds, head 9c3a15a8 unless said): `cargo test --workspace` 2274 passed, 0 failed, 27 ignored, and clippy `-D warnings`
+  clean on the merged tree; `:core:test` 431 passed; GameTests core All 168 (rerun; first round 1 flake, MZB-1040), `create -Psec1fx` All 266 (rerun; first
+  round 1 flake, MZB-1041), `create -PwithMowzie` All 271 at 129de219 with the default heap and no out-of-memory, mowziesmobs All 112
+  and iceandfire All 42 (first rounds at 129de219 had 4 and 1 failures: MZB-1043, MZB-1044, MZB-1042). The core and
+  create rounds' code differs from the head only in the other projects' GameTests (committed after) and documents.
 
