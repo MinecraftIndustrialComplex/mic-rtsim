@@ -448,6 +448,17 @@ public final class JournalBarrierGameTests {
     }
 
     /**
+     * Queues a marker on NeoForge's SavedData IO chain: once {@code drained} is set, every write queued before the call has run.
+     * A test that compares the journal's file with its own baseline ({@code writtenThrough}, {@code writes}) reads the baseline after
+     * this (MZB-1102, U-h13): the world save an earlier test, or the server's autosave before it, queued writes the journal's file on
+     * the chain after the test began (the GameTest server runs unthrottled, the chain syncs directories and falls behind), and a
+     * baseline read ahead of that write made "the file was not written" fail on a file the test never touched.
+     */
+    private static Runnable queueDrain(java.util.concurrent.atomic.AtomicBoolean drained) {
+        return () -> IOUtilities.withIOWorker(() -> drained.set(true));
+    }
+
+    /**
      * A world save as an autosave makes it ({@code saveEverything}), while the overworld's own autosaves are off
      * ({@code noSave}): the save turns it back on for itself.
      */
@@ -539,7 +550,10 @@ public final class JournalBarrierGameTests {
         java.util.concurrent.atomic.AtomicBoolean entered = new java.util.concurrent.atomic.AtomicBoolean();
         long[] through = new long[1];
         long[] fileBefore = new long[1];
+        java.util.concurrent.atomic.AtomicBoolean drained = new java.util.concurrent.atomic.AtomicBoolean();
         helper.startSequence()
+                .thenExecute(queueDrain(drained))
+                .thenWaitUntil(io(() -> check("the writes queued before the test have run on the IO chain", drained.get())))
                 .thenExecute(() -> {
                     // A record the file and the pages do not hold yet.
                     java.nio.ByteBuffer r = s.boundary().beginJournaled(com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs.TRANSFER,
@@ -612,7 +626,10 @@ public final class JournalBarrierGameTests {
         long[] through = new long[1];
         long[] fileBefore = new long[1];
         long[] heldBefore = new long[1];
+        java.util.concurrent.atomic.AtomicBoolean drained = new java.util.concurrent.atomic.AtomicBoolean();
         helper.startSequence()
+                .thenExecute(queueDrain(drained))
+                .thenWaitUntil(io(() -> check("the writes queued before the test have run on the IO chain", drained.get())))
                 .thenExecute(kit.step(() -> {
                     // A record the file and the pages do not hold yet, and a data file that cannot be written.
                     java.nio.ByteBuffer r = s.boundary().beginJournaled(com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs.TRANSFER,
