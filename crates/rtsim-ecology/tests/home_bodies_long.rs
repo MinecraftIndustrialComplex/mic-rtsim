@@ -144,12 +144,22 @@ fn bodies_do_not_move_the_s4_bands() {
     let (off, _) = run(1, false, 3);
     let (on, s) = run(1, true, 3);
     println!("bodies off {off:?}, on {on:?}; {:?}", s.d.stats);
-    assert!(s.d.stats.lair_censuses > 20, "the lairs came in: {:?}", s.d.stats);
+    assert!(
+        s.d.stats.lair_censuses > 20,
+        "the lairs came in: {:?}",
+        s.d.stats
+    );
     assert!(s.d.stats.home_spawns > 0, "owed bodies were spawned");
-    assert!(s.d.stats.home_saved > 0, "bodies were saved when their lair went out");
+    assert!(
+        s.d.stats.home_saved > 0,
+        "bodies were saved when their lair went out"
+    );
     assert!(s.d.stats.home_adopts > 0, "saved bodies were adopted again");
     assert_eq!(s.d.stats.home_missing, 0, "no body vanished without cause");
-    assert_eq!(s.d.stats.strays_adopted, 0, "no stray: every body is the engine's");
+    assert_eq!(
+        s.d.stats.strays_adopted, 0,
+        "no stray: every body is the engine's"
+    );
     assert!(
         (on.held - off.held).abs() <= 0.15,
         "lairs held {:.3} with bodies, {:.3} without",
@@ -158,7 +168,12 @@ fn bodies_do_not_move_the_s4_bands() {
     );
     assert!(on.losses > 0 && off.losses > 0);
     let ratio = on.losses as f64 / off.losses as f64;
-    assert!((0.5..=2.0).contains(&ratio), "losses {} against {}", on.losses, off.losses);
+    assert!(
+        (0.5..=2.0).contains(&ratio),
+        "losses {} against {}",
+        on.losses,
+        off.losses
+    );
 }
 
 /// The same over 30 seeds and 20 years; the medians must stay in the bands.

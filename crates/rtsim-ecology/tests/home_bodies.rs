@@ -89,11 +89,13 @@ impl Scene {
     }
 
     fn ingest(&mut self, o: Obs, t: u64) {
-        self.d.ingest(&mut self.w, &mut NoInfrastructure, &o, Tick(t));
+        self.d
+            .ingest(&mut self.w, &mut NoInfrastructure, &o, Tick(t));
     }
 
     fn run(&mut self, t: u64) {
-        self.d.run_until(&mut self.w, &mut NoInfrastructure, Tick(t));
+        self.d
+            .run_until(&mut self.w, &mut NoInfrastructure, Tick(t));
     }
 
     fn census(&mut self, epoch: u64, watched: bool, bodies: &[boundary::CensusBody], t: u64) {
@@ -207,8 +209,15 @@ fn a_lairs_own_dragon_found_by_the_census_becomes_its_occupant_with_a_home_body(
     assert_eq!(occupants.len(), 1, "the dragon is the lair's occupant");
     let x = occupants[0];
     assert_eq!(agent_of(x), adopted[0].agent);
-    assert!(matches!(s.d.dragon(x).unwrap().state, State::Embodied { .. }));
-    assert_eq!(s.d.dragon(x).unwrap().body, None, "booked only on the answer");
+    assert!(matches!(
+        s.d.dragon(x).unwrap().state,
+        State::Embodied { .. }
+    ));
+    assert_eq!(
+        s.d.dragon(x).unwrap().body,
+        None,
+        "booked only on the answer"
+    );
     assert!(
         s.d.lairs[s.l as usize].vacant_since.is_none(),
         "the lair is not waiting for a newcomer"
@@ -219,7 +228,10 @@ fn a_lairs_own_dragon_found_by_the_census_becomes_its_occupant_with_a_home_body(
     s.d.check(&s.w, None).unwrap();
     // The lair's site row names the body (K 2).
     let row = s.d.lair_site_state(s.l, Tick(101)).unwrap();
-    assert_eq!((row.kind, row.k, row.count, row.away), (SiteKind::Lair, 2, 1, 0));
+    assert_eq!(
+        (row.kind, row.k, row.count, row.away),
+        (SiteKind::Lair, 2, 1, 0)
+    );
     assert_eq!(row.bodies.home, vec![uuid(0xA1)]);
 }
 
@@ -240,8 +252,15 @@ fn a_home_body_found_is_adopted_and_synced_from_the_engine() {
     assert_eq!(a.len(), 1);
     assert_eq!(a[0].agent, agent_of(x));
     let want_hunger = before.fullness_at(&s.d.tun, Tick(at));
-    assert_eq!(a[0].hunger, want_hunger, "hunger from the engine's closed form");
-    assert_eq!(a[0].age_ticks as u64, before.age(Tick(at)), "age from the engine");
+    assert_eq!(
+        a[0].hunger, want_hunger,
+        "hunger from the engine's closed form"
+    );
+    assert_eq!(
+        a[0].age_ticks as u64,
+        before.age(Tick(at)),
+        "age from the engine"
+    );
     assert!(a[0].health > 100.0, "health from the engine");
     s.answer(a[0].agent, a[0].epoch, uuid(0xB1), at + 1);
     assert_eq!(s.d.dragon(x).unwrap().body, Some(uuid(0xB1)));
@@ -258,7 +277,10 @@ fn a_second_body_of_one_dragon_is_discarded_the_farther() {
     s.census(
         1,
         true,
-        &[body(0xC1, agent_of(x), 730.5), body(0xC2, agent_of(x), 703.5)],
+        &[
+            body(0xC1, agent_of(x), 730.5),
+            body(0xC2, agent_of(x), 703.5),
+        ],
         100,
     );
     let cmds = s.cmds();
@@ -293,8 +315,15 @@ fn a_stray_above_two_is_discarded() {
     assert_eq!(adopts(&cmds).len(), 2);
     let gone = discards(&cmds);
     assert_eq!(gone.len(), 1, "{cmds:?}");
-    assert_eq!((gone[0].entity, gone[0].reason), (uuid(0xD3), DISCARD_LAIR_FULL));
-    assert_eq!(s.d.lairs[s.l as usize].occupants.len(), 2, "no third occupant");
+    assert_eq!(
+        (gone[0].entity, gone[0].reason),
+        (uuid(0xD3), DISCARD_LAIR_FULL)
+    );
+    assert_eq!(
+        s.d.lairs[s.l as usize].occupants.len(),
+        2,
+        "no third occupant"
+    );
 }
 
 /// A lair found late with no ledger row waits the cap with its pressure at the cap; its own dragon
@@ -316,7 +345,10 @@ fn a_late_lair_with_no_row_resets_its_pressure_when_its_own_dragon_is_found() {
         Tick(0),
     );
     let h = d.tun.respawn_half_life_days as f32;
-    assert!(d.lairs[l as usize].pressure.now(0, h) > 3.0, "farmed to the cap");
+    assert!(
+        d.lairs[l as usize].pressure.now(0, h) > 3.0,
+        "farmed to the cap"
+    );
     assert!(d.lairs[l as usize].found_unknown);
     let mut s = Scene { w, d, l };
     s.census(1, false, &[body(0xE1, 0, 700.5)], 100);
@@ -373,7 +405,10 @@ fn a_watched_lair_recalls_its_away_dragon() {
     let t = s.d.now().0 + 10;
     s.census(1, true, &[body(0xF2, agent_of(x), 700.5)], t);
     let cmds = s.cmds();
-    assert!(discards(&cmds).is_empty(), "nothing is removed in view: {cmds:?}");
+    assert!(
+        discards(&cmds).is_empty(),
+        "nothing is removed in view: {cmds:?}"
+    );
     let a = adopts(&cmds);
     assert_eq!(a.len(), 1, "{cmds:?}");
     let dx = s.d.dragon(x).unwrap();
@@ -393,7 +428,10 @@ fn a_recall_cancels_the_trip_and_books_no_hunt() {
     s.census(1, true, &[body(0xF3, agent_of(x), 700.5)], t);
     s.cmds();
     s.run(t + 20 * DAY);
-    assert_eq!(s.d.stats.hunts, hunts, "the abandoned trip's hunt never happens");
+    assert_eq!(
+        s.d.stats.hunts, hunts,
+        "the abandoned trip's hunt never happens"
+    );
     assert_eq!(s.lost(), 0);
 }
 
@@ -412,7 +450,10 @@ fn an_owed_dragon_gets_its_body_at_an_unwatched_census() {
     assert_ne!(m[0].flags & boundary::MAT_HOME_BODY, 0);
     assert_ne!(m[0].flags & boundary::MAT_SLEEPING, 0);
     assert_eq!(m[0].pos, (700.0, 100.0, 1500.0), "at the lair");
-    assert!(matches!(s.d.dragon(x).unwrap().state, State::Embodied { .. }));
+    assert!(matches!(
+        s.d.dragon(x).unwrap().state,
+        State::Embodied { .. }
+    ));
     assert_eq!(s.d.stats.home_spawns, 1);
     s.answer(m[0].agent, m[0].epoch, uuid(0x91), 101);
     assert_eq!(s.d.dragon(x).unwrap().body, Some(uuid(0x91)));
@@ -433,12 +474,22 @@ fn a_watched_census_spawns_nothing() {
 fn seen_at_lair_materializes_an_owed_dragon_as_a_home_body() {
     let mut s = scene(11);
     let x = s.dragon("Owed", Gender::Female);
-    s.d.player_stays(&mut s.w, PLAYER, Pos::new(0, 700, 1500), Tick(100), Tick(150_000));
+    s.d.player_stays(
+        &mut s.w,
+        PLAYER,
+        Pos::new(0, 700, 1500),
+        Tick(100),
+        Tick(150_000),
+    );
     s.run(120);
     let m = materializes(&s.cmds());
     assert_eq!(m.len(), 1, "one body at the roost");
     assert_eq!(m[0].agent, agent_of(x));
-    assert_ne!(m[0].flags & boundary::MAT_HOME_BODY, 0, "a home body, not a puppet");
+    assert_ne!(
+        m[0].flags & boundary::MAT_HOME_BODY,
+        0,
+        "a home body, not a puppet"
+    );
 }
 
 /// A dragon whose home body stands is not materialized again: its body is its embodiment and the
@@ -448,7 +499,13 @@ fn seen_at_lair_ignores_a_dragon_with_a_standing_body() {
     let mut s = scene(12);
     let x = s.dragon("Housed", Gender::Female);
     s.d.dragons.get_mut(x).unwrap().body = Some(uuid(0x92));
-    s.d.player_stays(&mut s.w, PLAYER, Pos::new(0, 700, 1500), Tick(100), Tick(150_000));
+    s.d.player_stays(
+        &mut s.w,
+        PLAYER,
+        Pos::new(0, 700, 1500),
+        Tick(100),
+        Tick(150_000),
+    );
     s.run(120);
     assert!(materializes(&s.cmds()).is_empty());
     assert!(matches!(s.d.dragon(x).unwrap().state, State::Roosting));
@@ -467,14 +524,20 @@ fn a_missing_body_is_written_off_at_the_third_miss_over_two_days() {
     s.census(1, false, &[], 100 + DAY);
     assert!(s.d.dragon(x).is_some(), "two misses: still believed");
     s.census(1, false, &[], 100 + DAY + 100);
-    assert!(s.d.dragon(x).is_some(), "a third miss, but not two days after the first");
+    assert!(
+        s.d.dragon(x).is_some(),
+        "a third miss, but not two days after the first"
+    );
     s.census(1, false, &[], 100 + 2 * DAY);
     assert!(s.d.dragon(x).is_none(), "written off");
     assert_eq!(s.lost(), 1, "a player's loss");
     assert!(s.pressure(2) > 0.9, "the lair's pressure rose");
     assert_eq!(s.d.lairs[s.l as usize].missing, vec![uuid(0x81)]);
     assert!(s.d.lairs[s.l as usize].occupants.is_empty());
-    assert!(s.d.lairs[s.l as usize].vacant_since.is_some(), "its replacement waits");
+    assert!(
+        s.d.lairs[s.l as usize].vacant_since.is_some(),
+        "its replacement waits"
+    );
     s.d.check(&s.w, None).unwrap();
 }
 
@@ -517,7 +580,10 @@ fn a_missing_body_found_again_while_short_is_home_again() {
     let a = adopts(&s.cmds());
     assert_eq!(a.len(), 1, "home again");
     assert_eq!(s.d.lairs[s.l as usize].occupants.len(), 1);
-    assert!(s.d.lairs[s.l as usize].vacant_since.is_none(), "the wait is cancelled");
+    assert!(
+        s.d.lairs[s.l as usize].vacant_since.is_none(),
+        "the wait is cancelled"
+    );
     assert!(s.d.lairs[s.l as usize].missing.is_empty());
 }
 
@@ -540,7 +606,10 @@ fn after_a_refill_a_missing_body_found_is_a_stray_and_its_death_counts() {
     s.census(1, false, &[body(0x84, 0, 700.5)], 100 + 10 * DAY);
     let cmds = s.cmds();
     // A pair already: the stray is neither adopted nor removed by a census (it is left standing).
-    assert!(adopts(&cmds).iter().all(|a| a.entity != uuid(0x84)), "{cmds:?}");
+    assert!(
+        adopts(&cmds).iter().all(|a| a.entity != uuid(0x84)),
+        "{cmds:?}"
+    );
     assert!(
         discards(&cmds).iter().all(|d| d.entity != uuid(0x84)),
         "left standing: {cmds:?}"
@@ -560,10 +629,18 @@ fn after_a_refill_a_missing_body_found_is_a_stray_and_its_death_counts() {
         }),
         100 + 10 * DAY + 50,
     );
-    assert!(s.pressure(10) > p0 + 0.9, "the stray's death counts: {p0} then {}", s.pressure(10));
+    assert!(
+        s.pressure(10) > p0 + 0.9,
+        "the stray's death counts: {p0} then {}",
+        s.pressure(10)
+    );
     assert_eq!(s.d.stats.stray_deaths, 1);
     assert!(s.d.lairs[s.l as usize].missing.is_empty());
-    assert_eq!(s.lost(), lost, "the stray's death is not a second dragon's loss");
+    assert_eq!(
+        s.lost(),
+        lost,
+        "the stray's death is not a second dragon's loss"
+    );
 }
 
 /// Found each time, the misses start over.
@@ -655,7 +732,10 @@ fn a_killed_home_body_is_a_players_loss_and_its_corpse_is_not_left_behind() {
     assert!(s.d.dragon(x).is_none());
     assert_eq!(s.lost(), 1);
     assert!(s.pressure(0) > 0.9);
-    assert!(s.d.lairs[s.l as usize].left_behind.is_empty(), "the corpse is the loot");
+    assert!(
+        s.d.lairs[s.l as usize].left_behind.is_empty(),
+        "the corpse is the loot"
+    );
     assert!(s.d.lairs[s.l as usize].missing.is_empty());
     s.d.check(&s.w, None).unwrap();
 }
@@ -712,7 +792,10 @@ fn remove_discards_a_home_body() {
         })
         .expect("it is sent away");
     assert_eq!(dep.reason, 5);
-    assert!(s.d.lairs[s.l as usize].left_behind.is_empty(), "discarded, not left behind");
+    assert!(
+        s.d.lairs[s.l as usize].left_behind.is_empty(),
+        "discarded, not left behind"
+    );
 }
 
 // ---- the swaps (EQC109, EQC110, EQC117) -------------------------------------------------------
@@ -750,7 +833,13 @@ fn hand_back_is_ordered_only_for_a_settled_puppet_at_a_lair_that_is_in() {
     let mut s = scene(24);
     let x = s.dragon("Visitor", Gender::Female);
     // A puppet in view: the lair is out, so a settled state orders nothing.
-    s.d.player_stays(&mut s.w, PLAYER, Pos::new(0, 700, 1500), Tick(100), Tick(150_000));
+    s.d.player_stays(
+        &mut s.w,
+        PLAYER,
+        Pos::new(0, 700, 1500),
+        Tick(100),
+        Tick(150_000),
+    );
     s.d.dragons.get_mut(x).unwrap().fullness = 100;
     // Make it a puppet: a hunting dragon seen by the player is materialized without the flag.
     let (agent, epoch) = {
@@ -794,11 +883,20 @@ fn hand_back_is_ordered_only_for_a_settled_puppet_at_a_lair_that_is_in() {
     s.census(1, true, &[], 210);
     s.cmds();
     s.ingest(settled(boundary::STATE_FLYING, 701.5, 100.0), 220);
-    assert!(s.cmds().iter().all(|c| !matches!(c, Cmd::HandBack(_))), "flying");
+    assert!(
+        s.cmds().iter().all(|c| !matches!(c, Cmd::HandBack(_))),
+        "flying"
+    );
     s.ingest(settled(0, 800.5, 100.0), 230);
-    assert!(s.cmds().iter().all(|c| !matches!(c, Cmd::HandBack(_))), "too far");
+    assert!(
+        s.cmds().iter().all(|c| !matches!(c, Cmd::HandBack(_))),
+        "too far"
+    );
     s.ingest(settled(0, 701.5, 150.0), 235);
-    assert!(s.cmds().iter().all(|c| !matches!(c, Cmd::HandBack(_))), "too high");
+    assert!(
+        s.cmds().iter().all(|c| !matches!(c, Cmd::HandBack(_))),
+        "too high"
+    );
     s.ingest(settled(boundary::STATE_SLEEPING, 701.5, 101.0), 240);
     let hb: Vec<_> = s
         .cmds()
@@ -838,11 +936,21 @@ fn reason_8_keeps_the_body_and_resumes_roosting() {
         }),
         200,
     );
-    s.ingest(Obs::LairOut(boundary::LairOut { lair: KEY, epoch: 1 }), 200);
+    s.ingest(
+        Obs::LairOut(boundary::LairOut {
+            lair: KEY,
+            epoch: 1,
+        }),
+        200,
+    );
     let dx = s.d.dragon(x).unwrap();
     assert!(matches!(dx.state, State::Roosting), "{:?}", dx.state);
     assert_eq!(dx.body, Some(uuid(0x31)), "its body still stands");
-    assert_eq!(dx.fullness_at(&s.d.tun, Tick(200)), 70, "its hunger as captured");
+    assert_eq!(
+        dx.fullness_at(&s.d.tun, Tick(200)),
+        70,
+        "its hunger as captured"
+    );
     assert_eq!(s.d.stats.home_saved, 1);
     s.d.check(&s.w, None).unwrap();
 }
@@ -891,7 +999,10 @@ fn a_reset_lair_expects_its_rows_bodies_and_the_census_adopts_them() {
     assert_eq!(lair.left_behind, vec![uuid(0x22)]);
     assert_eq!(lair.missing, vec![uuid(0x23)]);
     assert!(lair.occupants.is_empty());
-    assert!(lair.vacant_since.is_some(), "waits until its bodies are found");
+    assert!(
+        lair.vacant_since.is_some(),
+        "waits until its bodies are found"
+    );
     let p0 = s.pressure(0);
     assert!(p0 > 1.4);
     s.census(1, false, &[body(0x21, 0, 700.5)], 100);
