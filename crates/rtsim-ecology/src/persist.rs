@@ -62,12 +62,16 @@ use crate::tunables::{DragonTunables, PreyKind};
 /// RP-14), "RTD8" before the site ledger's hand-over (EQUILIBRIUM.md S3: each lair's
 /// `found_unknown`, MZB-1012, and each nest's `seeded` and `found_unknown`, MZB-1013); no older
 /// save opens.
-const MAGIC: u32 = u32::from_le_bytes(*b"RTD9");
+///
+/// "RTD9" was the format before the home bodies (EQUILIBRIUM.md S5, EQC135): each dragon's `body`
+/// and `miss`, each lair's `gap`, `left_behind`, `missing`, `expect` and `miss`.
+/// It is the tenth format, written "RTDA" to keep the magic four bytes.
+const MAGIC: u32 = u32::from_le_bytes(*b"RTDA");
 /// The meta page of a paged save ("RTDM" before PF9, "RTN2" before tribute, "RTN3" before the oil
 /// gate, "RTN4" before the fields' daily watch, "RTN5" before the oil nests, "RTN6" before the
 /// lairs' renewal rule, "RTN7" before the nests' renewal serial, "RTN8" before the site ledger's
-/// hand-over).
-const META_MAGIC: u32 = u32::from_le_bytes(*b"RTN9");
+/// hand-over, "RTN9" before the home bodies' counters; the tenth, "RTNA").
+const META_MAGIC: u32 = u32::from_le_bytes(*b"RTNA");
 
 fn bad<T>(what: String) -> codec::Result<T> {
     Err(CodecError::Invalid(what))
@@ -430,6 +434,50 @@ fn put_dragon(w: &mut Writer, x: &Dragon) {
         w.u64(d);
         w.var_u64(u64::from(day));
     }
+    put_opt_uuid(w, x.body);
+    put_miss(w, x.miss);
+}
+
+fn put_opt_uuid(w: &mut Writer, u: Option<(u64, u64)>) {
+    match u {
+        Some((most, least)) => {
+            w.u8(1);
+            w.u64(most);
+            w.u64(least);
+        }
+        None => w.u8(0),
+    }
+}
+
+fn get_opt_uuid(r: &mut Reader<'_>) -> codec::Result<Option<(u64, u64)>> {
+    Ok(match r.u8()? {
+        0 => None,
+        1 => Some((r.u64()?, r.u64()?)),
+        t => return bad(format!("body tag {t}")),
+    })
+}
+
+fn put_uuids(w: &mut Writer, v: &[(u64, u64)]) {
+    w.var_u64(v.len() as u64);
+    for &(most, least) in v {
+        w.u64(most);
+        w.u64(least);
+    }
+}
+
+fn get_uuids(r: &mut Reader<'_>) -> codec::Result<Vec<(u64, u64)>> {
+    let n = r.len_prefix(16)?;
+    (0..n).map(|_| Ok((r.u64()?, r.u64()?))).collect()
+}
+
+/// A miss count and the tick of the first miss (EQC114).
+fn put_miss(w: &mut Writer, m: (u8, Tick)) {
+    w.u8(m.0);
+    w.var_u64(m.1.0);
+}
+
+fn get_miss(r: &mut Reader<'_>) -> codec::Result<(u8, Tick)> {
+    Ok((r.u8()?, Tick(r.var_u64()?)))
 }
 
 fn get_dragon(r: &mut Reader<'_>) -> codec::Result<Dragon> {
@@ -485,6 +533,8 @@ fn get_dragon(r: &mut Reader<'_>) -> codec::Result<Dragon> {
                 .map(|_| Ok((r.u64()?, u32_of(r.var_u64()?)?)))
                 .collect::<codec::Result<_>>()?
         },
+        body: get_opt_uuid(r)?,
+        miss: get_miss(r)?,
     })
 }
 
@@ -514,6 +564,11 @@ fn put_lair(w: &mut Writer, l: &Lair) {
     w.f32(l.fed);
     w.var_u64(l.fed_at.0);
     w.u8(u8::from(l.found_unknown));
+    w.u8(u8::from(l.gap));
+    put_uuids(w, &l.left_behind);
+    put_uuids(w, &l.missing);
+    put_uuids(w, &l.expect);
+    put_miss(w, l.miss);
 }
 
 fn get_lair(r: &mut Reader<'_>) -> codec::Result<Lair> {
@@ -552,6 +607,15 @@ fn get_lair(r: &mut Reader<'_>) -> codec::Result<Lair> {
             1 => true,
             v => return bad(format!("a lair's found_unknown {v}")),
         },
+        gap: match r.u8()? {
+            0 => false,
+            1 => true,
+            v => return bad(format!("a lair's gap {v}")),
+        },
+        left_behind: get_uuids(r)?,
+        missing: get_uuids(r)?,
+        expect: get_uuids(r)?,
+        miss: get_miss(r)?,
     })
 }
 
@@ -601,6 +665,8 @@ impl Row for Lair {
             + self.occupants.capacity() * std::mem::size_of::<Handle<Dragon>>()
             + btree_bytes(self.hoard.len(), std::mem::size_of::<(Item, i64)>())
             + btree_bytes(self.unplaced.len(), std::mem::size_of::<(Item, i64)>())
+            + (self.left_behind.capacity() + self.missing.capacity() + self.expect.capacity())
+                * std::mem::size_of::<(u64, u64)>()
     }
 }
 
@@ -895,7 +961,7 @@ fn get_cells(r: &mut Reader<'_>) -> codec::Result<Cells<u32>> {
     Ok(m.into())
 }
 
-const STATS: usize = 49;
+const STATS: usize = 60;
 
 fn stats_array(s: &DragonStats) -> [u64; STATS] {
     [
@@ -948,6 +1014,17 @@ fn stats_array(s: &DragonStats) -> [u64; STATS] {
         s.starved_away,
         s.arrivals_gated,
         s.heirs_sent,
+        s.lair_censuses,
+        s.home_adopts,
+        s.home_spawns,
+        s.home_removed,
+        s.home_recalled,
+        s.home_saved,
+        s.home_left,
+        s.home_hand_backs,
+        s.home_missing,
+        s.strays_adopted,
+        s.stray_deaths,
     ]
 }
 
@@ -1002,6 +1079,17 @@ fn stats_of(v: [u64; STATS]) -> DragonStats {
         starved_away: v[46],
         arrivals_gated: v[47],
         heirs_sent: v[48],
+        lair_censuses: v[49],
+        home_adopts: v[50],
+        home_spawns: v[51],
+        home_removed: v[52],
+        home_recalled: v[53],
+        home_saved: v[54],
+        home_left: v[55],
+        home_hand_backs: v[56],
+        home_missing: v[57],
+        strays_adopted: v[58],
+        stray_deaths: v[59],
     }
 }
 

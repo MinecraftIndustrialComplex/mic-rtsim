@@ -277,6 +277,23 @@ pub struct DragonStats {
     pub starved_away: u64,
     pub arrivals_gated: u64,
     pub heirs_sent: u64,
+    /// Home bodies (EQUILIBRIUM.md S5, EQC137): lair censuses taken, bodies adopted (a census
+    /// finding the dragon's own, a hand-back), spawned (an owed body), removed (an away or
+    /// second body, a left-behind one), dragons recalled from a hunt by a watched lair, bodies
+    /// the lair's going out left saved, bodies that went past the leash, hand-backs ordered,
+    /// bodies written off as missing, strays adopted as occupants, and strays that died after
+    /// being written off.
+    pub lair_censuses: u64,
+    pub home_adopts: u64,
+    pub home_spawns: u64,
+    pub home_removed: u64,
+    pub home_recalled: u64,
+    pub home_saved: u64,
+    pub home_left: u64,
+    pub home_hand_backs: u64,
+    pub home_missing: u64,
+    pub strays_adopted: u64,
+    pub stray_deaths: u64,
 }
 
 /// A village that pays a lair tribute (SINK.md §4.6): the lair whose dragon raided it last, the
@@ -914,6 +931,11 @@ impl Dragons {
             fed: 1.0,
             fed_at: at,
             found_unknown: false,
+            left_behind: Vec::new(),
+            missing: Vec::new(),
+            expect: Vec::new(),
+            miss: (0, Tick(0)),
+            gap: false,
         });
         debug_assert_eq!(self.lairs.get(id).map(|l| l.key), Some(key));
         self.lair_by_key.insert(key, id);
@@ -1161,6 +1183,8 @@ impl Dragons {
             oil_at: at,
             visitor: None,
             sensed: Vec::new(),
+            body: None,
+            miss: (0, Tick(0)),
         };
         let d = self.dragons.insert(row);
         // The floor of an agent that had none to hold it (a replayed record of the last session's
@@ -5101,6 +5125,16 @@ impl Dragons {
             wr.raw(&x.oil.to_le_bytes());
             wr.u64(x.oil_at.0);
             wr.u64(x.visitor.map_or(u64::MAX, u64::from));
+            match x.body {
+                Some((most, least)) => {
+                    wr.u64(1);
+                    wr.u64(most);
+                    wr.u64(least);
+                }
+                None => wr.u64(0),
+            }
+            wr.u64(u64::from(x.miss.0));
+            wr.u64(x.miss.1.0);
             if let Some(l) = x.leg {
                 for v in [l.path.x0, l.path.z0, l.path.x1, l.path.z1] {
                     wr.raw(&v.to_le_bytes());
@@ -5129,6 +5163,16 @@ impl Dragons {
             wr.raw(&l.fed.to_bits().to_le_bytes());
             wr.u64(l.fed_at.0);
             wr.u64(u64::from(l.found_unknown));
+            wr.u64(u64::from(l.gap));
+            for list in [&l.left_behind, &l.missing, &l.expect] {
+                wr.u64(list.len() as u64);
+                for u in list {
+                    wr.u64(u.0);
+                    wr.u64(u.1);
+                }
+            }
+            wr.u64(u64::from(l.miss.0));
+            wr.u64(l.miss.1.0);
         }
         wr.u64(u64::from(self.tribute_stamp));
         for (n, r) in &self.tribute {
