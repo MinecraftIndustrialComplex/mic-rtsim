@@ -128,6 +128,10 @@ pub(crate) enum Ev {
     BandPlays { band: u32, stop: u32, stamp: u32 },
     /// A village's purse reaches its next work's price (SINK.md §4.4).
     Works { node: usize, stamp: u32 },
+    /// A village's settlers' wait ends (EQC159, slice S6).
+    Settlers { node: usize, stamp: u32 },
+    /// A human village's next growth step while unloaded (EQC163, slice S6).
+    Breed { node: usize, stamp: u32 },
 }
 
 /// Conserved quantities outside markets and pipelines: what left the world to players or was
@@ -158,6 +162,8 @@ pub enum Cause {
     Player,
     /// The village grew a house and its population stepped up (P17).
     Growth,
+    /// A village's count changed (a census, settlers, growth, a refill: slice S6, EQC155).
+    Population,
     /// A predator with no haven took stock (PLAN.md §9: a dragon raided the village).
     Predator,
     /// Something outside the market changed what its flows may carry: a lane's hazard or a
@@ -170,7 +176,7 @@ impl Cause {
     pub fn forces_news(self) -> bool {
         matches!(
             self,
-            Cause::Breakpoint | Cause::Player | Cause::Growth | Cause::Predator
+            Cause::Breakpoint | Cause::Player | Cause::Growth | Cause::Population | Cause::Predator
         )
     }
 }
@@ -227,6 +233,18 @@ pub struct Stats {
     pub works_refused: u64,
     /// Tributes villages paid to dragons' lairs (MS-5).
     pub tributes: u64,
+    /// Settlers booked, by culture (slice S6).
+    pub settlers: [u64; 2],
+    /// Growth steps booked for unloaded human villages.
+    pub grown: u64,
+    /// Ribbit residents booked into a house that stood empty.
+    pub refills: u64,
+    /// Villages found short for settlers (a wait started).
+    pub emptied: u64,
+    /// Bookings that lapsed: refused by the bridge, or released as too old.
+    pub lapsed: u64,
+    /// Residents killed with a player's credit (each added pressure).
+    pub kills: u64,
 }
 
 /// What the engine asks Minecraft to do (the bridge's command buffer, later).
@@ -314,6 +332,10 @@ pub struct World {
     pub(crate) works: BTreeMap<usize, crate::works::WorksState>,
     /// Bought works the bridge has not answered: op to (node, kind key).
     pub(crate) works_pending: BTreeMap<u64, (usize, u64)>,
+    /// Villages' renewal rows, by node (slice S6; empty with `renewal` off).
+    pub villages: BTreeMap<usize, crate::villages::VillageRow>,
+    /// Resident bookings the bridge has not answered: op to (node, a house's resident).
+    pub(crate) resident_ops: BTreeMap<u64, (usize, bool)>,
 }
 
 impl World {
@@ -458,6 +480,8 @@ impl World {
             works_catalog: Vec::new(),
             works: BTreeMap::new(),
             works_pending: BTreeMap::new(),
+            villages: BTreeMap::new(),
+            resident_ops: BTreeMap::new(),
         }
     }
 
@@ -494,6 +518,8 @@ impl World {
             costs,
             local,
         });
+        let i = self.nodes.len() - 1;
+        self.make_village_row(i);
     }
 
     fn add_edge(&mut self, a: usize, b: usize, length: u64, d: u64, border: bool) {
@@ -729,23 +755,38 @@ impl World {
     }
 
     /// The census (EQUILIBRIUM.md S1) now: `village.human` and `village.ribbit`, one site per
-    /// adopted village, its members the sim's population. No K yet (beds come with slice S6), so a
-    /// village counts full or empty; human villages book no renewals yet, a ribbit village's are
-    /// the houses it booked.
+    /// adopted village. With renewal rows (slice S6, EQC173) its members are the row's count, its
+    /// capacity the row's K and its pressure the row's; a village with no row counts the
+    /// settlement's pop with no K, full or empty. Renewals are the arrivals booked: settlers and
+    /// growth for humans, refills, settlers and houses for Ribbits.
     pub fn census(&self) -> Vec<rtsim_kernel::census::KindCensus> {
         use rtsim_kernel::census::KindCensus;
         let mut out = [
             KindCensus::new("village.human"),
             KindCensus::new("village.ribbit"),
         ];
-        for n in &self.nodes {
+        let (day, half) = (self.day(), self.cfg.village_rule.half_life_days);
+        for (i, n) in self.nodes.iter().enumerate() {
             let rtsim_settle::NodeKind::Village(c) = n.kind else {
                 continue;
             };
-            let pop = self.settlements.get(n.settlement).map_or(0, |s| s.pop);
-            out[c.index()].site(u64::from(pop), 0, false, 0.0);
+            match self.villages.get(&i) {
+                Some(r) => out[c.index()].site(
+                    u64::from(r.members),
+                    u64::from(r.k),
+                    false,
+                    r.pressure.now(day, half),
+                ),
+                None => {
+                    let pop = self.settlements.get(n.settlement).map_or(0, |s| s.pop);
+                    out[c.index()].site(u64::from(pop), 0, false, 0.0);
+                }
+            }
         }
-        out[rtsim_settle::Culture::Ribbit.index()].renewals = self.stats.houses;
+        let s = &self.stats;
+        out[rtsim_settle::Culture::Human.index()].renewals = s.settlers[0] + s.grown;
+        out[rtsim_settle::Culture::Ribbit.index()].renewals =
+            s.settlers[1] + s.refills + s.houses;
         out.to_vec()
     }
 
@@ -883,6 +924,8 @@ impl World {
                 self.band_plays(band as usize, stop as usize, stamp, at)
             }
             Ev::Works { node, stamp } => self.works_due(node, stamp, at),
+            Ev::Settlers { node, stamp } => self.settlers_due(node, stamp, at),
+            Ev::Breed { node, stamp } => self.breed_due(node, stamp, at),
         }
     }
 

@@ -488,12 +488,12 @@ fn a_paged_grid_stepped_tick_by_tick_stays_within_its_budget() {
 
 /// A snapshot in an older world format is refused by name, never read as a damaged one: S8b-4a's
 /// closed lanes added a flag to the edge record every snapshot carries, so the format became
-/// `RTW4`; the one-blob form and the paged meta page start with the same magic.
+/// `RTW4` (and `RTW5` since S6's village rows); the one-blob form and the paged meta page start with the same magic.
 #[test]
 fn an_older_format_is_refused_by_name() {
     let (w, _) = world(1);
     let mut bytes = w.save();
-    assert_eq!(&bytes[..4], b"RTW4");
+    assert_eq!(&bytes[..4], b"RTW5");
     bytes[..4].copy_from_slice(b"RTW3");
     let (goods, ids) = synth::goods();
     let book = synth::recipes(&ids);
@@ -502,7 +502,7 @@ fn an_older_format_is_refused_by_name() {
         .expect("an RTW3 snapshot is refused");
     let msg = err.to_string();
     assert!(
-        msg.contains("format RTW3") && msg.contains("reads RTW4"),
+        msg.contains("format RTW3") && msg.contains("reads RTW5"),
         "the error names both formats: {msg}"
     );
     bytes[..4].copy_from_slice(b"XXXX");

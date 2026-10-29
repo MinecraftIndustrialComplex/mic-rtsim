@@ -13,8 +13,8 @@
 //! [`World::open_paged`] reads the meta and leaves the market pages where they are. Both give
 //! the same `state_hash`.
 //!
-//! **Format** `RTW4` since S8b-4a's closed lanes (2026-10-23): the edge record that every
-//! snapshot carries gained `Edge::closed`. A snapshot of an older format is refused by name
+//! **Format** `RTW5` since slice S6's village rows (2026-10-29); `RTW4` was S8b-4a's closed lanes
+//! (2026-10-23): the edge record that every snapshot carries gained `Edge::closed`. A snapshot of an older format is refused by name
 //! (`check_magic`), never read as a damaged one.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -42,6 +42,7 @@ use crate::bases::BaseState;
 use crate::config::WorldConfig;
 use crate::interest::PlayerState;
 use crate::ribbits::{Band, Growth, PlaceHouse, SentimentSnapshot, SpawnResident};
+use crate::villages::{Arrive, VillageRow};
 use crate::works::{
     Next, PlaceWork, SpawnWork, WorkCap, WorkDef, WorkGroup, WorkPlace, WorkVariant, WorksState,
 };
@@ -50,11 +51,12 @@ use crate::world::{
 };
 use rtsim_settle::Culture;
 
-/// RTW4: a world lane's edge carries its closed flag (`Edge::closed`, S8b-4a, PC51); RTW3: the
+/// RTW5: villages' renewal rows, the resident bookings, the new stats and wheel events and the
+/// arrival of a resident order (slice S6, EQC171); RTW4: a world lane's edge carries its closed flag (`Edge::closed`, S8b-4a, PC51); RTW3: the
 /// money sink's works (SINK.md) joined the meta; RTW2 moved the market rows to the end, as a row
 /// table (paging). No reader of an older format is kept: nothing is released (no backward
 /// compatibility before a release).
-const MAGIC: u32 = u32::from_le_bytes(*b"RTW4");
+const MAGIC: u32 = u32::from_le_bytes(*b"RTW5");
 
 /// Whether `magic` is this build's format: an older world format (`RTW` and another digit) is
 /// named, so an old snapshot says which format it is and never reads as a damaged one.
@@ -211,6 +213,52 @@ fn get_node(r: &mut Reader<'_>, snaps: &mut SnapDec) -> codec::Result<Node> {
     })
 }
 
+fn put_village_row(w: &mut Writer, v: &VillageRow) {
+    w.u32(v.members);
+    w.u16(v.k);
+    w.u16(v.k0);
+    w.u16(v.owed);
+    w.u64(v.owed_at);
+    w.bool(v.seen);
+    w.u32(v.seen_r);
+    w.u16(v.peak);
+    w.u16(v.pending_houses);
+    let (p, at_day) = v.pressure.parts();
+    w.f32(p);
+    w.u32(at_day);
+    w.u64(v.wait_due);
+    w.u32(v.wait_stamp);
+    w.u64(v.breed_due);
+    w.u32(v.breed_stamp);
+    w.u64(v.loaded_until);
+    w.u32(v.serial);
+}
+
+fn get_village_row(r: &mut Reader<'_>) -> codec::Result<VillageRow> {
+    Ok(VillageRow {
+        members: r.u32()?,
+        k: r.u16()?,
+        k0: r.u16()?,
+        owed: r.u16()?,
+        owed_at: r.u64()?,
+        seen: r.bool()?,
+        seen_r: r.u32()?,
+        peak: r.u16()?,
+        pending_houses: r.u16()?,
+        pressure: {
+            let p = r.f32()?;
+            let d = r.u32()?;
+            rtsim_kernel::renewal::Pressure::from_parts(p, d)
+        },
+        wait_due: r.u64()?,
+        wait_stamp: r.u32()?,
+        breed_due: r.u64()?,
+        breed_stamp: r.u32()?,
+        loaded_until: r.u64()?,
+        serial: r.u32()?,
+    })
+}
+
 fn put_ev(w: &mut Writer, e: &Ev) {
     match *e {
         Ev::Wake(n) => {
@@ -245,6 +293,16 @@ fn put_ev(w: &mut Writer, e: &Ev) {
             put_usize(w, node);
             w.u32(stamp);
         }
+        Ev::Settlers { node, stamp } => {
+            w.u8(6);
+            put_usize(w, node);
+            w.u32(stamp);
+        }
+        Ev::Breed { node, stamp } => {
+            w.u8(7);
+            put_usize(w, node);
+            w.u32(stamp);
+        }
     }
 }
 
@@ -266,6 +324,14 @@ fn get_ev(r: &mut Reader<'_>) -> codec::Result<Ev> {
             stamp: r.u32()?,
         },
         5 => Ev::Works {
+            node: get_usize(r)?,
+            stamp: r.u32()?,
+        },
+        6 => Ev::Settlers {
+            node: get_usize(r)?,
+            stamp: r.u32()?,
+        },
+        7 => Ev::Breed {
             node: get_usize(r)?,
             stamp: r.u32()?,
         },
@@ -373,6 +439,16 @@ fn put_command(w: &mut Writer, c: &Command) {
             w.u64(s.village);
             w.u64(s.house);
             put_body(w, s.body);
+            match s.arrive {
+                Arrive::House => w.u8(0),
+                Arrive::Refill => w.u8(1),
+                Arrive::Growth => w.u8(2),
+                Arrive::Settler { x, z } => {
+                    w.u8(3);
+                    w.var_i64(i64::from(x));
+                    w.var_i64(i64::from(z));
+                }
+            }
         }
         Command::PlaceWork(p) => {
             w.u8(4);
@@ -654,6 +730,16 @@ fn get_command(r: &mut Reader<'_>) -> codec::Result<Command> {
             village: r.u64()?,
             house: r.u64()?,
             body: Body::decode(r)?,
+            arrive: match r.u8()? {
+                0 => Arrive::House,
+                1 => Arrive::Refill,
+                2 => Arrive::Growth,
+                3 => Arrive::Settler {
+                    x: i32_of(r.var_i64()?)?,
+                    z: i32_of(r.var_i64()?)?,
+                },
+                t => return bad(format!("arrival {t}")),
+            },
         }),
         4 => Command::PlaceWork(PlaceWork {
             op: r.u64()?,
@@ -848,6 +934,13 @@ impl World {
             s.works_events,
             s.works_refused,
             s.tributes,
+            s.settlers[0],
+            s.settlers[1],
+            s.grown,
+            s.refills,
+            s.emptied,
+            s.lapsed,
+            s.kills,
         ] {
             w.var_u64(v);
         }
@@ -923,6 +1016,18 @@ impl World {
             w.u64(*k);
         }
         mark("growth, bases and works", &w);
+        put_usize(&mut w, self.villages.len());
+        for (n, v) in &self.villages {
+            put_usize(&mut w, *n);
+            put_village_row(&mut w, v);
+        }
+        put_usize(&mut w, self.resident_ops.len());
+        for (op, (n, house)) in &self.resident_ops {
+            w.u64(*op);
+            put_usize(&mut w, *n);
+            w.bool(*house);
+        }
+        mark("villages", &w);
         w
     }
 
@@ -1066,6 +1171,12 @@ impl World {
             works_events: r.var_u64()?,
             works_refused: r.var_u64()?,
             tributes: r.var_u64()?,
+            settlers: [r.var_u64()?, r.var_u64()?],
+            grown: r.var_u64()?,
+            refills: r.var_u64()?,
+            emptied: r.var_u64()?,
+            lapsed: r.var_u64()?,
+            kills: r.var_u64()?,
         };
         let n = r.len_prefix(2)?;
         let outbox = (0..n)
@@ -1144,6 +1255,15 @@ impl World {
         for _ in 0..r.len_prefix(17)? {
             works_pending.insert(r.u64()?, (get_usize(r)?, r.u64()?));
         }
+        let mut villages = BTreeMap::new();
+        for _ in 0..r.len_prefix(60)? {
+            let n = get_usize(r)?;
+            villages.insert(n, get_village_row(r)?);
+        }
+        let mut resident_ops = BTreeMap::new();
+        for _ in 0..r.len_prefix(10)? {
+            resident_ops.insert(r.u64()?, (get_usize(r)?, r.bool()?));
+        }
         match paged {
             None => markets.decode_rows(r, market_meta)?,
             Some((source, budget)) => markets.open_rows(source, budget, market_meta),
@@ -1191,6 +1311,8 @@ impl World {
             works_catalog,
             works,
             works_pending,
+            villages,
+            resident_ops,
         };
         world.check_indices()?;
         Ok(world)
@@ -1252,6 +1374,8 @@ impl World {
             && self.wakes.iter().all(|&(_, n)| node_ok(n))
             && self.works.keys().all(|&n| node_ok(n))
             && self.works_pending.values().all(|&(n, _)| node_ok(n))
+            && self.villages.keys().all(|&n| node_ok(n))
+            && self.resident_ops.values().all(|&(n, _)| node_ok(n))
             && self.works.values().all(|s| match s.next {
                 Next::Work { def, variant, .. } => self
                     .works_catalog
@@ -1273,7 +1397,11 @@ impl World {
         }
         for (_, e) in self.wheel.iter() {
             let ok = match *e {
-                Ev::Wake(n) | Ev::Grow { node: n, .. } | Ev::Works { node: n, .. } => node_ok(n),
+                Ev::Wake(n)
+                | Ev::Grow { node: n, .. }
+                | Ev::Works { node: n, .. }
+                | Ev::Settlers { node: n, .. }
+                | Ev::Breed { node: n, .. } => node_ok(n),
                 Ev::Deliver(_) | Ev::Arrive { .. } => true,
                 Ev::BandPlays { band, .. } => (band as usize) < self.bands.len(),
             };

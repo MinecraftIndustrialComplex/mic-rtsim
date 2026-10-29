@@ -38,6 +38,8 @@ pub enum Body {
     RibbitMusician,
     /// A ribbit resident spawned for a grown house (P17).
     RibbitResident,
+    /// A villager a human village's settlers or growth bring (EQUILIBRIUM.md §2.4.3, slice S6).
+    VillagerResident,
 }
 
 /// Which group shape a caravan has (C25; PLAN.md §8.3).

@@ -102,6 +102,33 @@ pub struct WorldConfig {
     /// How far from the meeting point the bridge searches for a work's plot, in blocks.
     /// PLACEHOLDER: 48, as a grown house's.
     pub works_radius: u32,
+    /// Villages renew (EQUILIBRIUM.md §2.4.3 and §2.4.4, slice S6, Ben's EQ-1 (a)): each keeps a
+    /// renewal row (its true count, K, pressure and settlers' wait), the census moves its count
+    /// both ways, settlers come to an emptied one, an unloaded one grows, and a Ribbit village
+    /// refills before it builds and books its population when the resident exists. Off, the world
+    /// is main's before S6: no rows, a census only raises, a house books its resident's pop.
+    pub renewal: bool,
+    /// The settlers' wait and the pressure's half-life for human and Ribbit villages (S6, EQC158):
+    /// `min(cap, base x 2^P)` days. TUNABLE, PLACEHOLDER: 16, 192, 96.
+    pub village_rule: rtsim_kernel::renewal::RenewalRule,
+    /// A loaded village breeds by vanilla's rules; an unloaded one grows toward its beds at this
+    /// logistic rate per villager-day (EQC163). TUNABLE: the model's 0.01.
+    pub village_growth_per_day: f64,
+    /// Most beds a village's K counts (EQC154). TUNABLE: 32.
+    pub village_k_max: u32,
+    /// Settlers a family brings (EQC160). TUNABLE: 2.
+    pub settlers_pair: u32,
+    /// How long a village reads loaded after its last logged census, in ticks (EQC164). TUNABLE:
+    /// 12,000.
+    pub village_loaded_ticks: u64,
+    /// Days after which a booking Java has not answered is released at the next confirmed census
+    /// (EQC162). TUNABLE: 192.
+    pub owed_max_days: u64,
+    /// A Ribbit village with fewer residents than houses gets a resident before it builds (EQC165).
+    pub ribbit_refill: bool,
+    /// The refill rides the growth clock's prosperity test as a house does (EQC167); off, a village
+    /// short of residents refills on the clock whatever its stocks.
+    pub ribbit_refill_needs_prosperity: bool,
 }
 
 impl WorldConfig {
@@ -143,6 +170,19 @@ impl WorldConfig {
             works_place_wd_milli: 10,
             works_threat_days: 24,
             works_radius: 48,
+            renewal: true,
+            village_rule: rtsim_kernel::renewal::RenewalRule {
+                base_days: 16.0,
+                cap_days: 192.0,
+                half_life_days: 96.0,
+            },
+            village_growth_per_day: 0.01,
+            village_k_max: 32,
+            settlers_pair: 2,
+            village_loaded_ticks: 12_000,
+            owed_max_days: 192,
+            ribbit_refill: true,
+            ribbit_refill_needs_prosperity: true,
         }
     }
 }

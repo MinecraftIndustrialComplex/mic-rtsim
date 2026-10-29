@@ -315,6 +315,33 @@ impl World {
             w.u64(*n as u64);
             w.u64(*k);
         }
+        // The villages' renewal rows and bookings (slice S6): nothing with renewal off.
+        for (n, v) in &self.villages {
+            w.u64(*n as u64);
+            w.u32(v.members);
+            w.u16(v.k);
+            w.u16(v.k0);
+            w.u16(v.owed);
+            w.u64(v.owed_at);
+            w.bool(v.seen);
+            w.u32(v.seen_r);
+            w.u16(v.peak);
+            w.u16(v.pending_houses);
+            let (p, d) = v.pressure.parts();
+            w.u32(p.to_bits());
+            w.u32(d);
+            w.u64(v.wait_due);
+            w.u32(v.wait_stamp);
+            w.u64(v.breed_due);
+            w.u32(v.breed_stamp);
+            w.u64(v.loaded_until);
+            w.u32(v.serial);
+        }
+        for (op, (n, house)) in &self.resident_ops {
+            w.u64(*op);
+            w.u64(*n as u64);
+            w.bool(*house);
+        }
         for map in [
             &self.outside.player_in,
             &self.outside.player_out,

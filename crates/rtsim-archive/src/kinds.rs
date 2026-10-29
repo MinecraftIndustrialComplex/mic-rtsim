@@ -114,6 +114,9 @@ kinds! {
     SETTLE_BASE = "settle.base", "Base marked", Minor;
     SETTLE_UNMARKED = "settle.unmarked", "Base unmarked", Minor;
     SETTLE_HOUSE = "settle.house", "House placed", Minor;
+    SETTLE_EMPTIED = "settle.emptied", "Village emptied", Notable;
+    SETTLE_SETTLERS = "settle.settlers", "Settlers arrive", Notable;
+    SETTLE_GREW = "settle.grew", "Village grows", Routine;
     // Phase 1: movers (rtsim-travel, recorded by rtsim-world).
     TRAVEL_CARAVAN = "travel.caravan", "Caravan sets out", Routine;
     TRAVEL_CARAVAN_LEG = "travel.caravan_leg", "Caravan on the road", Routine;

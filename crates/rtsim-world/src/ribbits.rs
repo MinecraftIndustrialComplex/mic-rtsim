@@ -88,6 +88,8 @@ pub struct SpawnResident {
     /// The PLACE_HOUSE op the resident is homed to.
     pub house: u64,
     pub body: Body,
+    /// Where it comes from and how it arrives (slice S6, EQC169).
+    pub arrive: crate::villages::Arrive,
 }
 
 /// A village's growth state (P17).
@@ -402,6 +404,7 @@ impl World {
                 village,
                 house: op,
                 body: Body::RibbitResident,
+                arrive: crate::villages::Arrive::House,
             }));
         }
         self.cfg.growth_pop_per_house as usize

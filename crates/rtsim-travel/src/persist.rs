@@ -330,6 +330,7 @@ impl Encode for Body {
             Body::RibbitMaster => 3,
             Body::RibbitMusician => 4,
             Body::RibbitResident => 5,
+            Body::VillagerResident => 6,
         });
     }
 }
@@ -343,6 +344,7 @@ impl Decode for Body {
             3 => Body::RibbitMaster,
             4 => Body::RibbitMusician,
             5 => Body::RibbitResident,
+            6 => Body::VillagerResident,
             t => return bad(format!("body {t}")),
         })
     }
