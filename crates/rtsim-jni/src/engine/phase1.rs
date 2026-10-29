@@ -1633,8 +1633,9 @@ fn apply_booked(st: &mut State, input: Input, at: u64) {
                 l.stats[stat::ROBBERIES] += 1;
             } else {
                 log_warn(&format!(
-                    "phase 1: DIAG a robbery of caravan {caravan:#x} by player {player:?} is not counted (refused {}, world tick {})",
+                    "phase 1: DIAG a robbery of caravan {caravan:#x} by player {player:?} is not counted (refused {}, the caravan's row is still there: {}, world tick {})",
                     out.refused,
+                    l.world.caravans.get(Handle::from_bits(*caravan)).is_some(),
                     l.world.now().0
                 ));
             }
