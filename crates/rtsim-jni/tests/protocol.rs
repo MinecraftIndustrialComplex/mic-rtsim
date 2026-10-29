@@ -16007,7 +16007,7 @@ mod worldmodel {
 /// EXPLORATORY (not to be kept): how late a robbery may arrive.
 #[test]
 fn explore_late_robbery() {
-    for lag in [0u64, 200, 1_000, 2_000, 4_000, 6_000, 8_000, 12_000, 24_000] {
+    for lag in [0i64, 200, 1_000, 2_000, 4_000, 6_000, 8_000, 12_000, 24_000] {
         let dir = tmpdir(&format!("lag{lag}"));
         let e = engine(&dir, 256 * 1024);
         let mut j = Java::open(e.clone(), WorldSave::fresh());
