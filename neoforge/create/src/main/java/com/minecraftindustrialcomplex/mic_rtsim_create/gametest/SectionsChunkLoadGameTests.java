@@ -1085,6 +1085,9 @@ public final class SectionsChunkLoadGameTests {
         int[] oscillations = new int[2];
         String[] lastAway = {"no report", "no report"};
         String[] lastPoll = {"none yet"};
+        // The reconciler's held count is the server's, not this test's: a command another test left held for a chunk that never loads
+        // again stays in it, so "none held" is "none more than there were when this test began" (MZB-1102).
+        int[] heldBase = {0};
         helper.onEachTick(() -> {
             if (level.getGameTime() % 100 == 0)
                 rec.poll();
@@ -1103,6 +1106,7 @@ public final class SectionsChunkLoadGameTests {
         };
         GameTestSequence s = helper.startSequence()
                 .thenExecute(() -> {
+                    heldBase[0] = ind().reconciler().held();
                     level.setChunkForced(ax, az, true);
                     level.setChunkForced(bx, az, true);
                 })
@@ -1307,7 +1311,8 @@ public final class SectionsChunkLoadGameTests {
                             check((i == 0 ? "A" : "B") + "'s reconcile lands (" + reconciles(recs, ids[i], at[0]).size() + " results of " + recs.size()
                                     + " records, " + (d == null ? "gone" : d.loadState()) + ")", !reconciles(recs, ids[i], at[0]).isEmpty());
                         }
-                        check("no reconcile held: " + ind().reconciler().held(), ind().reconciler().held() == 0);
+                        check("no reconcile held beyond the " + heldBase[0] + " there were at the start: " + ind().reconciler().held(),
+                                ind().reconciler().held() <= heldBase[0]);
                         lastPoll[0] = "passed at tick " + level.getGameTime();
                     } catch (RuntimeException e) {
                         lastPoll[0] = "tick " + level.getGameTime() + ": " + e.getMessage();
