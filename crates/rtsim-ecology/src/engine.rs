@@ -3726,6 +3726,8 @@ impl Dragons {
             Obs::NestCensus(c) => self.nest_census(c, at),
             Obs::NestLoss(l) => self.nest_loss(l, at),
             Obs::NestHeart(h) => self.nest_heart(h, at),
+            // Home bodies (EQUILIBRIUM.md S5): the engine's handling follows in later steps.
+            Obs::LairCensus(_) | Obs::LairOut(_) | Obs::DragonLeftHome(_) => {}
             Obs::LairChest(c) => {
                 if let Some(l) = self.lair_of_key(c.lair) {
                     let chest = Chest {
@@ -4852,6 +4854,9 @@ impl Dragons {
             epoch,
             flags: lair.is_some() as u32,
             home,
+            age_ticks: 0,
+            hunger: 0,
+            health: 0.0,
         }));
         self.by_entity.insert(u.entity, d);
         self.adopted.insert(u.entity, d);
@@ -4901,6 +4906,9 @@ impl Dragons {
             epoch,
             flags: lair.is_some() as u32,
             home,
+            age_ticks: 0,
+            hunger: 0,
+            health: 0.0,
         }));
         self.by_entity.insert(u.entity, d);
     }
