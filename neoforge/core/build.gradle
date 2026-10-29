@@ -72,7 +72,7 @@ neoForge {
         // matches its target fails the launch: booting at all is the suite's first assertion.
         gameTestServer {
             type = 'gameTestServer'
-            systemProperty 'neoforge.enabledGameTestNamespaces', 'mic_rtsim'
+            systemProperty 'neoforge.enabledGameTestNamespaces', (project.findProperty('gtNamespaces') ?: 'mic_rtsim').toString()
             // Unlocks RtsimConfig's test overrides; nothing else sets this property.
             systemProperty 'mic_rtsim.gametest', 'true'
             // The engine the server's session runs: native (default) or stub (-PrtsimEngine=stub).

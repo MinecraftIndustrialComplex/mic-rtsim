@@ -93,6 +93,9 @@ public final class CargoWatch {
         }
         Entity e = m.entity;
         Player p = e.level().getNearestPlayer(e, REACH);
+        com.minecraftindustrialcomplex.mic_rtsim.MicRtsim.LOGGER.info("[mic_rtsim] DIAG cargo report of agent {} member {}: {} at {} {} {}, nearest player within {}: {} (players in the level: {}); game time {}",
+                g.agent, m.index, delta, e.getX(), e.getY(), e.getZ(), REACH, p == null ? "none" : p.getGameProfile().getName() + " at " + p.getX() + " " + p.getY() + " " + p.getZ(),
+                e.level().players().size(), now);
         ByteBuffer r = session.boundary().beginJournaled(Obs.CARGO_CHANGED, Obs.CargoChanged.size(n), m.index, now);
         r.putLong(Obs.CargoChanged.AGENT, g.agent);
         r.putInt(Obs.CargoChanged.EPOCH, g.epoch);

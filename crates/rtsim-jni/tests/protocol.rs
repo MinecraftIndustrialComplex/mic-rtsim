@@ -16003,3 +16003,33 @@ mod worldmodel {
         assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
     }
 }
+
+/// EXPLORATORY (not to be kept): how late a robbery may arrive.
+#[test]
+fn explore_late_robbery() {
+    for lag in [0u64, 200, 1_000, 2_000, 4_000, 6_000, 8_000, 12_000, 24_000] {
+        let dir = tmpdir(&format!("lag{lag}"));
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        let agent = 0xCA4B_u64;
+        let cargo = phase1_caravan(&e, &mut j, agent);
+        let (member, item, n) = cargo
+            .iter()
+            .find(|(_, i, _)| i != EMERALD)
+            .cloned()
+            .unwrap_or_else(|| cargo[0].clone());
+        let before = p1_stat(&e, 5);
+        j.game_time += lag;
+        j.idle();
+        j.robbed(agent, 1, member, &[(&item, n.min(3))], wire::JAVA_OP_BIT | 0x7b01);
+        j.idle();
+        eprintln!(
+            "LAG {lag}: robberies {} -> {} (cargo {:?}); embodied {}",
+            before,
+            p1_stat(&e, 5),
+            cargo,
+            p1_stat(&e, 1)
+        );
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+}

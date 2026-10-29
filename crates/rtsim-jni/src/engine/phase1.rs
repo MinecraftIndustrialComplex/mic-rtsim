@@ -1628,9 +1628,15 @@ fn apply_booked(st: &mut State, input: Input, at: u64) {
                 l.stats[stat::CARAVAN_TRADES] += 1;
             }
         }
-        Input::Rob { player, .. } => {
+        Input::Rob { player, caravan, .. } => {
             if !out.refused && *player != (0, 0) {
                 l.stats[stat::ROBBERIES] += 1;
+            } else {
+                log_warn(&format!(
+                    "phase 1: DIAG a robbery of caravan {caravan:#x} by player {player:?} is not counted (refused {}, world tick {})",
+                    out.refused,
+                    l.world.now().0
+                ));
             }
         }
         Input::CaravanReport { .. } | Input::VillageReport { .. } => {
@@ -1961,8 +1967,17 @@ fn cargo(st: &mut State, rec: &Rec<'_>, at: u64) {
         }
     }
     let Some(bits) = caravan_of(&st.phase1, agent) else {
+        log_warn(&format!(
+            "phase 1: DIAG a CARGO_CHANGED of agent {agent:#x} names no caravan the engine knows: not booked"
+        ));
         return;
     };
+    log_info(&format!(
+        "phase 1: DIAG a CARGO_CHANGED of agent {agent:#x} (caravan {bits:#x}) by player {player:?}: {} goods out, {} in, at world tick {at} (the world is at {})",
+        out.len(),
+        inn.len(),
+        st.phase1.world.now().0
+    ));
     if !out.is_empty() {
         let goods = out.into_iter().collect();
         book(
