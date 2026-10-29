@@ -1671,13 +1671,27 @@ public final class MowzieGameTests {
         return seen;
     }
 
+    /** A camp's CAMP_DEATHs of its members: those without FLAG_STRAY (a stray's carries its own, MZB-1014). */
+    private static List<ScriptedEngine.Received> memberDeaths(long faction) {
+        return ConflictKit.campDeaths(faction).stream()
+                .filter(r -> (r.view().getInt(ConflictRecords.CampDeath.FLAGS) & ConflictRecords.CampDeath.FLAG_STRAY) == 0).toList();
+    }
+
+    /** A camp's CAMP_DEATHs of untagged strays a census listed (FLAG_STRAY, MZB-1014). */
+    private static List<ScriptedEngine.Received> strayDeaths(long faction) {
+        return ConflictKit.campDeaths(faction).stream()
+                .filter(r -> (r.view().getInt(ConflictRecords.CampDeath.FLAGS) & ConflictRecords.CampDeath.FLAG_STRAY) != 0).toList();
+    }
+
     /**
      * A camp body's death is booked and a stray's is not (§7 test 22). A grove with four strays, three of them
      * adopted, and a den with an adopted Frostmaw. A fake player kills warrior 0: CAMP_DEATH by a player, the
      * killer's UUID, slot 0, generation 1, a Java op id, and a record marker where it fell. The stray killed
-     * books nothing. Warrior 1 discarded is a death by none. {@code takeCampBody} on warrior 2 is a death by
-     * "taken" with the player, and the tag is gone. The Frostmaw killed is a CAMP_DEATH flagged chief, with
-     * the Frostmaw's body id.
+     * is no member's death: since S3 it journals a CAMP_DEATH of its own (FLAG_STRAY, slot 0, generation 0, its
+     * UUID and the player, MZB-1014) that the engine books only when the camp wrote the body off as missing,
+     * which it did not, so no member's death is added by it. Warrior 1 discarded is a death by none.
+     * {@code takeCampBody} on warrior 2 is a death by "taken" with the player, and the tag is gone. The
+     * Frostmaw killed is a CAMP_DEATH flagged chief, with the Frostmaw's body id.
      */
     @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "mowzie_deaths", skyAccess = true)
     public static void aCampBodysDeathIsBookedOnAMarkerAndAStraysIsNot(GameTestHelper helper) {
@@ -1770,22 +1784,29 @@ public final class MowzieGameTests {
                     MowzieKit.kill(w[3], level.damageSources().playerAttack(player[0]));
                 })
                 .thenIdle(20)
+                .thenWaitUntil(waits.logic(() -> check("the stray's death is journaled flagged as a stray's (" + strayDeaths(grove.faction).size()
+                        + ")", strayDeaths(grove.faction).size() == 1)))
                 .thenExecute(() -> {
-                    check("a stray's death books nothing (" + ConflictKit.campDeaths(grove.faction).size() + ")",
-                            ConflictKit.campDeaths(grove.faction).size() == 1);
+                    ScriptedEngine.Received d = strayDeaths(grove.faction).get(0);
+                    check("a stray's death adds no member's death (" + memberDeaths(grove.faction).size() + ")", memberDeaths(grove.faction).size() == 1);
+                    check("by the player (" + d.aux() + "), the fake player", d.aux() == ConflictRecords.BY_PLAYER
+                            && player[0].getUUID().equals(ConflictKit.uuidAt(d, ConflictRecords.CampDeath.KILLER_MOST)));
+                    check("slot 0, generation 0", d.view().getInt(ConflictRecords.CampDeath.SLOT) == 0
+                            && d.view().getInt(ConflictRecords.CampDeath.GENERATION) == 0);
+                    check("naming the stray's own UUID (MZB-1014)", w[3].getUUID().equals(ConflictKit.uuidAt(d, ConflictRecords.CampDeath.BODY_MOST)));
                     w[1].discard();
                 })
-                .thenWaitUntil(waits.logic(() -> check("CAMP_DEATH for the discard", ConflictKit.campDeaths(grove.faction).size() == 2)))
+                .thenWaitUntil(waits.logic(() -> check("CAMP_DEATH for the discard", memberDeaths(grove.faction).size() == 2)))
                 .thenExecute(() -> {
-                    ScriptedEngine.Received d = ConflictKit.campDeaths(grove.faction).get(1);
+                    ScriptedEngine.Received d = memberDeaths(grove.faction).get(1);
                     check("by none (" + d.aux() + ")", d.aux() == ConflictRecords.BY_NONE);
                     check("slot 1, generation 1", d.view().getInt(ConflictRecords.CampDeath.SLOT) == 1
                             && d.view().getInt(ConflictRecords.CampDeath.GENERATION) == 1);
                     check("taken by the player", RtsimApi.takeCampBody(w[2], player[0]));
                 })
-                .thenWaitUntil(waits.logic(() -> check("CAMP_DEATH for the take", ConflictKit.campDeaths(grove.faction).size() == 3)))
+                .thenWaitUntil(waits.logic(() -> check("CAMP_DEATH for the take", memberDeaths(grove.faction).size() == 3)))
                 .thenExecute(() -> {
-                    ScriptedEngine.Received d = ConflictKit.campDeaths(grove.faction).get(2);
+                    ScriptedEngine.Received d = memberDeaths(grove.faction).get(2);
                     check("by taken (" + d.aux() + ")", d.aux() == ConflictRecords.BY_TAKEN);
                     check("with the player", player[0].getUUID().equals(ConflictKit.uuidAt(d, ConflictRecords.CampDeath.KILLER_MOST)));
                     check("slot 2", d.view().getInt(ConflictRecords.CampDeath.SLOT) == 2);
@@ -1820,7 +1841,8 @@ public final class MowzieGameTests {
                             on.entries().get(0).gen() == now && on.entries().get(1).gen() == EARLIER_GEN && on.entries().get(2).gen() == now);
                     check("the death is the last", Short.toUnsignedInt(ByteBuffer.wrap(on.entries().get(2).bytes()).order(Layout.ORDER)
                             .getShort(Layout.R_KIND)) == ConflictRecords.CAMP_DEATH);
-                    check("the grove booked exactly three deaths", ConflictKit.campDeaths(grove.faction).size() == 3);
+                    check("the grove booked exactly three members' deaths and the one stray's", memberDeaths(grove.faction).size() == 3
+                            && strayDeaths(grove.faction).size() == 1);
                     deathMarker[0] = mk.id();
                     deathMarkerObject[0] = level.getEntity(mk.id());
                     check("the marker object is in the level", deathMarkerObject[0] instanceof Marker);
@@ -1847,7 +1869,7 @@ public final class MowzieGameTests {
                         check("a copy of the death, journaled in this session, is dropped", c.dropped());
                     check("the den still booked one death (a copy booked none)",
                             ConflictKit.campDeaths(den.faction).stream().filter(r -> !r.skipped()).count() == 1);
-                    record(test, "deaths", "warrior by player, discard by none, take by taken, Frostmaw chief; the stray booked none; the chief's marker "
+                    record(test, "deaths", "warrior by player, discard by none, take by taken, Frostmaw chief; the stray's death journaled flagged as one's (MZB-1014); the chief's marker "
                             + "loaded again journaled copies " + seen[0]);
                     MowzieKit.acknowledge();
                 })
@@ -2129,8 +2151,9 @@ public final class MowzieGameTests {
      * three strays: ADOPT w0 and REMOVE w1 by UUID are DONE, w1 is gone and a marker carries the records.
      * w0 (no AI) is moved 80 blocks out into a chunk forced alone; the grove is released and forced again:
      * the new census lists w0 as ELSEWHERE by slot 0, generation 1 (and w2 as a stray). With the camp in, w0's
-     * chunk is released until it has gone and forced again: {@code recounts} goes up 1, and a census comes with
-     * no CAMP_OUT, listing w0 as ELSEWHERE again.
+     * chunk is released until it has gone and forced again: {@code recounts} goes up 2, one for the hide (the camp
+     * in, a member body hidden outside its footprint: a census one tick on, MZB-1015) and one for the reload from
+     * disk, and censuses come with no CAMP_OUT, the last listing w0 as ELSEWHERE again.
      */
     @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "mowzie_elsewhere", skyAccess = true)
     public static void aRemoveByUuidTakesAStrayAndAnElsewhereBodyIsCountedApart(GameTestHelper helper) {
@@ -2210,15 +2233,17 @@ public final class MowzieGameTests {
                     far.force(outChunk, grove.cz);
                 })
                 .thenWaitUntil(waits.chunks(far.ready()))
-                .thenWaitUntil(waits.logic(() -> check("a third census (" + MowzieKit.censusCount(grove.faction) + ")", MowzieKit.censusCount(grove.faction) > was[2])))
+                .thenWaitUntil(waits.logic(() -> check("a third and a fourth census (" + MowzieKit.censusCount(grove.faction) + ")",
+                        MowzieKit.censusCount(grove.faction) >= was[2] + 2)))
                 .thenExecute(() -> {
-                    check("one recount (" + (MowzieKit.camps().recounts - was[0]) + ")", MowzieKit.camps().recounts - was[0] == 1);
+                    check("two recounts, the hide's and the reload's (" + (MowzieKit.camps().recounts - was[0]) + ")",
+                            MowzieKit.camps().recounts - was[0] == 2);
                     check("no new CAMP_OUT", ConflictKit.campOuts(grove.faction).size() == was[1]);
-                    ScriptedEngine.Received c = MowzieKit.census(grove.faction, (int) was[2] + 1);
+                    ScriptedEngine.Received c = MowzieKit.census(grove.faction, (int) was[2] + 2);
                     CensusBody b0 = MowzieKit.bodyOf(c, id[0]);
                     check("w0 is elsewhere again, slot 0, generation 1", b0 != null && (b0.flags() & ConflictRecords.CampCensus.BODY_ELSEWHERE) != 0
                             && b0.slot() == 0 && b0.generation() == 1);
-                    record(test, "elsewhere", "w0 counted ELSEWHERE twice; the reload from disk made a recount and no CAMP_OUT");
+                    record(test, "elsewhere", "w0 counted ELSEWHERE twice; the hide and the reload from disk each made a recount and no CAMP_OUT");
                 })
                 .thenSucceed();
     }
