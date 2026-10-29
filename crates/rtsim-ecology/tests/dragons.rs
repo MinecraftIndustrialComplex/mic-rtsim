@@ -363,6 +363,8 @@ fn the_kill_credit_decides_the_lairs_loss() {
                 killer: if kind == AttackerKind::None { (0, 0) } else { PLAYER },
                 dimension: 0,
                 pos: (f64::from(lp.x), 100.0, f64::from(lp.z)),
+                entity: (0, 0),
+                lair: 0,
             }),
             at,
         );
@@ -434,6 +436,8 @@ fn grudge_line() -> Dragons {
             killer: PLAYER,
             dimension: 0,
             pos: (f64::from(lp.x), 100.0, f64::from(lp.z)),
+            entity: (0, 0),
+            lair: 0,
         }),
         Tick(600),
     );
@@ -458,6 +462,8 @@ fn grudge_line() -> Dragons {
             killer: PLAYER,
             dimension: 0,
             pos: (f64::from(lp.x), 100.0, f64::from(lp.z)),
+            entity: (0, 0),
+            lair: 0,
         }),
         Tick(700),
     );
@@ -821,19 +827,31 @@ fn untagged_dragons_run(adopt_natural: bool) {
         })
     };
     let mut infra = NoInfrastructure;
-    // The lair's own dragon from world generation: adopted as its occupant.
+    // The lair's dragons from world generation, found by its census (EQC113, S5): the first two
+    // are adopted as its pair, a third is discarded (it has its dragons).
+    let b = |entity: u64| boundary::CensusBody {
+        entity: (entity, entity),
+        agent: 0,
+        species: Species::Ice,
+        flags: boundary::BODY_SLEEPING,
+        age_ticks: 90 * 24_000,
+        hunger: 50,
+        health: 300.0,
+        gender: Gender::Female,
+        variant: 1,
+        pos: (-4000.0, 30.0, 4000.0),
+    };
     d.ingest(
         &mut w,
         &mut infra,
-        &u(1, SpawnKind::Structure, boundary::UNTAGGED_SLEEPING, 77),
+        &Obs::LairCensus(boundary::LairCensus {
+            lair: 77,
+            epoch: 1,
+            dimension: 0,
+            flags: 0,
+            bodies: vec![b(1), b(2), b(6)],
+        }),
         Tick(10),
-    );
-    // A second structure dragon for the same lair: discarded (it has its dragon).
-    d.ingest(
-        &mut w,
-        &mut infra,
-        &u(2, SpawnKind::Structure, 0, 77),
-        Tick(11),
     );
     // A natural or spawner dragon: left alone, or discarded with the setting on.
     d.ingest(
@@ -871,12 +889,12 @@ fn untagged_dragons_run(adopt_natural: bool) {
             _ => None,
         })
         .collect();
-    assert_eq!(adopted, vec![1, 5]);
+    assert_eq!(adopted, vec![1, 2, 5]);
     if adopt_natural {
-        assert_eq!(discarded, vec![(2, 2), (3, 1)]);
+        assert_eq!(discarded, vec![(6, 2), (3, 1)]);
     } else {
-        // Only the second lair dragon (it has its dragon); the natural one gets no command.
-        assert_eq!(discarded, vec![(2, 2)]);
+        // Only the third lair dragon (its lair has its pair); the natural one gets no command.
+        assert_eq!(discarded, vec![(6, 2)]);
         assert!(
             !cmds
                 .iter()
@@ -885,8 +903,9 @@ fn untagged_dragons_run(adopt_natural: bool) {
         );
         assert_eq!(d.stats.discarded, 1);
     }
-    assert_eq!(d.lairs[l as usize].occupants.len(), 1);
-    assert_eq!(d.stats.adopted, 2);
+    assert_eq!(d.lairs[l as usize].occupants.len(), 2);
+    assert_eq!(d.stats.adopted, 1, "a wanderer, by the untagged path");
+    assert_eq!(d.stats.strays_adopted, 2, "the lair's pair, by its census");
     // Adopted dragons are embodied: when the plugin captures one, it goes on abstractly.
     let a1 = cmds
         .iter()

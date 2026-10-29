@@ -10,7 +10,7 @@
 //! row (and an adoption into it resets its pressure), and the rows the engine sends are marked in a
 //! set that is never saved and that no decision reads.
 
-use rtsim_ecology::boundary::{self, Obs, SpawnKind};
+use rtsim_ecology::boundary::{self, Obs};
 use rtsim_ecology::herds::climate::Uniform;
 use rtsim_ecology::herds::{HerdSpecies, HerdTunables, Herds, NewHerd};
 use rtsim_ecology::infra::NoInfrastructure;
@@ -297,21 +297,26 @@ fn lair_found(key: u64, late: bool, placed: bool) -> Obs {
     })
 }
 
-/// The lair's own world-generated dragon joining untagged (DRAGON_UNTAGGED, a structure spawn).
+/// The lair's own world-generated dragon, found standing in its footprint by the lair's census
+/// (LAIR_CENSUS, EQUILIBRIUM.md S5): the plugin no longer reports a lair's dragons untagged.
 fn its_dragon(key: u64, entity: u64) -> Obs {
-    Obs::Untagged(boundary::Untagged {
-        entity: (entity, entity),
-        spawn: SpawnKind::Structure,
-        species: Species::Fire,
+    Obs::LairCensus(boundary::LairCensus {
+        lair: key,
+        epoch: 1,
         dimension: 0,
         flags: 0,
-        age_ticks: 110 * 24_000,
-        hunger: 60,
-        gender: Gender::Female,
-        variant: 0,
-        home: (ROOST.x, 100, ROOST.z),
-        lair: key,
-        pos: (f64::from(ROOST.x), 100.0, f64::from(ROOST.z)),
+        bodies: vec![boundary::CensusBody {
+            entity: (entity, entity),
+            agent: 0,
+            species: Species::Fire,
+            flags: boundary::BODY_SLEEPING,
+            age_ticks: 110 * 24_000,
+            hunger: 60,
+            health: 400.0,
+            gender: Gender::Female,
+            variant: 0,
+            pos: (f64::from(ROOST.x), 100.0, f64::from(ROOST.z)),
+        }],
     })
 }
 
@@ -458,7 +463,7 @@ fn the_lairs_rows_are_marked_and_taken_outside_the_replay() {
     let s = &st[0];
     assert_eq!(
         (s.key, s.kind, s.k, s.count, s.away),
-        (9, SiteKind::Lair, 1, 0, 0)
+        (9, SiteKind::Lair, 2, 0, 0)
     );
     let flags = state_flags::SHORT | state_flags::EMPTY | state_flags::WAITING;
     assert_eq!(s.flags, flags);
