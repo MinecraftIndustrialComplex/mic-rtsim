@@ -4,7 +4,16 @@
 //! copied without its `rtsim/archive` (the event timeline): `events.rs` needs a real save with no
 //! archive and writes its own archive onto a copy of this one. The create save keeps its archive.
 //!
-//! - `tests/data/core`: neoforge/core's GameTest world, a fresh one, run from commit a9318ed7
+//! - `tests/data/core`: neoforge/core's GameTest world, a fresh one, run from commit 129de219
+//!   (Mowzie's Mobs M12a, the site ledger and kill credit, EQUILIBRIUM.md S3, merged with M11 at
+//!   13ac4d88 and main d53dbafd; S3's formats on top of M11's and U-e's: the conflict's pages are
+//!   RTCD (magic `RTCD`) with meta version 12, a camp's slots ending with their UUIDs and its ledger
+//!   with the bodies missing and left behind, a flags byte, the recount stamp and its due tick, the
+//!   wheel's events may be a camp recount, MZB-1014, MZB-1015; the dragons' pages are RTD9 and
+//!   their meta page RTN9, a lair ending with its `found_unknown` byte and a nest's flags with
+//!   `seeded` and `found_unknown`, MZB-1012, MZB-1013; the engine's meta page RTJM stays at
+//!   version 3 and phase 1's RTP1 at version 5; the site ledger itself is core's
+//!   `data/mic_rtsim_sites.dat`, outside the pages and not copied here); before that, a9318ed7
 //!   (Mowzie's Mobs M11 merged with main 60c759a9, which carries U-e with U-e13 and U-e14: both
 //!   sides' formats at once, M11's conflict pages RTC12 and U-e's engine meta page RTJM version 3,
 //!   as the two entries below say); before that, aec7918b
@@ -91,7 +100,9 @@
 //!   when the server stops: 6638edc's save had one, while both runs of 98d6d34 and main's 7e4042a
 //!   had every herd staying put. So the route layer is not required here; it still has to draw or
 //!   say why.
-//! - `tests/data/create`: neoforge/create's GameTest world, run from a9318ed7 with `-Psec1fx`
+//! - `tests/data/create`: neoforge/create's GameTest world, run from 129de219 with `-Psec1fx`
+//!   (M12a merged with M11 and main; the core save's formats, S3's, M11's and U-e's); before that,
+//!   a9318ed7
 //!   (M11 merged with main 60c759a9; the core save's formats, M11's and U-e's); before that, aec7918b
 //!   (M11 with M10 merged in; the core save's formats, M11's); before that, 1762b1e8
 //!   (U-e merged with M10 and main c7d0f6e2; the core save's formats, U-e's and M10's); before
