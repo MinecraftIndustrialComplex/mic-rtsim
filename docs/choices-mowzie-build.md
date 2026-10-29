@@ -14429,3 +14429,47 @@ fault is the test's, and the rows say which assumption and why it failed rarely.
   checks one step earlier), or the stray not visible to `level.getEntities` after `updateChunkStatus(ENTITY_TICKING)`; none was
   found in the code and none was seen, and the eight passing runs on record (`target/m11*-mowziesmobs*.log` of the mz11 worktree) list the
   stray. No log of the failing run was kept. Nothing was changed.
+
+## MZB-1105 The live caravan GameTest asked again while its spawn was on its way (`the engine booked the robbery`)
+
+`LivePhase1GameTests.aRealCaravanTradesIsRobbedAndTheNewsTravels` failed in three core rounds with "the engine booked the robbery" (the
+last failed check of the wait, which ran to the test's 24,000 ticks, 5 s of wall clock: vanilla's `GameTestSequence` keeps the last
+tick's exception), each at another random grid start: Mowzie M11c's rounds `m11c-gt1-core.log` and `m11c-gt2-core.log` (branch
+`feat/mowzie-m11`) and one more on main's parent branch (log gone). Branch `fix/robbery-flake`, from main d53dbafd. Test and docs only:
+no production code changed.
+
+- **MZB-1105** (a timing assumption of the test, not a fault of the engine, M10 or the module switch).
+  - *The cause.* The test finds its caravan by asking the engine every ten ticks (`P1_ADVANCE` 6,000, then `P1_SPAWN_NEAR`): the engine
+    runs its world a quarter day further for each ask, and the caravan it promotes walks on that clock, a leg of the three villages'
+    roads being about 4,000 ticks (`caravan_blocks_per_tick` 0.1, 400 blocks). Ten ticks was the test's allowance for "the last ask had
+    time to come back", but the ticks of a GameTest server run unthrottled and a step of the engine takes several of them: when the
+    ask that found the caravan had not yet shown as a group, the next ask (and the one after it) was sent, `Phase1Advance(6000)` each, and
+    the world ran a quarter to three quarters of a day past the caravan's trip. Its row arrived, turned and came home (`caravan_arrives`,
+    `dissolve(c, true)`, crates/rtsim-world/src/caravans.rs) and was removed, while its puppet, pinned by `P1_SPAWN_NEAR`
+    (`spawn_caravan(.., pinned = true)`), still stood in the arena. The robbery was reported (CARGO_CHANGED, the engine received it)
+    and refused: `Input::Rob` found no row (`World::rob_goods`, `self.caravans.get_mut(c)?`, crates/rtsim-world/src/bridge.rs), `apply_booked` counted nothing, and
+    `P1_ROBBERIES` stayed where it was for the 24,000 ticks.
+  - *The evidence.* The logs of the two failed rounds: the group was seen after 11 and 12 asks. Of the 49 core round logs I could find since
+    the test got its 24,000 ticks (2026-10-20, X2-24), 36 saw it after 9 asks, 9 after 10, the two failed ones after 11 and 12, and two after
+    17 and 18 (a caravan found late, with nothing in flight). A stress GameTest of this branch (commits 6434dc23 to ee8bb2f8, not kept in the tree) repeated the scenario 40
+    times in one server, with a refusal log in the engine: with the test's own asks 10 and 8 of 40 robberies were not booked (two runs),
+    and every one of the 8 logged in the second run was a robbery with "the caravan's row is still there: false"; with the asks gated as
+    below, 40 of 40 were booked. The rtsim-jni protocol test
+    `phase1_a_robbery_after_the_caravans_trip_is_over_has_no_row_and_is_not_booked` shows the engine's side deterministically: the same
+    caravan, robbed with no days between the spawn and the robbery, is booked, and robbed after eight more asks of the test's is not.
+  - *Why it was rare, and why M11c's rounds.* The number of asks in flight is the number of ticks the engine's step takes divided by ten, so it
+    follows the load of the machine and the cost of a step (not measured here). One ask too many is sometimes survived (the caravan was
+    far from home), two are not. The fault was there since 3ad527d9 (the 24,000 ticks); nothing in M10 or M11c, the module switch or the
+    stop's final save is needed to explain it, and none of them was found to matter. That the only two kept failures are M11c's rounds is
+    the odds of two logs, not a finding about M11c.
+  - *The fix.* One ask at a time, counted in the engine's steps and not in ticks: the next ask waits until the last was answered (two
+    steps done since it, the first step to start after the orders takes them) and, when the answer was a spawn
+    (`P1_SPAWNS_SENT` up since the ask), until the group has had ten steps to appear (a spawn the bridge rejects, or a caravan lost, is
+    asked for again). The promise is unchanged: a caravan from the engine's own flows, within 300 asks, traded with and robbed, each
+    booked once, the news in two villages' gossip. The check "the engine booked the robbery" now says how far the world's clock ran
+    since the group was seen, so a failure of this kind names itself.
+  - *Rounds.* ROUNDS-PENDING
+  - *Not changed, and why.* A robbery of an embodied puppet whose row has just gone home is refused in production too, in the steps
+    between the row's removal and the despawn the engine orders for it (`interest`: `moved_on`, 20-tick beat); the despawn's capture check
+    reports the difference (`check_capture`) and the goods it cannot book stay unbooked. It is a window of a few steps, nothing like a
+    quarter day, and it is not what failed here; it is noted, not changed.
