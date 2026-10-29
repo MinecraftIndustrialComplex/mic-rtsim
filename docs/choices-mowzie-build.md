@@ -11960,8 +11960,8 @@ rounds of phase 2 are the check, and what they found is recorded after them.
   one running after it is the ROAR (`getActiveAbilityType() == ROAR_ABILITY`). The check of 20 ticks stays (the jar's ROAR is 70) and so does everything the test
   asks of the module: no add while an ability is active, the re-pair 2 to 12 ticks after it ended, after two ticks held. The per-tick hook that clears the stuck
   machine (MZB-955) ran before the parties were made and logged an error for each of the first ticks (`conflict agent ... holds no party yet`); it skips an agent
-  with no party. In the round at 53934bdc (before the merge of U-e) the ROAR checks passed, and so did the two re-pair windows, the third turn
-  (MZB-955's hook works: it was due) and the kill; 31s then failed at the last step (MZB-959).
+  with no party (still logged by 23d's own hook and by the masked-player test's, which are not 31s's, and only logged). In the round at 53934bdc (before the merge of U-e) the ROAR checks passed, and so did the two re-pair windows, the third turn
+  (MZB-955's hook works: it was due) and the kill; 31s then failed at the last step (MZB-959). Passed in the round on the merged head (b37832e7).
 - **MZB-958** (round at 6e912760, test 24 `theChiefsSummonsArePuppets`; MZB-816, MZB-956; a test expectation, not a production fault; the cause is read from the code,
   not seen): "the warrior's animation has ended (not within 8000 ticks of the last chunk wait)". The kill came about 180 ticks after the chunk wait and the wait
   ran to its bound, 7,800 ticks (the progress bar prints a line each 20 ticks: 402 lines from the chunk wait to the failure). A warrior's death ends in
@@ -11981,7 +11981,7 @@ rounds of phase 2 are the check, and what they found is recorded after them.
   entities false, ticks lived 125)". The warrior had been chosen from those in a ticking chunk and it died 12 ticks, then stood 0.04 blocks past the lane's northern edge
   (z 3116752 is a chunk boundary: the lane is the row before it), in a chunk that does not tick, with the kill's knockback and its walk having carried it over: it is
   the jar's own death that waits for the body's tick. The one killed is now put in the lane's middle at rest before the kill (the bridge's own put-back of a stray), and
-  the record line gives its state before and after.
+  the record line gives its state before and after. Passed in the round on the merged head (b37832e7): 3 of 3 warriors stood in a ticking chunk and the one moved to the middle died there.
 - **MZB-959** (round at 53934bdc, test 31s `anAloftUmvuthiReadsAndTurns`; MZB-813, MZB-873; a test expectation): "the server's body and the packets agreed in every re-pair:
   [the bundle carries direction null, ... no glowing bit, ... the bundle's effects are []]", for both hearers at both re-pairs. The last step of the test was reached for
   the first time (no round before it got past the third turn). `Reading.packets` read the run of packets after the re-pair's add packet while their class was one of
@@ -11991,19 +11991,25 @@ rounds of phase 2 are the check, and what they found is recorded after them.
   payloads from what it sends on). The run ended at once with nothing read. The module's bundle is as designed: the add, the payload, the synched data (the direction,
   the flag byte), the attributes and the effects. The run now goes past a complex spawn payload (and no other custom payload), counts them, and the record line says how
   many of the packets after the add were one; the note for a missing direction names the classes that follow the add, so a bundle that really lacks the data says what it
-  has instead. In the round at 790d2bc5 the direction and the glowing bit were read and only the effects differed (MZB-960).
+  has instead. In the round at 790d2bc5 the direction and the glowing bit were read and only the effects differed (MZB-960). The round on the merged head (b37832e7) passed it:
+  both re-pairs came with 3 packets after the add, one of them the complex spawn payload, and 31s as a whole passed (the ROAR 71 ticks).
 - **MZB-960** (round at 790d2bc5, test 31s `anAloftUmvuthiReadsAndTurns`; MZB-813; a test expectation): "the bundle's effects are [], the body's [minecraft:fire_resistance/0,
   mowziesmobs:sunblock/0]" at both re-pairs, for both hearers. The test asked the bundle for every effect the body has, and vanilla's pairing of a mob carries none:
   `ServerEntity.sendPairingData` (1.21.1) sends the add, the entity's own pairing data, the synched data, the attributes, the equipment, the passengers and the leash, and
   `LivingEntity.onEffectAdded` sends an effect to a rider only; a client learns a mob's effects from its flags and particles, and a mod sends its own (Mowzie's Sunblock is its
   own payload, which the re-pair would skip as per-player data). The re-pair is "as if it had just come into view", so what it must carry is what the hearer's first pairing of the
   body carried, and that is what the test compares now (the effect packets after the first add packet for the body against those after the re-pair's), with a note if there is
-  no first pairing. The module is unchanged and its bundle is the vanilla pairing's. Not run yet.
+  no first pairing. The module is unchanged and its bundle is the vanilla pairing's. Passed in the round on the merged head (b37832e7), with the other two.
 - **MZB-961** (round at 790d2bc5, test 23b `anAloftUmvuthiSettlesAndRises`; MZB-809, MZB-812; a test expectation): "the throne body has made a summons (not within 9000 ticks
   of the last chunk wait)". The control sent SPAWN_ABILITY to the throne body once, and `Ability.canUse` drops a cast sent while an ability runs (the throne body's AI is on, so
   an ambient TALK or a BELLY is one chance in several): the same drop as MZB-957 and MZB-917. The wait now sends the cast again every 40 ticks to a body with no ability that has made
-  nothing, and names the cast's state in its message; the puppet's own cast a few steps before gets the same resend. Not run yet.
+  nothing, and names the cast's state in its message; the puppet's own cast a few steps before gets the same resend. Passed in the round on the merged head (b37832e7).
 
+- **MZB-962** (a flake, not diagnosed; M10's test `aRaptorWhoseFollowerAPlayerSeesIsNotCutAndIsOnceNoneIs`, `MarchMowzieGameTests`; MZB-745, MZB-473): in the round at 53934bdc, before the merge,
+  it failed once with "the cut came on the beat (0 ticks)" (the check asks for 5 to 25 ticks from the follower's move at tick 10 of a beat to the cut); the same code passed in the round at 790d2bc5 and on
+  the merged head (b37832e7). A cut 0 ticks after the move means the trim ran in the tick of the move or the cut was already counted: the test moves the follower in a tick where the sequence has just
+  seen `level.getGameTime() % 20 == 10`, and the trim of that tick (`trimDue && now % STOP_BEAT == 0`) runs before or after the sequence in the tick by their order in the tick, which a loaded server
+  can change. Not changed; the first failure is the only one in five rounds of the file.
 
 ## M12 S9
 
