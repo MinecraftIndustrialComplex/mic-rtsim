@@ -14468,7 +14468,15 @@ no production code changed.
     asked for again). The promise is unchanged: a caravan from the engine's own flows, within 300 asks, traded with and robbed, each
     booked once, the news in two villages' gossip. The check "the engine booked the robbery" now says how far the world's clock ran
     since the group was seen, so a failure of this kind names itself.
-  - *Rounds.* ROUNDS-PENDING
+  - *Rounds.* On the fix (HEAD 16bac884's code, each on a fresh GameTest world, through the shared runner): core round 1
+    (`target/rob-core1.log`) 167 of 167 required tests passed, the live test saw its group after 10 asks, booked the robbery and had the
+    news in two villages after 12 asks; core round 2 (`target/rob-core2.log`) 167 of 167, group after 9 asks, news after 10. Before:
+    3 failures in about 50 core round logs (the two kept ones and the lost one), which two rounds cannot tell from zero; the stress GameTest
+    is the stronger evidence (10 and 8 of 40 not booked with the old asks, 0 of 40 with the gated ones).
+    `cargo clippy --workspace --all-targets -- -D warnings` clean; `cargo test --workspace --no-fail-fast` in a machine at load 50 to 100:
+    2,209 passed, 2 failed, both timing tests of other crates (`rtsim-cli` `view` `at_100000_districts_a_full_world_request_keeps_the_budget_and_the_sidecar_its_cap`:
+    a card read "0 of its 2 chunks so far" where the test wanted the machines read; `rtsim-host` `tap` `the_server_threads_hand_over_keeps_its_timing_class`),
+    rerun alone: RERUN-PENDING (see the last line of this record). `cargo fmt --all --check` flags 17 files before this branch's change (none of its lines).
   - *Not changed, and why.* A robbery of an embodied puppet whose row has just gone home is refused in production too, in the steps
     between the row's removal and the despawn the engine orders for it (`interest`: `moved_on`, 20-tick beat); the despawn's capture check
     reports the difference (`check_capture`) and the goods it cannot book stay unbooked. It is a window of a few steps, nothing like a
