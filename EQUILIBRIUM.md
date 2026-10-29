@@ -48,7 +48,8 @@ Calendar used throughout: a game day is 24,000 ticks (20 real minutes); a game y
   chose MOWZIE's 6-day base, EQ-4 (b); the flat 6-day draft gives 12 to 16); a lair farmed without
   pause about one dragon a year (4.8 today). Leave the site alone and its pressure halves every game
   year; three quiet years bring a lair's wait back to within a fifth of its first. A kill by the player's pet, trap or turret counts as his, and luring a
-  creature away from home costs its site the same as killing it (§2.2, §2.3).
+  creature away from home costs its site the same as killing it, except for a dragon: a dragon lured from its
+  lair stays the lair's and costs it nothing (§2.2, §2.3; EQ-2 (a), FB-1 (a), Ben, 2026-10-29).
 - **Herds settle.** Births slow as a herd fills its range (a Beverton-Holt term), so herds sit at a
   steady share of their range whatever the forage tuning, with no winner-take-all and no extinctions
   in 60 years of any scenario. Today a 41-year run swings between 40,000 and 117,000 animals while one
@@ -363,7 +364,10 @@ ledger knows each home body's UUID, and a body not found is **missing**:
   site like a player's kill. The ledger keeps at most K missing UUIDs a site, the oldest dropped first.
 
 So luring a Frostmaw out of its den costs the den what a kill would, killing the stray later costs it
-again, and the den's crystals stay at the farmed yield of §3.3. A body that wandered off on its own,
+again, and the den's crystals stay at the farmed yield of §3.3. **A dragon is the exception (EQ-2 (a), FB-1 (a),
+Ben, 2026-10-29):** a dragon that goes more than 48 blocks from its lair becomes a puppet there and then, so it is
+never left standing away from home; it stays the lair's occupant, a lure is no loss and no stray exists, and a kill,
+a tame or any other loss while it is away costs the lair as always. A body that wandered off on its own,
 with rtsim absent, refills at most once per cap wait. Villagers and Ribbits are counted, not tracked by
 UUID: they carry no boss loot, and a missing villager is `Other`.
 
@@ -1398,7 +1402,7 @@ boss loot, how fights feel, an interface another plan must follow).
 | Only player-caused losses raise pressure | So the world does not learn to empty itself: an unattended server stays full, and a dragon eating a herd or a camp losing a feud does not slow its own renewal. |
 | Half-life 96 days (one game year), counted per site | A farmed one-member site settles at one or two arrivals a year (a lair 1.1, a den 1.8 on its 6-day base, §3.3); a lair left alone three years is back within a fifth of its first wait (a den within a third: 16 days against 12). H is the knob that sets the farmed yield. |
 | A player's loss is vanilla's kill credit (his hit in the last 100 ticks, his pet), every A10 removal, and for boss kinds any death no wild mob is credited with | A10: a creature a player takes leaves the sim, a loss to its site. Pets, traps and turrets are how a player farms without swinging a sword; for the boss kinds an unclaimed death in a loaded chunk is almost always his doing, while for villagers and herds zombies and falls are common and stay unpressured. |
-| A home body missing at a census is a player's loss while rtsim ran throughout; it stays tracked, and a stray's death counts | A body can leave home only while its chunk is loaded, which is a player's doing; this makes luring cost what killing costs, and keeps one body from being counted twice. |
+| A home body missing at a census is a player's loss while rtsim ran throughout; it stays tracked, and a stray's death counts | A body can leave home only while its chunk is loaded, which is a player's doing; this makes luring cost what killing costs, and keeps one body from being counted twice. Dragons are the exception: a dragon lured from its lair is a puppet and a lure is no loss (EQ-2 (a), FB-1 (a), 2026-10-29). |
 | A running wait is not pushed out by more losses | One wheel entry per wait and no rescheduling; the pressure from the extra losses sets the next wait. |
 | A site that never unloads gets its census and arrival when its wait ends | Otherwise a den or lair under a chunk loader would never refill. |
 | No shunning (a site that refuses arrivals for good) | Pressure alone holds a farmed site to one or two a year, and a permanent "never again" is the extinction this design removes. |
