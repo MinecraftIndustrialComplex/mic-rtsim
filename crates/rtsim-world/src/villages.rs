@@ -19,9 +19,20 @@
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 use rtsim_kernel::renewal::Pressure;
 use rtsim_kernel::rng::{StreamKey, SystemId};
-use rtsim_settle::{Culture, NodeKind};
+use rtsim_settle::{Culture, NodeKind, Pos};
+use rtsim_travel::caravan::Body;
 
+use crate::ribbits::{SpawnResident, identity_op};
 use crate::world::{Cause, Command, Ev, World};
+
+/// Fewer than this many in a village and vanilla cannot breed any more (EQC159).
+const MIN_PAIR: u32 = 2;
+/// How far the settlers come from, in blocks (EQC161).
+const SOURCE_BLOCKS: f64 = 192.0;
+/// Villages within this many blocks are the neighbours settlers come away from (EQC161).
+const NEIGHBOURS_WITHIN: u64 = 3_000;
+/// A centroid nearer than this is no direction (EQC161).
+const AWAY_MIN: f64 = 150.0;
 
 /// The villages' RNG system: the settlers' bearing and the growth steps' waits.
 pub const SYS_VILLAGE: SystemId = SystemId::named("world.village");
@@ -155,6 +166,7 @@ impl World {
                 self.set_members(i, target, at);
             }
         }
+        self.reconsider(i, at);
     }
 
     fn is_ribbit(&self, i: usize) -> bool {
@@ -214,23 +226,224 @@ impl World {
 
     /// The bridge answered a resident op (EQC162). False when the world holds no such op.
     pub fn resident_result(&mut self, op: u64, placed: bool, at: Tick) -> bool {
-        let _ = (op, placed, at);
-        false
+        if let Some(&node) = self.houses_pending.get(&op) {
+            // A booked house the bridge could not place (NOT_FREE, FAILED): its resident's booking
+            // lapses, the house stays booked (`houses` is what the clock counts).
+            if placed || !self.villages.contains_key(&node) {
+                return false;
+            }
+            self.houses_pending.remove(&op);
+            let per = u16::try_from(self.cfg.growth_pop_per_house).unwrap_or(1);
+            let row = self.villages.get_mut(&node).expect("a row");
+            row.owed = row.owed.saturating_sub(per);
+            row.pending_houses = row.pending_houses.saturating_sub(per);
+            if row.owed == 0 {
+                row.owed_at = u64::MAX;
+            }
+            self.stats.lapsed += u64::from(per);
+            self.recompute_k(node);
+            self.reconsider(node, at);
+            return true;
+        }
+        let Some((node, house)) = self.resident_ops.remove(&op) else {
+            return false;
+        };
+        let ribbit = self.is_ribbit(node);
+        let Some(row) = self.villages.get_mut(&node) else {
+            return true;
+        };
+        row.owed = row.owed.saturating_sub(1);
+        if row.owed == 0 {
+            row.owed_at = u64::MAX;
+        }
+        if house {
+            row.pending_houses = row.pending_houses.saturating_sub(1);
+        }
+        let members = row.members;
+        if placed {
+            if ribbit {
+                // Pop on spawn (EQC165): the resident exists now.
+                let row = self.villages.get_mut(&node).expect("a row");
+                let m = members + 1;
+                row.peak = row.peak.max(u16::try_from(m).unwrap_or(u16::MAX));
+                self.recompute_k(node);
+                self.set_members(node, m, at);
+            }
+        } else {
+            self.stats.lapsed += 1;
+            if !ribbit {
+                // The abstract booking lapses: the bridge would not put a villager there (EQC179).
+                self.set_members(node, members.saturating_sub(1), at);
+            }
+            self.recompute_k(node);
+        }
+        self.reconsider(node, at);
+        true
     }
 
-    /// Whether `op` is a resident or house booking the bridge has not answered.
-    pub fn is_resident_op(&self, op: u64) -> bool {
-        self.resident_ops.contains_key(&op) || self.houses_pending.contains_key(&op)
+    /// Whether the bridge's answer `placed` to `op` is one the world acts on: a resident booking's
+    /// either way, a booked house's only when it could not be placed (a placed house is
+    /// HOUSE_PLACED's business).
+    pub fn wants_resident_result(&self, op: u64, placed: bool) -> bool {
+        self.resident_ops.contains_key(&op) || (!placed && self.houses_pending.contains_key(&op))
     }
 
     /// A player killed a resident of village `i` (EQC158): its pressure rises by 1/K.
     pub(crate) fn village_killed(&mut self, i: usize, at: Tick) {
-        let _ = (i, at);
+        let half = self.cfg.village_rule.half_life_days;
+        let Some(row) = self.villages.get_mut(&i) else {
+            return;
+        };
+        let day = (at.0 / TICKS_PER_DAY) as u32;
+        row.pressure.bump(day, 1.0 / f32::from(row.k.max(1)), half);
+        self.stats.kills += 1;
+    }
+
+    /// What a village counts toward the settlers' threshold: a Ribbit village's bookings are not
+    /// members yet (EQC159).
+    fn effective(&self, i: usize) -> u32 {
+        let r = &self.villages[&i];
+        r.members + if self.is_ribbit(i) { u32::from(r.owed) } else { 0 }
+    }
+
+    /// A village is short for settlers when the engine has seen it alive, it has beds for a pair
+    /// and fewer than two are in it (EQC159).
+    fn short_for_settlers(&self, i: usize) -> bool {
+        let r = &self.villages[&i];
+        r.seen && u32::from(r.k) >= MIN_PAIR && self.effective(i) < MIN_PAIR
+    }
+
+    /// After anything that moved a village's count, K or bookings: start the settlers' wait if it
+    /// is short and none runs, drop a wait it no longer needs, and keep the growth step and the
+    /// Ribbit clock right (EQC159).
+    pub(crate) fn reconsider(&mut self, i: usize, at: Tick) {
+        if !self.villages.contains_key(&i) {
+            return;
+        }
+        let short = self.short_for_settlers(i);
+        let (running, rule) = (self.villages[&i].wait_due != u64::MAX, self.cfg.village_rule);
+        if short && !running {
+            let day = (at.0 / TICKS_PER_DAY) as u32;
+            let row = self.villages.get_mut(&i).expect("a row");
+            let delay = rule.delay_ticks(row.pressure, day);
+            let due = at.0 + delay;
+            row.wait_stamp += 1;
+            row.wait_due = due;
+            let stamp = row.wait_stamp;
+            self.schedule(Tick(due), Ev::Settlers { node: i, stamp });
+            self.stats.emptied += 1;
+            let (place, id) = (self.node_at(i, at), self.node_id(i));
+            self.tape.event(
+                rtsim_archive::kinds::SETTLE_EMPTIED,
+                place,
+                id,
+                0,
+                (delay / TICKS_PER_DAY) as i64,
+            );
+        } else if !short && running {
+            let row = self.villages.get_mut(&i).expect("a row");
+            row.wait_stamp += 1;
+            row.wait_due = u64::MAX;
+        }
     }
 
     /// The settlers' wait ran out (EQC160).
     pub(crate) fn settlers_due(&mut self, node: usize, stamp: u32, at: Tick) {
-        let _ = (node, stamp, at);
+        let Some(row) = self.villages.get_mut(&node) else {
+            return;
+        };
+        if row.wait_stamp != stamp || row.wait_due == u64::MAX {
+            return;
+        }
+        row.wait_due = u64::MAX;
+        if !self.short_for_settlers(node) {
+            return;
+        }
+        let eff = self.effective(node);
+        let k = u32::from(self.villages[&node].k);
+        let n = self.cfg.settlers_pair.min(k.saturating_sub(eff));
+        if n == 0 {
+            return;
+        }
+        let ribbit = self.is_ribbit(node);
+        let row = self.villages.get_mut(&node).expect("a row");
+        row.serial += 1;
+        let serial = row.serial;
+        let members = row.members;
+        let (x, z) = self.settlers_from(node, serial);
+        let key = self.nodes[node].key;
+        let seed = StreamKey::new(self.cfg.seed, SYS_VILLAGE, key).block(u64::from(serial), 0)[0];
+        // A human village books them abstractly (EQC160): the count rises now, Java places the
+        // bodies at the next unwatched load. A Ribbit village's count rises at the answers.
+        let row = self.villages.get_mut(&node).expect("a row");
+        row.owed = row.owed.saturating_add(n as u16);
+        if row.owed_at == u64::MAX {
+            row.owed_at = at.0;
+        }
+        if !ribbit {
+            self.set_members(node, members + n, at);
+        }
+        let body = if ribbit { Body::RibbitResident } else { Body::VillagerResident };
+        for slot in 0..n {
+            let op = identity_op(seed, u64::from(slot) + 1);
+            self.outbox.push(Command::SpawnResident(SpawnResident {
+                op,
+                village: key,
+                house: 0,
+                body,
+                arrive: Arrive::Settler { x, z },
+            }));
+            self.resident_ops.insert(op, (node, false));
+        }
+        self.stats.settlers[usize::from(ribbit)] += u64::from(n);
+        let (place, id) = (self.node_at(node, at), self.node_id(node));
+        self.tape.event(
+            rtsim_archive::kinds::SETTLE_SETTLERS,
+            place,
+            id,
+            0,
+            i64::from(n),
+        );
+        self.reconsider(node, at);
+    }
+
+    /// Where a family comes from (EQC161): the point 192 blocks out on the side away from the
+    /// other villages within 3,000 blocks, else along a bearing drawn from the village's stream.
+    /// The draw is always made, so the stream does not depend on which is used.
+    fn settlers_from(&self, node: usize, serial: u32) -> (i32, i32) {
+        let me = self.nodes[node].pos;
+        let key = self.nodes[node].key;
+        let draw = StreamKey::new(self.cfg.seed, SYS_VILLAGE, key).block(u64::from(serial), 2)[0];
+        let random = (draw >> 11) as f64 / (1u64 << 53) as f64 * std::f64::consts::TAU;
+        let (mut cx, mut cz, mut n) = (0.0f64, 0.0f64, 0u32);
+        for (j, o) in self.nodes.iter().enumerate() {
+            if j == node || !matches!(o.kind, NodeKind::Village(_)) || o.pos.frame != me.frame {
+                continue;
+            }
+            if self.pos_dist(me, o.pos).is_some_and(|d| d <= NEIGHBOURS_WITHIN) {
+                // The neighbour's nearest image, so a village across a seam counts on its side.
+                let (ox, oz) = self.topo(me.frame).toward(
+                    (i64::from(me.x), i64::from(me.z)),
+                    (i64::from(o.pos.x), i64::from(o.pos.z)),
+                );
+                cx += (ox - i64::from(me.x)) as f64;
+                cz += (oz - i64::from(me.z)) as f64;
+                n += 1;
+            }
+        }
+        let away = if n > 0 {
+            let (mx, mz) = (cx / f64::from(n), cz / f64::from(n));
+            (mx.hypot(mz) >= AWAY_MIN).then(|| (-mz).atan2(-mx))
+        } else {
+            None
+        };
+        let a = away.unwrap_or(random);
+        let p = self.canonical_pos(Pos::new(
+            me.frame,
+            me.x + (SOURCE_BLOCKS * a.cos()).round() as i32,
+            me.z + (SOURCE_BLOCKS * a.sin()).round() as i32,
+        ));
+        (p.x, p.z)
     }
 
     /// A growth step is due (EQC163).
@@ -248,6 +461,4 @@ impl World {
     pub(crate) fn day(&self) -> u32 {
         (self.now.0 / TICKS_PER_DAY) as u32
     }
-
-    fn _unused(&self, _: StreamKey, _: Command, _: Ev, _: Culture) {}
 }
