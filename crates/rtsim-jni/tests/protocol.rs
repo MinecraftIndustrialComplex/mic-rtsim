@@ -3233,12 +3233,14 @@ mod dragons {
         j.dragon_obs(&O::LairFound(db::LairFound {
             lair: LAIR,
             late: false,
+            placed: false,
             dimension: dim,
             species: Species::Fire,
             kind: LairKind::Roost,
             min: (HOME.0 - 30, 60, HOME.2 - 30),
             max: (HOME.0 + 30, 140, HOME.2 + 30),
             home: HOME,
+            row: Default::default(),
         }));
         j.idle();
         j.idle();
@@ -3347,12 +3349,14 @@ mod dragons {
         j.dragon_obs(&O::LairFound(db::LairFound {
             lair: LAIR,
             late: false,
+            placed: false,
             dimension: dim,
             species: Species::Fire,
             kind: LairKind::Roost,
             min: (HOME.0 - 30, 60, HOME.2 - 30),
             max: (HOME.0 + 30, 140, HOME.2 + 30),
             home: HOME,
+            row: Default::default(),
         }));
         j.idle();
         j.idle();
@@ -3466,12 +3470,14 @@ mod dragons {
         j.dragon_obs(&O::LairFound(db::LairFound {
             lair: LAIR,
             late: false,
+            placed: false,
             dimension: dim,
             species: Species::Fire,
             kind: LairKind::Roost,
             min: (HOME.0 - 30, 60, HOME.2 - 30),
             max: (HOME.0 + 30, 140, HOME.2 + 30),
             home: HOME,
+            row: Default::default(),
         }));
         j.idle();
         j.idle();
@@ -3565,12 +3571,14 @@ mod dragons {
         j.dragon_obs(&O::LairFound(db::LairFound {
             lair: LAIR,
             late: false,
+            placed: false,
             dimension: dim,
             species: Species::Fire,
             kind: LairKind::Roost,
             min: (HOME.0 - 30, 60, HOME.2 - 30),
             max: (HOME.0 + 30, 140, HOME.2 + 30),
             home: HOME,
+            row: Default::default(),
         }));
         j.idle();
         j.idle();
@@ -4304,12 +4312,14 @@ mod dragons {
         j.dragon_obs(&O::LairFound(db::LairFound {
             lair: LAIR,
             late: false,
+            placed: false,
             dimension: dim,
             species: Species::Fire,
             kind: LairKind::Roost,
             min: (HOME.0 - 30, 60, HOME.2 - 30),
             max: (HOME.0 + 30, 140, HOME.2 + 30),
             home: HOME,
+            row: Default::default(),
         }));
         let mut fed = untagged((0xD3, 0x1), SpawnKind::Structure, LAIR, dim);
         if let O::Untagged(u) = &mut fed {
@@ -4488,12 +4498,14 @@ mod dragons {
         j.dragon_obs(&O::LairFound(db::LairFound {
             lair: LAIR,
             late: false,
+            placed: false,
             dimension: dim,
             species: Species::Fire,
             kind: LairKind::Roost,
             min: (HOME.0 - 30, 60, HOME.2 - 30),
             max: (HOME.0 + 30, 140, HOME.2 + 30),
             home: HOME,
+            row: Default::default(),
         }));
         let mut fed = untagged((0xD3, 0x2), SpawnKind::Structure, LAIR, dim);
         if let O::Untagged(u) = &mut fed {
@@ -4573,12 +4585,14 @@ mod dragons {
         j.dragon_obs(&O::LairFound(db::LairFound {
             lair: LAIR,
             late: false,
+            placed: false,
             dimension: dim,
             species: Species::Fire,
             kind: LairKind::Roost,
             min: (HOME.0 - 30, 60, HOME.2 - 30),
             max: (HOME.0 + 30, 140, HOME.2 + 30),
             home: HOME,
+            row: Default::default(),
         }));
         let mut fed = untagged((0xD3, 0x2), SpawnKind::Structure, LAIR, dim);
         if let O::Untagged(u) = &mut fed {
@@ -4671,12 +4685,14 @@ mod dragons {
         j.dragon_obs(&O::LairFound(db::LairFound {
             lair: LAIR,
             late: false,
+            placed: false,
             dimension: dim,
             species: Species::Fire,
             kind: LairKind::Roost,
             min: (HOME.0 - 30, 60, HOME.2 - 30),
             max: (HOME.0 + 30, 140, HOME.2 + 30),
             home: HOME,
+            row: Default::default(),
         }));
         j.dragon_obs(&untagged((0xD3, 0x3), SpawnKind::Structure, LAIR, dim));
         j.idle();

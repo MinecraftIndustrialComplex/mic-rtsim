@@ -17286,3 +17286,56 @@ DRAGON_DIED):
 - **MZB-1034** (F15, DIED is left alone): the lead took the alternative. Phase 1 puppets belong to no site, so
   nothing would read a killer kind on DIED, and RtsimSession is the U slices'. The design's step 9 is dropped;
   DIED's layout, phase 1's decoder and RtsimSession are unchanged.
+
+### The merge of M11 and main into M12a (MZB-1035 to MZB-1039)
+
+`feat/mowzie-m11` at 13ac4d88 (M11a, M11b and M11c, merged with main d53dbafd: M10, slices U-e, U-f and U-i, the Mowzie path
+sweep mixin, the flake fixes MZB-1100 to MZB-1104) into this branch, commit 24fbaf54. M12a had merged M11 once, at 33d628e1
+(before the camps step), so the merge brought M11's work since: M10's march, U-e's journaled module switch, M11c, and main.
+
+- **MZB-1035** (the merge, five conflicts, each with one hunk, both sides kept): `rtsim-jni/src/engine.rs`, M12a's
+  `write_site_states` and M11's `SaveKind` (P29: which generation a save confirms) are two additions at one place, both kept.
+  `rtsim-host/src/java.rs`, M12a's `WorldSave` comment (it keeps the site ledger) and M11's `patch_switch` (U-e's journaled
+  MODULE_SWITCH), both kept. `docs/boundary.md`, M11's NOT_LOADED sentences on TRANSFER_TO_CONTAINER (RP-210, MZB-760) come first
+  and M12a's SITE_STATE bullet and section 2.5 follow, unchanged. `docs/choices-mowzie-build.md`, both appended a section at the
+  end: M11's (the end of slice R's section, MZB-1100 to MZB-1104) first and this one last. `Nests.java`, two imports
+  (`JournalDependent`, `SiteLedger`), in alphabetical order. No record id clashes: M11's side ends at MZB-962, main's at MZB-1104, this
+  range is MZB-1000 to MZB-1099.
+- **MZB-1036** (where the two designs meet, nothing contradicts): no choice between them was needed, and what follows is how they
+  combine.
+  - **The chief's death, the tribute and the kill credit.** M11's grove earmark (MZB-930: what the grove owes its chest is held
+    apart from the haven market) and S3's credit act on different state and compose in the order a record is heard: a CHIEF_KILLED
+    or a chief's CAMP_DEATH is booked as before (the fall, the heir, `LossCause::from_credit` for the pressure), and the tribute owed
+    stays owed in `owed_tribute` and in the world's held books, untouched by the death and not part of the ledger row (the row
+    carries bodies, not goods). A reset that loses the engine loses both together (the earmark with the world model it is booked
+    in), so the ledger's hand-over never holds a tribute the new engine does not know.
+  - **The camp's census.** `camp_census` ends: the next recount is planned (S3, MZB-1015), the heir is looked at (M9), and the
+    tribute owed goes (M11: `place_tribute` no longer reads a market, so it needs no clock). A camp going out forgets its chest,
+    lets a parked stack go again (M11, MZB-760) and cancels its booked recount (S3) in the same arm; the order between them is of no
+    consequence.
+  - **FACTION_FOUND, LAIR_FOUND, NEST_FOUND.** M11 changed none of the three records; the tails and flag 2 stand as MZB-1004 and
+    MZB-1012 have them. M11's HAVEN_CHEST (0x0817), OWED_HUNT (0x880C) and BAND_MARCH (0x880B) and U-e's MODULE_SWITCH (0x0132) are
+    kinds this slice does not touch.
+  - **DRAGON_DIED's tamer.** M11 changed the dragons' tribute (parked stacks, the same chest rule) and not the death, so the tamer
+    (killer kind 4) and the engine's `from_credit` arm are as MZB-1010 has them.
+  - **The module switch (U-e) and the SITE_STATE stream.** SITE_STATEs are core commands queued in `State`, not the module's: a
+    module switched off drops its own queued commands (`conflict::switched`), not the rows already queued, and a switched-off
+    module changes nothing, so its marks wait in the engine and are taken at the switch-on's reset end (the replay holds them, as
+    for a restart). Records the module kept while off (RP-292) are applied there too and mark their camps, so the rows follow what
+    they brought. Nothing was changed.
+  - **The reinstall marker (U-g11) and the gap.** The marker now stays while the industry file's write has failed, so a restart
+    before it is deleted resets again: a second gap, as MZB-1011 already says a crash does, and the rows written between read GAP,
+    which errs toward booking Other at the cap.
+  - **The ledger is still not journal dependent** (MZB-1011): main's U-g/U-h list (`JournalDependent`) names the SavedData that
+    hold an op's effect or its dedup; the site ledger holds neither, and a failed write loses at most the rows since the last good
+    one, which matter only after a reset.
+- **MZB-1037** (the formats after the merge): the conflict's pages stay M12a's RTCD with meta version 12 (a camp's slot ends with its
+  UUID, a camp with its missing and left behind, a flags byte, `recount`, `recount_at`; MZB-1014, MZB-1015) and the dragons'
+  pages RTD9 with meta RTN9 (a lair's `found_unknown`, a nest's `seeded` and `found_unknown`; MZB-1012, MZB-1013); M11 changed
+  neither since 33d628e1 (it only made their table lists public). The engine's meta RTJM is M11's version 3 (U-e's module mask)
+  and phase 1's RTP1 is version 5; S3 adds nothing to either (the site marks and the SITE_STATE queue are never saved, MZB-1011).
+  So the merge gives no format a new version: it puts M11's RTJM 3 and RTP1 5 beside S3's RTCD 12 and RTD9 and RTN9, and the
+  viewer fixtures, which M11 refreshed with RTCC and RTD8 pages, are written again (MZB-1039).
+- **MZB-1038** (test-side fix, `rtsim-jni/tests/protocol.rs`): M11's tests build `LairFound` as it was before S3 gave it `placed`
+  and `row`; the eight initialisers take `placed: false` and `row: Default::default()`, the values of the nine S3 already had. No
+  behaviour is involved.
