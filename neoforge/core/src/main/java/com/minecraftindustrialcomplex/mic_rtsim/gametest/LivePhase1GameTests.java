@@ -84,6 +84,7 @@ public final class LivePhase1GameTests {
         long[] ask = {0, 0}; // ticks waited since the last ask, asks
         boolean[] traded = {false};
         long[] robbedAt = {0}, robbedSteps = {0};
+        List<String> askLog = new ArrayList<>();
         String[] robbed = {null};
         List<String> told = new ArrayList<>();
 
@@ -104,6 +105,9 @@ public final class LivePhase1GameTests {
                         e.phase1Advance(6_000);
                         e.phase1SpawnNear(agent, 1, dim, at.x, at.y, at.z, 2_000, ox + 150, oz + 150);
                         ask[1]++;
+                        long[] d = e.phase1Stats();
+                        askLog.add("ask " + ask[1] + " at game tick " + helper.getLevel().getGameTime() + ", engine steps " + e.steps()
+                                + ", world tick " + d[NativeEngine.P1_WORLD_TICK] + ", spawns sent " + d[NativeEngine.P1_SPAWNS_SENT]);
                     }
                     long[] s = e.phase1Stats();
                     check("the engine materialized a caravan off its flows (asks " + ask[1] + ", world tick "
@@ -124,6 +128,10 @@ public final class LivePhase1GameTests {
                         }
                     }
                     record("liveCaravan", "materialized after asks", ask[1]);
+                    record("liveCaravan", "DIAG the last asks", askLog.subList(Math.max(0, askLog.size() - 4), askLog.size())
+                            + " ; the group was seen at game tick " + helper.getLevel().getGameTime() + ", engine steps " + e.steps()
+                            + ", world tick " + e.phase1Stats()[NativeEngine.P1_WORLD_TICK] + ", spawns sent " + e.phase1Stats()[NativeEngine.P1_SPAWNS_SENT]
+                            + " (base " + base[NativeEngine.P1_SPAWNS_SENT] + ")");
                     record("liveCaravan", "cargo in the chests (C21)", cargo);
                     check("the caravan carries wares in its chests", stacks > 0);
                     List<String> offers = new ArrayList<>();
