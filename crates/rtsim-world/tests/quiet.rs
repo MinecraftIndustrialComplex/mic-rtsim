@@ -76,100 +76,101 @@ fn a_grid_of_villages_nearly_settles() {
 }
 
 /// Villages renew (EQUILIBRIUM.md S6, EQC173): a grid of villages the census has seen alive, a few
-/// of them wiped by a player at day 200 and the bridge answering every order at once, against the
-/// same grid with no wipe. Settlers, growth and refills run for years of game time; at the end the
-/// wiped world is no busier than the control (which, as `a_grid_of_villages_nearly_settles` says
-/// of the grid, is not silent either), conserved after every window.
+/// of them wiped by a player at day 200 and the bridge answering every order at once. Settlers,
+/// growth and refills run for years of game time and then stop: in the last 300 days no village
+/// books a settler, a growth step, a refill or a house, none has a booking or a wait running, no
+/// market event is a population change or a growth, and conservation held after every window.
+///
+/// What it does not assert is that the markets go silent. They do not, with or without S6: the
+/// grid's late rate is chaotic, and any perturbation at all (the same four villages' populations
+/// set to 1 for a month and set back, with no renewal) flips a seed between about 0.1 and 3 market
+/// events per market per day in the long run (EQC184).
 #[test]
 fn sim_quiet_stays_quiet_with_settlers() {
-    use rtsim_world::Command;
     use rtsim_world::inputs::{Input, apply};
+    use rtsim_world::{Cause, Command};
     use std::collections::BTreeMap;
 
-    /// Market events per market per day in each 100-day window of 1,800 days, and the renewals
-    /// the run booked.
-    fn windows(wipe: bool) -> (Vec<f64>, u64) {
-        let mut cfg = WorldConfig::new(42);
-        cfg.check_every_event = false;
-        cfg.genesis = Genesis::AtTarget;
-        let (goods, ids) = synth::goods();
-        let book = synth::recipes(&ids);
-        let mut w = World::build(cfg, goods, book, synth::grid(36, 42));
-        let mut nodes: BTreeMap<u64, usize> =
-            (0..w.nodes.len()).map(|i| (w.nodes[i].key, i)).collect();
-        let ribbit = |w: &World, i: usize| {
-            w.nodes[i].kind.culture() == Some(rtsim_settle::Culture::Ribbit)
-        };
-        // The census of every village at day 1: every village is seen alive.
-        w.run_until(Tick::from_days(1));
-        let mut real: BTreeMap<usize, u32> = BTreeMap::new();
-        for i in 0..w.nodes.len() {
-            let pop = w.nodes[i].local.pop;
-            real.insert(i, pop);
-            let beds = if ribbit(&w, i) { 0 } else { pop };
-            w.census_village(i, pop, beds, true, w.now());
-        }
-        let wiped = [0usize, 6, 14, 25];
-        assert!(wiped.iter().any(|&i| ribbit(&w, i)) && wiped.iter().any(|&i| !ribbit(&w, i)));
-        let mut out = Vec::new();
-        let mut before = w.stats.market_events;
-        for day in 2..=1_800u64 {
-            w.run_until(Tick::from_days(day));
-            if wipe && day == 200 {
-                for &i in &wiped {
-                    let key = w.nodes[i].key;
-                    let now = w.now().0;
-                    for _ in 0..real[&i] {
-                        let report = Input::VillageReport { key, player: (1, 2), kind: 8 };
-                        apply(&mut w, &mut nodes, &report, now);
-                    }
-                    real.insert(i, 0);
-                    let beds = if ribbit(&w, i) { 0 } else { w.nodes[i].local.pop.max(8) };
-                    for _ in 0..2 {
-                        w.census_village(i, 0, beds, true, w.now());
-                    }
-                }
-            }
-            // The bridge: every house stands and every resident exists the day it is ordered.
-            for _ in 0..4 {
-                let cmds = w.take_commands();
-                if cmds.is_empty() {
-                    break;
-                }
-                for c in cmds {
-                    match c {
-                        Command::PlaceHouse(h) => {
-                            w.house_placed(h.op);
-                        }
-                        Command::SpawnResident(r) => {
-                            let now = w.now();
-                            w.resident_result(r.op, true, now);
-                            *real.get_mut(&w.node_of_key(r.village).unwrap()).unwrap() += 1;
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            if day % 100 == 0 {
-                w.check_conserved(w.now()).unwrap();
-                let events = w.stats.market_events;
-                out.push((events - before) as f64 / 100.0 / w.nodes.len() as f64);
-                before = events;
-            }
-        }
-        (out, w.stats.settlers.iter().sum::<u64>() + w.stats.grown + w.stats.refills)
+    let mut cfg = WorldConfig::new(42);
+    cfg.check_every_event = false;
+    cfg.genesis = Genesis::AtTarget;
+    let (goods, ids) = synth::goods();
+    let book = synth::recipes(&ids);
+    let mut w = World::build(cfg, goods, book, synth::grid(36, 42));
+    let mut nodes: BTreeMap<u64, usize> = (0..w.nodes.len()).map(|i| (w.nodes[i].key, i)).collect();
+    let ribbit = |w: &World, i: usize| {
+        w.nodes[i].kind.culture() == Some(rtsim_settle::Culture::Ribbit)
+    };
+    // The census of every village at day 1: every village is seen alive.
+    w.run_until(Tick::from_days(1));
+    let mut real: BTreeMap<usize, u32> = BTreeMap::new();
+    for i in 0..w.nodes.len() {
+        let pop = w.nodes[i].local.pop;
+        real.insert(i, pop);
+        let beds = if ribbit(&w, i) { 0 } else { pop };
+        w.census_village(i, pop, beds, true, w.now());
     }
-
-    let (control, renewals0) = windows(false);
-    let (wiped, renewals) = windows(true);
-    eprintln!("control {control:.3?}\nwiped   {wiped:.3?}");
-    assert!(renewals >= renewals0 + 4, "the wipe was renewed: {renewals0} -> {renewals}");
-    let late = |w: &[f64]| w[w.len() - 3..].iter().sum::<f64>() / 3.0;
-    assert!(late(&wiped) < 0.3, "{:.3}", late(&wiped));
-    assert!(
-        late(&wiped) < late(&control) + 0.1,
-        "the renewed world is no busier than the control: {:.3} against {:.3}",
-        late(&wiped),
-        late(&control)
-    );
+    let wiped = [0usize, 6, 14, 25];
+    assert!(wiped.iter().any(|&i| ribbit(&w, i)) && wiped.iter().any(|&i| !ribbit(&w, i)));
+    let renewals = |w: &World| {
+        let s = &w.stats;
+        s.settlers.iter().sum::<u64>() + s.grown + s.refills + s.houses + s.lapsed
+    };
+    let mut at_1500 = 0;
+    for day in 2..=1_800u64 {
+        w.run_until(Tick::from_days(day));
+        if day == 200 {
+            for &i in &wiped {
+                let key = w.nodes[i].key;
+                let now = w.now().0;
+                for _ in 0..real[&i] {
+                    let report = Input::VillageReport { key, player: (1, 2), kind: 8 };
+                    apply(&mut w, &mut nodes, &report, now);
+                }
+                real.insert(i, 0);
+                let beds = if ribbit(&w, i) { 0 } else { w.nodes[i].local.pop.max(8) };
+                for _ in 0..2 {
+                    w.census_village(i, 0, beds, true, w.now());
+                }
+            }
+        }
+        if day == 1_500 {
+            at_1500 = renewals(&w);
+            w.enable_trace();
+        }
+        // The bridge: every house stands and every resident exists the day it is ordered.
+        for _ in 0..4 {
+            let cmds = w.take_commands();
+            if cmds.is_empty() {
+                break;
+            }
+            for c in cmds {
+                match c {
+                    Command::PlaceHouse(h) => {
+                        w.house_placed(h.op);
+                    }
+                    Command::SpawnResident(r) => {
+                        let now = w.now();
+                        w.resident_result(r.op, true, now);
+                        *real.get_mut(&w.node_of_key(r.village).unwrap()).unwrap() += 1;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if day % 100 == 0 {
+            w.check_conserved(w.now()).unwrap();
+        }
+    }
+    assert!(w.stats.settlers.iter().sum::<u64>() >= 4, "settlers came: {:?}", w.stats.settlers);
+    assert!(w.stats.grown + w.stats.refills > 0, "and growth ran");
+    assert_eq!(renewals(&w), at_1500, "no renewal in the last 300 days");
+    for i in 0..w.nodes.len() {
+        let Some(r) = w.village_row(i) else { continue };
+        assert_eq!(r.members, real[&i], "village {i}: the sim holds what stands there");
+        assert_eq!((r.owed, r.wait_due, r.breed_due), (0, u64::MAX, u64::MAX), "village {i}: {r:?}");
+    }
+    let rows = w.trace.clone().unwrap_or_default();
+    let renewing = rows.iter().filter(|r| matches!(r.cause, Cause::Population | Cause::Growth)).count();
+    assert_eq!(renewing, 0, "no market event of the last 300 days was a renewal's");
 }

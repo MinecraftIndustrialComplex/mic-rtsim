@@ -1022,13 +1022,12 @@ impl Java {
                     cmd::WRITE_GOSSIP | cmd::PLACE_HOUSE | cmd::SPAWN_RESIDENT => {
                         let status = if self.applied_cmd_ops.contains(&op) {
                             obs::command_result::DUPLICATE_OP
-                        } else if rec.kind == cmd::PLACE_HOUSE && self.no_free_plot {
-                            obs::command_result::NOT_FREE
-                        } else if rec.kind == cmd::SPAWN_RESIDENT
-                            && self.no_free_bed
-                            && wire::u32_at(rec.bytes, cmd::spawn_resident::FLAGS)
-                                & cmd::spawn_resident::FLAG_ARRIVAL
-                                != 0
+                        } else if (rec.kind == cmd::PLACE_HOUSE && self.no_free_plot)
+                            || (rec.kind == cmd::SPAWN_RESIDENT
+                                && self.no_free_bed
+                                && wire::u32_at(rec.bytes, cmd::spawn_resident::FLAGS)
+                                    & cmd::spawn_resident::FLAG_ARRIVAL
+                                    != 0)
                         {
                             obs::command_result::NOT_FREE
                         } else {

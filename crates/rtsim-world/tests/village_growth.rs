@@ -36,9 +36,9 @@ fn world(seed: u64) -> (World, Nodes) {
 }
 
 /// The Ribbit tests' world: the one `features.rs` grows houses in (a raid on the road keeps the
-/// markets' stocks moving), `refill_unconditionally` taking the prosperity test off the refill so
-/// the mechanism is tested on its own clock (EQC167: the knob, its default and the check that
-/// decides it are in `rtsim-cli`'s `kill_all_ribbits`).
+/// markets' stocks moving). `refill_unconditionally` is the knob's default (EQC167, EQC184: the
+/// refill takes no prosperity test); the house tests leave the test on a refill so a house is
+/// only built when the village is prosperous, as before S6.
 fn ribbit_world(seed: u64, refill_unconditionally: bool) -> (World, Nodes) {
     let mut cfg = config(seed);
     cfg.ribbit_refill_needs_prosperity = !refill_unconditionally;
