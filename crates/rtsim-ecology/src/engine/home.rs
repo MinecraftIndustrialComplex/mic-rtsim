@@ -35,7 +35,11 @@ impl Dragons {
         v.sort_by_key(|d| {
             let x = &self.dragons[*d];
             let held = x.body.is_some() || self.pending_home.contains(d);
-            (std::cmp::Reverse(held), std::cmp::Reverse(x.age(at)), d.to_bits())
+            (
+                std::cmp::Reverse(held),
+                std::cmp::Reverse(x.age(at)),
+                d.to_bits(),
+            )
         });
         v.truncate(self.tun.home_bodies_max);
         v
@@ -229,12 +233,16 @@ impl Dragons {
                         at,
                         "recall",
                         Some(d),
-                        "its lair came in with a player near: its trip ends, its body stands".into(),
+                        "its lair came in with a player near: its trip ends, its body stands"
+                            .into(),
                     );
                     self.adopt_home(w, d, c.bodies[i].entity, at);
                 }
                 Plan::Miss(d) => {
-                    let (n, span) = (self.tun.miss_writeoff, self.tun.miss_span_days * TICKS_PER_DAY);
+                    let (n, span) = (
+                        self.tun.miss_writeoff,
+                        self.tun.miss_span_days * TICKS_PER_DAY,
+                    );
                     let x = self.dragons.get_mut(d).expect("live");
                     if x.miss.0 == 0 {
                         x.miss = (1, at);
@@ -307,7 +315,11 @@ impl Dragons {
         if lair.found_unknown && lair.occupants.is_empty() {
             lair.pressure = Pressure::default();
         }
-        let pos = self.canon(u32::from(self.lairs[l as usize].pos.frame), b.pos.0, b.pos.2);
+        let pos = self.canon(
+            u32::from(self.lairs[l as usize].pos.frame),
+            b.pos.0,
+            b.pos.2,
+        );
         let d = self.add_dragon(
             w,
             NewDragon {
@@ -437,7 +449,12 @@ impl Dragons {
         };
         x.rest = Some((lp, ly));
         self.track(d);
-        self.note(at, "materialize", Some(d), "its owed home body is spawned".into());
+        self.note(
+            at,
+            "materialize",
+            Some(d),
+            "its owed home body is spawned".into(),
+        );
     }
 
     /// The plugin answered an adoption, a spawn or a hand-back with the home body (EQC122).
@@ -503,7 +520,10 @@ impl Dragons {
             }
             return;
         }
-        let (n, span) = (self.tun.miss_writeoff, self.tun.miss_span_days * TICKS_PER_DAY);
+        let (n, span) = (
+            self.tun.miss_writeoff,
+            self.tun.miss_span_days * TICKS_PER_DAY,
+        );
         let listed: BTreeSet<Uuid> = c.bodies.iter().map(|b| b.entity).collect();
         let lair = &mut self.lairs[l as usize];
         lair.expect.retain(|u| !listed.contains(u));
@@ -534,7 +554,12 @@ impl Dragons {
         if let Some(l) = l {
             self.site_dirty.insert(l);
         }
-        self.note(at, "leash", Some(d), "left its lair: a puppet from here".into());
+        self.note(
+            at,
+            "leash",
+            Some(d),
+            "left its lair: a puppet from here".into(),
+        );
     }
 
     /// A home body whose lair went out, or whose chunk unloaded, stays in the world and vanilla
@@ -555,7 +580,12 @@ impl Dragons {
         self.by_entity.retain(|_, v| *v != d);
         self.pending_home.remove(&d);
         self.stats.home_saved += 1;
-        self.note(at, "saved", Some(d), "its home body stays; vanilla saves it".into());
+        self.note(
+            at,
+            "saved",
+            Some(d),
+            "its home body stays; vanilla saves it".into(),
+        );
         self.roost(w, d, at);
     }
 
@@ -608,18 +638,22 @@ impl Dragons {
             return;
         };
         let u = dd.entity;
-        let mine = self.lairs[l as usize].occupants.iter().copied().find(|o| {
-            self.dragons
-                .get(*o)
-                .is_some_and(|x| x.body == Some(u))
-        });
+        let mine = self.lairs[l as usize]
+            .occupants
+            .iter()
+            .copied()
+            .find(|o| self.dragons.get(*o).is_some_and(|x| x.body == Some(u)));
         if let Some(d) = mine {
             self.dragons.get_mut(d).expect("live").body = None;
             if LossCause::from_credit(dd.killer_kind.credit(), true) == LossCause::Player {
                 self.press(d, at);
             }
-            let killer = (dd.killer_kind == AttackerKind::Player).then(|| self.player(w, dd.killer));
-            let pos = (self.canon(dd.dimension, dd.pos.0, dd.pos.2), dd.pos.1 as i32);
+            let killer =
+                (dd.killer_kind == AttackerKind::Player).then(|| self.player(w, dd.killer));
+            let pos = (
+                self.canon(dd.dimension, dd.pos.0, dd.pos.2),
+                dd.pos.1 as i32,
+            );
             self.kill(w, d, killer, pos, at);
         } else if self.lairs[l as usize].missing.contains(&u) {
             let h = self.tun.respawn_half_life_days as f32;
@@ -645,7 +679,10 @@ impl Dragons {
                 continue;
             };
             if x.lair.is_none() {
-                return Err(format!("dragon {} holds a home body but has no lair", h.to_bits()));
+                return Err(format!(
+                    "dragon {} holds a home body but has no lair",
+                    h.to_bits()
+                ));
             }
             if let Some(o) = seen.insert(u, h) {
                 return Err(format!(
@@ -683,7 +720,10 @@ impl Dragons {
         }
         for d in &self.pending_home {
             if !self.embodied.contains(d) {
-                return Err(format!("dragon {} awaits a body but is not embodied", d.to_bits()));
+                return Err(format!(
+                    "dragon {} awaits a body but is not embodied",
+                    d.to_bits()
+                ));
             }
         }
         Ok(())
