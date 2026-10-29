@@ -17339,3 +17339,11 @@ sweep mixin, the flake fixes MZB-1100 to MZB-1104) into this branch, commit 24fb
 - **MZB-1038** (test-side fix, `rtsim-jni/tests/protocol.rs`): M11's tests build `LairFound` as it was before S3 gave it `placed`
   and `row`; the eight initialisers take `placed: false` and `row: Default::default()`, the values of the nine S3 already had. No
   behaviour is involved.
+- **MZB-1039** (the viewer fixtures, written again at 129de219): the merged build cannot read the fixtures M11 refreshed (the
+  dragons' pages there are RTD8 and RTN8, the conflict's RTCC), so `crates/rtsim-view/tests/data/core` and `.../create` are fresh
+  GameTest saves of this head, taken as b37832e7 took M11's. Core: a fresh core round's `neoforge/core/run-gametest/world/rtsim`
+  without `archive`, and `data/mic_rtsim_journal.dat`; the round was the rerun that passed (168 tests), the first round's one
+  failure being MZB-1040's flake. Create: a fresh `create -Psec1fx` round's world copied to `target/` after its JVM exited, then its
+  `rtsim` with the archive and `data/mic_rtsim_journal.dat`. The header in `tests/fixtures.rs` names the run and keeps the history.
+  The ledger file `data/mic_rtsim_sites.dat` is not part of the fixtures (the viewer reads the pages). `rtsim-view` and `rtsim-host`
+  pass on them (`fixtures`, `hashes`, `host`).
