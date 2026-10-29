@@ -1084,6 +1084,7 @@ public final class SectionsChunkLoadGameTests {
         boolean[] glass = new boolean[2];
         int[] oscillations = new int[2];
         String[] lastAway = {"no report", "no report"};
+        String[] lastPoll = {"none yet"};
         helper.onEachTick(() -> {
             if (level.getGameTime() % 100 == 0)
                 rec.poll();
@@ -1295,11 +1296,23 @@ public final class SectionsChunkLoadGameTests {
                     }
                 }))
                 .thenWaitUntil(io(() -> {
-                    check("a record poll tick", level.getGameTime() % 20 == 0);
+                    // Vanilla reports the failure of the wait's last tick, and the poll-tick check below fails on 19 ticks of 20: a
+                    // wait that timed out always said "a record poll tick", whatever the poll ticks found (MZB-1102). So the failure
+                    // of the last poll tick is kept and carried in that message.
+                    check("a record poll tick (the last poll tick: " + lastPoll[0] + ")", level.getGameTime() % 20 == 0);
                     List<ScriptedEngine.Received> recs = rec.records();
-                    for (int i = 0; i < 2; i++)
-                        check((i == 0 ? "A" : "B") + "'s reconcile lands", !reconciles(recs, ids[i], at[0]).isEmpty());
-                    check("no reconcile held: " + ind().reconciler().held(), ind().reconciler().held() == 0);
+                    try {
+                        for (int i = 0; i < 2; i++) {
+                            District d = ind().district(ids[i]);
+                            check((i == 0 ? "A" : "B") + "'s reconcile lands (" + reconciles(recs, ids[i], at[0]).size() + " results of " + recs.size()
+                                    + " records, " + (d == null ? "gone" : d.loadState()) + ")", !reconciles(recs, ids[i], at[0]).isEmpty());
+                        }
+                        check("no reconcile held: " + ind().reconciler().held(), ind().reconciler().held() == 0);
+                        lastPoll[0] = "passed at tick " + level.getGameTime();
+                    } catch (RuntimeException e) {
+                        lastPoll[0] = "tick " + level.getGameTime() + ": " + e.getMessage();
+                        throw e;
+                    }
                 }))
                 .thenIdle(40)
                 .thenExecute(() -> {
