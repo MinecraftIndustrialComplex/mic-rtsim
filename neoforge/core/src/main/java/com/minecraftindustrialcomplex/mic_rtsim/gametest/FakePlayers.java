@@ -72,15 +72,79 @@ public final class FakePlayers {
      * and every title, subtitle and action-bar packet in {@link Hearer#titles}. Otherwise as {@link #add}.
      */
     public static Hearer hearing(ServerLevel level, Vec3 at, String name) {
+        Hearer p = newHearer(level, at, name, null);
+        level.players().add(p);
+        return p;
+    }
+
+    /**
+     * A {@link Hearer} that keeps every packet it is sent ({@link Hearer#packets}, a bundle flattened into its parts) and that
+     * the level tracks entities to (M11, MZB-839): joined through {@code level.addNewPlayer}, as {@link #addSeen}'s is, since a
+     * player only in {@code level.players()} is not in the chunk map, and no tracked entity is paired with it.
+     * <p>
+     * Three traps, all vanilla's. (1) The server's tick sends chunks only to {@code PlayerList}'s players, and this one is in
+     * none, so its chunks are never sent unless {@link #pump} sends them; and an entity is paired with a player only once the
+     * entity's chunk is tracked and no longer pending to it. (2) {@code PlayerChunkSender} sends no second batch before the
+     * first is acknowledged, and nobody acknowledges for a mock connection; {@link #pump} does. (3) An entity is paired when it
+     * is within the smaller of its tracking range and {@code viewDistance} chunks, in a loaded chunk the player tracks, so the
+     * watcher must stand within that of what it watches (the default view is {@value #WATCH_VIEW} chunks, 64 blocks).
+     * Like {@link #addSeen}'s it loads chunks round itself: take it out with {@link #removeSeen}, before releasing chunks.
+     * UNVERIFIED on a running server (compiled only).
+     */
+    public static Hearer watching(ServerLevel level, Vec3 at, String name) {
+        return watching(level, at, name, WATCH_VIEW);
+    }
+
+    /** The view distance (chunks) of a {@link #watching} player: the range a player's chunks and tracked entities reach. */
+    public static final int WATCH_VIEW = 4;
+
+    public static Hearer watching(ServerLevel level, Vec3 at, String name, int viewDistance) {
+        Hearer p = newHearer(level, at, name, viewDistance);
+        p.keepAll = true; // before it joins: the pairing of what already stands round it is sent by the join
+        level.addNewPlayer(p);
+        return p;
+    }
+
+    /**
+     * Gives a {@link #watching} player's connection its turn the server's tick would give a logged-in one: acknowledges every
+     * chunk batch it has been sent (the client's {@code ChunkBatchReceived}), sends its next batches (a few rounds, as chunks
+     * are loaded), then re-evaluates what it tracks ({@code ServerChunkCache.move}: the entities already standing are paired
+     * once their chunks have been sent, which no tick does for a player that never moves). Call it every tick of a wait.
+     *
+     * @return the number of chunk packets it sent
+     */
+    public static int pump(Hearer p) {
+        net.minecraft.server.network.PlayerChunkSender sender = p.connection.chunkSender;
+        int before = p.chunkPackets;
+        for (int round = 0; round < PUMP_ROUNDS; round++) {
+            while (p.batchesAcknowledged < p.batchesSeen) {
+                p.batchesAcknowledged++;
+                sender.onChunkBatchReceivedByClient(net.minecraft.server.network.PlayerChunkSender.MAX_CHUNKS_PER_TICK);
+            }
+            int seen = p.batchesSeen;
+            sender.sendNextChunks(p);
+            if (p.batchesSeen == seen)
+                break;
+        }
+        p.serverLevel().getChunkSource().move(p);
+        return p.chunkPackets - before;
+    }
+
+    private static final int PUMP_ROUNDS = 4;
+
+    private static Hearer newHearer(ServerLevel level, Vec3 at, String name, Integer viewDistance) {
         GameProfile profile = new GameProfile(UUID.randomUUID(), name);
         CommonListenerCookie cookie = CommonListenerCookie.createInitial(profile, false);
-        Hearer p = new Hearer(level.getServer(), level, profile, cookie.clientInformation());
+        net.minecraft.server.level.ClientInformation info = cookie.clientInformation();
+        if (viewDistance != null)
+            info = new net.minecraft.server.level.ClientInformation(info.language(), viewDistance, info.chatVisibility(), info.chatColors(),
+                    info.modelCustomisation(), info.mainHand(), info.textFilteringEnabled(), info.allowsListing());
+        Hearer p = new Hearer(level.getServer(), level, profile, info);
         Connection connection = new Connection(PacketFlow.SERVERBOUND);
         new EmbeddedChannel(connection);
         new Hearing(level.getServer(), connection, p, cookie);
         p.setGameMode(GameType.SURVIVAL);
         p.moveTo(at.x, at.y, at.z);
-        level.players().add(p);
         return p;
     }
 
@@ -97,6 +161,25 @@ public final class FakePlayers {
         public final java.util.List<net.minecraft.network.protocol.game.ClientboundSoundPacket> sounds = new java.util.ArrayList<>();
         /** Every title, subtitle and action-bar text packet sent to it. */
         public final java.util.List<net.minecraft.network.chat.Component> titles = new java.util.ArrayList<>();
+        /** Every packet sent to it, a bundle as its parts, in order: only for a player from {@link #watching}. */
+        public final java.util.List<net.minecraft.network.protocol.Packet<?>> packets = new java.util.ArrayList<>();
+        boolean keepAll;
+        /** Chunk batches it has been sent and ones {@link #pump} has acknowledged, and chunk packets sent. */
+        int batchesSeen, batchesAcknowledged, chunkPackets;
+
+        /** How many packets of this class (or a subclass) it has been sent. */
+        public long count(Class<?> type) {
+            return packets.stream().filter(type::isInstance).count();
+        }
+
+        /** How many times the entity of this id was sent to it as added (a pairing), and how many times as removed. */
+        public long added(int entityId) {
+            return packets.stream().filter(q -> q instanceof net.minecraft.network.protocol.game.ClientboundAddEntityPacket a && a.getId() == entityId).count();
+        }
+
+        public long removed(int entityId) {
+            return packets.stream().filter(q -> q instanceof net.minecraft.network.protocol.game.ClientboundRemoveEntitiesPacket r && r.getEntityIds().contains(entityId)).count();
+        }
 
         Hearer(net.minecraft.server.MinecraftServer server, ServerLevel level, GameProfile profile,
                net.minecraft.server.level.ClientInformation info) {
@@ -116,7 +199,22 @@ public final class FakePlayers {
             super.sendSystemMessage(message, overlayBar);
         }
 
+        private void keep(net.minecraft.network.protocol.Packet<?> packet) {
+            if (packet instanceof net.minecraft.network.protocol.BundlePacket<?> bundle) {
+                for (net.minecraft.network.protocol.Packet<?> part : bundle.subPackets())
+                    keep(part);
+            } else {
+                packets.add(packet);
+            }
+        }
+
         void record(net.minecraft.network.protocol.Packet<?> packet) {
+            if (packet instanceof net.minecraft.network.protocol.game.ClientboundChunkBatchFinishedPacket)
+                batchesSeen++;
+            else if (packet instanceof net.minecraft.network.protocol.game.ClientboundLevelChunkWithLightPacket)
+                chunkPackets++;
+            if (keepAll)
+                keep(packet);
             if (packet instanceof net.minecraft.network.protocol.game.ClientboundSoundPacket sound)
                 sounds.add(sound);
             else if (packet instanceof net.minecraft.network.protocol.game.ClientboundSetTitleTextPacket title)
@@ -138,6 +236,26 @@ public final class FakePlayers {
         public void send(net.minecraft.network.protocol.Packet<?> packet) {
             if (this.player instanceof Hearer h)
                 h.record(packet);
+            // A mod's custom payload is recorded and not sent: the mock connection negotiated no channel, so NeoForge's check throws
+            // "may not be sent to the client" for it (a Mowzie boss bar update reaches a hearer that tracks the chief).
+            if (packet instanceof net.minecraft.network.protocol.common.ClientboundCustomPayloadPacket)
+                return;
+            if (packet instanceof net.minecraft.network.protocol.game.ClientboundBundlePacket bundle) {
+                java.util.List<net.minecraft.network.protocol.Packet<? super net.minecraft.network.protocol.game.ClientGamePacketListener>> kept =
+                        new java.util.ArrayList<>();
+                boolean dropped = false;
+                for (net.minecraft.network.protocol.Packet<? super net.minecraft.network.protocol.game.ClientGamePacketListener> part : bundle.subPackets()) {
+                    if (part instanceof net.minecraft.network.protocol.common.ClientboundCustomPayloadPacket)
+                        dropped = true;
+                    else
+                        kept.add(part);
+                }
+                if (dropped) {
+                    if (!kept.isEmpty())
+                        super.send(new net.minecraft.network.protocol.game.ClientboundBundlePacket(kept));
+                    return;
+                }
+            }
             super.send(packet);
         }
     }

@@ -5,8 +5,9 @@
 //!   march record, from a camp that is in and from one that is out (12.6); the chief killed away;
 //!   a camp that comes in while its band is out; the throne body held and the seat held; the
 //!   re-binds; the arrival with the only player 170 blocks off; a fight that loses its watcher; the
-//!   dead of an abstract fight counted once. The chief's own travel is M11's, so the run's row
-//!   keeps "M11".
+//!   dead of an abstract fight counted once. And the chief aloft (M11a, MZB-838): its own stack
+//!   behind its CHIEF_BODY wherever a player meets the band, its hand-back home, a payment to its
+//!   puppet, and its puppet killed as it floats home.
 //! - **Run 13, the march record** (`march_record`): runs 1, 5, 10 and 11 stepped 20 ticks at a time
 //!   with the march audit (`rtsim_conflict::synth::march`, MZB-498) on, and the seams: a band that
 //!   crosses an x-wrapped world's seam and routs, and one that crosses a glued world's.
@@ -153,6 +154,10 @@ pub(super) fn invasion_marches(slice: &'static str) -> RunOut {
     let arrivals = arrivals(&mut out);
     watcher_lost(&mut out, arrivals);
     abstract_dead(&mut out);
+    aloft_chief_body(&mut out);
+    aloft_home(&mut out);
+    aloft_paid(&mut out);
+    aloft_killed_after_home(&mut out);
     out_of(slice, 11, out)
 }
 
@@ -831,6 +836,437 @@ fn abstract_dead(out: &mut Vec<Check>) {
     );
 }
 
+// ---- run 11, the chief aloft (M11a) --------------------------------------------------------------
+
+fn here(r: &CampRun, p: Handle<Party>) -> Pos {
+    let at = r.c.now();
+    let (x, z) = r.c.party_pos(p, at);
+    Pos::new(synth::CAMP_POS.frame, x, z)
+}
+
+/// The scripted player meets `p` where it is now, as the bridge reports a player (MZB-499).
+fn meet(r: &mut CampRun, p: Handle<Party>) {
+    let at = r.c.now();
+    let pos = here(r, p);
+    r.c.observe_player(&mut r.w, synth::PLAYER, pos, at);
+    // The meeting is an event of the engine's wheel, due now.
+    r.run(at + 2);
+}
+
+/// The scripted player follows `p`, looking where it is every 50 ticks, until `to` or until it is
+/// home.
+fn follow(r: &mut CampRun, p: Handle<Party>, to: Tick) {
+    while r.c.now() < to && r.c.parties.contains(p) {
+        let at = r.c.now();
+        let pos = here(r, p);
+        r.c.observe_player(&mut r.w, synth::PLAYER, pos, at);
+        let next = (at + 50).min(to);
+        r.run(next);
+    }
+}
+
+/// `p`, past its fight and on its way home, met 300 ticks short of its camp and followed to `short`
+/// ticks before it is there: the tick it is home, if it walks there in bodies.
+fn followed_home(r: &mut CampRun, p: Handle<Party>, short: u64) -> Option<Tick> {
+    let arrive = *r.c.parties.get(p)?.times.last()?;
+    r.run(arrive + 400);
+    let x = r.c.parties.get(p)?;
+    if x.phase != Phase::Home {
+        return None;
+    }
+    let home = *x.times.last()?;
+    r.run(Tick(home.0 - 300));
+    follow(r, p, Tick(home.0 - short));
+    r.c.parties.get(p)?.embodied.then_some(home)
+}
+
+/// The chief's pairs among the commands sent for `agent` from `mark` on: the away CHIEF_BODYs each
+/// just ahead of the MATERIALIZE of its agent and epoch with BAND_CHIEF and, last, the chief alone
+/// (`{ umvuthi, 0, MEMBER_CHIEF }`); and the MATERIALIZEs of the agent with a chief stack.
+fn chief_pairs(r: &CampRun, agent: u64, mark: usize) -> (usize, usize) {
+    let cmds: Vec<&Cmd> = r.cmds[mark..].iter().map(|c| &c.1).collect();
+    let (mut pairs, mut stacks) = (0, 0);
+    for (i, c) in cmds.iter().enumerate() {
+        match c {
+            Cmd::ChiefBody(b) if b.agent == agent => {
+                if let Some(Cmd::Materialize(m)) = cmds.get(i + 1)
+                    && m.agent == agent
+                    && u64::from(m.epoch) == b.epoch
+                    && m.flags & boundary::BAND_CHIEF != 0
+                    && m.members
+                        .last()
+                        .is_some_and(|s| s.count == 0 && s.flags == boundary::MEMBER_CHIEF)
+                {
+                    pairs += 1;
+                }
+            }
+            Cmd::Materialize(m) if m.agent == agent => {
+                stacks += usize::from(
+                    m.members
+                        .iter()
+                        .any(|s| s.flags & boundary::MEMBER_CHIEF != 0),
+                );
+            }
+            _ => {}
+        }
+    }
+    (pairs, stacks)
+}
+
+/// The Umvuthi bodies in the world: the throne's and the puppets of the grove's bands.
+fn umvuthi_bodies(r: &CampRun) -> usize {
+    chief_bodies(r).len() + r.plugin.band_chiefs(r.key)
+}
+
+/// The chief's line among the commands from `mark` on (a CAMP_RECONCILE's line on `CHIEF_SLOT`)
+/// and the command just ahead of its reconcile.
+fn chief_line_since(r: &CampRun, mark: usize) -> Option<(boundary::ReconcileLine, Option<Cmd>)> {
+    let cmds: Vec<&Cmd> = r.cmds[mark..].iter().map(|c| &c.1).collect();
+    cmds.iter().enumerate().find_map(|(i, c)| match c {
+        Cmd::Reconcile(x) => x
+            .lines
+            .iter()
+            .find(|l| l.slot == rtsim_conflict::engine::CHIEF_SLOT)
+            .map(|l| (*l, i.checked_sub(1).map(|j| cmds[j].clone()))),
+        _ => None,
+    })
+}
+
+/// MZB-801, MZB-803, MZB-838: an Invasion its Umvuthi leads, met on the road, at its fight and on
+/// its way home: each meeting sends the band's away CHIEF_BODY and, just behind it, the MATERIALIZE
+/// with the chief's own stack, and the plugin finds the memory waiting for each. Walked into its
+/// fight in the bodies it has, the band sends no chief again.
+fn aloft_chief_body(out: &mut Vec<Check>) {
+    let (mut ok, mut report) = (true, Vec::new());
+    for case in ["on the road", "at its fight", "on its way home"] {
+        let mut r = quiet_grove(8);
+        let Some((p, _)) = led_invasion(&mut r, None) else {
+            ok = false;
+            report.push(format!("{case}: no Invasion"));
+            continue;
+        };
+        let agent = Party::agent(p);
+        let muster = r.c.parties[p].until;
+        r.run(muster + 200);
+        let arrive = r.c.parties[p].times.last().copied().unwrap_or(Tick::ZERO);
+        let (matched, mark) = (r.plugin.chief_bodies_matched, r.cmds.len());
+        let mut walk_in = None;
+        match case {
+            "on the road" => {
+                meet(&mut r, p);
+                let walked = r.cmds.len();
+                follow(&mut r, p, arrive + 5);
+                let fight = r.c.parties.get(p).map(|x| x.phase) == Some(Phase::Fighting);
+                walk_in = Some((fight, chief_pairs(&r, agent, walked)));
+            }
+            "at its fight" => {
+                r.run(Tick(arrive.0 - 1));
+                let (who, at) = (r.player, r.c.now());
+                r.w.set_player_pos(who, synth::REFINERY_POS, at);
+                r.run(arrive + 1);
+            }
+            _ => {
+                r.run(arrive + 400);
+                let unmet =
+                    r.c.parties
+                        .get(p)
+                        .is_some_and(|x| x.phase == Phase::Home && !x.embodied);
+                if unmet {
+                    meet(&mut r, p);
+                } else {
+                    ok = false;
+                    report.push(format!("{case}: not walking home unmet"));
+                }
+            }
+        }
+        let (pairs, stacks) = chief_pairs(&r, agent, mark);
+        let matched = r.plugin.chief_bodies_matched - matched;
+        r.settle();
+        let missing = r.plugin.chief_bodies_missing;
+        let books = holds(&mut r);
+        let walked = walk_in.is_none_or(|(fight, w)| fight && w == (0, 0));
+        ok &= pairs == 1 && stacks == 1 && matched == 1 && missing == 0 && walked && books;
+        report.push(format!(
+            "{case}: {pairs} pairs, {stacks} chief stacks, {matched} matched, {missing} missing; \
+             walk-in (fight, pairs, stacks) {walk_in:?}; books hold {books}"
+        ));
+    }
+    check(
+        out,
+        "an Invasion its Umvuthi leads, met on the road, at its fight and on its way home: each \
+         meeting sends the CHIEF_BODY and at once the chief's stack, and the plugin matches each; \
+         a walk-in sends no chief",
+        ok,
+        report.join("; "),
+    );
+}
+
+/// MZB-821, MZB-823: the band its Umvuthi leads, in bodies as it comes home, hands its chief back
+/// by a line of its own, the camp's memory (a home CHIEF_BODY) just ahead of it. To a grove that is
+/// in, from a Gone slot (answered DONE) or a Left one whose throne body stands (the census's TAKE
+/// held on a player at the throne, answered stale as the puppet comes near; answered NOTHING), the
+/// slot is Body in its generation and one Umvuthi stands in the camp. To a grove that is out the
+/// band is recalled with no line, and the next census spawns the chief.
+fn aloft_home(out: &mut Vec<Check>) {
+    let (mut ok, mut report) = (true, Vec::new());
+    for case in ["Gone", "Left", "out"] {
+        let mut r = quiet_grove(8);
+        let Some((p, seat)) = led_invasion(&mut r, None) else {
+            ok = false;
+            report.push(format!("{case}: no Invasion"));
+            continue;
+        };
+        let agent = Party::agent(p);
+        if case == "Left" {
+            r.camp_out();
+        }
+        let muster = r.c.parties[p].until;
+        r.run(muster + 200);
+        let set_out = chief_of(&r).map(|c| c.0);
+        let mut near = None;
+        if case == "Left" {
+            // A player at the throne as the grove comes in: the census's TAKE is held.
+            let at = r.c.now();
+            r.plugin.hold_chief(r.key, true, false, at);
+            r.camp_in();
+            let to = r.c.now() + 10;
+            r.run(to);
+        }
+        if case == "out" {
+            r.camp_out();
+        }
+        let Some(home) = followed_home(&mut r, p, 20) else {
+            ok = false;
+            report.push(format!("{case}: not followed home"));
+            continue;
+        };
+        if case == "Left" {
+            let at = r.c.now();
+            near = Some(r.plugin.puppet_near_throne(r.key, at));
+        }
+        follow(&mut r, p, Tick(home.0 - 1));
+        let epoch = r.c.parties[p].epoch;
+        let mark = r.cmds.len();
+        r.run(home + 50);
+        let gone = !r.c.parties.contains(p);
+        let line = chief_line_since(&r, mark);
+        let good = if case == "out" {
+            let recalled = recalls_since(&r, agent, mark) == vec![(epoch, boundary::RECALL_DONE)];
+            let owed = chief_of(&r) == Some((SlotState::Owed, seat));
+            let mark = r.cmds.len();
+            r.camp_in();
+            let to = r.c.now() + r.plugin.leave_ticks + 50;
+            r.run(to);
+            let spawn = chief_line_since(&r, mark).is_some_and(|(l, ahead)| {
+                l.action == boundary::ACTION_SPAWN
+                    && matches!(ahead, Some(Cmd::ChiefBody(b)) if b.agent == 0)
+            });
+            let body = chief_of(&r) == Some((SlotState::Body, seat)) && chief_bodies(&r).len() == 1;
+            report.push(format!(
+                "out: set out {set_out:?}, home {gone}, line at home {}, recalled {recalled}, owed \
+                 {owed}, spawned at the census {spawn}, body {body}",
+                line.is_some()
+            ));
+            line.is_none() && recalled && owed && spawn && body
+        } else {
+            let handed = line.as_ref().is_some_and(|(l, ahead)| {
+                l.action == boundary::ACTION_HAND_BACK
+                    && l.flags & boundary::LINE_CHIEF != 0
+                    && (l.a, l.b, l.generation) == (agent, u64::from(epoch), seat)
+                    && matches!(ahead, Some(Cmd::ChiefBody(b)) if b.agent == 0)
+            });
+            let want = if case == "Gone" {
+                boundary::LINE_DONE
+            } else {
+                boundary::LINE_NOTHING
+            };
+            let answered = chief_lines(&r, boundary::ACTION_HAND_BACK);
+            let body = chief_of(&r) == Some((SlotState::Body, seat));
+            let one = umvuthi_bodies(&r) == 1;
+            report.push(format!(
+                "{case}: set out {set_out:?}, TAKE stale near the throne {near:?}, home {gone}, \
+                 HAND_BACK with the memory ahead {handed}, answered {answered:?}, body {body}, one \
+                 Umvuthi {one}"
+            ));
+            set_out
+                == Some(if case == "Gone" {
+                    SlotState::Gone
+                } else {
+                    SlotState::Left
+                })
+                && near.is_none_or(|n| n)
+                && handed
+                && answered == vec![want]
+                && body
+                && one
+        };
+        r.settle();
+        let books = holds(&mut r);
+        ok &= gone && good && books;
+        if !books {
+            report.push(format!("{case}: books hold false"));
+        }
+    }
+    check(
+        out,
+        "the Umvuthi's band home in bodies hands its chief back with the camp's memory ahead: from \
+         Gone answered DONE, from Left answered NOTHING over its standing throne body, one Umvuthi \
+         after; to a grove that is out, recalled and spawned at the next census",
+        ok,
+        report.join("; "),
+    );
+}
+
+/// MZB-819: a player pays the Umvuthi's puppet on the road (CHIEF_PAID with PAID_PUPPET): the
+/// tribute is booked once, the payer joins the camp's memory, and the home CHIEF_BODY ahead of the
+/// chief's HAND_BACK carries it.
+fn aloft_paid(out: &mut Vec<Check>) {
+    let tribute = |r: &CampRun| -> i128 { r.c.ledger.tribute.values().sum() };
+    let mut r = quiet_grove(8);
+    let Some((p, _)) = led_invasion(&mut r, None) else {
+        check(out, "a payment to the puppet", false, "no Invasion".into());
+        return;
+    };
+    let muster = r.c.parties[p].until;
+    r.run(muster + 200);
+    meet(&mut r, p);
+    let before = (tribute(&r), r.c.camp(r.f).map(|c| c.traded.clone()));
+    let Some(g) = r.w.goods.find("gold_nugget") else {
+        check(out, "a payment to the puppet", false, "no gold".into());
+        return;
+    };
+    let id = rtsim_conflict::engine::item_of(g);
+    r.c.define(2, id, "gold_nugget");
+    let at = r.c.now();
+    let items = vec![boundary::Item { item: id, count: 9 }];
+    r.plugin.pay_puppet(r.key, synth::PLAYER, items, at);
+    r.run(at + 5);
+    let paid = tribute(&r) - before.0;
+    let remembered = r.c.camp(r.f).map(|c| c.traded.clone()) == Some(vec![synth::PLAYER]);
+    let Some(home) = followed_home(&mut r, p, 1) else {
+        check(
+            out,
+            "a payment to the puppet",
+            false,
+            "not followed home".into(),
+        );
+        return;
+    };
+    let mark = r.cmds.len();
+    r.run(home + 50);
+    let carried = chief_line_since(&r, mark).is_some_and(|(l, ahead)| {
+        l.action == boundary::ACTION_HAND_BACK
+            && matches!(ahead, Some(Cmd::ChiefBody(b))
+                if b.agent == 0 && b.traded == vec![synth::PLAYER])
+    });
+    r.settle();
+    let once = tribute(&r) - before.0;
+    let books = holds(&mut r);
+    check(
+        out,
+        "a payment to the Umvuthi's puppet on the road is tribute booked once, the payer is \
+         remembered, and the home CHIEF_BODY carries it",
+        before.1.as_ref().is_some_and(Vec::is_empty)
+            && paid > 0
+            && once == paid
+            && remembered
+            && carried
+            && books,
+        format!(
+            "memory before {:?}; tribute {paid} at the payment, {once} after; remembered \
+             {remembered}; the home CHIEF_BODY carries the payer {carried}; books hold {books}",
+            before.1
+        ),
+    );
+}
+
+/// MZB-824, MZB-853: the puppet floats home for 200 ticks (`chief_float`, Java's homing holding the
+/// chief's HAND_BACK) and a player kills it on the way: one CAMP_DEATH of the chief's slot, no
+/// CHIEF_KILLED, the line stale, the heir due after its wait (6 x 2^1 days, one player's loss), and
+/// never more than one Umvuthi body in the world, the puppet or the throne's.
+fn aloft_killed_after_home(out: &mut Vec<Check>) {
+    let mut r = fast_grove(8);
+    r.plugin.chief_float = 200;
+    let Some((p, seat)) = led_invasion(&mut r, None) else {
+        check(
+            out,
+            "a puppet killed after home",
+            false,
+            "no Invasion".into(),
+        );
+        return;
+    };
+    let muster = r.c.parties[p].until;
+    r.run(muster + 200);
+    let Some(home) = followed_home(&mut r, p, 1) else {
+        check(
+            out,
+            "a puppet killed after home",
+            false,
+            "not followed home".into(),
+        );
+        return;
+    };
+    let (falls, losses) = (r.c.stats.chiefs_killed, r.c.stats.renewal_losses);
+    let mut most = umvuthi_bodies(&r);
+    let mark = r.cmds.len();
+    while r.c.now() < home + 100 {
+        let to = r.c.now() + 10;
+        r.run(to);
+        most = most.max(umvuthi_bodies(&r));
+    }
+    let handed = chief_line_since(&r, mark).is_some_and(|(l, _)| {
+        l.action == boundary::ACTION_HAND_BACK && l.flags & boundary::LINE_CHIEF != 0
+    });
+    let homing =
+        chief_lines(&r, boundary::ACTION_HAND_BACK).is_empty() && r.plugin.band_chiefs(r.key) == 1;
+    let at = r.c.now();
+    let killed = r.plugin.kill_homing_chief(r.key, at);
+    let until = at + r.plugin.chief_float + r.plugin.leave_ticks;
+    while r.c.now() < until {
+        let to = r.c.now() + 10;
+        r.run(to);
+        most = most.max(umvuthi_bodies(&r));
+    }
+    let stale = chief_lines(&r, boundary::ACTION_HAND_BACK) == vec![boundary::LINE_STALE];
+    let booked = (
+        r.c.stats.chiefs_killed - falls,
+        r.c.stats.renewal_losses - losses,
+    );
+    let freed = chief_of(&r).is_none_or(|c| c.1 != seat);
+    let wait = heir_due(&r).map(|d| days_between(at, d));
+    if let Some(d) = heir_due(&r) {
+        while r.c.now() < d + at_day(1.5).0 {
+            let to = r.c.now() + 200;
+            r.run(to);
+            most = most.max(umvuthi_bodies(&r));
+        }
+    }
+    let seated = chief_of(&r).is_some_and(|c| c.0 == SlotState::Body && c.1 != seat);
+    r.settle();
+    let books = holds(&mut r);
+    check(
+        out,
+        "the Umvuthi's puppet killed as it floats home: one camp death, no CHIEF_KILLED, its line \
+         stale, the heir due at 12 days, and one Umvuthi body at most throughout",
+        handed
+            && homing
+            && killed
+            && stale
+            && booked == (1, 1)
+            && freed
+            && wait.is_some_and(|w| (w - 12.0).abs() < 0.1)
+            && seated
+            && most == 1
+            && books,
+        format!(
+            "HAND_BACK sent {handed}, held while it floats {homing}; killed {killed}; line stale \
+             {stale}; (falls, losses) {booked:?}; slot freed {freed}; heir after {wait:?} days, \
+             seated {seated}; most Umvuthi bodies {most}; books hold {books}"
+        ),
+    );
+}
+
 // ---- run 13 ---------------------------------------------------------------------------------------
 
 /// What one audited run found, for the detail line.
@@ -845,6 +1281,7 @@ pub(super) fn march_record(seed: u64, slice: &'static str) -> RunOut {
     let mut out = Vec::new();
     let mut all = audit::Totals::default();
     let mut lines = Vec::new();
+    let mut chiefs = Vec::new();
     // The stepped runs' own checks are not read: a step of 20 ticks moves the plugin's and the
     // watching player's clocks, so their figures differ. The audit's verdict is what counts.
     type Stepped<'a> = Box<dyn FnOnce() + 'a>;
@@ -883,6 +1320,10 @@ pub(super) fn march_record(seed: u64, slice: &'static str) -> RunOut {
              ({} ending), {} shell-steps",
             t.steps, t.still, t.ticks, t.changed, t.records, t.ended, t.shells
         ));
+        chiefs.push(format!(
+            "run {name}: {} away CHIEF_BODYs, {} chief stacks",
+            t.chief_bodies_away, t.chief_stacks
+        ));
         all.add(&t);
     }
     check(
@@ -900,6 +1341,21 @@ pub(super) fn march_record(seed: u64, slice: &'static str) -> RunOut {
         format!(
             "{} changes seen, {} with no record in their step",
             all.changes, all.unrecorded
+        ),
+    );
+    check(
+        &mut out,
+        "the chief's own stack (MZB-838): each away CHIEF_BODY is followed at once by its \
+         MATERIALIZE with the chief alone, and no chief stack goes without one, twice in an epoch, \
+         for a band its chief does not lead or while replaying; a band its chief leads in bodies \
+         had its stack, in runs 1, 5, 10 and 11 stepped 20 ticks at a time",
+        all.chief_failed == 0
+            && all.chief_bodies_away > 0
+            && all.chief_bodies_away == all.chief_stacks,
+        format!(
+            "{}; {} failures of the chief's stack",
+            chiefs.join("; "),
+            all.chief_failed
         ),
     );
     no_census_ends_a_party(&mut out);

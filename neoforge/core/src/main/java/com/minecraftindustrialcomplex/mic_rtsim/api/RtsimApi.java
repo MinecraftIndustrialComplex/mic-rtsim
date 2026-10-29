@@ -282,6 +282,20 @@ public final class RtsimApi {
         return com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictBridge.INSTANCE.reconciler().secondBody(entity);
     }
 
+    /**
+     * A chief puppet's summons are about to join the level (M11, MZB-816): when {@code summoner} is a live chief puppet of a band,
+     * they are adopted as its slot's extras, as a raptor's followers are, and this is true; the caller then calls
+     * {@link #dropSummons} if the join fails. False for any other summoner. A plugin's summons mixin asks.
+     */
+    public static boolean adoptSummons(Entity summoner, net.minecraft.world.entity.Mob summons) {
+        return com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictBridge.INSTANCE.adoptSummons(summoner, summons);
+    }
+
+    /** The join of a summons {@link #adoptSummons} adopted failed: it is no extra and untagged again. */
+    public static void dropSummons(net.minecraft.world.entity.Mob summons) {
+        com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictBridge.INSTANCE.dropSummons(summons);
+    }
+
     /** The conflict factions' territories, by dimension and position (read only; M7's train sampler). */
     public static com.minecraftindustrialcomplex.mic_rtsim.conflict.Territories territories() {
         return com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictBridge.INSTANCE.territories();
@@ -320,6 +334,27 @@ public final class RtsimApi {
      */
     public static void registerLurker(String entityType, com.minecraftindustrialcomplex.mic_rtsim.conflict.Lurker lurker) {
         com.minecraftindustrialcomplex.mic_rtsim.conflict.Lurkers.register(entityType, lurker);
+    }
+
+    // ---- travelling aloft (M11; MZB-807) ---------------------------------------------------------
+
+    /**
+     * Registers how a mod's body travels with its party in place of walking, by entity type id
+     * ({@code mowziesmobs:umvuthi}; a string, so it can be called in a plugin's constructor before the registries
+     * freeze). A type with none walks. Call during mod construction.
+     */
+    public static void registerTraveller(String entityType, com.minecraftindustrialcomplex.mic_rtsim.conflict.Traveller traveller) {
+        com.minecraftindustrialcomplex.mic_rtsim.conflict.Travellers.register(entityType, traveller);
+    }
+
+    /**
+     * Sends a body's facing again to the players tracking it, as if it had just come into view (MZB-813): a
+     * traveller calls it after it has held the body still for 2 ticks and set the field the clients' copy reads only
+     * at its first tick. True when a bundle went out; false when nobody tracks the body, or when its pairing data hold
+     * anything per player (nothing is sent then, and the bridge counts it).
+     */
+    public static boolean rePair(net.minecraft.world.entity.Mob body) {
+        return com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictBridge.INSTANCE.rePair(body);
     }
 
     /**

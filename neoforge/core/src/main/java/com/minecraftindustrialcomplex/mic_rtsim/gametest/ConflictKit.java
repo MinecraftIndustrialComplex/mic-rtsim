@@ -346,6 +346,106 @@ public final class ConflictKit {
         return bridge().unbookedHomeDeaths;
     }
 
+    // ---- M11's counters (this session; MZB-870 to MZB-889) -------------------------------------------
+
+    /** HAND_BACK lines of a chief held: while its puppet is walked home, or while a puppet that died this tick is journaled (MZB-822, MZB-824). */
+    public static long heldHandBacks() {
+        return bridge().reconciler().heldHandBacks;
+    }
+
+    /** Held hand-backs that played on their timeout with the puppet not settled (MZB-822). */
+    public static long chiefHandBacksLate() {
+        return bridge().reconciler().chiefHandBacksLate;
+    }
+
+    /** HAND_BACKs that found the throne body standing and merged into it, answering NOTHING (case B, MZB-823). */
+    public static long chiefMerges() {
+        return bridge().reconciler().chiefMerges;
+    }
+
+    /** Held takes of a chief body answered STALE because its puppet stood within 32 blocks of the throne (MZB-823). */
+    public static long staleTakes() {
+        return bridge().reconciler().staleTakes;
+    }
+
+    /** CAMP_DEATHs journaled for a chief puppet that died while its party's HAND_BACK was held or yet to play (MZB-824). */
+    public static long homeDeaths() {
+        return bridge().reconciler().homeDeaths;
+    }
+
+    /** CHIEF_PAIDs journaled as PAID_PUPPET, a payment made to a chief puppet (MZB-819). */
+    public static long puppetPaid() {
+        return bridge().reconciler().puppetPaid;
+    }
+
+    /** Chief puppets marked second when the engine booked the chief's slot dead (a CAMP_DEATH of the throne body) while they floated (MZB-825). */
+    public static long puppetsSecond() {
+        return bridge().reconciler().puppetsSecond;
+    }
+
+    /** Away CHIEF_BODYs held for their MATERIALIZE (MZB-805). */
+    public static long chiefBodiesAway() {
+        return bridge().reconciler().chiefBodiesAway;
+    }
+
+    /** CHIEF_BODYs sent ahead of a materialize that never claimed them (MZB-805). */
+    public static long chiefBodiesUnmatched() {
+        return bridge().chiefBodiesUnmatched;
+    }
+
+    /** Traveller calls that threw and were caught (MZB-807). */
+    public static long travellerErrors() {
+        return bridge().travellerErrors;
+    }
+
+    /** Pushes of a floating puppet that were zeroed (MZB-810). */
+    public static long knockbacksZeroed() {
+        return bridge().knockbacksZeroed;
+    }
+
+    /** Portal trips of a puppet that were cancelled (MZB-815). */
+    public static long portalsCancelled() {
+        return bridge().portalsCancelled;
+    }
+
+    /** A dying chief's loot lost to a removal before its drops (MZB-817). */
+    public static long deathLootLost() {
+        return bridge().deathLootLost;
+    }
+
+    /** Re-pairs sent to a floating body's trackers, and the ones skipped for per-player data (MZB-813). */
+    public static long repairs() {
+        return bridge().repairs;
+    }
+
+    public static long repairsSkipped() {
+        return bridge().repairsSkipped;
+    }
+
+    /** Chief puppets a recall despawned while their throne body stood, so their health was lost (MZB-823). */
+    public static long chiefMergesMissed() {
+        return bridge().chiefMergesMissed;
+    }
+
+    /** CHIEF_KILLEDs journaled for a party whose march had ended (MZB-824). */
+    public static long chiefDeathsAfterEnd() {
+        return bridge().chiefDeathsAfterEnd;
+    }
+
+    /** Chief puppets called home (MZB-822). */
+    public static long chiefsCalledHome() {
+        return bridge().chiefsCalledHome;
+    }
+
+    /** A chief puppet's summons adopted as its slot's extras, and the ones whose join failed (MZB-816). */
+    public static long summonsAdopted() {
+        return bridge().summonsAdopted;
+    }
+
+    public static long summonsRefused() {
+        return bridge().summonsRefused;
+    }
+
     /**
      * OWED_HUNT, as the engine sends a debt of animals a raid on an unwatched district left (docs/boundary.md §9.4):
      * {@code count} animals within {@code radius} of the centre, or {@code rest} when {@code replaced} is the op last applied.
@@ -586,6 +686,15 @@ public final class ConflictKit {
      * camp at {@code epoch}; {@code health} 0 leaves the body its own.
      */
     public static void chiefBody(long faction, long epoch, float health, List<UUID> players) {
+        chiefBody(faction, 0L, epoch, health, players);
+    }
+
+    /**
+     * CHIEF_BODY for a chief that is away (M11, MZB-805): {@code agent} is the party the chief marched with, so the bridge holds
+     * the record until that party's BAND_MATERIALIZE arrives, in the same buffer, a later one or a later tick. Agent 0 is the
+     * chief at home, the four-argument form's.
+     */
+    public static void chiefBody(long faction, long agent, long epoch, float health, List<UUID> players) {
         script(out -> {
             int n = players.size();
             int at = out.reserve(ConflictRecords.CHIEF_BODY, ConflictRecords.ChiefBody.size(n), n);
@@ -593,6 +702,7 @@ public final class ConflictKit {
                 return;
             ByteBuffer b = out.buffer();
             b.putLong(at + ConflictRecords.ChiefBody.FACTION, faction);
+            b.putLong(at + ConflictRecords.ChiefBody.AGENT, agent);
             b.putLong(at + ConflictRecords.ChiefBody.EPOCH, epoch);
             b.putFloat(at + ConflictRecords.ChiefBody.HEALTH, health);
             for (int i = 0; i < n; i++) {

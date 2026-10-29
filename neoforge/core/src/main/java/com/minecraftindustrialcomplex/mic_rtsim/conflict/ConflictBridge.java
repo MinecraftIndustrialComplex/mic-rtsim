@@ -433,6 +433,17 @@ public final class ConflictBridge implements SessionPlugin {
          * a map by body in the plugin held every killed puppet and its level for good).
          */
         Lurker.Memo lurkMemo;
+        /**
+         * M11 (MZB-807): how this body travels with its party in place of walking (null: it walks), what that Traveller
+         * keeps for it (on the slot, so it goes with it, as {@link #lurkMemo}), and the engine's memory of the chief
+         * (MZB-805), kept so that a stack taken back and placed again makes the body with the same players.
+         */
+        final Traveller traveller;
+        final Traveller.Memo travelMemo;
+        CampKind.ChiefBody chiefMemory;
+        /** M11 (MZB-822): where a chief puppet called home floats to, and the jar's direction it settles in; null while it travels. */
+        Vec3 homeSpot;
+        int homeDirection;
 
         Slot(Stack stack, boolean chief, boolean envoy, String body, int javaBody, EntityType<?> type, double lat, double back) {
             this.stack = stack;
@@ -443,6 +454,8 @@ public final class ConflictBridge implements SessionPlugin {
             this.type = type;
             this.lat = lat;
             this.back = back;
+            this.traveller = Travellers.of(type);
+            this.travelMemo = traveller == null ? null : traveller.memo();
         }
 
         double[] placeXZ(long now) {
@@ -507,6 +520,21 @@ public final class ConflictBridge implements SessionPlugin {
             return alive;
         }
 
+        /** What its Traveller keeps for it, or null for a slot that walks (GameTests, M11c). */
+        public Traveller.Memo travelMemo() {
+            return travelMemo;
+        }
+
+        /** Where a chief puppet called home floats to; null while it travels (GameTests, M11c). */
+        public Vec3 homeSpot() {
+            return homeSpot;
+        }
+
+        /** Whether its body's death is waiting to be journaled (GameTests, M11c). */
+        public boolean dying() {
+            return pendingDeath != null;
+        }
+
         /** Blocks between its body and its place now; NaN with no body (GameTests). */
         public double lag() {
             return entity == null ? Double.NaN : lag(entity);
@@ -552,6 +580,26 @@ public final class ConflictBridge implements SessionPlugin {
     private final Map<UUID, Slot> byUuid = new HashMap<>();
     /** The slot each extra entity came with (MZB-428), so that it may join the level. */
     private final Map<UUID, Slot> extraOf = new HashMap<>();
+    /** A chief's memory sent ahead of its BAND_MATERIALIZE (M11, MZB-805): the party's epoch and the engine's CHIEF_BODY. */
+    private record Away(int epoch, CampKind.ChiefBody memory) {}
+    /** CHIEF_BODYs of a party not embodied yet, by agent, kept in memory until their MATERIALIZE claims them (MZB-805). */
+    private final Map<Long, Away> chiefAway = new HashMap<>();
+    /**
+     * The slots whose body travels with its party (M11, MZB-807): bodies with a {@link Traveller}, in the world. The
+     * aloft pass steps these and nothing else (D1: a pack with none pays an empty-list check a tick).
+     */
+    private final List<Slot> travelling = new ArrayList<>();
+    /** The one {@link Traveller.Way} the pass fills for each body (server thread only). */
+    private final Traveller.Way way = new Traveller.Way();
+    /**
+     * A chief puppet in its death animation that its band has forgotten (M11, MZB-817): the jar drops its loot when the
+     * animation ends, long after {@code settleDeaths} journaled CHIEF_KILLED. Its body, that record and the record's sequence.
+     */
+    private record Dying(Mob body, byte[] record, long seq) {}
+    /** Named apart from {@code Camps}' own dying list. Empty but while a chief puppet is in its animation (D1). */
+    private final List<Dying> dying = new ArrayList<>();
+    /** What {@code deathTime} is set to for the jar's own end of the animation (MZB-817): past any duration. */
+    private static final int DEATH_TIME_DONE = 1_000_000;
     private final Territories territories = new Territories();
     /**
      * The camp kin whose killing signal was counted in the tick {@link #killedAt}, by UUID (P2-6): the jar's Umvuthi
@@ -596,11 +644,48 @@ public final class ConflictBridge implements SessionPlugin {
      * ended; stacks cut by the trim, walked into the square and clamped on it (MZB-472, MZB-473).
      */
     public long marchRecords, marchStale, marchEnds, trimmed, walkIns, clamps, unbookedHomeDeaths;
+    /** M11's (this session): re-pairs sent to a body's trackers and skipped for per-player data (MZB-813). */
+    public long repairs, repairsSkipped;
+    /** M11's (this session): CHIEF_BODYs sent ahead of a materialize that never claimed them (MZB-805); a Traveller call that threw (MZB-807). */
+    public long chiefBodiesUnmatched, travellerErrors;
+    /** M11's (this session): pushes of a floating puppet zeroed and portal trips of a puppet cancelled (MZB-810, MZB-815). */
+    public long knockbacksZeroed, portalsCancelled;
+    /** M11's (this session): a dying chief's loot lost to a removal before its drops (MZB-817). */
+    public long deathLootLost;
+    /**
+     * M11's (this session): chief puppets a recall despawned while their camp's throne body stood, so the puppet's health was lost
+     * (MZB-823); chief deaths journaled as CHIEF_KILLED for a party whose march had ended, which the engine counts for nothing
+     * (MZB-824); chief puppets called home (MZB-822).
+     */
+    public long chiefMergesMissed, chiefDeathsAfterEnd, chiefsCalledHome;
+    /** M11's (this session): a chief puppet's summons adopted as the slot's extras, and ones whose join failed (MZB-816). */
+    public long summonsAdopted, summonsRefused;
     /** The last DEMAND_SETTLED's outcome (GameTests). */
     public int lastSettled;
 
     public RtsimSession session() {
         return session;
+    }
+
+    /**
+     * Sends a body's facing again to the players tracking it, as if it had just come into view (MZB-813): a
+     * {@link Traveller} calls it after it has held the body still for 2 ticks and set the field its clients read
+     * only at their copy's first tick. True when a bundle went out; false when nobody tracks the body, or when the
+     * pairing data hold anything per player (counted in {@link #repairsSkipped}, nothing sent).
+     */
+    public boolean rePair(Mob body) {
+        if (!(body.level() instanceof ServerLevel level))
+            return false;
+        switch (Repairs.send(level, body)) {
+            case SENT -> {
+                repairs++;
+                return true;
+            }
+            case SKIPPED -> repairsSkipped++;
+            case NOBODY -> {
+            }
+        }
+        return false;
     }
 
     /** The camp reconciler (GameTests and the core's hooks). */
@@ -628,6 +713,11 @@ public final class ConflictBridge implements SessionPlugin {
         byAgent.clear();
         byUuid.clear();
         extraOf.clear();
+        chiefAway.clear();
+        travelling.clear();
+        if (!dying.isEmpty())
+            MicRtsim.LOGGER.warn("[mic_rtsim] {} dying chief bodies were left by the last session; their loot carries no record", dying.size());
+        dying.clear(); // every end of a session finishes them first (MZB-817); one left is lost
         territories.clear();
         notices.clear();
         signals.clear();
@@ -639,6 +729,9 @@ public final class ConflictBridge implements SessionPlugin {
         blockedHits = blockedTargets = strays = refills = demandsShown = paymentsRefused = noticeHearers = railPasses = 0;
         lurksKept = lurksRemoved = trainPasses = lurkStrikes = roarsTold = roarsPlayed = roarHearers = lurksRefused = 0;
         marchRecords = marchStale = marchEnds = trimmed = walkIns = clamps = unbookedHomeDeaths = 0;
+        repairs = repairsSkipped = 0;
+        chiefBodiesUnmatched = travellerErrors = knockbacksZeroed = portalsCancelled = deathLootLost = 0;
+        chiefMergesMissed = chiefDeathsAfterEnd = chiefsCalledHome = summonsAdopted = summonsRefused = 0;
         lastSettled = 0;
         owedHunts.clear();
         clearLurks();
@@ -654,10 +747,13 @@ public final class ConflictBridge implements SessionPlugin {
             return;
         long now = s.gameTime();
         settleDeaths(now);
+        finishDying(); // each dying chief ends its animation now and drops its loot with the record, before the save (MZB-817)
         reconciler.sessionStopping(now);
         flushSignals(now, true);
         for (Party p : List.copyOf(byAgent.values()))
             capture(p, ConflictRecords.Dematerialized.SESSION_END, now);
+        chiefAway.clear(); // a CHIEF_BODY sent ahead of a materialize that did not come before the end (MZB-805)
+        travelling.clear();
         clearLurks();
         clearMarches();
     }
@@ -666,11 +762,19 @@ public final class ConflictBridge implements SessionPlugin {
     public void sessionFailed(RtsimSession s) {
         if (s != session)
             return;
+        try {
+            finishDying(); // the loot is not lost with the session (MZB-817); a failed session carries no record
+        } catch (RuntimeException ex) {
+            MicRtsim.LOGGER.error("[mic_rtsim] a dying chief could not be finished at the session's failure", ex);
+            dying.clear();
+        }
         for (Party p : List.copyOf(byAgent.values()))
             discardAll(p);
         byAgent.clear();
         byUuid.clear();
         extraOf.clear();
+        chiefAway.clear();
+        travelling.clear();
         watches.clear();
         signals.clear();
         notices.clear();
@@ -691,6 +795,9 @@ public final class ConflictBridge implements SessionPlugin {
         byAgent.clear();
         byUuid.clear();
         extraOf.clear();
+        chiefAway.clear();
+        travelling.clear();
+        dying.clear();
         territories.clear();
         notices.clear();
         signals.clear();
@@ -752,8 +859,16 @@ public final class ConflictBridge implements SessionPlugin {
             return;
         Entity.RemovalReason reason = e.getRemovalReason();
         if (reason == Entity.RemovalReason.KILLED) {
-            if (sl.pendingDeath == null)
+            if (sl.pendingDeath == null) {
+                if (sl.chief && reconciler.secondBody(e)) {
+                    // A second puppet's animation ended (MZB-890): the throne body's CAMP_DEATH booked the chief dead while the puppet
+                    // floated, and its own death journaled nothing (onDeath). This removal is no death either, or settleDeaths would
+                    // journal a CHIEF_KILLED the engine drops. The slot is forgotten with no Death, as a member nobody books.
+                    forget(sl);
+                    return;
+                }
                 sl.pendingDeath = new Death(ConflictRecords.BY_NONE, null);
+            }
             return;
         }
         if (reason == Entity.RemovalReason.DISCARDED) {
@@ -1032,6 +1147,13 @@ public final class ConflictBridge implements SessionPlugin {
             reject(agent, epoch, wave, cmdSeq, ConflictRecords.SpawnRejected.ALREADY_EMBODIED, now);
             return;
         }
+        // A CHIEF_BODY of another epoch than this materialize's was for a materialize that never came (MZB-805).
+        Away away = chiefAway.get(agent);
+        if (away != null && away.epoch() != epoch) {
+            chiefAway.remove(agent);
+            chiefBodiesUnmatched++;
+            away = null;
+        }
         if (empty) {
             // A walked-in band's fight with every member placed already (MZB-728): nothing to place, no epoch to end. The
             // wave is taken as had, and the echo is the fight's one record, flags and all (a replay reads a refusal as the
@@ -1123,8 +1245,15 @@ public final class ConflictBridge implements SessionPlugin {
             Stack st = columnStack(p, wave, at0[pl.entry()], met, hx, hz, pl.back(), pl.side(), now);
             st.chief = pl.chief();
             // The war chief is no unit of the band (the engine counts it apart): an extra body of the entry's kind (MZB-109).
-            for (int g = 0; g < pl.slots(); g++)
-                st.slots.add(new Slot(st, pl.chief(), false, k.body(), k.javaBody(), k.type(), lateral(g, pl.slots()), 0.0));
+            for (int g = 0; g < pl.slots(); g++) {
+                Slot sl = new Slot(st, pl.chief(), false, k.body(), k.javaBody(), k.type(), lateral(g, pl.slots()), 0.0);
+                if (pl.chief() && away != null) {
+                    sl.chiefMemory = away.memory(); // MZB-805: the CHIEF_BODY sent just ahead of this materialize
+                    chiefAway.remove(agent);
+                    away = null;
+                }
+                st.slots.add(sl);
+            }
             launch(st, (sflags[pl.entry()] & ConflictRecords.Materialize.STACK_BARE) != 0, tx, tz, lurk, now);
         }
         int n = 0;
@@ -1465,6 +1594,8 @@ public final class ConflictBridge implements SessionPlugin {
                 x = q[0];
                 z = q[1];
                 y = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, Mth.floor(x), Mth.floor(z));
+                if (sl.traveller != null)
+                    y += sl.traveller.lift(null); // a floating body is made in the air (MZB-808), not set down to be lifted
             }
             Mob m;
             List<Mob> extras = new ArrayList<>();
@@ -1476,6 +1607,8 @@ public final class ConflictBridge implements SessionPlugin {
                     BodyKinds.makeBare(sl.body, m);
                 if (m != null && from != null)
                     so.site.kind.copy(from, m);
+                if (m != null && sl.traveller != null)
+                    sl.traveller.made(level, m, sl.chiefMemory, sl.travelMemo); // after the copy: the memory adds to what was handed over
             } catch (RuntimeException ex) {
                 MicRtsim.LOGGER.error("[mic_rtsim] creating a conflict body {} failed", sl.body, ex);
                 m = null;
@@ -1532,8 +1665,12 @@ public final class ConflictBridge implements SessionPlugin {
             reconciler.handedOff(h, now);
         for (Slot sl : todo) {
             Mob m = sl.entity;
-            sl.goal = new ConflictFollowGoal(m, sl);
-            m.goalSelector.addGoal(ConflictFollowGoal.PRIORITY, sl.goal);
+            if (sl.traveller != null) {
+                travelling.add(sl); // it travels by the Traveller's step, not the follow goal and navigation (MZB-807)
+            } else {
+                sl.goal = new ConflictFollowGoal(m, sl);
+                m.goalSelector.addGoal(ConflictFollowGoal.PRIORITY, sl.goal);
+            }
             if (p.envoy && p.guarded)
                 sl.stripped = ConflictBodies.stripTargets(m);
             if (sl.envoy)
@@ -1562,11 +1699,16 @@ public final class ConflictBridge implements SessionPlugin {
     private void despawn(Slot sl) {
         Mob m = sl.entity;
         releaseLurk(sl); // the Lurker lets go of the body it is about to lose (its goals, its stamp), so nothing of it outlives it
+        if (sl.traveller != null) {
+            travelling.remove(sl);
+            if (m != null)
+                sl.traveller.release(m, sl.travelMemo); // the same for the Traveller's (a floating body's gravity, its memo)
+        }
         if (m != null) {
             sl.removing = true;
             if (sl.goal != null)
                 m.goalSelector.removeGoal(sl.goal);
-            if (!m.isRemoved()) {
+            if (!m.isRemoved() && !isDying(m)) { // a dying chief finishes its animation and drops its loot (MZB-817)
                 m.ejectPassengers();
                 m.discard();
             }
@@ -1579,6 +1721,7 @@ public final class ConflictBridge implements SessionPlugin {
         sl.entity = null;
         sl.uuid = null;
         sl.holdAt = null;
+        sl.homeSpot = null;
     }
 
     // ---- the pending stacks' chunks -------------------------------------------------------------
@@ -1695,6 +1838,8 @@ public final class ConflictBridge implements SessionPlugin {
     public void endOfTick(RtsimSession s, long now) {
         if (s != session || s.failed())
             return;
+        if (!dying.isEmpty())
+            tickDying(); // first, and with the module off: a body in its animation does not wait for a party (MZB-817)
         if (!RtsimConfig.on(Module.CONFLICT)) {
             if (held)
                 switchedOff(now);
@@ -1723,6 +1868,8 @@ public final class ConflictBridge implements SessionPlugin {
         passing.addAll(byAgent.values());
         for (Party p : passing)
             pass(p, now);
+        if (!travelling.isEmpty())
+            aloft(now);
         pollWatches();
         for (Party p : passing) {
             if (byAgent.get(p.agent) != p || p.recalling)
@@ -1755,6 +1902,83 @@ public final class ConflictBridge implements SessionPlugin {
         flushSignals(now, false);
         if (now % NOTICE_CHECK == 0)
             checkNotices(now);
+    }
+
+    /**
+     * The aloft pass (M11, MZB-807): each live traveller body is stepped once, from the end of the tick, after every
+     * level ticked its entities and block entities (a push that landed after them is wiped by the step; one before
+     * them is the knockback listener's, MZB-810). Walking the list from the end drops, as it goes, a slot whose body
+     * is gone by a path that did not call {@link #despawn}. A dying body is never stepped, nor one whose chunk does not
+     * tick entities (the placing's {@code checkPlaced} teleports that one back), nor one held at a lurk's point, nor one
+     * called home (its {@code home} is the camp reconciler's, MZB-822).
+     */
+    private void aloft(long now) {
+        for (int i = travelling.size() - 1; i >= 0; i--) {
+            Slot sl = travelling.get(i);
+            Mob m = sl.entity;
+            if (m == null || m.isRemoved() || !sl.alive) {
+                travelling.remove(i);
+                continue;
+            }
+            if (sl.pendingDeath != null || m.isDeadOrDying() || sl.holdAt != null || sl.homeSpot != null)
+                continue;
+            if (!(m.level() instanceof ServerLevel level) || !RtsimSession.entitiesTickAt(level, m.blockPosition()))
+                continue;
+            Stack st = sl.stack;
+            double f = st.walked(now);
+            way.set(sl.placeX(f), sl.placeZ(f), st.ex, st.ez, st.party.attack, st.party.recalling, now);
+            try {
+                sl.traveller.step(level, m, way, sl.travelMemo);
+            } catch (RuntimeException ex) {
+                if (travellerErrors++ < 3)
+                    MicRtsim.LOGGER.error("[mic_rtsim] a traveller's step failed for {}", sl.body, ex);
+            }
+        }
+    }
+
+    /**
+     * Whether an explosion's push of this entity is to be zeroed (M11, MZB-810): it is a live puppet of a band whose
+     * Traveller says it floats. One identity lookup in the map of live puppets, which is empty with no band out (D1).
+     * The step zeroes a push that lands after the entities tick; this is for the one that lands before them, which
+     * the jar's own tick would carry up (it zeroes only the horizontal motion).
+     */
+    public boolean zeroKnockback(Entity e) {
+        if (byUuid.isEmpty())
+            return false;
+        Slot sl = byUuid.get(e.getUUID());
+        if (sl == null || sl.entity != e || !sl.alive || sl.traveller == null || !(e instanceof Mob m)
+                || !sl.traveller.aloft(m, sl.travelMemo))
+            return false;
+        knockbacksZeroed++;
+        return true;
+    }
+
+    /**
+     * Whether a trip to another dimension is cancelled (M11, MZB-815): the entity is a live puppet of a band, aloft or not
+     * (or one of a body's extras, a raptor's follower): a portal use would make a copy the bridge refuses to admit and
+     * lose the body, and the party's book is of the level it is in. One identity lookup, empty with no band out.
+     */
+    public boolean cancelPortal(Entity e) {
+        if (byUuid.isEmpty() && extraOf.isEmpty())
+            return false;
+        Slot sl = byUuid.get(e.getUUID());
+        boolean puppet = sl != null && sl.entity == e && sl.alive;
+        if (!puppet) {
+            sl = extraOf.get(e.getUUID());
+            puppet = sl != null && sl.extras.contains(e);
+        }
+        if (puppet)
+            portalsCancelled++;
+        return puppet;
+    }
+
+    /**
+     * A chief's memory for the party whose BAND_MATERIALIZE follows (CHIEF_BODY with an agent, M11, MZB-805): kept, the
+     * latest per agent, until that materialize claims it for its chief stack's slot, across command buffers and ticks
+     * (rtsim-jni can end a buffer between the two). One of another epoch, the party's end and the session's end drop it.
+     */
+    void chiefBodyAway(long agent, int epoch, CampKind.ChiefBody memory) {
+        chiefAway.put(agent, new Away(epoch, memory));
     }
 
     // ---- the stop (MZB-472) ---------------------------------------------------------------------
@@ -1901,7 +2125,7 @@ public final class ConflictBridge implements SessionPlugin {
 
     /** A member the trim may cut: in the books, not dying, not already removed. */
     private static boolean trimmable(Slot sl) {
-        return sl.alive && sl.pendingDeath == null && !sl.removing;
+        return sl.alive && sl.pendingDeath == null && !sl.removing && sl.homeSpot == null; // a puppet called home is its line's (MZB-822)
     }
 
     /**
@@ -1919,7 +2143,9 @@ public final class ConflictBridge implements SessionPlugin {
                 Slot sl = st.slots.get(i);
                 if (!trimmable(sl) || (body == null ? !sl.chief : sl.chief || !body.equals(sl.body)))
                     continue;
-                cands.add(new MarchTrim.Candidate(st.index, i, st.back, pending, pending || !inSight(sl, level)));
+                // A chief puppet Rule U holds is not cut, in sight or not (M11, MZB-827): it stays due, tried on the stop's beat.
+                boolean unseen = pending || !inSight(sl, level) && !(sl.chief && sl.traveller != null && reconciler.holdsChief(sl.entity));
+                cands.add(new MarchTrim.Candidate(st.index, i, st.back, pending, unseen));
                 slots.add(sl);
             }
         }
@@ -2054,8 +2280,9 @@ public final class ConflictBridge implements SessionPlugin {
             }
             if (present) {
                 Vec3 q = sl.place(e);
+                double lift = sl.traveller == null ? 0.0 : sl.traveller.lift(sl.travelMemo); // a floating body goes back up there
                 e.stopRiding();
-                e.teleportTo(q.x, q.y, q.z);
+                e.teleportTo(q.x, q.y + lift, q.z);
                 e.getNavigation().stop();
                 strays++;
             } else {
@@ -2110,19 +2337,44 @@ public final class ConflictBridge implements SessionPlugin {
         for (Stack st : p.stacks) {
             if (st.state != StackState.PLACED)
                 continue;
-            if (timeUp || level == null || !seen(st, level)) {
+            boolean goes = timeUp || level == null || !seen(st, level);
+            boolean kept = false;
+            if (goes) {
                 for (Slot sl : st.slots) {
-                    if (sl.alive && sl.pendingDeath == null)
+                    // A chief puppet is not despawned while its HAND_BACK is yet to play or Rule U holds it (M11, MZB-827): its
+                    // BAND_DEMATERIALIZED goes only after the puppet is gone, or its death journaled (MZB-824's invariant).
+                    if (keepsChief(sl, p, now)) {
+                        kept = true;
+                        continue;
+                    }
+                    if (sl.alive && sl.pendingDeath == null) {
+                        if (sl.chief && sl.traveller != null && sl.entity != null && reconciler.throneBodyStands(p.faction))
+                            chiefMergesMissed++; // the throne body stays and the puppet's health is lost (MZB-823)
                         despawn(sl);
+                    }
                     dropExtras(sl);
                 }
-                st.state = StackState.GONE;
-            } else {
-                any = true;
+                if (!kept)
+                    st.state = StackState.GONE;
             }
+            if (kept || !goes)
+                any = true;
         }
         if (!any && !dying(p))
             finish(p, ConflictRecords.Dematerialized.COMMAND, now);
+    }
+
+    /**
+     * Whether a recall keeps a chief puppet this tick ({@link AloftRules#recallKeeps}, MZB-827): one called home keeps its place
+     * until its line could have played (and a grace after, for a line that was lost), one Rule U holds until the recall's
+     * deadline. A slot with no Traveller, or no live body, is never kept: its band's walk is the recall's as for any member.
+     */
+    private boolean keepsChief(Slot sl, Party p, long now) {
+        if (!sl.chief || sl.traveller == null || !sl.alive || sl.pendingDeath != null || sl.entity == null || sl.entity.isRemoved()
+                || sl.entity.isDeadOrDying())
+            return false;
+        boolean homing = sl.homeSpot != null;
+        return AloftRules.recallKeeps(homing, !homing && reconciler.holdsChief(sl.entity), now, p.recallDeadline, RECALL_TIMEOUT);
     }
 
     private static boolean dying(Party p) {
@@ -2230,6 +2482,11 @@ public final class ConflictBridge implements SessionPlugin {
     private void unregister(Party p) {
         if (byAgent.get(p.agent) == p)
             byAgent.remove(p.agent);
+        Away unclaimed = chiefAway.get(p.agent);
+        if (unclaimed != null && unclaimed.epoch() == p.epoch) {
+            chiefAway.remove(p.agent);
+            chiefBodiesUnmatched++; // the party ends with its chief's memory unclaimed (MZB-805)
+        }
         for (Stack st : p.stacks) {
             unwatch(st);
             st.state = StackState.GONE;
@@ -2288,19 +2545,23 @@ public final class ConflictBridge implements SessionPlugin {
     /** LivingDeathEvent (lowest, not cancelled): a member's death is journaled at the end of the tick, once certain. */
     void onDeath(LivingEntity dead, DamageSource source, long now) {
         reconciler.onDeath(dead, source);
-        if (reconciler.secondBody(dead))
-            return; // no path journals a second body's death, and it kills nobody's kin (MZB-431)
         Slot sl = live(dead);
+        if (reconciler.secondBody(dead)) {
+            // no path journals a second body's death, and it kills nobody's kin (MZB-431); a floating one still falls through its
+            // animation (MZB-817), or it would hang with no gravity until the animation ends
+            if (sl != null && sl.traveller != null)
+                died(sl, dead);
+            return;
+        }
         Entity killer = source.getEntity();
         if (sl != null) {
-            // a chief's death goes by the kill credit (CHIEF_KILLED renews the den, MZB-261); the rest by the hit
-            if (sl.chief) {
-                Credit c = credit(dead, source);
-                sl.pendingDeath = new Death(c.by(), c.killer());
-                return;
-            }
-            int by = byKind(killer);
-            sl.pendingDeath = new Death(by, by == ConflictRecords.BY_PLAYER ? killer.getUUID() : null);
+            if (sl.traveller != null && sl.pendingDeath == null)
+                died(sl, dead); // the first death: a floating body falls during its animation (MZB-817)
+            // A chief's death goes by the kill credit (CHIEF_KILLED renews the den, MZB-261). So does every other member's, by the
+            // camp's rule (a player the damage names, a tame animal's owner, the credit of a hit within 100 ticks, MZB-826), so the
+            // warriors an Umvuthi's `die` takes are credited as vanilla credits them.
+            Credit c = sl.chief ? credit(dead, source) : Camps.killer(dead, source);
+            sl.pendingDeath = new Death(c.by(), c.killer());
             return;
         }
         // A camp's kin killed by a player inside its faction's territory: killing (4).
@@ -2325,6 +2586,19 @@ public final class ConflictBridge implements SessionPlugin {
 
     /** LivingDropsEvent: a dying member's drops carry its record until the engine has it (§3.1). */
     void onDrops(LivingEntity dead, Collection<ItemEntity> drops) {
+        if (!dying.isEmpty()) {
+            // A dying chief's drops, 115 ticks after its death: the slot is long forgotten, so the list carries its record (MZB-817)
+            for (int i = 0; i < dying.size(); i++) {
+                Dying d = dying.get(i);
+                if (d.body() == dead) {
+                    dying.remove(i);
+                    for (ItemEntity drop : drops)
+                        if (!drop.isRemoved())
+                            session.carryOnEntity(drop, List.of(d.record()), d.seq());
+                    return;
+                }
+            }
+        }
         Slot sl = live(dead);
         if (sl != null && sl.pendingDeath != null)
             sl.drops = new ArrayList<>(drops);
@@ -2351,12 +2625,92 @@ public final class ConflictBridge implements SessionPlugin {
                 sl.pendingDeath = null;
                 ByteBuffer r = journalLoss(sl, d.by(), d.killer(), now);
                 long seq = r.getLong(Obs.OBS_SEQ);
-                if (sl.drops != null)
+                if (sl.drops != null) {
                     for (ItemEntity drop : sl.drops)
                         if (!drop.isRemoved())
                             session.carryOnEntity(drop, List.of(r.array()), seq);
+                } else if (sl.chief && e != null && !e.isRemoved()) {
+                    dying.add(new Dying(e, r.array(), seq)); // its drops are yet to come, at the animation's end (MZB-817)
+                }
                 sl.drops = null;
                 forget(sl);
+            }
+        }
+    }
+
+    /** The Traveller's word that the body died (MZB-817), its failure counted as a step's is. */
+    private void died(Slot sl, LivingEntity dead) {
+        try {
+            if (dead instanceof Mob m)
+                sl.traveller.died(m, sl.travelMemo);
+        } catch (RuntimeException ex) {
+            if (travellerErrors++ < 3)
+                MicRtsim.LOGGER.error("[mic_rtsim] a traveller's death hook failed for {}", sl.body, ex);
+        }
+    }
+
+    /** Whether a body is a chief puppet in its death animation, kept for its loot (MZB-817). */
+    private boolean isDying(Entity e) {
+        if (dying.isEmpty())
+            return false;
+        for (Dying d : dying)
+            if (d.body() == e)
+                return true;
+        return false;
+    }
+
+    /** The number of chief puppets in their death animations (GameTests). */
+    public int dyingBodies() {
+        return dying.size();
+    }
+
+    /**
+     * Ends the death animation of a dying chief whose chunk no longer ticks entities (M11, MZB-817): the jar's own end
+     * runs from the body's tick, which a chunk past the ticking edge never gives, and the body is not saved (UR-1), so
+     * its loot would go with its unload. One {@code isPositionEntityTicking} read per entry per tick.
+     */
+    private void tickDying() {
+        endDying(false);
+    }
+
+    /** Ends every dying chief's animation (the session's stop or failure, MZB-817), so no loot waits on a body. */
+    private void finishDying() {
+        endDying(true);
+        dying.clear();
+    }
+
+    private void endDying(boolean all) {
+        for (int i = dying.size() - 1; i >= 0; i--) {
+            if (i >= dying.size())
+                continue; // a finish's drops took entries off the list
+            Dying d = dying.get(i);
+            Mob b = d.body();
+            if (b.isRemoved()) {
+                dying.remove(i);
+                // The jar's own end removes it as KILLED (its drops, if any, were met by onDrops); any other removal
+                // (its chunk unloading, a command, another dimension) took the body before its loot.
+                if (b.getRemovalReason() != Entity.RemovalReason.KILLED) {
+                    deathLootLost++;
+                    MicRtsim.LOGGER.warn("[mic_rtsim] a dying chief {} was removed ({}) before its drops", b, b.getRemovalReason());
+                }
+                continue;
+            }
+            if (!b.isDeadOrDying()) {
+                dying.remove(i); // alive again (another mod): no loot is coming
+                continue;
+            }
+            if (!all && b.level() instanceof ServerLevel level && RtsimSession.entitiesTickAt(level, b.blockPosition()))
+                continue; // its own tick ends the animation
+            b.deathTime = DEATH_TIME_DONE;
+            try {
+                b.baseTick(); // the jar's tickDeath: the killer from its kill data, dropAllDeathLoot, event 60, removal
+            } catch (RuntimeException ex) {
+                MicRtsim.LOGGER.error("[mic_rtsim] a dying chief {} could not end its animation", b, ex);
+            }
+            if (b.isRemoved() || all) {
+                if (!b.isRemoved())
+                    deathLootLost++;
+                dying.remove(d); // its drops, if any, took it off the list already
             }
         }
     }
@@ -2372,6 +2726,11 @@ public final class ConflictBridge implements SessionPlugin {
         if (e != null) {
             e.removeData(RtsimAttachments.AGENT);
             if (keepBody && !e.isRemoved()) {
+                if (sl.traveller != null) {
+                    travelling.remove(sl);
+                    sl.homeSpot = null;
+                    sl.traveller.release(e, sl.travelMemo); // a body a player carries off is an ordinary mob with gravity (MZB-829)
+                }
                 if (sl.goal != null)
                     e.goalSelector.removeGoal(sl.goal);
                 ConflictBodies.restoreTargets(e, sl.stripped);
@@ -2388,7 +2747,8 @@ public final class ConflictBridge implements SessionPlugin {
     /** CHIEF_KILLED for the chief, else BAND_CASUALTIES of one member, each with a Java op id (MZB-589 for the latter). */
     private ByteBuffer journalLoss(Slot sl, int by, UUID killer, long now) {
         Party p = sl.stack.party;
-        if (!p.envoy && !p.recalling && marches.ended(p.agent)) {
+        boolean ended = !p.envoy && marches.ended(p.agent);
+        if (ended && !p.recalling) {
             // MZB-466: the engine has ended this party (its march says so) and its HAND_BACK lines are in flight, so
             // the engine books this loss nowhere. It costs at most this one body; the log and the count show the rate.
             unbookedHomeDeaths++;
@@ -2397,6 +2757,20 @@ public final class ConflictBridge implements SessionPlugin {
         }
         ByteBuffer r;
         if (sl.chief) {
+            // A chief puppet that dies while its party's chief HAND_BACK is held or yet to play (M11, MZB-824): the engine has ended the
+            // party, so a CHIEF_KILLED would count for nothing. Camps journals a CAMP_DEATH of the line's slot instead, and answers the
+            // line stale. BAND_DEMATERIALIZED follows only after this (the recall waits on the death, the capture settles it first).
+            if (sl.traveller != null) {
+                ByteBuffer home = reconciler.chiefDiedHome(sl, by, killer, now);
+                if (home != null)
+                    return home;
+                reconciler.chiefDiedAway(p.faction); // a throne body that stands is the engine's dead chief now: nobody's (MZB-825)
+                if (ended) {
+                    chiefDeathsAfterEnd++; // no line held: a boss killed in this window comes back at the next census (MZB-824, counted)
+                    MicRtsim.LOGGER.debug("[mic_rtsim] a chief of party {} (epoch {}) died after its march ended, with no HAND_BACK held",
+                            p.agent, p.epoch);
+                }
+            }
             r = session.boundary().beginJournaled(ConflictRecords.CHIEF_KILLED, ConflictRecords.ChiefKilled.SIZE, by, now);
             r.putLong(ConflictRecords.ChiefKilled.AGENT, p.agent);
             r.putInt(ConflictRecords.ChiefKilled.EPOCH, p.epoch);
@@ -3329,6 +3703,139 @@ public final class ConflictBridge implements SessionPlugin {
     /** A declared camp's FACTION_FOUND, at its first census of the session (MZB-206). */
     void factionFound(Camps.Site c, ServerLevel level, int homeBodies, int census, long now) {
         journalFound(c.faction, level, c.structure, c.pos, c.late, homeBodies, census, now);
+    }
+
+    /**
+     * Calls a chief puppet home (M11, MZB-822): it floats to {@code spot} and turns to {@code direction} (the throne's), which
+     * {@link #homeStep} asks for each tick. A puppet called home is not stepped with its party, not trimmed, and kept by its
+     * recall until its line has played.
+     */
+    void homeChief(Slot sl, Vec3 spot, int direction) {
+        if (sl.homeSpot == null)
+            chiefsCalledHome++;
+        sl.homeSpot = spot;
+        sl.homeDirection = direction;
+    }
+
+    /** One step of a called-home puppet toward its spot: true once it has settled there, or when there is nothing to wait for. */
+    boolean homeStep(Slot sl) {
+        Mob m = sl.entity;
+        if (sl.traveller == null || sl.homeSpot == null || m == null || m.isRemoved())
+            return true;
+        if (!(m.level() instanceof ServerLevel level))
+            return true;
+        if (!RtsimSession.entitiesTickAt(level, m.blockPosition()))
+            return false; // its chunk does not tick it: it waits, and the line's timeout plays it where it stands
+        try {
+            return sl.traveller.home(level, m, sl.homeSpot, sl.homeDirection, sl.travelMemo);
+        } catch (RuntimeException ex) {
+            if (travellerErrors++ < 3)
+                MicRtsim.LOGGER.error("[mic_rtsim] a traveller's home step failed for {}", sl.body, ex);
+            return true; // played where it stands: a puppet that cannot float home must not hold its line for good
+        }
+    }
+
+    /** A puppet no longer called home (its line went stale): its party's recall takes it as any member's. */
+    void releaseHome(Slot sl) {
+        sl.homeSpot = null;
+    }
+
+    /**
+     * Whether a live chief puppet of {@code faction} floats within {@link AloftRules#TAKE_STALE} blocks (horizontally) of
+     * (x, z) in {@code dimension}: its hand-back will land on the throne body there (MZB-823).
+     */
+    boolean chiefPuppetNear(long faction, ResourceKey<Level> dimension, double x, double z) {
+        for (Party p : byAgent.values()) {
+            if (p.faction != faction || p.envoy || !p.dimension.equals(dimension))
+                continue;
+            for (Stack st : p.stacks)
+                for (Slot sl : st.slots)
+                    if (sl.chief && sl.traveller != null && sl.alive && sl.pendingDeath == null && sl.entity != null && !sl.entity.isRemoved()
+                            && sl.entity.isAlive() && AloftRules.takeStale(sl.entity.getX() - x, sl.entity.getZ() - z))
+                        return true;
+        }
+        return false;
+    }
+
+    /** The faction's live chief puppets that float (a Traveller's), for the second-body mark (MZB-825). */
+    List<Mob> chiefPuppets(long faction) {
+        List<Mob> out = List.of();
+        for (Party p : byAgent.values()) {
+            if (p.faction != faction || p.envoy)
+                continue;
+            for (Stack st : p.stacks)
+                for (Slot sl : st.slots)
+                    if (sl.chief && sl.traveller != null && sl.alive && sl.entity != null && !sl.entity.isRemoved()) {
+                        if (out.isEmpty())
+                            out = new ArrayList<>(1);
+                        out.add(sl.entity);
+                    }
+        }
+        return out;
+    }
+
+    /** The party's chief slot of {@code body} that died this tick and is not journaled yet, or null. */
+    Slot dyingChief(Party p, String body) {
+        for (Stack st : p.stacks)
+            for (Slot sl : st.slots)
+                if (sl.chief && sl.alive && sl.pendingDeath != null && sl.body.equals(body))
+                    return sl;
+        return null;
+    }
+
+    /**
+     * A chief puppet's summons (M11, MZB-816): the summoner is a live chief puppet of a party, so the warriors and cranes it calls
+     * are puppets of that party's slot, in the way of a raptor's followers (MZB-428): tagged with the party's AgentTag, held,
+     * and listed in the slot's extras and in {@link #extraOf} before the join, which {@link #admit} lets through. They go with the
+     * slot's despawn or the party's end, are never saved, and book nothing when they die. Each adoption first prunes the extras
+     * that are dead or removed, so a long Invasion does not keep every one it ever summoned. False for any other summoner (a
+     * grove's own Umvuthi at its throne: its summons stay strays), and one lookup in the map of live puppets is all it costs (D1).
+     */
+    public boolean adoptSummons(Entity summoner, Mob summons) {
+        if (byUuid.isEmpty())
+            return false;
+        Slot sl = byUuid.get(summoner.getUUID());
+        if (sl == null || sl.entity != summoner || !sl.alive || !sl.chief || sl.traveller == null || sl.pendingDeath != null
+                || summoner.isRemoved() || !summoner.isAlive())
+            return false;
+        Party p = sl.stack.party;
+        List<Mob> next = new ArrayList<>(sl.extras.size() + 1);
+        for (Mob x : sl.extras) {
+            if (x.isRemoved() || !x.isAlive())
+                extraOf.remove(x.getUUID(), sl);
+            else
+                next.add(x);
+        }
+        summons.setData(RtsimAttachments.AGENT, new AgentTag(p.agent, p.epoch));
+        ConflictBodies.hold(summons);
+        next.add(summons);
+        sl.extras = next;
+        extraOf.put(summons.getUUID(), sl);
+        summonsAdopted++;
+        return true;
+    }
+
+    /** The join of an adopted summons failed (another mod cancelled it): it is no extra, and no longer tagged. */
+    public void dropSummons(Mob summons) {
+        Slot sl = extraOf.remove(summons.getUUID());
+        if (sl != null)
+            sl.extras = sl.extras.stream().filter(x -> x != summons).collect(java.util.stream.Collectors.toCollection(ArrayList::new));
+        summons.removeData(RtsimAttachments.AGENT);
+        summonsRefused++;
+    }
+
+    /**
+     * Whether the party's chief puppet of {@code body} that has not left the party yet is a second body (MZB-891): the engine booked its
+     * chief dead at the throne body's CAMP_DEATH. It counts while the puppet floats and while it is in its death animation, which
+     * {@link #puppetOf} (a live puppet only) does not find.
+     */
+    boolean secondPuppet(Party p, String body) {
+        for (Stack st : p.stacks)
+            for (Slot sl : st.slots)
+                if (sl.chief && sl.traveller != null && sl.alive && sl.entity != null && !sl.entity.isRemoved() && sl.body.equals(body)
+                        && reconciler.secondBody(sl.entity))
+                    return true;
+        return false;
     }
 
     /** A party's live puppet of {@code body}, for a hand-back; null with none. */

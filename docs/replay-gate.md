@@ -158,6 +158,20 @@ checked against what landed and amended where main differs from what they assume
   `UNNAMED_GEN | session_first`, then is admitted. Every record dispatched while replaying therefore
   belongs to a generation of an earlier session (the pages' open one or one a replayed JOURNAL_GEN
   opened), and every record dispatched after the end to this session's.
+- **Residual: no conflict hook at a replayed generation switch** (M11a, MZB-853 and MZB-859's P4,
+  accepted by the coordinator). A replay that crosses an earlier session's generation switch runs
+  both sessions' records over the same pages with no replay end between them, so a module's
+  `replay_done` work for that earlier session never runs. The case found: a chief's band has ended
+  (`Camp.ended` holds), its HAND_BACK is answered STALE, a restart follows, then the chief's
+  CAMP_DEATH, then a crash. Live, the first restart's replay end loses the chief (MZB-853 release 5,
+  `chief_ends_lost`) and the later CAMP_DEATH finds no end and books nothing: (0, 0, true, false).
+  The crash replay of both sessions reaches the CAMP_DEATH with the end still holding and books the
+  death: (1, 1, true, false). One end and one heir on both paths, never two, so nothing is
+  duplicated; only the fall and the player loss differ. The test
+  `a_stale_hand_back_then_a_camp_death_across_a_replay_books_one_end` (rtsim-jni `protocol.rs`)
+  asserts both as they are. Making them agree needs a hook at the replay's generation switches that
+  runs each module's session-end work there; the slice that adds such hooks picks this case up and
+  changes that test's last stage to (0, 0, true, false).
 - **On main: the replay clock agrees.** While replaying the clock runs no further than the replay
   clock (§3.6), which each replayed record raises to its GAME_TIME. A copy is dispatched as its inner
   record, whose GAME_TIME is the original's (Java journals a REASSERT with the inner record's time),
@@ -1000,7 +1014,8 @@ The counts live in the module's JNI stats, not saved.
 | AmbushSpot | drop | drop | a body's lurk |
 | Reconcile | drop | never | answers a CAMP_CENSUS of this session with spawn, adopt and take lines (MOWZIE.md §4.9); M5's `send_lines` orders only a camp that is in (`is_in`), false all through a replay: `begin_replay`'s `camp_session_start` makes every camp out and a census replayed only marks its camp out (RP-64) |
 | TrainRobbed | keep | drop | a roar (RP-12) |
-| ChiefBody | keep | never | goes only ahead of a stack, a spawn line or a hand-back, none of which is made while replaying |
+| ChiefBody, home (agent 0) | keep | never | goes only ahead of a chief's spawn line or hand-back (`send_lines`, MZB-821) and from a census that found the chief short, none of which is made while replaying |
+| ChiefBody, away (agent not 0; M11) | drop | never | goes only just ahead of its band's MATERIALIZE, with the chief's stack and the same epoch, so it is dropped from the queue with it; pushed only by `spawn_wave`, whose `defer` returns while replaying; Java keeps it in memory only for that MATERIALIZE, so a dropped pair loses nothing and the next meeting sends both again at a new epoch (MZB-803, MZB-804) |
 | March (M10) | drop | drop | a party's march (MOWZIE.md §4.16): latest wins per agent, built from the party by `take_commands` at the first take after the replay end, and by `home` for a band's end, neither while replaying; Java's map is a session's (RP-170) |
 | OwedHunt (M9) | drop | drop | the faction's hunts are state: a raid replayed owes its hunt again, which the plugin had; every hunt still held goes at the replay end (`resend_notices`), after a journaled HUNT_APPLIED cleared its own (§7.4, MZB-449, RP-131) |
 
@@ -1074,7 +1089,13 @@ OwedHunt, with its row above, and new push sites for two kinds that had rows:
   line M9 adds; `camp_heir` asks `is_in` itself too.
 - **CHIEF_BODY** goes ahead of a chief SPAWN line in `send_lines` and from a census that found the
   chief short (`chief_body_cmd`, which asks `is_in`). Never while replaying: the ChiefBody row's
-  "never" holds.
+  "never" holds. M11 adds two pushes. `send_lines` sends it ahead of the chief's HAND_BACK too
+  (MZB-821), under the same `is_in`. And `spawn_wave` pushes an away one (the band's agent, its
+  epoch, the camp's memory) directly before the MATERIALIZE of a band its chief leads in the chief's
+  own stack (`chief_own_stack`, the grove's culture), after `defer` has returned while replaying
+  (MZB-801, MZB-803). The writer keeps the conflict's queue in order, so the pair can be split across
+  two command buffers only at the end of one, the MATERIALIZE leading the next (protocol test P1,
+  MZB-859).
 - **Tribute stacks** are no conflict `Cmd`: `place_tribute` books a TRANSFER_TO_CONTAINER that
   rtsim-jni writes through the core outbox (`placings`, `push_with_op`) under a deterministic op
   (`tribute_op`, of the camp, the stack's index, the good and the amount), only for a camp that is

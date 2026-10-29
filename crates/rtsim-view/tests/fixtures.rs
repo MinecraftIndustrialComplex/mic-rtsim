@@ -4,7 +4,14 @@
 //! copied without its `rtsim/archive` (the event timeline): `events.rs` needs a real save with no
 //! archive and writes its own archive onto a copy of this one. The create save keeps its archive.
 //!
-//! - `tests/data/core`: neoforge/core's GameTest world, a fresh one, run from commit 1762b1e8
+//! - `tests/data/core`: neoforge/core's GameTest world, a fresh one, run from commit a9318ed7
+//!   (Mowzie's Mobs M11 merged with main 60c759a9, which carries U-e with U-e13 and U-e14: both
+//!   sides' formats at once, M11's conflict pages RTC12 and U-e's engine meta page RTJM version 3,
+//!   as the two entries below say); before that, aec7918b
+//!   (Mowzie's Mobs M11, the Umvuthi aloft, with M10 merged in, which carries main 8703d216; M11's
+//!   formats: the conflict's pages are RTC12 (magic `RTCC`) with meta version 11, a camp's ledger
+//!   ending with the end of the band its chief came home with and the resident state ending with
+//!   those ends' index by agent, after the tribute stacks, MZB-853); before that, 1762b1e8
 //!   (replay-gate slice U-e, the module switch as a journaled record, RP-290, merged with Mowzie's
 //!   Mobs M10 36634dd2, which carries main c7d0f6e2: U-f, U-i, MZB-939, MZB-950; U-e's format: the
 //!   engine's meta page RTJM is version 3, the mask the modules are in as of the pages' sequence
@@ -84,7 +91,9 @@
 //!   when the server stops: 6638edc's save had one, while both runs of 98d6d34 and main's 7e4042a
 //!   had every herd staying put. So the route layer is not required here; it still has to draw or
 //!   say why.
-//! - `tests/data/create`: neoforge/create's GameTest world, run from 1762b1e8 with `-Psec1fx`
+//! - `tests/data/create`: neoforge/create's GameTest world, run from a9318ed7 with `-Psec1fx`
+//!   (M11 merged with main 60c759a9; the core save's formats, M11's and U-e's); before that, aec7918b
+//!   (M11 with M10 merged in; the core save's formats, M11's); before that, 1762b1e8
 //!   (U-e merged with M10 and main c7d0f6e2; the core save's formats, U-e's and M10's); before
 //!   that, 49fef870 (M10 merged with main 8703d216; the core save's formats, M10's); before that, da5aea80
 //!   (the core save's formats, M8's); before that, 2acae5ba (8e3eda72 merged

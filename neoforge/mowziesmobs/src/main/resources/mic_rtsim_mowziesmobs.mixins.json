@@ -6,9 +6,11 @@
   "mixins": [
     "ContainerUmvuthanaTradeSlotResultMixin",
     "EntityFrostmawMixin",
+    "EntityUmvuthiAccessor",
     "EntityUmvuthiMixin",
     "MMEntityMoveHelperMixin",
-    "MMPathNavigateGroundMixin"
+    "MMPathNavigateGroundMixin",
+    "UmvuthiSummonsMixin"
   ],
   "injectors": {
     "defaultRequire": 1

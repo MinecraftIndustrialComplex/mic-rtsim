@@ -311,6 +311,10 @@ enum Hold {
     /// A player near a chief body or targeted by it (`holdRemoval`): its TAKE, REMOVE or SET_OUT.
     /// No time limit; a census, the camp's out or the heir seated over the body answers it stale.
     Removal,
+    /// The chief's own puppet floating home (Java's homing, MZB-821): its HAND_BACK, for
+    /// `chief_float` ticks, or until the puppet is killed on the way
+    /// ([`FakeConflict::kill_homing_chief`]).
+    Homing,
 }
 
 /// The lines of a reconcile the plugin holds, with the reconcile they belong to, the tick they
@@ -422,6 +426,18 @@ pub struct FakeConflict {
     /// player leaves ([`FakeConflict::watch_throne`], [`FakeConflict::hold_chief`]) or, for the
     /// throne's, `HOLD_MAX` ticks after they arrived; answered stale at a census or the camp's out.
     held: Vec<HeldLines>,
+    /// The away CHIEF_BODY of each agent, kept until the agent's next MATERIALIZE, as Java keeps a
+    /// chief's memory for the record that carries its stack (MZB-803).
+    pending_chief: BTreeMap<u64, boundary::ChiefBody>,
+    /// MATERIALIZEs carrying a chief's own stack that found their CHIEF_BODY pending (its agent and
+    /// epoch), and those that found none: a failure each (MZB-838).
+    pub chief_bodies_matched: u32,
+    pub chief_bodies_missing: u32,
+    /// Ticks the chief's HAND_BACK of a band whose body holds its chief waits while the puppet
+    /// floats home, as Java's homing holds it (0: it goes at once; MZB-821). The band's
+    /// BAND_DEMATERIALIZED goes after that time, as Java's goes only once the puppet is gone
+    /// (MZB-853).
+    pub chief_float: u64,
 }
 
 /// A warrior a MASK may take: tagged, not the chief, in the footprint.
@@ -476,6 +492,10 @@ impl FakeConflict {
             uuids: 0,
             walk_off_deaths: 0,
             held: Vec::new(),
+            pending_chief: BTreeMap::new(),
+            chief_bodies_matched: 0,
+            chief_bodies_missing: 0,
+            chief_float: 0,
         }
     }
 
@@ -499,12 +519,18 @@ impl FakeConflict {
     }
 
     pub fn next_due(&self) -> Option<Tick> {
-        let held = self
-            .held
-            .iter()
-            .filter(|h| h.kind == Hold::Throne)
-            .map(|h| h.since + HOLD_MAX);
+        let held = self.held.iter().filter_map(|h| self.deadline(h));
         self.queue.iter().map(|e| e.0).chain(held).min()
+    }
+
+    /// When held lines go by themselves: the throne's at `HOLD_MAX`, a homing chief's after
+    /// `chief_float`; the others wait with no limit.
+    fn deadline(&self, h: &HeldLines) -> Option<Tick> {
+        match h.kind {
+            Hold::Throne => Some(h.since + HOLD_MAX),
+            Hold::Homing => Some(h.since + self.chief_float),
+            Hold::Fight | Hold::Removal => None,
+        }
     }
 
     /// Observations due by `to`, in time then push order, each through the codec.
@@ -675,6 +701,22 @@ impl FakeConflict {
                 }
             }
             Cmd::Materialize(m) => {
+                // A chief that is a body of its own goes as a stack of its own, the chief alone, after
+                // the first stack (MZB-801): its memory came just before, as an away CHIEF_BODY of
+                // this epoch (MZB-803). A pending one is spent on the agent's next record either way.
+                let own_chief = m.flags & boundary::BAND_CHIEF != 0
+                    && m.members
+                        .iter()
+                        .skip(1)
+                        .any(|s| s.count == 0 && s.flags & boundary::MEMBER_CHIEF != 0);
+                let pending = self.pending_chief.remove(&m.agent);
+                if own_chief {
+                    if pending.is_some_and(|b| b.epoch == u64::from(m.epoch)) {
+                        self.chief_bodies_matched += 1;
+                    } else {
+                        self.chief_bodies_missing += 1;
+                    }
+                }
                 let b = self.bodies.entry(m.agent).or_insert(Body {
                     epoch: m.epoch,
                     faction: m.faction,
@@ -802,8 +844,13 @@ impl FakeConflict {
             | Cmd::Steer(_)
             | Cmd::Settled(_)
             | Cmd::AmbushSpot(_)
-            | Cmd::TrainRobbed(_)
-            | Cmd::ChiefBody(_) => {}
+            | Cmd::TrainRobbed(_) => {}
+            // An away chief's memory waits for its MATERIALIZE; one at home is the throne's.
+            Cmd::ChiefBody(b) => {
+                if b.agent != 0 {
+                    self.pending_chief.insert(b.agent, b);
+                }
+            }
             // The march record (MZB-476): the latest revision of a party's is kept, an ENDED one
             // drops it, and the held body is trimmed to its counts (MZB-473; keyed by body id,
             // as the record's units are).
@@ -1076,13 +1123,133 @@ impl FakeConflict {
         self.replay_held(faction, at);
     }
 
+    /// Whether the band a chief's HAND_BACK names (`a`, at epoch `b`) still holds its chief's
+    /// puppet in the world.
+    fn homing(&self, l: &boundary::ReconcileLine) -> bool {
+        self.bodies
+            .get(&l.a)
+            .is_some_and(|b| u64::from(b.epoch) == l.b && b.chief.is_some())
+    }
+
+    /// The chief's puppet of the band `agent` at `epoch` leaves the world (home on its throne,
+    /// killed, or its line answered): its body id, if it stood. A band whose members are gone
+    /// already is gone with it.
+    fn take_chief(&mut self, agent: u64, epoch: u64) -> Option<u32> {
+        let b = self
+            .bodies
+            .get_mut(&agent)
+            .filter(|b| u64::from(b.epoch) == epoch)?;
+        let chief = b.chief.take();
+        if b.members.is_empty() {
+            self.bodies.remove(&agent);
+        }
+        chief
+    }
+
+    /// A player kills the chief's puppet of `faction` while it floats home (its HAND_BACK held by
+    /// `chief_float`): a CAMP_DEATH of the line's slot and generation, by the player, at `at`, and
+    /// the line answered stale, as Java finds its puppet gone (MZB-824, MZB-853). `false` when no
+    /// chief of the faction is homing.
+    pub fn kill_homing_chief(&mut self, faction: u64, at: Tick) -> bool {
+        let Some(i) = self
+            .held
+            .iter()
+            .position(|h| h.faction == faction && h.kind == Hold::Homing)
+        else {
+            return false;
+        };
+        let h = self.held.remove(i);
+        let Some(l) = h
+            .lines
+            .iter()
+            .map(|e| e.1)
+            .find(|l| l.action == boundary::ACTION_HAND_BACK)
+        else {
+            self.held.insert(i, h);
+            return false;
+        };
+        let body = self.take_chief(l.a, l.b).unwrap_or(l.body);
+        let op = self.op();
+        let death = boundary::CampDeath {
+            faction,
+            by: boundary::BY_PLAYER,
+            body,
+            flags: boundary::DEATH_CHIEF,
+            slot: l.slot,
+            generation: l.generation,
+            killer: self.player,
+            op,
+        };
+        // The puppet leaves its marker with its death, as a camp body does.
+        self.death_holders.push(death);
+        self.push(at, Obs::CampDeath(death));
+        self.apply_lines(h.faction, h.epoch, h.op, false, h.lines, at);
+        true
+    }
+
+    /// A player pays the chief's puppet of `faction` away from its camp (MZB-819): CHIEF_PAID with
+    /// PAID_PUPPET, the chief's slot and generation 0, at `at`. Its op.
+    pub fn pay_puppet(
+        &mut self,
+        faction: u64,
+        player: Uuid,
+        items: Vec<boundary::Item>,
+        at: Tick,
+    ) -> u64 {
+        let op = self.op();
+        self.push(
+            at,
+            Obs::ChiefPaid(boundary::ChiefPaid {
+                faction,
+                slot: crate::engine::CHIEF_SLOT,
+                generation: 0,
+                flags: boundary::PAID_PUPPET,
+                player,
+                op,
+                items,
+            }),
+        );
+        op
+    }
+
+    /// The chief's puppet of `faction` comes within 32 blocks of its throne while the census's TAKE
+    /// of the throne body is held on a player there: Java answers the held TAKE stale, and the
+    /// slot is the puppet's to settle by its own line (MZB-823). `false` when no such TAKE is held.
+    pub fn puppet_near_throne(&mut self, faction: u64, at: Tick) -> bool {
+        let mut found = false;
+        for mut h in self.take_held(Some(faction), Some(Hold::Removal)) {
+            let (take, rest): (Vec<_>, Vec<_>) = h.lines.iter().copied().partition(|(_, l)| {
+                l.action == boundary::ACTION_TAKE && l.slot == crate::engine::CHIEF_SLOT
+            });
+            let (epoch, op) = (h.epoch, h.op);
+            if !rest.is_empty() {
+                h.lines = rest;
+                self.held.push(h);
+            }
+            if !take.is_empty() {
+                found = true;
+                self.apply_lines(faction, epoch, op, false, take, at);
+            }
+        }
+        found
+    }
+
+    /// The chiefs standing in the world as puppets of `faction`'s bands (MZB-801).
+    pub fn band_chiefs(&self, faction: u64) -> usize {
+        self.bodies
+            .values()
+            .filter(|b| b.faction == faction && b.chief.is_some())
+            .count()
+    }
+
     /// What each of `lines` waits on, if it does (the camp being in at their epoch): the throne
     /// for a chief SPAWN or the pair of a plain seat (a player within 160 blocks of it); for the
     /// pair seated over the old chief's body, that body in a fight; for a TAKE, REMOVE or SET_OUT
     /// of a chief body, a player near it or targeting it.
     fn waits(&self, faction: u64, lines: &[boundary::ReconcileLine]) -> Vec<Option<Hold>> {
         use boundary::{
-            ACTION_MASK, ACTION_REMOVE, ACTION_SEAT_HEIR, ACTION_SET_OUT, ACTION_SPAWN, ACTION_TAKE,
+            ACTION_HAND_BACK, ACTION_MASK, ACTION_REMOVE, ACTION_SEAT_HEIR, ACTION_SET_OUT,
+            ACTION_SPAWN, ACTION_TAKE,
         };
         let Some(camp) = self.camps.get(&faction) else {
             return vec![None; lines.len()];
@@ -1105,6 +1272,11 @@ impl FakeConflict {
                 },
                 ACTION_SPAWN if l.flags & boundary::LINE_CHIEF != 0 => {
                     camp.watched.then_some(Hold::Throne)
+                }
+                // The chief's puppet floats home from where its band ended (MZB-821): its
+                // HAND_BACK goes when it is there.
+                ACTION_HAND_BACK if l.flags & boundary::LINE_CHIEF != 0 => {
+                    (self.chief_float > 0 && self.homing(l)).then_some(Hold::Homing)
                 }
                 ACTION_TAKE | ACTION_REMOVE | ACTION_SET_OUT => camp
                     .bodies
@@ -1147,16 +1319,20 @@ impl FakeConflict {
         taken
     }
 
-    /// The throne's lines whose `HOLD_MAX` is up by `to` go, each at its own deadline. A removal
-    /// and a pair over a fighting chief have no limit.
+    /// The throne's lines whose `HOLD_MAX` is up by `to` go, and a homing chief's whose
+    /// `chief_float` is, each at its own deadline. A removal and a pair over a fighting chief have
+    /// no limit.
     fn release_held(&mut self, to: Tick) {
-        let (mut over, kept): (Vec<HeldLines>, Vec<HeldLines>) = std::mem::take(&mut self.held)
+        let (over, kept): (Vec<HeldLines>, Vec<HeldLines>) = std::mem::take(&mut self.held)
             .into_iter()
-            .partition(|h| h.kind == Hold::Throne && h.since + HOLD_MAX <= to);
+            .partition(|h| self.deadline(h).is_some_and(|d| d <= to));
         self.held = kept;
-        over.sort_by_key(|h| h.since);
-        for h in over {
-            let at = h.since + HOLD_MAX;
+        let mut over: Vec<(Tick, HeldLines)> = over
+            .into_iter()
+            .map(|h| (self.deadline(&h).expect("a deadline"), h))
+            .collect();
+        over.sort_by_key(|e| e.0);
+        for (at, h) in over {
             self.apply_held(h, at);
         }
     }
@@ -1294,41 +1470,65 @@ impl FakeConflict {
     /// (§4.9, *Orders and answers*). With a player near, the lines Rule U holds wait (MZB-433):
     /// see [`Hold`] and `waits`; they are answered when they go.
     fn reconcile(&mut self, r: &boundary::CampReconcile, at: Tick) {
+        let live = self
+            .camps
+            .get(&r.faction)
+            .is_some_and(|c| c.epoch != 0 && c.epoch == r.epoch);
         // Java's homecoming (MZB-464): each HAND_BACK line names a party (`a`) and its epoch
         // (`b`), and one the plugin holds at that epoch is ended whatever the line's outcome:
-        // its body is gone, and BAND_DEMATERIALIZED (reason 1) names its survivors.
+        // its body is gone, and BAND_DEMATERIALIZED (reason 1) names its survivors. A chief's
+        // puppet with a line of its own floats home while `chief_float` runs (MZB-821): its body
+        // stays, the chief alone, and the band's end goes after it, as Java's goes only once the
+        // puppet is gone (MZB-853).
+        let mut ended: Vec<(u64, u64)> = Vec::new();
         for l in r
             .lines
             .iter()
             .filter(|l| l.action == boundary::ACTION_HAND_BACK)
         {
-            if self
-                .bodies
-                .get(&l.a)
-                .is_some_and(|b| u64::from(b.epoch) == l.b)
-                && let Some(b) = self.bodies.remove(&l.a)
-            {
-                let survivors = b
-                    .members
+            if ended.contains(&(l.a, l.b)) {
+                continue;
+            }
+            ended.push((l.a, l.b));
+            let homing = live
+                && self.chief_float > 0
+                && r.lines.iter().any(|c| {
+                    c.action == boundary::ACTION_HAND_BACK
+                        && c.flags & boundary::LINE_CHIEF != 0
+                        && (c.a, c.b) == (l.a, l.b)
+                        && self.homing(c)
+                });
+            let members = match self.bodies.get_mut(&l.a) {
+                Some(b) if u64::from(b.epoch) == l.b && homing => {
+                    Some((b.epoch, std::mem::take(&mut b.members)))
+                }
+                Some(b) if u64::from(b.epoch) == l.b => {
+                    self.bodies.remove(&l.a).map(|b| (b.epoch, b.members))
+                }
+                _ => None,
+            };
+            if let Some((epoch, members)) = members {
+                let survivors = members
                     .iter()
                     .map(|(&k, &v)| (k, v))
                     .filter(|e| e.1 > 0)
                     .collect();
+                let leave = if homing {
+                    self.leave_ticks.max(self.chief_float + 1)
+                } else {
+                    self.leave_ticks
+                };
                 self.push(
-                    at + self.leave_ticks,
+                    at + leave,
                     Obs::Dematerialized(boundary::BandDematerialized {
                         agent: l.a,
-                        epoch: b.epoch,
+                        epoch,
                         reason: 1,
                         survivors,
                     }),
                 );
             }
         }
-        let live = self
-            .camps
-            .get(&r.faction)
-            .is_some_and(|c| c.epoch != 0 && c.epoch == r.epoch);
         let waits = if live {
             self.waits(r.faction, &r.lines)
         } else {
@@ -1403,6 +1603,12 @@ impl FakeConflict {
         }
         let mut answers = Vec::new();
         for (index, l) in &lines {
+            // The chief's HAND_BACK takes its band's chief puppet out of the world whatever its
+            // outcome: on the throne (DONE), consumed beside the body standing there (NOTHING,
+            // MZB-821's case B), or gone (STALE).
+            if l.action == boundary::ACTION_HAND_BACK && l.flags & boundary::LINE_CHIEF != 0 {
+                self.take_chief(l.a, l.b);
+            }
             let mut taken = None;
             let outcome = if !live
                 || (!pair_ok
@@ -2140,6 +2346,7 @@ impl CampRun {
         self.plugin.drop_queued();
         // What the plugin held is in its memory, which a session's end clears.
         self.plugin.take_held(None, None);
+        self.plugin.pending_chief.clear();
         self.plugin.forget_hunts();
         for camp in self.plugin.camps.values_mut() {
             camp.epoch = 0;
