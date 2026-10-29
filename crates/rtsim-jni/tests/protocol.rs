@@ -16004,11 +16004,11 @@ mod worldmodel {
     }
 }
 
-/// EXPLORATORY (not to be kept): how late a robbery may arrive.
+/// EXPLORATORY (not to be kept): how far the phase 1 clock may run on after a caravan is spawned before its robbery is not booked.
 #[test]
 fn explore_late_robbery() {
-    for lag in [0i64, 200, 1_000, 2_000, 4_000, 6_000, 8_000, 12_000, 24_000] {
-        let dir = tmpdir(&format!("lag{lag}"));
+    for asks in [0u64, 1, 2, 3, 4] {
+        let dir = tmpdir(&format!("lag{asks}"));
         let e = engine(&dir, 256 * 1024);
         let mut j = Java::open(e.clone(), WorldSave::fresh());
         let agent = 0xCA4B_u64;
@@ -16019,16 +16019,29 @@ fn explore_late_robbery() {
             .cloned()
             .unwrap_or_else(|| cargo[0].clone());
         let before = p1_stat(&e, 5);
-        j.game_time += lag;
-        j.idle();
+        // The live GameTest asks again every ten ticks until it sees the group: each ask is a quarter day on.
+        for _ in 0..asks {
+            e.order(vec![Order::Phase1Advance(6_000)]).unwrap();
+            j.idle();
+            e.order(vec![Order::Phase1SpawnNear {
+                agent,
+                epoch: 1,
+                dimension: OVERWORLD.into(),
+                pos: [10.5, 64.0, 0.5],
+                radius: 2_000,
+                search: [10.5, 0.5],
+            }])
+            .unwrap();
+            j.idle();
+        }
         j.robbed(agent, 1, member, &[(&item, n.min(3))], wire::JAVA_OP_BIT | 0x7b01);
         j.idle();
         eprintln!(
-            "LAG {lag}: robberies {} -> {} (cargo {:?}); embodied {}",
+            "EXTRA ASKS {asks}: robberies {} -> {}; world tick {}; cargo {:?}",
             before,
             p1_stat(&e, 5),
-            cargo,
-            p1_stat(&e, 1)
+            p1_stat(&e, 15),
+            cargo
         );
         e.close(true, Duration::from_secs(5)).unwrap();
     }
