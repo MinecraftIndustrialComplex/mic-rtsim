@@ -16,6 +16,10 @@
 //! - `ships`: the synthetic coast's pirate haven (`rtsim_ships::synth::coastal`) through the fake
 //!   ships plugin. Kind `ship.haven`.
 //! - `conflict`: the goblin camp of the conflict's synthetic world. Kind `conflict.camp`.
+//! - `villages`: phase 1's synthetic world (six human villages, three Ribbit villages) with the
+//!   bridge faked at the world level ([`Villages`], slice S6): every village seen alive by one
+//!   census, every house and resident answered the day it is ordered, nobody watching. Kinds are
+//!   the villages' own, with K: a human village's beds, a Ribbit village's houses.
 //!
 //! The host soak prints the same lines from the native engine (`Engine::census`).
 
@@ -48,10 +52,17 @@ pub enum Kind {
     Ranges,
     Ships,
     Conflict,
+    Villages,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 4] = [Kind::Ecology, Kind::Ranges, Kind::Ships, Kind::Conflict];
+    pub const ALL: [Kind; 5] = [
+        Kind::Ecology,
+        Kind::Ranges,
+        Kind::Ships,
+        Kind::Conflict,
+        Kind::Villages,
+    ];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -59,6 +70,7 @@ impl Kind {
             Kind::Ranges => "ranges",
             Kind::Ships => "ships",
             Kind::Conflict => "conflict",
+            Kind::Villages => "villages",
         }
     }
 
@@ -117,6 +129,7 @@ pub enum Scenario {
     Ecology(Box<Ecology>),
     Ships(Box<Sea>),
     Conflict(Box<Camp>),
+    Villages(Box<Villages>),
 }
 
 impl Scenario {
@@ -144,6 +157,7 @@ impl Scenario {
                     .expect("the goblin culture");
                 Scenario::Conflict(Box::new(Camp { w, c }))
             }
+            Kind::Villages => Scenario::Villages(Box::new(Villages::new(seed))),
         }
     }
 
@@ -168,6 +182,7 @@ impl Scenario {
                     c.w.run_until(t);
                 }
             }
+            Scenario::Villages(v) => v.run_to(to),
         }
     }
 
@@ -189,6 +204,136 @@ impl Scenario {
                 let mut out = c.w.census();
                 out.extend(c.c.census());
                 out
+            }
+            Scenario::Villages(v) => v.w.census(),
+        }
+    }
+}
+
+/// The player who does the killing in the villages scenario (the tests' wipes).
+#[cfg_attr(not(test), allow(dead_code))]
+pub const VILLAGE_KILLER: (u64, u64) = (0xE1, 0x5A4);
+
+/// The synthetic world's villages with the bridge faked at the world level (slice S6,
+/// docs/overnight-choices-equilibrium.md "S6 tests"): the harness keeps the real residents of each
+/// village, answers every order the world gives (a house stands, a resident exists, both the day
+/// they are ordered), and feeds a village a census only when the script says so. Nobody holds any
+/// village, so after the setup census the engine hears nothing and its growth steps run.
+#[cfg_attr(not(test), allow(dead_code))]
+pub struct Villages {
+    pub w: World,
+    nodes: std::collections::BTreeMap<u64, usize>,
+    /// Real residents of each village node.
+    pub real: std::collections::BTreeMap<usize, u32>,
+    /// The beds each village's census reports (a Ribbit village's census reports none).
+    beds: std::collections::BTreeMap<usize, u32>,
+    /// The day each wiped village was first ordered settlers after its wipe.
+    pub wiped_at: std::collections::BTreeMap<usize, u64>,
+    pub first_pair: std::collections::BTreeMap<usize, u64>,
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+impl Villages {
+    /// The world at day 1, every village counted once by a complete census (so the engine has seen
+    /// each alive).
+    pub fn new(seed: u64) -> Self {
+        Self::with(seed, |_| {})
+    }
+
+    /// [`Villages::new`] with the world's configuration adjusted first.
+    pub fn with(seed: u64, tweak: impl FnOnce(&mut rtsim_world::WorldConfig)) -> Self {
+        use rtsim_trade::build::Genesis;
+        use rtsim_world::{WorldConfig, synth};
+        let mut cfg = WorldConfig::new(seed);
+        cfg.check_every_event = false;
+        cfg.genesis = Genesis::AtTarget;
+        tweak(&mut cfg);
+        let (mut w, _) = synth::build(cfg, true);
+        let nodes = (0..w.nodes.len()).map(|i| (w.nodes[i].key, i)).collect();
+        w.run_until(Tick::from_days(1));
+        let mut real = std::collections::BTreeMap::new();
+        let mut beds = std::collections::BTreeMap::new();
+        for i in 0..w.nodes.len() {
+            let rtsim_settle::NodeKind::Village(culture) = w.nodes[i].kind else {
+                continue;
+            };
+            let pop = w.nodes[i].local.pop;
+            let b = if culture == rtsim_settle::Culture::Ribbit { 0 } else { pop };
+            real.insert(i, pop);
+            beds.insert(i, b);
+            w.census_village(i, pop, b, true, w.now());
+        }
+        Villages {
+            w,
+            nodes,
+            real,
+            beds,
+            wiped_at: Default::default(),
+            first_pair: Default::default(),
+        }
+    }
+
+    /// Whether village node `i` is of `culture`.
+    pub fn is(&self, i: usize, culture: rtsim_settle::Culture) -> bool {
+        self.w.nodes[i].kind == rtsim_settle::NodeKind::Village(culture)
+    }
+
+    /// A player kills every resident of village `i` and the engine's next two complete censuses
+    /// read it empty.
+    pub fn wipe(&mut self, i: usize) {
+        use rtsim_world::inputs::{Input, apply};
+        let key = self.w.nodes[i].key;
+        let now = self.w.now().0;
+        for _ in 0..self.real[&i] {
+            let report = Input::VillageReport { key, player: VILLAGE_KILLER, kind: 8 };
+            apply(&mut self.w, &mut self.nodes, &report, now);
+        }
+        self.real.insert(i, 0);
+        for _ in 0..2 {
+            self.w.census_village(i, 0, self.beds[&i], true, self.w.now());
+        }
+        self.wiped_at.insert(i, now / TICKS_PER_DAY);
+    }
+
+    /// Runs a day at a time to `to`, answering what the world orders.
+    pub fn run_to(&mut self, to: Tick) {
+        let mut day = self.w.now().0 / TICKS_PER_DAY;
+        while self.w.now() < to {
+            day += 1;
+            self.w.run_until(Tick::from_days(day).min(to));
+            self.answer(day);
+        }
+    }
+
+    /// The bridge: every house stands and every resident exists the day it is ordered.
+    fn answer(&mut self, day: u64) {
+        use rtsim_world::Command;
+        for _ in 0..4 {
+            let cmds = self.w.take_commands();
+            if cmds.is_empty() {
+                break;
+            }
+            for c in cmds {
+                match c {
+                    Command::PlaceHouse(h) => {
+                        self.w.house_placed(h.op);
+                    }
+                    Command::SpawnResident(r) => {
+                        let Some(i) = self.w.node_of_key(r.village).filter(|i| self.real.contains_key(i))
+                        else {
+                            continue;
+                        };
+                        let now = self.w.now();
+                        self.w.resident_result(r.op, true, now);
+                        *self.real.get_mut(&i).expect("a village") += 1;
+                        if let (Some(at), rtsim_world::Arrive::Settler { .. }) =
+                            (self.wiped_at.get(&i), r.arrive)
+                        {
+                            self.first_pair.entry(i).or_insert(day - at);
+                        }
+                    }
+                    _ => {}
+                }
             }
         }
     }
@@ -389,7 +534,7 @@ pub fn cli(rest: &[&str]) -> ExitCode {
 
 fn bad(why: &str) -> ExitCode {
     eprintln!(
-        "{why}\nusage: rtsim-cli sim census [--scenario all|ecology,ranges,ships,conflict] [--days N] \
+        "{why}\nusage: rtsim-cli sim census [--scenario all|ecology,ranges,ships,conflict,villages] [--days N] \
          [--every N] [--seed S]"
     );
     ExitCode::from(64)
@@ -513,6 +658,37 @@ mod tests {
         let c = kind(&cs, "conflict.camp");
         assert_eq!(c.sites, 1);
         assert!(c.capacity > 0 && c.members <= c.capacity, "{c:?}");
+    }
+
+    /// The villages scenario counts each village by its K (slice S6): a human village's beds, a
+    /// Ribbit village's houses. A player wiping a village shows as an empty site with pressure
+    /// 1.00 (twelve kills at K 12) and no change in its K, and its settlers, 32 days later, as a
+    /// short one.
+    #[test]
+    fn census_counts_villages_by_k() {
+        let mut s = Scenario::new(Kind::Villages, 3);
+        s.run_to(Tick::from_days(6));
+        let cs = s.census();
+        assert_eq!(kinds(&cs), ["village.human", "village.ribbit"]);
+        let h = kind(&cs, "village.human").clone();
+        assert_eq!(
+            (h.sites, h.members, h.capacity, h.empty, h.short),
+            (6, 89, 89, 0, 0),
+            "{h:?}"
+        );
+        let r = kind(&cs, "village.ribbit").clone();
+        assert_eq!((r.sites, r.empty), (3, 0), "{r:?}");
+        assert!(r.members >= 32 && r.members <= r.capacity, "{r:?}");
+        let Scenario::Villages(v) = &mut s else {
+            unreachable!()
+        };
+        v.wipe(2);
+        let h = kind(&s.census(), "village.human").clone();
+        assert_eq!((h.members, h.capacity, h.empty), (77, 89, 1), "{h:?}");
+        assert!((h.mean_p() - 1.0 / 6.0).abs() < 1e-3, "twelve kills at K 12 over six villages: {h:?}");
+        s.run_to(Tick::from_days(6 + 33));
+        let h = kind(&s.census(), "village.human").clone();
+        assert_eq!((h.members, h.capacity, h.empty, h.short), (79, 89, 0, 1), "{h:?}");
     }
 
     /// With nobody watching nothing presses: every kind keeps its sites, every pressure is 0, no

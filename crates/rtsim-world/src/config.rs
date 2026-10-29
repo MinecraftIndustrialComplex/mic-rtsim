@@ -127,7 +127,9 @@ pub struct WorldConfig {
     /// A Ribbit village with fewer residents than houses gets a resident before it builds (EQC165).
     pub ribbit_refill: bool,
     /// The refill rides the growth clock's prosperity test as a house does (EQC167); off, a village
-    /// short of residents refills on the clock whatever its stocks.
+    /// short of residents refills on the clock whatever its stocks. Off by default: with the test
+    /// on, `kill_all_ribbits` never reached 90% of the control in 700 days (the economy rarely
+    /// sits at target after a wipe, EQC184); off, it does in 122.
     pub ribbit_refill_needs_prosperity: bool,
 }
 
@@ -182,7 +184,7 @@ impl WorldConfig {
             village_loaded_ticks: 12_000,
             owed_max_days: 192,
             ribbit_refill: true,
-            ribbit_refill_needs_prosperity: true,
+            ribbit_refill_needs_prosperity: false,
         }
     }
 }

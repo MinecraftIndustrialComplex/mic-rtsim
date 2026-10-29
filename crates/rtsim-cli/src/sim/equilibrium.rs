@@ -20,6 +20,7 @@
 //! grid: run them in release, `nice -n 10 cargo test --release -p rtsim-cli sim::equilibrium --
 //! --ignored --nocapture` (`RTSIM_EQ_THREADS` sets the threads, half the machine by default).
 
+use std::collections::BTreeMap;
 use std::ops::RangeInclusive;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -566,6 +567,120 @@ pub fn dragon_kill_all(grid: &Grid, seed: u64, shock_day: u64, after_days: u64) 
     r
 }
 
+// ---- villages (slice S6, EQC150 to EQC183) --------------------------------------------------------
+
+/// One run of the synthetic world's villages of a culture ([`Villages`]: the bridge faked at the
+/// world level, nobody holding any village, so after the setup census the engine hears nothing and
+/// its growth steps run).
+pub struct VillageRun {
+    /// Real residents over the villages of the culture, at the end of each day from day 0.
+    pub total: Vec<u32>,
+    /// Residents each wiped village had at the wipe, by node.
+    pub killed: BTreeMap<usize, u32>,
+    /// Days after the wipe each wiped village was first ordered settlers, by node.
+    pub first_pair: BTreeMap<usize, f64>,
+    /// Settlers, growth steps and refills the world booked over the run.
+    pub settlers: u64,
+    pub grown: u64,
+    pub refills: u64,
+}
+
+/// A run of `seed` to day `to`: with `wipe` the culture's villages are all killed by a player on
+/// that day, and the engine's census reads each one empty.
+pub fn village_run(
+    seed: u64,
+    culture: rtsim_settle::Culture,
+    wipe: Option<u64>,
+    to: u64,
+    tweak: impl Fn(&mut rtsim_world::WorldConfig),
+) -> VillageRun {
+    use super::census::Villages;
+    let mut v = Villages::with(seed, tweak);
+    let ours: Vec<usize> = (0..v.w.nodes.len()).filter(|&i| v.is(i, culture)).collect();
+    let sum = |v: &Villages| ours.iter().map(|i| v.real[i]).sum::<u32>();
+    let mut out = VillageRun {
+        total: vec![sum(&v); 2],
+        killed: BTreeMap::new(),
+        first_pair: BTreeMap::new(),
+        settlers: 0,
+        grown: 0,
+        refills: 0,
+    };
+    for day in 2..=to {
+        v.run_to(Tick::from_days(day));
+        if wipe == Some(day) {
+            for &i in &ours {
+                out.killed.insert(i, v.real[&i]);
+                v.wipe(i);
+            }
+        }
+        out.total.push(sum(&v));
+    }
+    out.first_pair = ours
+        .iter()
+        .filter_map(|i| v.first_pair.get(i).map(|&d| (*i, d as f64)))
+        .collect();
+    out.settlers = v.w.stats.settlers.iter().sum();
+    out.grown = v.w.stats.grown;
+    out.refills = v.w.stats.refills;
+    v.w.check_conserved(v.w.now()).expect("the world is conserved");
+    out
+}
+
+/// A village wipe against its control, read on the culture's residents.
+#[derive(Clone, Debug)]
+pub struct VillageRefill {
+    pub seed: u64,
+    /// Residents of the culture's villages at the wipe.
+    pub pre: u32,
+    /// Days from the wipe to the first day the wiped world holds 90% of the control's residents.
+    pub ninety_ctrl: Option<u64>,
+    /// Days from the wipe to the first settlers' order, over the wiped villages: (first, last).
+    pub pair: (f64, f64),
+    pub wiped_villages: usize,
+    /// Wiped villages that were ordered settlers.
+    pub paired: usize,
+    pub settlers: u64,
+    pub grown: u64,
+    pub refills: u64,
+    /// The wiped world's residents over the control's on the last day.
+    pub end_over_ctrl: f64,
+}
+
+/// The same seed twice to `wipe_day + after_days`: a control, and a world where every village of
+/// the culture is killed by a player on `wipe_day`.
+pub fn village_wipe(
+    seed: u64,
+    culture: rtsim_settle::Culture,
+    wipe_day: u64,
+    after_days: u64,
+    tweak: impl Fn(&mut rtsim_world::WorldConfig),
+) -> VillageRefill {
+    let to = wipe_day + after_days;
+    let ctrl = village_run(seed, culture, None, to, &tweak);
+    let run = village_run(seed, culture, Some(wipe_day), to, &tweak);
+    let at = |r: &VillageRun, d: u64| f64::from(r.total[d as usize]);
+    let ninety_ctrl = (wipe_day + 1..=to)
+        .find(|&d| at(&run, d) >= 0.9 * at(&ctrl, d))
+        .map(|d| d - wipe_day);
+    let firsts: Vec<f64> = run.first_pair.values().copied().collect();
+    VillageRefill {
+        seed,
+        pre: run.killed.values().sum(),
+        ninety_ctrl,
+        pair: (
+            firsts.iter().copied().fold(f64::INFINITY, f64::min),
+            firsts.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+        ),
+        wiped_villages: run.killed.len(),
+        paired: firsts.len(),
+        settlers: run.settlers - ctrl.settlers,
+        grown: run.grown - ctrl.grown,
+        refills: run.refills - ctrl.refills,
+        end_over_ctrl: at(&run, to) / at(&ctrl, to).max(1.0),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -922,5 +1037,124 @@ mod tests {
             "roamer {fill_r:?} nobody {fill_n:?}"
         );
         assert!(fill_r.1 >= 0.5 && fill_r.2 < 1.0, "roamer {fill_r:?}");
+    }
+
+    fn print_village_refills(what: &str, rs: &[VillageRefill]) {
+        let b = |f: &dyn Fn(&VillageRefill) -> f64| band(&rs.iter().map(f).collect::<Vec<_>>());
+        println!("{what} over {} seeds, median [5th, 95th]:", rs.len());
+        println!(
+            "  days to the first settlers:    {:?}",
+            b(&|r| r.pair.0)
+        );
+        println!(
+            "  days to the last settlers:     {:?}",
+            b(&|r| r.pair.1)
+        );
+        println!(
+            "  days to 90% of the control:    {:?}",
+            b(&|r| days(r.ninety_ctrl))
+        );
+        println!(
+            "  last day over the control:     {:?}",
+            b(&|r| r.end_over_ctrl)
+        );
+        println!(
+            "  never 90% of the control: {}, a wiped village never settled: {}",
+            rs.iter().filter(|r| r.ninety_ctrl.is_none()).count(),
+            rs.iter().filter(|r| r.paired < r.wiped_villages).count(),
+        );
+        for r in rs {
+            println!(
+                "  seed {:>2}: pre {:>3} villages {} settled {} pair day {:.0} to {:.0} 90% {:?} settlers {} grown {} refills {} end/ctrl {:.3}",
+                r.seed,
+                r.pre,
+                r.wiped_villages,
+                r.paired,
+                r.pair.0,
+                r.pair.1,
+                r.ninety_ctrl,
+                r.settlers,
+                r.grown,
+                r.refills,
+                r.end_over_ctrl
+            );
+        }
+    }
+
+    /// Every human village of the synthetic world killed by a player on day 100 (the engine's
+    /// census reading each empty): each is ordered its pair 32 days after (P is 1.00 at K), the
+    /// unloaded villages grow by the logistic, and 90% of the control's villagers are back within
+    /// 600 days (EQUILIBRIUM.md S6, EQ-1 (a); the model: 480).
+    #[test]
+    fn kill_all_villagers() {
+        let r = village_wipe(1, rtsim_settle::Culture::Human, 100, 700, |_| {});
+        print_village_refills("kill all villagers", std::slice::from_ref(&r));
+        assert_eq!(r.wiped_villages, 6, "{r:?}");
+        assert_eq!(r.paired, 6, "every wiped village was settled: {r:?}");
+        assert!(r.pair.0 >= 32.0 && r.pair.1 <= 33.0, "32 days after the wipe: {r:?}");
+        assert!(r.ninety_ctrl.is_some_and(|d| d <= 600), "{r:?}");
+    }
+
+    /// `kill_all_villagers` on seeds 1 to 30: every village settled on day 32 and the median
+    /// seed back to 90% of the control within 600 days.
+    #[test]
+    #[ignore]
+    fn kill_all_villagers_30_seeds() {
+        let rs = par_map(&seeds(), threads(), |&seed| {
+            village_wipe(seed, rtsim_settle::Culture::Human, 100, 900, |_| {})
+        });
+        print_village_refills("kill all villagers", &rs);
+        for r in &rs {
+            assert_eq!(r.paired, r.wiped_villages, "{r:?}");
+            assert!(r.pair.0 >= 32.0 && r.pair.1 <= 33.0, "{r:?}");
+        }
+        let b = band(&rs.iter().map(|r| days(r.ninety_ctrl)).collect::<Vec<_>>());
+        assert!(b.0 <= 600.0, "median days to 90% of the control {b:?}");
+    }
+
+    /// Every Ribbit village killed by a player on day 100: each is settled 32 days after, refills
+    /// its empty houses before building (the population booked as each resident exists), and 90%
+    /// of the control's Ribbits are back within 300 days (§3.6).
+    #[test]
+    fn kill_all_ribbits() {
+        let r = village_wipe(1, rtsim_settle::Culture::Ribbit, 100, 500, |_| {});
+        print_village_refills("kill all ribbits", std::slice::from_ref(&r));
+        assert_eq!(r.wiped_villages, 3, "{r:?}");
+        assert_eq!(r.paired, 3, "every wiped village was settled: {r:?}");
+        assert!(r.pair.0 >= 32.0 && r.pair.1 <= 33.0, "32 days after the wipe: {r:?}");
+        assert!(r.ninety_ctrl.is_some_and(|d| d <= 300), "{r:?}");
+    }
+
+    /// Where the Ribbit refill's prosperity test costs time (EQC167's knob): the same wipe with the
+    /// test on (the default) and off, three seeds each. Prints, asserts nothing.
+    #[test]
+    #[ignore]
+    fn the_refill_knob_probe() {
+        for needs in [true, false] {
+            let rs: Vec<_> = (1..=3)
+                .map(|seed| {
+                    village_wipe(seed, rtsim_settle::Culture::Ribbit, 100, 700, |c| {
+                        c.ribbit_refill_needs_prosperity = needs;
+                    })
+                })
+                .collect();
+            print_village_refills(&format!("ribbits, refill needs prosperity {needs}"), &rs);
+        }
+    }
+
+    /// `kill_all_ribbits` on seeds 1 to 30: the median seed back to 90% of the control within 300
+    /// days.
+    #[test]
+    #[ignore]
+    fn kill_all_ribbits_30_seeds() {
+        let rs = par_map(&seeds(), threads(), |&seed| {
+            village_wipe(seed, rtsim_settle::Culture::Ribbit, 100, 700, |_| {})
+        });
+        print_village_refills("kill all ribbits", &rs);
+        for r in &rs {
+            assert_eq!(r.paired, r.wiped_villages, "{r:?}");
+        }
+        let b = band(&rs.iter().map(|r| days(r.ninety_ctrl)).collect::<Vec<_>>());
+        assert!(b.0 <= 300.0, "median days to 90% of the control {b:?}");
     }
 }

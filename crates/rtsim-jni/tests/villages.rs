@@ -134,7 +134,7 @@ fn village_pop_follows_census_down() {
     j.idle();
     j.village_census(A, 5, 12, true);
     j.idle();
-    assert!(stat(&e, P1_CENSUSES) >= base + 1, "after 6,000 ticks the heartbeat is logged");
+    assert!(stat(&e, P1_CENSUSES) > base, "after 6,000 ticks the heartbeat is logged");
 
     // The world after a restart equals the one that kept running.
     let before = row(&e);
@@ -350,16 +350,16 @@ fn villages_renew_end_to_end() {
     assert!(rig.sent.is_empty(), "nothing at day 15: {:?}", rig.sent);
     rig.run_to(18.0);
     assert_eq!(rig.sent.get(&B), Some(&2), "B's pair, 16 days on: {:?}", rig.sent);
-    assert!(rig.sent.get(&A).is_none(), "A is still waiting: {:?}", rig.sent);
+    assert!(!rig.sent.contains_key(&A), "A is still waiting: {:?}", rig.sent);
     let b_day = rig.first[&B];
     assert!((15.9..17.0).contains(&b_day), "B's pair came on day {b_day}");
     rig.run_to(31.0);
-    assert!(rig.sent.get(&A).is_none(), "A waits 32 days: {:?}", rig.sent);
+    assert!(!rig.sent.contains_key(&A), "A waits 32 days: {:?}", rig.sent);
     rig.run_to(34.0);
     assert_eq!(rig.sent.get(&A), Some(&2), "A's pair at 32: {:?}", rig.sent);
     let a_day = rig.first[&A];
     assert!((31.9..33.5).contains(&a_day), "A's pair came on day {a_day}");
-    assert!(rig.sent.get(&C).is_none(), "C was never short");
+    assert!(!rig.sent.contains_key(&C), "C was never short");
     for (v, n) in [(A, 2), (B, 2), (C, 12)] {
         let r = rig.e.phase1_village(v).unwrap();
         assert_eq!(r[MEMBERS], n, "village {v:x}: {r:?}");
