@@ -1143,14 +1143,14 @@ The bridge and the industry ranges (`docs/industry-boundary.md` §1) stay as the
 |---|---|---|---|---|
 | 0x0060 | DRAGON_STATE (latest-wins) | flags: 1 sleeping, 2 flying, 4 has an attack target, 8 ticking | 8 u64 agent, 16 u32 epoch, 20 u32 dimension, 24 f32 health, 28 f32 maxHealth, 32 i32 hunger, 36 i32 ageTicks, 40 f64 x, 48 f64 y, 56 f64 z. Every 100 ticks per embodied dragon (PLACEHOLDER) | 64 |
 | 0x0061 | LAIR_CHEST (latest-wins) | 0 | 8 u64 lair, 16 u32 dimension, 20 i32 x, 24 i32 y, 28 i32 z: a chest in the lair's box the tribute can go into | 32 |
-| 0x0500 | DRAGON_MATERIALIZED | 0 | 24 u64 agent, 32 u32 epoch, 36 u32 dimension, 40 u64 entityMost, 48 u64 entityLeast | 56 |
+| 0x0500 | DRAGON_MATERIALIZED | aux bit 1: the body is a home body (§6.9) | 24 u64 agent, 32 u32 epoch, 36 u32 dimension, 40 u64 entityMost, 48 u64 entityLeast | 56 |
 | 0x0501 | DRAGON_SPAWN_REJECTED | reason (§2.3's codes, plus 9 unknown species) | 24 u64 agent, 32 u32 epoch, 36 reserved, 40 u64 cmdSeq | 48 |
-| 0x0502 | DRAGON_DEMATERIALIZED | reason (§2.3's codes) | 24 u64 agent, 32 u32 epoch, 36 u32 dimension, 40 f32 health, 44 f32 maxHealth, 48 i32 hunger, 52 i32 ageTicks, 56 f64 x, 64 f64 y, 72 f64 z | 80 |
+| 0x0502 | DRAGON_DEMATERIALIZED | reason (§2.3's codes, plus 8: a home body released and kept, §6.9) | 24 u64 agent, 32 u32 epoch, 36 u32 dimension, 40 f32 health, 44 f32 maxHealth, 48 i32 hunger, 52 i32 ageTicks, 56 f64 x, 64 f64 y, 72 f64 z | 80 |
 | 0x0503 | DRAGON_HURT | attacker kind: 0 none, 1 player, 2 mob, 3 other | 24 u64 agent, 32 u32 epoch, 36 u32 hits, 40 f32 amount, 44 f32 healthAfter, 48 u64 attackerMost, 56 u64 attackerLeast | 64 |
-| 0x0504 | DRAGON_DIED | killer kind: core's kill credit (0 none, 1 player, 2 mob, 3 other, 4 taken: tamed, the killer fields naming the tamer) | 24 u64 agent, 32 u32 epoch, 36 u32 dimension, 40 u64 killerMost, 48 u64 killerLeast, 56 f64 x, 64 f64 y, 72 f64 z | 80 |
+| 0x0504 | DRAGON_DIED | killer kind: core's kill credit (0 none, 1 player, 2 mob, 3 other, 4 taken: tamed, the killer fields naming the tamer) | 24 u64 agent, 32 u32 epoch, 36 u32 dimension, 40 u64 killerMost, 48 u64 killerLeast, 56 f64 x, 64 f64 y, 72 f64 z, 80 u64 entityMost, 88 u64 entityLeast, 96 u64 lair (the body's UUID and lair when it was a home body; 0 else, §6.9) | 104 |
 | 0x0505 | LAIR_FOUND | flags: 1 LATE (in a chunk generated before the plugin), 2 PLACED (the plugin placed it now, PLACE_LAIR's answer; MZB-1012) | 24 u64 lair, 32 u32 dimension, 36 u32 structure (dictionary 4), 40 i32 minX, 44 minY, 48 minZ, 52 maxX, 56 maxY, 60 maxZ, 64 i32 homeX, 68 homeY, 72 homeZ, 76 reserved, 80 the found tail (§2.5) | 120 + 16 a UUID |
 | 0x0506 | HOARD_ROBBED | n | 24 u64 lair, 32 u64 opId, 40 u64 playerMost, 48 u64 playerLeast, 56 n × (u32 item, i32 count, u64 reserved) | 56 + 16n |
-| 0x0507 | DRAGON_UNTAGGED | spawn: 1 structure, 2 natural, 3 spawner, 4 spawn egg, 5 command, 6 hatched, 7 other | 24 u64 entityMost, 32 u64 entityLeast, 40 u32 species (dictionary 3), 44 u32 dimension, 48 u32 flags (1 tamed, 2 has home, 4 sleeping, 8 aging disabled), 52 i32 ageTicks, 56 i32 hunger, 60 u32 gender (0 female, 1 male), 64 u32 variant (0 to 3 within the species), 68 i32 homeX, 72 homeY, 76 homeZ, 80 u64 lair (0: none), 88 f64 x, 96 f64 y, 104 f64 z | 112 |
+| 0x0507 | DRAGON_UNTAGGED | spawn: 1 structure, 2 natural, 3 spawner, 4 spawn egg, 5 command, 6 hatched, 7 other | 24 u64 entityMost, 32 u64 entityLeast, 40 u32 species (dictionary 3), 44 u32 dimension, 48 u32 flags (1 tamed, 2 has home, 4 sleeping, 8 aging disabled), 52 i32 ageTicks, 56 i32 hunger, 60 u32 gender (0 female, 1 male), 64 u32 variant (0 to 3 within the species), 68 i32 homeX, 72 homeY, 76 homeZ, 80 u64 lair (always 0 since S5: a dragon in a lair's box is the lair census's, §6.9), 88 f64 x, 96 f64 y, 104 f64 z | 112 |
 | 0x0508 | DRAGON_ATE | count | 24 u64 agent, 32 u32 epoch, 36 u32 prey (dictionary 3), 40 u64 village (0: none), 48 f64 x, 56 f64 y, 64 f64 z | 72 |
 | 0x0509 | OIL_CHUNKS | n | 24 u32 dimension, 28 u32 source (1 Deep Time, 2 CDG, 3 a deposit sample), 32 n × (i32 chunkX, i32 chunkZ, i32 amount mB, u32 flags: 1 bottomless). n at most 1024 per record | 32 + 16n |
 | 0x050A | DRAGON_BREATHS | count | 24 u64 agent, 32 u32 epoch, 36 reserved | 40 |
@@ -1159,6 +1159,9 @@ The bridge and the industry ranges (`docs/industry-boundary.md` §1) stay as the
 | 0x050D | NEST_CENSUS | flags: 1 the heart is gone | 24 u64 nest, 32 u32 worms (alive, an unloaded one counting as alive, plus those still owed), 36 reserved | 40 |
 | 0x050E | NEST_LOSS | cause (`LossCause`: 0 player, 1 age, 2 starved, 3 faction, 4 predator, 5 other) | 24 u64 nest, 32 u32 count, 36 reserved, 40 u64 playerMost, 48 u64 playerLeast (zero for none) | 56 |
 | 0x050F | NEST_HEART | 0 | 24 u64 nest, 32 u64 playerMost, 40 u64 playerLeast (zero for none) | 48 |
+| 0x0510 | LAIR_CENSUS | n bodies (at most 16) | 24 u64 lair, 32 u64 epoch (the plugin's op id for this stay in), 40 u32 dimension, 44 u32 flags (1 watched), 48 u32 n, 52 reserved, 56 n × body (§6.9) | 56 + 80n |
+| 0x0511 | LAIR_OUT | 0 | 24 u64 lair, 32 u64 epoch | 40 |
+| 0x0512 | DRAGON_LEFT_HOME | 0 | 24 u64 agent, 32 u32 epoch, 36 u32 dimension, 40 u64 entityMost, 48 u64 entityLeast, 56 f64 x, 64 f64 y, 72 f64 z | 80 |
 
 - **DRAGON_HURT** sums one attacker's hits on one dragon over a tick (PLACEHOLDER: over 20 ticks
   would also do). The engine turns a player's wound into an assault report the dragon and its lair
@@ -1199,8 +1202,8 @@ The bridge and the industry ranges (`docs/industry-boundary.md` §1) stay as the
   dragons home and no wait (they were the old engine's, lost with it) waits the cap with its pressure
   (F12). With no row, a LATE lair that is not PLACED is taken as farmed: the cap's pressure and the
   cap to wait, until its own dragon is adopted (that resets its pressure: its history was lost, not
-  its dragon). Any other lair starts fresh. The engine sends each lair's SITE_STATE (K 1, the
-  dragons home as count, flags SHORT and EMPTY when nobody is, WAITING with the wait left) when its
+  its dragon). Any other lair starts fresh. The engine sends each lair's SITE_STATE (K 2 since S5: the
+  dragons home as count, their home, left-behind and missing bodies' UUIDs (§6.9), flags SHORT and EMPTY when nobody is, WAITING with the wait left) when its
   dragons, its vacancy or its pressure change and when it is found again; the marks are not saved,
   and the found census heals any a restart lost.
 - **NEST_FOUND** (OG-9e, §6.8): answers PLACE_NEST, placed (with the heart's block) or failed (the
@@ -1239,16 +1242,17 @@ The bridge and the industry ranges (`docs/industry-boundary.md` §1) stay as the
 
 | Kind | Name | aux | Fields | Size | Answered by |
 |---|---|---|---|---|---|
-| 0x8500 | DRAGON_MATERIALIZE | flags: 1 clamp above the surface, 2 has a home, 4 sleeping, 8 hostile, 16 oil (the body carries a reserve) | 16 u64 agent, 24 u32 epoch, 28 u32 species (dictionary 3), 32 u32 dimension, 36 i32 ageTicks, 40 f64 x, 48 f64 y, 56 f64 z, 64 i32 hunger, 68 u32 gender, 72 u32 variant, 76 f32 health (0 full), 80 i32 homeX, 84 homeY, 88 homeZ, 92 i32 oil (0 to the capacity; 0 without flag 16), 96 f64 targetX, 104 targetY, 112 targetZ, 120 u64 targetPlayerMost, 128 u64 targetPlayerLeast | 136 | DRAGON_MATERIALIZED or DRAGON_SPAWN_REJECTED |
+| 0x8500 | DRAGON_MATERIALIZE | flags: 1 clamp above the surface, 2 has a home, 4 sleeping, 8 hostile, 16 oil (the body carries a reserve), 32 home body (§6.9) | 16 u64 agent, 24 u32 epoch, 28 u32 species (dictionary 3), 32 u32 dimension, 36 i32 ageTicks, 40 f64 x, 48 f64 y, 56 f64 z, 64 i32 hunger, 68 u32 gender, 72 u32 variant, 76 f32 health (0 full), 80 i32 homeX, 84 homeY, 88 homeZ, 92 i32 oil (0 to the capacity; 0 without flag 16), 96 f64 targetX, 104 targetY, 112 targetZ, 120 u64 targetPlayerMost, 128 u64 targetPlayerLeast | 136 | DRAGON_MATERIALIZED or DRAGON_SPAWN_REJECTED |
 | 0x8501 | DRAGON_STEER | flags: 1 settle at the target | 16 u64 agent, 24 u32 epoch, 28 reserved, 32 f64 x, 40 f64 y, 48 f64 z | 56 | |
 | 0x8502 | DRAGON_DEPART | reason: 1 bored, 2 hungry, 3 wounded, 4 passing through, 5 recalled | 16 u64 agent, 24 u32 epoch, 28 u32 timeoutTicks, 32 f64 x, 40 f64 y, 48 f64 z | 56 | DRAGON_DEMATERIALIZED |
-| 0x8503 | DRAGON_ADOPT | 0 | 16 u64 entityMost, 24 u64 entityLeast, 32 u64 agent, 40 u32 epoch, 44 u32 flags (1 has a home), 48 i32 homeX, 52 homeY, 56 homeZ, 60 reserved | 64 | DRAGON_MATERIALIZED or DRAGON_SPAWN_REJECTED |
-| 0x8504 | DRAGON_DISCARD | reason: 1 the sim owns the population, 2 its lair has its dragon | 16 u64 entityMost, 24 u64 entityLeast | 32 | COMMAND_RESULT |
+| 0x8503 | DRAGON_ADOPT | 0 | 16 u64 entityMost, 24 u64 entityLeast, 32 u64 agent, 40 u32 epoch, 44 u32 flags (1 has a home, 2 home body), 48 i32 homeX, 52 homeY, 56 homeZ, 60 reserved, 64 i32 ageTicks, 68 i32 hunger, 72 f32 health (flag 2: the body is synced to them; health 0 leaves it), 76 reserved | 80 | DRAGON_MATERIALIZED or DRAGON_SPAWN_REJECTED |
+| 0x8504 | DRAGON_DISCARD | reason: 1 the sim owns the population, 2 its lair has its dragon (a third body), 3 its dragon is away, 4 a second body of one dragon | 16 u64 entityMost, 24 u64 entityLeast | 32 | COMMAND_RESULT |
 | 0x8505 | PLACE_LAIR | 0 | 16 u64 field (the engine's id, for logs), 24 u32 dimension, 28 u32 structure (dictionary 4), 32 i32 x, 36 i32 z, 40 u32 radius, 44 reserved | 48 | LAIR_FOUND (flags 1 LATE and 2 PLACED) when placed; nothing when no site is found |
 | 0x8506 | OIL_SURVEY | 0 | 16 u32 dimension, 20 i32 x, 24 i32 z, 28 u32 radius | 32 | OIL_CHUNKS (source 2), as many as it takes; nothing when it finds none |
 | 0x8507 | PLACE_NEST | 0 | 16 u64 nest, 24 u32 dimension, 28 i32 chunkX, 32 i32 chunkZ, 36 u32 depth (the chamber's floor this many blocks below the surface) | 40 | NEST_FOUND, at once if the chunk is loaded, else on its next load |
 | 0x8508 | NEST_RENEW | count | 16 u64 nest, 24 u32 dimension, 28 u32 stage (1 to 3, the worms' size), 32 u32 serial (the engine's count of this nest's renewals, this one in it, from 1), 36 reserved | 40 | NEST_CENSUS once they spawn |
 | 0x8509 | NEST_SORTIE | count | 16 u64 nest, 24 u32 dimension, 28 i32 x, 32 i32 z (a block of the raided district), 36 u32 timeoutTicks | 40 | |
+| 0x850A | DRAGON_HAND_BACK | 0 | 16 u64 agent, 24 u32 epoch, 28 reserved | 32 | DRAGON_MATERIALIZED (aux 1) |
 
 **Tribute** (SINK.md §4.6) needs no command of its own: the coin a village pays a lair goes into the
 lair's reported chest as the core's TRANSFER_TO_CONTAINER (§2.4, 0x8005), one stack of at most 64
@@ -1335,7 +1339,8 @@ What the bridge must do:
 2. **Report every untagged dragon** that joins a level (`EntityJoinLevelEvent`) as DRAGON_UNTAGGED,
    with its spawn kind from `FinalizeSpawnEvent.getSpawnType()` where one fired first (STRUCTURE,
    NATURAL, SPAWNER, SPAWN_EGG, COMMAND, BREEDING mapped to the codes above), its NBT fields, and the
-   lair whose box holds it. Ice and Fire's lair pieces do **not** spawn their dragon through
+   lair whose box holds it (since S5 a lair's own dragon is listed by the lair's census instead, §6.9, and this
+   record's lair is always 0). Ice and Fire's lair pieces do **not** spawn their dragon through
    `finalizeSpawn` (verified: `DragonRoostPiece.spawnDragon` and `DragonCavePiece.createDragon` call
    `EntityType.create` and `WorldGenLevel.addFreshEntity`), so no STRUCTURE spawn type is ever seen for
    them; the lair's box decides: a dragon with no spawn type that joins inside a lair's box is a
@@ -1449,6 +1454,64 @@ instead. The engine side is `crates/rtsim-ecology/src/oil.rs`; the synthetic plu
   worms, renews lost ones by EQUILIBRIUM.md §2.2's rule while drilling lasts, and raids the districts
   in reach as threat class `Burrowing` (docs/industry-boundary.md). The nest's id packs the frame
   (top 16 bits) and the cell's x and z (24 bits each, signed).
+
+### 6.9 Home bodies (EQUILIBRIUM.md slice S5, EQ-2 (a); records EQC100 to EQC149 in `docs/overnight-choices-equilibrium.md`)
+
+A dragon roosting at its lair is a vanilla entity that vanilla saves (a **home body**); away from it, or
+whenever the sim flies it, it is a puppet as before. The two are one entity: the plugin swaps their tags in
+place. A home body carries the plugin's attachment `mic_rtsim_iceandfire:home` ({`lair`: long, `agent`:
+long}, saved with the entity) and no `mic_rtsim:agent` tag; a puppet carries the agent tag and is never
+saved. The engine's belief is `Dragon.body`, the entity it thinks stands for the dragon, loaded or saved; it
+is set only from the plugin's answers (DRAGON_MATERIALIZED aux 1), never from an order. Invariants: at most
+one body per dragon (H1), at most two home bodies per lair (H2), no order applied twice (H4), an unbelieved
+standing body is a stray, adopted or removed (H5), a puppet is never saved (H6).
+
+**Body of a LAIR_CENSUS** (80 bytes each, from offset 56): 0 u64 entityMost, 8 u64 entityLeast, 16 u64 agent
+(0: the body carries no home attachment, an untagged structure dragon), 24 u32 species (dictionary 3), 28
+u32 flags (1 sleeping, 2 flying, 4 has a home), 32 i32 ageTicks, 36 i32 hunger, 40 f32 health, 44 u32
+gender, 48 u32 variant, 56 f64 x, 64 f64 y, 72 f64 z.
+
+- **The lair census.** A lair is *in* while every chunk within `lairFootprint` (48) blocks of its home is
+  at ticket level FULL or lower with its entities visible to the level's queries (core's `ChunkWatch`: a
+  poll every 20 ticks is the authority, the ticket event a hint, 200 ticks of gap after going out; the
+  camps' rules, MZB-290, MZB-249, MZB-660). When it comes in the plugin sends LAIR_CENSUS, journaled, with
+  a new epoch: the home bodies of the lair standing in the footprint and the untagged structure dragons in
+  its box (at most 16); WATCHED when a non-spectator player is within the larger of `watchBlocks` (128) and
+  view distance times 16. It is sent again each game day while the lair stays in. When the lair goes out the
+  plugin releases each loaded home body with DRAGON_DEMATERIALIZED reason 8 (the entity stays and vanilla
+  saves it) and sends LAIR_OUT with the epoch. Only lairs whose home chunk is loaded are followed.
+- **What the engine answers.** In this order, so a removed body and a spawned one never stand together:
+  DRAGON_DISCARD for removals (reason 2 a third body of a pair, 3 the dragon is away and the lair is
+  unwatched, 4 a second body of one dragon), DRAGON_ADOPT (flags 1 and 2, with age, hunger and health) for
+  each body it keeps, DRAGON_MATERIALIZE (flag 32, sleeping, at the lair) for an owed dragon when the lair is
+  unwatched. A watched lair spawns nothing and recalls an away dragon whose body stands (its trip ends, the
+  body is adopted); a body a player is within `watchBlocks` of is never removed. A body the census does not
+  list for a dragon that holds one is a miss; three misses at least two game days apart write the dragon
+  off as missing: a player's loss, unless the lair's row said a gap, then Other and the cap wait; its UUID
+  goes to the row's `missing`. A stray adopted below two bodies becomes an occupant (the lair branch of
+  DRAGON_UNTAGGED is gone); a UUID the ledger's row names (`expect`, after a reset) is adopted the same way.
+- **Plugin application.** ADOPT flag 2 sets the home attachment `{lair, agent}` instead of the agent tag,
+  keeps the entity persistent, turns aging off and syncs age, hunger and health through the setters then
+  `refreshDirtyAttributes` (a live dragon is never rewritten through its NBT: Ice and Fire's save removes its
+  multipart parts); MATERIALIZE flag 32 builds the body the same way; both answer DRAGON_MATERIALIZED aux 1,
+  which is when the engine books the body. A home body is kept by the pass while its lair is in (not
+  ticking is not a capture) and reports DRAGON_STATE, DRAGON_HURT and DRAGON_DIED like a puppet.
+- **The leash.** Every `leashScan` (20) ticks the plugin checks each loaded home body's distance from its
+  lair's home through the seams: past `homeLeash` (48) blocks horizontally, or in another dimension, it
+  journals DRAGON_LEFT_HOME and in the same tick removes the attachment and sets the agent tag at the same
+  epoch. The engine clears `body`; the dragon stays Embodied, the lair's occupant, and nothing is lost
+  (EQ-2 (a), FB-1 (a)). A puppet that has settled within `hand_back_blocks` (24) of a lair that is in is
+  handed back: DRAGON_HAND_BACK, the swap the other way, answered DRAGON_MATERIALIZED aux 1.
+- **Deaths and removals.** DRAGON_DIED names the body's entity and lair. A home body released with its lair
+  (the engine holds it as saved) that dies while loaded is reported by its attachment: agent from it, epoch
+  0, entity and lair named; the engine honours it by the UUID (EQC131). A home body that leaves its level
+  is released as saved (reason 8) when vanilla saves it, else captured as lost (UNLOADED). Stop and failure:
+  home bodies are released as saved, never removed.
+- **Replay** (docs/replay-gate.md §4.5): a replayed LAIR_CENSUS only marks its lair out, DRAGON_HAND_BACK
+  is dropped, and the lair is decided again from the next census of the session.
+- **Pages**: RTD10 and RTN10 (the magics "RTDA" and "RTNA"); no migration (UR-1).
+- **The reference**: `FakeIaf`'s home bodies (`crates/rtsim-ecology/src/synth.rs`) and the host's fake Java
+  (`crates/rtsim-host/src/java.rs`) are what the plugin must answer.
 
 ## 7. Ships (PLAN.md §10.1; a future ships plugin)
 
