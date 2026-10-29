@@ -161,7 +161,7 @@ public final class LivePhase1GameTests {
                     robbedSteps[0] = e.steps();
                     record("liveCaravan", "DIAG at the robbery", "game time " + robbedAt[0] + ", engine steps " + robbedSteps[0]
                             + ", cargo reports " + RtsimTests.session().phase1.cargo.reports() + ", llama distances to the player "
-                            + distances(g, player));
+                            + distances(g, player) + ", last step " + e.lastStepNanos() / 1000 + " us");
                     check("there was something to rob", robbed[0] != null);
                 })
                 .thenWaitUntil(() -> {
@@ -172,7 +172,7 @@ public final class LivePhase1GameTests {
                             + "; inputs " + s[NativeEngine.P1_INPUTS] + " vs base " + base[NativeEngine.P1_INPUTS]
                             + "; embodied " + s[NativeEngine.P1_EMBODIED] + "; group "
                             + (RtsimTests.group(agent) == null ? "gone" : "there, distances " + distances(RtsimTests.group(agent), player))
-                            + "; protocol error " + e.protocolError() + ")",
+                            + "; last step " + e.lastStepNanos() / 1000 + " us; protocol error " + e.protocolError() + ")",
                             s[NativeEngine.P1_ROBBERIES] > base[NativeEngine.P1_ROBBERIES]);
                     check("and the trade", !traded[0] || s[NativeEngine.P1_CARAVAN_TRADES] > base[NativeEngine.P1_CARAVAN_TRADES]);
                 })

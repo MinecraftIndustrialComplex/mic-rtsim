@@ -121,9 +121,9 @@ public final class RobberyStressGameTests {
                     boolean yes = s[NativeEngine.P1_ROBBERIES] > base[0][NativeEngine.P1_ROBBERIES];
                     if (yes || now - tickMark[0] >= BOOK_TICKS) {
                         PuppetGroup g = RtsimTests.group(agent[0]);
-                        MicRtsim.LOGGER.info("[gametest] robStress round {}: {} after {} asks; robbed {}; {} ticks and {} steps after the robbery; robberies {} vs base {}; group {}",
+                        MicRtsim.LOGGER.info("[gametest] robStress round {}: {} after {} asks; robbed {}; {} ticks and {} steps after the robbery; robberies {} vs base {}; last step {} us; group {}",
                                 round[0], yes ? "BOOKED" : "NOT BOOKED", asks[0], robbed[0], now - tickMark[0], e.steps() - stepMark[0],
-                                s[NativeEngine.P1_ROBBERIES], base[0][NativeEngine.P1_ROBBERIES],
+                                s[NativeEngine.P1_ROBBERIES], base[0][NativeEngine.P1_ROBBERIES], e.lastStepNanos() / 1000,
                                 g == null ? "gone" : "there, llama 1 at " + RtsimTests.member(g, 1).distanceTo(player));
                         if (yes)
                             booked[0]++;
