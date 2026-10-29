@@ -30,7 +30,7 @@ public final class RobberyStressGameTests {
     private static final int ROUNDS = Integer.getInteger("rob.rounds", 40);
     private static final int BOOK_TICKS = 3_000;
 
-    @GameTest(template = RtsimTests.TEMPLATE, templateNamespace = "mic_rtsim", timeoutTicks = 3_000_000, batch = "rob_stress")
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 3_000_000, batch = "rob_stress")
     public static void robberyStress(GameTestHelper helper) {
         if (!(RtsimTests.engine() instanceof NativeEngine e)) {
             helper.succeed();
