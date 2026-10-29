@@ -338,8 +338,9 @@ public final class HomeBodies {
         for (ServerPlayer p : lair.level().players()) {
             if (p.isSpectator())
                 continue;
+            // The image of the player nearest the lair, through the seams: its offset from the lair is the distance.
             double[] at = topo.nearestImage(h.getX() + 0.5, h.getZ() + 0.5, p.getX(), p.getZ(), true);
-            double dx = at[0] - p.getX(), dz = at[1] - p.getZ();
+            double dx = at[0] - (h.getX() + 0.5), dz = at[1] - (h.getZ() + 0.5);
             if (dx * dx + dz * dz <= range * range)
                 return true;
         }
@@ -411,8 +412,9 @@ public final class HomeBodies {
             boolean away = lair == null || e.level() != lair.level();
             if (!away) {
                 var topo = bridge.session().topology(lair.level());
+                // The image of the body nearest the lair, through the seams: its offset from the lair is the distance.
                 double[] at = topo.nearestImage(lair.home().getX() + 0.5, lair.home().getZ() + 0.5, e.getX(), e.getZ(), true);
-                double dx = at[0] - e.getX(), dz = at[1] - e.getZ();
+                double dx = at[0] - (lair.home().getX() + 0.5), dz = at[1] - (lair.home().getZ() + 0.5);
                 double leash = DragonConfig.homeLeash();
                 away = dx * dx + dz * dz > leash * leash;
             }

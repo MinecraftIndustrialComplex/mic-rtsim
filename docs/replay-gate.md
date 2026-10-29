@@ -1194,11 +1194,22 @@ through `push` and the gate:
 | PlaceNest | keep | send | idempotent (boundary.rs) |
 | NestRenew | keep | send (slice N; dropped in slice D) | idempotent by its serial: Java applies a renewal only above the nest's last (§7.1, RP-14) |
 | NestSortie | drop | drop | a watched district's fight, re-derived (RP-15) |
+| HandBack | drop | drop | S5 (EQC123): a puppet settled at an in lair becomes a home body in place; ordered from a live DRAGON_STATE, and a replay's last session's lines are decided again from the next census of this session |
 
 As built (slice D, RP-74): `rtsim-ecology/src/outbox.rs`, `gate` an exhaustive `match` over `Cmd`
 with no `_` arm, every push of nest.rs, oil.rs and engine.rs through `Outbox::push`. "Never"
 (Materialize) is counted and `debug_assert!`s in debug builds only. NestRenew sends while replaying
 since slice N, which gave it its serial (RP-230). The tests are the module's own (§4.2).
+
+Home bodies (EQUILIBRIUM.md S5, EQC123): a replayed LAIR_CENSUS only marks its lair out (`Dragons::lair_census`
+returns after removing the lair from `lairs_in`, as RP-64 does for camps), a replayed LAIR_OUT clears it, and a
+replayed DRAGON_LEFT_HOME or DRAGON_MATERIALIZED aux 1 honours the live record by the epoch it names (`Obs::agent_epoch` is an
+exhaustive match over the new kinds). The orders a census answers with (Discard, Adopt, Materialize)
+were gated above and are decided again from the first live census of the session, so no replay applies one twice (H4).
+`replay_done` roosts every dragon that holds a body, so nothing stays embodied for a session that is over. The
+lair's Discard reasons 3 and 4 are kept while queued and dropped while replaying like reason 2. The tests are
+`home_bodies.rs`'s `a_replayed_census_marks_in_and_sends_nothing` and the outbox's
+`every_command_kind_has_its_replay_verdicts` (11 kinds, HandBack dropped both ways).
 
 Three routes go around the gate, and all are tests': rtsim-jni engine/dragons.rs `order_command`
 (`Order::DragonCommand`, TEST mode only) puts a command of any kind straight into the host's queue,

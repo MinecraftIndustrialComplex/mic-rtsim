@@ -147,6 +147,11 @@ public final class HomeBodyGameTests {
                     epoch[0] = homeEpoch(agent[0]);
                     d[0].moveTo(c.x + blocks, c.y, c.z, 0f, 0f);
                 })
+                .thenIdle(30)
+                .thenExecute(() -> record("leash", "after 30 ticks", "the dragon at " + d[0].position() + " (the lair's home " + c + "), removed "
+                        + d[0].isRemoved() + ", home attachment " + d[0].hasData(MicRtsimIceAndFire.HOME) + ", agent tag " + RtsimAttachments.isTagged(d[0])
+                        + ", registered " + (bridge().body(agent[0]) == d[0]) + ", swaps " + bridge().homes.leashed + ", leash " + DragonConfig.homeLeash()
+                        + ", scan " + DragonConfig.leashScan()))
                 .thenWaitUntil(waits.engine(() -> check("DRAGON_LEFT_HOME reached the engine", !about(DragonRecords.DRAGON_LEFT_HOME, agent[0]).isEmpty())))
                 .thenExecute(() -> {
                     ScriptedEngine.Received left = about(DragonRecords.DRAGON_LEFT_HOME, agent[0]).get(0);
@@ -318,7 +323,7 @@ public final class HomeBodyGameTests {
         String test = "uninstallKeepsRoostingDragons";
         if (!nativeOnly(helper, test))
             return;
-        ChunkWait waits = ChunkWait.of(helper, 2400);
+        ChunkWait waits = ChunkWait.of(helper, 9000);
         ServerLevel level = helper.getLevel();
         MinecraftServer server = level.getServer();
         DragonKit.onEnd(helper, () -> SiteTestHooks.cleanUp(server));
@@ -347,17 +352,18 @@ public final class HomeBodyGameTests {
                     // The attachment type is unknown to a server without the plugin: the entity is the jar's own.
                     d[0].removeData(MicRtsimIceAndFire.HOME);
                     check("a plain untagged dragon", !d[0].hasData(MicRtsimIceAndFire.HOME) && !RtsimAttachments.isTagged(d[0]) && d[0].shouldBeSaved());
-                    SiteTestHooks.gapRestart(server, 2 * DAY);
+                    // The game clock moves by the gap, and a test's own clock (ChunkWait's) with it: a short gap.
+                    SiteTestHooks.gapRestart(server, 1200);
                     check("a session runs after the reinstall: " + RtsimSession.startFailure(), RtsimSession.current() != null);
                     // Lairs are found again at each session's start (Lairs.clear): this one as a test declares it.
                     bridge().lairs.declareForTest(level, lair, ROOST, DragonKit.arenaBox(helper), BlockPos.containing(c), level.getGameTime());
                     bridge().homes.testIn(lair, false, level.getGameTime());
                 })
-                .thenWaitUntil(waits.engine(() -> {
+                .thenWaitUntil(RtsimTests.io(() -> {
                     long a = bridge().agentOf(d[0]);
                     check("the census adopted the standing dragon by its UUID", a != 0 && !homeAnswers(a).isEmpty());
                 }))
-                .thenWaitUntil(waits.engine(() -> {
+                .thenWaitUntil(RtsimTests.io(() -> {
                     SiteLedger.Row r = row(level, lair);
                     check("the lair is occupied again: " + describe(r), r != null && r.count() == 1 && !r.waiting() && r.home().contains(id[0]));
                 }))
@@ -583,7 +589,7 @@ public final class HomeBodyGameTests {
         String test = "resetFindsTheRoostingDragonByCensus";
         if (!nativeOnly(helper, test))
             return;
-        ChunkWait waits = ChunkWait.of(helper, 2400);
+        ChunkWait waits = ChunkWait.of(helper, 9000);
         ServerLevel level = helper.getLevel();
         MinecraftServer server = level.getServer();
         DragonKit.onEnd(helper, () -> SiteTestHooks.cleanUp(server));

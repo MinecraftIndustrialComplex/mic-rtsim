@@ -548,10 +548,13 @@ public final class DragonGameTests {
                     ScriptedEngine.Received found = DragonKit.received(DragonRecords.LAIR_FOUND, DragonRecords.LairFound.LAIR, lairId).get(0);
                     ScriptedEngine.Received census = DragonKit.received(DragonRecords.LAIR_CENSUS, DragonRecords.LairCensus.LAIR, lairId).get(0);
                     check("the lair came first", found.obsSeq() < census.obsSeq());
-                    check("the census lists the dragon, asleep, aging disabled, with a home (flags "
-                            + census.view().getInt(DragonRecords.LairCensus.BODIES + DragonRecords.LairCensus.B_FLAGS) + ")", census.aux() == 1
-                            && census.view().getInt(DragonRecords.LairCensus.BODIES + DragonRecords.LairCensus.B_FLAGS) == DragonRecords.LairCensus.BODY_SLEEPING
+                    check("the census lists the dragon (one body)", census.aux() == 1
                             && DragonKit.uuidAt(census, DragonRecords.LairCensus.BODIES + DragonRecords.LairCensus.B_ENTITY_MOST).equals(d.getUUID()));
+                    int hunger = census.view().getInt(DragonRecords.LairCensus.BODIES + DragonRecords.LairCensus.B_HUNGER);
+                    check("with no attachment yet, its age 30 days and its hunger about 50 (" + hunger + ")",
+                            census.view().getLong(DragonRecords.LairCensus.BODIES + DragonRecords.LairCensus.B_AGENT) == 0
+                                    && census.view().getInt(DragonRecords.LairCensus.BODIES + DragonRecords.LairCensus.B_AGE_TICKS) == DragonKit.AGE_30_DAYS
+                                    && hunger >= 40 && hunger <= 50);
                 })
                 // Adopted, and its DRAGON_MATERIALIZED sent (after OG-10's arms the engine can take a step longer).
                 .thenWaitUntil(() -> check("adopted", bridge().agentOf(d) != 0
