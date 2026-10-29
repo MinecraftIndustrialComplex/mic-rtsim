@@ -24,7 +24,7 @@ use mic_viewer::http::{Config, Server};
 use mic_viewer::viewer::App;
 
 use rtsim_conflict::boundary as cb;
-use rtsim_ecology::boundary::{self as db, SpawnKind};
+use rtsim_ecology::boundary as db;
 use rtsim_ecology::dragon::LairKind;
 use rtsim_ecology::species::{Gender, Species};
 use rtsim_host::fork;
