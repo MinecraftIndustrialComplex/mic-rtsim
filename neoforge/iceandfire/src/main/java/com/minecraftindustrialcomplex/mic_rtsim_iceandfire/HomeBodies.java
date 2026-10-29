@@ -260,14 +260,17 @@ public final class HomeBodies {
         outs++;
     }
 
-    /** GameTests: the lair comes in now (a census), unwatched or watched, whatever its chunks say. */
-    public long testIn(long lairId, boolean watched, long now) {
+    /**
+     * GameTests: the lair comes in now (a census), whatever its chunks say: watched or unwatched as given, or, with null,
+     * as the players near it say ({@link #watched}).
+     */
+    public long testIn(long lairId, Boolean watched, long now) {
         Lairs.Lair lair = bridge.lairs.known(lairId);
         if (lair == null)
             throw new IllegalStateException("no lair " + lairId);
         if (epochs.containsKey(lairId))
             leave(lair, now);
-        return enter(lair, now, !watched, watched);
+        return enter(lair, now, Boolean.FALSE.equals(watched), Boolean.TRUE.equals(watched));
     }
 
     /** GameTests: the lair goes out now. */
@@ -381,6 +384,8 @@ public final class HomeBodies {
         if (p == null || !p.home || p.entity != e || p.removing)
             return;
         Entity.RemovalReason reason = e.getRemovalReason();
+        MicRtsimIceAndFire.LOGGER.info("[mic_rtsim_iceandfire] home body {} of lair {} left its level, removal reason {}",
+                p.uuid, Long.toHexString(p.lair), reason);
         if (reason == null || reason == Entity.RemovalReason.CHANGED_DIMENSION)
             return;
         if (reason == Entity.RemovalReason.KILLED) {

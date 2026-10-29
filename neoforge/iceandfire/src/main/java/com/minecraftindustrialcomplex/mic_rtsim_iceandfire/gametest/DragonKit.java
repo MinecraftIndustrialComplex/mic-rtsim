@@ -14,16 +14,20 @@ import com.minecraftindustrialcomplex.mic_rtsim_iceandfire.DragonBridge;
 import com.minecraftindustrialcomplex.mic_rtsim_iceandfire.DragonRecords;
 import com.minecraftindustrialcomplex.mic_rtsim_iceandfire.Nests;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.gametest.framework.GameTestAssertException;
 import net.minecraft.gametest.framework.GameTestHelper;
 import net.minecraft.gametest.framework.GameTestInfo;
 import net.minecraft.gametest.framework.GameTestListener;
 import net.minecraft.gametest.framework.GameTestRunner;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.entity.ChunkEntities;
 import net.minecraft.world.level.entity.EntityPersistentStorage;
+import net.minecraft.world.level.levelgen.structure.BoundingBox;
 import net.minecraft.world.phys.Vec3;
 
 import java.nio.ByteBuffer;
@@ -114,6 +118,50 @@ public final class DragonKit {
                     forced.add(p);
             }
         return () -> forced.forEach(p -> level.setChunkForced(p.x, p.z, false));
+    }
+
+    // ---- a lair and its own dragon (S5, EQC139) -------------------------------------------------
+
+    /** A lair id of the tests' own range (no real structure start packs to it). */
+    public static long newLair() {
+        return 0x0E00_0000_0000_0000L | (ThreadLocalRandom.current().nextLong() & 0xFFFF_FFFF_FFFFL);
+    }
+
+    /** The arena's own box, where a test lair's dragon stands. */
+    public static BoundingBox arenaBox(GameTestHelper helper) {
+        return BoundingBox.fromCorners(helper.absolutePos(BlockPos.ZERO), helper.absolutePos(new BlockPos(10, 5, 10)));
+    }
+
+    /**
+     * A fire dragon as Ice and Fire's roost piece makes its own (no finalizeSpawn, aging disabled, hunger 50, sitting), not
+     * yet in the level.
+     */
+    public static DragonBaseEntity newRoostDragon(ServerLevel level, Vec3 at) {
+        EntityType<?> fire = BuiltInRegistries.ENTITY_TYPE.get(ResourceLocation.parse(FIRE));
+        DragonBaseEntity d = (DragonBaseEntity) fire.create(level);
+        check("a fire dragon is created", d != null);
+        d.setAgeInTicks(AGE_30_DAYS);
+        d.setAgingDisabled(true);
+        d.setHunger(50);
+        d.setInSittingPose(true);
+        d.moveTo(at.x, at.y, at.z, 0f, 0f);
+        return d;
+    }
+
+    /** {@link #newRoostDragon} added to the level. */
+    public static DragonBaseEntity roostDragon(ServerLevel level, Vec3 at) {
+        DragonBaseEntity d = newRoostDragon(level, at);
+        level.addFreshEntity(d);
+        return d;
+    }
+
+    /** DRAGON_MATERIALIZED records for an agent that name a home body (aux 1, EQC122), in the order the engine received them. */
+    public static List<ScriptedEngine.Received> homeAnswers(long agent) {
+        List<ScriptedEngine.Received> out = new ArrayList<>();
+        for (ScriptedEngine.Received r : about(DragonRecords.DRAGON_MATERIALIZED, agent))
+            if (r.aux() == DragonRecords.Materialized.AUX_HOME_BODY)
+                out.add(r);
+        return out;
     }
 
     // ---- scripting the engine side --------------------------------------------------------------

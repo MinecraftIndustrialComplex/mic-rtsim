@@ -956,13 +956,13 @@ public final class DragonBridge implements SessionPlugin {
                 onTame(d, null, now); // tamed by a path that fired no AnimalTameEvent (another mod's tool)
                 continue;
             }
+            if (p.mode == Mode.DEPART && (now >= p.deadline || !inAnyPlayersRange(level, e))) {
+                capture(p, DragonRecords.Dematerialized.COMMAND, now);
+                continue;
+            }
             if (p.home) {
                 if (now - p.lastState >= STATE_INTERVAL)
                     state(p, d, level, now);
-                continue;
-            }
-            if (p.mode == Mode.DEPART && (now >= p.deadline || !inAnyPlayersRange(level, e))) {
-                capture(p, DragonRecords.Dematerialized.COMMAND, now);
                 continue;
             }
             if (p.oil == 0)

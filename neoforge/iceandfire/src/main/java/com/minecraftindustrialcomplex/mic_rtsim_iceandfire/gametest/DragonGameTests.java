@@ -495,8 +495,9 @@ public final class DragonGameTests {
 
     /**
      * A lair's own dragon: a dragon that joins inside a lair's box with no spawn type (Ice and Fire's lair
-     * pieces never call finalizeSpawn) is reported as a STRUCTURE spawn of that lair, after its LAIR_FOUND,
-     * and adopted as its occupant with the lair's home. A player then robs the hoard: a gold pile of three
+     * pieces never call finalizeSpawn) is not reported untagged: the lair's census lists it when the lair comes in
+     * (S5, EQC113), after its LAIR_FOUND, and the engine adopts it as its occupant, a home body, with the lair's home.
+     * A player then robs the hoard: a gold pile of three
      * layers broken (6 gold nuggets, its loot table) and 4 gold ingots taken out of a chest inside the lair
      * are one HOARD_ROBBED record (the player's tick) with a Java op id.
      */
@@ -525,23 +526,32 @@ public final class DragonGameTests {
         long[] agent = new long[2];
 
         helper.startSequence()
-                .thenWaitUntil(() -> check("LAIR_FOUND and DRAGON_UNTAGGED reached the engine",
-                        !DragonKit.received(DragonRecords.LAIR_FOUND, DragonRecords.LairFound.LAIR, lairId).isEmpty()
-                                && !DragonKit.untagged(d.getUUID()).isEmpty()))
+                .thenWaitUntil(() -> check("LAIR_FOUND reached the engine",
+                        !DragonKit.received(DragonRecords.LAIR_FOUND, DragonRecords.LairFound.LAIR, lairId).isEmpty()))
                 .thenExecute(() -> {
                     ScriptedEngine.Received found = DragonKit.received(DragonRecords.LAIR_FOUND, DragonRecords.LairFound.LAIR, lairId).get(0);
-                    ScriptedEngine.Received u = DragonKit.untagged(d.getUUID()).get(0);
                     check("the lair's structure", "iceandfire:fire_dragon_roost".equals(engine().javaDictName(found.view().getInt(DragonRecords.LairFound.STRUCTURE))));
                     check("the lair's box", found.view().getInt(DragonRecords.LairFound.MIN_X) == box.minX()
                             && found.view().getInt(DragonRecords.LairFound.MAX_Z) == box.maxZ());
-                    check("the lair came first", found.obsSeq() < u.obsSeq());
-                    check("a structure spawn (" + u.aux() + ")", u.aux() == DragonRecords.Untagged.SPAWN_STRUCTURE);
-                    check("of this lair", u.view().getLong(DragonRecords.Untagged.LAIR) == lairId);
-                    check("asleep, aging disabled", (u.view().getInt(DragonRecords.Untagged.FLAGS)
-                            & (DragonRecords.Untagged.FLAG_SLEEPING | DragonRecords.Untagged.FLAG_AGING_DISABLED))
-                            == (DragonRecords.Untagged.FLAG_SLEEPING | DragonRecords.Untagged.FLAG_AGING_DISABLED));
-                    if (!DragonKit.nativeEngine())
+                    check("not reported untagged: the census lists a lair's own dragon", DragonKit.untagged(d.getUUID()).isEmpty());
+                    if (DragonKit.nativeEngine()) {
+                        bridge().homes.testIn(lairId, false, level.getGameTime());
+                    } else {
                         DragonKit.adopt(d.getUUID(), stubAgent, 1, home);
+                    }
+                })
+                .thenWaitUntil(() -> check("the lair's census reached the engine",
+                        !DragonKit.nativeEngine() || !DragonKit.received(DragonRecords.LAIR_CENSUS, DragonRecords.LairCensus.LAIR, lairId).isEmpty()))
+                .thenExecute(() -> {
+                    if (!DragonKit.nativeEngine())
+                        return;
+                    ScriptedEngine.Received found = DragonKit.received(DragonRecords.LAIR_FOUND, DragonRecords.LairFound.LAIR, lairId).get(0);
+                    ScriptedEngine.Received census = DragonKit.received(DragonRecords.LAIR_CENSUS, DragonRecords.LairCensus.LAIR, lairId).get(0);
+                    check("the lair came first", found.obsSeq() < census.obsSeq());
+                    check("the census lists the dragon, asleep, aging disabled, with a home (flags "
+                            + census.view().getInt(DragonRecords.LairCensus.BODIES + DragonRecords.LairCensus.B_FLAGS) + ")", census.aux() == 1
+                            && census.view().getInt(DragonRecords.LairCensus.BODIES + DragonRecords.LairCensus.B_FLAGS) == DragonRecords.LairCensus.BODY_SLEEPING
+                            && DragonKit.uuidAt(census, DragonRecords.LairCensus.BODIES + DragonRecords.LairCensus.B_ENTITY_MOST).equals(d.getUUID()));
                 })
                 // Adopted, and its DRAGON_MATERIALIZED sent (after OG-10's arms the engine can take a step longer).
                 .thenWaitUntil(() -> check("adopted", bridge().agentOf(d) != 0
