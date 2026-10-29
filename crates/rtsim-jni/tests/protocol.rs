@@ -2848,6 +2848,30 @@ mod dragons {
         })
     }
 
+    /// A lair's own dragon, as the plugin reports it now (EQC112, EQC113): the lair came in with one
+    /// untagged structure dragon standing in its footprint, so the census lists it with no home
+    /// attachment. (It was an UNTAGGED record with a lair key before S5.)
+    fn lair_dragon(entity: (u64, u64), dim: u32, hunger: i32) -> O {
+        O::LairCensus(db::LairCensus {
+            lair: LAIR,
+            epoch: 1,
+            dimension: dim,
+            flags: 0,
+            bodies: vec![db::CensusBody {
+                entity,
+                agent: 0,
+                species: Species::Fire,
+                flags: db::BODY_HAS_HOME,
+                age_ticks: 110 * 24_000,
+                hunger,
+                health: 0.0,
+                gender: Gender::Female,
+                variant: 1,
+                pos: (f64::from(HOME.0), f64::from(HOME.1), f64::from(HOME.2)),
+            }],
+        })
+    }
+
     fn captured(agent: u64, epoch: u32, dim: u32, health: f32) -> O {
         O::Dematerialized(db::Dematerialized {
             agent,
@@ -2929,7 +2953,7 @@ mod dragons {
             home: HOME,
             row: Default::default(),
         }));
-        j.dragon_obs(&untagged((0xD1, 0x1), SpawnKind::Structure, LAIR, dim));
+        j.dragon_obs(&lair_dragon((0xD1, 0x1), dim, 60));
         j.idle();
         j.idle();
         assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
@@ -3900,7 +3924,7 @@ mod dragons {
             home: HOME,
             row: Default::default(),
         }));
-        j.dragon_obs(&untagged((0xD1, 0x1), SpawnKind::Structure, LAIR, dim));
+        j.dragon_obs(&lair_dragon((0xD1, 0x1), dim, 60));
         j.idle();
         j.idle();
         assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
@@ -4002,10 +4026,7 @@ mod dragons {
         }));
         // A well-fed dragon: it stays at rest in its lair for days (R7), so a player there sees
         // it whenever the dragons run.
-        let mut fed = untagged((0xD2, 0x1), SpawnKind::Structure, LAIR, dim);
-        if let O::Untagged(u) = &mut fed {
-            u.hunger = 100;
-        }
+        let fed = lair_dragon((0xD2, 0x1), dim, 100);
         j.dragon_obs(&fed);
         j.idle();
         j.idle();
@@ -4099,10 +4120,7 @@ mod dragons {
             home: HOME,
             row: Default::default(),
         }));
-        let mut fed = untagged((0xD2, 0x1), SpawnKind::Structure, LAIR, dim);
-        if let O::Untagged(u) = &mut fed {
-            u.hunger = 100;
-        }
+        let fed = lair_dragon((0xD2, 0x1), dim, 100);
         j.dragon_obs(&fed);
         j.idle();
         j.idle();
@@ -4161,7 +4179,7 @@ mod dragons {
             (lair.found_unknown, lair.due.0 - d.now().0, d.tun.renewal().cap_ticks())
         });
         assert!(unknown && cap - left <= 4, "{left} against the cap {cap}");
-        j.dragon_obs(&untagged((0xD1, 0x1), SpawnKind::Structure, LAIR, dim));
+        j.dragon_obs(&lair_dragon((0xD1, 0x1), dim, 60));
         j.idle();
         j.idle();
         let first = adoptions(&j);
@@ -4176,6 +4194,8 @@ mod dragons {
             killer: PLAYER,
             dimension: dim,
             pos: (f64::from(HOME.0), f64::from(HOME.1), f64::from(HOME.2)),
+            entity: (0, 0),
+            lair: 0,
         }));
         j.idle();
         j.idle();
@@ -4253,7 +4273,7 @@ mod dragons {
             home: HOME,
             row: Default::default(),
         }));
-        j.dragon_obs(&untagged((0xD1, 0x1), SpawnKind::Structure, LAIR, dim));
+        j.dragon_obs(&lair_dragon((0xD1, 0x1), dim, 60));
         j.idle();
         j.idle();
         let first = adoptions(&j);
@@ -4269,6 +4289,8 @@ mod dragons {
             killer: PLAYER,
             dimension: dim,
             pos: (f64::from(HOME.0), f64::from(HOME.1), f64::from(HOME.2)),
+            entity: (0, 0),
+            lair: 0,
         }));
         j.idle();
         j.idle();
@@ -4364,10 +4386,7 @@ mod dragons {
             home: HOME,
             row: Default::default(),
         }));
-        let mut fed = untagged((0xD3, 0x1), SpawnKind::Structure, LAIR, dim);
-        if let O::Untagged(u) = &mut fed {
-            u.hunger = 100;
-        }
+        let fed = lair_dragon((0xD3, 0x1), dim, 100);
         j.dragon_obs(&fed);
         j.idle();
         j.idle();
@@ -4389,6 +4408,8 @@ mod dragons {
             killer,
             dimension: dim,
             pos: (f64::from(HOME.0), f64::from(HOME.1), f64::from(HOME.2)),
+            entity: (0, 0),
+            lair: 0,
         }));
         j.idle();
         j.idle();
@@ -4550,10 +4571,7 @@ mod dragons {
             home: HOME,
             row: Default::default(),
         }));
-        let mut fed = untagged((0xD3, 0x2), SpawnKind::Structure, LAIR, dim);
-        if let O::Untagged(u) = &mut fed {
-            u.hunger = 100;
-        }
+        let fed = lair_dragon((0xD3, 0x2), dim, 100);
         j.dragon_obs(&fed);
         j.idle();
         j.idle();
@@ -4575,6 +4593,8 @@ mod dragons {
             killer: PLAYER,
             dimension: dim,
             pos: (f64::from(HOME.0), f64::from(HOME.1), f64::from(HOME.2)),
+            entity: (0, 0),
+            lair: 0,
         }));
         j.idle();
         assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
@@ -4637,10 +4657,7 @@ mod dragons {
             home: HOME,
             row: Default::default(),
         }));
-        let mut fed = untagged((0xD3, 0x2), SpawnKind::Structure, LAIR, dim);
-        if let O::Untagged(u) = &mut fed {
-            u.hunger = 100;
-        }
+        let fed = lair_dragon((0xD3, 0x2), dim, 100);
         j.dragon_obs(&fed);
         j.idle();
         j.idle();
@@ -4665,6 +4682,8 @@ mod dragons {
             killer: PLAYER,
             dimension: dim,
             pos: (f64::from(HOME.0), f64::from(HOME.1), f64::from(HOME.2)),
+            entity: (0, 0),
+            lair: 0,
         }));
         j.idle();
         j.game_time = off_at + 300;
@@ -4737,7 +4756,7 @@ mod dragons {
             home: HOME,
             row: Default::default(),
         }));
-        j.dragon_obs(&untagged((0xD3, 0x3), SpawnKind::Structure, LAIR, dim));
+        j.dragon_obs(&lair_dragon((0xD3, 0x3), dim, 60));
         j.idle();
         j.idle();
         let a = adoptions(&j)[0];
@@ -5694,19 +5713,23 @@ mod ships {
             home,
             row: Default::default(),
         }));
-        j.dragon_obs(&DO::Untagged(db::Untagged {
-            entity: (0xD3, 0x1),
-            spawn: SpawnKind::Structure,
-            species: Species::Fire,
-            dimension: dim,
-            flags: db::UNTAGGED_HAS_HOME,
-            age_ticks: 110 * 24_000,
-            hunger: 90,
-            gender: Gender::Female,
-            variant: 0,
-            home,
+        j.dragon_obs(&DO::LairCensus(db::LairCensus {
             lair,
-            pos: (f64::from(home.0), f64::from(home.1), f64::from(home.2)),
+            epoch: 1,
+            dimension: dim,
+            flags: 0,
+            bodies: vec![db::CensusBody {
+                entity: (0xD3, 0x1),
+                agent: 0,
+                species: Species::Fire,
+                flags: db::BODY_HAS_HOME,
+                age_ticks: 110 * 24_000,
+                hunger: 90,
+                health: 0.0,
+                gender: Gender::Female,
+                variant: 0,
+                pos: (f64::from(home.0), f64::from(home.1), f64::from(home.2)),
+            }],
         }));
         j.idle();
         j.idle();

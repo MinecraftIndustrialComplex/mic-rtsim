@@ -4549,6 +4549,8 @@ mod tests {
             killer: (7, 8),
             dimension: 0,
             pos: (0.0, 64.0, 0.0),
+            entity: (0, 0),
+            lair: 0,
         });
         encode_obs(seq, game_time, &died, &SpeciesDict::default(), &mut b);
         b
