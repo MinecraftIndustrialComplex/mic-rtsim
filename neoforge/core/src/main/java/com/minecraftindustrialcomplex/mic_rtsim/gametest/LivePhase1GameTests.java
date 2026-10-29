@@ -55,6 +55,13 @@ public final class LivePhase1GameTests {
         return n;
     }
 
+    private static String distances(PuppetGroup g, ServerPlayer player) {
+        StringBuilder b = new StringBuilder();
+        for (PuppetGroup.Member m : g.members)
+            b.append(m.entity == null ? "null " : String.format("%.1f ", m.entity.distanceTo(player)));
+        return b.toString().trim();
+    }
+
     @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 24000, batch = "mic_rtsim_p1_live")
     public static void aRealCaravanTradesIsRobbedAndTheNewsTravels(GameTestHelper helper) {
         if (!(RtsimTests.engine() instanceof NativeEngine e)) {
@@ -76,6 +83,7 @@ public final class LivePhase1GameTests {
         long[] base = e.phase1Stats();
         long[] ask = {0, 0}; // ticks waited since the last ask, asks
         boolean[] traded = {false};
+        long[] robbedAt = {0}, robbedSteps = {0};
         String[] robbed = {null};
         List<String> told = new ArrayList<>();
 
@@ -149,11 +157,23 @@ public final class LivePhase1GameTests {
                         }
                     }
                     record("liveCaravan", "robbed", robbed[0]);
+                    robbedAt[0] = helper.getLevel().getGameTime();
+                    robbedSteps[0] = e.steps();
+                    record("liveCaravan", "DIAG at the robbery", "game time " + robbedAt[0] + ", engine steps " + robbedSteps[0]
+                            + ", cargo reports " + RtsimTests.session().phase1.cargo.reports() + ", llama distances to the player "
+                            + distances(g, player));
                     check("there was something to rob", robbed[0] != null);
                 })
                 .thenWaitUntil(() -> {
                     long[] s = e.phase1Stats();
-                    check("the engine booked the robbery", s[NativeEngine.P1_ROBBERIES] > base[NativeEngine.P1_ROBBERIES]);
+                    check("the engine booked the robbery (DIAG " + (helper.getLevel().getGameTime() - robbedAt[0]) + " ticks and "
+                            + (e.steps() - robbedSteps[0]) + " steps after it; cargo reports " + RtsimTests.session().phase1.cargo.reports()
+                            + "; robberies " + s[NativeEngine.P1_ROBBERIES] + " vs base " + base[NativeEngine.P1_ROBBERIES]
+                            + "; inputs " + s[NativeEngine.P1_INPUTS] + " vs base " + base[NativeEngine.P1_INPUTS]
+                            + "; embodied " + s[NativeEngine.P1_EMBODIED] + "; group "
+                            + (RtsimTests.group(agent) == null ? "gone" : "there, distances " + distances(RtsimTests.group(agent), player))
+                            + "; protocol error " + e.protocolError() + ")",
+                            s[NativeEngine.P1_ROBBERIES] > base[NativeEngine.P1_ROBBERIES]);
                     check("and the trade", !traded[0] || s[NativeEngine.P1_CARAVAN_TRADES] > base[NativeEngine.P1_CARAVAN_TRADES]);
                 })
                 .thenWaitUntil(() -> {
