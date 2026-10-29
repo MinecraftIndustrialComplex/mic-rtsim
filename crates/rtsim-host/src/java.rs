@@ -175,6 +175,9 @@ pub struct Java {
     /// Answer every new PLACE_HOUSE NOT_FREE (no plot), as HouseBuilder does when its search
     /// finds none.
     pub no_free_plot: bool,
+    /// Every SPAWN_RESIDENT arrival (slice S6) is answered NOT_FREE, as when the village has no
+    /// free bed.
+    pub no_free_bed: bool,
     /// Answer every new TRANSFER_TO_CONTAINER FAILED (no container there, or no room), as
     /// CommandDispatcher does.
     pub fail_transfers: bool,
@@ -417,6 +420,7 @@ impl Java {
             p1: Vec::new(),
             talk_facts: Vec::new(),
             no_free_plot: false,
+            no_free_bed: false,
             fail_transfers: false,
             unloaded_transfers: false,
             switch_ahead_of_transfer_answers: None,
@@ -1010,6 +1014,13 @@ impl Java {
                         let status = if self.applied_cmd_ops.contains(&op) {
                             obs::command_result::DUPLICATE_OP
                         } else if rec.kind == cmd::PLACE_HOUSE && self.no_free_plot {
+                            obs::command_result::NOT_FREE
+                        } else if rec.kind == cmd::SPAWN_RESIDENT
+                            && self.no_free_bed
+                            && wire::u32_at(rec.bytes, cmd::spawn_resident::FLAGS)
+                                & cmd::spawn_resident::FLAG_ARRIVAL
+                                != 0
+                        {
                             obs::command_result::NOT_FREE
                         } else {
                             if rec.kind == cmd::PLACE_HOUSE {
@@ -2005,6 +2016,22 @@ impl Java {
         });
     }
 
+    /// A VILLAGE_CENSUS (latest wins) as Java's census writes one: `residents` villagers, `beds`,
+    /// complete (every chunk of the reach full and every walker found) or not.
+    pub fn village_census(&mut self, village: u64, residents: u32, beds: u32, complete: bool) {
+        use obs::village_census as k;
+        let dim = self.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        assert!(self.preamble(), "room for the dictionary");
+        let r = self
+            .reserve(obs::VILLAGE_CENSUS, k::ENTRIES, 0)
+            .expect("room for VILLAGE_CENSUS");
+        wire::put_u64(r, k::VILLAGE, village);
+        wire::put_u32(r, k::DIM, dim);
+        wire::put_u32(r, k::FLAGS, if complete { k::FLAG_COMPLETE } else { 0 });
+        wire::put_u32(r, k::RESIDENTS, residents);
+        wire::put_u32(r, k::BEDS, beds);
+    }
+
     /// The engine dictionary's name for an id the commands used.
     pub fn cmd_name(&self, kind: u32, id: u32) -> String {
         self.cmd_dict.get(&(kind, id)).cloned().unwrap_or_default()
@@ -2074,6 +2101,29 @@ impl Java {
                 wire::put_u32(r, it + obs::item::ITEM, *id);
                 wire::put_i32(r, it + obs::item::COUNT, -*n);
             }
+        })
+    }
+}
+
+// ---- villages renew (slice S6) -------------------------------------------------------------------
+
+impl Java {
+    /// A HURT RESIDENT_KILLED at `village`: a resident the player killed (`by_player`) or that
+    /// something else killed, as the bridge's kill credit reports it (MZB-1006).
+    pub fn resident_killed(&mut self, village: u64, by_player: bool) -> u64 {
+        use obs::hurt as k;
+        self.journal(obs::HURT, k::SIZE, k::RESIDENT_KILLED, |r| {
+            wire::put_u64(r, k::NODE, village);
+            wire::put_u32(
+                r,
+                k::ATTACKER_KIND,
+                if by_player { k::ATTACKER_PLAYER } else { 0 },
+            );
+            if by_player {
+                wire::put_u64(r, k::ATTACKER_MOST, PLAYER.0);
+                wire::put_u64(r, k::ATTACKER_LEAST, PLAYER.1);
+            }
+            wire::put_u32(r, k::FLAGS, k::FLAG_LETHAL);
         })
     }
 }

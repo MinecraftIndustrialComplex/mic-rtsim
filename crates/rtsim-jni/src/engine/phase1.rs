@@ -53,7 +53,7 @@ use rtsim_trade::{Amount, GoodId, MILLI, OfferSide};
 use rtsim_travel::caravan::{Body, GroupKind};
 use rtsim_world::bases::CaravanRef;
 use rtsim_world::works::{self, WorkCap, WorkDef, WorkGroup, WorkPlace, WorkVariant};
-use rtsim_world::{CaravanId, Command, Visible, World, WorldConfig, identity_op};
+use rtsim_world::{Arrive, CaravanId, Command, Visible, World, WorldConfig, identity_op};
 
 use super::{State, log_info, log_warn, shared};
 use crate::orders::{
@@ -89,9 +89,11 @@ pub const META_MAGIC: u32 = u32::from_le_bytes(*b"RTP1");
 /// as a row table (`World::save` RTW2, docs/choices-paging-modules.md). Version 4: the world pages
 /// through the store (`World::save_paged`, PF17), the snapshot pieces hold the link's part only,
 /// and the state hash is written in TEST mode only (0 otherwise, PF16). Version 5: the inputs kept
-/// while phase 1 was switched off follow the queue (`Link::kept`, RP-300). Before release a version
+/// while phase 1 was switched off follow the queue (`Link::kept`, RP-300). Version 6: the village census
+/// input and the resident answer join the log (tags 22 and 23) and the snapshot part drops the censused
+/// villages, a village row's `seen_r` says it (slice S6, EQC171). Before release a version
 /// this build does not read is dropped (S5, [`when_pages_unreadable`]); there is no migration.
-pub const META_VERSION: u16 = 5;
+pub const META_VERSION: u16 = 6;
 
 /// The most inputs the list of those heard while phase 1 is off ([`Link::kept`]) holds before
 /// reports are dropped, talks first, then hurts and rescues, then residents killed, each the
@@ -231,8 +233,20 @@ pub mod stat {
     pub const WORKS_REFUSED: usize = 18;
     /// Tributes villages paid to dragons' lairs (MS-5).
     pub const TRIBUTES: usize = 19;
+    /// Settlers the world booked for emptied villages (slice S6).
+    pub const SETTLERS: usize = 20;
+    /// Growth steps the world booked for unloaded human villages.
+    pub const GROWN: usize = 21;
+    /// Ribbit residents the world booked into houses that stood empty.
+    pub const REFILLS: usize = 22;
+    /// Villages found short for settlers (a wait started).
+    pub const EMPTIED: usize = 23;
+    /// Resident bookings that lapsed: refused by the bridge, or released as too old.
+    pub const LAPSED: usize = 24;
+    /// Village censuses the link's filter let into the input log (EQC152).
+    pub const CENSUSES: usize = 25;
 }
-pub const STATS: usize = 20;
+pub const STATS: usize = 26;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PuppetOf {
@@ -328,7 +342,9 @@ pub(super) struct Link {
     players: BTreeMap<Uuid, Seen>,
     markets_sent: BTreeMap<u64, u64>,
     market_dirty: BTreeSet<u64>,
-    censused: BTreeSet<u64>,
+    /// The census filter's memory per village (EQC152): transient, never saved. A restart loses it
+    /// and costs one more census interval.
+    census_memo: BTreeMap<u64, CensusMemo>,
     last_interest: i64,
     last_market: i64,
     spawn_near: Vec<SpawnNear>,
@@ -443,7 +459,7 @@ impl Link {
             players: BTreeMap::new(),
             markets_sent: BTreeMap::new(),
             market_dirty: BTreeSet::new(),
-            censused: BTreeSet::new(),
+            census_memo: BTreeMap::new(),
             last_interest: i64::MIN,
             last_market: i64::MIN,
             spawn_near: Vec::new(),
@@ -516,7 +532,7 @@ impl Link {
                     m.snap_len
                 ));
             }
-            let (nodes, censused) =
+            let nodes =
                 decode_snapshot(&blob).map_err(|e| format!("the phase 1 snapshot: {e}"))?;
             let (cfg, goods, book) = world_parts();
             let world = World::open_paged(Arc::clone(source), budget, WORLD_META, cfg, goods, book)
@@ -538,7 +554,6 @@ impl Link {
             }
             link.world = world;
             link.nodes = nodes;
-            link.censused = censused;
         } else if super::paging::holds_pages(&**source, SNAPSHOT_TABLE..=TABLE + 0x1f) {
             return Err("phase 1 world pages without a snapshot".into());
         }
@@ -597,13 +612,6 @@ impl Link {
         link.base_inputs = m.base_inputs;
         link.durable
             .store(pack(link.snap_gen, log.len() / CHUNK), Ordering::Release);
-        // Villages whose first census is in the tail (the snapshot carried the earlier ones;
-        // choice V9: later ones only raise).
-        link.censused
-            .extend(log.iter().filter_map(|l| match l.input {
-                Input::Population { key, .. } => Some(key),
-                _ => None,
-            }));
         link.log = log;
         let keys: Vec<u64> = link.nodes.keys().copied().collect();
         for key in keys {
@@ -907,25 +915,21 @@ fn decode_meta(b: &[u8]) -> codec::Result<Meta> {
     })
 }
 
-/// The link's part of the snapshot: its village index and censused villages as of the snapshot.
+/// The link's part of the snapshot: its village index as of the snapshot.
 /// The world's part is its own pages (`World::save_paged`, the meta page at [`WORLD_META`]).
 /// Everything else of the link is in the meta page, written every save.
 fn encode_snapshot(l: &Link) -> Vec<u8> {
-    let mut w = Writer::with_capacity(64 + l.nodes.len() * 24 + l.censused.len() * 8);
+    let mut w = Writer::with_capacity(64 + l.nodes.len() * 24);
     w.u32(SNAP_MAGIC);
     w.var_u64(l.nodes.len() as u64);
     for (k, i) in &l.nodes {
         w.u64(*k);
         w.var_u64(*i as u64);
     }
-    w.var_u64(l.censused.len() as u64);
-    l.censused.iter().for_each(|k| w.u64(*k));
     w.into_bytes()
 }
 
-type Restored = (BTreeMap<u64, usize>, BTreeSet<u64>);
-
-fn decode_snapshot(b: &[u8]) -> codec::Result<Restored> {
+fn decode_snapshot(b: &[u8]) -> codec::Result<BTreeMap<u64, usize>> {
     let mut r = Reader::new(b);
     if r.u32()? != SNAP_MAGIC {
         return Err(CodecError::Invalid("not a phase 1 snapshot".into()));
@@ -935,12 +939,8 @@ fn decode_snapshot(b: &[u8]) -> codec::Result<Restored> {
         let k = r.u64()?;
         nodes.insert(k, r.var_u64()? as usize);
     }
-    let mut censused = BTreeSet::new();
-    for _ in 0..r.len_prefix(8)? {
-        censused.insert(r.u64()?);
-    }
     r.finish()?;
-    Ok((nodes, censused))
+    Ok(nodes)
 }
 
 fn pack(generation: u32, chunks: usize) -> u64 {
@@ -1278,8 +1278,11 @@ pub(super) fn observe_state(st: &mut State, rec: &Rec<'_>) {
             }
             let key = wire::u64_at(b, obs::village_census::VILLAGE);
             let residents = wire::u32_at(b, obs::village_census::RESIDENTS);
+            let beds = wire::u32_at(b, obs::village_census::BEDS);
             let golems = wire::u32_at(b, obs::village_census::GOLEMS);
-            census(st, key, residents, golems);
+            let complete =
+                wire::u32_at(b, obs::village_census::FLAGS) & obs::village_census::FLAG_COMPLETE != 0;
+            census(st, key, residents, beds, golems, complete);
         }
         obs::WORK_CATALOG if rec.size() >= obs::work_catalog::DEFS => {
             let Some(defs) = work_catalog(st, rec) else {
@@ -1305,11 +1308,38 @@ pub(super) fn observe_state(st: &mut State, rec: &Rec<'_>) {
     }
 }
 
-/// A census: the first one sets the village's population (its adoption guessed it from its
-/// pieces); later ones only raise it, since growth books residents before they exist (P17) and a
-/// census of a part-loaded village counts low (choice V9). Its golems are the latest count
-/// (SINK.md MS-8: defenders against dragons), logged when they change.
-fn census(st: &mut State, key: u64, residents: u32, golems: u32) {
+/// What the census filter remembers of one village (EQC152). Never saved.
+#[derive(Clone, Copy, Debug, Default)]
+struct CensusMemo {
+    /// A complete reading that differs from the world's last confirmed one, waiting for a second
+    /// equal reading before the world is told.
+    pending: Option<(u32, u32)>,
+    /// The world tick the last census of this village was logged at.
+    logged_at: u64,
+}
+
+/// Ticks between two heartbeat censuses of a village that has not changed (EQC152). A logged census
+/// is also the signal that the village is loaded (EQC164), so a loaded village is heard at least
+/// this often.
+pub const CENSUS_HEARTBEAT_TICKS: u64 = 6_000;
+
+/// A village census (docs/overnight-choices-equilibrium.md EQC150 to EQC152; slice S6). The census
+/// is the one reading of what is really in a village: **a complete one** (Java saw every chunk of
+/// the village's reach with its entities, and every settler walking in) **sets the sim's count both
+/// ways**, an incomplete one only raises it (choice V9 for the incomplete case: a part-loaded
+/// village counts low). The filter keeps the log small and the count steady:
+///
+/// - the first complete census of a village is logged at once;
+/// - a complete census equal to the world's last confirmed reading is only a heartbeat, logged at
+///   most once per [`CENSUS_HEARTBEAT_TICKS`];
+/// - a complete census that differs is held until the next complete census reads the same (two
+///   equal readings in a row, so a villager across the reach's edge never flaps the count), and a
+///   different one replaces the held one;
+/// - an incomplete census is logged when it would raise the count and otherwise as a heartbeat.
+///
+/// Its golems are the latest count (SINK.md MS-8: defenders against dragons), logged when they
+/// change.
+fn census(st: &mut State, key: u64, residents: u32, beds: u32, golems: u32, complete: bool) {
     let l = &mut st.phase1;
     if l.scripted.contains(&key) {
         return;
@@ -1320,20 +1350,51 @@ fn census(st: &mut State, key: u64, residents: u32, golems: u32) {
     if l.world.golems(i) != golems {
         input_now(st, Input::Golems { key, golems });
     }
-    if residents == 0 {
-        return;
-    }
+    let now = shared::hand_over_target(st).0;
     let l = &mut st.phase1;
-    let pop = l.world.nodes[i].local.pop;
-    // The first census is logged even when it changes nothing: the log is what tells a later
-    // session which villages had theirs.
-    let first = l.censused.insert(key);
-    if first || residents > pop {
+    let Some(row) = l.world.village_row(i).copied() else {
+        return; // a base, or a world with renewal off: no row to count
+    };
+    let ribbit = matches!(
+        l.world.nodes[i].kind,
+        NodeKind::Village(Culture::Ribbit)
+    );
+    let k_max = l.world.cfg.village_k_max;
+    let memo = l.census_memo.entry(key).or_default();
+    let cooled = now.saturating_sub(memo.logged_at) >= CENSUS_HEARTBEAT_TICKS;
+    let log_it = if !complete {
+        let target = if ribbit {
+            residents
+        } else {
+            residents + u32::from(row.owed)
+        };
+        target > row.members || cooled
+    } else if row.seen_r == u32::MAX {
+        memo.pending = None;
+        true
+    } else {
+        let same = residents == row.seen_r && (ribbit || beds.min(k_max) == u32::from(row.k));
+        if same {
+            memo.pending = None;
+            cooled
+        } else if memo.pending == Some((residents, beds.min(k_max))) {
+            memo.pending = None;
+            true
+        } else {
+            memo.pending = Some((residents, beds.min(k_max)));
+            false
+        }
+    };
+    if log_it {
+        memo.logged_at = now;
+        st.phase1.stats[stat::CENSUSES] += 1;
         input_now(
             st,
-            Input::Population {
+            Input::Census {
                 key,
-                pop: residents,
+                residents,
+                beds,
+                complete,
             },
         );
     }
@@ -2105,6 +2166,19 @@ pub(super) fn after_core(st: &mut State, rec: &Rec<'_>) {
                 let placed = rec.aux == r::APPLIED || rec.aux == r::DUPLICATE_OP;
                 let at = l.wt(wire::i64_at(b, obs::GAME_TIME));
                 book(st, Input::WorkResult { op, placed }, at);
+            } else {
+                // A resident or a house the world booked (slice S6, EQC162): placed, or the
+                // bridge could not (FAILED, NOT_FREE). Heard on or off, like a work's answer.
+                use obs::command_result as r;
+                let placed = rec.aux == r::APPLIED || rec.aux == r::DUPLICATE_OP;
+                let kept = l
+                    .kept
+                    .iter()
+                    .any(|k| matches!(k.input, Input::ResidentResult { op: o, .. } if o == op));
+                if l.world.wants_resident_result(op, placed) && !kept {
+                    let at = l.wt(wire::i64_at(b, obs::GAME_TIME));
+                    book(st, Input::ResidentResult { op, placed }, at);
+                }
             }
         }
         _ => {}
@@ -2271,6 +2345,11 @@ pub(super) fn simulate(st: &mut State) {
     l.stats[stat::WORLD_TICK] = l.world.now().0;
     l.stats[stat::WORKS_BOUGHT] = l.world.stats.works;
     l.stats[stat::TRIBUTES] = l.world.stats.tributes;
+    l.stats[stat::SETTLERS] = l.world.stats.settlers.iter().sum();
+    l.stats[stat::GROWN] = l.world.stats.grown;
+    l.stats[stat::REFILLS] = l.world.stats.refills;
+    l.stats[stat::EMPTIED] = l.world.stats.emptied;
+    l.stats[stat::LAPSED] = l.world.stats.lapsed;
 }
 
 /// Turns the world's commands into records. Scripted villages get none.
@@ -2379,14 +2458,29 @@ fn take_world_commands(st: &mut State) {
                 let Some(dimension) = Link::java_dim(&st.world, l.world.nodes[i].pos.frame) else {
                     continue;
                 };
+                // A renewal arrival (slice S6, EQC169): a house's resident as ever, the others at the
+                // meeting point, held while the village is watched; a settler may walk in from x, z.
+                use cmd::spawn_resident as f;
+                let (flags, pos) = match r.arrive {
+                    Arrive::House => (f::FLAG_AT_HOUSE, [0.0; 3]),
+                    Arrive::Refill | Arrive::Growth => (f::FLAG_AT_VILLAGE | f::FLAG_ARRIVAL, [0.0; 3]),
+                    Arrive::Settler { x, z } => (
+                        f::FLAG_AT_VILLAGE | f::FLAG_ARRIVAL | f::FLAG_WALK_IN,
+                        [f64::from(x), 0.0, f64::from(z)],
+                    ),
+                };
+                let body = match r.body {
+                    Body::VillagerResident => catalog::HUMAN_BODY,
+                    _ => catalog::RIBBIT_BODY,
+                };
                 P1Cmd::SpawnResident(SpawnResidentCmd {
                     op: r.op,
                     village: r.village,
                     dimension,
-                    body: catalog::RIBBIT_BODY.to_string(),
+                    body: body.to_string(),
                     profession: String::new(),
-                    flags: cmd::spawn_resident::FLAG_AT_HOUSE,
-                    pos: [0.0; 3],
+                    flags,
+                    pos,
                     house: r.house,
                 })
             }
@@ -3366,6 +3460,55 @@ pub(super) fn works_view(st: &State) -> BTreeMap<u64, [i64; WORKS_VIEW]> {
 /// The length of a village's works view ([`works_view`]).
 pub const WORKS_VIEW: usize = 6;
 
+/// Indexes of a village's renewal view ([`village_view`]).
+pub mod village {
+    /// What the sim believes the village holds.
+    pub const MEMBERS: usize = 0;
+    pub const K: usize = 1;
+    /// 1 when a complete census has counted a villager here.
+    pub const SEEN: usize = 2;
+    /// Bookings the bridge has not answered.
+    pub const OWED: usize = 3;
+    /// The world tick the settlers' wait ends at, -1 none running.
+    pub const WAIT_DUE: usize = 4;
+    /// The world tick of the next growth step, -1 none booked.
+    pub const BREED_DUE: usize = 5;
+    pub const PENDING_HOUSES: usize = 6;
+    pub const PEAK: usize = 7;
+    /// The pressure now, in thousandths.
+    pub const PRESSURE_MILLI: usize = 8;
+    /// The last complete census's residents, -1 none yet.
+    pub const SEEN_READING: usize = 9;
+}
+
+/// The length of a village's renewal view ([`village_view`]).
+pub const VILLAGE_VIEW: usize = 10;
+
+/// Every adopted village's renewal row (slice S6): what the world believes of it, for tests.
+pub(super) fn village_view(st: &State) -> BTreeMap<u64, [i64; VILLAGE_VIEW]> {
+    let l = &st.phase1;
+    let ticks = |t: u64| if t == u64::MAX { -1 } else { t as i64 };
+    let mut out = BTreeMap::new();
+    for (&key, &i) in &l.nodes {
+        let Some(r) = l.world.village_row(i) else {
+            continue;
+        };
+        let mut v = [0i64; VILLAGE_VIEW];
+        v[village::MEMBERS] = i64::from(r.members);
+        v[village::K] = i64::from(r.k);
+        v[village::SEEN] = i64::from(r.seen);
+        v[village::OWED] = i64::from(r.owed);
+        v[village::WAIT_DUE] = ticks(r.wait_due);
+        v[village::BREED_DUE] = ticks(r.breed_due);
+        v[village::PENDING_HOUSES] = i64::from(r.pending_houses);
+        v[village::PEAK] = i64::from(r.peak);
+        v[village::PRESSURE_MILLI] = (f64::from(l.world.village_pressure(i)) * 1000.0).round() as i64;
+        v[village::SEEN_READING] = if r.seen_r == u32::MAX { -1 } else { i64::from(r.seen_r) };
+        out.insert(key, v);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3485,12 +3628,12 @@ mod tests {
         world_done(st, ticket, false);
     }
 
-    /// Review 3, P4: the first census sets a village's population and later ones only raise it
-    /// (choice V9), because growth books residents before they exist and a part-loaded village
-    /// counts low. Which villages had their first census was forgotten at every restart, so the
-    /// first census after one lowered the population again.
+    /// Review 3, P4, as slice S6 reads it (EQC152): a complete census believes a count at once the
+    /// first time, a differing one later only after a second equal reading, and an incomplete one
+    /// never lowers it. What the link remembers between readings is never saved, so a restart
+    /// costs one more reading and never lowers a count on the strength of one.
     #[test]
-    fn a_census_after_a_restart_never_lowers_a_population() {
+    fn a_census_after_a_restart_never_lowers_a_population_on_one_reading() {
         let mut st = state();
         st.phase1.input(
             Input::Join {
@@ -3504,20 +3647,25 @@ mod tests {
             },
             0,
         );
-        census(&mut st, 5, 25, 0);
-        census(&mut st, 5, 28, 0);
+        census(&mut st, 5, 25, 30, 0, true);
         let i = st.phase1.nodes[&5];
-        assert_eq!(st.phase1.world.nodes[i].local.pop, 28);
+        assert_eq!(st.phase1.world.nodes[i].local.pop, 25, "the first complete census is believed");
+        census(&mut st, 5, 28, 30, 0, true);
+        assert_eq!(st.phase1.world.nodes[i].local.pop, 25, "one differing reading is held");
+        census(&mut st, 5, 28, 30, 0, true);
+        assert_eq!(st.phase1.world.nodes[i].local.pop, 28, "the second equal one is believed");
         let dir = tmpdir("census");
         let s = open(&dir);
         commit(&s, &mut st);
         let mut st2 = state();
         st2.phase1 = load(&s).unwrap();
-        census(&mut st2, 5, 20, 0);
+        census(&mut st2, 5, 20, 30, 0, true);
         assert_eq!(
             st2.phase1.world.nodes[i].local.pop, 28,
-            "a low census after the restart left the population alone"
+            "a low reading after the restart is held, not believed"
         );
+        census(&mut st2, 5, 3, 30, 0, false);
+        assert_eq!(st2.phase1.world.nodes[i].local.pop, 28, "an incomplete census never lowers it");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -5398,7 +5546,7 @@ mod tests {
             P1Op::Census { village: v, pop } => {
                 if let Some(key) = village(l, v) {
                     let _ = l;
-                    census(st, key, pop, 0);
+                    census(st, key, pop, pop, 0, pop % 3 != 0);
                 }
             }
             P1Op::Trade {
@@ -5589,7 +5737,6 @@ mod tests {
                     proptest::prop_assert!(fresh.phase1.replay_diverged.is_none());
                     proptest::prop_assert_eq!(fresh.phase1.world.state_hash(), b.phase1.world.state_hash());
                     proptest::prop_assert_eq!(&fresh.phase1.nodes, &b.phase1.nodes);
-                    proptest::prop_assert_eq!(&fresh.phase1.censused, &b.phase1.censused);
                     b = fresh;
                     // A takes the same save, so both take snapshots at the same points after.
                     commit(&sa, &mut a);

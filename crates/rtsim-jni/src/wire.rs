@@ -306,6 +306,9 @@ pub mod obs {
         pub const ENTRIES: usize = 56;
         pub const ENTRY: usize = 8;
         pub const FLAG_MEETING_POI: u32 = 1;
+        /// Every chunk of the village's reach was FULL with its entities loaded and every walker was
+        /// found: a count below the engine's is believed (slice S6, EQC151).
+        pub const FLAG_COMPLETE: u32 = 2;
     }
 
     /// Latest-wins: the works catalogue (SINK.md §4.2), every kind in one record, item counts read
@@ -759,6 +762,11 @@ pub mod cmd {
         pub const FLAG_AT_HOUSE: u32 = 1;
         /// At the village's meeting point (a work's body: SINK.md's golems).
         pub const FLAG_AT_VILLAGE: u32 = 2;
+        /// A renewal arrival (slice S6, EQC169): held while a player is within 128 blocks of the
+        /// village's footprint, a human body clamped to the free beds.
+        pub const FLAG_ARRIVAL: u32 = 4;
+        /// With ARRIVAL: a watched village's arrival walks in from the point X, Z names.
+        pub const FLAG_WALK_IN: u32 = 8;
     }
 }
 
