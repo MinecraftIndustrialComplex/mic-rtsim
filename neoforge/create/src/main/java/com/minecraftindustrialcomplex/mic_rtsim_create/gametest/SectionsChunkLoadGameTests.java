@@ -1086,7 +1086,7 @@ public final class SectionsChunkLoadGameTests {
         String[] lastAway = {"no report", "no report"};
         String[] lastPoll = {"none yet"};
         // The reconciler's held count is the server's, not this test's: a command another test left held for a chunk that never loads
-        // again stays in it, so "none held" is "none more than there were when this test began" (MZB-1102).
+        // again stays in it, so "none held" is "none more than there were when this test began" (MZB-1103).
         int[] heldBase = {0};
         helper.onEachTick(() -> {
             if (level.getGameTime() % 100 == 0)
@@ -1301,7 +1301,7 @@ public final class SectionsChunkLoadGameTests {
                 }))
                 .thenWaitUntil(io(() -> {
                     // Vanilla reports the failure of the wait's last tick, and the poll-tick check below fails on 19 ticks of 20: a
-                    // wait that timed out always said "a record poll tick", whatever the poll ticks found (MZB-1102). So the failure
+                    // wait that timed out always said "a record poll tick", whatever the poll ticks found (MZB-1103). So the failure
                     // of the last poll tick is kept and carried in that message.
                     check("a record poll tick (the last poll tick: " + lastPoll[0] + ")", level.getGameTime() % 20 == 0);
                     List<ScriptedEngine.Received> recs = rec.records();
