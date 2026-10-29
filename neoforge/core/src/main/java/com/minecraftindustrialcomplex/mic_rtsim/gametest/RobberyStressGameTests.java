@@ -81,8 +81,11 @@ public final class RobberyStressGameTests {
                         throw new GameTestAssertException("caravan there");
                     }
                     if (askTick[0]++ % 10 == 0) {
-                        if (asks[0] >= 300)
-                            throw new IllegalStateException("no caravan within 300 asks");
+                        if (asks[0] >= 300) {
+                            MicRtsim.LOGGER.info("[gametest] robStress round {}: no caravan within 300 asks", round[0]);
+                            phase[0] = 5;
+                            throw new GameTestAssertException("no caravan");
+                        }
                         e.phase1Advance(6_000);
                         Village a = villages.get(0);
                         e.phase1SpawnNear(agent[0], 1, dim, at.x, at.y, at.z, 2_000, a.meeting.getX() + 150, a.meeting.getZ() + 150);
