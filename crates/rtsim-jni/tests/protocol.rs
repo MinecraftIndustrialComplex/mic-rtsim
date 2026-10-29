@@ -2848,28 +2848,39 @@ mod dragons {
         })
     }
 
+    /// A body in a lair's census (EQC112): an untagged structure dragon standing `dx` blocks east of
+    /// the lair's home, with no home attachment (agent 0).
+    fn stray(entity: (u64, u64), dx: i32, hunger: i32) -> db::CensusBody {
+        db::CensusBody {
+            entity,
+            agent: 0,
+            species: Species::Fire,
+            flags: db::BODY_HAS_HOME,
+            age_ticks: 110 * 24_000,
+            hunger,
+            health: 0.0,
+            gender: Gender::Female,
+            variant: 1,
+            pos: (f64::from(HOME.0 + dx), f64::from(HOME.1), f64::from(HOME.2)),
+        }
+    }
+
+    /// The lair came in, unwatched, with `bodies` standing in its footprint.
+    fn lair_census(epoch: u64, dim: u32, bodies: Vec<db::CensusBody>) -> O {
+        O::LairCensus(db::LairCensus {
+            lair: LAIR,
+            epoch,
+            dimension: dim,
+            flags: 0,
+            bodies,
+        })
+    }
+
     /// A lair's own dragon, as the plugin reports it now (EQC112, EQC113): the lair came in with one
     /// untagged structure dragon standing in its footprint, so the census lists it with no home
     /// attachment. (It was an UNTAGGED record with a lair key before S5.)
     fn lair_dragon(entity: (u64, u64), dim: u32, hunger: i32) -> O {
-        O::LairCensus(db::LairCensus {
-            lair: LAIR,
-            epoch: 1,
-            dimension: dim,
-            flags: 0,
-            bodies: vec![db::CensusBody {
-                entity,
-                agent: 0,
-                species: Species::Fire,
-                flags: db::BODY_HAS_HOME,
-                age_ticks: 110 * 24_000,
-                hunger,
-                health: 0.0,
-                gender: Gender::Female,
-                variant: 1,
-                pos: (f64::from(HOME.0), f64::from(HOME.1), f64::from(HOME.2)),
-            }],
-        })
+        lair_census(1, dim, vec![stray(entity, 0, hunger)])
     }
 
     fn captured(agent: u64, epoch: u32, dim: u32, health: f32) -> O {
@@ -4246,6 +4257,172 @@ mod dragons {
         let again = j.sites.row(SiteKind::Lair, LAIR).expect("the new engine's row");
         assert_eq!(again.flags, waiting);
         assert!(again.wait_left.abs_diff(want) <= 400, "{again:?}");
+        let (s, _, _) = e.dragon_stats();
+        assert_eq!((s.respawns, s.heirs_sent), (0, 0), "nobody minted: {s:?}");
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// The lair census through the native engine (EQC112, EQC113, EQC116): a lair comes in with
+    /// three untagged dragons standing in its footprint. The engine answers with the removal
+    /// first (the third, the lair is full: a pair), then an adoption for each of the other two, as
+    /// home bodies the plugin books when it answers. One of the pair is then captured (no body
+    /// stands), and the next census, with nobody near, orders its body spawned at the lair.
+    #[test]
+    fn a_census_is_answered_with_adopt_discard_and_spawn_lines() {
+        let dir = tmpdir("dragons-census");
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        j.module_mask = MODULES;
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        j.dragon_obs(&O::LairFound(db::LairFound {
+            lair: LAIR,
+            late: false,
+            placed: false,
+            dimension: dim,
+            species: Species::Fire,
+            kind: LairKind::Roost,
+            min: (HOME.0 - 30, 60, HOME.2 - 30),
+            max: (HOME.0 + 30, 140, HOME.2 + 30),
+            home: HOME,
+            row: Default::default(),
+        }));
+        j.idle();
+        let before = j.iaf.len();
+        j.dragon_obs(&lair_census(
+            1,
+            dim,
+            vec![
+                stray((0xD1, 0xC), 9, 60),
+                stray((0xD1, 0xA), 0, 60),
+                stray((0xD1, 0xB), 5, 60),
+            ],
+        ));
+        j.idle();
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        let lines: Vec<&D> = j.iaf[before..].iter().map(|(_, c)| c).collect();
+        let kinds: Vec<&str> = lines
+            .iter()
+            .map(|c| match c {
+                D::Discard(_) => "discard",
+                D::Adopt(_) => "adopt",
+                D::Materialize(_) => "materialize",
+                _ => "other",
+            })
+            .collect();
+        assert_eq!(kinds, ["discard", "adopt", "adopt"], "removals first, then adoptions");
+        let D::Discard(x) = lines[0] else { unreachable!() };
+        assert_eq!((x.entity, x.reason), ((0xD1, 0xC), db::DISCARD_LAIR_FULL), "the farthest of three");
+        let adopts: Vec<db::Adopt> = lines
+            .iter()
+            .filter_map(|c| if let D::Adopt(a) = c { Some(*a) } else { None })
+            .collect();
+        let entities: Vec<_> = adopts.iter().map(|a| a.entity).collect();
+        assert_eq!(entities, [(0xD1, 0xA), (0xD1, 0xB)], "the nearer two, nearest first");
+        for a in &adopts {
+            assert_eq!(a.flags, db::ADOPT_HAS_HOME | db::ADOPT_HOME_BODY);
+            assert_eq!(a.home, HOME);
+        }
+        // The plugin's answers book the bodies (H3).
+        let (bodies, occupants) = e.with_dragons(|d, _| {
+            let mut b: Vec<_> = d.dragons.iter().filter_map(|(_, x)| x.body).collect();
+            b.sort();
+            (b, d.lairs[0].occupants.len())
+        });
+        assert_eq!(bodies, [(0xD1, 0xA), (0xD1, 0xB)]);
+        assert_eq!(occupants, 2);
+
+        // One of the pair is captured: nothing stands for it, and an unwatched census owes it a body.
+        j.dragon_obs(&captured(adopts[0].agent, adopts[0].epoch, dim, 400.0));
+        j.idle();
+        assert_eq!(e.with_dragons(|d, _| d.dragons.iter().filter(|(_, x)| x.body.is_some()).count()), 1);
+        let before = j.iaf.len();
+        j.dragon_obs(&lair_census(2, dim, vec![stray((0xD1, 0xB), 5, 60)]));
+        j.idle();
+        j.idle();
+        let spawned: Vec<db::Materialize> = j.iaf[before..]
+            .iter()
+            .filter_map(|(_, c)| if let D::Materialize(m) = c { Some(*m) } else { None })
+            .collect();
+        assert_eq!(spawned.len(), 1, "one owed body");
+        assert_eq!(spawned[0].agent, adopts[0].agent);
+        assert_ne!(spawned[0].flags & db::MAT_HOME_BODY, 0);
+        assert_ne!(spawned[0].flags & db::MAT_SLEEPING, 0);
+        assert_eq!(e.with_dragons(|d, _| d.dragons.iter().filter(|(_, x)| x.body.is_some()).count()), 2);
+        assert_eq!(e.dragon_stats().0.home_spawns, 1);
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// A reset hands a lair's bodies to the new engine (EQC127, EQC135): the ledger's row for the
+    /// lair lists the home body's UUID (K 2), core keeps it through the reinstall guard's reset,
+    /// and the new engine, meeting the lair again, expects the body, has no wait, and adopts the
+    /// body its census finds as the lair's occupant with its pressure intact.
+    #[test]
+    fn a_reset_hands_a_lairs_bodies_to_the_new_engine() {
+        use rtsim_kernel::sites::SiteKind;
+        let dir = tmpdir("dragons-bodies");
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        j.module_mask = MODULES;
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        let found = |dim| {
+            O::LairFound(db::LairFound {
+                lair: LAIR,
+                late: false,
+                placed: false,
+                dimension: dim,
+                species: Species::Fire,
+                kind: LairKind::Roost,
+                min: (HOME.0 - 30, 60, HOME.2 - 30),
+                max: (HOME.0 + 30, 140, HOME.2 + 30),
+                home: HOME,
+                row: Default::default(),
+            })
+        };
+        j.dragon_obs(&found(dim));
+        j.idle();
+        j.dragon_obs(&lair_dragon((0xD1, 0x1), dim, 60));
+        j.idle();
+        j.idle();
+        assert_eq!(adoptions(&j).len(), 1);
+        let row = j.sites.row(SiteKind::Lair, LAIR).expect("the lair's row").clone();
+        assert_eq!(row.k, 2, "a lair's row lists bodies");
+        assert_eq!(row.count, 1);
+        assert_eq!(row.bodies.home, [(0xD1, 0x1)], "the home body's UUID is in the row");
+
+        let left_at = j.game_time;
+        let saved = j.world_save();
+        e.close(true, Duration::from_secs(5)).unwrap();
+        let mut reset = WorldSave::fresh();
+        reset.dict = saved.dict;
+        reset.sites = saved.sites;
+        reset.sites.gap();
+        let dir = tmpdir("dragons-bodies-reset");
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), reset);
+        j.module_mask = MODULES;
+        j.game_time = left_at + 3 * 24_000;
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        j.dragon_obs(&found(dim));
+        j.idle();
+        j.idle();
+        let (expect, vacant, occupants) = e.with_dragons(|d, _| {
+            let l = &d.lairs[d.lair_of_key(LAIR).expect("found again") as usize];
+            (l.expect.clone(), l.vacant_since.is_some(), l.occupants.len())
+        });
+        assert_eq!(expect, [(0xD1, 0x1)], "the new engine expects the row's body");
+        assert!(vacant && occupants == 0, "nobody is counted until the body is seen");
+        j.dragon_obs(&lair_census(1, dim, vec![stray((0xD1, 0x1), 0, 60)]));
+        j.idle();
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        let a = adoptions(&j);
+        assert_eq!(a.len(), 1, "the saved body is adopted: {a:?}");
+        let (expect, vacant, occupants) = e.with_dragons(|d, _| {
+            let l = &d.lairs[d.lair_of_key(LAIR).expect("found again") as usize];
+            (l.expect.clone(), l.vacant_since.is_some(), l.occupants.len())
+        });
+        assert!(expect.is_empty() && !vacant && occupants == 1);
         let (s, _, _) = e.dragon_stats();
         assert_eq!((s.respawns, s.heirs_sent), (0, 0), "nobody minted: {s:?}");
         e.close(true, Duration::from_secs(5)).unwrap();
@@ -5686,7 +5863,7 @@ mod ships {
     /// index, and both the dragon and a ship enter the player's view through it.
     #[test]
     fn dragons_and_ships_see_a_player_through_one_area() {
-        use rtsim_ecology::boundary::{self as db, Cmd as D, Obs as DO, SpawnKind};
+        use rtsim_ecology::boundary::{self as db, Cmd as D, Obs as DO};
         use rtsim_ecology::dragon::LairKind;
         use rtsim_ecology::species::{Gender, Species};
         let dir = tmpdir("shared-area");

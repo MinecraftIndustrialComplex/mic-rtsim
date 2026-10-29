@@ -197,11 +197,7 @@ impl Dragons {
                 .total_cmp(&dist(self, &c.bodies[b]))
                 .then(a.cmp(&b))
         });
-        let mut room = self
-            .tun
-            .home_bodies_max
-            .saturating_sub(occupants.len())
-            .max(0);
+        let mut room = self.tun.home_bodies_max.saturating_sub(occupants.len());
         let mut adoptable: Vec<usize> = Vec::new();
         for i in strays {
             let u = c.bodies[i].entity;
