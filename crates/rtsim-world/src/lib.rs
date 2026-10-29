@@ -37,6 +37,7 @@ pub mod raids;
 pub mod ribbits;
 pub mod synth;
 pub mod topology;
+pub mod villages;
 pub mod works;
 pub mod world;
 
@@ -47,4 +48,5 @@ pub use interest::{PlayerState, Viewer, Visible};
 pub use lanes::{Cut, LaneSpec};
 pub use observe::Side;
 pub use ribbits::{BandView, PlaceHouse, SentimentSnapshot, SpawnResident, identity_op};
+pub use villages::{Arrive, VillageRow};
 pub use world::{CaravanId, Cause, Command, NodeData, Outside, Stats, TraceRow, Via, World};

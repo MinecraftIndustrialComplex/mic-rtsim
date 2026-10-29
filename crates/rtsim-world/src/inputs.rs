@@ -39,7 +39,8 @@ pub enum Input {
         pop: u32,
         resources: Vec<(u16, Amount)>,
     },
-    /// A census changed a village's population.
+    /// A test's census changed a village's population: the legacy census, which only sets the
+    /// market's pop (kept for scripted worlds).
     Population { key: u64, pop: u32 },
     /// A resident's trade, as the bridge reported it.
     Trade {
@@ -126,6 +127,17 @@ pub enum Input {
     /// TALKED: a player talked with one of a village's ribbits (TK2); the village's sentiment toward
     /// them rises by `bridge::TALK_CREDIT`.
     Talked { key: u64, player: Uuid },
+    /// A village census (slice S6, EQC150): `residents` counted, `beds` found, and `complete` when
+    /// Java saw every chunk of the village's reach with its entities, so a count below the sim's
+    /// is believed.
+    Census {
+        key: u64,
+        residents: u32,
+        beds: u32,
+        complete: bool,
+    },
+    /// The bridge answered a resident booking: placed, or not (EQC162).
+    ResidentResult { op: u64, placed: bool },
 }
 
 /// An input and the world tick it was applied at.
@@ -201,9 +213,33 @@ pub fn apply(w: &mut World, nodes: &mut BTreeMap<u64, usize>, input: &Input, at:
             out.node = Some(i);
         }
         Input::Population { key, pop } => match nodes.get(key) {
-            Some(&i) => w.set_population(i, (*pop).max(1), at),
+            Some(&i) => {
+                w.set_population(i, (*pop).max(1), at);
+                if let Some(row) = w.villages.get_mut(&i) {
+                    row.members = (*pop).max(1);
+                }
+            }
             None => out.refused = true,
         },
+        Input::Census {
+            key,
+            residents,
+            beds,
+            complete,
+        } => match nodes
+            .get(key)
+            .copied()
+            .filter(|&i| w.villages.contains_key(&i))
+        {
+            Some(i) => {
+                w.census_village(i, *residents, *beds, *complete, at);
+                out.node = Some(i);
+            }
+            None => out.refused = true,
+        },
+        Input::ResidentResult { op, placed } => {
+            out.refused = !w.resident_result(*op, *placed, at);
+        }
         Input::Trade {
             key,
             player: p,
@@ -334,6 +370,9 @@ pub fn apply(w: &mut World, nodes: &mut BTreeMap<u64, usize>, input: &Input, at:
                 return out;
             };
             w.village_report(i, a, k, at);
+            if *kind == 8 {
+                w.village_killed(i, at);
+            }
             out.node = Some(i);
         }
         Input::MarkBase {
@@ -641,6 +680,23 @@ impl Logged {
                 w.u64(*key);
                 put_uuid(w, player);
             }
+            Input::Census {
+                key,
+                residents,
+                beds,
+                complete,
+            } => {
+                w.u8(22);
+                w.u64(*key);
+                w.u32(*residents);
+                w.u32(*beds);
+                w.u8(u8::from(*complete));
+            }
+            Input::ResidentResult { op, placed } => {
+                w.u8(23);
+                w.u64(*op);
+                w.u8(u8::from(*placed));
+            }
         }
     }
 
@@ -763,6 +819,16 @@ impl Logged {
                 key: r.u64()?,
                 player: get_uuid(r)?,
             },
+            22 => Input::Census {
+                key: r.u64()?,
+                residents: r.u32()?,
+                beds: r.u32()?,
+                complete: r.u8()? != 0,
+            },
+            23 => Input::ResidentResult {
+                op: r.u64()?,
+                placed: r.u8()? != 0,
+            },
             t => return Err(CodecError::Invalid(format!("phase 1 input tag {t}"))),
         };
         Ok(Logged { at, input })
@@ -872,6 +938,22 @@ mod tests {
                 tribute: true,
             },
             Input::Talked { key: 7, player: p },
+            Input::Census {
+                key: 7,
+                residents: 0,
+                beds: 12,
+                complete: true,
+            },
+            Input::Census {
+                key: 7,
+                residents: 3,
+                beds: 0,
+                complete: false,
+            },
+            Input::ResidentResult {
+                op: 0xAB,
+                placed: false,
+            },
         ];
         let mut w = Writer::new();
         for (i, input) in inputs.iter().enumerate() {
