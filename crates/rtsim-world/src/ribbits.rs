@@ -291,9 +291,13 @@ impl World {
         {
             return;
         }
-        let ok = self.prosperous(node);
+        let refill = self.can_refill(node);
+        let ok = (self.prosperous(node) || (refill && !self.cfg.ribbit_refill_needs_prosperity))
+            && !self.deserted(node);
         let g = self.growth.entry(node).or_default();
-        if g.houses >= self.cfg.growth_max_houses {
+        // The ceiling of houses stops building, not refilling (EQC165): a wiped village at its
+        // ceiling still fills the houses it has.
+        if g.houses >= self.cfg.growth_max_houses && !refill {
             return;
         }
         match (ok, g.since) {
@@ -320,7 +324,20 @@ impl World {
         if g.stamp != stamp || g.since.is_none() {
             return;
         }
-        if !self.prosperous(node) {
+        let refill = self.can_refill(node);
+        if self.deserted(node)
+            || !(self.prosperous(node) || (refill && !self.cfg.ribbit_refill_needs_prosperity))
+        {
+            let g = self.growth.entry(node).or_default();
+            g.since = None;
+            g.stamp += 1;
+            return;
+        }
+        if refill {
+            self.refill(node, at);
+            return;
+        }
+        if g.houses >= self.cfg.growth_max_houses {
             let g = self.growth.entry(node).or_default();
             g.since = None;
             g.stamp += 1;
@@ -355,16 +372,81 @@ impl World {
             0,
             i64::from(houses),
         );
-        // The population steps up now (P17), so the market stays piecewise linear: only its
-        // targets move.
-        let pop = self.nodes[node].local.pop + self.cfg.growth_pop_per_house;
-        self.set_population(node, pop, at);
+        if self.villages.contains_key(&node) {
+            // Pop on spawn (EQC165): the village's count rises when the bridge answers that the
+            // resident exists, not when the house is ordered.
+            let per = u16::try_from(self.cfg.growth_pop_per_house).unwrap_or(1);
+            let row = self.villages.get_mut(&node).expect("a row");
+            row.pending_houses = row.pending_houses.saturating_add(per);
+            row.owed = row.owed.saturating_add(per);
+            if row.owed_at == u64::MAX {
+                row.owed_at = at.0;
+            }
+        } else {
+            // The population steps up now (P17), so the market stays piecewise linear: only its
+            // targets move.
+            let pop = self.nodes[node].local.pop + self.cfg.growth_pop_per_house;
+            self.set_population(node, pop, at);
+        }
         let g = self.growth.entry(node).or_default();
         g.houses = houses;
         g.since = None;
         g.stamp += 1;
         self.stats.houses += 1;
+        self.recompute_k(node);
         self.market_event(node, at, Cause::Growth);
+    }
+
+    /// Whether a Ribbit village has a house with no resident booked: seen alive, one or more in
+    /// it, fewer residents and bookings than houses (EQC165).
+    pub(crate) fn can_refill(&self, node: usize) -> bool {
+        self.cfg.renewal
+            && self.cfg.ribbit_refill
+            && self.villages.get(&node).is_some_and(|r| {
+                r.seen && r.members >= 1 && r.members + u32::from(r.owed) < u32::from(r.k)
+            })
+    }
+
+    /// A village the engine has seen alive and nobody lives in: it is settled first, and builds
+    /// nothing until somebody is there (EQC167).
+    pub(crate) fn deserted(&self, node: usize) -> bool {
+        self.villages.get(&node).is_some_and(|r| r.seen && r.members == 0)
+    }
+
+    /// A resident into a house that stands empty, at the village's meeting point (EQC165), instead
+    /// of a new house. The clock starts again, as after a house.
+    fn refill(&mut self, node: usize, at: Tick) {
+        let key = self.nodes[node].key;
+        let row = self.villages.get_mut(&node).expect("a row");
+        row.serial += 1;
+        row.owed = row.owed.saturating_add(1);
+        if row.owed_at == u64::MAX {
+            row.owed_at = at.0;
+        }
+        let serial = row.serial;
+        let seed = StreamKey::new(
+            self.cfg.seed,
+            crate::villages::SYS_VILLAGE,
+            key,
+        )
+        .block(u64::from(serial), 0)[0];
+        let op = identity_op(seed, 1);
+        self.outbox.push(Command::SpawnResident(SpawnResident {
+            op,
+            village: key,
+            house: 0,
+            body: Body::RibbitResident,
+            arrive: crate::villages::Arrive::Refill,
+        }));
+        self.resident_ops.insert(op, (node, false));
+        self.stats.refills += 1;
+        let g = self.growth.entry(node).or_default();
+        g.since = None;
+        g.stamp += 1;
+        // A market event restarts the clock, as after a house.
+        self.market_event(node, at, Cause::Growth);
+        // The booking counts toward the settlers' threshold (EQC159).
+        self.reconsider(node, at);
     }
 
     /// Sets a node's population: the settlement, the market's households and targets.
@@ -399,6 +481,9 @@ impl World {
         for k in 0..self.cfg.growth_pop_per_house {
             // The resident's identity: its house and its place in it.
             let rop = identity_op(op, u64::from(k) + 1);
+            if self.villages.contains_key(&node) {
+                self.resident_ops.insert(rop, (node, true));
+            }
             self.outbox.push(Command::SpawnResident(SpawnResident {
                 op: rop,
                 village,

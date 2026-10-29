@@ -149,11 +149,15 @@ impl World {
             row.seen_r = residents;
             row.seen |= residents > 0;
             row.peak = row.peak.max(u16::try_from(residents).unwrap_or(u16::MAX));
+            let k_before = row.k;
             if !ribbit {
                 row.k = u16::try_from(beds.min(k_max)).unwrap_or(u16::MAX);
             }
             row.loaded_until = loaded_until;
             self.recompute_k(i);
+            if self.villages[&i].k != k_before {
+                self.breed_cancel(i);
+            }
             // A human village's bookings are in its count; a Ribbit village's are not, until the
             // bridge answers them (EQC162).
             let target = if ribbit { residents } else { residents + owed };
@@ -220,6 +224,7 @@ impl World {
             return;
         }
         row.members = members;
+        self.breed_cancel(i);
         self.set_population(i, members.max(1), at);
         self.market_event(i, at, Cause::Population);
     }
@@ -345,6 +350,65 @@ impl World {
             row.wait_stamp += 1;
             row.wait_due = u64::MAX;
         }
+        self.breed_ensure(i, at);
+        if self.is_ribbit(i) {
+            // Its growth clock may have a refill to run, or none left (EQC165).
+            self.growth_check(i, at);
+        }
+    }
+
+    /// Whether a human village is growing by the sim's steps: seen alive, a pair or more in it,
+    /// beds free (EQC163).
+    fn breeds(&self, i: usize) -> bool {
+        let r = &self.villages[&i];
+        self.cfg.renewal
+            && !self.is_ribbit(i)
+            && r.seen
+            && r.members >= MIN_PAIR
+            && r.members < u32::from(r.k)
+    }
+
+    /// Books the next growth step when the village breeds and none is booked, and drops one it no
+    /// longer needs. The exponential wait is memoryless, so a fresh draw at the new count is exact.
+    fn breed_ensure(&mut self, i: usize, at: Tick) {
+        let want = self.breeds(i);
+        let row = self.villages.get_mut(&i).expect("a row");
+        if !want {
+            if row.breed_due != u64::MAX {
+                row.breed_stamp += 1;
+                row.breed_due = u64::MAX;
+            }
+            return;
+        }
+        if row.breed_due != u64::MAX {
+            return;
+        }
+        row.serial += 1;
+        let (m, k) = (f64::from(row.members), f64::from(row.k));
+        let rate = self.cfg.village_growth_per_day * m * (1.0 - m / k);
+        if rate <= 0.0 {
+            return;
+        }
+        let key = self.nodes[i].key;
+        let row = self.villages.get_mut(&i).expect("a row");
+        let draw = StreamKey::new(self.cfg.seed, SYS_VILLAGE, key).block(u64::from(row.serial), 1)[0];
+        let u = ((draw >> 11) as f64 + 1.0) / (1u64 << 53) as f64;
+        let ticks = ((-u.ln() / rate) * TICKS_PER_DAY as f64).round().max(1.0) as u64;
+        let due = at.0.saturating_add(ticks);
+        row.breed_stamp += 1;
+        row.breed_due = due;
+        let stamp = row.breed_stamp;
+        self.schedule(Tick(due), Ev::Breed { node: i, stamp });
+    }
+
+    /// A village's count or K changed: the booked growth step is for the old one.
+    fn breed_cancel(&mut self, i: usize) {
+        if let Some(row) = self.villages.get_mut(&i)
+            && row.breed_due != u64::MAX
+        {
+            row.breed_stamp += 1;
+            row.breed_due = u64::MAX;
+        }
     }
 
     /// The settlers' wait ran out (EQC160).
@@ -448,7 +512,45 @@ impl World {
 
     /// A growth step is due (EQC163).
     pub(crate) fn breed_due(&mut self, node: usize, stamp: u32, at: Tick) {
-        let _ = (node, stamp, at);
+        let Some(row) = self.villages.get_mut(&node) else {
+            return;
+        };
+        if row.breed_stamp != stamp || row.breed_due == u64::MAX {
+            return;
+        }
+        row.breed_due = u64::MAX;
+        if !self.breeds(node) {
+            return;
+        }
+        if self.villages[&node].loaded_until > at.0 {
+            // Loaded: vanilla's breeding is what runs there (EQC164). Draw the next wait.
+            self.breed_ensure(node, at);
+            return;
+        }
+        let row = self.villages.get_mut(&node).expect("a row");
+        row.serial += 1;
+        let (serial, members) = (row.serial, row.members);
+        row.owed = row.owed.saturating_add(1);
+        if row.owed_at == u64::MAX {
+            row.owed_at = at.0;
+        }
+        let key = self.nodes[node].key;
+        let seed = StreamKey::new(self.cfg.seed, SYS_VILLAGE, key).block(u64::from(serial), 0)[0];
+        let op = identity_op(seed, 1);
+        self.outbox.push(Command::SpawnResident(SpawnResident {
+            op,
+            village: key,
+            house: 0,
+            body: Body::VillagerResident,
+            arrive: Arrive::Growth,
+        }));
+        self.resident_ops.insert(op, (node, false));
+        self.stats.grown += 1;
+        let (place, id) = (self.node_at(node, at), self.node_id(node));
+        self.tape
+            .event(rtsim_archive::kinds::SETTLE_GREW, place, id, 0, 1);
+        self.set_members(node, members + 1, at);
+        self.reconsider(node, at);
     }
 
     /// A village's pressure now.

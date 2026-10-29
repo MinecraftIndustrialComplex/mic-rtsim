@@ -91,6 +91,9 @@ fn prosperous_ribbit_villages_grow_a_house_at_a_time() {
     cfg.genesis = Genesis::AtTarget;
     cfg.growth_after_days = 3;
     cfg.growth_max_houses = 2;
+    // This is P17's rule: the pop steps up at the order. Slice S6's pop on spawn has its own tests
+    // (`village_growth.rs`).
+    cfg.renewal = false;
     let (mut w, ids) = synth::build(cfg, true);
     let pops: Vec<u32> = w.nodes.iter().map(|n| n.local.pop).collect();
     let bread_eaten: Vec<i64> = (0..w.nodes.len())
