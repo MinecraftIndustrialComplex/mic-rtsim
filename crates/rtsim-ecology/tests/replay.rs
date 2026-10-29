@@ -166,6 +166,7 @@ fn materialized_of(agent: u64, epoch: u32, entity: (u64, u64)) -> Obs {
         epoch,
         dimension: 0,
         entity,
+        home: false,
     })
 }
 
@@ -203,6 +204,8 @@ fn died(agent: u64, epoch: u32) -> Obs {
         killer: PLAYER,
         dimension: 0,
         pos: (120.0, 80.0, -40.0),
+        entity: (0, 0),
+        lair: 0,
     })
 }
 
