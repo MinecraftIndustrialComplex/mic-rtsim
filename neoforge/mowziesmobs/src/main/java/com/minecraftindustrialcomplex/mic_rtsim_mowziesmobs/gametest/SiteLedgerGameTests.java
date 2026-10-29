@@ -204,6 +204,21 @@ public final class SiteLedgerGameTests {
                 .thenWaitUntil(waits.engine(() -> check("an engine save covers the journal through " + upTo[0], SiteTestHooks.savedThrough(upTo[0]))));
     }
 
+    /**
+     * Steps after a gap's restart: the budget of the logic waits starts again. {@link SiteTestHooks#gapRestart} moves the game
+     * clock on by the gap, and a logic wait counts the test's ticks (the game's since the test began) from the last chunk wait's
+     * end ({@link ChunkWait#logic}): a gap of a day or three is past any budget at once, and the first failing poll of the next
+     * wait ends the test. The test's tick count is read at the start of each tick, so the jump shows from the tick after the
+     * restart's: wait for it, then a chunk wait (the den's chunks are forced and stand through the restart, so it passes at once)
+     * marks the tick again.
+     */
+    private static GameTestSequence clockMoved(GameTestSequence s, ChunkWait waits, GameTestHelper helper, Far far) {
+        long[] at = new long[1];
+        return s.thenExecute(() -> at[0] = helper.getTick())
+                .thenWaitUntil(() -> check("the tick after the restart", helper.getTick() > at[0]))
+                .thenWaitUntil(waits.chunks(far.ready()));
+    }
+
     // ---- 1: a plain reset ------------------------------------------------------------------------
 
     /**
@@ -319,8 +334,9 @@ public final class SiteLedgerGameTests {
                     t[0] = level.getGameTime();
                     check("the guard reset the sim", SiteTestHooks.gapRestart(server, gap) != null);
                     check("a session runs after the reinstall: " + RtsimSession.startFailure(), RtsimSession.current() != null);
-                })
-                .thenWaitUntil(waits.engine(() -> check("the new engine has the den's FACTION_FOUND", !ConflictKit.factionsFound(den.faction).isEmpty())))
+                });
+        s = clockMoved(s, waits, helper, far);
+        s.thenWaitUntil(waits.engine(() -> check("the new engine has the den's FACTION_FOUND", !ConflictKit.factionsFound(den.faction).isEmpty())))
                 .thenExecute(() -> {
                     int flags = tailFlags(den.faction);
                     check("its tail carries the row, waiting, and GAP (flags " + flags + ")",
@@ -413,8 +429,9 @@ public final class SiteLedgerGameTests {
                     t[0] = level.getGameTime();
                     check("the guard reset the sim", SiteTestHooks.gapRestart(server, DAY) != null);
                     check("a session runs after the reinstall: " + RtsimSession.startFailure(), RtsimSession.current() != null);
-                })
-                .thenWaitUntil(waits.engine(() -> check("the new engine has the grove's FACTION_FOUND", !ConflictKit.factionsFound(g.faction).isEmpty())))
+                });
+        s = clockMoved(s, waits, helper, far);
+        s.thenWaitUntil(waits.engine(() -> check("the new engine has the grove's FACTION_FOUND", !ConflictKit.factionsFound(g.faction).isEmpty())))
                 .thenExecute(() -> {
                     int flags = tailFlags(g.faction);
                     check("its tail carries the row and GAP (flags " + flags + ")", (flags & ROW) != 0 && (flags & GAP) != 0);

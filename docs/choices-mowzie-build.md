@@ -17351,3 +17351,36 @@ sweep mixin, the flake fixes MZB-1100 to MZB-1104) into this branch, commit 24fb
   `rtsim` with the archive and `data/mic_rtsim_journal.dat`. The header in `tests/fixtures.rs` names the run and keeps the history.
   The ledger file `data/mic_rtsim_sites.dat` is not part of the fixtures (the viewer reads the pages). `rtsim-view` and `rtsim-host`
   pass on them (`fixtures`, `hashes`, `host`).
+- **MZB-1040** (core `aColumnFormsAgainAfterTheModuleIsSwitchedOffAndOn`, "it was materialized and not rejected (materialized 0,
+  rejected 0)"): *a flake, not found.* It failed once in the first core round at 129de219 (`target/m12m-core.log`) and passed in the
+  rerun of the same code (`target/m12m-core-rerun.log`, All 168 required tests passed). The record M11 recorded as MZB-961's
+  neighbour in the same test (the march test's waits) is not this one: here the band's `BAND_MATERIALIZED` count after the switch-on
+  had not risen when the check ran, with the column placed (the wait before it passed). The test is M10c's and the merge touched
+  neither it nor the code it reads (`ConflictBridge`'s materialize path is M12a's `credit` and `journalFound` apart); nothing changed.
+- **MZB-1041** (create `-Psec1fx`, `glasscorpus.millstone_flour`: "measured 54.064/min, expected 46.154/min +- 7.894"): a timing
+  measure of the glass corpus under load (the round ran with other rounds' JVMs and cargo on the machine); S3 touches nothing of
+  industry or Create. See the rerun below.
+- **MZB-1042** (iceandfire `aTamedOrFarAwayPuppetLeavesTheSim`, "no killer"): *the merge of S3's design with a test of the older one.*
+  The test asserted a tamed dragon's DRAGON_DIED has no killer (the dragon records had no TAKEN, choice Z7); S3 gives a tame killer
+  kind 4 with the tamer's UUID (MZB-1010, and the slice's own `tameIsAPlayerLoss` asserts it). The test now asserts the new
+  record. Commit 162bbbaa.
+- **MZB-1043** (mowziesmobs `aCampBodysDeathIsBookedOnAMarkerAndAStraysIsNot`, "by none (1)"; and
+  `aRemoveByUuidTakesAStrayAndAnElsewhereBodyIsCountedApart`, "one recount (2)"): *two M11 tests that S3's behaviour changes, as
+  the M12a section says it does* (MZB-1014's last bullets, MZB-1015). (1) An untagged stray a census listed now journals a CAMP_DEATH of
+  its own when it dies (FLAG_STRAY, slot and generation 0, its UUID and its credit); the test counted the grove's CAMP_DEATHs and
+  read the second as the discard's "by none", so it now counts the members' deaths apart from the strays' and checks the stray's
+  record. (2) A member body hidden with its chunk outside the footprint of a camp that is in asks for a census (the hide's recount,
+  MZB-1015), and the reload from disk asks for another: `recounts` rises by 2, and the test waits for the fourth census. Both passed in a
+  `siteOnly` round (the mowziesmobs project with the other classes left out) of the merged head. Commit 22e2881a.
+- **MZB-1044** (mowziesmobs `reinstallKeepsPressure` and `uninstallLeavesHomeBodies`, "(not within 8000 ticks of the last chunk
+  wait)", at once after the restart): *a bug of M12a's own GameTests, never run before this merge* (their commit says "compiled only,
+  round 1 waits for the lead's go"). `SiteTestHooks.gapRestart` moves the game clock on by the gap (three days, one day), and a
+  logic wait counts the test's ticks, which GameTest reads from the game clock, from the last chunk wait's end: a gap above the
+  budget (8000) fails the first failing poll of the next wait. The new engine's SITE_STATEs were applied all along (the ledger's
+  counter rose from 9 to 35 in the log). The test's tick count is read at the start of each tick, so the jump shows from the tick
+  after the restart's: `clockMoved` waits for that tick and a chunk wait (the den's chunks are forced and stand) marks it again.
+  The three plain-reset tests were never affected. All six of the project's tests passed in a `siteOnly` round.
+- **MZB-1045** (the uninstall test's party, MZB-1016): *the gap stands.* `uninstallLeavesHomeBodies` still has no party out at the
+  uninstall, since only the engine's own decision sends one and a GameTest cannot ask for it on the real engine; the Rust tests
+  (`tests/camp.rs`, members away waiting the cap) cover it.
+
