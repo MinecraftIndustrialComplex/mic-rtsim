@@ -61,6 +61,8 @@ pub const RIBBIT_HOUSES: [&str; 14] = [
 pub const RIBBIT_PROCESSORS: &str = "ribbits:main";
 /// A ribbit resident's entity type.
 pub const RIBBIT_BODY: &str = "ribbits:ribbit";
+/// The body of a villager a human village's settlers or growth bring (slice S6, EQC169).
+pub const HUMAN_BODY: &str = "minecraft:villager";
 
 /// Group kinds the bridge knows (BodyKinds, the Ribbits plugin).
 pub const HUMAN_CARAVAN: &str = "mic_rtsim:human_caravan";
