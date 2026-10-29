@@ -1480,6 +1480,49 @@ fn phase1_puppet_records_replayed_after_a_crash_are_still_booked() {
     e.close(true, Duration::from_secs(5)).unwrap();
 }
 
+/// MZB-1105, what the live caravan GameTest stands on: a puppet's robbery is booked to the caravan's
+/// row, so it is booked only while the row is in the world. The GameTest asks again every ten ticks
+/// until it sees the group, and each ask is a quarter day of the world's clock (`Phase1Advance`); an
+/// ask sent while the spawn was still on its way carried the clock past the end of the caravan's trip,
+/// the row went home and was removed while the pinned puppet still stood, and the engine refused the
+/// robbery of it (no row to take the goods from): "the engine booked the robbery" failed in core
+/// rounds. A robbery with no days between the spawn and the robbery is booked (the test above).
+#[test]
+fn phase1_a_robbery_after_the_caravans_trip_is_over_has_no_row_and_is_not_booked() {
+    let dir = tmpdir("p1late");
+    let e = engine(&dir, 256 * 1024);
+    let mut j = Java::open(e.clone(), WorldSave::fresh());
+    let agent = 0xCA4C_u64;
+    let cargo = phase1_caravan(&e, &mut j, agent);
+    let (member, item, n) = cargo
+        .iter()
+        .find(|(_, i, _)| i != EMERALD)
+        .cloned()
+        .unwrap_or_else(|| cargo[0].clone());
+    let before = p1_stat(&e, 5);
+    // Eight more asks of the GameTest's (two days): any trip on the three villages' roads, out and
+    // home again (about 4,000 ticks a leg), is over.
+    for _ in 0..8 {
+        e.order(vec![Order::Phase1Advance(6_000)]).unwrap();
+        j.idle();
+    }
+    j.robbed(
+        agent,
+        1,
+        member,
+        &[(&item, n.min(3))],
+        wire::JAVA_OP_BIT | 0x7b02,
+    );
+    j.idle();
+    assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+    assert_eq!(
+        p1_stat(&e, 5),
+        before,
+        "the caravan's row went home two days ago: there is nothing to rob, so no robbery is counted"
+    );
+    e.close(true, Duration::from_secs(5)).unwrap();
+}
+
 // ---- phase 1 switched off (RP-300) ------------------------------------------------------------------
 
 /// The rule (docs/choices-journal-barrier.md RP-300): the switch gates only new decisions; every
