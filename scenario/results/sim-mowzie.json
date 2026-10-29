@@ -44,12 +44,12 @@
         {
           "name": "a save loads to the same state",
           "ok": true,
-          "detail": "state hash b57ee5a7039a4e02"
+          "detail": "state hash f5ef94a2b81f294d"
         },
         {
           "name": "4 legs a day",
           "ok": true,
-          "detail": "4 legs a day: settles 17.2, Notice 11.6, Raid never, 140 never, Invasion never, pushes 19; wakes 2.09 a day; first seed state de19506420d461be"
+          "detail": "4 legs a day: settles 17.2, Notice 11.6, Raid never, 140 never, Invasion never, pushes 19; wakes 2.09 a day; first seed state 8cff2a0cb68069e9"
         },
         {
           "name": "the raids aim at the track and the invasion at the line's station",
@@ -69,7 +69,7 @@
         {
           "name": "12 legs a day",
           "ok": true,
-          "detail": "12 legs a day: settles 86.0, Notice 3.1, Raid 17.0, 140 never, Invasion never, pushes 24; wakes 5.46 a day; first seed state 18efa0a397111fb0"
+          "detail": "12 legs a day: settles 86.0, Notice 3.1, Raid 17.0, 140 never, Invasion never, pushes 24; wakes 5.46 a day; first seed state f7a49db2a8953489"
         },
         {
           "name": "the raids aim at the track and the invasion at the line's station",
@@ -89,7 +89,7 @@
         {
           "name": "24 legs a day",
           "ok": true,
-          "detail": "24 legs a day: settles 189.9, Notice 1.9, Raid 6.5, 140 14.3, Invasion 21.6, pushes 30; wakes 5.24 a day; first seed state 5694c166ae6a3ca2"
+          "detail": "24 legs a day: settles 189.9, Notice 1.9, Raid 6.5, 140 14.3, Invasion 21.6, pushes 30; wakes 5.24 a day; first seed state 538b6d9a850ca3a1"
         },
         {
           "name": "the raids aim at the track and the invasion at the line's station",
@@ -109,7 +109,7 @@
         {
           "name": "50 legs a day",
           "ok": true,
-          "detail": "50 legs a day: settles 415.1, Notice 1.2, Raid 3.5, 140 5.9, Invasion 11.2, pushes 37; wakes 5.22 a day; first seed state b5d5abdd6ad3defa"
+          "detail": "50 legs a day: settles 415.1, Notice 1.2, Raid 3.5, 140 5.9, Invasion 11.2, pushes 37; wakes 5.22 a day; first seed state 5f575caf1a11072b"
         },
         {
           "name": "the raids aim at the track and the invasion at the line's station",
@@ -134,7 +134,7 @@
         {
           "name": "14 lines at 1.7 legs a day on one trunk (23.8)",
           "ok": true,
-          "detail": "14 lines at 1.7 legs a day on one trunk (23.8): settles 188.0, Notice 1.8, Raid 6.4, 140 14.4, Invasion 21.6, pushes 32; wakes 5.79 a day; first seed state 1d82c1f725abe7ae"
+          "detail": "14 lines at 1.7 legs a day on one trunk (23.8): settles 188.0, Notice 1.8, Raid 6.4, 140 14.4, Invasion 21.6, pushes 32; wakes 5.79 a day; first seed state 308e9fa80e75f145"
         },
         {
           "name": "a meter takes at most 6.5 rail pops a day, stale pops counted",
@@ -635,7 +635,7 @@
         {
           "name": "cut service: under 70, under 42, settles",
           "ok": true,
-          "detail": "cut to 4 legs a day: under 70 on day 21.4 (want 21.4), under 42 on day 27.9 (want 28.1), settles at 17.5 (want 17.3); peak 121.8 on day 13.1 (about 122 on 13); first seed state 8de057d64990c381"
+          "detail": "cut to 4 legs a day: under 70 on day 21.4 (want 21.4), under 42 on day 27.9 (want 28.1), settles at 17.5 (want 17.3); peak 121.8 on day 13.1 (about 122 on 13); first seed state 2ad0a56ffed5ad52"
         },
         {
           "name": "a meter takes at most 6.5 rail pops a day, stale pops counted",
@@ -665,7 +665,7 @@
         {
           "name": "stopped service: under 70, under 42, settles",
           "ok": true,
-          "detail": "stopped: under 70 on day 19.3 (want 19.2), under 42 on day 23.7 (want 23.6), settles at 0.0 (want 0); peak 120.9 on day 12.9 (about 122 on 13); first seed state e1afbd7b0fb582b7"
+          "detail": "stopped: under 70 on day 19.3 (want 19.2), under 42 on day 23.7 (want 23.6), settles at 0.0 (want 0); peak 120.9 on day 12.9 (about 122 on 13); first seed state be60f222b1a7b7aa"
         },
         {
           "name": "a meter takes at most 6.5 rail pops a day, stale pops counted",
@@ -710,12 +710,12 @@
         {
           "name": "the track moved off the circle: the grievance follows the stopped row",
           "ok": true,
-          "detail": "under 70 on day 19.3 (want 19.2), under 42 on day 23.7 (want 23.6), settles at 0.0; first seed state b739205720d7cda3"
+          "detail": "under 70 on day 19.3 (want 19.2), under 42 on day 23.7 (want 23.6), settles at 0.0; first seed state 9405972336852d3c"
         },
         {
           "name": "the track moved within the circle: the next Raid aims at the new point",
           "ok": true,
-          "detail": "raids on the track at x [(7.583333333333333, 1050), (15.166666666666666, 1000)] (days, x); the line's point at x Some(1000) (was 1050); first seed state d23cc7a0b21e137a"
+          "detail": "raids on the track at x [(7.583333333333333, 1050), (15.166666666666666, 1000)] (days, x); the line's point at x Some(1000) (was 1050); first seed state 4b19d90081bfdc49"
         }
       ],
       "rungs": [],
@@ -730,12 +730,12 @@
         {
           "name": "den A (west of the line) follows the 12-a-day row",
           "ok": true,
-          "detail": "12 legs a day: settles 86.0, Notice 3.1, Raid 17.0, 140 never, Invasion never, pushes 48; wakes 10.93 a day; first seed state 02d83669c3b7332c"
+          "detail": "12 legs a day: settles 86.0, Notice 3.1, Raid 17.0, 140 never, Invasion never, pushes 48; wakes 10.93 a day; first seed state 0adde239408e47d1"
         },
         {
           "name": "den B (east of the line) follows the 12-a-day row",
           "ok": true,
-          "detail": "12 legs a day: settles 86.0, Notice 3.1, Raid 17.0, 140 never, Invasion never, pushes 48; wakes 10.93 a day; first seed state 02d83669c3b7332c"
+          "detail": "12 legs a day: settles 86.0, Notice 3.1, Raid 17.0, 140 never, Invasion never, pushes 48; wakes 10.93 a day; first seed state 0adde239408e47d1"
         },
         {
           "name": "a den found on day 10 gets its first pass from the next train and its own meter",
@@ -775,7 +775,7 @@
         {
           "name": "a save loads to the same state",
           "ok": true,
-          "detail": "state hash 008c8159457b7f77"
+          "detail": "state hash f87b1faa3e071aba"
         },
         {
           "name": "a demand at 4 nuggets a coin, paid in full, settles it",
@@ -1121,7 +1121,7 @@
         {
           "name": "a save and load mid-wait arrives on the same tick, to the same books",
           "ok": true,
-          "detail": "state 6521908bf93c181c against 6521908bf93c181c, then [1, 0, 0, 0, 0]"
+          "detail": "state 27d035ae61709a15 against 27d035ae61709a15, then [1, 0, 0, 0, 0]"
         },
         {
           "name": "an emptied grove refills to its cap of 9 at 2 a day, its chief untouched",
@@ -1206,17 +1206,17 @@
         {
           "name": "a save with nine adopts in flight loads and ends as the run that kept going",
           "ok": true,
-          "detail": "nine adopts in flight: state 5faa920db4857190 against 5faa920db4857190, 9 lines and 9 answers booked"
+          "detail": "nine adopts in flight: state 108918dd95f3f8bb against 108918dd95f3f8bb, 9 lines and 9 answers booked"
         },
         {
           "name": "a save with a spawn in flight loads and ends as the run that kept going",
           "ok": true,
-          "detail": "a spawn in flight: state 6e92db583bf3c176 against 6e92db583bf3c176, 1 lines and 1 answers booked"
+          "detail": "a spawn in flight: state 458f3a8f7629eb07 against 458f3a8f7629eb07, 1 lines and 1 answers booked"
         },
         {
           "name": "a save with a muster's set-outs in flight loads and ends as the run that kept going",
           "ok": true,
-          "detail": "a muster's set-outs in flight: state 3c0ac97f93dd614d against 3c0ac97f93dd614d, 20 lines and 20 answers booked"
+          "detail": "a muster's set-outs in flight: state b3a0ef0a7e6c4a58 against b3a0ef0a7e6c4a58, 20 lines and 20 answers booked"
         },
         {
           "name": "a restart with adopts in flight voids them, and the next census adopts each once",
@@ -1405,8 +1405,8 @@
     },
     {
       "run": 11,
-      "built": false,
-      "slice": "the chief's travel M11",
+      "built": true,
+      "slice": "",
       "checks": [
         {
           "name": "an Invasion with its chief from a camp that is in and from one that is out: the record carries the chief, the fight is 12.6, the Umvuthi is home in its generation",
@@ -1452,6 +1452,26 @@
           "name": "the dead of an abstract fight in bodies are counted once at the recall, and across a restart",
           "ok": true,
           "detail": "(crash, band, left after the village, alive after the despawn) [(false, 8, 6, 5), (true, 8, 6, 5)]; "
+        },
+        {
+          "name": "an Invasion its Umvuthi leads, met on the road, at its fight and on its way home: each meeting sends the CHIEF_BODY and at once the chief's stack, and the plugin matches each; a walk-in sends no chief",
+          "ok": true,
+          "detail": "on the road: 1 pairs, 1 chief stacks, 1 matched, 0 missing; walk-in (fight, pairs, stacks) Some((true, (0, 0))); books hold true; at its fight: 1 pairs, 1 chief stacks, 1 matched, 0 missing; walk-in (fight, pairs, stacks) None; books hold true; on its way home: 1 pairs, 1 chief stacks, 1 matched, 0 missing; walk-in (fight, pairs, stacks) None; books hold true"
+        },
+        {
+          "name": "the Umvuthi's band home in bodies hands its chief back with the camp's memory ahead: from Gone answered DONE, from Left answered NOTHING over its standing throne body, one Umvuthi after; to a grove that is out, recalled and spawned at the next census",
+          "ok": true,
+          "detail": "Gone: set out Some(Gone), TAKE stale near the throne None, home true, HAND_BACK with the memory ahead true, answered [1], body true, one Umvuthi true; Left: set out Some(Left), TAKE stale near the throne Some(true), home true, HAND_BACK with the memory ahead true, answered [2], body true, one Umvuthi true; out: set out Some(Gone), home true, line at home false, recalled true, owed true, spawned at the census true, body true"
+        },
+        {
+          "name": "a payment to the Umvuthi's puppet on the road is tribute booked once, the payer is remembered, and the home CHIEF_BODY carries it",
+          "ok": true,
+          "detail": "memory before Some([]); tribute 9000 at the payment, 9000 after; remembered true; the home CHIEF_BODY carries the payer true; books hold true"
+        },
+        {
+          "name": "the Umvuthi's puppet killed as it floats home: one camp death, no CHIEF_KILLED, its line stale, the heir due at 12 days, and one Umvuthi body at most throughout",
+          "ok": true,
+          "detail": "HAND_BACK sent true, held while it floats true; killed true; line stale true; (falls, losses) (1, 1); slot freed true; heir after Some(12.0) days, seated true; most Umvuthi bodies 1; books hold true"
         }
       ],
       "rungs": [],
@@ -1486,12 +1506,17 @@
         {
           "name": "every party unchanged across a step has its record's position equal the engine's at every tick of the step, and a changed one at the step's end, in runs 1, 5, 10 and 11 stepped 20 ticks at a time",
           "ok": true,
-          "detail": "run 1: 3681559 steps, 1482499 unchanged party-steps (28737968 ticks), 1185 changed, 966 records (209 ending), 0 shell-steps; run 5: 769407 steps, 80934 unchanged party-steps (1617416 ticks), 79 changed, 84 records (21 ending), 0 shell-steps; run 10: 3524449 steps, 3350484 unchanged party-steps (65839122 ticks), 5626 changed, 6148 records (914 ending), 11797 shell-steps; run 11: 3097182 steps, 31903 unchanged party-steps (636849 ticks), 29 changed, 41 records (5 ending), 0 shell-steps; failures []"
+          "detail": "run 1: 3681559 steps, 1482499 unchanged party-steps (28737968 ticks), 1185 changed, 966 records (209 ending), 0 shell-steps; run 5: 769407 steps, 80934 unchanged party-steps (1617416 ticks), 79 changed, 84 records (21 ending), 0 shell-steps; run 10: 3524449 steps, 3350484 unchanged party-steps (65839122 ticks), 5626 changed, 6148 records (914 ending), 11797 shell-steps; run 11: 5040546 steps, 70769 unchanged party-steps (1405935 ticks), 66 changed, 79 records (14 ending), 0 shell-steps; failures []"
         },
         {
           "name": "a record follows each change of route, phase or count",
           "ok": true,
-          "detail": "2968 changes seen, 0 with no record in their step"
+          "detail": "2988 changes seen, 0 with no record in their step"
+        },
+        {
+          "name": "the chief's own stack (MZB-838): each away CHIEF_BODY is followed at once by its MATERIALIZE with the chief alone, and no chief stack goes without one, twice in an epoch, for a band its chief does not lead or while replaying; a band its chief leads in bodies had its stack, in runs 1, 5, 10 and 11 stepped 20 ticks at a time",
+          "ok": true,
+          "detail": "run 1: 0 away CHIEF_BODYs, 0 chief stacks; run 5: 0 away CHIEF_BODYs, 0 chief stacks; run 10: 17 away CHIEF_BODYs, 17 chief stacks; run 11: 9 away CHIEF_BODYs, 9 chief stacks; 0 failures of the chief's stack"
         },
         {
           "name": "no census ends a party: an Invasion out across ten censuses sends no ENDED, and one when it is home",

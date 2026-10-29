@@ -7191,7 +7191,7 @@ mod conflict {
     use super::*;
     use rtsim_conflict::boundary::{self as cb, Cmd as C, Obs as O};
     use rtsim_conflict::culture::PartyKind;
-    use rtsim_conflict::engine::{Party, Phase, Target};
+    use rtsim_conflict::engine::{CHIEF_SLOT, Party, Phase, SlotState, Target};
     use rtsim_conflict::{Step, synth};
     use rtsim_jni::engine::{CONFLICT_TABLE, MODULE_CONFLICT, MODULE_INDUSTRY};
     use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
@@ -15883,6 +15883,609 @@ mod conflict {
     #[test]
     fn a_capped_race_applied_after_the_late_answer_owes_the_second_raid_its_own_animals() {
         hunt_race("hunt-race-capped-after", 6, 6, false);
+    }
+
+    // ---- M11a: the grove's chief aloft, through the link (MOWZIE.md §4.5, ledger 24) ----------
+
+    /// The Umvuthi, the grove's chief, as Java names it.
+    const UMVUTHI: &str = "mic_rtsim:conflict/umvuthana/umvuthi";
+    /// Where the player waits while no band of the grove is to be in view.
+    const AWAY: (i32, i32) = (CAMP_AT.0 - 6_000, CAMP_AT.1 - 6_000);
+    /// The place the grove's Invasions go to: 600 blocks out, a day and a quarter of road.
+    const TARGET: (i32, i32) = (CAMP_AT.0 + 600, CAMP_AT.1);
+
+    /// The grove's chief slot: its state and generation.
+    fn chief_of(e: &Engine) -> Option<(SlotState, u32)> {
+        e.with_conflict(|c, _| {
+            let f = c.faction_of_key(CAMP)?;
+            c.camp(f)?.chief().map(|s| (s.state, s.generation))
+        })
+    }
+
+    /// The camp's memory: the players who paid it.
+    fn traded(e: &Engine) -> Vec<(u64, u64)> {
+        e.with_conflict(|c, _| {
+            c.faction_of_key(CAMP)
+                .and_then(|f| c.camp(f))
+                .map(|camp| camp.traded.clone())
+                .unwrap_or_default()
+        })
+    }
+
+    /// A grove that is in, its chief on its throne: [`grove`] with 12 strays, the first an
+    /// untagged Umvuthi, which the first census adopts as the chief (MZB-405). The chief's
+    /// generation.
+    fn seated_grove(name: &str) -> (std::path::PathBuf, std::sync::Arc<Engine>, Java, u32) {
+        let (dir, e, mut j) = grove(name, 12);
+        let umvuthi = j.dict_id(wire::DICT_BODY, UMVUTHI);
+        let b = &mut j.conflict_plugin.camp_world(CAMP).bodies[0];
+        b.body = umvuthi;
+        b.chief = true;
+        camp_in(&mut j);
+        camp_until(&mut j, "the Umvuthi adopted as the chief", |j| {
+            chief_of(&j.e).is_some_and(|c| c.0 == SlotState::Body)
+        });
+        let generation = chief_of(&e).expect("seated").1;
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        (dir, e, j, generation)
+    }
+
+    /// The player stands at `at`.
+    fn stand(j: &mut Java, at: (i32, i32)) {
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        j.players = vec![(
+            PLAYER,
+            dim,
+            [f64::from(at.0) + 0.5, 64.0, f64::from(at.1) + 0.5],
+        )];
+    }
+
+    /// Where the band is now.
+    fn band_at(e: &Engine, p: Handle<Party>) -> (i32, i32) {
+        e.with_conflict(|c, _| c.party_pos(p, c.now()))
+    }
+
+    /// An Invasion the seated chief leads toward [`TARGET`], ordered with the player away, and on
+    /// its road `road` ticks past its muster's end, unmet.
+    fn led_invasion(e: &Engine, j: &mut Java, road: i64) -> Handle<Party> {
+        stand(j, AWAY);
+        let p = order_to(e, j, PartyKind::Invasion, Step::Invasion, TARGET);
+        on_step(e, p, Step::Invasion);
+        assert!(
+            e.with_conflict(|c, _| c.parties[p].chief),
+            "the chief leads"
+        );
+        advance_until(j, 20, 3 * DAY, "the muster's end", |j| {
+            party(&j.e, p).is_some_and(|x| x.0 == Phase::Out)
+        });
+        let end = j.game_time + road;
+        advance_until(j, 100, road + 200, "on the road", |j| j.game_time >= end);
+        assert_eq!(party(e, p), Some((Phase::Out, false)), "on its road, unmet");
+        p
+    }
+
+    /// Every command Java applied, in order: the command buffer it came in, its kind, and what it
+    /// decoded to when it is the conflict's.
+    fn on_wire(j: &Java) -> Vec<(u64, u16, Option<&C>)> {
+        let mut conflict = cmds(j);
+        let out = j
+            .commands
+            .iter()
+            .map(|&(k, kind, _)| {
+                let c = (0x8800..=0x88FF)
+                    .contains(&kind)
+                    .then(|| conflict.next().expect("each conflict command decoded"));
+                (k, kind, c)
+            })
+            .collect();
+        assert!(conflict.next().is_none(), "each decoded command on the wire");
+        out
+    }
+
+    /// A filler: a TRAIN_ROBBED of a faction nobody has, which the fake plugin applies as nothing.
+    fn filler(n: u64) -> C {
+        C::TrainRobbed(cb::TrainRobbed {
+            faction: 0xF111,
+            train: n,
+        })
+    }
+
+    /// The bytes a command takes in a command buffer.
+    fn encoded(c: &C) -> usize {
+        let mut r = Vec::new();
+        cb::encode_cmd(0, c, &mut r);
+        r.len()
+    }
+
+    /// `count` fillers ordered as the conflict's own commands: the writer takes them ahead of
+    /// whatever the conflict decides in the next step, since a test's orders join its queue at
+    /// the step's start.
+    fn order_fillers(e: &Engine, count: usize) {
+        let unit = (0..count as u64)
+            .map(|n| {
+                let mut record = Vec::new();
+                cb::encode_cmd(0, &filler(n), &mut record);
+                Order::ConflictCommand {
+                    names: Vec::new(),
+                    record,
+                }
+            })
+            .collect();
+        e.order(unit).expect("a test engine takes the order");
+    }
+
+    /// The player stands where the band is and the hand-overs go one at a time, `fill` fillers
+    /// ordered ahead of each, until the band's away CHIEF_BODY reaches Java; one more goes if it
+    /// was the last command so far. Its index among Java's commands, and whether its command
+    /// buffer was marked CMD_FLAG_MORE (read before the buffer is used again).
+    fn meet_chief(j: &mut Java, p: Handle<Party>, fill: usize) -> (usize, bool) {
+        let agent = Party::agent(p);
+        let from = j.commands.len();
+        for _ in 0..100 {
+            let at = band_at(&j.e, p);
+            stand(j, at);
+            if fill > 0 {
+                order_fillers(&j.e, fill);
+            }
+            j.flush();
+            let found = on_wire(j)[from..].iter().position(
+                |(_, _, c)| matches!(c, Some(C::ChiefBody(b)) if b.agent == agent),
+            );
+            if let Some(n) = found {
+                let i = from + n;
+                let k = j.commands[i].0;
+                let more = j.cmd_buf(k).get_u32(wire::H_FLAGS) & wire::CMD_FLAG_MORE != 0;
+                if i + 1 == j.commands.len() {
+                    j.flush();
+                }
+                return (i, more);
+            }
+        }
+        panic!("the band's CHIEF_BODY never reached Java");
+    }
+
+    /// Asserts Java's command `i` is the band's away CHIEF_BODY (the camp's key, `agent`, health
+    /// 0, no flags, the memory `traded`) and the next on the wire its BAND_MATERIALIZE: one
+    /// epoch, BAND_CHIEF, and the chief's own stack last. The command buffers they came in.
+    fn assert_pair(j: &Java, i: usize, agent: u64, traded: &[(u64, u64)]) -> (u64, u64) {
+        let w = on_wire(j);
+        let umvuthi = j.java_id(wire::DICT_BODY, UMVUTHI).expect("Java names the Umvuthi");
+        let (k, kind, Some(C::ChiefBody(b))) = w[i] else {
+            panic!("not a CHIEF_BODY: {:?}", w[i]);
+        };
+        assert_eq!(kind, cb::CHIEF_BODY);
+        assert_eq!((b.faction, b.agent, b.health, b.flags), (CAMP, agent, 0.0, 0));
+        assert_eq!(b.traded, traded, "the camp's memory");
+        let Some(&(next, kind, Some(C::Materialize(m)))) = w.get(i + 1) else {
+            panic!(
+                "the CHIEF_BODY is not directly before a MATERIALIZE: {:?}",
+                w.get(i + 1)
+            );
+        };
+        assert_eq!(kind, cb::BAND_MATERIALIZE);
+        assert_eq!(
+            (m.agent, u64::from(m.epoch)),
+            (agent, b.epoch),
+            "one band, one epoch"
+        );
+        assert_ne!(m.flags & cb::BAND_CHIEF, 0, "BAND_CHIEF");
+        assert_eq!(
+            m.members.last(),
+            Some(&cb::Stack {
+                body: umvuthi,
+                count: 0,
+                flags: cb::MEMBER_CHIEF,
+            }),
+            "the chief's stack, last"
+        );
+        (k, next)
+    }
+
+    /// The first CAMP_RECONCILE Java applied from its command `from` on with a line for the
+    /// chief's slot: its index among Java's commands, the reconcile, and the line's index there.
+    fn chief_line_on_wire(j: &Java, from: usize) -> Option<(usize, cb::CampReconcile, usize)> {
+        on_wire(j)
+            .iter()
+            .enumerate()
+            .skip(from)
+            .find_map(|(i, (_, _, c))| match c {
+                Some(C::Reconcile(r)) => r
+                    .lines
+                    .iter()
+                    .position(|l| l.slot == CHIEF_SLOT)
+                    .map(|n| (i, r.clone(), n)),
+                _ => None,
+            })
+    }
+
+    /// Asserts the command just before Java's command `at` (a CAMP_RECONCILE of the camp's epoch
+    /// `epoch`) is a home CHIEF_BODY in the same command buffer: agent 0, that epoch, the memory
+    /// `traded`.
+    fn assert_home_body(j: &Java, at: usize, epoch: u64, traded: &[(u64, u64)]) {
+        let w = on_wire(j);
+        match w[at - 1] {
+            (k, kind, Some(C::ChiefBody(b))) => {
+                assert_eq!(kind, cb::CHIEF_BODY);
+                assert_eq!(
+                    (b.faction, b.agent, b.epoch),
+                    (CAMP, 0, epoch),
+                    "home: agent 0, the camp's epoch"
+                );
+                assert_eq!(b.traded, traded, "the camp's memory");
+                assert_eq!(k, w[at].0, "one command buffer");
+            }
+            other => panic!("no CHIEF_BODY directly before the chief's line: {other:?}"),
+        }
+    }
+
+    /// The player leaves the band: it is recalled, walks off, and its BAND_DEMATERIALIZED is
+    /// counted.
+    fn leave(j: &mut Java, p: Handle<Party>) {
+        stand(j, AWAY);
+        advance_until(j, 50, DAY, "the walk-off counted", |j| {
+            let b = books(&j.e, p);
+            !b.2 && !b.3
+        });
+    }
+
+    /// The band on its way home, unseen to 300 ticks short of its camp, then followed (the player
+    /// standing at it every 50 ticks) until it is home: embodied as it comes in.
+    fn follow_home(j: &mut Java, p: Handle<Party>) {
+        advance_until(j, 600, 4 * DAY, "on its way home", |j| {
+            party(&j.e, p).is_some_and(|x| x.0 == Phase::Home)
+        });
+        let left = j.e.with_conflict(|c, _| {
+            let home = *c.parties[p].times.last().expect("a route home");
+            home.0 as i64 - c.now().0 as i64
+        });
+        let end = j.game_time + left - 300;
+        advance_until(j, 100, left, "300 ticks short of home", |j| j.game_time >= end);
+        advance_until(j, 50, 1_000, "home, followed", |j| {
+            if party(&j.e, p).is_none() {
+                return true;
+            }
+            let at = band_at(&j.e, p);
+            stand(j, at);
+            false
+        });
+    }
+
+    /// A player's payment of `count` gold nuggets: to the chief's puppet (PAID_PUPPET, the chief's
+    /// slot, generation 0, MZB-819), or to a stray Umvuthi at the grove (PAID_STRAY, as M9's).
+    fn paid(j: &mut Java, puppet: bool, player: (u64, u64), op: u64, count: i32) -> O {
+        let item = j.dict_id(wire::DICT_ITEM, "minecraft:gold_nugget");
+        let (slot, flags) = if puppet {
+            (CHIEF_SLOT, cb::PAID_PUPPET)
+        } else {
+            (0, cb::PAID_STRAY)
+        };
+        O::ChiefPaid(cb::ChiefPaid {
+            faction: CAMP,
+            slot,
+            generation: 0,
+            flags,
+            player,
+            op: wire::JAVA_OP_BIT | op,
+            items: vec![cb::Item { item, count }],
+        })
+    }
+
+    /// P1 (MZB-801, MZB-804; ledger 24): an Invasion its Umvuthi leads is met on its road. On the
+    /// wire the band's away CHIEF_BODY (0x880A, its agent, its epoch) goes directly before its
+    /// BAND_MATERIALIZE (0x8803), in one command buffer. Met again after a recall, with fillers
+    /// ordered ahead so that the command buffer ends just after the CHIEF_BODY, the buffer is
+    /// marked CMD_FLAG_MORE and the MATERIALIZE leads the next one, nothing between: the writer
+    /// keeps the conflict's queue in order, and the plugin, which keeps a chief's memory for the
+    /// agent's next MATERIALIZE, matches both. The control: the band comes home unseen, and the
+    /// chief's SPAWN at its throne goes directly behind a home CHIEF_BODY (agent 0, the camp's
+    /// epoch), as before. With the CHIEF_BODY pushed after its MATERIALIZE (the design's planted
+    /// bug) the first meeting fails; with no chief stack (step 7's M1) no CHIEF_BODY comes.
+    #[test]
+    fn an_away_chief_body_leads_its_materialize_on_the_wire() {
+        let (_dir, e, mut j, generation) = seated_grove("aloft-wire");
+        let p = led_invasion(&e, &mut j, 4_000);
+        let agent = Party::agent(p);
+
+        // Met on its road: the pair in one command buffer, the CHIEF_BODY first.
+        let (i, _) = meet_chief(&mut j, p, 0);
+        let (k, next) = assert_pair(&j, i, agent, &[]);
+        assert_eq!(next, k, "one command buffer");
+        let epoch1 = books(&e, p).1;
+        let Some(first) = on_wire(&j)[i].2.cloned() else {
+            unreachable!()
+        };
+        leave(&mut j, p);
+
+        // Met again, the command buffer filled to end just after the CHIEF_BODY: the fillers
+        // fit with room for it, and no MATERIALIZE fits what is left.
+        let cap = j.cmd_buf(k).capacity();
+        let fill = (cap - encoded(&first)) / encoded(&filler(0));
+        let (i, more) = meet_chief(&mut j, p, fill);
+        let (k, next) = assert_pair(&j, i, agent, &[]);
+        let w = on_wire(&j);
+        let ahead = w[..i]
+            .iter()
+            .rev()
+            .take_while(|c| c.0 == k)
+            .filter(|c| c.1 == cb::TRAIN_ROBBED)
+            .count();
+        assert_eq!(ahead, fill, "the fillers fill buffer {k} ahead of the CHIEF_BODY");
+        assert!(
+            w[..i].iter().rev().take_while(|c| c.0 == k).all(|c| c.1 == cb::TRAIN_ROBBED),
+            "nothing else in buffer {k}"
+        );
+        assert!(more, "buffer {k} goes with CMD_FLAG_MORE");
+        assert_eq!(next, k + 1, "the MATERIALIZE leads the next buffer");
+        assert!(books(&e, p).1 > epoch1, "a new epoch");
+        assert_eq!(
+            (
+                j.conflict_plugin.chief_bodies_matched,
+                j.conflict_plugin.chief_bodies_missing
+            ),
+            (2, 0),
+            "the plugin matched each chief stack with its CHIEF_BODY"
+        );
+        assert_eq!(j.conflict_plugin.band_chiefs(CAMP), 1, "one puppet");
+
+        // The control: the band comes home unseen; the chief's SPAWN goes behind its memory.
+        leave(&mut j, p);
+        let mark = j.commands.len();
+        advance_until(&mut j, 600, 6 * DAY, "home", |j| party(&j.e, p).is_none());
+        j.conflict_flush();
+        j.idle();
+        let (at, r, n) = chief_line_on_wire(&j, mark).expect("the chief's line at home");
+        assert_eq!(r.lines[n].action, cb::ACTION_SPAWN, "an unseen chief spawns");
+        assert_eq!(r.lines[n].generation, generation);
+        assert_home_body(&j, at, r.epoch, &[]);
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// P2 (MZB-819; ledger 24): a player pays the chief's puppet on its band's road (CHIEF_PAID,
+    /// PAID_PUPPET, the chief's slot, generation 0) after the last save, the record written twice
+    /// under one op, and the server dies. The replay books the tribute once and the camp
+    /// remembers the payer, so the band's next CHIEF_BODY carries it. The control: a second
+    /// player's payment to a stray Umvuthi (PAID_STRAY, as M9's), journaled beside it, is tribute
+    /// booked once and no memory. With the payment's branch finding the chief's slot by
+    /// `index(slot, generation)` (generation 0 holds nothing, step 7's M3) the payer is forgotten.
+    #[test]
+    fn a_payment_to_the_puppet_survives_a_restart() {
+        let (dir, e, mut j, _) = seated_grove("aloft-paid-restart");
+        let p = led_invasion(&e, &mut j, 4_000);
+        let agent = Party::agent(p);
+        save(&e, &mut j);
+        let (i, _) = meet_chief(&mut j, p, 0);
+        assert_pair(&j, i, agent, &[]);
+        let puppet = paid(&mut j, true, PLAYER, 0x7201, 9);
+        j.conflict_obs(&puppet);
+        j.conflict_obs(&puppet);
+        let stray = paid(&mut j, false, PLAYER2, 0x7202, 5);
+        j.conflict_obs(&stray);
+        j.idle();
+        assert_eq!(owed_tribute(&e).0, 14, "9 and 5 nuggets, each once");
+        assert_eq!(traded(&e), vec![PLAYER], "the puppet's payer, not the stray's");
+        leave(&mut j, p);
+
+        // The server dies with no save since the band was unmet.
+        let gt = j.game_time;
+        let saved = j.crash();
+        let (e, mut j) = reopen(&dir, saved, gt);
+        j.conflict_plugin = synth::FakeConflict::new(PLAYER);
+        stand(&mut j, AWAY);
+        j.idle();
+        assert_eq!(owed_tribute(&e).0, 14, "the replay books each payment once");
+        assert_eq!(traded(&e), vec![PLAYER], "and remembers the puppet's payer");
+        assert_eq!(party(&e, p), Some((Phase::Out, false)), "still on its road");
+
+        // Met again: the CHIEF_BODY carries the payer.
+        let (i, _) = meet_chief(&mut j, p, 0);
+        assert_pair(&j, i, agent, &[PLAYER]);
+        assert_eq!(owed_tribute(&e).0, 14);
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// P3 (MZB-819, MZB-821; ledger 24): the band of a chief whose puppet was paid on the road
+    /// (`pay`) comes home embodied to its grove, which is in: the chief comes home by its
+    /// HAND_BACK (LINE_CHIEF, the band's agent, the chief's generation), and the home CHIEF_BODY
+    /// directly ahead of that reconcile carries the payer, so the throne body made from the
+    /// puppet knows them. Without the payment (the control) the memory is the camp's, empty. With
+    /// `camp_home`'s HAND_BACK off (step 7's M2) no chief line goes with the homecoming; with the
+    /// payer forgotten (M3) the memory is empty.
+    fn payer_home(name: &str, pay: bool) {
+        let (_dir, e, mut j, generation) = seated_grove(name);
+        let p = led_invasion(&e, &mut j, 4_000);
+        let agent = Party::agent(p);
+        let (i, _) = meet_chief(&mut j, p, 0);
+        assert_pair(&j, i, agent, &[]);
+        if pay {
+            let puppet = paid(&mut j, true, PLAYER, 0x7301, 9);
+            j.conflict_obs(&puppet);
+            j.idle();
+        }
+        let payers = if pay { vec![PLAYER] } else { Vec::new() };
+        assert_eq!(traded(&e), payers);
+        leave(&mut j, p);
+        let mark = j.commands.len();
+        follow_home(&mut j, p);
+        let (at, r, n) = chief_line_on_wire(&j, mark).expect("the chief's line at home");
+        let l = r.lines[n];
+        assert_eq!(l.action, cb::ACTION_HAND_BACK, "the chief comes home by its puppet");
+        assert_eq!((l.a, l.generation), (agent, generation), "its band, its generation");
+        assert_ne!(l.flags & cb::LINE_CHIEF, 0, "LINE_CHIEF");
+        assert_home_body(&j, at, r.epoch, &payers);
+        camp_until(&mut j, "the chief on its throne", |j| {
+            chief_of(&j.e) == Some((SlotState::Body, generation))
+        });
+        assert_eq!(traded(&e), payers, "the memory kept");
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    #[test]
+    fn the_payer_reaches_the_throne_body_at_home() {
+        payer_home("aloft-payer-home", true);
+    }
+
+    #[test]
+    fn with_no_payment_the_throne_body_carries_the_camps_memory() {
+        payer_home("aloft-payer-home-control", false);
+    }
+
+    /// The books of the chief's end: (falls, player losses, an heir due, the chief's slot still
+    /// holds `generation`).
+    fn death_books(e: &Engine, generation: u32) -> (u64, u64, bool, bool) {
+        e.with_conflict(|c, _| {
+            let camp = c.camp(c.faction_of_key(CAMP).expect("the camp")).expect("a ledger");
+            (
+                c.stats.chiefs_killed,
+                c.stats.renewal_losses,
+                camp.heir.is_some(),
+                camp.index(CHIEF_SLOT, generation).is_some(),
+            )
+        })
+    }
+
+    /// P4 (MZB-824, MZB-853; ledger 24): the band comes home embodied to its grove, which is in,
+    /// and the chief's HAND_BACK is in flight (the puppet floats for days); the pages are saved.
+    /// Then A6's two records, the puppet's CAMP_DEATH (BY_PLAYER, the chief's slot and
+    /// generation) and the line's STALE, in the order `death_first` says, with a crash and a
+    /// restart between them and another after both, the pages never saved again. The chief's
+    /// end is booked once and one heir is due at every stage:
+    /// - death first: (falls, losses) (1, 1) throughout;
+    /// - STALE first: the STALE releases nothing; the first restart's replay end loses the chief
+    ///   to no one (MZB-853 release 5: no fall, no loss, the heir due), the CAMP_DEATH after it
+    ///   books nothing, and the replay of both after the second crash books the death (1, 1).
+    ///   The replay runs the two sessions' records as one: no replay end falls between them
+    ///   (MZB-859).
+    ///
+    /// The control: a CHIEF_KILLED of the ended band after the death books nothing and is counted
+    /// (MZB-466). The design's control, a CHIEF_KILLED with no death before it, is now the chief's
+    /// death (MZB-853 release 3). With `camp_home`'s HAND_BACK off (step 7's M2) no line is in
+    /// flight; with no loss at the replay's end (release 5 off) the STALE-first case still holds
+    /// the end after the first restart.
+    fn death_after_end(name: &str, death_first: bool) {
+        let (dir, e, mut j, generation) = seated_grove(name);
+        let p = led_invasion(&e, &mut j, 4_000);
+        let agent = Party::agent(p);
+        j.conflict_plugin.chief_float = 10 * DAY as u64;
+        let mark = j.commands.len();
+        follow_home(&mut j, p);
+        j.conflict_flush();
+        j.idle();
+        let (_, r, n) = chief_line_on_wire(&j, mark).expect("the chief's line at home");
+        let l = r.lines[n];
+        assert_eq!(l.action, cb::ACTION_HAND_BACK, "a HAND_BACK");
+        let epoch = l.b as u32;
+        let held = |e: &Engine| {
+            e.with_conflict(|c, _| {
+                c.camp(c.faction_of_key(CAMP).unwrap())
+                    .and_then(|camp| camp.ended)
+                    .map(|x| (x.agent, x.epoch, x.generation))
+            })
+        };
+        assert_eq!(held(&e), Some((agent, epoch, generation)), "the end holds the chief");
+        assert_eq!(
+            e.with_conflict(|c, _| {
+                c.camp(c.faction_of_key(CAMP).unwrap())
+                    .and_then(|camp| camp.chief())
+                    .map(|s| s.line.is_some())
+            }),
+            Some(true),
+            "the HAND_BACK in flight"
+        );
+        save(&e, &mut j);
+        let (falls, losses, _, _) = death_books(&e, generation);
+        assert_eq!(death_books(&e, generation), (falls, losses, false, true));
+        let umvuthi = j.dict_id(wire::DICT_BODY, UMVUTHI);
+        let death = O::CampDeath(cb::CampDeath {
+            faction: CAMP,
+            by: cb::BY_PLAYER,
+            body: umvuthi,
+            flags: cb::DEATH_CHIEF,
+            slot: CHIEF_SLOT,
+            generation,
+            killer: PLAYER,
+            op: wire::JAVA_OP_BIT | 0x7401,
+        });
+        let stale = O::CampBodies(cb::CampBodies {
+            faction: CAMP,
+            epoch: r.epoch,
+            op: r.op,
+            lines: vec![cb::LineAnswer {
+                line: n as u32,
+                slot: CHIEF_SLOT,
+                generation,
+                action: cb::ACTION_HAND_BACK,
+                outcome: cb::LINE_STALE,
+            }],
+        });
+        let dead = (falls + 1, losses + 1, true, false);
+        let lost = (falls, losses, true, false);
+        let (first, second, stages) = if death_first {
+            (death, stale, [dead, dead, dead, dead])
+        } else {
+            (stale, death, [(falls, losses, false, true), lost, lost, dead])
+        };
+        let restart = |j: Java| {
+            let gt = j.game_time;
+            let saved = j.crash();
+            let (e, mut j) = reopen(&dir, saved, gt);
+            j.conflict_plugin = synth::FakeConflict::new(PLAYER);
+            stand(&mut j, AWAY);
+            j.idle();
+            (e, j)
+        };
+        let check = |e: &Engine, stage: usize, what: &str| {
+            assert_eq!(
+                death_books(e, generation),
+                stages[stage],
+                "death first {death_first}, {what}"
+            );
+            assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        };
+
+        j.conflict_obs(&first);
+        j.idle();
+        check(&e, 0, "the first record");
+        if death_first {
+            // The control: the ended band's CHIEF_KILLED after the death is counted, not booked.
+            let unbooked = e.with_conflict(|c, _| c.stats.unbooked_home_deaths);
+            j.conflict_obs(&O::ChiefKilled(cb::ChiefKilled {
+                agent,
+                epoch,
+                by: cb::BY_PLAYER,
+                killer: PLAYER,
+                op: wire::JAVA_OP_BIT | 0x7402,
+            }));
+            j.idle();
+            check(&e, 0, "a CHIEF_KILLED after the death");
+            assert_eq!(
+                e.with_conflict(|c, _| c.stats.unbooked_home_deaths),
+                unbooked + 1,
+                "MZB-466's counter"
+            );
+        }
+        let (e, mut j) = restart(j);
+        check(&e, 1, "the first restart");
+        j.conflict_obs(&second);
+        j.idle();
+        check(&e, 2, "the second record");
+        let (e, j) = restart(j);
+        check(&e, 3, "the restart after both");
+        assert_eq!(held(&e), None, "no end left");
+        drop(j);
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    #[test]
+    fn a_camp_death_after_the_end_books_once_across_a_replay() {
+        death_after_end("aloft-death-replay", true);
+    }
+
+    #[test]
+    fn a_stale_hand_back_then_a_camp_death_across_a_replay_books_one_end() {
+        death_after_end("aloft-stale-replay", false);
     }
 }
 

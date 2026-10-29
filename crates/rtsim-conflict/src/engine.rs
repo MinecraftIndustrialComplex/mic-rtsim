@@ -94,8 +94,8 @@ pub mod camp;
 pub mod rail;
 
 pub use camp::{
-    Answered, CHIEF_SLOT, Camp, Chest, Heir, Line, Placing, Retired, STACK_ITEMS, Slot, SlotState,
-    TRADED_CAP, Throne,
+    Answered, CHIEF_SLOT, Camp, Chest, Ended, Heir, Line, Placing, Retired, STACK_ITEMS, Slot,
+    SlotState, TRADED_CAP, Throne,
 };
 pub use rail::{HeldPass, LineCount, Pin, RailCall, RailMeter, StationEnd, TrackFocus};
 
@@ -988,6 +988,12 @@ pub struct Conflict {
     /// one for each camp. Saved in the meta page, so the link never walks the factions' rows for
     /// them.
     pub placing: Vec<(u32, Placing)>,
+    /// The camps whose [`Camp::ended`] stands, by the ended band's agent (MZB-853): a
+    /// BAND_DEMATERIALIZED or CHIEF_KILLED of a party `home` removed names no faction. Saved in
+    /// the meta page, as `placing` is, so neither a save and load in a session nor a lookup walks
+    /// the factions' rows. An entry whose camp's record was pruned (its slot's generation freed)
+    /// goes at the next lookup of its agent, and every entry at the replay end.
+    pub chief_ended: BTreeMap<u64, u32>,
     /// The stacks in `placing` whose chest's chunk was not loaded when Java read them (NOT_LOADED,
     /// MZB-760, as the dragons' `parked`, RP-210): kept in flight under their op ids and not sent
     /// again until their grove's chest is reported (HAVEN_CHEST). The chunk may already hold the
@@ -1126,12 +1132,18 @@ pub fn body_id(c: &Cultures, name: &str) -> u32 {
         .map_or(0, |i| i as u32 + 1)
 }
 
-/// Whether a culture's chief goes into a band as a stack of its own (BAND_CHIEF, MEMBER_CHIEF,
-/// ledger 24). Before M11 gives the grove's chief its aloft puppet, a chief that is a body of its
-/// own has none, so its band carries no chief flag and the Umvuthi stays on its throne until a
-/// held take removes it (MZB-414).
+/// Whether a culture's chief is one of its band's bodies (the Frostmaw's): its band's first stack
+/// carries MEMBER_CHIEF and the band BAND_CHIEF (ledger 24, MZB-414). A chief that is a body of its
+/// own (the grove's Umvuthi) goes as a stack of its own instead, [`chief_own_stack`] (MZB-801).
 pub fn chief_stack(c: &crate::culture::Culture) -> bool {
     c.def.chief_body.is_none()
+}
+
+/// Whether a culture's chief is a body of its own (`chief_body`, the grove's Umvuthi): its band's
+/// first BAND_MATERIALIZE with bodies of each epoch carries it as a stack of its own, the chief
+/// alone (count 0, MEMBER_CHIEF), just after an away CHIEF_BODY (ledger 24, MZB-801, MZB-803).
+pub fn chief_own_stack(c: &crate::culture::Culture) -> bool {
+    c.def.chief_body.is_some()
 }
 
 /// The engine's item dictionary: a world good's id + 1 (named by the catalogue).
@@ -1179,6 +1191,7 @@ impl Conflict {
             peaceful_since: Tick::ZERO,
             notice_serial: 0,
             placing: Vec::new(),
+            chief_ended: BTreeMap::new(),
             parked: BTreeSet::new(),
             tribute_owing: Vec::new(),
             replay_from_pages: false,
@@ -5423,7 +5436,7 @@ impl Conflict {
         let x = &self.parties[p];
         let boss = c.renewal.is_some_and(|r| r.boss);
         let crystal = self.factions[f as usize].crystal;
-        let stacks: Vec<boundary::Stack> = fill
+        let mut stacks: Vec<boundary::Stack> = fill
             .iter()
             .enumerate()
             .map(|(i, &(u, t))| {
@@ -5443,6 +5456,19 @@ impl Conflict {
                 }
             })
             .collect();
+        // A chief that is a body of its own goes as a stack of its own, the chief alone (count 0,
+        // MZB-109), in its band's first MATERIALIZE with bodies of each epoch, whichever meeting or
+        // wave that is (SPAWN_REJECTED clears `spawned` and keeps `wave`). It is in no fill, so
+        // `place` and the wave counts never count it. A walk-in keeps its earlier wave's puppets,
+        // the chief's among them (MZB-801).
+        let own_chief = x.chief && chief_own_stack(&c) && !walked_in && x.spawned.is_empty();
+        if own_chief && let Some(chief) = c.def.chief_body.as_deref() {
+            stacks.push(boundary::Stack {
+                body: body_id(&self.cultures, chief),
+                count: 0,
+                flags: boundary::MEMBER_CHIEF,
+            });
+        }
         let here = self.party_pos(p, at);
         // Seen on the march: at the image on the player's side (TP11).
         let here = match w.players.get(&player).and_then(|s| s.pos) {
@@ -5477,7 +5503,9 @@ impl Conflict {
             } else {
                 0
             }) | boundary::BAND_SURFACE
-                | if x.chief && chief_stack(&c) {
+                // On every wave of a chief's band, whichever way its chief goes: Java makes a
+                // chief only of a stack that has MEMBER_CHIEF too (MZB-801).
+                | if x.chief && (chief_stack(&c) || chief_own_stack(&c)) {
                     boundary::BAND_CHIEF
                 } else {
                     0
@@ -5497,6 +5525,13 @@ impl Conflict {
             speed: c.def.march_blocks_per_tick as f32,
             members: stacks,
         });
+        // The chief's memory, just ahead of the MATERIALIZE that carries its stack and only then:
+        // Java keeps it for that record (MZB-803). Both come after the `defer` above, so neither is
+        // pushed while replaying (MZB-804).
+        if own_chief {
+            let memory = self.chief_body_away(p);
+            self.outbox.push(memory);
+        }
         self.outbox.push(cmd);
         self.place(p, &fill);
         self.parties[p].wave += 1;
@@ -6344,6 +6379,8 @@ impl Conflict {
         for c in std::mem::take(&mut self.chief_states_held).into_values() {
             self.chief_state(&c, now);
         }
+        // The chiefs whose puppets the last session left unaccounted for are lost (MZB-853).
+        self.chief_ends_lost(now);
         self.presence.every_player_left();
     }
 
@@ -6820,6 +6857,8 @@ impl Conflict {
                 {
                     self.home_open.remove(&d.agent);
                 }
+                // The end of a grove chief's band (MZB-853): its puppet is gone from the world.
+                self.chief_band_gone(d.agent, d.epoch, at);
                 // By the party, not through `party_of`: a band recalled at one epoch and seen
                 // again at the next has its old epoch's despawn still to come (MZB-131).
                 let Some(p) = Party::of_agent(d.agent).filter(|p| self.parties.contains(*p)) else {
@@ -6897,7 +6936,11 @@ impl Conflict {
             Obs::ChiefKilled(ck) => {
                 let Some(p) = Party::of_agent(ck.agent).filter(|p| self.parties.contains(*p))
                 else {
-                    self.unbooked_home_death(ck.agent, ck.epoch, ck.op, None, at);
+                    // A grove chief's puppet killed after its band's end is the chief's death at
+                    // its camp (MZB-853); any other death of an ended band books nothing.
+                    if !self.chief_killed_home(w, ck, at) {
+                        self.unbooked_home_death(ck.agent, ck.epoch, ck.op, None, at);
+                    }
                     return;
                 };
                 let killer = (ck.by == boundary::BY_PLAYER).then(|| self.player(w, ck.killer));
@@ -7780,6 +7823,8 @@ impl Conflict {
                 "tribute stacks",
                 self.placing.capacity() * std::mem::size_of::<(u32, Placing)>(),
             ),
+            // The same key and value as the index by key (MZB-853).
+            ("chief band ends", self.chief_ended.len() * BTREE_KEY_BYTES),
             ("players", self.players.len() * BTREE_PLAYER_BYTES),
         ])
     }
