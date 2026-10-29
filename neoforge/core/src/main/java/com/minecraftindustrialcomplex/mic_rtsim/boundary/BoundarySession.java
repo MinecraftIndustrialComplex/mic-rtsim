@@ -36,7 +36,8 @@ public final class BoundarySession {
     private long tickMarked = Long.MIN_VALUE;
     private boolean sessionStartPending = true;
     private int moduleMask;
-    private boolean modulesDirty = true;
+    /** The mask this session started in (its first MODULE_SWITCH's): SESSION_START names it. */
+    private final int startMask;
     private final long gameTimeAtStart;
     private final long journalFirstAtStart;
     private final long worldNextAtStart;
@@ -64,6 +65,7 @@ public final class BoundarySession {
         this.engine = engine;
         this.journal = journal;
         this.moduleMask = moduleMask;
+        this.startMask = moduleMask;
         this.gameTimeAtStart = gameTime;
         this.journalFirstAtStart = journal.firstSeq();
         this.worldNextAtStart = journal.nextObsSeq();
@@ -76,6 +78,9 @@ public final class BoundarySession {
         ByteBuffer g = journal.begin(Obs.JOURNAL_GEN, Obs.JournalGen.SIZE, 0, gameTime);
         g.putLong(Obs.JournalGen.GEN, gen);
         journal.commit(g);
+        // And its module mask (U-e3), so a restart finds the session's switch beside its generation
+        // and applies a config that differs from the journal's last mask as this session's own switch.
+        commitModuleSwitch(moduleMask, gameTime);
         this.handover = new Handover(engine);
     }
 
@@ -140,13 +145,24 @@ public final class BoundarySession {
      * same value). The engine acknowledges only pages a WORLD_SAVED confirmed, and WORLD_SAVED reports
      * {@code min(through, writtenThrough)}, so in the running game the clamp binds only on an
      * acknowledgement the engine takes without a world save (a test's, a stop's). The default is no
-     * clamp.
+     * clamp. The same value goes to the engine at the stop ({@link #closeEngine()}).
      */
     public void trimsClampedTo(java.util.function.LongSupplier writtenThrough) {
         this.writtenThrough = writtenThrough;
     }
 
     private java.util.function.LongSupplier writtenThrough = () -> Long.MAX_VALUE;
+
+    /**
+     * Ends the engine at a stop, naming what the journal's file on disk holds (the supplier of
+     * {@link #trimsClampedTo}, read now, after the stop's flush save has waited for the IO chain): the
+     * engine confirms its final save at once only if the file holds it, and leaves it pending otherwise,
+     * so that the restart from the older file rolls it back (slice U-i, docs/choices-journal-barrier.md
+     * U-i1). With no clamp set the file is taken to hold everything.
+     */
+    public void closeEngine() {
+        engine.close(writtenThrough.getAsLong());
+    }
 
     /** Called with each acknowledgement (the highest sequence the engine's saved pages include). */
     public void onAck(java.util.function.LongConsumer listener) {
@@ -184,11 +200,23 @@ public final class BoundarySession {
         return plainRecommits;
     }
 
-    public void setModuleMask(int mask) {
+    /**
+     * The module switches changed: journals a MODULE_SWITCH at its real place among the records
+     * (docs/choices-journal-barrier.md U-e3), not in the preamble, so the engine hears it between the
+     * records journaled before and after it, in a replay as live. A mask equal to the current one
+     * journals nothing.
+     */
+    public void setModuleMask(int mask, long gameTime) {
         if (mask != moduleMask) {
             moduleMask = mask;
-            modulesDirty = true;
+            commitModuleSwitch(mask, gameTime);
         }
+    }
+
+    private void commitModuleSwitch(int mask, long gameTime) {
+        ByteBuffer m = journal.begin(Obs.MODULE_SWITCH, Obs.ModuleSwitch.SIZE, 0, gameTime);
+        m.putInt(Obs.ModuleSwitch.MASK, mask);
+        journal.commit(m);
     }
 
     // ---- observations ---------------------------------------------------------------------------
@@ -265,7 +293,7 @@ public final class BoundarySession {
             b.putLong(at + Obs.SessionStart.LAST_APPLIED_CMD_SEQ, journal.lastAppliedCmdSeq());
             b.putLong(at + Obs.SessionStart.JOURNAL_FIRST_OBS_SEQ, journalFirstAtStart);
             b.putLong(at + Obs.SessionStart.WORLD_NEXT_OBS_SEQ, worldNextAtStart);
-            b.putInt(at + Obs.SessionStart.MODULE_MASK, moduleMask);
+            b.putInt(at + Obs.SessionStart.MODULE_MASK, startMask);
             handover.flagOpen(Layout.OBS_FLAG_SESSION_START);
             sessionStartPending = false;
         }
@@ -273,13 +301,6 @@ public final class BoundarySession {
             if (!journal.writeDict(w, dictSent + 1))
                 return false;
             dictSent++;
-        }
-        if (modulesDirty) {
-            int at = w.reserve(Obs.MODULES, Obs.Modules.SIZE, 0);
-            if (at < 0)
-                return false;
-            b.putInt(at + Obs.Modules.MASK, moduleMask);
-            modulesDirty = false;
         }
         while (!preamble.isEmpty()) {
             var it = preamble.entrySet().iterator();

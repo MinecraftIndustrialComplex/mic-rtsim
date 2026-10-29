@@ -358,12 +358,12 @@ public final class RtsimSession {
 
     public void close() {
         industry.close();
-        engine.close();
+        boundary.closeEngine(); // the final save, confirmed through the journal's file (U-i)
     }
 
     public void onModulesChanged() {
         int mask = RtsimConfig.effectiveMask();
-        boundary.setModuleMask(mask);
+        boundary.setModuleMask(mask, gameTime());
         farLegs.setEnabled((mask & com.minecraftindustrialcomplex.mic_rtsim.config.Module.ECOLOGY.bit()) != 0);
     }
 

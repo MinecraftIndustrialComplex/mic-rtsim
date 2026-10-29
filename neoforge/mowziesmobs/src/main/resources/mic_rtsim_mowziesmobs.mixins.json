@@ -9,6 +9,7 @@
     "EntityUmvuthiAccessor",
     "EntityUmvuthiMixin",
     "MMEntityMoveHelperMixin",
+    "MMPathNavigateGroundMixin",
     "UmvuthiSummonsMixin"
   ],
   "injectors": {

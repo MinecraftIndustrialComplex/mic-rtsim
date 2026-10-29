@@ -5,7 +5,7 @@ import java.util.Set;
 
 /**
  * The engine's generic modules (PLAN.md §1.2), each with a server config switch (C25, PLAN.md §5.4).
- * The bit sent to the engine in MODULES and SESSION_START is {@link #ordinal()}, so new modules go at
+ * The bit sent to the engine in MODULE_SWITCH and SESSION_START is {@link #ordinal()}, so new modules go at
  * the end.
  */
 public enum Module {

@@ -353,6 +353,19 @@ public final class StubEngine implements ScriptedEngine {
         }
     }
 
+    private volatile long closedWith = Long.MIN_VALUE;
+
+    /** Test hook: the {@code writtenThrough} the stop named in {@link #close(long)} (Long.MIN_VALUE: not closed that way). The stub keeps one generation and confirms its final save whatever it is. */
+    public long closedWith() {
+        return closedWith;
+    }
+
+    @Override
+    public void close(long writtenThrough) {
+        closedWith = writtenThrough;
+        close();
+    }
+
     /** Ends the session without the final save: a crash. Steps already submitted still run. */
     public void closeWithoutSaving() {
         stopWorker();
