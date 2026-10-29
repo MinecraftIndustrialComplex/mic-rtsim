@@ -45,7 +45,7 @@ public final class RobberyStressGameTests {
         long[][] base = {null};
         int[] asks = {0}, askTick = {0};
         List<Village> villages = new java.util.ArrayList<>();
-        int[] booked = {0}, notBooked = {0};
+        int[] booked = {0}, notBooked = {0}, firstSent = {0};
         String[] robbed = {null};
 
         helper.startSequence().thenWaitUntil(() -> {
@@ -61,6 +61,7 @@ public final class RobberyStressGameTests {
                     agent[0] = RtsimTests.newAgent();
                     base[0] = e.phase1Stats();
                     asks[0] = 0;
+                    firstSent[0] = 0;
                     askTick[0] = 0;
                     robbed[0] = null;
                     phase[0] = 1;
@@ -91,6 +92,8 @@ public final class RobberyStressGameTests {
                         e.phase1SpawnNear(agent[0], 1, dim, at.x, at.y, at.z, 2_000, a.meeting.getX() + 150, a.meeting.getZ() + 150);
                         asks[0]++;
                     }
+                    if (firstSent[0] == 0 && e.phase1Stats()[NativeEngine.P1_SPAWNS_SENT] > base[0][NativeEngine.P1_SPAWNS_SENT])
+                        firstSent[0] = asks[0];
                     throw new GameTestAssertException("no caravan yet");
                 }
                 case 3 -> { // rob
@@ -121,8 +124,8 @@ public final class RobberyStressGameTests {
                     boolean yes = s[NativeEngine.P1_ROBBERIES] > base[0][NativeEngine.P1_ROBBERIES];
                     if (yes || now - tickMark[0] >= BOOK_TICKS) {
                         PuppetGroup g = RtsimTests.group(agent[0]);
-                        MicRtsim.LOGGER.info("[gametest] robStress round {}: {} after {} asks; robbed {}; {} ticks and {} steps after the robbery; robberies {} vs base {}; last step {} us; group {}",
-                                round[0], yes ? "BOOKED" : "NOT BOOKED", asks[0], robbed[0], now - tickMark[0], e.steps() - stepMark[0],
+                        MicRtsim.LOGGER.info("[gametest] robStress round {}: {} after {} asks (the engine's first spawn noticed at ask {}); robbed {}; {} ticks and {} steps after the robbery; robberies {} vs base {}; last step {} us; group {}",
+                                round[0], yes ? "BOOKED" : "NOT BOOKED", asks[0], firstSent[0], robbed[0], now - tickMark[0], e.steps() - stepMark[0],
                                 s[NativeEngine.P1_ROBBERIES], base[0][NativeEngine.P1_ROBBERIES], e.lastStepNanos() / 1000,
                                 g == null ? "gone" : "there, llama 1 at " + RtsimTests.member(g, 1).distanceTo(player));
                         if (yes)
