@@ -654,10 +654,11 @@ public final class DragonGameTests {
     }
 
     /**
-     * Two ways a body leaves: a puppet a player tames leaves the sim (A10) as a DRAGON_DIED with no killer
-     * (the dragon records have no TAKEN, choice Z7), and stays in the world as the player's, untagged; a
-     * puppet carried out of the entity-ticking area is captured (DRAGON_DEMATERIALIZED, not ticking or
-     * unloaded) and its body removed.
+     * Two ways a body leaves: a puppet a player tames leaves the sim (A10) as a DRAGON_DIED, killer kind 4
+     * (taken) naming the tamer (S3, MZB-1010: the dragon records had no TAKEN, choice Z7, and the death had
+     * no killer), and stays in the world as the player's, untagged; a puppet carried out of the
+     * entity-ticking area is captured (DRAGON_DEMATERIALIZED, not ticking or unloaded) and its body
+     * removed.
      */
     @GameTest(template = DragonKit.ARENA, timeoutTicks = 300, batch = "dragon_leaves")
     public static void aTamedOrFarAwayPuppetLeavesTheSim(GameTestHelper helper) {
@@ -688,13 +689,14 @@ public final class DragonGameTests {
                 .thenWaitUntil(() -> check("the far one was captured", !about(DragonRecords.DRAGON_DEMATERIALIZED, far).isEmpty()))
                 .thenExecute(() -> {
                     ScriptedEngine.Received died = about(DragonRecords.DRAGON_DIED, tamed).get(0);
-                    check("no killer", died.aux() == DragonRecords.ATTACKER_NONE && died.view().getLong(DragonRecords.Died.KILLER_MOST) == 0L);
+                    check("taken, naming the tamer (aux " + died.aux() + ")", died.aux() == DragonRecords.ATTACKER_TAKEN
+                            && player[0].getUUID().equals(DragonKit.uuidAt(died, DragonRecords.Died.KILLER_MOST)));
                     check("the tamed body stays, the player's", !bodies[0].isRemoved() && bodies[0].isTame());
                     ScriptedEngine.Received gone = about(DragonRecords.DRAGON_DEMATERIALIZED, far).get(0);
                     check("not ticking or unloaded (" + gone.aux() + ")", gone.aux() == DragonRecords.Dematerialized.NOT_TICKING
                             || gone.aux() == DragonRecords.Dematerialized.UNLOADED);
                     check("the far body is gone", bodies[1].isRemoved() && bridge().body(far) == null);
-                    record(test, "left", "tamed: DRAGON_DIED with no killer, body kept; far: DEMATERIALIZED reason " + gone.aux());
+                    record(test, "left", "tamed: DRAGON_DIED taken by the tamer, body kept; far: DEMATERIALIZED reason " + gone.aux());
                     FakePlayers.remove(player[0]);
                     bodies[0].discard();
                 })
