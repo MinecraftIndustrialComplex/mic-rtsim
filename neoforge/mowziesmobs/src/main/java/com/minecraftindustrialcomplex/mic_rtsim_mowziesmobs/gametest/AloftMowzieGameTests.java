@@ -971,7 +971,12 @@ public final class AloftMowzieGameTests {
                     check("the golem is its target (" + puppet[0].getTarget() + ")", puppet[0].getTarget() == golem[0]);
                     puppet[0].sendAbilityMessage(EntityUmvuthi.SPAWN_ABILITY);
                 })
-                .thenWaitUntil(waits.logic(() -> check("a summons stands among its extras", !chiefSlot(agent[0]).extras().isEmpty())))
+                .thenWaitUntil(waits.logic(() -> {
+                    // a cast sent while an ability runs (an ambient TALK, a BELLY) is dropped without a word: sent again every 40 ticks (MZB-917, MZB-961)
+                    if (level.getGameTime() % 40 == 0 && chiefSlot(agent[0]).extras().isEmpty() && puppet[0].getActiveAbility() == null)
+                        puppet[0].sendAbilityMessage(EntityUmvuthi.SPAWN_ABILITY);
+                    check("a summons stands among its extras", !chiefSlot(agent[0]).extras().isEmpty());
+                }))
                 .thenExecute(() -> {
                     EntityUmvuthi u = puppet[0];
                     Mob first = chiefSlot(agent[0]).extras().get(0);
@@ -998,7 +1003,10 @@ public final class AloftMowzieGameTests {
                 .thenWaitUntil(waits.logic(() -> {
                     List<EntityUmvuthanaMinion> made = level.getEntitiesOfClass(EntityUmvuthanaMinion.class, lane[2].area(),
                             m -> !m.isRemoved() && m.getRestrictRadius() == 25f);
-                    check("the throne body has made a summons", !made.isEmpty());
+                    if (made.isEmpty() && level.getGameTime() % 40 == 0 && throne[0].getActiveAbility() == null)
+                        throne[0].sendAbilityMessage(EntityUmvuthi.SPAWN_ABILITY); // as above (MZB-961)
+                    check("the throne body has made a summons (" + abilityState(throne[0], EntityUmvuthi.SPAWN_ABILITY) + ", its ability " + throne[0].getActiveAbilityType() + ")",
+                            !made.isEmpty());
                     check("its centre is the throne body's own (" + made.get(0).getRestrictCenter() + " and " + throne[0].getRestrictCenter() + ")",
                             made.get(0).getRestrictCenter().equals(throne[0].getRestrictCenter()));
                 }))
@@ -1883,14 +1891,17 @@ public final class AloftMowzieGameTests {
                             + theirs[0].size() + " of the throne body's untagged strays");
                     // a warrior killed by the player books nothing. The jar ends a death animation from the body's own tick (MowzieEntity.tickDeath), which a
                     // chunk that does not tick entities never gives; the lane is one chunk deep and the summons walk, are pushed and teleport (the warriors'
-                    // TELEPORT ability), so one may stand outside it and never finish dying (MZB-958). The one killed is one that stands in a chunk that ticks.
+                    // TELEPORT ability), so one may stand outside it and never finish dying (MZB-958). The round at 53934bdc killed one that stood in a chunk
+                    // that ticked and found it 0.04 blocks over the lane's edge 12 ticks into its death (the kill's knockback): the one killed is put in the
+                    // lane's middle, at rest, as the bridge puts back a stray.
                     List<EntityUmvuthanaMinion> fighters = mine[0].stream().filter(j -> !j.crane()).map(j -> (EntityUmvuthanaMinion) j.body()).toList();
-                    List<EntityUmvuthanaMinion> ticking = fighters.stream().filter(w -> !w.isRemoved() && RtsimSession.entitiesTickAt(level, w.blockPosition())).toList();
-                    killed[0] = ticking.isEmpty() ? fighters.get(0) : ticking.get(0);
-                    if (ticking.isEmpty())
-                        killed[0].teleportTo(lane.x0 + start + 10, lane.top + 1, lane.z); // as the bridge puts back a stray (the lane's middle ticks)
-                    record(test, "warriors", ticking.size() + " of " + fighters.size() + " of the puppet's warriors stood in a chunk that ticks entities; killed "
-                            + killed[0].getId() + warriorState(level, killed[0]));
+                    long ticking = fighters.stream().filter(w -> !w.isRemoved() && RtsimSession.entitiesTickAt(level, w.blockPosition())).count();
+                    killed[0] = fighters.get(0);
+                    String before = warriorState(level, killed[0]);
+                    killed[0].teleportTo(lane.x0 + 32, lane.top + 1, lane.z);
+                    killed[0].setDeltaMovement(Vec3.ZERO);
+                    record(test, "warriors", ticking + " of " + fighters.size() + " of the puppet's warriors stood in a chunk that ticks entities; killed "
+                            + killed[0].getId() + before + " after it was put in the lane's middle" + warriorState(level, killed[0]));
                     killed[0].setLastHurtByPlayer(player[0]);
                     MowzieKit.kill(killed[0], level.damageSources().playerAttack(player[0]));
                 })
@@ -4297,11 +4308,21 @@ public final class AloftMowzieGameTests {
             }
             if (flags == null || (flags & 0x40) == 0)
                 note("tick " + now + ": the bundle's flag byte is " + flags + ": no glowing bit");
-            java.util.TreeSet<String> have = new java.util.TreeSet<>();
-            for (MobEffectInstance e : body.getActiveEffects())
-                have.add(e.getEffect().getRegisteredName() + "/" + e.getAmplifier());
-            if (!sent.equals(have))
-                note("tick " + now + ": the bundle's effects are " + sent + ", the body's " + have);
+            // Vanilla's pairing of a mob carries no effects (ServerEntity.sendPairingData sends the add, the entity's own data, the synched data, the
+            // attributes, the equipment, passengers and leash; a client learns a mob's effects from its flags and particles, and a mod sends its own), so the
+            // re-pair, "as if it had just come into view", carries what the hearer's first pairing of the body carried (MZB-960).
+            java.util.TreeSet<String> first = new java.util.TreeSet<>();
+            int f = -1;
+            for (int i = 0; i < ps.size() && f < 0; i++)
+                if (ps.get(i) instanceof ClientboundAddEntityPacket p && p.getId() == id)
+                    f = i;
+            for (int i = f + 1; f >= 0 && f < k && i < ps.size() && (BUNDLED.contains(ps.get(i).getClass()) || isComplexSpawn(ps.get(i))); i++)
+                if (ps.get(i) instanceof ClientboundUpdateMobEffectPacket e && e.getEntityId() == id)
+                    first.add(e.getEffect().getRegisteredName() + "/" + e.getEffectAmplifier());
+            if (f < 0 || f >= k)
+                note("tick " + now + ": hearer " + hearer + " has no first pairing before the re-pair's add");
+            if (!sent.equals(first))
+                note("tick " + now + ": the bundle's effects are " + sent + ", the first pairing's " + first + " (the body has " + body.getActiveEffects().size() + ")");
             if (hearer == 0)
                 facts.add(String.format("tick %d: yaw %.1f (old %.1f, way %.1f), %d packets after the add, %d of them the complex spawn payload", now, yaw, old, way, run, complex));
         }

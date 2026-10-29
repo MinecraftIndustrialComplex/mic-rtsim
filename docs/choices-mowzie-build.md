@@ -11869,7 +11869,11 @@ rounds of phase 2 are the check, and what they found is recorded after them.
   of the warriors stood in a ticking chunk, and the wait's message gives the killed warrior's state (removed, dying, death time, health, ability, position, whether
   its chunk ticks entities, ticks lived), so a failure with the chunk ticking is a different finding. What the test asks of the module is as before: a warrior
   killed by a player books no BAND_CASUALTIES and no CHIEF_KILLED, the band keeps its members, the puppet stays the chief's, and none of the summons is saved.
-  Passed in the round at 53934bdc (the record line of that round says how many of the warriors stood in a ticking chunk).
+  Passed in the round at 53934bdc; failed in the next, at 790d2bc5, with the cause now seen: "(removed false, dying true, death time 12, health 0.0, ability ..., at (-4455079.29680371, -59.0, 3116752.0396923), in a chunk that ticks
+  entities false, ticks lived 125)". The warrior had been chosen from those in a ticking chunk and it died 12 ticks, then stood 0.04 blocks past the lane's northern edge
+  (z 3116752 is a chunk boundary: the lane is the row before it), in a chunk that does not tick, with the kill's knockback and its walk having carried it over: it is
+  the jar's own death that waits for the body's tick. The one killed is now put in the lane's middle at rest before the kill (the bridge's own put-back of a stray), and
+  the record line gives its state before and after.
 - **MZB-959** (round at 53934bdc, test 31s `anAloftUmvuthiReadsAndTurns`; MZB-813, MZB-873; a test expectation): "the server's body and the packets agreed in every re-pair:
   [the bundle carries direction null, ... no glowing bit, ... the bundle's effects are []]", for both hearers at both re-pairs. The last step of the test was reached for
   the first time (no round before it got past the third turn). `Reading.packets` read the run of packets after the re-pair's add packet while their class was one of
@@ -11879,7 +11883,18 @@ rounds of phase 2 are the check, and what they found is recorded after them.
   payloads from what it sends on). The run ended at once with nothing read. The module's bundle is as designed: the add, the payload, the synched data (the direction,
   the flag byte), the attributes and the effects. The run now goes past a complex spawn payload (and no other custom payload), counts them, and the record line says how
   many of the packets after the add were one; the note for a missing direction names the classes that follow the add, so a bundle that really lacks the data says what it
-  has instead. Not run yet.
+  has instead. In the round at 790d2bc5 the direction and the glowing bit were read and only the effects differed (MZB-960).
+- **MZB-960** (round at 790d2bc5, test 31s `anAloftUmvuthiReadsAndTurns`; MZB-813; a test expectation): "the bundle's effects are [], the body's [minecraft:fire_resistance/0,
+  mowziesmobs:sunblock/0]" at both re-pairs, for both hearers. The test asked the bundle for every effect the body has, and vanilla's pairing of a mob carries none:
+  `ServerEntity.sendPairingData` (1.21.1) sends the add, the entity's own pairing data, the synched data, the attributes, the equipment, the passengers and the leash, and
+  `LivingEntity.onEffectAdded` sends an effect to a rider only; a client learns a mob's effects from its flags and particles, and a mod sends its own (Mowzie's Sunblock is its
+  own payload, which the re-pair would skip as per-player data). The re-pair is "as if it had just come into view", so what it must carry is what the hearer's first pairing of the
+  body carried, and that is what the test compares now (the effect packets after the first add packet for the body against those after the re-pair's), with a note if there is
+  no first pairing. The module is unchanged and its bundle is the vanilla pairing's. Not run yet.
+- **MZB-961** (round at 790d2bc5, test 23b `anAloftUmvuthiSettlesAndRises`; MZB-809, MZB-812; a test expectation): "the throne body has made a summons (not within 9000 ticks
+  of the last chunk wait)". The control sent SPAWN_ABILITY to the throne body once, and `Ability.canUse` drops a cast sent while an ability runs (the throne body's AI is on, so
+  an ambient TALK or a BELLY is one chance in several): the same drop as MZB-957 and MZB-917. The wait now sends the cast again every 40 ticks to a body with no ability that has made
+  nothing, and names the cast's state in its message; the puppet's own cast a few steps before gets the same resend. Not run yet.
 
 
 ## M12 S9
