@@ -178,6 +178,9 @@ pub struct Java {
     /// Every SPAWN_RESIDENT arrival (slice S6) is answered NOT_FREE, as when the village has no
     /// free bed.
     pub no_free_bed: bool,
+    /// Every SPAWN_RESIDENT arrival is received and never answered, as Java down between placing a
+    /// body and its result would leave it.
+    pub hold_arrivals: bool,
     /// Answer every new TRANSFER_TO_CONTAINER FAILED (no container there, or no room), as
     /// CommandDispatcher does.
     pub fail_transfers: bool,
@@ -421,6 +424,7 @@ impl Java {
             talk_facts: Vec::new(),
             no_free_plot: false,
             no_free_bed: false,
+            hold_arrivals: false,
             fail_transfers: false,
             unloaded_transfers: false,
             switch_ahead_of_transfer_answers: None,
@@ -1010,6 +1014,11 @@ impl Java {
                             },
                         );
                     }
+                    cmd::SPAWN_RESIDENT
+                        if self.hold_arrivals
+                            && wire::u32_at(rec.bytes, cmd::spawn_resident::FLAGS)
+                                & cmd::spawn_resident::FLAG_ARRIVAL
+                                != 0 => {}
                     cmd::WRITE_GOSSIP | cmd::PLACE_HOUSE | cmd::SPAWN_RESIDENT => {
                         let status = if self.applied_cmd_ops.contains(&op) {
                             obs::command_result::DUPLICATE_OP

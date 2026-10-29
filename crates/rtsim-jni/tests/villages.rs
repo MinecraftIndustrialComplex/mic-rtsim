@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use common::*;
 use rtsim_jni::engine::Engine;
 use rtsim_jni::orders::Order;
-use rtsim_jni::wire::{self, cmd};
+use rtsim_jni::wire::{self, cmd, obs};
 
 /// `engine::phase1::village` indexes.
 const MEMBERS: usize = 0;
@@ -367,4 +367,52 @@ fn villages_renew_end_to_end() {
     }
     assert!(rig.e.protocol_error().is_none(), "{:?}", rig.e.protocol_error());
     rig.e.close(true, Duration::from_secs(5)).unwrap();
+}
+
+/// A pair ordered and never answered (Java down between placing the bodies and saying so), then a
+/// crash: the bookings are in the saved world, so the answers Java gives when it is back (its
+/// registry still holds the orders) settle them, once; an answer for an op the world no longer
+/// holds is no answer.
+#[test]
+fn a_settlers_order_survives_a_crash_between_its_order_and_its_result() {
+    let (dir, e, mut j) = open("village-settlers-crash");
+    j.hold_arrivals = true;
+    j.village_census(A, 6, 12, true);
+    j.idle();
+    for _ in 0..2 {
+        j.village_census(A, 0, 12, true);
+        j.idle();
+    }
+    advance(&e, &mut j, 16 * 24_000 + 3_000);
+    use cmd::spawn_resident as k;
+    let ops: Vec<u64> = j.p1_of(cmd::SPAWN_RESIDENT).iter().map(|s| wire::u64_at(s, k::OP_ID)).collect();
+    assert_eq!(ops.len(), 2, "a pair was ordered: {:?}", e.phase1_stats());
+    let r = row(&e);
+    assert_eq!((r[MEMBERS], r[OWED]), (2, 2), "booked, not answered: {r:?}");
+    save_durable(&e, &mut j);
+    let saved = j.world_save();
+    let _ = j.crash();
+    let e = engine(&dir, 256 * 1024);
+    let mut j = Java::open(e.clone(), saved);
+    j.module_mask = 0b1111;
+    j.idle();
+    let r = row(&e);
+    assert_eq!((r[MEMBERS], r[OWED]), (2, 2), "the bookings survived the crash: {r:?}");
+    // Java is back and answers what its registry held: both placed, one of them told twice.
+    let answer = |j: &mut Java, op: u64, status: u32| {
+        j.journal(obs::COMMAND_RESULT, obs::command_result::SIZE, status, |r| {
+            wire::put_u64(r, obs::command_result::OP_ID, op);
+        });
+        j.idle();
+    };
+    answer(&mut j, ops[0], obs::command_result::APPLIED);
+    assert_eq!(row(&e)[OWED], 1);
+    answer(&mut j, ops[0], obs::command_result::DUPLICATE_OP);
+    assert_eq!(row(&e)[OWED], 1, "an op is answered once");
+    answer(&mut j, ops[1], obs::command_result::APPLIED);
+    let r = row(&e);
+    assert_eq!((r[MEMBERS], r[OWED]), (2, 0), "settled: {r:?}");
+    assert_eq!(stat(&e, P1_LAPSED), 0);
+    assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+    e.close(true, Duration::from_secs(5)).unwrap();
 }
