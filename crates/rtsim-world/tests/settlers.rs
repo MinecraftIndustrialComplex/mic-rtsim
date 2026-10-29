@@ -20,6 +20,9 @@ fn config(renewal: bool) -> WorldConfig {
     cfg.check_every_event = true;
     cfg.genesis = Genesis::AtTarget;
     cfg.renewal = renewal;
+    // The settlers are this file's subject: an unloaded village's growth (`village_growth.rs`)
+    // would add orders of its own between a pair and the next census.
+    cfg.village_growth_per_day = 0.0;
     cfg
 }
 

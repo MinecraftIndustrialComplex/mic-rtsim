@@ -704,7 +704,13 @@ pub fn run(o: Options) -> i32 {
                     ));
                     features.residents += w.house_placed(h.op);
                 }
-                Command::SpawnResident(_) | Command::PlaceWork(_) | Command::SpawnWork(_) => {}
+                Command::SpawnResident(r) => {
+                    // The bridge places the body at once and answers (slice S6, EQC162): a Ribbit
+                    // village's population rises when its resident exists.
+                    let now = w.now();
+                    w.resident_result(r.op, true, now);
+                }
+                Command::PlaceWork(_) | Command::SpawnWork(_) => {}
             }
         }
         drain_world(&mut meter, &mut w);
