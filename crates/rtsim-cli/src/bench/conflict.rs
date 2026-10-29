@@ -222,13 +222,6 @@ pub fn run(c: &FactionConfig) -> Measured {
             ));
         }
     }
-    let conservation = match k.check(&w) {
-        Ok(()) => "ok".to_string(),
-        Err(e) => e,
-    };
-    if conservation != "ok" {
-        failures.push(format!("conservation: {conservation}"));
-    }
     let st = k.stats;
     if st.materialized > 0 {
         failures.push("a party materialized with nobody watching".into());
@@ -237,7 +230,15 @@ pub fn run(c: &FactionConfig) -> Measured {
     let cpu = have_cpu.then_some(ns);
     let heap_live = sys::heap_live() as u64;
     let heap_peak = sys::heap_peak() as u64;
-    // Whole-engine passes (they load every page, evicted again after): outside the window.
+    // Whole-engine passes (they load every page, evicted again after): outside the window. The
+    // books' check is one since the grove earmark (MZB-930) reads every faction's camp.
+    let conservation = match k.check(&w) {
+        Ok(()) => "ok".to_string(),
+        Err(e) => e,
+    };
+    if conservation != "ok" {
+        failures.push(format!("conservation: {conservation}"));
+    }
     let state_hash = Some(k.state_hash() as u32);
     let save_full = Some(k.save().len() as u64);
     k.enforce_budget();
@@ -465,13 +466,6 @@ pub fn run_rail(c: &RailConfig) -> Measured {
             ));
         }
     }
-    let conservation = match k.check(&w) {
-        Ok(()) => "ok".to_string(),
-        Err(e) => e,
-    };
-    if conservation != "ok" {
-        failures.push(format!("conservation: {conservation}"));
-    }
     let st = k.stats;
     if st.materialized > 0 {
         failures.push("a party materialized with nobody watching".into());
@@ -480,6 +474,14 @@ pub fn run_rail(c: &RailConfig) -> Measured {
     let cpu = have_cpu.then_some(ns);
     let heap_live = sys::heap_live() as u64;
     let heap_peak = sys::heap_peak() as u64;
+    // After the samples, as in `run`: the books' check reads every faction's camp (MZB-930).
+    let conservation = match k.check(&w) {
+        Ok(()) => "ok".to_string(),
+        Err(e) => e,
+    };
+    if conservation != "ok" {
+        failures.push(format!("conservation: {conservation}"));
+    }
     let state_hash = Some(k.state_hash() as u32);
     let save_full = Some(k.save().len() as u64);
     k.enforce_budget();

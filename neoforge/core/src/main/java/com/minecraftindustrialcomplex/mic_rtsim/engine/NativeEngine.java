@@ -49,6 +49,7 @@ public final class NativeEngine implements ScriptedEngine {
     static final int STAT_ACKED_SENT = 6;
     static final int STAT_NEXT_CMD_SEQ = 7;
     static final int STAT_ORDERS_PENDING = 8;
+    /** Saves confirmed: a world save counts at its WORLD_SAVED, not at its commit (P29, slice U-h); a test's save at once. */
     static final int STAT_SAVES_DONE = 9;
     static final int STAT_LAST_STEP_NANOS = 10;
     static final int STAT_AGENTS = 11;
@@ -126,15 +127,19 @@ public final class NativeEngine implements ScriptedEngine {
     private static native ByteBuffer nBuffer(long handle, int which);
 
     /** out[0] = pagesObsSeq, out[1] = nextCmdSeq. 0 or a negative status (message: nLastError). */
-    private static native int nStart(long handle, long lastAppliedCmdSeq, long[] out);
+    private static native int nStart(long handle, long lastAppliedCmdSeq, long worldNextObsSeq, long[] out);
 
     /** Queues step {@code handover} on the background pool; returns at once. 0 or negative. */
     private static native int nSubmit(long handle, long handover);
 
     private static native void nRequestSave(long handle, long throughObsSeq);
 
-    /** save: final save waited for; false: a crash. Waits up to timeoutMs for a step in flight. The handle is dead afterwards. */
-    private static native int nClose(long handle, boolean save, int timeoutMs);
+    /**
+     * save: final save waited for; false: a crash. writtenThrough: the last observation sequence the world's journal file
+     * holds; the final save is confirmed at once only if the file holds it (slice U-i), and unused when save is false.
+     * Waits up to timeoutMs for a step in flight. The handle is dead afterwards.
+     */
+    private static native int nClose(long handle, boolean save, long writtenThrough, int timeoutMs);
 
     private static native String nDescribe(long handle);
 
@@ -316,7 +321,7 @@ public final class NativeEngine implements ScriptedEngine {
         try {
             return new NativeEngine(pagesDir, capacity, flags, h);
         } catch (RuntimeException e) {
-            nClose(h, false, CLOSE_TIMEOUT_MS);
+            nClose(h, false, 0, CLOSE_TIMEOUT_MS);
             throw e;
         }
     }
@@ -356,9 +361,9 @@ public final class NativeEngine implements ScriptedEngine {
     // a call can never use a handle another thread is freeing.
 
     @Override
-    public synchronized SessionStart start(long lastAppliedCmdSeq) {
+    public synchronized SessionStart start(long lastAppliedCmdSeq, long worldNextObsSeq) {
         long[] out = new long[2];
-        check(nStart(live(), lastAppliedCmdSeq, out), "start");
+        check(nStart(live(), lastAppliedCmdSeq, worldNextObsSeq, out), "start");
         return new SessionStart(out[0], out[1]);
     }
 
@@ -381,13 +386,22 @@ public final class NativeEngine implements ScriptedEngine {
         return h == 0 ? "native engine (closed)" : nDescribe(h);
     }
 
-    /** The final save, waited for (up to 5 s for a step in flight). Idempotent. */
+    /** The final save, waited for (up to 5 s for a step in flight), confirmed at once: a journal file that holds everything. Idempotent. */
     @Override
     public synchronized void close() {
+        close(Long.MAX_VALUE);
+    }
+
+    /**
+     * The final save, waited for (up to 5 s for a step in flight), confirmed at once only if the journal's file holds
+     * every observation it includes ({@code writtenThrough}); otherwise it stays pending (slice U-i). Idempotent.
+     */
+    @Override
+    public synchronized void close(long writtenThrough) {
         long h = takeHandle();
         if (h == 0)
             return;
-        int status = nClose(h, true, CLOSE_TIMEOUT_MS);
+        int status = nClose(h, true, writtenThrough, CLOSE_TIMEOUT_MS);
         if (status < 0)
             MicRtsim.LOGGER.error("[mic_rtsim] the native engine's final save failed (status {}): {}; the journal replays what the pages miss",
                     status, nLastError());
@@ -1004,7 +1018,7 @@ public final class NativeEngine implements ScriptedEngine {
         long h = takeHandle();
         if (h == 0)
             throw new IllegalStateException("the native engine is closed");
-        int status = nClose(h, false, CLOSE_TIMEOUT_MS);
+        int status = nClose(h, false, 0, CLOSE_TIMEOUT_MS);
         if (status < 0)
             throw new IllegalStateException("rtsim_jni close (crash) failed with status " + status + ": " + nLastError());
         return open(pagesDir, capacity, flags);

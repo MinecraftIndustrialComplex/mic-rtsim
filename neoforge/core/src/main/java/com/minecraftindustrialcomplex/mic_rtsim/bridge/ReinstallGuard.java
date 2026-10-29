@@ -1,6 +1,8 @@
 package com.minecraftindustrialcomplex.mic_rtsim.bridge;
 
 import com.minecraftindustrialcomplex.mic_rtsim.MicRtsim;
+import com.minecraftindustrialcomplex.mic_rtsim.industry.IndustryData;
+import com.minecraftindustrialcomplex.mic_rtsim.journal.SavedDataWrites;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.ListTag;
 import net.minecraft.nbt.Tag;
@@ -69,6 +71,8 @@ public final class ReinstallGuard {
         volatile boolean markerCleared;
         /** The deletion is queued behind a save. */
         volatile boolean deletionQueued;
+        /** The industry file's failed write kept the marker, and the line is logged (once per reset). */
+        volatile boolean keptSaid;
         /** The industry module of the session this reset opened has planned its re-adoption (RG7). */
         final java.util.concurrent.atomic.AtomicBoolean readoptTaken = new java.util.concurrent.atomic.AtomicBoolean();
         /** The site ledger has counted this reset as a gap (MZB-1003). */
@@ -189,14 +193,27 @@ public final class ReinstallGuard {
      * The overworld saved (LevelEvent.Save, after its saved data queued their writes): the first save after a
      * reset deletes the marker behind them on the same chain, so after the industry data that remembers what to
      * re-adopt. A crash before then resets again at the next start, which is harmless (the engine is still new).
+     * When the industry data's write failed ({@link SavedDataWrites}, docs/choices-journal-barrier.md U-g11) the marker
+     * stays: deleted, it would leave the next start with no reset and no file that remembers what to re-adopt. The next
+     * world save tries again, after marking the data dirty again.
      */
-    static void onOverworldSave(MinecraftServer server) {
+    public static void onOverworldSave(MinecraftServer server) {
         Path dir = worldDir(server);
         Status s = STATUS.get(dir);
         if (s == null || s.markerCleared || s.deletionQueued)
             return;
         s.deletionQueued = true;
+        Path industry = dir.resolve("data").resolve(IndustryData.FILE + ".dat");
         net.neoforged.neoforge.common.IOUtilities.withIOWorker(() -> {
+            if (SavedDataWrites.INSTANCE.holds(industry)) { // after the industry data's own write on this chain: its failure is known
+                s.deletionQueued = false;
+                if (!s.keptSaid) {
+                    s.keptSaid = true;
+                    MicRtsim.LOGGER.error("[mic_rtsim] reinstall reset: the industry data's write failed, so the marker {} stays until it is written;"
+                            + " a restart before then resets again; said once (docs/choices-journal-barrier.md U-g11)", MARKER);
+                }
+                return;
+            }
             try {
                 ReinstallRules.deleteMarker(dir);
                 s.markerCleared = true;
@@ -237,6 +254,26 @@ public final class ReinstallGuard {
     /** GameTests: forgets a capture this start will not take (a test's read that did not restart). */
     public static void forgetCaptureForTest(MinecraftServer server) {
         CAPTURES.remove(worldDir(server));
+    }
+
+    /**
+     * GameTests: this world's status becomes a reset that has not deleted its marker, with the marker written. Returns
+     * what {@link #restoreStatusForTest} gives back.
+     */
+    public static Object installResetForTest(MinecraftServer server) throws IOException {
+        Path dir = worldDir(server);
+        ReinstallRules.writeMarker(dir, "a GameTest's reset\n");
+        Status before = STATUS.put(dir, new Status(null, new Reset("a GameTest's reset", null, Instant.now())));
+        return before == null ? Boolean.FALSE : before;
+    }
+
+    /** GameTests: the status {@link #installResetForTest} replaced. The marker is the caller's to delete. */
+    public static void restoreStatusForTest(MinecraftServer server, Object before) {
+        Path dir = worldDir(server);
+        if (before instanceof Status s)
+            STATUS.put(dir, s);
+        else
+            STATUS.remove(dir);
     }
 
     /** GameTests: whether this start's reset has deleted its marker. */

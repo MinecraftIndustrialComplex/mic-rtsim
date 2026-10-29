@@ -146,13 +146,102 @@ class BoundaryProtocolTest {
         tick(s, sink, e);
         assertEquals(5, e.ledger(7));
         tick(s, sink, e);
-        assertEquals(2, s.journal().size(), "applied but not on the engine's disk: still journaled (with the JOURNAL_GEN)");
+        assertEquals(3, s.journal().size(), "applied but not on the engine's disk: still journaled (with the JOURNAL_GEN and the session's switch)");
 
         e.requestSaveAtNextStep();
         tick(s, sink, e); // the step saves its pages and acknowledges in its command header
         tick(s, sink, e); // Java reads that header and trims
         assertEquals(0, s.journal().size());
         assertEquals(e.pages().obsSeq(), sink.lastAck);
+    }
+
+    /**
+     * JB9 (docs/choices-journal-barrier.md): the engine's acknowledgement never trims the journal past
+     * what the journal's file on disk holds. A header's acknowledgement is clamped to {@code writtenThrough}
+     * before it trims the journal and reaches the ack listener; once the file catches up, the next header
+     * trims.
+     */
+    @Test
+    void theTrimStopsAtTheJournalOnDisk() {
+        StubEngine e = stub(StubEngine.Pages.EMPTY, StubEngine.DEFAULT_CAPACITY);
+        BoundarySession s = new BoundarySession(e, new Journal(), 0, time);
+        long[] onDisk = {0};
+        s.trimsClampedTo(() -> onDisk[0]);
+        List<Long> acked = new ArrayList<>();
+        s.onAck(acked::add);
+        Sink sink = new Sink(s);
+        transfer(s, 7, 5);
+        tick(s, sink, e);
+        tick(s, sink, e);
+        assertEquals(3, s.journal().size(), "applied but not on the engine's disk: still journaled");
+        e.requestSaveAtNextStep();
+        tick(s, sink, e); // the step saves its pages and acknowledges in its command header
+        tick(s, sink, e); // Java reads that header
+        long pages = e.pages().obsSeq();
+        assertTrue(pages > 0);
+        assertEquals(pages, sink.lastAck, "the engine acknowledged its pages");
+        assertEquals(3, s.journal().size(), "the journal's file holds nothing yet: nothing is trimmed");
+        assertTrue(acked.isEmpty(), "and the holders hear no acknowledgement: " + acked);
+
+        onDisk[0] = pages - 1;
+        tick(s, sink, e);
+        assertEquals(onDisk[0], acked.get(acked.size() - 1), "only what the file holds");
+        assertEquals(1, s.journal().size(), "trimmed to the file, not to the acknowledgement");
+
+        onDisk[0] = pages;
+        tick(s, sink, e);
+        assertEquals(pages, acked.get(acked.size() - 1));
+        assertEquals(0, s.journal().size());
+    }
+
+    /**
+     * Slice U-i (docs/choices-journal-barrier.md U-i1): the stop names what the journal's file on disk
+     * holds to the engine, from the same supplier the trim clamp uses, read at the stop and not before.
+     * The engine confirms its final save at once only if the file holds it; a stop whose last journal
+     * write was held names the older file's last sequence, and the final save stays pending.
+     */
+    @Test
+    void theStopNamesTheJournalsFileToTheEngine() {
+        StubEngine e = stub(StubEngine.Pages.EMPTY, StubEngine.DEFAULT_CAPACITY);
+        BoundarySession s = new BoundarySession(e, new Journal(), 0, time);
+        long[] onDisk = {0};
+        s.trimsClampedTo(() -> onDisk[0]);
+        assertEquals(Long.MIN_VALUE, e.closedWith(), "not closed yet");
+        onDisk[0] = 41; // the file landed after the clamp was set: the stop reads it when it stops
+        s.closeEngine();
+        assertEquals(41, e.closedWith(), "the file's last sequence, as the supplier gave it at the stop");
+    }
+
+    /** With no clamp set (a session with no journal file to name) the stop takes the file to hold everything: the final save is confirmed at once, as before U-i. */
+    @Test
+    void aStopWithNoJournalFileNamedTakesItToHoldEverything() {
+        StubEngine e = stub(StubEngine.Pages.EMPTY, StubEngine.DEFAULT_CAPACITY);
+        BoundarySession s = new BoundarySession(e, new Journal(), 0, time);
+        s.closeEngine();
+        assertEquals(Long.MAX_VALUE, e.closedWith());
+    }
+
+    /**
+     * The session starts the engine with the world's next observation sequence, so the engine opens the
+     * page generation the world's journal file holds (P29): the journal's {@code nextObsSeq} as it was
+     * restored from the world's save.
+     */
+    @Test
+    void theSessionStartsTheEngineWithTheWorldsNextSequence() {
+        StubEngine e1 = stub(StubEngine.Pages.EMPTY, StubEngine.DEFAULT_CAPACITY);
+        BoundarySession s1 = new BoundarySession(e1, new Journal(), 0, time);
+        assertEquals(1, e1.startedWithWorldNext(), "a fresh world: its journal's next sequence is 1");
+        Sink k1 = new Sink(s1);
+        transfer(s1, 7, 5);
+        tick(s1, k1, e1);
+        Journal.Snapshot worldSave = s1.journal().snapshot();
+
+        Journal restored = Journal.restore(worldSave);
+        long next = restored.nextObsSeq();
+        assertTrue(next > 1);
+        StubEngine e2 = stub(e1.pages(), StubEngine.DEFAULT_CAPACITY);
+        new BoundarySession(e2, restored, 0, time);
+        assertEquals(next, e2.startedWithWorldNext(), "the world's next sequence, before the session journals its own");
     }
 
     @Test
@@ -218,7 +307,7 @@ class BoundaryProtocolTest {
         e2.requestSaveAtNextStep();
         tick(s2, k2, e2);
         Journal.Snapshot worldSave2 = s2.journal().snapshot();
-        assertEquals(3, Journal.restore(worldSave2).size(), "the transfer between the two sessions' JOURNAL_GENs");
+        assertEquals(5, Journal.restore(worldSave2).size(), "the transfer between the two sessions' JOURNAL_GENs, each session's switch after its own");
 
         // Session 3: the replay arrives at an engine whose pages already include it: skipped.
         StubEngine e3 = stub(e2.pages(), StubEngine.DEFAULT_CAPACITY);
@@ -370,17 +459,17 @@ class BoundaryProtocolTest {
         long op2 = transfer(s1, 1, 1);
         long op3 = transfer(s1, 1, 1);
         tick(s1, k1, e1);
-        s1.worldSaveDurable(2);
+        s1.worldSaveDurable(3);
         tick(s1, k1, e1);
         List<ScriptedEngine.Received> saved = e1.received(Obs.WORLD_SAVED);
         assertEquals(1, saved.size());
-        assertEquals(2L, saved.get(0).view().getLong(Obs.WorldSaved.DURABLE_OBS_SEQ));
+        assertEquals(3L, saved.get(0).view().getLong(Obs.WorldSaved.DURABLE_OBS_SEQ));
         assertFalse(e1.opApplied(op2), "the engine forgets op ids the world save holds");
         assertTrue(e1.opApplied(op3), "and keeps the ones past it");
         tick(s1, k1, e1);
         assertEquals(1, e1.received(Obs.WORLD_SAVED).size(), "reported once per save");
 
-        // A world save that knew sequences 1 to 3 (the session's JOURNAL_GEN and the two transfers),
+        // A world save that knew sequences 1 to 4 (the session's JOURNAL_GEN and switch and the two transfers),
         // against engine pages that include only 1.
         StubEngine e2 = stub(new StubEngine.Pages(1, 1, java.util.Set.of(), java.util.Map.of()), StubEngine.DEFAULT_CAPACITY);
         Journal j = Journal.restore(s1.journal().snapshot());
@@ -388,18 +477,18 @@ class BoundaryProtocolTest {
         tick(s2, new Sink(s2), e2);
         ByteBuffer start = e2.received(Obs.SESSION_START).get(0).view();
         assertEquals(1L, start.getLong(Obs.SessionStart.JOURNAL_FIRST_OBS_SEQ));
-        assertEquals(4L, start.getLong(Obs.SessionStart.WORLD_NEXT_OBS_SEQ));
+        assertEquals(5L, start.getLong(Obs.SessionStart.WORLD_NEXT_OBS_SEQ));
         assertEquals(0b101, start.getInt(Obs.SessionStart.MODULE_MASK));
-        assertEquals(5L, j.nextObsSeq(), "the world is ahead of the pages: no sequence moves (4 is the session's JOURNAL_GEN)");
+        assertEquals(7L, j.nextObsSeq(), "the world is ahead of the pages: no sequence moves (5 is the session's JOURNAL_GEN, 6 its switch)");
 
         // Engine pages ahead of the world save (P29): Java moves past them and never reuses one.
         StubEngine e3 = stub(new StubEngine.Pages(10, 1, java.util.Set.of(), java.util.Map.of()), StubEngine.DEFAULT_CAPACITY);
         Journal j3 = Journal.restore(s1.journal().snapshot());
         BoundarySession s3 = new BoundarySession(e3, j3, 0, time);
         tick(s3, new Sink(s3), e3);
-        assertEquals(4L, e3.received(Obs.SESSION_START).get(0).view().getLong(Obs.SessionStart.WORLD_NEXT_OBS_SEQ),
+        assertEquals(5L, e3.received(Obs.SESSION_START).get(0).view().getLong(Obs.SessionStart.WORLD_NEXT_OBS_SEQ),
                 "the engine sees the world's own next sequence, so it can tell it is ahead");
-        assertEquals(12L, j3.nextObsSeq(), "past the pages, and 11 is the session's JOURNAL_GEN");
+        assertEquals(13L, j3.nextObsSeq(), "past the pages, and 11 is the session's JOURNAL_GEN, 12 its switch");
     }
 
     @Test
@@ -424,12 +513,12 @@ class BoundaryProtocolTest {
         Sink sink = new Sink(s);
         transfer(s, 1, 1);
         transfer(s, 1, 1);
-        e.requestSave(3); // the world save knew sequences 1 to 3 (the JOURNAL_GEN and two transfers)
+        e.requestSave(4); // the world save knew sequences 1 to 4 (the JOURNAL_GEN, the session's switch and two transfers)
         transfer(s, 1, 1); // 4 and 5 come after it, in the same hand-over
         transfer(s, 1, 1);
         tick(s, sink, e);
         assertEquals(4, e.ledger(1), "everything is applied");
-        assertEquals(3, e.pages().obsSeq(), "but the pages stop where the world save did");
+        assertEquals(4, e.pages().obsSeq(), "but the pages stop where the world save did");
         tick(s, sink, e);
         assertEquals(2, s.journal().size(), "and only what they include is trimmed");
     }
@@ -641,5 +730,84 @@ class BoundaryProtocolTest {
         Seq.setRelease(e.commandBuffer(1), Layout.H_PUBLISHED, 1);
         org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,
                 () -> new BoundarySession(e, new Journal(), 0, time));
+    }
+    // ---- the module switch is a journaled record (docs/choices-journal-barrier.md U-e, RP-290) -----
+
+    private static int kindOf(byte[] record) {
+        return Short.toUnsignedInt(ByteBuffer.wrap(record).order(Layout.ORDER).getShort(Layout.R_KIND));
+    }
+
+    private static List<Journal.Entry> entriesOf(Journal j) {
+        List<Journal.Entry> out = new ArrayList<>();
+        j.entries().forEach(out::add);
+        return out;
+    }
+
+    /** U-e3: every session journals its mask right after its generation, with the mask and the time it was given. */
+    @Test
+    void aSessionJournalsItsModuleMaskRightAfterItsGeneration() {
+        StubEngine e = stub(StubEngine.Pages.EMPTY, StubEngine.DEFAULT_CAPACITY);
+        Journal j = new Journal();
+        new BoundarySession(e, j, 0b101, time);
+        List<Journal.Entry> all = entriesOf(j);
+        assertEquals(2, all.size(), "the generation and the mask");
+        assertEquals(Obs.JOURNAL_GEN, kindOf(all.get(0).bytes()));
+        Journal.Entry sw = all.get(1);
+        assertEquals(Obs.MODULE_SWITCH, kindOf(sw.bytes()), "the second record is the session's switch");
+        assertEquals(2, sw.seq());
+        ByteBuffer m = ByteBuffer.wrap(sw.bytes()).order(Layout.ORDER);
+        assertEquals(0b101, m.getInt(Obs.ModuleSwitch.MASK));
+        assertEquals(time, m.getLong(Obs.GAME_TIME));
+        assertEquals(0, m.getInt(Layout.R_AUX));
+        assertEquals(Layout.align(Obs.ModuleSwitch.SIZE), m.limit());
+    }
+
+    /**
+     * U-e3: a switch is journaled where it happens, between the records journaled before and after it, and
+     * the engine hears the three in that order in one hand-over (the preamble no longer carries it).
+     */
+    @Test
+    void aSwitchIsJournaledBetweenTheRecordsAroundIt() {
+        StubEngine e = stub(StubEngine.Pages.EMPTY, StubEngine.DEFAULT_CAPACITY);
+        Journal j = new Journal();
+        BoundarySession s = new BoundarySession(e, j, 0b101, time);
+        transfer(s, 7, 5);
+        s.setModuleMask(0b001, time + 3);
+        transfer(s, 7, 2);
+        List<Journal.Entry> all = entriesOf(j);
+        assertEquals(List.of(Obs.JOURNAL_GEN, Obs.MODULE_SWITCH, Obs.TRANSFER, Obs.MODULE_SWITCH, Obs.TRANSFER),
+                all.stream().map(x -> kindOf(x.bytes())).toList());
+        ByteBuffer sw = ByteBuffer.wrap(all.get(3).bytes()).order(Layout.ORDER);
+        assertEquals(0b001, sw.getInt(Obs.ModuleSwitch.MASK));
+        assertEquals(time + 3, sw.getLong(Obs.GAME_TIME));
+        assertTrue(all.get(2).seq() < all.get(3).seq() && all.get(3).seq() < all.get(4).seq(),
+                "between the two transfers");
+
+        tick(s, new Sink(s), e);
+        List<Integer> heard = e.received().stream().map(ScriptedEngine.Received::kind)
+                .filter(k -> k == Obs.TRANSFER || k == Obs.MODULE_SWITCH).toList();
+        assertEquals(List.of(Obs.MODULE_SWITCH, Obs.TRANSFER, Obs.MODULE_SWITCH, Obs.TRANSFER), heard,
+                "in the journal's order, whatever the preamble does");
+    }
+
+    /**
+     * U-e2, U-e3: an unchanged mask journals nothing; no MODULES record is sent; SESSION_START names the mask
+     * the session started in (the engine's starting mask when its pages hold none), though the mask changed
+     * since.
+     */
+    @Test
+    void anUnchangedMaskJournalsNothingAndNoModulesRecordIsSent() {
+        StubEngine e = stub(StubEngine.Pages.EMPTY, StubEngine.DEFAULT_CAPACITY);
+        Journal j = new Journal();
+        BoundarySession s = new BoundarySession(e, j, 0b101, time);
+        s.setModuleMask(0b101, time + 1);
+        assertEquals(2, j.size(), "the same mask journals nothing");
+        s.setModuleMask(0b001, time + 2);
+        assertEquals(3, j.size());
+        tick(s, new Sink(s), e);
+        assertTrue(e.received().stream().noneMatch(r -> r.kind() == 0x0004), "kind 0x0004 is retired");
+        assertEquals(0b101, e.received(Obs.SESSION_START).get(0).view().getInt(Obs.SessionStart.MODULE_MASK),
+                "SESSION_START names the mask the session started in");
+        assertEquals(2, e.received(Obs.MODULE_SWITCH).size());
     }
 }

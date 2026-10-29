@@ -522,6 +522,7 @@ public final class AloftMowzieGameTests {
                     ConflictKit.recall(agent[0], ConflictKit.party(agent[0]).epoch, ConflictRecords.RECALL_DONE, 40, g[0].spot.x, g[0].spot.z);
                 })
                 .thenWaitUntil(waits.logic(() -> check("S's band went (" + dematerialized(agent[0]).size() + ")", dematerialized(agent[0]).size() == 1)))
+                .thenIdle(2) // the per-tick hook reads the record on its own listener's turn, which may come after the wait's in the tick the record is seen (MZB-913)
                 .thenExecute(() -> {
                     check("the puppet was gone (tick " + tick[0] + ") no later than the BAND_DEMATERIALIZED (tick " + tick[1] + ")",
                             tick[0] >= 0 && tick[0] <= tick[1]);
@@ -924,15 +925,19 @@ public final class AloftMowzieGameTests {
                 .thenIdle(400)
                 .thenExecute(() -> {
                     check("with the flag set it stayed down 400 ticks (" + rose[0] + " ticks aloft)", rose[0] == 0);
-                    Lane a = lane[0];
-                    phase[0] = 4;
-                    dropTick[0] = level.getGameTime();
-                    // the flag dropped, and the player is back in plain view: it is the target again, so the rise waits on it
-                    ConflictKit.steer(agent[0], ConflictKit.party(agent[0]).epoch, 0.5f, puppet[0].getX() + 11, a.z, 0, false);
+                    // the player is back in plain view with the flag still set, and is the target again before the flag drops (MZB-912: the
+                    // jar picks a target only every few ticks, and a flag dropped first let the puppet rise, with no player target for 400 ticks)
                     player[1].setInvisible(false);
                     player[1].setPos(puppet[0].getX() + 12, puppet[0].getY(), puppet[0].getZ());
                 })
                 .thenWaitUntil(waits.logic(() -> check("A's puppet targets the player again", puppet[0].getTarget() == player[1])))
+                .thenExecute(() -> {
+                    Lane a = lane[0];
+                    phase[0] = 4;
+                    dropTick[0] = level.getGameTime();
+                    // the flag dropped with the player the target: the rise waits on it
+                    ConflictKit.steer(agent[0], ConflictKit.party(agent[0]).epoch, 0.5f, puppet[0].getX() + 11, a.z, 0, false);
+                })
                 .thenIdle(20)
                 .thenExecute(() -> {
                     check("a player for target keeps it down with the flag gone", !puppet[0].isNoGravity());
@@ -966,7 +971,12 @@ public final class AloftMowzieGameTests {
                     check("the golem is its target (" + puppet[0].getTarget() + ")", puppet[0].getTarget() == golem[0]);
                     puppet[0].sendAbilityMessage(EntityUmvuthi.SPAWN_ABILITY);
                 })
-                .thenWaitUntil(waits.logic(() -> check("a summons stands among its extras", !chiefSlot(agent[0]).extras().isEmpty())))
+                .thenWaitUntil(waits.logic(() -> {
+                    // a cast sent while an ability runs (an ambient TALK, a BELLY) is dropped without a word: sent again every 40 ticks (MZB-917, MZB-961)
+                    if (level.getGameTime() % 40 == 0 && chiefSlot(agent[0]).extras().isEmpty() && puppet[0].getActiveAbility() == null)
+                        puppet[0].sendAbilityMessage(EntityUmvuthi.SPAWN_ABILITY);
+                    check("a summons stands among its extras", !chiefSlot(agent[0]).extras().isEmpty());
+                }))
                 .thenExecute(() -> {
                     EntityUmvuthi u = puppet[0];
                     Mob first = chiefSlot(agent[0]).extras().get(0);
@@ -993,7 +1003,10 @@ public final class AloftMowzieGameTests {
                 .thenWaitUntil(waits.logic(() -> {
                     List<EntityUmvuthanaMinion> made = level.getEntitiesOfClass(EntityUmvuthanaMinion.class, lane[2].area(),
                             m -> !m.isRemoved() && m.getRestrictRadius() == 25f);
-                    check("the throne body has made a summons", !made.isEmpty());
+                    if (made.isEmpty() && level.getGameTime() % 40 == 0 && throne[0].getActiveAbility() == null)
+                        throne[0].sendAbilityMessage(EntityUmvuthi.SPAWN_ABILITY); // as above (MZB-961)
+                    check("the throne body has made a summons (" + abilityState(throne[0], EntityUmvuthi.SPAWN_ABILITY) + ", its ability " + throne[0].getActiveAbilityType() + ")",
+                            !made.isEmpty());
                     check("its centre is the throne body's own (" + made.get(0).getRestrictCenter() + " and " + throne[0].getRestrictCenter() + ")",
                             made.get(0).getRestrictCenter().equals(throne[0].getRestrictCenter()));
                 }))
@@ -1016,8 +1029,8 @@ public final class AloftMowzieGameTests {
      * Explosions, a fan's push and a portal leave an aloft puppet where it floats (test 23c; MZB-810, MZB-815). One puppet marches
      * along a lane with no flag; an untagged Umvuthi with its gravity off (the control, no band's) stands behind it.
      * <ol>
-     * <li>A listener on {@code LevelTickEvent.Pre} (before the entities tick) explodes a blast of power 3 two blocks under the puppet and
-     * another under the control: the puppet's motion is the same after the blast as before (the knockback hook zeroed it); the
+     * <li>A listener on {@code LevelTickEvent.Pre} (before the entities tick) explodes a blast of power 3 two blocks beside the puppet, at the height of its middle (MZB-910: a blast under it stood in the floor,
+     * where its rays are blocked and it pushes nothing), and another beside the control: the puppet's motion is the same after the blast as before (the knockback hook zeroed it); the
      * control's changes by more than 0.15 blocks a tick. {@code knockbacksZeroed} counts the puppet's blast, once.</li>
      * <li>The same with a wind charge's blast (knockback times 1.22, no damage): the same two results, a second count.</li>
      * <li>A listener on {@code LevelTickEvent.Post} (after the entities tick) gives both a push of 0.4 up and 0.4 out ({@code hurtMarked}):
@@ -1083,12 +1096,12 @@ public final class AloftMowzieGameTests {
                                     k == 2 ? Optional.of(1.22f) : Optional.empty(), Optional.empty());
                             pBefore[k] = puppet[0].getDeltaMovement();
                             zeroed[k] = ConflictKit.knockbacksZeroed();
-                            Vec3 at = puppet[0].position().add(0.0, -2.0, 0.0);
+                            Vec3 at = puppet[0].position().add(2.0, puppet[0].getBbHeight() / 2.0, 0.0);
                             level.explode(null, null, calc, at.x, at.y, at.z, 3.0f, false, Level.ExplosionInteraction.NONE);
                             zeroed[k] = ConflictKit.knockbacksZeroed() - zeroed[k];
                             pAfter[k] = puppet[0].getDeltaMovement();
                             cBefore[k] = control[0].getDeltaMovement();
-                            Vec3 under = control[0].position().add(0.0, -2.0, 0.0);
+                            Vec3 under = control[0].position().add(2.0, control[0].getBbHeight() / 2.0, 0.0);
                             level.explode(null, null, calc, under.x, under.y, under.z, 3.0f, false, Level.ExplosionInteraction.NONE);
                             cAfter[k] = control[0].getDeltaMovement();
                         } else if (k == 4) {
@@ -1178,7 +1191,8 @@ public final class AloftMowzieGameTests {
     /**
      * A puppet that cannot rise is raised, held and moved to its place (test 23d; MZB-811). Three lanes, one band each, all steered
      * 60 blocks on: A's, whose masked player stands 30 blocks off with a clear line; B's, with no player within 160; and the control's,
-     * clear. Once each puppet floats, a stone ceiling is laid over A's and B's, 3 blocks over the foot (30 long, a lane wide): the
+     * clear. Once each puppet floats, a stone ceiling is laid over A's and B's, 8 blocks over the floor (the puppet's foot floats 3 over it and its
+     * box is 3.2 tall, so the room under the ceiling is 1.8 blocks; a ceiling at 6 over the floor, laid first, was inside the box, MZB-911) (30 long, a lane wide): the
      * rule sees it and aims over it, the puppet cannot rise through it and takes no step across while its target is high, so
      * neither makes headway.
      * <ol>
@@ -1215,7 +1229,7 @@ public final class AloftMowzieGameTests {
         double[] place = new double[2];
         long[] moves = {0};
         long[] buried = {0};
-        int ceiling = 6;
+        int ceiling = 8;
 
         MowzieKit.seq(helper)
                 .thenExecute(() -> {
@@ -1263,8 +1277,10 @@ public final class AloftMowzieGameTests {
                                 buried[0]++;
                         }
                     });
+                    // the control walks at PACE, under the puppet's cap (MZB-953): at 0.5 the anchor outran it as it outruns the stuck puppets, which
+                    // the stuck rule cannot tell from a puppet held by a ceiling (no headway toward its place), and it was raised to 16 and then moved
                     for (int i = 0; i < 3; i++)
-                        ConflictKit.steer(agent[i], ConflictKit.party(agent[i]).epoch, 0.5f, lane[i].x0 + end, lane[i].z, 0, false);
+                        ConflictKit.steer(agent[i], ConflictKit.party(agent[i]).epoch, i == 2 ? PACE : 0.5f, lane[i].x0 + end, lane[i].z, 0, false);
                 })
                 .thenIdle(160)
                 .thenExecute(() -> {
@@ -1281,12 +1297,13 @@ public final class AloftMowzieGameTests {
                     check("neither stuck puppet has moved yet (" + movedAt[0] + " and " + movedAt[1] + ")", movedAt[0] == 0 && movedAt[1] == 0);
                     check("each is under the ceiling (" + puppet[0].getY() + ", " + puppet[1].getY() + " under " + ceilingRoom[0] + ")",
                             puppet[0].getY() <= ceilingRoom[0] + 1.0e-6 && puppet[1].getY() <= ceilingRoom[0] + 1.0e-6);
-                    hearer[0] = FakePlayers.watching(level, new Vec3(place[0] - 20, lane[1].top + 1, place[1]), "mowzie-aloft-stuck-b-hearer");
                 })
                 .thenWaitUntil(waits.logic(() -> check("B has been moved", movedAt[1] != 0)))
                 .thenExecute(() -> {
                     long a = raisedAt[1][0], b = raisedAt[1][1], c = raisedAt[1][2];
-                    check("B's raise read 8, 16 and 24 (" + a + ", " + b + ", " + c + ")", a > 0 && b > 0 && c > 0);
+                    check("B's raise read 8, 16 and 24 (" + a + ", " + b + ", " + c + "; the most read " + most[1] + ", moved at " + movedAt[1] + ", now "
+                            + level.getGameTime() + ", stuck moves " + (UmvuthiAloft.INSTANCE.stuckMoves - moves[0]) + ", B at " + puppet[1].position()
+                            + ", its place " + place[0] + ", " + place[1] + ", the ceiling's room " + ceilingRoom[0] + ")", a > 0 && b > 0 && c > 0);
                     check("100 ticks apart (" + (b - a) + " and " + (c - b) + ")", b - a == 100 && c - b == 100);
                     long wait = movedAt[1] - c;
                     check("B was moved at the first look after the next 100 ticks (" + wait + ")", wait >= 100 && wait <= 112);
@@ -1294,6 +1311,9 @@ public final class AloftMowzieGameTests {
                     double off = Math.hypot(puppet[1].getX() - place[0], puppet[1].getZ() - place[1]);
                     check("B stands at its place (" + off + " off)", off <= 1.5);
                     check("A is still held under the ceiling (" + most[0] + ", " + movedAt[0] + ")", most[0] == 24 && movedAt[0] == 0);
+                    // the watching player stands 20 blocks from B's place only now (MZB-919): put there while B was held under the ceiling, 38 blocks
+                    // off with a clear line, it was a player B could see, so B was neither unseen nor moved, and the jar's AI targeted it and set B down
+                    hearer[0] = FakePlayers.watching(level, new Vec3(place[0] - 20, lane[1].top + 1, place[1]), "mowzie-aloft-stuck-b-hearer");
                     ConflictKit.steer(agent[1], ConflictKit.party(agent[1]).epoch, 0.5f, lane[1].x0 + end, lane[1].z, 0, true);
                 })
                 .thenWaitUntil(waits.logic(() -> check("B has landed", !puppet[1].isNoGravity())))
@@ -1799,12 +1819,23 @@ public final class AloftMowzieGameTests {
                     throne[0].sendAbilityMessage(EntityUmvuthi.SPAWN_ABILITY);
                 })
                 .thenWaitUntil(waits.logic(() -> {
+                    // the jar drops a cast that cannot start (Ability.canUse) without a word, and a first round saw none come in 8,000 ticks:
+                    // the message is sent again every 40 ticks to a body whose cast has not made its three (MZB-917)
+                    if (level.getGameTime() % 40 == 0) {
+                        if (joins.stream().filter(j -> j.tag() != null).count() < 3 && puppet[0].getActiveAbility() == null)
+                            puppet[0].sendAbilityMessage(EntityUmvuthi.SPAWN_ABILITY);
+                        if (joins.stream().filter(j -> j.tag() == null).count() < 3 && throne[0].getActiveAbility() == null)
+                            throne[0].sendAbilityMessage(EntityUmvuthi.SPAWN_ABILITY);
+                    }
                     check("the puppet's warriors have come (" + joins.stream().filter(j -> j.tag() != null).count() + " tagged of " + joins.size()
                                     + " joins; adopted +" + (ConflictKit.summonsAdopted() - was[0]) + ", refused +" + (ConflictKit.summonsRefused() - was[1])
                                     + "; the puppet's ability " + puppet[0].getActiveAbilityType() + ", alive " + puppet[0].isAlive() + ", removed " + puppet[0].isRemoved()
-                                    + ", gravity " + !puppet[0].isNoGravity() + ", slot " + chiefSlot(agent).alive() + ")",
+                                    + ", gravity " + !puppet[0].isNoGravity() + ", slot " + chiefSlot(agent).alive() + "; " + abilityState(puppet[0], EntityUmvuthi.SPAWN_ABILITY) + ")",
                             joins.stream().filter(j -> j.tag() != null).count() >= 3);
-                    check("and the throne body's (" + joins.stream().filter(j -> j.tag() == null).count() + ")",
+                    check("and the throne body's (" + joins.stream().filter(j -> j.tag() == null).count() + " untagged joins; " + abilityState(throne[0], EntityUmvuthi.SPAWN_ABILITY)
+                                    + "; the throne body alive " + throne[0].isAlive()
+                                    + ", removed " + throne[0].isRemoved() + ", puppet " + RtsimApi.isPuppet(throne[0]) + ", ability " + throne[0].getActiveAbilityType()
+                                    + ", no AI " + throne[0].isNoAi() + ", at " + throne[0].position() + ")",
                             joins.stream().filter(j -> j.tag() == null).count() >= 3);
                     check("both abilities are over", puppet[0].getActiveAbility() == null && throne[0].getActiveAbility() == null);
                 }))
@@ -1813,6 +1844,12 @@ public final class AloftMowzieGameTests {
                     throne[0].sendAbilityMessage(EntityUmvuthi.SPAWN_SUNBLOCKERS_ABILITY);
                 })
                 .thenWaitUntil(waits.logic(() -> {
+                    if (level.getGameTime() % 40 == 0) { // sent again to a body whose cast has not made its three, as above (MZB-917)
+                        if (joins.stream().filter(j -> j.tag() != null && j.crane()).count() < 3 && puppet[0].getActiveAbility() == null)
+                            puppet[0].sendAbilityMessage(EntityUmvuthi.SPAWN_SUNBLOCKERS_ABILITY);
+                        if (joins.stream().filter(j -> j.tag() == null && j.crane()).count() < 3 && throne[0].getActiveAbility() == null)
+                            throne[0].sendAbilityMessage(EntityUmvuthi.SPAWN_SUNBLOCKERS_ABILITY);
+                    }
                     check("the puppet's cranes have come (" + joins.stream().filter(j -> j.tag() != null && j.crane()).count() + ")",
                             joins.stream().filter(j -> j.tag() != null && j.crane()).count() >= 3);
                     check("and the throne body's (" + joins.stream().filter(j -> j.tag() == null && j.crane()).count() + ")",
@@ -1852,12 +1889,23 @@ public final class AloftMowzieGameTests {
                     check("and the adopted count did not move for them", ConflictKit.summonsAdopted() - was[0] == mine[0].size());
                     record(test, "summons", warriors + " warriors and " + cranes + " cranes of the puppet tagged and listed before their joins; "
                             + theirs[0].size() + " of the throne body's untagged strays");
-                    // a warrior killed by the player books nothing
-                    killed[0] = (EntityUmvuthanaMinion) mine[0].stream().filter(j -> !j.crane()).findFirst().orElseThrow().body();
+                    // a warrior killed by the player books nothing. The jar ends a death animation from the body's own tick (MowzieEntity.tickDeath), which a
+                    // chunk that does not tick entities never gives; the lane is one chunk deep and the summons walk, are pushed and teleport (the warriors'
+                    // TELEPORT ability), so one may stand outside it and never finish dying (MZB-958). The round at 53934bdc killed one that stood in a chunk
+                    // that ticked and found it 0.04 blocks over the lane's edge 12 ticks into its death (the kill's knockback): the one killed is put in the
+                    // lane's middle, at rest, as the bridge puts back a stray.
+                    List<EntityUmvuthanaMinion> fighters = mine[0].stream().filter(j -> !j.crane()).map(j -> (EntityUmvuthanaMinion) j.body()).toList();
+                    long ticking = fighters.stream().filter(w -> !w.isRemoved() && RtsimSession.entitiesTickAt(level, w.blockPosition())).count();
+                    killed[0] = fighters.get(0);
+                    String before = warriorState(level, killed[0]);
+                    killed[0].teleportTo(lane.x0 + 32, lane.top + 1, lane.z);
+                    killed[0].setDeltaMovement(Vec3.ZERO);
+                    record(test, "warriors", ticking + " of " + fighters.size() + " of the puppet's warriors stood in a chunk that ticks entities; killed "
+                            + killed[0].getId() + before + " after it was put in the lane's middle" + warriorState(level, killed[0]));
                     killed[0].setLastHurtByPlayer(player[0]);
                     MowzieKit.kill(killed[0], level.damageSources().playerAttack(player[0]));
                 })
-                .thenWaitUntil(waits.logic(() -> check("the warrior's animation has ended", killed[0].isRemoved())))
+                .thenWaitUntil(waits.logic(() -> check("the warrior's animation has ended" + warriorState(level, killed[0]), killed[0].isRemoved())))
                 .thenIdle(20)
                 .thenExecute(() -> {
                     check("no BAND_CASUALTIES for the party (" + ConflictKit.about(ConflictRecords.BAND_CASUALTIES, agent).size() + ")",
@@ -2042,8 +2090,45 @@ public final class AloftMowzieGameTests {
         return back;
     }
 
+    /**
+     * The place (x, z) the engine reckons for a party's chief slot at this tick, by the slot's own {@code placeXZ} (package-private in the core, so read
+     * through reflection), or null with no slot or no such method.
+     */
+    private static double[] placeOf(long agent, ServerLevel level) {
+        ConflictBridge.Slot sl = chiefSlot(agent);
+        if (sl == null)
+            return null;
+        try {
+            java.lang.reflect.Method m = ConflictBridge.Slot.class.getDeclaredMethod("placeXZ", long.class);
+            m.setAccessible(true);
+            return (double[]) m.invoke(sl, level.getGameTime());
+        } catch (ReflectiveOperationException | RuntimeException e) {
+            return null;
+        }
+    }
+
+    /** What the jar's ability gate says of one ability of a body: whether a cast would start, whether one runs, the cooldown left. */
+    private static String abilityState(EntityUmvuthi u, com.bobmowzie.mowziesmobs.server.ability.AbilityType<?, ?> type) {
+        com.bobmowzie.mowziesmobs.server.ability.Ability<?> a = com.bobmowzie.mowziesmobs.server.ability.AbilityHandler.INSTANCE.getAbility(u, type);
+        return a == null ? "no such ability" : "can use " + a.canUse() + ", using " + a.isUsing() + ", cooldown " + a.getCooldownTimer();
+    }
+
+    /** What decides whether a warrior finishes dying (MZB-958): the jar's tickDeath runs from its own tick, in a chunk that ticks entities. */
+    private static String warriorState(ServerLevel level, EntityUmvuthanaMinion w) {
+        return " (removed " + w.isRemoved() + ", dying " + w.isDeadOrDying() + ", death time " + w.deathTime + ", health " + w.getHealth() + ", ability "
+                + w.getActiveAbilityType() + ", at " + w.position() + ", in a chunk that ticks entities " + RtsimSession.entitiesTickAt(level, w.blockPosition())
+                + ", ticks lived " + w.tickCount + ")";
+    }
+
     /** Health an Umvuthi out of battle heals in the ticks between a test's set and its read: 0.3 a tick (the jar's, once its timer ran out). */
     private static final float HEAL_SLACK = 9f;
+
+    /**
+     * The health a throne body is given in the held take's test (29b). Low, because the jar heals it 0.3 a tick out of battle while the
+     * puppet walks 60 blocks home (about 340 ticks, 100 points): from 40 it came to 141 of 150 and could not be told from the
+     * puppet's health that the merge writes (MZB-914).
+     */
+    private static final float THRONE_OWN = 10f;
 
     /**
      * Whether an Umvuthi has the health it was given, to its maximum: the jar heals 0.3 a tick out of battle ({@code healsOutOfBattle}), so a read
@@ -2497,7 +2582,7 @@ public final class AloftMowzieGameTests {
      * <li>The take is answered STALE no earlier than the puppet comes within {@link AloftRules#TAKE_STALE} blocks of the throne
      * (horizontally) and within two ticks of it, and the throne body stands.</li>
      * <li>The chief's HAND_BACK, sent with CHIEF_BODY home (naming no player) when the take is answered, floats the puppet to the spot.
-     * Then one Umvuthi stands on the throne: the throne body, merged, with the puppet's health in place of its own 40, the payer in
+     * Then one Umvuthi stands on the throne: the throne body, merged, with the puppet's health in place of its own (10, healed on the way), the payer in
      * its memory (it knew none), and no second body; the puppet is gone, the answer is NOTHING, and the bridge counted one merge.</li>
      * </ul>
      * The control, grove C, has no player within 160 blocks of its throne: the TAKE plays at once (DONE, the throne body gone), and
@@ -2548,7 +2633,7 @@ public final class AloftMowzieGameTests {
                 .thenExecute(() -> {
                     for (int i = 0; i < 2; i++) {
                         MowzieKit.allOutcomes("ADOPT " + i, ConflictKit.outcomes(g[i].faction, op[i]), DONE);
-                        throne[i].setHealth(40f);
+                        throne[i].setHealth(THRONE_OWN);
                     }
                     chiefBand(helper, g[0], agent[0], g[0].spot.x + 60, g[0].spot.z, 180f, List.of(), 1);
                     chiefBand(helper, g[1], agent[1], g[1].spot.x + 45, g[1].spot.z, 180f, List.of(), 1);
@@ -2607,8 +2692,14 @@ public final class AloftMowzieGameTests {
                     check("the puppet came within " + AloftRules.TAKE_STALE + " blocks at tick " + tick[0] + " and the take went at " + tick[1],
                             tick[0] >= 0 && tick[1] >= tick[0] && tick[1] - tick[0] <= 2);
                     check("H's throne body still stands, not second", throne[0].isAlive() && !MowzieKit.camps().secondBody(throne[0]));
-                    check("H's throne body has its own health still (" + throne[0].getHealth() + ")", healthIs(throne[0], 40f));
-                    check("the held line is gone (" + (MowzieKit.camps().heldLines() - was[2]) + ")", MowzieKit.camps().heldLines() == was[2]);
+                    // it has healed 0.3 a tick out of battle in the walk home (MZB-914): its own, from THRONE_OWN, and well short of the puppet's
+                    check("H's throne body has its own health still, healed from " + THRONE_OWN + " and short of the puppet's (" + throne[0].getHealth() + ")",
+                            throne[0].getHealth() >= THRONE_OWN - 1.0e-3f && throne[0].getHealth() < throne[0].getMaxHealth() - 20f);
+                    // C's own HAND_BACK is held while its puppet floats home (Camps.handBack holds every chief puppet that floats: MZB-822), 45 blocks
+                    // at 0.1 a tick, longer than H's walk: it is the one held line left (MZB-918)
+                    int cHeld = ConflictKit.outcomes(g[1].faction, handBack[1]).isEmpty() ? 1 : 0;
+                    check("H's held line is gone (" + (MowzieKit.camps().heldLines() - was[2]) + " held, C's hand-back held " + cHeld + ")",
+                            MowzieKit.camps().heldLines() == was[2] + cHeld);
                     // the engine's own home sends the chief's HAND_BACK, with its memory of a chief at home (no player named)
                     ConflictKit.chiefBody(g[0].faction, epochOf(g[0]), 180f, List.of());
                     handBack[0] = MowzieKit.reconcile(g[0].faction, epochOf(g[0]), g[0].spot, 3f, List.of(
@@ -2962,7 +3053,8 @@ public final class AloftMowzieGameTests {
                         long now = level.getGameTime();
                         for (int i = 0; i < 2; i++) {
                             ConflictBridge.Party p = ConflictKit.bridge().party(agent[i]);
-                            if (recalledAt[i] == 0 && p != null && p.recalling())
+                            // a band whose every body goes in the recall's own tick has no party left to read recalling (MZB-915: band B's)
+                            if (recalledAt[i] == 0 && (p == null || p.recalling()))
                                 recalledAt[i] = now;
                             if (goneAt[i] == 0 && puppet[i].isRemoved())
                                 goneAt[i] = now;
@@ -3792,7 +3884,8 @@ public final class AloftMowzieGameTests {
                                 swaps[0]++;
                                 double d = u.position().distanceTo(prev[0]);
                                 most[1] = Math.max(most[1], d);
-                                if (d > 0.1 && broke.size() < 8)
+                                // 0.1 is the puppet's own step in the tick; the sum of doubles reads 0.10000000000000142 (MZB-954)
+                                if (d > 0.1 + 1.0e-6 && broke.size() < 8)
                                     broke.add("tick " + now + ": the swap moved it " + d + " blocks");
                             }
                         }
@@ -4009,6 +4102,8 @@ public final class AloftMowzieGameTests {
         final long[] fired = new long[5];
         /** The first tick after the n-th re-pair that the body's way was more than the turn's limit off its facing. */
         final long[] dueAfter = new long[8];
+        /** The body's place (x, z) by the engine's own reckoning, or null: the way the re-pair gate reads, which a tick's move does not always give (MZB-919). */
+        Supplier<double[]> place = () -> null;
         boolean armed;
         Vec3 prev;
         String before;
@@ -4111,9 +4206,14 @@ public final class AloftMowzieGameTests {
                     note("tick " + now + ": only " + rose + " of " + hearers.length + " hearers were sent an add");
                 repaired(now, at, moved, state);
             }
-            if (!repairs.isEmpty() && dueAfter[repairs.size()] == 0 && moved > 0.05
-                    && AloftRules.turn(body.getYRot(), AloftRules.wayYaw(at.x - prev.x, at.z - prev.z)) > AloftRules.TURN)
-                dueAfter[repairs.size()] = now;
+            if (!repairs.isEmpty() && dueAfter[repairs.size()] == 0) {
+                double[] pl = place.get();
+                // the gate's own way: from the body to its place; the tick's move only when the place is unknown
+                float way = pl != null ? AloftRules.wayYaw(pl[0] - at.x, pl[1] - at.z)
+                        : moved > 0.05 ? AloftRules.wayYaw(at.x - prev.x, at.z - prev.z) : Float.NaN;
+                if (!Float.isNaN(way) && AloftRules.turn(body.getYRot(), way) > AloftRules.TURN)
+                    dueAfter[repairs.size()] = now;
+            }
             still2 = still1;
             still1 = moved;
             prev = at;
@@ -4178,10 +4278,17 @@ public final class AloftMowzieGameTests {
             Integer direction = null;
             Byte flags = null;
             java.util.TreeSet<String> sent = new java.util.TreeSet<>();
-            int run = 0;
-            for (int i = k + 1; i < ps.size() && BUNDLED.contains(ps.get(i).getClass()); i++) {
+            int run = 0, complex = 0;
+            // The complex spawn payload comes second in the bundle, right after the add (ServerEntity.sendPairingData asks the entity for its own pairing
+            // data before the synched data), because the jar's MowzieEntity is an IEntityWithComplexSpawn, and the re-pair lets it through (MZB-873). A
+            // run that stopped at it read no direction, no flag byte and no effect (MZB-959).
+            for (int i = k + 1; i < ps.size() && (BUNDLED.contains(ps.get(i).getClass()) || isComplexSpawn(ps.get(i))); i++) {
                 run++;
                 net.minecraft.network.protocol.Packet<?> q = ps.get(i);
+                if (isComplexSpawn(q)) {
+                    complex++;
+                    continue;
+                }
                 if (q instanceof ClientboundSetEntityDataPacket d && d.id() == id) {
                     for (SynchedEntityData.DataValue<?> v : d.packedItems()) {
                         if (v.id() == directionId && v.value() instanceof Integer n)
@@ -4193,17 +4300,36 @@ public final class AloftMowzieGameTests {
                     sent.add(e.getEffect().getRegisteredName() + "/" + e.getEffectAmplifier());
                 }
             }
-            if (direction == null || direction != body.getDirectionData())
-                note("tick " + now + ": the bundle carries direction " + direction + ", the body's is " + body.getDirectionData());
+            if (direction == null || direction != body.getDirectionData()) {
+                StringBuilder after = new StringBuilder();
+                for (int i = k + 1; i < ps.size() && i <= k + 6; i++)
+                    after.append(' ').append(ps.get(i).getClass().getSimpleName());
+                note("tick " + now + ": the bundle carries direction " + direction + ", the body's is " + body.getDirectionData() + " (after the add:" + after + ")");
+            }
             if (flags == null || (flags & 0x40) == 0)
                 note("tick " + now + ": the bundle's flag byte is " + flags + ": no glowing bit");
-            java.util.TreeSet<String> have = new java.util.TreeSet<>();
-            for (MobEffectInstance e : body.getActiveEffects())
-                have.add(e.getEffect().getRegisteredName() + "/" + e.getAmplifier());
-            if (!sent.equals(have))
-                note("tick " + now + ": the bundle's effects are " + sent + ", the body's " + have);
+            // Vanilla's pairing of a mob carries no effects (ServerEntity.sendPairingData sends the add, the entity's own data, the synched data, the
+            // attributes, the equipment, passengers and leash; a client learns a mob's effects from its flags and particles, and a mod sends its own), so the
+            // re-pair, "as if it had just come into view", carries what the hearer's first pairing of the body carried (MZB-960).
+            java.util.TreeSet<String> first = new java.util.TreeSet<>();
+            int f = -1;
+            for (int i = 0; i < ps.size() && f < 0; i++)
+                if (ps.get(i) instanceof ClientboundAddEntityPacket p && p.getId() == id)
+                    f = i;
+            for (int i = f + 1; f >= 0 && f < k && i < ps.size() && (BUNDLED.contains(ps.get(i).getClass()) || isComplexSpawn(ps.get(i))); i++)
+                if (ps.get(i) instanceof ClientboundUpdateMobEffectPacket e && e.getEntityId() == id)
+                    first.add(e.getEffect().getRegisteredName() + "/" + e.getEffectAmplifier());
+            if (f < 0 || f >= k)
+                note("tick " + now + ": hearer " + hearer + " has no first pairing before the re-pair's add");
+            if (!sent.equals(first))
+                note("tick " + now + ": the bundle's effects are " + sent + ", the first pairing's " + first + " (the body has " + body.getActiveEffects().size() + ")");
             if (hearer == 0)
-                facts.add(String.format("tick %d: yaw %.1f (old %.1f, way %.1f), %d packets after the add", now, yaw, old, way, run));
+                facts.add(String.format("tick %d: yaw %.1f (old %.1f, way %.1f), %d packets after the add, %d of them the complex spawn payload", now, yaw, old, way, run, complex));
+        }
+
+        private static boolean isComplexSpawn(net.minecraft.network.protocol.Packet<?> q) {
+            return q instanceof net.minecraft.network.protocol.common.ClientboundCustomPayloadPacket c
+                    && c.payload() instanceof net.neoforged.neoforge.network.payload.AdvancedAddEntityPayload;
         }
     }
 
@@ -4229,7 +4355,7 @@ public final class AloftMowzieGameTests {
      * the bundle's data carries the new direction, the glowing bit and every effect.</li>
      * <li>The server's body is the same across the tick (id, UUID, health, health lost, effects, glowing, kill credit, target, the boss
      * bar's players), the map holds one tracker for it, and none of join, leave, start or stop tracking, or death fired in it.</li>
-     * <li>A second turn 100 ticks later (west at 0.3) is due before 200 ticks have passed, and the second re-pair comes 200 or more ticks
+     * <li>A second turn 60 ticks later (west at 0.3) is due before 200 ticks have passed, and the second re-pair comes 200 or more ticks
      * after the first. A third turn is due when the body is killed 198 ticks after the second re-pair: nothing is sent for the dying body.</li>
      * </ol>
      * The control, lane C, turns 40 degrees at 0.2 a tick, so the puppet lags and its way is 40 degrees off its facing for 400 ticks and
@@ -4283,6 +4409,18 @@ public final class AloftMowzieGameTests {
                             if (h != null && !h.isRemoved())
                                 FakePlayers.pump(h);
                     });
+                    // The anchors outrun the puppets on purpose (0.2 and 0.3 a tick against their 0.1), which is the stuck rule's case: no headway toward its
+                    // place raised the target 8 blocks a window, and a puppet rising 24 blocks takes no step across for 240 ticks, so its way never turned
+                    // (MZB-955). The stuck machine is started over every tick here; the rule itself is 23d's.
+                    MowzieKit.everyTick(helper, () -> {
+                        for (long ag : agent) {
+                            if (ConflictKit.bridge().party(ag) == null)
+                                continue; // the bands are not made yet (the hook ran for the first ticks and logged an error each)
+                            ConflictBridge.Slot sl = chiefSlot(ag);
+                            if (sl != null && sl.travelMemo() != null)
+                                UmvuthiAloft.INSTANCE.clearStuck(sl.travelMemo());
+                        }
+                    });
                 })
                 .thenWaitUntil(waits.logic(() -> {
                     puppet[0] = puppet(agent[0]);
@@ -4307,6 +4445,16 @@ public final class AloftMowzieGameTests {
                     check("the away hearer is more than the sight rule's 160 off (" + Math.hypot(u.getX() - hearer[2].getX(), u.getZ() - hearer[2].getZ()) + ")",
                             Math.hypot(u.getX() - hearer[2].getX(), u.getZ() - hearer[2].getZ()) > AloftRules.SIGHT + 10);
                     check("it faces east (" + u.getDirectionData() + ")", u.getDirectionData() == 4);
+                    // The jar starts abilities of its own on an Umvuthi with nothing to do, and Ability.canUse drops a message sent while one is active
+                    // (MZB-957): an ambient TALK (Mob.baseTick rolls nextInt(1000) against ambientSoundTime and getAmbientSound sends it: 23 ticks, about one
+                    // time in six), and with its AI on a BELLY drum (40) or a ROAR of its own (70), or the sunblockers of a health loss. A ROAR sent at the
+                    // wrong moment was refused and the test counted the 17 ticks left of a TALK. The puppet has no AI here, and its ambient timer is held
+                    // below zero (as Lurkers.hold holds a Frostmaw's, MZB-937): the ROAR is the only ability it has, the one the test sends.
+                    u.setNoAi(true);
+                    MowzieKit.everyTick(helper, () -> {
+                        if (!u.isRemoved())
+                            u.ambientSoundTime = -1000;
+                    });
                     u.addEffect(new MobEffectInstance(EffectHandler.SUNBLOCK, 6000, 0));
                     u.addEffect(new MobEffectInstance(MobEffects.FIRE_RESISTANCE, 6000, 0));
                     u.setGlowingTag(true);
@@ -4315,6 +4463,7 @@ public final class AloftMowzieGameTests {
                     check("it has Sunblock and Fire Resistance (" + u.getActiveEffects() + ")",
                             u.hasEffect(EffectHandler.SUNBLOCK) && u.hasEffect(MobEffects.FIRE_RESISTANCE));
                     Reading r = new Reading(level, u, hearer[0], hearer[0], hearer[1]);
+                    r.place = () -> placeOf(agent[0], level);
                     reading[0] = r;
                     for (int k = 0; k < r.fired.length; k++) {
                         int kind = k;
@@ -4374,8 +4523,9 @@ public final class AloftMowzieGameTests {
                     check("no re-pair yet, the body still east (" + r.repairs + ", " + u.getDirectionData() + ")", r.repairs.isEmpty() && u.getDirectionData() == 4);
                     record(test, "trail", "near " + near + ", far " + far1 + " small_flame packets in 100 ticks, away "
                             + hearer[2].count(ClientboundLevelParticlesPacket.class));
+                    check("it has no ability before the ROAR (" + u.getActiveAbilityType() + ")", u.getActiveAbility() == null);
                     u.sendAbilityMessage(EntityUmvuthi.ROAR_ABILITY);
-                    check("the ROAR started (" + u.getActiveAbility() + ")", u.getActiveAbility() != null);
+                    check("the ROAR started, and not another ability (" + u.getActiveAbilityType() + ")", u.getActiveAbilityType() == EntityUmvuthi.ROAR_ABILITY);
                     r.roarAt = level.getGameTime();
                     at[1] = r.roarAt;
                     // south, 60 blocks at 0.2: the anchor outruns the puppet, so its way is 90 degrees off its facing at once
@@ -4392,7 +4542,9 @@ public final class AloftMowzieGameTests {
                     check("it is facing south now (" + puppet[0].getDirectionData() + ")", puppet[0].getDirectionData() == 1);
                     at[2] = r1;
                 })
-                .thenWaitUntil(waits.logic(() -> check("100 ticks after the re-pair", level.getGameTime() >= at[2] + 100)))
+                // 60 ticks, not 100 (MZB-952): the way came 55 degrees off its facing 112 ticks after the west steer, so a steer 100 ticks after
+                // the re-pair had it due at 212, past the cooldown's end, and the test asks for a turn due before it
+                .thenWaitUntil(waits.logic(() -> check("60 ticks after the re-pair", level.getGameTime() >= at[2] + 60)))
                 .thenExecute(() -> {
                     long now = level.getGameTime();
                     double z = Math.min(a.z + 0.2 * (now - at[1]), a.z + 60); // where the anchor is on its way south
@@ -4411,7 +4563,9 @@ public final class AloftMowzieGameTests {
                     check("it is facing west now (" + puppet[0].getDirectionData() + ")", puppet[0].getDirectionData() == 2);
                     long now = level.getGameTime();
                     double z = anchor[0];
-                    double x = a.x0 + 56 - 0.3 * (now - at[3]);
+                    // the anchor stops at the west end, a.x0 + 4 (MZB-916: past it, the target ran west of the lane and the third leg went west-north-west,
+                    // with the puppet's way never 55 degrees off its facing)
+                    double x = Math.max(a.x0 + 4, a.x0 + 56 - 0.3 * (now - at[3]));
                     at[5] = r2;
                     // north, at 0.3: the third turn, due again before the cooldown ends
                     ConflictKit.steer(agent[0], ConflictKit.party(agent[0]).epoch, 0.3f, x, z - 60, 0, false);
@@ -4421,7 +4575,10 @@ public final class AloftMowzieGameTests {
                     Reading r = reading[0];
                     EntityUmvuthi u = puppet[0];
                     check("only two re-pairs so far (" + r.repairs + ")", r.repairs.size() == 2);
-                    check("the third turn is due: its way has been 55 degrees off its facing since " + (level.getGameTime() - r.dueAfter[2]) + " ticks ago",
+                    check("the third turn is due: its way has been 55 degrees off its facing since " + (level.getGameTime() - r.dueAfter[2]) + " ticks ago (due after "
+                                    + java.util.Arrays.toString(r.dueAfter) + ", at " + u.position() + ", yaw " + u.getYRot() + ", facing " + u.getDirectionData()
+                                    + ", lag " + chiefSlot(agent[0]).lag() + ", re-pairs " + r.repairs + ", now " + level.getGameTime() + ", the wait began at " + at[5]
+                                    + ", the second steer at " + at[3] + ")",
                             r.dueAfter[2] != 0 && level.getGameTime() - r.dueAfter[2] >= 10);
                     check("the body is alive, with no ability (" + u.isDeadOrDying() + ", " + u.getActiveAbility() + ")", !u.isDeadOrDying() && u.getActiveAbility() == null);
                     r.removedBefore = (int) (hearer[0].removed(u.getId()) + hearer[1].removed(u.getId()));

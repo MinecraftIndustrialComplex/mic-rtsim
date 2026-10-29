@@ -321,6 +321,53 @@ fn place_of(topo: &rtsim_space::Topologies, d: &District, at: Tick) -> Option<At
     Some(At::new(at.0, d.dim, x, z))
 }
 
+/// What names a command for its op id, with the tick of the decision ([`Engine::decided`];
+/// docs/choices-mowzie-build.md RP-272). Java guards an IND_CARRIAGE_DELTA, IND_DEPOSIT_DELTA,
+/// IND_WRITE_PACKAGE and IND_WRITE_CHAIN by its op id alone, so one of those decided again after
+/// a crash must carry the op it carried live, or the world applies it a second time. Its amounts
+/// can differ when it is decided again: the replay has none of the latest-wins records the live
+/// run had, and takes a record a full hand-over left for the next one at its own tick where the
+/// live run took it at the step's (RP-262). So the amounts are left out, and what it changes (the
+/// train, the deposit, the postbox's good, the frogport's good) and the tick name it: decided
+/// again, it meets the op Java applied and is answered DUPLICATE, so the live change stands,
+/// applied once (lose, never double). A deposit delta names its district too, outside the
+/// command ([`IndustryOps::derive_with`], RP-275). A package is named by its number at its
+/// postbox in place of the tick, one package a command ([`IndustryOps::derive_numbered`], RP-259):
+/// the engine books what it decides, so the same op must always carry the same package. A chunk
+/// reconcile keeps its whole content:
+/// Java's chunk epoch guards it whatever its op, and its epoch and deltas tell two rounds apart.
+fn op_key(c: &Cmd) -> Cmd {
+    let marks = |g: &GoodVec| GoodVec::from_pairs(g.goods().map(|g| (g, 1)));
+    match c {
+        Cmd::ChunkReconcile(_) | Cmd::ProbeSet(_) | Cmd::CountSet(_) | Cmd::HeldDraw(_) => {
+            c.without_op()
+        }
+        Cmd::CarriageDelta(x) => Cmd::CarriageDelta(CarriageDelta {
+            op: OpId(0),
+            train: x.train,
+            reason: x.reason,
+            entries: Vec::new(),
+        }),
+        Cmd::DepositDelta(x) => Cmd::DepositDelta(DepositDelta {
+            op: OpId(0),
+            delta: 0,
+            ..*x
+        }),
+        Cmd::WritePackage(x) => Cmd::WritePackage(WritePackage {
+            op: OpId(0),
+            count: 0,
+            goods: marks(&x.goods),
+            ..x.clone()
+        }),
+        Cmd::WriteChain(x) => Cmd::WriteChain(WriteChain {
+            op: OpId(0),
+            count: 0,
+            goods: marks(&x.goods),
+            ..x.clone()
+        }),
+    }
+}
+
 /// Items in `v` by absolute amount, for an archive magnitude: fluids, energy and deposits are not
 /// items. A good the dictionary does not know counts as one.
 fn item_count(goods: &BTreeMap<Good, GoodInfo>, v: &GoodVec) -> i64 {
@@ -385,6 +432,17 @@ pub struct Engine {
     ops: IndustryOps,
     out: Vec<Cmd>,
     now: Tick,
+    /// The tick of the decision the engine makes now, or made last: a record's own time (`t.at`,
+    /// even when the record is older than `now`), a breakpoint's, a wake's, a raid's, a session
+    /// start's. Every op id derives with it, never with `now` (docs/choices-mowzie-build.md
+    /// RP-270): `now` follows the history of calls, which a replay after a crash does not repeat
+    /// (a record the live run took late, at the step's time, is replayed at its own). A coverage
+    /// flush derives with the tick of the decision that marked it, which is this one: a
+    /// breakpoint's and a wake's marks are flushed at their own ticks, a record's at the next
+    /// record's or the step's (RP-271). Saved in the globals page: pages can be taken in the
+    /// middle of a hand-over, after a stale record whose marks wait for the next record, which
+    /// settles them only when its own tick is past this one (RP-259).
+    decided: Tick,
     pub stats: Stats,
     pub books: Books,
     pub log: std::collections::VecDeque<EngineEvent>,
@@ -544,6 +602,7 @@ impl Engine {
             ops: IndustryOps::default(),
             out: Vec::new(),
             now,
+            decided: now,
             stats: Stats::default(),
             books: Books::default(),
             log: std::collections::VecDeque::new(),
@@ -786,11 +845,28 @@ impl Engine {
         out
     }
 
+    /// A chain write `op` of `store` that the host still holds goes to Java again at `at`, its
+    /// session start (docs/choices-journal-barrier.md RP-294): its answer is awaited from then.
+    /// The host calls this before [`Engine::session_start`], whose catch-up over a stretch with
+    /// the module switched off would otherwise take the answer as lost ten periods after the drain
+    /// that first handed the write on (`WRITE_ANSWER_PERIODS`, choice SC113) and write the
+    /// frogport again under a new op while the held write goes too. Returns whether the store
+    /// still awaited `op` (an answered or superseded write is left as it is).
+    pub fn hand_on_again(&mut self, store: StoreId, op: OpId, at: Tick) -> bool {
+        if !self.stores.get(&store).is_some_and(|s| s.awaits_write(op)) {
+            return false;
+        }
+        self.stores
+            .get_mut(&store)
+            .is_some_and(|s| s.write_handed_on_again(op, at))
+    }
+
     /// A session start (the bridge's SESSION_START): open learning windows are lost with the
     /// latest-wins samples that were in flight, so they are discarded (F6). Every district is
     /// unloaded until its chunks report in.
     pub fn session_start(&mut self, at: Tick) {
-        self.advance_to(at);
+        self.run_to(at);
+        self.decided = at;
         self.sent_this_session.clear();
         // Asks of the session before may be lost with it: asked again as they come due.
         self.draws_asked.clear();
@@ -812,8 +888,25 @@ impl Engine {
 
     /// Fires every breakpoint, pressure wake and approach hold due by `to`, in time order, after
     /// the replay coverage of every district whose chunks changed is brought up to date (I7).
-    /// The step calls this once the hand-over's records are in.
+    /// The step calls this once the hand-over's records are in, and it ends the step: the op
+    /// window keeps every id at or above the step's oldest decision tick until here (RP-259, the
+    /// slice R re-check). A replay in rtsim-jni is one step: its steps are held, and the held
+    /// step after the replay end calls this.
     pub fn advance_to(&mut self, to: Tick) {
+        self.run_to(to);
+        self.ops.end_step();
+    }
+
+    /// [`Engine::advance_to`] within a step, for a caller that holds the step open (a module switch
+    /// freezing the engine at the tick of its record, in a replay that is one step): every
+    /// breakpoint and wake due by `to` fires, and the step goes on.
+    pub fn run_in_step(&mut self, to: Tick) {
+        self.run_to(to);
+    }
+
+    /// [`Engine::advance_to`] within a step (a session start, a raid that lands while industry is
+    /// held): the step goes on.
+    fn run_to(&mut self, to: Tick) {
         let now = self.now;
         self.flush_dirty(now);
         self.drain_networks(now);
@@ -831,13 +924,20 @@ impl Engine {
             let limit = next.unwrap_or(to);
             while let Some((at, h)) = self.clusters.next_due(limit) {
                 self.stats.breakpoints += 1;
+                self.decided = at;
                 self.after_cluster(h, at);
                 // A part's new rows reach the replays on its shared networks at the same tick.
+                self.drain_networks(at);
+                // The coverage it changed settles at its own tick, as a wake's does: left for the
+                // next flush, it would settle at the step's time live and at the next record's
+                // in a replay, which differ (docs/choices-mowzie-build.md RP-271).
+                self.flush_dirty(at);
                 self.drain_networks(at);
             }
             match next {
                 Some(t) => {
                     self.now = self.now.max(t);
+                    self.decided = t;
                     // On a tie a hold ends (or pollution is pushed) before an attack lands.
                     if next_h == Some(t) {
                         let (key, wake) = self.wakes.pop_first().expect("peeked");
@@ -871,13 +971,20 @@ impl Engine {
 
     fn ingest_obs(&mut self, t: &Timed) {
         let at = t.at.max(self.now);
-        // Coverage changed by this tick's records settles before the next tick's (I7).
-        if at > self.now {
+        // Coverage changed by this tick's records settles before the next tick's (I7). The next
+        // tick is the record's own, past the last decision's (which never passes `now`, so this
+        // holds whenever the clock moves): a live run that took several records late, at the
+        // step's time, settles between them as their replay does, each round at the tick of the
+        // record that marked it (docs/choices-mowzie-build.md RP-271).
+        if t.at > self.decided {
             let now = self.now;
             self.flush_dirty(now);
             self.drain_networks(now);
         }
         self.fire_until(at);
+        // The record's decisions derive their op ids with its own time: a replay takes it at
+        // `t.at`, while a live run may have taken it later (RP-262, RP-270).
+        self.decided = t.at;
         self.stats.observations += 1;
         match &t.obs {
             Obs::Glass(g) => self.glass_obs(at, g),
@@ -1150,6 +1257,9 @@ impl Engine {
                 chunk,
                 applied_epoch,
             } => {
+                // The applied epoch raises no floor (RP-259): a round decided again after a crash
+                // must meet the epoch the chunk holds, so that Java refuses it; one past it would
+                // be applied a second time.
                 self.district_mut(*district).loaded_chunks.insert(*chunk);
                 self.chain_chunk_loaded(*district, Some(*chunk), at);
                 // It leaves the replay once the tick's records are in (I7).
@@ -2322,7 +2432,7 @@ impl Engine {
                     count: count as u32,
                     goods: GoodVec::from_pairs([(g, each)]),
                 });
-                let op = self.ops.derive(self.world_seed, at, &c);
+                let op = self.ops.derive(self.world_seed, at, &op_key(&c));
                 c.set_op(op);
                 self.out.push(c);
                 self.stats.chain_writes += 1;
@@ -3054,17 +3164,33 @@ impl Engine {
             i.known_at = i.known_at.max(at);
         }
         self.stats.packages_written += count as u64;
-        let mut c = Cmd::WritePackage(WritePackage {
-            op: OpId(0),
-            district: d,
-            inventory: inv,
-            pos,
-            address,
-            count: count as u32,
-            goods: GoodVec::from_pairs([(g, batch)]),
-        });
-        c.set_op(self.ops.derive(self.world_seed, at, &c));
-        self.out.push(c);
+        // One command per package, named by its number at this postbox, address and good, not by
+        // the tick (RP-259, P1-4 of the review). Java journals no count for a written package
+        // (WritePackages.java answers APPLIED with no record), so the engine books the packages it
+        // decides: a replay that decided the live run's op with fewer packages, or one live
+        // package at another tick (its room came from a latest-wins postbox sample the replay
+        // never sees), left goods in the mail pool that Java had written, and wrote them again.
+        // Numbered, the replay's `n`th package is the live run's `n`th, the same content under the
+        // same op, which Java answers DUPLICATE whenever the replay decides it.
+        let numbers: Vec<u64> = (0..count)
+            .map(|_| dist.next_package(inv, address, g))
+            .collect();
+        for n in numbers {
+            let mut c = Cmd::WritePackage(WritePackage {
+                op: OpId(0),
+                district: d,
+                inventory: inv,
+                pos,
+                address,
+                count: 1,
+                goods: GoodVec::from_pairs([(g, batch)]),
+            });
+            c.set_op(
+                self.ops
+                    .derive_numbered(self.world_seed, at, &op_key(&c), n),
+            );
+            self.out.push(c);
+        }
     }
 
     /// At a season boundary, members whose season model is missing freeze; the others swap models
@@ -3351,8 +3477,15 @@ impl Engine {
             unplaced: rest,
             ..ReconcileReport::default()
         };
+        // With the round's own tick, never `now` (RP-270), and keyed by the deposit and the
+        // district (RP-272, RP-275: two districts on one oil chunk write back at one tick).
         for mut c in immediate {
-            c.set_op(self.ops.derive(self.world_seed, self.now, &c));
+            c.set_op(self.ops.derive_with(
+                self.world_seed,
+                self.decided,
+                &op_key(&c),
+                &d.0.to_le_bytes(),
+            ));
             self.out.push(c);
         }
         let chunks: BTreeSet<ChunkPos> = by_chunk.keys().chain(destroys.keys()).copied().collect();
@@ -3364,20 +3497,24 @@ impl Engine {
             report.destroyed += destroy.len() as u32;
             report.deltas += deltas.len() as u32;
             report.chunks += 1;
+            // The chunk's own epoch, which Java's guard reads (RP-259); the round's names its books.
             let mut cmd = ChunkReconcile {
                 op: OpId(0),
                 district: d,
-                epoch,
+                epoch: dist.next_chunk_epoch(chunk),
                 chunk,
                 deltas,
                 destroy,
             };
-            cmd.op = self
-                .ops
-                .derive(self.world_seed, self.now, &Cmd::ChunkReconcile(cmd.clone()));
+            cmd.op = self.ops.derive(
+                self.world_seed,
+                self.decided,
+                &Cmd::ChunkReconcile(cmd.clone()),
+            );
             dist.pending_ops.insert(cmd.op, chunk);
             dist.pending.entry(chunk).or_default().push(PendingChunk {
                 cmd,
+                round: epoch,
                 trim: false,
                 sent: false,
             });
@@ -3484,6 +3621,8 @@ impl Engine {
         let Some(dist) = self.districts.get_mut(&r.district) else {
             return;
         };
+        // The result's epoch raises no floor either (RP-259): a round the replay decides after
+        // the result's record must meet it.
         let Some(chunk) = dist.pending_ops.remove(&r.op) else {
             // Already applied: a replayed or repeated result changes nothing (A9).
             self.stats.duplicate_results += 1;
@@ -3579,7 +3718,7 @@ impl Engine {
             return;
         }
         self.books.shortfall.merge(&shortfall);
-        let epoch = done.cmd.epoch;
+        let epoch = done.round;
         let rates = dist
             .models
             .get(&season)
@@ -3620,15 +3759,15 @@ impl Engine {
         self.apply_trims(r.district, epoch, &trims, at);
     }
 
-    /// Trims outputs (I8): first from additions of `epoch` not yet applied, then by a new epoch of
-    /// removals from whatever holds them.
+    /// Trims outputs (I8): first from additions of round `epoch` not yet applied, then by a new
+    /// round of removals from whatever holds them, each chunk at its next epoch.
     fn apply_trims(&mut self, d: DistrictId, epoch: u32, trims: &GoodVec, at: Tick) {
         let dist = self.districts.get_mut(&d).expect("exists");
         let mut left = trims.clone();
         for list in dist.pending.values_mut() {
             for p in list
                 .iter_mut()
-                .filter(|p| p.cmd.epoch == epoch && !p.trim && !p.sent)
+                .filter(|p| p.round == epoch && !p.trim && !p.sent)
             {
                 for delta in p.cmd.deltas.iter_mut().filter(|x| x.delta > 0) {
                     let want = left.get(delta.good);
@@ -3682,17 +3821,20 @@ impl Engine {
             let mut cmd = ChunkReconcile {
                 op: OpId(0),
                 district: d,
-                epoch: new_epoch,
+                epoch: dist.next_chunk_epoch(chunk),
                 chunk,
                 deltas,
                 destroy: Vec::new(),
             };
-            cmd.op = self
-                .ops
-                .derive(self.world_seed, self.now, &Cmd::ChunkReconcile(cmd.clone()));
+            cmd.op = self.ops.derive(
+                self.world_seed,
+                self.decided,
+                &Cmd::ChunkReconcile(cmd.clone()),
+            );
             dist.pending_ops.insert(cmd.op, chunk);
             dist.pending.entry(chunk).or_default().push(PendingChunk {
                 cmd,
+                round: new_epoch,
                 trim: true,
                 sent: false,
             });
@@ -3703,12 +3845,13 @@ impl Engine {
         }
     }
 
-    fn send_pending_from(&mut self, d: DistrictId, chunk: ChunkPos, epoch: u32) {
+    /// Sends `chunk`'s reconciles of round `round`.
+    fn send_pending_from(&mut self, d: DistrictId, chunk: ChunkPos, round: u32) {
         let Some(dist) = self.districts.get_mut(&d) else {
             return;
         };
         if let Some(list) = dist.pending.get_mut(&chunk) {
-            for p in list.iter_mut().filter(|p| p.cmd.epoch == epoch) {
+            for p in list.iter_mut().filter(|p| p.round == round) {
                 p.sent = true;
                 self.stats.chunk_commands += 1;
                 self.sent_this_session.insert(p.cmd.op);
@@ -3923,7 +4066,13 @@ impl Engine {
             reason: CarriageReason::Exchange,
             entries: entries.clone(),
         });
-        let op = self.ops.derive(self.world_seed, self.now, &cmd);
+        // Named by the train and the call's own tick, never by `now` or the entries (RP-270,
+        // RP-272): decided again after a crash, it is the op Java applied, which Java answers
+        // DUPLICATE, whatever the ports hold by then; the replayed IND_CARRIAGE_RESULT, if any,
+        // settles the books against what this decision booked (`carriage_result`).
+        let op = self
+            .ops
+            .derive(self.world_seed, self.decided, &op_key(&cmd));
         cmd.set_op(op);
         self.exchanges.insert(
             op,
@@ -4025,11 +4174,18 @@ impl Engine {
             }
             return;
         }
-        // What the district gave or got differs from what was asked: correct its stock.
+        // What the district gave or got differs from what this exchange booked: correct its
+        // stock. The booking is the exchange's own request, not the result's: a call decided
+        // again after a crash keeps the op of the live call (RP-272), and the live application's
+        // result, replayed, may answer another request (the replay's ports held something else),
+        // so the world's change, `applied`, settles what the replay booked (RP-273).
         let mut fix = GoodVec::new();
-        for e in &r.entries {
+        for &(_, good, requested) in &ex.entries {
             // Into the carriage: the district's change is the negative.
-            fix.add(e.good, e.requested - e.applied);
+            fix.add(good, requested);
+        }
+        for e in &r.entries {
+            fix.add(e.good, -e.applied);
         }
         if fix.is_empty() {
             return;
@@ -4829,7 +4985,10 @@ impl Engine {
                 good: g,
                 delta,
             });
-            c.set_op(self.ops.derive(self.world_seed, at, &c));
+            c.set_op(
+                self.ops
+                    .derive_with(self.world_seed, at, &op_key(&c), &d.0.to_le_bytes()),
+            );
             self.out.push(c);
             self.stats.pollution_pushes += 1;
         }
@@ -4949,7 +5108,10 @@ impl Engine {
 
     fn threat_with(&mut self, t: &Threat, fuels: &[Good], room: i64, in_sight: bool) {
         let at = t.at.max(self.now);
-        self.advance_to(at);
+        self.run_to(at);
+        // The raid is decided at the threat's own tick, which the module that sent it chose; the
+        // engine's clock, which it may find past that, only moves (RP-270).
+        self.decided = t.at;
         let t = Threat { at, ..*t };
         match t.target {
             ThreatTarget::District(_) => self.attack_district(&t, fuels, room, in_sight),
@@ -5872,7 +6034,9 @@ mod persist_impls {
 
     /// The globals page starts with this, so a page of another format fails by name, not by whatever
     /// field its bytes happen to decode as (ID10).
-    pub const GLOBAL_MAGIC: u32 = u32::from_le_bytes(*b"IGB1");
+    /// IGB2 since slice R's review: the page holds `decided` after `now` (RP-259; `now` again when no
+    /// coverage mark is pending).
+    pub const GLOBAL_MAGIC: u32 = u32::from_le_bytes(*b"IGB2");
 
     fn globals(e: &Engine, w: &mut Writer) {
         w.u32(GLOBAL_MAGIC);
@@ -5898,6 +6062,14 @@ mod persist_impls {
         e.ops.put(w);
         e.out.put(w);
         e.now.put(w);
+        // `decided` is read before the next decision sets it only for the coverage marks still
+        // pending (`dirty`): their round derives with it, and the next record settles them first
+        // when its tick is past it (RP-259, RP-271). With none pending the page holds `now`, as
+        // `restore` set it before, so the page and its state hash do not move with the tick of a
+        // record that decided nothing (the host's season feed stamps IND_CONDITIONS at the
+        // hand-over's time, a stride late at the fast stride).
+        let decided = if e.dirty.is_empty() { e.now } else { e.decided };
+        decided.put(w);
         e.stats.put(w);
         e.books.put(w);
         e.log_enabled.put(w);
@@ -6241,6 +6413,7 @@ mod persist_impls {
             e.ops = Persist::get(&mut r)?;
             e.out = Persist::get(&mut r)?;
             e.now = Persist::get(&mut r)?;
+            e.decided = Persist::get(&mut r)?;
             e.stats = Persist::get(&mut r)?;
             e.books = Persist::get(&mut r)?;
             e.log_enabled = Persist::get(&mut r)?;

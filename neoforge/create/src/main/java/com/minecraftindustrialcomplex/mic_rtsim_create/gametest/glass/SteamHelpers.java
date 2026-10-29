@@ -153,12 +153,17 @@ public final class SteamHelpers {
     /**
      * A double chest: {@code left} gets type LEFT and {@code right} type RIGHT, both facing {@code facing};
      * {@code right} must be {@code left}'s neighbour on the facing's clockwise side
-     * ({@code ChestBlock.getConnectedDirection}). Either half's capability covers both: list one as the store.
+     * ({@code ChestBlock.getConnectedDirection}). Either half's capability covers both: list one as the store. The
+     * pair must sit in one chunk: a vanilla pair across a chunk border is two inventories of 27 slots each, two stores
+     * (RP-215), not the one this helper's callers list.
      */
     public static void doubleChest(GameTestHelper h, BlockPos left, BlockPos right, Direction facing) {
         BlockState base = Blocks.CHEST.defaultBlockState().setValue(ChestBlock.FACING, facing);
         if (!left.relative(facing.getClockWise()).equals(right))
             throw new GameTestAssertException("a double chest's right half sits clockwise of the left half");
+        if ((left.getX() >> 4) != (right.getX() >> 4) || (left.getZ() >> 4) != (right.getZ() >> 4))
+            throw new GameTestAssertException("a double chest across a chunk border is two inventories, not the one store this pair is listed as: "
+                    + left.toShortString() + " and " + right.toShortString());
         set(h, left, base.setValue(ChestBlock.TYPE, ChestType.LEFT));
         set(h, right, base.setValue(ChestBlock.TYPE, ChestType.RIGHT));
     }

@@ -8,6 +8,8 @@
     "EntityFrostmawMixin",
     "EntityUmvuthiAccessor",
     "EntityUmvuthiMixin",
+    "MMEntityMoveHelperMixin",
+    "MMPathNavigateGroundMixin",
     "UmvuthiSummonsMixin"
   ],
   "injectors": {

@@ -11,6 +11,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.mixin.ServerLevelAccessor;
 import com.minecraftindustrialcomplex.mic_rtsim.mixin.SimpleRegionStorageAccessor;
 import net.minecraft.SharedConstants;
 import net.minecraft.core.BlockPos;
+import net.minecraft.gametest.framework.AfterBatch;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
 import net.minecraft.nbt.CompoundTag;
@@ -447,6 +448,17 @@ public final class JournalBarrierGameTests {
     }
 
     /**
+     * Queues a marker on NeoForge's SavedData IO chain: once {@code drained} is set, every write queued before the call has run.
+     * A test that compares the journal's file with its own baseline ({@code writtenThrough}, {@code writes}) reads the baseline after
+     * this (MZB-1102, U-h13): the world save an earlier test, or the server's autosave before it, queued writes the journal's file on
+     * the chain after the test began (the GameTest server runs unthrottled, the chain syncs directories and falls behind), and a
+     * baseline read ahead of that write made "the file was not written" fail on a file the test never touched.
+     */
+    private static Runnable queueDrain(java.util.concurrent.atomic.AtomicBoolean drained) {
+        return () -> IOUtilities.withIOWorker(() -> drained.set(true));
+    }
+
+    /**
      * A world save as an autosave makes it ({@code saveEverything}), while the overworld's own autosaves are off
      * ({@code noSave}): the save turns it back on for itself.
      */
@@ -519,6 +531,173 @@ public final class JournalBarrierGameTests {
     }
 
     /**
+     * The engine's acknowledgement never passes the journal's file on disk (P29, slice U-h,
+     * docs/choices-journal-barrier.md U-h1 and U-h9). A world save's pages are a pending generation until
+     * WORLD_SAVED, which the bridge sends after the journal's write; while that write is held (blocked here on
+     * the IO chain, with {@link JournalSavedData#BEFORE_WRITE_FOR_TEST}) the engine acknowledges nothing past what
+     * the file holds, the marker stays at the file, and the journal keeps the record. Once the write lands the
+     * marker confirms the pages and the acknowledgement follows: the journal is trimmed past the record.
+     */
+    @GameTest(template = RtsimTests.TEMPLATE, batch = "mic_rtsim_journal_barrier_ack", timeoutTicks = 6000)
+    public static void theEnginesAcknowledgementNeverPassesTheWorldSavedMarker(GameTestHelper helper) {
+        ServerLevel level = helper.getLevel();
+        boolean noSave = level.noSave;
+        level.noSave = true;
+        ChunkWait.of(helper, 6000).onEnd(() -> level.noSave = noSave);
+        RtsimSession s = RtsimTests.session();
+        JournalSavedData data = s.journal();
+        java.util.concurrent.CountDownLatch release = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicBoolean entered = new java.util.concurrent.atomic.AtomicBoolean();
+        long[] through = new long[1];
+        long[] fileBefore = new long[1];
+        java.util.concurrent.atomic.AtomicBoolean drained = new java.util.concurrent.atomic.AtomicBoolean();
+        helper.startSequence()
+                .thenExecute(queueDrain(drained))
+                .thenWaitUntil(io(() -> check("the writes queued before the test have run on the IO chain", drained.get())))
+                .thenExecute(() -> {
+                    // A record the file and the pages do not hold yet.
+                    java.nio.ByteBuffer r = s.boundary().beginJournaled(com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs.TRANSFER,
+                            com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs.Transfer.SIZE,
+                            com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs.Transfer.GENERIC, 0);
+                    r.putLong(com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs.Transfer.TO, 7);
+                    r.putLong(com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs.Transfer.AMOUNT, 5);
+                    s.boundary().commitWithOpId(r, com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs.Transfer.OP_ID);
+                    through[0] = s.boundary().journal().nextObsSeq() - 1;
+                    fileBefore[0] = data.writtenThrough();
+                    check("the file is behind the journal", fileBefore[0] < through[0]);
+                    JournalSavedData.BEFORE_WRITE_FOR_TEST.set(file -> {
+                        entered.set(true);
+                        try {
+                            release.await(60, java.util.concurrent.TimeUnit.SECONDS);
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                        }
+                    });
+                    data.setDirty();
+                    saveWorld(level);
+                })
+                .thenWaitUntil(io(() -> check("the journal's write is held on the IO chain", entered.get())))
+                .thenExecuteAfter(40, () -> {
+                    long ack = RtsimTests.engine().pagesObsSeq();
+                    long marker = s.boundary().durablePending();
+                    record("theEnginesAcknowledgementNeverPassesTheWorldSavedMarker", "held: engine ack, marker, file, journal",
+                            ack + ", " + marker + ", " + data.writtenThrough() + ", " + through[0]);
+                    check("the file was not written", data.writtenThrough() == fileBefore[0]);
+                    check("the engine's acknowledgement is at most the file: " + ack + " <= " + data.writtenThrough(), ack <= data.writtenThrough());
+                    check("the marker is at most the file: " + marker + " <= " + data.writtenThrough(), marker <= data.writtenThrough());
+                    check("the journal still holds the record", s.boundary().journal().size() > 0 && s.boundary().journal().firstSeq() <= through[0]);
+                    release.countDown();
+                })
+                .thenWaitUntil(io(() -> check("the file was written", data.writtenThrough() >= through[0])))
+                .thenWaitUntil(io(() -> check("the engine acknowledged the save and the journal was trimmed past it",
+                        RtsimTests.engine().pagesObsSeq() >= through[0]
+                                && (s.boundary().journal().size() == 0 || s.boundary().journal().firstSeq() > through[0]))))
+                .thenExecute(() -> {
+                    JournalSavedData.BEFORE_WRITE_FOR_TEST.set(null);
+                    record("theEnginesAcknowledgementNeverPassesTheWorldSavedMarker", "after the write: engine ack, marker, file",
+                            RtsimTests.engine().pagesObsSeq() + ", " + s.boundary().durablePending() + ", " + data.writtenThrough());
+                    check("the acknowledgement is at most the marker: " + RtsimTests.engine().pagesObsSeq() + " <= " + s.boundary().durablePending(),
+                            RtsimTests.engine().pagesObsSeq() <= s.boundary().durablePending());
+                })
+                .thenSucceed();
+    }
+
+    /**
+     * The same with the journal held by a failed SavedData write instead of a blocked one (P29 with U-g1, docs/
+     * choices-journal-barrier.md U-h1, U-h9): a file of a world save's data directories fails to write, so the
+     * journal's file is kept as it was and the marker (WORLD_SAVED) reports that file; the engine's world save stays a
+     * pending generation and the journal keeps its record. With the disk back, the next world save writes the data and
+     * then the journal's file, the marker confirms the pages and the acknowledgement follows. The failing file is a test
+     * Pad of a directory the world save counts as its own ({@link SavedDataWriteKit}), which holds every journal of its
+     * window, the server's too: the test has a batch of its own (a batch's tests run together, and U-g12's lowers the give-up
+     * limit for every file on record).
+     */
+    @GameTest(template = RtsimTests.TEMPLATE, batch = "mic_rtsim_journal_barrier_held_ack", timeoutTicks = 6000)
+    public static void aHeldJournalHoldsTheEnginesAcknowledgement(GameTestHelper helper) {
+        String test = "aHeldJournalHoldsTheEnginesAcknowledgement";
+        ServerLevel level = helper.getLevel();
+        boolean noSave = level.noSave;
+        level.noSave = true;
+        ChunkWait.of(helper, 6000).onEnd(() -> level.noSave = noSave);
+        RtsimSession s = RtsimTests.session();
+        JournalSavedData data = s.journal();
+        SavedDataWriteHoldGameTests.Pad pad = new SavedDataWriteHoldGameTests.Pad();
+        SavedDataWriteKit.Kit kit = new SavedDataWriteKit.Kit(level, pad, true);
+        long[] through = new long[1];
+        long[] fileBefore = new long[1];
+        long[] heldBefore = new long[1];
+        java.util.concurrent.atomic.AtomicBoolean drained = new java.util.concurrent.atomic.AtomicBoolean();
+        helper.startSequence()
+                .thenExecute(queueDrain(drained))
+                .thenWaitUntil(io(() -> check("the writes queued before the test have run on the IO chain", drained.get())))
+                .thenExecute(kit.step(() -> {
+                    // A record the file and the pages do not hold yet, and a data file that cannot be written.
+                    java.nio.ByteBuffer r = s.boundary().beginJournaled(com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs.TRANSFER,
+                            com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs.Transfer.SIZE,
+                            com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs.Transfer.GENERIC, 0);
+                    r.putLong(com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs.Transfer.TO, 7);
+                    r.putLong(com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs.Transfer.AMOUNT, 5);
+                    s.boundary().commitWithOpId(r, com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs.Transfer.OP_ID);
+                    through[0] = s.boundary().journal().nextObsSeq() - 1;
+                    fileBefore[0] = data.writtenThrough();
+                    heldBefore[0] = data.savedDataHeld();
+                    check("the file is behind the journal", fileBefore[0] < through[0]);
+                    kit.diskFull();
+                    pad.value = 1;
+                    pad.setDirty();
+                    savePad(kit, pad);
+                }))
+                .thenWaitUntil(io(() -> check("the Pad's write failed and holds the journal", kit.heldByFailedWrite())))
+                .thenExecute(kit.step(() -> {
+                    data.setDirty();
+                    saveWorld(level);
+                }))
+                .thenWaitUntil(io(() -> check("the journal's write was held by the failed file", data.savedDataHeld() > heldBefore[0])))
+                .thenExecuteAfter(40, kit.step(() -> {
+                    long ack = RtsimTests.engine().pagesObsSeq();
+                    long marker = s.boundary().durablePending();
+                    record(test, "held: engine ack, marker, file, journal", ack + ", " + marker + ", " + data.writtenThrough() + ", " + through[0]);
+                    check("the file was not written", data.writtenThrough() == fileBefore[0]);
+                    check("the engine's acknowledgement is at most the file: " + ack + " <= " + data.writtenThrough(), ack <= data.writtenThrough());
+                    check("the marker is at most the file: " + marker + " <= " + data.writtenThrough(), marker <= data.writtenThrough());
+                    check("the journal still holds the record", s.boundary().journal().size() > 0 && s.boundary().journal().firstSeq() <= through[0]);
+                    // The disk is back: the Pad is written, and the next world save writes the journal's file.
+                    kit.diskFree();
+                    pad.setDirty();
+                    savePad(kit, pad);
+                }))
+                .thenWaitUntil(io(() -> check("the Pad is written and holds nothing", !kit.heldByFailedWrite())))
+                .thenExecute(kit.step(() -> {
+                    data.setDirty();
+                    saveWorld(level);
+                }))
+                .thenWaitUntil(io(() -> check("the file was written", data.writtenThrough() >= through[0])))
+                .thenWaitUntil(io(() -> check("the engine acknowledged the save and the journal was trimmed past it",
+                        RtsimTests.engine().pagesObsSeq() >= through[0]
+                                && (s.boundary().journal().size() == 0 || s.boundary().journal().firstSeq() > through[0]))))
+                .thenExecute(kit.step(() -> {
+                    record(test, "after the write: engine ack, marker, file",
+                            RtsimTests.engine().pagesObsSeq() + ", " + s.boundary().durablePending() + ", " + data.writtenThrough());
+                    check("the acknowledgement is at most the marker: " + RtsimTests.engine().pagesObsSeq() + " <= " + s.boundary().durablePending(),
+                            RtsimTests.engine().pagesObsSeq() <= s.boundary().durablePending());
+                    kit.cleanup();
+                }))
+                .thenSucceed();
+    }
+
+    /** A timed-out {@link #aHeldJournalHoldsTheEnginesAcknowledgement} never ran its cleanup, and its failing Pad would hold every later journal. */
+    @AfterBatch(batch = "mic_rtsim_journal_barrier_held_ack")
+    public static void cleanUpHeldAck(ServerLevel level) {
+        SavedDataWriteKit.cleanupAll();
+    }
+
+    /** The Pad's own save, as a world save runs it: its write goes on the IO chain and fails or lands there. */
+    private static void savePad(SavedDataWriteKit.Kit kit, net.minecraft.world.level.saveddata.SavedData pad) {
+        net.minecraft.core.HolderLookup.Provider registries = kit.level.registryAccess();
+        WorldSaveOrder.asWorldSaveForTest(kit.level.getServer(), () -> pad.save(kit.dataFile.toFile(), registries));
+    }
+
+    /**
      * A level saved by itself, outside a world save, leaves the journal's file on disk as it was (RP-203). The
      * overworld's own {@code ServerLevel.save}, as a mod might call it, with the server's journal dirty: on the IO
      * chain right after it, the file's bytes are the bytes from before, nothing was written, the journal is still
@@ -534,11 +713,31 @@ public final class JournalBarrierGameTests {
         AtomicReference<byte[]> before = new AtomicReference<>();
         AtomicReference<Look> after = new AtomicReference<>();
         long[] at = new long[3];
+        // A save the barrier held (the notes of chunks an earlier test left) is saved again until the file is written and
+        // nothing is queued behind it: a late write of an earlier round lands after the "before" read, and the file then
+        // differs from it for a reason that is not the direct save's.
+        long[] settle = new long[4]; // writes at the start, writes last seen, the nanos it last moved, the last save
         helper.startSequence()
                 .thenExecute(() -> {
+                    data.setDirty();
+                    settle[0] = settle[1] = data.writes();
+                    settle[2] = settle[3] = System.nanoTime();
                     overworld.getServer().saveEverything(true, false, false); // so the file is there
-                    IOUtilities.withIOWorker(() -> before.set(bytesOrEmpty(file)));
                 })
+                .thenWaitUntil(io(() -> {
+                    long now = System.nanoTime(), w = data.writes();
+                    boolean dirty = data.isDirty();
+                    if (dirty || w != settle[1]) {
+                        settle[1] = w;
+                        settle[2] = now;
+                    }
+                    if (dirty && now - settle[3] > 1_000_000_000L) {
+                        settle[3] = now;
+                        overworld.getServer().saveEverything(true, false, false);
+                    }
+                    check("the journal's file is written and nothing is queued behind it", !dirty && w > settle[0] && now - settle[2] > 1_000_000_000L);
+                }))
+                .thenExecute(() -> IOUtilities.withIOWorker(() -> before.set(bytesOrEmpty(file))))
                 .thenWaitUntil(io(() -> check("the chain looked", before.get() != null)))
                 .thenExecute(() -> {
                     at[0] = data.writes();

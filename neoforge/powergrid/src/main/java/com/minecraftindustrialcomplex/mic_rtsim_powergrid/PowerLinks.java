@@ -4,6 +4,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.MicRtsim;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.District;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.IndRecords;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.Industry;
+import com.minecraftindustrialcomplex.mic_rtsim.journal.JournalDependent;
 import net.minecraft.core.HolderLookup;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.server.level.ServerLevel;
@@ -226,10 +227,20 @@ public final class PowerLinks {
         l.setDirty();
     }
 
-    /** The links sent, sink to source ({@code data/mic_rtsim_powergrid_links.dat}). */
-    static final class Links extends SavedData {
+    /**
+     * The links sent, sink to source ({@code data/mic_rtsim_powergrid_links.dat}): the dedup of IND_POWER_LINK, so the
+     * journal's file must not reach disk ahead of it; a failed write of this file holds the journal's write
+     * (docs/choices-journal-barrier.md U-g3, U-g1). Public for its GameTest.
+     */
+    public static final class Links extends SavedData implements JournalDependent {
         final Map<Long, Long> links = new HashMap<>();
         static final Factory<Links> FACTORY = new Factory<>(Links::new, Links::load);
+
+        /** Vanilla clears the dirty flag before a write that fails: the next world save marks it again here. */
+        @Override
+        public void mic_rtsim$remark() {
+            setDirty();
+        }
 
         static Links get(Industry ind) {
             return ind.server().overworld().getDataStorage().computeIfAbsent(FACTORY, "mic_rtsim_powergrid_links");

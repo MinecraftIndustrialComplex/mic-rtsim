@@ -268,10 +268,11 @@ public final class StubEngine implements ScriptedEngine {
     }
 
     @Override
-    public synchronized SessionStart start(long lastAppliedCmdSeq) {
+    public synchronized SessionStart start(long lastAppliedCmdSeq, long worldNextObsSeq) {
         if (started)
             throw new IllegalStateException("start called twice");
         started = true;
+        startedWithWorldNext = worldNextObsSeq;
         Pages p = disk;
         maxObsSeq = p.obsSeq();
         ackedObsSeq = p.obsSeq();
@@ -292,6 +293,13 @@ public final class StubEngine implements ScriptedEngine {
     @Override
     public void submit(long handover) {
         worker.execute(() -> runStep(handover));
+    }
+
+    private volatile long startedWithWorldNext = -1;
+
+    /** Test hook: the {@code worldNextObsSeq} the session started this engine with (-1: not started). The stub keeps one generation and ignores it. */
+    public long startedWithWorldNext() {
+        return startedWithWorldNext;
     }
 
     private volatile java.util.concurrent.CountDownLatch stepGate;
@@ -343,6 +351,19 @@ public final class StubEngine implements ScriptedEngine {
             if (pagesFile != null)
                 savePages();
         }
+    }
+
+    private volatile long closedWith = Long.MIN_VALUE;
+
+    /** Test hook: the {@code writtenThrough} the stop named in {@link #close(long)} (Long.MIN_VALUE: not closed that way). The stub keeps one generation and confirms its final save whatever it is. */
+    public long closedWith() {
+        return closedWith;
+    }
+
+    @Override
+    public void close(long writtenThrough) {
+        closedWith = writtenThrough;
+        close();
     }
 
     /** Ends the session without the final save: a crash. Steps already submitted still run. */

@@ -1662,7 +1662,7 @@ impl Conflict {
     /// earlier epoch is void, and each slot is compared with the bodies found (MOWZIE.md §4.9's
     /// table). A census replayed from an earlier session only marks its camp out: its bodies are
     /// not the world as it is now.
-    pub(super) fn camp_census(&mut self, w: &mut World, c: &CampCensus, at: Tick) {
+    pub(super) fn camp_census(&mut self, _w: &mut World, c: &CampCensus, at: Tick) {
         let Some(&f) = self.by_key.get(&c.faction) else {
             return;
         };
@@ -2164,7 +2164,7 @@ impl Conflict {
         self.camp_heir(f, at);
         // The camp is in: tribute owed to a chest the plugin named while the camp was out (or
         // before a restart's replay) goes now, not at the next record (MZB-446, review P3-4).
-        self.place_tribute(w, f, at);
+        self.place_tribute(f);
     }
 
     // ---- tribute, trade and the chest (MZB-416 to MZB-423) -----------------------------------
@@ -2220,24 +2220,39 @@ impl Conflict {
 
     /// Tribute or a gift the grove took in is owed to its chest (MZB-423): only its tribute good,
     /// since another item's stack may exceed its limit and the transfer fails above it (MZB-446).
-    /// Then the next stack is sent if the chest is known.
+    /// What is owed is earmarked (MZB-930): it enters the world from the players as held
+    /// ([`World::held_from_players`]), never into the haven market's line, so nothing the market
+    /// does draws it, and it leaves to the players only as Java puts it in the chest. Then the
+    /// next stack is sent if the chest is known. Returns what was earmarked and the rest of
+    /// `goods`, which the caller stocks at the haven as any payment.
     pub(super) fn owe_tribute(
         &mut self,
         w: &mut World,
         f: u32,
-        stocked: &BTreeMap<GoodId, Amount>,
-        at: Tick,
-    ) {
-        if self.culture(f).def.chief_body.is_none() {
-            return;
+        goods: &BTreeMap<GoodId, Amount>,
+    ) -> (BTreeMap<GoodId, Amount>, BTreeMap<GoodId, Amount>) {
+        let mut rest = goods.clone();
+        if self.culture(f).def.chief_body.is_none() || self.camp(f).is_none() {
+            return (BTreeMap::new(), rest);
         }
         let good = self.tribute_good(w, f);
-        let Some(&a) = stocked.get(&good).filter(|a| **a > 0) else {
-            return;
+        // Whole items only: a stack is whole items, so what is owed always places to the last.
+        let Some(a) = rest
+            .get(&good)
+            .map(|a| a / MILLI * MILLI)
+            .filter(|a| *a > 0)
+        else {
+            return (BTreeMap::new(), rest);
         };
-        let Some(camp) = self.camp_mut(f) else {
-            return;
-        };
+        if let Some(r) = rest.get_mut(&good) {
+            *r -= a;
+            if *r <= 0 {
+                rest.remove(&good);
+            }
+        }
+        let earmarked = BTreeMap::from([(good, a)]);
+        w.held_from_players(&earmarked);
+        let camp = self.camp_mut(f).expect("checked above");
         let g = u32::from(good.0);
         match camp.owed_tribute.binary_search_by_key(&g, |e| e.0) {
             Ok(i) => camp.owed_tribute[i].1 += a,
@@ -2247,14 +2262,15 @@ impl Conflict {
         if self.outbox.replaying() && !self.tribute_owing.contains(&f) {
             self.tribute_owing.push(f);
         }
-        self.place_tribute(w, f, at);
+        self.place_tribute(f);
+        (earmarked, rest)
     }
 
     /// HAVEN_CHEST (MZB-422): the chest the plugin chose for a grove, its position and free slots
     /// as they were at the record's time: the latest wins, so a record is idempotent by the state
     /// it names. Journaled (MZB-446), so that a replay after a crash knows the chest the session
     /// knew; unsaved.
-    pub(super) fn haven_chest(&mut self, w: &mut World, h: &boundary::HavenChest, at: Tick) {
+    pub(super) fn haven_chest(&mut self, h: &boundary::HavenChest) {
         let Some(&f) = self.by_key.get(&h.faction) else {
             return;
         };
@@ -2266,16 +2282,30 @@ impl Conflict {
             pos: h.pos,
             free: h.free,
         });
-        self.place_tribute(w, f, at);
+        // The grove's parked stack goes again (MZB-760): to the chest it went to first, which its
+        // placing keeps, and not to the one named now. Only that chest's chunk carries the record
+        // that says it is already there. Not on its own chest reported full (MZB-764): the plugin
+        // looks at its chest again after every answer, and a chunk that is gone reports it full,
+        // so the stack would go at each report, answered NOT_LOADED each time. It goes when the
+        // chest is reported with room, or at CAMP_OUT.
+        let own_full = h.free == 0
+            && self
+                .placing
+                .iter()
+                .any(|(g, p)| *g == f && p.dimension == h.dimension && p.pos == h.pos);
+        if !own_full {
+            self.unpark(f);
+        }
+        self.place_tribute(f);
     }
 
     /// Sends the next stack of the tribute a grove owes its chest (MZB-423): while the camp is in,
-    /// its chest is known with room, and nothing is being placed, one good leaves the books, the
-    /// least of what is owed, what the faction's stock holds and one stack. It is a TRANSFER_TO_
-    /// CONTAINER the link writes through its outbox ([`Conflict::placings`]), booked as leaving to
-    /// the players until it is answered.
-    pub(super) fn place_tribute(&mut self, w: &mut World, f: u32, at: Tick) {
-        let node = self.factions[f as usize].node;
+    /// its chest is known with room, and nothing is being placed, one good goes, the least of what
+    /// is owed and one stack. It is a TRANSFER_TO_CONTAINER the link writes through its outbox
+    /// ([`Conflict::placings`]). The goods are the earmark's (MZB-930): no market is read, and
+    /// they stay held until Java answers, when an APPLIED books them out to the players and a
+    /// FAILED moves nothing.
+    pub(super) fn place_tribute(&mut self, f: u32) {
         let key = self.factions[f as usize].key;
         if self.placing.iter().any(|(g, _)| *g == f) {
             return;
@@ -2286,35 +2316,17 @@ impl Conflict {
         let Some(chest) = camp.chest.filter(|c| c.free > 0) else {
             return;
         };
-        // The stock is read as it stands at `at`: the world is caught up first, as
-        // `stock_to_players` does it, or a market that drains between its clock and `at` would
-        // be taken short of what was read (review P3-2).
-        w.run_until(at);
-        let m = w.market(node);
         let pick = camp.owed_tribute.iter().find_map(|&(g, owed)| {
-            let good = GoodId(u16::try_from(g).ok()?);
-            let held = m.lines.get(good.index())?.stock;
-            let n = owed.min(held).min(STACK_ITEMS * MILLI) / MILLI * MILLI;
-            (n >= MILLI).then_some((good, n))
+            let n = owed.min(STACK_ITEMS * MILLI) / MILLI * MILLI;
+            (n >= MILLI).then_some((g, n))
         });
         let Some((good, n)) = pick else {
             return;
         };
-        let taken = w.stock_to_players(node, &BTreeMap::from([(good, n)]), at);
-        // A take short of what was read (the stock moved after all): place the whole items taken
-        // and put the rest back, so the goods are never lost on this path.
-        let got = taken.get(&good).copied().unwrap_or(0);
-        let n = got / MILLI * MILLI;
-        if got > n {
-            w.stock_from_players(node, &BTreeMap::from([(good, got - n)]), at);
-        }
-        if n < MILLI {
-            return;
-        }
         let Some(camp) = self.camp_mut(f) else {
             return;
         };
-        let op = tribute_op(key, camp.stacks, u32::from(good.0), n);
+        let op = tribute_op(key, camp.stacks, good, n);
         camp.stacks += 1;
         // A stack may fill a slot: the chest has one less until the plugin says otherwise.
         camp.chest = Some(Chest {
@@ -2325,7 +2337,7 @@ impl Conflict {
             f,
             Placing {
                 op,
-                good: u32::from(good.0),
+                good,
                 amount: n,
                 dimension: chest.dimension,
                 pos: chest.pos,
@@ -2333,25 +2345,49 @@ impl Conflict {
         ));
     }
 
-    /// The tribute stacks sent to chests and not yet answered, by op id (MZB-423).
+    /// The tribute stacks sent to chests and not yet answered, by op id (MZB-423): those parked
+    /// too ([`Conflict::tribute_not_loaded`]).
     pub fn placings(&self) -> impl Iterator<Item = (u64, Placing)> + '_ {
         self.placing.iter().map(|(_, p)| (p.op, *p))
     }
 
-    /// Takes the stack `op` out of those in flight: its faction and what it was.
+    /// The stacks the link writes: those in flight but the parked ones, which wait for their
+    /// grove's chest to be reported (MZB-760).
+    pub fn placings_to_send(&self) -> impl Iterator<Item = (u64, Placing)> + '_ {
+        self.placings().filter(|(op, _)| !self.parked.contains(op))
+    }
+
+    /// Takes the stack `op` out of those in flight, parked or not: its faction and what it was.
     fn unplace(&mut self, op: u64) -> Option<(u32, Placing)> {
         let i = self.placing.iter().position(|(_, p)| p.op == op)?;
+        self.parked.remove(&op);
         Some(self.placing.remove(i))
     }
 
-    /// The plugin put a stack in its chest (APPLIED or DUPLICATE_OP): the amount is no longer owed,
-    /// and the next stack goes. While replaying, an answer to a stack no placing holds is booked
-    /// by its op ([`Conflict::replayed_placed`], RP-134). False for an op that is not a tribute
-    /// stack.
+    /// Lets the stack grove `f` has in flight go again, if it was parked (MZB-760).
+    fn unpark(&mut self, f: u32) {
+        if let Some((_, p)) = self.placing.iter().find(|(g, _)| *g == f) {
+            self.parked.remove(&p.op);
+        }
+    }
+
+    /// The plugin put a stack in its chest (APPLIED or DUPLICATE_OP): the goods leave the earmark
+    /// to the players (MZB-930), the amount is no longer owed, and the next stack goes. While
+    /// replaying, an answer to a stack no placing holds is booked by its op
+    /// ([`Conflict::replayed_placed`], RP-134). False for an op that is not a tribute stack.
     pub fn tribute_placed(&mut self, w: &mut World, op: u64, at: Tick) -> bool {
         let Some((f, p)) = self.unplace(op) else {
             return self.replayed_placed(w, op, at);
         };
+        let good = GoodId(u16::try_from(p.good).unwrap_or(0));
+        let out = w.held_to_players(&BTreeMap::from([(good, p.amount)]));
+        // The earmark always holds what is owed: a short take is a book error (hit 3 of MZB-930
+        // again), which `take_held` would clamp silently.
+        debug_assert_eq!(
+            out.get(&good).copied(),
+            Some(p.amount),
+            "the earmark is short"
+        );
         if let Some(camp) = self.camp_mut(f)
             && let Ok(i) = camp.owed_tribute.binary_search_by_key(&p.good, |e| e.0)
         {
@@ -2361,24 +2397,60 @@ impl Conflict {
             }
         }
         self.stats.tribute_stacks += 1;
-        self.place_tribute(w, f, at);
+        self.place_tribute(f);
         true
     }
 
-    /// The plugin could not put a stack in its chest (FAILED): the goods go back to the faction's
-    /// stock, the tribute is still owed, and the chest is forgotten until the plugin names one
-    /// again. While replaying, an answer to a stack no placing holds is booked by its op
-    /// ([`Conflict::replayed_failed`], RP-134).
-    pub fn tribute_failed(&mut self, w: &mut World, op: u64, at: Tick) -> bool {
+    /// The plugin could not put a stack in its chest (FAILED): the goods never left the earmark
+    /// (MZB-930), so nothing moves; the tribute is still owed, and the chest is forgotten until the
+    /// plugin names one again, if it is still the stack's own (the same dimension and place, as
+    /// [`Conflict::tribute_not_loaded`], MZB-762): a chest named since, elsewhere, is kept, as the
+    /// plugin names it again only on a change, and the next stack goes to it now. While
+    /// replaying, an answer to a stack no placing holds is booked by its op
+    /// ([`Conflict::replayed_failed`], RP-134). `w` and `at` are kept for the link's one call
+    /// shape with [`Conflict::tribute_placed`].
+    pub fn tribute_failed(&mut self, _w: &mut World, op: u64, _at: Tick) -> bool {
         let Some((f, p)) = self.unplace(op) else {
             return self.replayed_failed(op);
         };
-        let node = self.factions[f as usize].node;
-        if let Some(camp) = self.camp_mut(f) {
+        if let Some(camp) = self.camp_mut(f)
+            && camp
+                .chest
+                .is_some_and(|c| c.dimension == p.dimension && c.pos == p.pos)
+        {
             camp.chest = None;
         }
-        let good = GoodId(u16::try_from(p.good).unwrap_or(0));
-        w.stock_from_players(node, &BTreeMap::from([(good, p.amount)]), at);
+        // A chest kept takes the next stack at once: nothing else sends it before the next payment.
+        self.place_tribute(f);
+        true
+    }
+
+    /// The plugin found the chest's chunk of a stack not loaded (NOT_LOADED, MZB-760, as the
+    /// dragons' `tribute_unloaded`, RP-210). It did not look for the stack in the chest, and the
+    /// chunk, written ahead of the journal, may already hold it and carry its APPLIED record, which
+    /// it copies when it loads. So the stack stays in flight under its op id, parked: it is not
+    /// written again every step, and goes again when the grove's chest is reported, to the chest it
+    /// went to first, where a copy of its APPLIED record is to be found (a DUPLICATE_OP answer) or
+    /// the stack is put. The goods stay in the earmark (MZB-930) all the while, as for a FAILED.
+    /// The grove's chest is forgotten only if it is still the stack's own (the
+    /// same dimension and place): a chest reported since, elsewhere, is kept for the next stack,
+    /// which a parked stack holds back ([`Conflict::place_tribute`]). False for an op that is no
+    /// stack in flight, as a replayed answer to a stack the session decided after the pages' save
+    /// (RP-134): it books nothing, not even the camp's count, so the census after the replay
+    /// decides the stack again as the same op, which Java answers DUPLICATE_OP if the chunk holds
+    /// it.
+    pub fn tribute_not_loaded(&mut self, op: u64) -> bool {
+        let Some(&(f, p)) = self.placing.iter().find(|(_, p)| p.op == op) else {
+            return false;
+        };
+        if let Some(camp) = self.camp_mut(f)
+            && camp
+                .chest
+                .is_some_and(|c| c.dimension == p.dimension && c.pos == p.pos)
+        {
+            camp.chest = None;
+        }
+        self.parked.insert(op);
         true
     }
 
@@ -2416,19 +2488,22 @@ impl Conflict {
 
     /// A replayed APPLIED or DUPLICATE_OP for a stack no placing holds (RP-134): Java put it in its
     /// chest, and answers its op DUPLICATE_OP while the journal holds this answer, so it is booked
-    /// as the session that went on booked it. The goods leave the stock to the players (the
-    /// replay never took them), the amount is no longer owed, the camp's count passes the stack,
-    /// and its chest has a slot less until the plugin says otherwise. The census after the replay
-    /// decides the next stack, not this one again from a stock that has moved.
-    fn replayed_placed(&mut self, w: &mut World, op: u64, at: Tick) -> bool {
+    /// as the session that went on booked it. The goods leave the earmark to the players, all of
+    /// the stack (MZB-930: the earmark holds what is owed, and no market draws it, so the books
+    /// lose exactly what Java put in the chest), the amount is no longer owed, the camp's count
+    /// passes the stack, and its chest has a slot less until the plugin says otherwise. The census
+    /// after the replay decides the next stack, not this one again.
+    fn replayed_placed(&mut self, w: &mut World, op: u64, _at: Tick) -> bool {
         let Some((f, n, g, amount)) = self.replayed_stack(op) else {
             return false;
         };
-        let node = self.factions[f as usize].node;
         let good = GoodId(u16::try_from(g).unwrap_or(0));
-        // What the stock holds of it: the replay held the stack's goods from the decision to here,
-        // so a market that took more meanwhile leaves less to take.
-        w.stock_to_players(node, &BTreeMap::from([(good, amount)]), at);
+        let out = w.held_to_players(&BTreeMap::from([(good, amount)]));
+        debug_assert_eq!(
+            out.get(&good).copied(),
+            Some(amount),
+            "the earmark is short"
+        );
         let Some(camp) = self.camp_mut(f) else {
             return false;
         };
@@ -2447,8 +2522,11 @@ impl Conflict {
     }
 
     /// A replayed FAILED for a stack no placing holds (RP-134): the camp's count passes the stack
-    /// and the chest is forgotten, as the session that went on did. The goods stay in the stock,
-    /// which the replay never took them from, and the tribute is still owed.
+    /// and the chest is forgotten, whatever chest it is. The live session forgets it only if it is
+    /// the stack's own (MZB-762), so a chest named since can differ here; harmless (MZB-768): the
+    /// replay decides nothing, and the plugin names its chest again after a restart or a
+    /// switch-on (`GroveChests` starts with nothing sent), before any stack goes. The goods stay in
+    /// the earmark (MZB-930), which the replay never took them from, and the tribute is still owed.
     fn replayed_failed(&mut self, op: u64) -> bool {
         let Some((f, n, _, _)) = self.replayed_stack(op) else {
             return false;
@@ -2483,6 +2561,9 @@ impl Conflict {
         camp.recount_at = None;
         camp.chest = None;
         camp.void();
+        // The chest is forgotten here, so a parked stack goes again (MZB-760): its chunk may be
+        // loaded still, and if not it is parked once more by its answer.
+        self.unpark(f);
         self.unblock(f, at);
     }
 

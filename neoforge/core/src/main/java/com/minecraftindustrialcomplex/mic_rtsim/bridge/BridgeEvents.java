@@ -142,6 +142,7 @@ public final class BridgeEvents {
     private static void onServerStopped(ServerStoppedEvent event) {
         RtsimSession.stopGlobal();
         com.minecraftindustrialcomplex.mic_rtsim.village.VillageAdoption.clear();
+        com.minecraftindustrialcomplex.mic_rtsim.journal.SavedDataWrites.INSTANCE.reset(); // one record per JVM: the next server starts clean (U-g11)
     }
 
     /**

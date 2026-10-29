@@ -5355,6 +5355,278 @@ RP-150 to RP-153 the replay records.
   waits of M8's own GameTests on ChunkWait's two clocks: six tests in FrostmawGameTests and
   `aLurkRefusedAtItsPlacingClaimsNoCampBodyAndTheSetOutIsATake` in MowzieGameTests. M8's rail
   GameTests (RailDirectionsGameTests, RailFrostmawGameTests) needed no change.
+- **MZB-694** (the held puppets' waits on ChunkWait's clocks; M8's round fixes): M8's merged round failed 10
+  mowziesmobs GameTests under load (concurrent workspace cargo tests). Seven came from one test bug:
+  FrostmawGameTests' `Held` helper made its own waits, which `tools/chunk_waits.py` could not see, so their tick
+  budget counted from the test's start and a slow chunk load spent it ("not within 1500 ticks of the last chunk
+  wait", chunks not ready). `Held` now takes the test's `ChunkWait`, and its lurk and stand waits are chunk waits.
+  The nine tick-bound batches (the lurk taken, the dodges and the placings) carry `ChunkWait.NO_TICK_TIMEOUT`, as
+  the kit's other chunk-waiting tests do, and `taken`, `dodged` and `placedAt` make their own `ChunkWait` of 1,500
+  ticks. `chunk_waits.py --dry-run` reports the file unchanged.
+- **MZB-695** (the camp-body marker test runs with saving off): `aCampBodysDeathIsBookedOnAMarkerAndAStraysIsNot`
+  failed at "the Frostmaw carries its adopt answer" because vanilla's autosave (every 6,000 ticks, a few seconds
+  on an unthrottled GameTest server) came in the middle: the save asks the engine for one, its ack drops the
+  pending record, and the marker the test reads is gone. The test turns `ServerLevel.noSave` on for its span, as
+  /save-off does, and restores it however it ends (`ConflictKit.onEnd`). Its check now names the records it saw
+  and their generations. The other two failures of the round (a masked player targeted, a hidden stray counted
+  as a chief) are judged on a rerun on a quiet machine.
+- **MZB-696** (M9's grove world tests wait on the right clock): `tools/chunk_waits.py`'s default chunk patterns
+  are anchored (`^far\.ready\(`), so a wait on `st.far.ready()` was never seen as a chunk wait. In
+  UmvuthanaWorldGameTests, `aMaskedPlayerIsNotTargetedByTheBand` (2,400 ticks) and `raptorsHuntTheBasesAnimals`
+  (5,000) kept a tick timeout over their site load, and the masked player test failed in M8's round under load at
+  its last check. The script now converts both with `--chunk '^st\.far\.ready\('`. Two converted tests had
+  `waits.logic(st.far.ready())`, a chunk wait on the logic clock, and the chest test's HAVEN_CHEST wait loaded a 5
+  by 5 rect inside its logic wait; those are now `waits.chunks(...)`, the chest's split into a chunk wait and then
+  the logic wait for the record.
+- **MZB-697** (the masked player strikes from beside the warrior): on the rerun after MZB-696,
+  `aMaskedPlayerIsNotTargetedByTheBand` failed its reach check, "26.378878 of 26.36": after 100 ticks of walking
+  toward the bare player, even the warrior nearest the masked player stood past the hurt-by goal's reach of where
+  the masked player had stood (MZB-678 picked the nearest warrior, which was not enough). A player who strikes a
+  warrior stands within a blow's reach of it, so the masked player now steps to 3 blocks east of the struck
+  warrior (away from the bare one) before the blow. The reach check and the 20-tick answer stay.
+- **MZB-698** (the chase test measures from the hold point): `aHeldPuppetWalksBackToItsSpotAndDoesNotChaseItsTarget`
+  failed in both M8 runs the same way, "the closest it came to the spot 2.0, the closest it came to the player
+  6.441193965241448". The test was written before MZB-361's amendment moved the hold to the point Java chooses
+  beside the rail (`Slot.holdAt`), and still pushed the body off, and measured it from, the engine's spot: the
+  body walked back to its hold point, which is not the spot, so it never came nearer the spot than the push left
+  it. The dodge tests already read the hold point (`ConflictKit.lurkHold`). The chase test now does too: it checks
+  the body rests within `STAND` of the hold point, stands the player 8 blocks west of it, pushes the body 2 blocks
+  off it along z toward the floor's middle (so on the floor), and measures every distance and the floor of the
+  "never walked after the player" check from it.
+  - Amended by MZB-770: the reading was wrong. No rail direction is known on the mowziesmobs server, so the hold
+    point there is the engine's spot, and the move changed no number. The cause is MZB-770's.
+- **MZB-699** (train_passed_replay.rs takes the ring as well as the journal; the M8 merge with slice T, RP-187):
+  /tmp/mzbuild/rp-t-m8-test.rs, the draft of tests/train_passed_replay.rs, built unchanged against this head
+  (its `Conflict` API calls and the shared harness all matched). Two of its three tests passed; its third,
+  the J1 to J4 table, failed at J3 (64, not 128): the draft was written when the harness modelled only slice
+  T's journal index, where goods on disk without the journal doubled (J3) and the journal without the goods
+  duped (J4). The harness now models T2's ring too (`Dedup`, RP-190, RP-191), under which J3 and J4 give once,
+  as the dragons' and the ambush's tests have it. The code is right and the draft was stale: the third test is
+  now `which_of_javas_saves_landed_by_the_ring_and_by_the_journal`, the same table as rtsim-ecology's
+  train_raid_replay.rs (ring: once in all four cases; journal: J3 twice, J4 never), run through
+  `across_a_crash_on` for both, with the draft's assertions kept for the journal's rows and one added
+  assertion that the replayed pass robs again (`lurk_robberies` 1) in every row. The module doc no
+  longer says it is for a later merge. Nothing else of the draft changed but rustfmt's wrapping.
+- **MZB-770** (a held Frostmaw turns 90 degrees a tick on its walk back, as vanilla turns any mob; the chase
+  test's failure). The id: MZB-700 to 708 are M10's review fixes (291272be and after, on feat/mowzie-m10 and the
+  branches built on it), and 709 to 719 are in the range M10's brief claims, so this takes the first id no brief
+  claims and no branch uses.
+  - The failure: `aHeldPuppetWalksBackToItsSpotAndDoesNotChaseItsTarget`, the same in m8-gt1b and m8-gt7, "back
+    within 0.5 blocks of its spot in 200 ticks (1501 gone, the closest it came to the spot 2.0, the closest it
+    came to the player 6.441193965241448)". The body never came nearer its spot than the push left it and ended
+    1.88 blocks west, toward the player.
+  - Not the hold point: no plugin registers `RailAxes` on the mowziesmobs server and the test registers none, so
+    `holdPoint` takes the engine's spot and `ConflictKit.lurkHold` is the spot (MZB-698 amended). Not the jar's
+    chase: MZB-361's wraps hold (the three `moveTo(Entity, double)` calls of `EntityFrostmaw.tick` do nothing for a
+    held body).
+  - The cause, from the jar (cfr of mowziesmobs-1.21.1-1.8.2.jar, the build's): `EntityFrostmaw`'s constructor sets
+    `moveControl = new MMEntityMoveHelper(this, 7.0f)`, and `MMEntityMoveHelper.tick`'s `MOVE_TO` branch sets
+    `setYRot(rotlerp(getYRot(), f9, maxRotate))` and then `setSpeed(...)` every tick, whatever the angle: a
+    Frostmaw turns at most 7 degrees a tick while it walks on at full speed (vanilla `MoveControl` turns 90).
+    The bridge places a lurk puppet facing its track point (yaw 180 here, north), and the test's push went 2 blocks
+    north (`home.z < spot.z` was false with the hold point on the spot), on along its facing, so its spot was
+    straight behind it. From 180 the wrap turns it through 90, west: the walk back is a loop about 0.9 blocks in
+    radius toward the player 8 blocks west. In about 16 ticks the body is within the jar's swipe range of its
+    target (`targetDistance`, the distance less half the target's width, at most 6.5): `tick()` sends SWIPE or
+    SWIPE_TWICE whenever the body has no animation, so a new swipe starts in the tick the last one ends, before the
+    hold runs on `ServerTickEvent.Post`, and the hold yields to every animation (`FrostmawLurker.hold`: stop and
+    return). It never walked again while the player stood there. A planar model of the move control, vanilla
+    ground travel on stone and the swipe threshold gives the swipe at tick 16 and 6.41 from the player.
+  - Not the test's doing: the game puts a held puppet with its spot behind it (a camp body handed to its puppet
+    where it stands, with its own yaw, which the hold walks to the hold point; a body that leapt out of lava; one
+    that swung at a player and was moved), and the loop carries a body 2 blocks or more aside, toward the rail as
+    well as a player.
+  - The fix: `MMEntityMoveHelperMixin`, a `@ModifyArg` on the one `rotlerp(FFF)F` call in `MMEntityMoveHelper.tick`
+    (offset 388; its third argument is the `maxRotate` read at 385): for a Frostmaw that `FrostmawLurker.holds`, on
+    the server, it is `max(maxRotate, FrostmawLurker.TURN)`, 90. Other mobs that use the helper, and a Frostmaw not
+    held, keep the jar's turn. In the planar model the body is back within `STAND` in 10 ticks, at most 0.16 aside
+    of the straight way, never nearer the player than 7.9.
+  - The test: it now sets the body 2 blocks from the hold point toward the track point and faces it at the track
+    as the bridge does, so the spot is straight behind it on purpose (not by the placement's facing surviving the
+    look goals), and it checks the walk back keeps within `STAND` of the straight way (`aside`) besides the old
+    checks. Its comments no longer say the hold point lies beside the rail here. In m8-gt9 (all 73 mowziesmobs
+    tests passed) it was back within `STAND` in 20 ticks, at most 0.160 aside of the way, never nearer the player
+    than 7.948, and stood 100 ticks within the stand with no new path.
+  - Left as it is, for the lead: a held puppet off its spot with a player within the jar's swipe reach swipes
+    back to back and is not walked back while the player stays. The hold yields to animations by design (MZB-361);
+    with the turn fixed the walk back no longer carries a puppet toward a player.
+  - The other line of m8-gt7, "a per-tick hook failed ... conflict agent 4300d1607fa84c12 holds no party yet" in
+    `aMaskedPlayerIsNotTargetedByTheBand`: `MowzieKit`'s Post listener catches a hook's `RuntimeException`, logs it
+    and keeps the hook, which runs again the next tick until the test ends (not dropped, not retried within the
+    tick). `everyone` tests for a null party, but `ConflictKit.party` throws instead, so the watch hook threw once,
+    in the tick between the recall's removal of the party and the test's success. Its checks were made before
+    (the unprovoked watch, which "a body went for the bare player" shows saw the band): not vacuous, left as it is.
+
+- **MZB-935 to MZB-939** (the rail GameTests' first run: `create -PwithMowzie` at da5aea80, 6 of 262 failed). The
+  rail tests 8 and 9 (`RailFrostmawGameTests`: the ice ball, the lurk and its variants) were written over M8's
+  re-checks "compiled, not run" (their records say so), and this is the first round of them on record. Five of the
+  six failures are theirs, one is a port-ring test. The causes were found with a temporary copy of the 13 rail tests in a
+  namespace of their own (`mic_rtsim_create_dbg`, so a round ran them alone, 5 minutes) with a log line a tick of the
+  puppet, the carriage and the strike (m8-r7-dbg; not committed), and the fixes were run on the same copy (m8-r7-dbg2,
+  13 of 13) before the full rounds.
+  - **MZB-935** (a carriage's entity box is not the carriage: `aLurkingFrostmawSwipesARiderStandingAtTheMiddleOfALongCarriage`
+    and `...AtTheRearOfALongCarriage`, "no carriage box touched the puppet's"). The pass itself was right (a strike, the
+    zombie hurt, 7.8e-7 degrees off the bearing, `overlapped true` the only fault). `LurkRun.sampleSwipe` took the carriage
+    entity's `getBoundingBox()`, which is the contraption's bounds moved to its anchor
+    (`AbstractContraptionEntity.setPos`), and Create's assembly widens those bounds to a square about the anchor, as far as
+    the farthest block and two more (`StationBlockEntity` calls `Contraption.expandBoundsAroundAxis`), whatever the yaw.
+    The 9-block carriage's bounds were `[-9, 0, -9]` to `[10, 2, 10]`: an entity box 19 blocks square, reaching the puppet's
+    box, whose near edge is 3 blocks from the rail's centre line; the seated tests' carriages are short, and only the two
+    long-carriage tests failed. Test only: `touches` asks whether a block of the contraption, where it stands in the world
+    (`toGlobalVector`), touches the puppet's box. The rear test passes with it (m8-r7-dbg, dbg2); no block of any carriage
+    touched a puppet in any run. `TrainSampler.RAIL_CLEARANCE`'s "clear of the carriages' boxes" reads as the carriages'
+    blocks (the sampler never asks for the entity box).
+  - **MZB-936** (the riders-first test's premise was out of its own margin:
+    `theSwingGoesToARiderOnTheNextCarriageBeforeABareBogeyInFront`, "the near plank is inside the swipe's reach
+    (6.708203932499369 of 6.800000011920929)"). The track point two blocks past carriage 0's bogey put the near plank
+    4 along, 5 across and 2 up from the puppet, 6.708 in 3D, and the test wants it 0.3 inside the swipe's 6.8. Nothing
+    of M8's code was involved: the premise was wrong from the start. The point is now three blocks past: the bogey 5.83
+    from the puppet (inside the strike reach, 6.0), the near plank 6.164, the far plank 10.488, the two bearings 61.9
+    degrees apart (m8-r7-dbg). With the premises right the test then met MZB-937 (a roar pushed the zombie off the
+    plank), and passes with it fixed: the first strike 2.9e-8 degrees off the zombie, 61.9 off the bogey (m8-r7-dbg2).
+  - **MZB-937** (an awake Frostmaw roars on its own, and a roaring puppet refuses its strike:
+    `aLurkingFrostmawForAnObliqueDenStandsOnTheRailsNormalAndSwipes`, "the lurk struck at 1.0 (0)"; in m8-r7-dbg the
+    same message in four of the nine pass tests, and the riders-first test's first strike at the bare bogey). Not
+    oblique-specific: a rerun passed the oblique test and failed others. The per-tick log of the failing passes shows the
+    puppet in one 76-tick animation (the same object in each, from 7, 27, 26 and 1 ticks on when the log began until the
+    end, none in a passing run, which shows no animation and then the swipe's 28 ticks), so `FrostmawLurker.strike`
+    (`getAnimation() != NO_ANIMATION`) refused every call while the rider was in reach. A puppet without a target
+    starts one animation by itself: the jar's ambient roar. cfr of mowziesmobs-1.21.1-1.8.2.jar:
+    `EntityFrostmaw.tick` sets `active` every tick for an always-active body (line 384), `Mob.baseTick` rolls
+    `nextInt(1000) < ambientSoundTime++` (the timer counts up from -80), and `playAmbientSound` (line 333), for an
+    active body, sends `ROAR_ANIMATION` (76 ticks) one time in four. That is about one tick in 500, so by that
+    arithmetic a swipe window of a few ticks is lost to a roar that began in the 76 ticks before it about one pass in
+    seven (r6 saw one in eleven, m8-r7-dbg four in nine). The roar's
+    `doRoarEffects` also pushes every living entity within 10 blocks away (with the crystal): in the riders-first run it
+    carried the standing zombie 1 block and off the plank (`riders 0`), and the strike after the roar went to the bogey.
+    It is not a change M8 made, but a gap in M8's hold: the Lurker's job is to hold the body awake and swipe, and a
+    lurking body that roars at random gives itself away, spoils the one roar that means something (MZB-366's, after a
+    robbery) and loses its swing. The fix is in the hold, `FrostmawLurker.hold`: a body in hand has its
+    `ambientSoundTime` put at -1 whenever it is 0 or more, which the roll never beats; the core holds once a tick after
+    every level ticked, so the roll never sees it above 0. The body keeps its other behaviour (its idle breath, its own
+    swipes at a player, a roar by `roar`). A choice that is easy to undo; the lead may prefer the test alone to be quiet
+    (set `ambientSoundTime` in the GameTests). The test is `aHeldPuppetsAmbientSoundTimerStaysBelowZero` (the timer put
+    at 700, the hold run, the timer below 0; before the fix the hold left it at 700, read not run: the rail tests' roared
+    passes are the old code's failing run, m8-r7-dbg 6 of 13 failed, m8-r7-dbg2 13 of 13 with the fix).
+  - **MZB-938** (Create holds a train with a player aboard at a chunk it cannot see ahead:
+    `theIceBallHitRatesAgainstAMovingTrain`, "the front reached the east end (-6085297.5)", on the first pass). The
+    train stood at x0 + 14.5, where its approach to the west end had ended, for the test's 16,000 ticks. m8-r7-dbg's log
+    shows `train.speed -0.5` with the lead not moving and `Train.carriageWaitingForChunks` set (to a carriage's id).
+    cfr of create-1.21.1-6.0.10.jar: `Carriage.DimensionalCarriageEntity.alignEntity`, for a carriage with a
+    `Player` passenger within 32 blocks, looks 16 blocks ahead of the carriage along the way it moves and, when that
+    point is not in an entity-ticking chunk (`CarriageEntityHandler.isActiveChunk`), sets the field and returns before it
+    moves the entity, so the lookahead never changes; `Train.tick` takes the field as zero distance. The ice rider is a mock
+    player (the other tests' riders are mobs, and the static ice test does not move). The forced chunks end where the
+    track does, the approach turned at x0 + 15 (a tick at 2 blocks, so x0 + 14.5), and 16 blocks on lies in the chunk
+    beyond. Test only: the passes turn `ICE_ENDS` (24) from the track's ends, 16 for the lookahead, 2 for a tick's travel
+    and slack. Passed in m8-r7-dbg2 (hits 4/4, 3/4, 1/4, 0/4 at 0.5, 1.0, 1.4 and 2.0, a rate, no gate).
+  - **MZB-939** (`aRestoredBufferWhoseChunkOutlivedTheTracksTakesAPackageOnce`, "one package in the buffer, primed, the
+    op in its ring"; test only, found and fixed). Not a wrong-port write and not another test's station: the failing
+    message of the round with the extended diagnostic lists one station with the port at the postbox, at (-10361743, -59,
+    13842531), which is exactly the test's own station position (the test's origin plus 16, the floor, plus 29), marked
+    OTHER, with `packages 1, primed true, op in ring true` (the write went where it should), and "the test's station is one
+    of them: false". The postbox lies 7300 chunks (116,800 blocks) from the station in x and z, by the test's own
+    arithmetic, so the listed postbox position is the test's frame, not a neighbour's. So the station object the test kept
+    from its first look is no longer on any graph, and the station on the graph at the same block is a new one. Create makes
+    a station's edge point anew when the track beside it is propagated again: `TrackBlock.tick` (one scheduled tick for each
+    block of the 30-block track) calls `TrackPropagator.onRailAdded`, which removes the graph nodes next to the block and with
+    them the edge points on their edges (`TrackGraph.removeNode`, `invalidate`), and the station's block entity makes a new
+    `GlobalStation` from the old one's migration data (ports and rings included, `GlobalStation.read` and the ring mixin
+    read them). A block's tick waits for its chunk to tick with its entities loaded (`ServerLevel.isPositionTickingWithEntitiesLoaded`),
+    which on the unthrottled GameTest server is real time, and the track crosses a chunk border, so the station (joined
+    from its own chunk's ticks) can be on the graph before the other chunk's blocks have ticked. `-PwithMowzie` shifts the
+    load and the order of chunk work, which is why it showed in half of those rounds and not in `-Psec1fx` ones.
+    Reproduced deterministically by `aRestoredBufferTakesAPackageOnceThoughCreateMadeItsStationAnewBeforeTheWrite` (the same
+    test with `TrackPropagator.onRailAdded` called on the track under the station before the write): it failed with the
+    message above (one station, "OTHER", the test's own position) on the test's old code. Fix, in `PortRingGameTests`:
+    every test waits (`settled`, paced) for the station on the graph and for no scheduled tick left on its track, and looks
+    the station up in its block entity at each use (`Station.get`). Production is unaffected: the new station keeps the
+    port, its package and its ring, and `WritePackages.port` finds it on the graph. Run: the debug copy of the class
+    (`mic_rtsim_create_dbg`, the old and the new text side by side, stub engine) failed the variant on the old text and
+    passed everything on the new; `create -PwithMowzie` at the fix passed 268 of 268 (a round is one draw of a roughly
+    even coin, so it shows the fix does not break the class, not that the flake is gone; the wait records, per test,
+    the track ticks still waiting when the station first joined and whether it was made anew since: 0 and false in all 13
+    of that round).
+  - **MZB-950** (the heap of the full `create -PwithMowzie` run: out of memory at 4G and at 6G in the light engine
+    worker, "passes only at 10G"; not a leak, not the U-g, J6, U-h or M8 code). Measured at `-Xmx10G`
+    (jcmd class histograms after a full collection; `target/heap-NN.txt`, `target/dense/`): through the first 207
+    tests the live heap sat between 0.3 and 1.0 GB (1.0 GB at 180 tests with 5,600 chunks waiting in the chunk
+    IOWorker, 0.56 GB at 207), no class of ours growing, no `Journal$Entry` (17), `ChunkWriteBarrier$Note` (1) or
+    district structure above a few hundred objects; then, in `theIceBallHitRatesAgainstAMovingTrain`, the server thread
+    sat in one tick for 15 minutes with the live heap going 0.56, 5.4, 6.6, 7.9, 8.8, 9.8, 10.0 GB (round 1, base
+    -6,724,212 / 6,945,462) and 2.0, 4.3, 7.3 GB (round 2, base -3,797,620 / 4,715,190): 33,700 loaded chunks and
+    402,000 chunk holders after 5 minutes, 37,700 after 8 (`LevelChunkSection` 177,000 to 10.5 million, `PalettedContainer`
+    21 million), the line of chunks growing along one axis. Every thread dump of the server thread: `EntityFrostmaw.tick` to
+    `MMPathNavigateGround.followThePath`, `tryShortcut`, `sweep` (jar line 139, the `getBlockState` or `getPathType` of a
+    cell), the chunk loaded by `Level.getBlockState` on the server thread. A temporary mixin that named any path node more
+    than 300 blocks from its mob logged nothing: the path was an ordinary one. The cause is the jar's (Mowzie's Mobs
+    1.8.2): `sweep` steps a grid in `float`, and the world coordinates of the mob's box are the floats. Above 2^22 blocks a
+    float is a multiple of 0.5 (2^21: 0.25); the trailing edge, advanced by a sum of about 0.28 a step, rounds up to 0.5
+    every step and overtakes the leading edge by the box's width after some 15 to 30 cells, and
+    `for (int z = z0; z != z1; z += step)` then starts beyond its end and counts through the whole int range, loading a line of
+    chunks out to the world border and past it. A copy of the algorithm in plain Java (400,000 random sweeps of 10 to 80
+    blocks, boxes 3 to 5 wide, per size) runs away in 0 sweeps at 100,000 to 800,000 blocks from the origin, 2 at 1.0
+    million, 3,543 (0.9%) at 2.0 million, 4,259 at 3.0 million, 17,131 (4.3%) at 4.5 million, 16,540 at 6.5 million; for
+    boxes 0.6 to 2 wide 0 up to 340,000 blocks, 310 at 520,000 and 7,695 at 1.0 million. The GameTests' far bases
+    (`ConflictKit.farBase`: x from -3 to -7.1 million, z from 3 to 7.1 million) are all in the range, and a Frostmaw that
+    follows a path for 16,000 ticks at 40 sweeps a tick should not miss. Why the ice-rates test passed earlier at
+    -6,085,297 (MZB-938) is not known: the sweeps it met did not hit the band, or its Frostmaw followed no long path. **Test fix:** `RailFrostmawGameTests` builds at `ConflictKit.nearBase()` (`PathSafeBase`: x -100,000
+    to -231,000, z 100,000 to 231,000, inside 2^18 blocks, where the copy never ran away), and `releaseFarChunks` also
+    releases that area. `PathSafeBaseTest` keeps every slot, the strip built from it and the sweep beyond it inside the
+    limit. **Not changed here, for the lead (done in MZB-951):** the jar's bug is a product one too (any Mowzie mob that follows a path
+    more than about 500,000 blocks from the origin can stall the server for minutes and load millions of chunks); a
+    mixin in this plugin that replaces `sweep` with a `double` one measured from the box removes it (MZB-951, PATCHES.md
+    row 97), and with it the same applies to `MowzieKit`'s tests (`farBase`), which have not been seen to run away. Away from
+    the ice test the run's live heap stayed under 1.4 GB (the chunk IOWorker's backlog included).
+    **Heap default:** `create/build.gradle` is back to `-Xmx4G` for every run (the 6G for `-PwithMowzie`, set on
+    2026-10-27 on the reading that the merges outgrew 4G, is gone); the fix's 4G round passed 267 of 267.
+  - **MZB-951** (the fix of MZB-950: a mixin that makes the jar's path sweep exact far from the origin; PATCHES.md row 97;
+    Ben approved it as a slice on `diag/gametest-heap`). **What:** `MMPathNavigateGroundMixin` is an `@Inject` at the head of
+    the jar's private `MMPathNavigateGround.sweep(Vec3, Vec3, Vec3)Z` (1.8.2; `require 1`, `allow 1`, cancellable) that always
+    answers, from `PathSweep.sweep`: the jar's grid walk in `double`, in a pure class with no Minecraft type, so the unit tests
+    run the code that ships. `PathColumns` reads the world for one column as the jar's loop body does (every cell of the column
+    pathfindable by land; the block under its first cell not water, lava or open air; the cell at it a malus of 0 up to 8 and not
+    fire or damage). Read from the jar (vineflower on `MMPathNavigateGround.class`): `followThePath` calls `tryShortcut`,
+    `tryShortcut` calls `sweep` once per path node from the path's far end down to the next node, and `EntityFrostmaw`,
+    `EntityWroughtnaut` and `EntityGrottol` make this navigation. **The walk:** the jar's algorithm, two changes. (1) Every
+    number is a `double` measured from the integer cell the box's low corner stands in (the cells are added back when a column
+    is handed over), so the arithmetic is on numbers a few blocks wide wherever the mob is: the same box moved by whole blocks
+    reads the same cells, to the bit when its edges are exact in a double. (2) The three cell loops end by direction (`x < x1`
+    for a step of +1, `x > x1` for -1) in place of `!=`: a range that starts past its end is empty, and cannot count through the
+    int range; and a walk ends, blocked, after as many crossings as its vector has cell boundaries (their sum, 8 more), a bound the
+    maths does not need and a bad input might. A NaN or a number past 1.0E9 is blocked with nothing read (the mob then walks its
+    path node by node, as it does when a shortcut is refused). **Why not only bound the loops:** that stops the runaway and leaves
+    the answer wrong: at 4.5 million blocks the float's trailing edge is off by up to a block, so a slab of the walk can come out
+    empty or in the wrong cells, and a shortcut through a wall can be approved. **Why `@Inject` and not `@Overwrite`:** the same
+    effect, and another mod's mixin on the method does not conflict with it; the jar's body stays in the class and is never run.
+    **What stays the jar's:** the order of crossings, the slab at each, and the first crossing after the vector's end, which the
+    jar's `do ... while (t <= max_t)` reads before it stops (so cells up to two past the end are read: the bound the tests keep);
+    an edge on an integer is in the cell above it (`floor`: the jar's `1.0E-8` nudge is lost in a float beyond a quarter block
+    from the world origin, and the double walk does not apply it either; the one difference this leaves near the origin is a box
+    edge exactly on 0.0 (within 1.0E-8 of it), which the jar's float puts one cell lower). **Equivalence, measured**
+    (`PathSweepTest`, `./gradlew :mowziesmobs:test`, against `JarFloatSweep`, a copy of the jar's float walk with its loop body
+    behind an interface): within 16 blocks of the origin, 12,000 random sweeps (boxes 0.5 to 5 wide and 5.5 tall, vectors of 1
+    to 80 blocks), the 7,859 whose cells do not move under twelve nudges of a ten thousandth of a block to the box and the
+    vector read exactly the jar's cells and columns (0 differ; the rest are decided by the float's own rounding, about 1e-5 of a
+    block, and are not compared); 8,000 sweeps along one axis with every edge on a multiple of a half (the integer-edge cases),
+    all the same; at 1,000 blocks, where the float is off by a ten thousandth, 61 of 10,000 sweeps differ, the worst by 37 cells
+    in a thousand (cells the box's trailing edge just touches). **Far out:** 6,000 sweeps at 0.5 to 7.1 million blocks
+    read only cells within two of the box and its target, none ran away; the jar's copy ran away in 40 of the first 1,500;
+    MZB-950's known sweep (a box 3.5 by 4.5, a node 38.6 blocks off) counts past 400,000 cells in the copy and reads under
+    10,000 in the shipped walk; 4,000 sweeps near the origin and the same shifted by 3 to 7.1 million blocks read the same
+    cells and columns, bit for bit. **GameTests** (`PathSweepGameTests`, mowziesmobs, batches `mowzie_path_sweep_near` and
+    `_far`): the jar's real `sweep` called by reflection on a real Frostmaw's navigation over a stone floor, near the origin
+    and at x -3,797,664, z 4,715,168 (a place built round MZB-950's known sweep, `PathSweepRunaway`): clear, blocked by a
+    wall, blocked by a missing strip of floor, clear again, the known sweep, and 120 random ones. Chosen because a runaway
+    can be kept from running three ways, all in the test: it fails before the first call if the jar's class has no mixin
+    handler (a method named `...$sweep`, so a broken mixin cannot let the first far call count through the int range); every call
+    runs under a `PathSweep.Budget` (12,000 block reads, 5 s: the walk stops, blocked, when it is spent, and the test fails on
+    it); and the place is 6 by 6 chunks that no sweep leaves, with a check that no more than 300 chunks loaded. The budget is
+    a static the shipped walk reads once per column (null outside a test). **Uninstalling:** the mixin holds no state and writes
+    nothing; a world saved with it loads without it, and the jar's float walk, with its runaway, comes back. **Not done:**
+    `RailFrostmawGameTests` still build at `nearBase` (MZB-950's test fix stays; with this mixin they could use the far bases
+    again, which is for the lead); a Mowzie's Mobs newer than 1.8.2 that fixes its own sweep still gets this mixin (the
+    answers are the same); another mod's navigation with the same bug is not touched.
 
 ## M9 Umvuthana
 
@@ -5554,6 +5826,8 @@ M9b takes MZB-600 to 624 (M9c takes 625 to 649); the M9b build choices are under
   - APPLIED or DUPLICATE_OP lowers what is owed by the amount. FAILED returns the goods through
     `stock_from_players`.
   - A grove whose chest is gone keeps owing.
+  - Amended by MZB-930: what is owed is earmarked out of the market's line at the payment, and it is
+    booked out to the players at the answer, not at the send.
 - **MZB-424** (owed hunts, ledger 11): a unit field `hunts: u32` (raptor 2, PLACEHOLDER) and a culture field
   `hunt_cap: u32` (8, PLACEHOLDER).
   - `raid_district` adds `survivors × hunts` for each class it did not skip, capped at `hunt_cap` per
@@ -5906,6 +6180,8 @@ M9b takes MZB-600 to 624 (M9c takes 625 to 649); the M9b build choices are under
     the camp was out (or by a replayed record, MZB-446 above) goes at the census that brings the camp in, and
     the plugin's session-start HAVEN_CHEST is no longer what places it. A duplicate census (the camp's own
     epoch) and a replayed one place nothing.
+  - Amended by MZB-930: P3-2's read of the stock is gone with the earmark. A stack is the least of what is
+    owed and 64, and no market is read.
 - **MZB-447** (tribute pricing, M9a): `gift_value` prices only the faction's tribute good and an unpriced
   tribute good is worth `1 / tribute_per_coin` of a coin, so 567 nuggets are 63 coins at the fallback 9.0. TRADED's
   coins are its nuggets over `tribute_per_coin`. Any other unpriced good is still worth nothing.
@@ -7059,6 +7335,94 @@ conversion or the merge: the tests had been compiled but never run.
     rescans' slice count in the tick they ran. On a host slow enough that one call passes the 5 ms slice
     limit (11 ms here against 2.5 ms on main), those rescans split into slices too, and the wait passed on
     them. It now waits for one more detection by `Districts.rescans()`.
+
+### The tribute earmark (MZB-930 to MZB-933)
+
+The GameTest `tributeLandsInAGroveChestWhenTheGroveLoads` failed twice on SEC-1's rounds with "566 of 567".
+The plan says a player who later raids the grove "finds the gold they paid" (MOWZIE.md, the Umvuthana
+section). The cause was in the engine, not the test.
+
+- **MZB-930** (the bug, three hits, each pinned by a test that failed first):
+  - Tribute was stocked into the haven market's nugget line and kept owed as a number, with no reservation.
+    The line is drawn by the market's own draw (about two nuggets a day in the test world), lanes and
+    caravans, player trades at the haven, and predator and raid takes.
+  - **Hit 1** (`place_tribute`): each stack was `owed.min(held).min(64)`, cut to whole items. A draw of
+    even a thousandth between the payment and the last stack cut a whole nugget. The rest (1,000 owed
+    against 999 held) then cut to 0. No later chest, census or answer placed it, and it stayed owed, saved
+    in the page. Test `a_market_that_draws_its_nuggets_takes_none_of_the_tribute_owed_to_the_chest`, before
+    the fix: 566 placed, 1 owed.
+  - **Hit 2** (`tribute_failed`): a FAILED stack went back into the line while the chest was forgotten, so
+    the line could be drawn until the next HAVEN_CHEST or census. Test
+    `a_failed_stack_goes_back_to_the_chest_not_to_a_line_the_market_draws`, before the fix: 566 placed, 1
+    owed.
+  - **Hit 3, a dupe** (`replayed_placed`): a replayed APPLIED took `stock_to_players` of the stack and
+    ignored what it got. The replay holds the stack's goods in the line from the payment to the answer, so a
+    line drawn meanwhile booked out less than Java put in its chest: the chest has the items, and the
+    market also spent them. Test `a_replayed_stack_leaves_the_books_by_what_java_put_in_the_chest` (the
+    line drawn to nothing between the payment and the replayed answer), before the fix: 0 of the 30 booked
+    out, a dupe of 30. The size of the dupe is whatever the line was drawn below the stack.
+- **MZB-931** (the earmark): what a grove owes its chest leaves the payment before anything is stocked.
+  - `owe_tribute` takes the tribute good's whole items, books them `World::held_from_players`
+    (`outside.player_in` and `outside.held`, never consumed, so the world's conservation holds), and
+    returns the rest. `pay_tribute` and `gift` stock only that rest at the haven, and `ledger.tribute` or
+    `ledger.gifts` counts both parts.
+  - The plan's "paid tribute is stocked at the grove's haven" now holds for what is not owed to the chest:
+    a gift's other goods, every culture with no chief body (no camp chest), and a grove with no camp
+    yet, which are unchanged.
+  - A payment at a haven that keeps no stock still earmarks the owed part: the chest gets it, where before
+    nothing was booked at all.
+- **MZB-932** (booked at the answer, not at the send):
+  - `place_tribute` reads no market. A stack is `owed.min(64 items)`, and owed is always whole items.
+  - The goods stay held while the stack is in flight. APPLIED or DUPLICATE_OP books them
+    `held_to_players` and lowers what is owed. FAILED moves nothing (the chest is forgotten as before).
+    The send-then-return round trip of MZB-423 and MZB-446 is gone, so a grove's earmark is exactly its
+    `owed_tribute`, in flight included.
+  - `replayed_placed` books the whole stack `held_to_players`, which the earmark always holds, and
+    `replayed_failed` moves nothing.
+  - `place_tribute` and `haven_chest` lost their now unused world and tick parameters, and `camp_census`'s
+    world parameter is unused (kept, with an underscore).
+- **MZB-933** (where the earmark goes, and the check):
+  - No path drops a camp or a faction in a running engine: `FactionTable` never removes a row, and a camp
+    is only taken and put back. The earmark lives as long as the faction.
+  - One path drops them all at a start: conflict pages this build cannot read (`when_pages_unreadable` in
+    rtsim-jni's conflict link: a conflict page bump on a deployed world, or a corrupt meta page) start the
+    conflict afresh while the world's pages load. The earmark then stays in the world's `outside.held`
+    with no owner, and nothing books it out: the paid tribute never reaches a chest. Before the earmark
+    those goods sat in the haven's line and stayed in the economy, so this is a new loss, bounded by what
+    was owed at the save. Parties' loot in `outside.held` is lost the same way already. Kept (the
+    conservative choice, and no compatibility before release): the fresh conflict cannot know which part
+    of the shared held was its earmark, so it cannot land it.
+  - At a reinstall reset the engine and its world start fresh, so the earmark goes with them, as the owed
+    goods in the market did before (UR-1: an uninstall loses nothing new).
+  - `Conflict::check` adds one rule: per good, what the parties carry plus every grove's `owed_tribute` is
+    at most the world's `outside.held`. Grove tests' `ok` now runs `Conflict::check`. A mutation that drops
+    the earmark's `held_from_players` breaks 9 grove tests, 5 of them by this rule.
+  - The MZB-423 P3-2 test pinned the old cut. It is now
+    `a_drained_line_cuts_no_stack_of_the_earmarked_tribute`: the line drained to nothing, the stack is a
+    whole 64.
+  - No saved format changes: `owed_tribute` was already saved, and `outside.held` is the world's.
+  - The GameTest keeps its exact-567 check.
+- **MZB-934** (the slice's Opus review: no P1; its P2 and P3 fixed):
+  - P2-1, the check is one-sided. `Conflict::check` asks only that the world's held covers the parties'
+    loot and the earmarks, so a leak into held (a FAILED that earmarks again, an APPLIED that books
+    nothing out) passed it. It stays one-sided: `outside.held` is one pool, and ships and lanes hold
+    goods in it too, so an equality there would fail in any world with them. The grove tests' `ok` adds
+    the equality instead, per good: in those worlds only the conflict holds goods. It holds in all 60
+    grove tests and kills those mutations, as the review showed.
+  - P2-2, the drop path above (unreadable conflict pages): recorded in MZB-933, not fixed.
+  - P2-3, no rtsim-jni test pinned the earmark across a real save and crash. A helper,
+    `assert_earmarked`, asserts that the world's held of the tribute good is what the grove owes and that
+    `Conflict::check` passes. It runs in the crash test
+    (`a_groves_tribute_lands_in_its_chest_once_across_a_failure_and_a_crash`: 567 after the payment, the
+    FAILED and the restart, 503 after the stack lands), in the NOT_LOADED test, and in RP-292's
+    switch-off test, where it replaces the stock bound that the earmark made vacuous (the goods no longer
+    go back to a stock).
+  - P3: `tribute_placed` and `replayed_placed` debug-assert that `held_to_players` took the whole stack,
+    since `take_held` clamps silently and a short take is hit 3 again. The texts that still sent a FAILED
+    stack's goods back to the stock (docs/boundary.md, rtsim-jni's conflict link, the protocol tests'
+    messages) now say it stays owed and earmarked. The test names that say "goes back to its stock" are
+    kept for MZB-760, which rewrites those tests. The conflict and rail benches run `Conflict::check`
+    after their heap samples, as it now reads every faction's camp.
 
 ## M10 March
 
@@ -8743,6 +9107,489 @@ An Opus review of M10's head (2443e915) found one P1, one P2 and seven P3s. Each
   - The review's "not checked by tests, reasoned safe" items are unchanged: a HAND_BACK answer against the band's
     BAND_DEMATERIALIZED cut with the camp in (only the camp-out case, camp.rs's `camp_out` path, is tested), a set-out
     hand-off cut with a march, and CHIEF_KILLED copies after an unwatched resolve.
+
+## MZB-760 Grove tribute parking
+
+Slice fix/grove-tribute-park, from fix/slice-u-b at a7616f51 (the U-b merge). RP-210's "Left" row
+(docs/choices-journal-barrier.md): the Umvuthana grove's tribute stack answered NOT_LOADED is parked
+under its op id, as the dragons' (RP-210). Rust only; no GameTest, no Java.
+
+- **MZB-760** (a grove's tribute stack answered NOT_LOADED stays in flight under its op id):
+  - **What was double.** U-b's merge took NOT_LOADED as FAILED for the grove (`tribute_failed`): the
+    stack's goods went back to the grove's stock, the chest was forgotten, and the next stack went under
+    a new op id (`tribute_op` of the camp's `stacks` counter). NOT_LOADED means Java did not look in the
+    chest's chunk, and that chunk may have been written ahead of the journal, holding the stack and its
+    APPLIED record (`PendingRecords`). Its REASSERT then found no placing to book, and the stack went
+    again under the new op: the nuggets were in the chest twice.
+  - **The failing numbers.** The test
+    `conflict::a_groves_tribute_stack_in_a_chunk_saved_ahead_of_the_journal_is_placed_once`
+    (crates/rtsim-jni/tests/protocol.rs, modelled on the dragons'), committed failing as 242f031a, on
+    a7616f51: seven gold blocks are 567 nuggets owed, the first stack of 64 is
+    sent and put in the chest, the chunk keeps it and the journal loses its APPLIED, and the restart
+    answers NOT_LOADED. It fails first at "still in flight under its op id": (owed, in flight, stacks)
+    is (567, 0, 1) for (567, 1, 1). With that check off, after the chunk's REASSERT it is (567, 0, 1)
+    for (503, 0, 1) (the REASSERT booked nothing), and at the end the chest holds 631 nuggets for 567
+    (the 64 twice) and the books read (0, 0, 10) for (0, 0, 9): a tenth stack, under a new op.
+  - **The fix** (rtsim-conflict `engine.rs` and `engine/camp.rs`; rtsim-jni `engine/conflict.rs`). The
+    `Conflict` has a per-session `parked` set of op ids beside `placing`. `tribute_not_loaded(op)` keeps the
+    stack in `placing` and parks it; the grove's chest is forgotten only if it is still the stack's own
+    (the same dimension and place), so a chest named since, elsewhere, is kept. `placings_to_send()` leaves
+    parked stacks out and `write_tribute` writes only those, so a parked stack is not written every step.
+    `place_tribute` sends nothing while the grove has a placing, parked or not, so a parked stack holds the
+    next back. HAVEN_CHEST (`haven_chest`) lets the grove's parked stack go again, to the chest its
+    placing keeps (the one it went to first), not the one just named. APPLIED, DUPLICATE_OP and a chunk's
+    REASSERT take it out like any placing (`tribute_placed`), and FAILED takes it out and puts the goods
+    back (`tribute_failed`): `unplace` clears its parking. `after_core` calls `tribute_not_loaded` for
+    NOT_LOADED and `tribute_failed` for FAILED only.
+  - **Outcomes.** A stack in the chest's chunk saved ahead of the journal (direction B): placed once,
+    EXACT (the same test, 567 in the chest and (0, 0, 9) in the books; it was DUPE). A give-up (the
+    chunk from before, with no coin): LOSS, as the dragons' (the engine took APPLIED, and the chunk has
+    nothing). A grove whose chest is never named again keeps its stack parked until the next session
+    start, which sends it again once (the dragons' too), unless the replayed part of the journal holds
+    a NOT_LOADED answer for it: that parks it again, and the session start sends nothing (MZB-761,
+    MZB-763's test).
+  - **Nothing is saved**, as for the dragons: `parked` is in memory only. The pages' format is the same.
+  - **Amendment, with slice U-c merged (RP-292).** A grove stack's answer heard while the conflict is
+    off is kept on the conflict's kept page and applied at the switch-on, at its own tick
+    (`keep_answer`, `apply_kept`; docs/choices-journal-barrier.md, RP-292). Both ways in go to one body,
+    `answer_tribute`, which holds the NOT_LOADED arm, so a kept NOT_LOADED parks the stack exactly as a
+    live one does: in flight under its op id, its goods not back in the stock, the chest forgotten if it
+    is still the stack's own, no taint and no command taken. The switch-on's reset runs `begin_replay`
+    first (which clears `parked`), then the kept answers, so the park is made after the clear and holds.
+    The stack is not sent before the plugin names its chest again, and then goes once under its own op.
+    The kept answer survives a crash on the kept page, and the new session parks it again at the
+    switch-on (parking itself is unsaved). U-c's own test of this case expected FAILED (the goods back in
+    the stock, nothing in flight, a new op for them): that is the double-placement path above, so it now
+    expects the park (`conflict::a_groves_tribute_stack_answered_not_loaded_with_the_conflict_off_is_parked_at_the_switch_on`,
+    the helper's `Answer::NotLoaded` arm), and
+    `conflict::a_groves_tribute_stack_answered_not_loaded_with_the_conflict_off_survives_a_crash_parked`
+    is the same with a save while off, a crash and a restart with the conflict still off.
+    Mutation, a kept NOT_LOADED applied as FAILED (`tribute_failed` when `State::applying_kept`): both
+    tests fail at "parked, in flight under its op id", (owed, in flight, stacks) (567, 0, 1) for
+    (567, 1, 1); the live-answer parking test still passes, so the mutation reaches the kept path only.
+    At the merge, before the test was changed, U-c's version of the test failed the same way against
+    the merged code ((567, 1, 1) for its (567, 0, 1)): the merge already parked a kept answer.
+- **MZB-761** (forks, each the dragons' unless said):
+  - **`placings()` is still every stack in flight.** The brief said `placings()` leaves parked stacks out.
+    It would make "in flight" read 0 for a parked stack in every test that counts them, and the dragons'
+    own `placing()` lists all of them with `placing_to_send()` leaving the parked out. So the grove has
+    `placings_to_send()` for the link and `placings()` is all.
+  - **A session start clears `parked`** in `begin_replay`, where the dragons clear theirs, before the
+    replay's own records park again what they answered NOT_LOADED. The stack in the pages is sent once at
+    the restart and parked again by its answer.
+  - **CAMP_OUT lets the grove's parked stack go again**, since it forgets the chest there. The chunk may
+    be loaded still, and if not the stack is answered NOT_LOADED again and parked again: one command, not
+    a loop. (The dragons have no CAMP_OUT.)
+  - **A replayed NOT_LOADED for a stack no placing holds books nothing** (RP-134, the stack the session
+    decided after the pages' save): `replayed_failed` is not taken for it, since it passes the camp's
+    count and forgets the chest, and the stack may be in its chest. The census after the replay decides
+    the stack again as the same op (the same index, good and amount), which Java answers DUPLICATE_OP if
+    the chunk holds it. Test: `a_replayed_not_loaded_for_a_stack_after_the_save_books_nothing`
+    (crates/rtsim-conflict/tests/grove.rs).
+  - **The status match keeps a last `_` arm.** A COMMAND_RESULT status is a `u32`, so the compiler
+    cannot check a match over it for exhaustiveness. `after_core` names APPLIED, DUPLICATE_OP, FAILED and
+    NOT_LOADED, and NOT_FREE and VANILLA_KNOWS (other commands' answers) as no tribute stack's, and a last
+    `_` covers a status it does not know. Amended (MZB-765): the grove's site matches a typed
+    `CommandStatus` and has no `_` arm.
+  - **NOT_LOADED taints nothing**: it changes no state the pages hold (the chest and the parking are not
+    saved), so `after_core` neither taints the world nor takes commands for it.
+  - **Tests.** Engine: `an_unloaded_stack_is_parked_under_its_op_until_the_chest_is_named_again`,
+    `an_unloaded_stack_forgets_only_its_own_chest` (the dragons' name),
+    `a_parked_stack_is_answered_like_any_stack_and_goes_again_at_camp_out_and_a_session_start` and the
+    replay test above (crates/rtsim-conflict/tests/grove.rs). Link (crates/rtsim-jni/tests/protocol.rs):
+    U-b's `conflict::a_groves_tribute_stack_answered_not_loaded_goes_back_to_its_stock` is reworked into
+    `conflict::a_groves_tribute_stack_answered_not_loaded_is_parked_under_its_op_id_until_the_next_haven_chest`,
+    and `conflict::a_groves_parked_stack_goes_to_its_own_chest_and_the_chest_named_since_gets_the_rest`
+    is new. Mutation: NOT_LOADED back to FAILED fails the three
+    link tests that park (the parking test, the own-chest test and the ahead-of-the-journal test); writing
+    parked stacks again every step fails the parking test ("parked: not sent again every step", 11
+    commands for 7).
+
+## MZB-762 Review fixes to MZB-760 (grove tribute parking)
+
+Review of fix/grove-tribute-park at 7e1183ef (the build lead's findings P2-1, P2-2, P3-1, P3-4, P3-5 and
+the docs). Rust and docs only; no GameTest, no Java. One record per fix, MZB-762 to MZB-766. A second
+review, of 76f5ecb4 (one P2 and the doc slips), adds MZB-767 and MZB-768.
+
+- **MZB-762** (P2-1: a FAILED stack forgets the chest only if it is the stack's own):
+  - **The stall.** `tribute_failed` set `camp.chest = None` whatever chest the grove held. A stack s to
+    chest X answered NOT_LOADED is parked; the grove comes in with X full or broken and GroveChests
+    names Y; `haven_chest` unparks s and sends it to its own chest X, whose chunk is loaded and carries
+    no op, so the insert fails (FAILED); the engine forgot Y. Java names Y again only on a change
+    (`GroveChests.containerTransferred` re-checks only the chest it last named, and the 200-tick scan
+    sends only on a change), so the grove stalled. The same holds without a parking: a stack in flight
+    to X when Y is named, and then FAILED.
+  - **The fix.** The chest is forgotten only if it is the stack's own (the same dimension and place), as
+    `tribute_not_loaded` does. Engine test `a_failed_stack_forgets_only_its_own_chest`
+    (crates/rtsim-conflict/tests/grove.rs): parked at X, Y named, the stack goes again to X, FAILED; the
+    camp still holds Y, and the failed goods go as a new stack to Y. On 7e1183ef it failed at "only the
+    stack's own chest is forgotten" (None for Y).
+  - **Fork: the next stack goes at once.** With Y kept nothing sent the failed goods again before the
+    next payment or census (`place_tribute` runs at a payment, a census, a HAVEN_CHEST and an APPLIED),
+    a stall of its own. So `tribute_failed` ends with `place_tribute`, as `tribute_placed` does. It sends
+    nothing when the chest was forgotten (the usual FAILED, as before), and a chest that fails again is
+    its stack's own and is forgotten then, so it cannot loop. The dragons' call runs only while the
+    dragons run (MZB-767).
+  - **The dragons have the same line** (`Dragons::tribute_failed` took `chests.remove` whatever the
+    chest). The sequence reaches it: a stack parked at X, `LairChest` Y reported (it unparks the lair's
+    stacks and sends them to their own chests), the stack answered FAILED forgot Y, and its coin sat
+    unplaced until Lairs reported a chest again (the plugin reports on a change only: a chest gone,
+    full, or its chunk unloaded). The next season's payment did not help: its `place_tribute` needs
+    a chest, and Y, the one it needed, was the one forgotten. Same fix (forget only if `chests[lair] == p.chest`) and the
+    same `place_tribute(lair)` after it. Test `a_failed_stack_forgets_only_its_own_chest`
+    (crates/rtsim-ecology/tests/tribute.rs), failed first the same way on 7e1183ef (None for Y).
+- **MZB-763** (P2-2: two link tests, no behaviour change):
+  - **A replayed NOT_LOADED parks the stack again**
+    (`conflict::a_groves_stack_answered_not_loaded_after_the_save_is_parked_again_by_the_replay`,
+    crates/rtsim-jni/tests/protocol.rs). The pages hold a stack in flight (saved while Minecraft held
+    it), Java's NOT_LOADED answer to it is journaled after the save, a crash, a restart: the replay
+    hears the answer and parks the stack, and the session start writes no transfer; its chest named
+    later, it goes once under its own op and the 567 nuggets land once (9 stacks). The answer took the
+    stack's op out of the core outbox, so a stack the replay did not park would be written again by
+    `write_tribute`. Mutation: `tribute_not_loaded` not parking while `outbox.replaying()` fails it
+    at "the replay parked it again, and the session start sends nothing" (1 transfer for 0), and fails
+    the two U-c NOT_LOADED tests that park at the switch-on as well (their kept answer is applied in
+    a replay).
+  - **What the clear in `begin_replay` is for**
+    (`conflict::a_groves_parked_stack_is_sent_again_when_the_conflict_is_switched_off_and_on`). A
+    restart makes a new engine, with nothing parked, so the clear matters only for a session begun in
+    the same process: the conflict switched off and on (the reset runs `begin_replay`). A stack
+    parked live (NOT_LOADED) goes again at once at the switch-on, with no chest named, to its own
+    chest: one more transfer under the same op, answered, and booked placed ((503, 0, 1)). The
+    parking is the old session's. A stack kept parked across the reset would wait for the plugin to
+    name a chest: `GroveChests.endOfTick` clears what it sent while the conflict is off, so it names
+    its chest at its first scan with the camp in, and the stack would go then, later than the clear
+    sends it; only when no chest has room is none named, and the stack would wait for as long
+    (a full chest is told as free 0, which does not unpark it: MZB-764). With the clear removed only the engine
+    test `a_parked_stack_is_answered_like_any_stack_and_goes_again_at_camp_out_and_a_session_start`
+    failed; now this link test fails too, at "the new session sends the stack again" (1 transfer for
+    2), and no other link test does. Transfers are counted with `tribute_sends` (the
+    TRANSFER_TO_CONTAINER commands Java was given), not `j.commands.len()`: a switch-on writes
+    territory commands as well.
+- **MZB-764** (P3-1: a parked stack's own chest reported full does not send it again):
+  - **The loop.** After any answer for its chest, NOT_LOADED included, GroveChests looks at the chest
+    again; with the chunk gone it reports `HAVEN_CHEST(X, 0)`. `haven_chest` unparked the stack on it, the
+    stack was written again, answered NOT_LOADED again, and the plugin reported again: one send a step
+    until Camps' 20-tick poll sent CAMP_OUT.
+  - **The fix.** `haven_chest` does not unpark on a HAVEN_CHEST with free 0 that names the stack's own
+    chest (the same dimension and place as its placing). The chest is still recorded (full, so
+    `place_tribute` sends nothing). The stack goes again at a HAVEN_CHEST for its chest with room, or at
+    CAMP_OUT and back in (CAMP_OUT forgets the chest and unparks). Engine test
+    `a_parked_stack_waits_for_its_own_chest_reported_with_room` (crates/rtsim-conflict/tests/grove.rs),
+    failed first on the fix's parent at "still parked" (1 stack to send for 0). A full chest that is not
+    the stack's own still unparks it, as before (named in the test): it is news, and the stack goes to its
+    own chest once.
+  - **The dragons** have no equivalent: `LairChest` carries no free count, so a report never says "full".
+- **MZB-765** (P3-4: a typed COMMAND_RESULT status at the grove's site):
+  - **The gap.** The grove's status match (`answer_tribute`) ended in `NOT_FREE | VANILLA_KNOWS => false`
+    and `_ => false`, so a status added to the wire slipped by as "no tribute stack's" with no build error.
+  - **The type.** `wire::CommandStatus` (crates/rtsim-jni/src/wire.rs): Applied, DuplicateOp, Failed,
+    NotFree, VanillaKnows, NotLoaded and `Unknown(u32)` for a number it does not know; `from_wire(u32)`
+    and `wire()` (the inverse). The wire numbers are the same, and so is every behaviour: the grove's site
+    is `match CommandStatus::from_wire(rec.aux)` with no `_` arm, and `NotFree`, `VanillaKnows` and
+    `Unknown(_)` still take nothing. Unit test `wire::tests::a_command_status_names_every_wire_number_and_keeps_the_rest`
+    (every number maps to its variant and back, no two share one, 0 and 7 and up are `Unknown`, whole). It
+    failed first as a build error on 7e1183ef (no such type). Adding a variant to the enum stops the build
+    at the grove's site (E0004, checked with a throwaway variant).
+  - **Follow-up, with the replay pushes: the other readers still compare the number.** None is converted
+    here: `dragons::after_core` (crates/rtsim-jni/src/engine/dragons.rs, a `match rec.aux` with `_ => false`),
+    `world.rs` `apply_journaled` (`obs::COMMAND_RESULT`, a `match rec.aux` with `_ => {}`), `op_of`
+    (crates/rtsim-jni/src/engine.rs, APPLIED or DUPLICATE_OP by `==`), and industry's `command_result`,
+    `answered_again` and the kept-answer test in crates/rtsim-jni/src/engine/industry.rs (comparisons
+    with DUPLICATE_OP, FAILED and APPLIED). A status added to the wire must be read at each of them by
+    hand until they take a `CommandStatus`.
+- **MZB-766** (P3-5: U-c's NOT_LOADED test counts transfers):
+  - **The gap.** The renamed U-c test (`a_grove_stack_answered_with_the_conflict_off`, its NotLoaded arm,
+    crates/rtsim-jni/tests/protocol.rs) checked "a parked stack is not sent before its chest is named"
+    with `tribute_ops(&j) == first` in the non-crash variant: a set of op ids, which does not change when
+    the same stack is sent again under its own op.
+  - **The fix.** The test counts the transfers Java was given (`tribute_sends`, the TRANSFER_TO_CONTAINER
+    commands) before the switch-on and after the census, and asserts the count is the same, first, ahead
+    of the old assertions, which stay. Not `j.commands.len()` as the live parking test counts: the
+    switch-on writes territory and census commands too, so only the transfers are stable.
+  - **Mutation.** `tribute_not_loaded` not parking while the outbox replays (the kept NOT_LOADED then is not
+    parked at the switch-on, and the stack is sent again): the new assertion fails in both NotLoaded
+    variants, at "a parked stack is not sent before its chest is named again, under any op" (2
+    transfers for 1 without a crash, 1 for 0 with one). The op set is the same in the non-crash run
+    (the same op, sent twice), so only the old `owed_tribute` check, which sees Java's APPLIED
+    answer to the resend, caught it before.
+- **MZB-767** (re-check P2: a FAILED dragon stack answered with the dragons off makes no stack):
+  - **The hole.** MZB-762 ended `Dragons::tribute_failed` with `place_tribute(lair)`, so a FAILED that
+    kept a chest placed the failed coin again at once. The answer path (`dragons::after_core`) takes
+    tribute answers whatever the switch (RP-291), and the engine's `chests` map is cleared only in
+    `begin_replay`, not at a switch-off. Sequence: stack s to chest X; NOT_LOADED parks it;
+    `LAIR_CHEST` names Y (the lair's parked stacks go again, to X); ECOLOGY goes off; Java answers
+    FAILED. Y is kept, so `place_tribute` drew op ids and made stacks while the module was off; they
+    were saved, and at the switch-on, which had just forgotten Y, they went to Y. That broke the rule
+    that the switch gates only new decisions (docs/replay-gate.md 9.7) and RP-291's premise that the
+    answer decides nothing.
+  - **The fix.** `Dragons::tribute_failed(op, place)`. The books and the chest are as before (the coin
+    back to unplaced; the chest forgotten if it is the stack's own); `place` is whether the dragons run,
+    and only then does the coin go again at once. `after_core` passes `running(st)` (switched on, in
+    the world, not waiting for Java's dictionary), as does `write_tribute`'s never-written path. Off, no
+    stack is made and no op id is drawn (the lair's stack counter does not move); the next stack comes
+    with the lair's next `LAIR_CHEST` after the switch-on, as for any lair chest.
+  - **Conservative choice.** The coin waits for the report rather than the engine keeping the chest
+    across a switch-off: the switch-on forgets the chests on purpose (they are a session's, MSC48).
+  - **Tests.** `dragons::a_failed_tribute_stack_answered_with_the_dragons_off_makes_no_stack`
+    (crates/rtsim-jni/tests/protocol.rs): the sequence above, ECOLOGY off in the tick Java answers
+    FAILED. Off, `dragons_tribute` is `[1, 0, coins, 0]` and no new op was sent; back on, nothing is
+    sent; the chest reported again takes the coin once (`[1, coins, 0, 0]`, the chest holds 499), and
+    the ledger and the world's tribute hold every coin. With `after_core` passing `true` (the
+    behaviour before the fix) it failed at "off: the coin is booked back and no stack is made"
+    (`[1, 0, 0, 8]` for `[1, 0, 499, 0]`: 8 stacks made while off). Engine half,
+    `a_failed_stack_answered_with_the_dragons_off_makes_no_stack` (crates/rtsim-ecology/tests/tribute.rs):
+    `tribute_failed(op, false)` keeps the chest, books the coin back and moves no counter; with
+    `place` ignored it failed at its first look at the lair's unplaced coin (the coin had been placed
+    again, so the map held no entry).
+  - **The grove needs no gate.** Its answers heard off are not taken: `after_core` keeps them
+    (`keep_answer`, RP-292) and the switch-on applies them after `begin_replay`, at their own tick
+    (`apply_kept`, `answer_tribute`). By then every camp is out and its chest forgotten
+    (`camp_session_start`), and `place_tribute` needs a camp that is in with a chest, so a kept FAILED
+    moves nothing (the goods stay earmarked, MZB-930) and places nothing. Its other `tribute_failed` call, `fail_tribute` in
+    `write_tribute`, runs only with the conflict on. Agreed with the re-check.
+- **MZB-768** (re-check P3: doc slips; one code comment):
+  - **`replayed_failed`** (rtsim-conflict, camp.rs) still forgets the chest whatever it is, while the
+    live `tribute_failed` forgets it only if it is the stack's own (MZB-762). Its doc said "as the
+    session that went on did", which no longer held. Only the doc changed. The difference is harmless:
+    the replay decides nothing, a chest the live session kept was named by a HAVEN_CHEST that is
+    replayed or sent again, and `GroveChests` names its chest again after a restart or a switch-on
+    (it starts with nothing sent), before any stack goes, because a stack needs a camp that is in with
+    a chest.
+  - **Corrected text.** MZB-762's dragons claim (the coin waited for Lairs' next report, not the next
+    payment: the payment's `place_tribute` needs the forgotten chest); MZB-763's "a report that never
+    comes" and the test doc's "never names again" (`GroveChests.endOfTick` clears `sent` while the
+    conflict is off, so the chest is named at the first scan with the camp in; never only with no room);
+    docs/replay-gate.md section 4.4 and the RP-57 HAVEN_CHEST row (any HAVEN_CHEST unparks except one
+    naming the stack's own chest with free 0; another chest reported full also unparks, as MZB-764's
+    test asserts); HAVEN_CHEST listed twice in the RP-57 table (the second removed); and the dragon
+    text that said a FAILED only returns the coin and forgets the chest (docs/boundary.md section 4 and
+    6.4, MSC48, MSC54, MSC55, RP-291 and the "Never written" comments in rtsim-jni dragons.rs and
+    conflict.rs), now: a kept chest takes the coin at once while the dragons run, and nothing is placed
+    while they are off. boundary.md section 4 also said a stack answered while the module is off "goes
+    again and Java answers DUPLICATE_OP", which RP-291 had made false; it now says the answer is taken.
+
+## MZB-769 The grove tribute parking meets the earmark
+
+The merge of origin/main (the earmark, MZB-930 to MZB-934) into fix/grove-tribute-park (MZB-760 to
+MZB-768). Rust, docs and tests; no Java. The rule: the earmark's accounting wins (owed goods stay held
+until a placement is answered, and a FAILED moves nothing), and MZB-760's parking wins (NOT_LOADED parks
+the stack under its op id and does not fail it).
+
+- **MZB-769** (how the two meet):
+  - **`tribute_failed`** keeps MZB-762's own-chest check and its `place_tribute(f)` call (the next stack
+    goes at once to a chest named since). The `stock_from_players` call that MZB-760 had is gone: the
+    goods never left the earmark, so nothing goes back. `w` and `at` are unused and kept for the link's
+    one call shape with `tribute_placed`.
+  - **`place_tribute(f)`** reads no market (MZB-932). `haven_chest(h)` keeps MZB-764's own-chest-full rule
+    and unparks, then calls `place_tribute(f)`; `h` is its only parameter.
+  - **`tribute_not_loaded`** moves nothing either: the parked stack's goods stay earmarked all the while,
+    which is what the unloaded chunk needs (it may hold the stack already). A parked stack answered
+    APPLIED, DUPLICATE_OP or by a chunk's REASSERT is booked out of the earmark by `tribute_placed`, as
+    any stack.
+  - **The link** (`write_tribute`'s never-written path) fails the stack: the goods stay owed and earmarked,
+    and the chest is forgotten only if it is the stack's own (MZB-762).
+  - **`replayed_failed`** moves nothing in either model, as before; its doc now says the goods stay in the
+    earmark. The chest it forgets whatever chest it is (MZB-768).
+- **Tests whose expectation changed because of the other side.**
+  - Engine, crates/rtsim-conflict/tests/grove.rs. MZB-760's tests counted the market's line: a parked or
+    failed stack's goods were "out of the stock" or "back in" it. Under the earmark the line is never
+    touched, so they read the world's held instead. `an_unloaded_stack_is_parked_under_its_op_until_the_chest_is_named_again`
+    (the line was `held - 64`, now the line is unchanged and the earmark holds all 567),
+    `a_failed_stack_forgets_only_its_own_chest` (the line was `held - 64` with the next stack out and
+    `held` after the second FAILED; now the earmark holds all 567 throughout and the line is unchanged)
+    and `a_parked_stack_is_answered_like_any_stack_and_goes_again_at_camp_out_and_a_session_start` (the
+    line was "back"; now it was never read and the earmark is whole). Also the `TributeRec::NotLoaded`
+    arm that MZB-760 added is handled in the earmark's own replay test
+    (`a_replayed_stack_leaves_the_books_by_what_java_put_in_the_chest`), which matches every record.
+  - Link, crates/rtsim-jni/tests/protocol.rs. The earmark's rework of U-b's NOT_LOADED test expected the
+    stack to be taken as FAILED, owed with nothing in flight ((567, 0, 1)), the old behaviour that
+    MZB-760 replaces. The parking wins: `conflict::a_groves_tribute_stack_answered_not_loaded_is_parked_under_its_op_id_until_the_next_haven_chest`
+    keeps MZB-760's (567, 1, 1), still in flight and parked, and adds the earmark's `assert_earmarked(567)`
+    (the goods held, owed 567). Likewise the helper's NotLoaded arm for an answer heard with the conflict
+    off (`a_grove_stack_answered_with_the_conflict_off`, `Answer::NotLoaded`): (567, 1, 1), parked, and
+    `assert_earmarked(567)`. The helper's signature is main's (`Restart`, `Answer`), so MZB-760's
+    crash test (`..._survives_a_crash_parked`) now passes `Restart::Off`. Main's three tests of the
+    helper (the DICTs wait, the second answer, the second answer across a crash) are kept as they were.
+- **Docs.** docs/boundary.md section 9.6 now says FAILED moves nothing and NOT_LOADED parks the stack with
+  its goods earmarked; docs/replay-gate.md 4.4 and docs/choices-journal-barrier.md (RP-291's twin) say the
+  same where they said the goods went back to the stock; MZB-767's "the grove needs no gate" says a kept
+  FAILED moves nothing.
+
+## MZB-940 RP-318's second test fails by the IO lane's speed
+
+M10's merge head (49fef870, the slice merged with origin/main) failed
+`ack_never_resends::a_replayed_duplicate_refused_by_op_id_with_industry_off_leaves_the_queued_copy`
+(crates/rtsim-jni/tests/industry.rs, from slice R) when the whole `ack_never_resends` group ran serially
+in one process, at the final `conserves`: "world totals off by: create:crushed_raw_iron -224". It is not
+M10's, and no earlier test is needed. Rust, tests and docs; no Java.
+
+- **MZB-940** (the test saved its world where the IO lane's latency put the tick, and the off path of
+  an engine restart loses the station side of an odd number of exchanges):
+  - *Not M10, not the group.* The test alone, in a process of its own, failed 12 of 167 runs on this
+    branch. At origin/main's Rust (the mic-rtsim-uf worktree, no march records) it failed 2 of 15 runs
+    after `a_replayed_answer_acknowledged_is_sent_again_and_its_refusal_never_after`, the pair that first
+    looked guilty here; no pair is needed. The only state the tests share is the host (`host_with`,
+    crates/rtsim-host/src/java.rs:41, one `OnceLock` pool for the process), so a group run differs from a
+    single one only by IO lane latency, and a loaded machine makes that longer.
+  - *The harness.* After the loop that takes the pages at the step which writes X, the test waited with
+    `r.run("the pages", ...)`: it ticked the world until the engine confirmed the save, as many ticks as
+    the IO lane took (2,000 to 4,100 of them here), and only then saved the world (`w1`). The
+    P3-1 review of RP-259 had found this and fixed it for `lockstep_until_saved`
+    (its doc, tests/industry.rs, "Ticking until it was durable ran as many world ticks as the IO lane
+    took"); this rig did not have it. `w1` landed between ticks 50,400 and 52,600, so the window the two
+    restarts replay (X at 48,400 to `w1`) held two, or three, of train 1's station exchanges
+    (49,000: unload, 50,400: load, 51,800: unload, 53,200: load). Forcing `w1` later by idle ticks (80 runs,
+    0 to 7,900 of them, each run once): the books closed at every `w1` below 51,800 and failed at every one
+    from there on (51,800 twice, 51,900 twice), so for a given tick the result is the same.
+  - *The engine, not fixed.* With industry on in session 2 the same `w1` ticks close the books (the new
+    test `a_world_saved_after_three_later_exchanges_closes_its_books_with_industry_on`, `w1` 51,900): the
+    replay hears the train arrivals and decides each exchange again under its op, so the carriage result
+    meets its pending exchange. With industry off, `journaled` ignores every record but Java's answers
+    (crates/rtsim-jni/src/engine/industry.rs:701-706, `ignored` 8 to 18 in the link's stats), the
+    arrivals among them, so the engine decides none of the window's exchanges again, and the kept
+    IND_CARRIAGE_RESULT booked at the switch meets no pending exchange and returns
+    (crates/rtsim-industry/src/engine.rs:4157, `carriage_result`). The carriage side of each exchange is
+    in the world (the crashed session wrote it, the world applied it); the station side is the engine's
+    `held` booking (engine.rs:4022), kept in memory until the district's reconcile, and it is not
+    booked. An unload and a load of the same good cancel in the world's total, so a window of two
+    passes; an odd one leaves the world short by that exchange's request. In the failing runs the
+    mill's engine (district 2) shows `made_total` -6286 where the passing ones show -6510 (224 less
+    burned), no "station exchange with train 1" at 51,800 and "running" at 54,700 where the others
+    have 51,900. The 352 iron ingots of train 2's exchange at 52,800 leave `+352` the same way once it is in
+    the window. This is goods lost in the world, not a count: a carriage emptied and a chest never
+    credited. Nothing in M10 touches it.
+  - *The tests.* `wait_for_pages` (the wait `lockstep_until_saved` had, factored out) replaces the
+    ticking wait, so `w1` is the tick after X is answered whatever the load and the window holds no
+    exchange. The case moved into `twice` (tag, `late`, `off`); the RP-318 test is `twice(.., None,
+    true)`. The control above is `twice(.., Some(THIRD_EXCHANGE + 100), false)`. The off case at
+    the late tick, `a_world_saved_after_three_later_exchanges_closes_its_books_with_industry_off`, is
+    `#[ignore]`d with this id: run with `--ignored` it fails deterministically with the -224 above,
+    and it is the failing-first test of the engine fix below.
+  - *Open, for the build lead.* Whether the off replay keeps what the exchanges need (the
+    TrainArrived records and the state they decide against) the way it keeps answers (`KeptAnswer`, saved
+    with the link page, a page format change), or the engine books the station side from the carriage
+    result by remembering which district a train stood at, or an off restart over exchanges is accepted as
+    lossy (it is rare: the crash and the switch off at once, trains running between the last pages and the
+    crash). The first is the conservative one and the largest; none is made here.
+  - *Not checked.* Three other places wait for pages with `Rig::run("the pages", ...)`, ticking:
+    `replayed_answer`, `a_replayed_duplicate_leaves_the_copy_the_replay_decided_again_to_be_sent` and
+    `a_duplicate_restarted_off`. Each takes its pages at day 2 (tick 48,000) and then waits for an event
+    (a loot, X) before it saves the world, so the exchanges that fall inside the wait are in the window its
+    restarts replay, and the IO lane's speed could move them the way it moved this test's. The 24 other tests passed in
+    every serial group run on record, and their flake rates alone were not measured. Their wait cannot simply be
+    `wait_for_pages`: they ask for the save between ticks, so the engine has not taken it yet.
+  - *Checks.* The RP-318 test passed 40 of 40 alone and 120 of 120 in six processes at once (it failed 12 of
+    167 before); `cargo test -p rtsim-jni --test industry ack_never_resends -- --test-threads=1` passed twice (26
+    passed, 1 ignored, 54 and 63 s); the ignored test fails 5 of 5 with the -224. rustfmt is clean on tests/industry.rs.
+  - *Closed by slice U-e (RP-290, docs/choices-journal-barrier.md U-e11).* The "open, for the build lead"
+    question had a fourth answer: the off replay was wrong, not lossy. The module switch is a journaled
+    record now, the pages hold the mask as of their sequence, and `Engine::start` sets every module's
+    flag from it before the replay, so a restart whose config is off replays the crashed session's
+    window with industry on, as that session lived it, and applies the config as the session's own switch
+    after the replay. The replay hears the window's train arrivals and decides each exchange again, so
+    the carriage result meets its pending exchange and the station side is booked. `#[ignore]` is gone
+    from `a_world_saved_after_three_later_exchanges_closes_its_books_with_industry_off`: it passes 3 of
+    3 alone and in the serial `ack_never_resends` group (`-- --test-threads=1`, 29 passed, 0 ignored),
+    and U-e's own `a_window_of_exchanges_after_the_pages_makes_the_same_world_restarted_off_or_on`
+    (engine books and pages equal between the restart off and the restart on) covers the shape on its
+    own helpers. Failing first, on main's engine, U-e's test printed the same -224 as this one
+    (crushed_raw_iron -96 restarted on, +128 restarted off).
+
+## MZB-941 Seven of M10c's march GameTests fail for the tests' own reasons
+
+M10's merge head (49fef870) failed seven core GameTests in `MarchGameTests`, all M10c's (MZB-741, MZB-742, MZB-744), in the
+core round on a fresh world (`target/m10m-core.log`): `themarchrecordmatchesthebodies`,
+`acolumnappearsinsidethetickingarea` and `...atten`, `astoppedbandkeepstotheplayerssquare` and `...atsimulationdistancefour`,
+`thependingarecutatonceandanendedorforeignrecordtrimsnothing` and `acolumnformsagainafterthemoduleisswitchedoffandon`. None is a
+fault of what main brought in (M8's lurk and held puppets, U-g, J6, U-h, MZB-760, the earmark). Java tests only; no production
+code changed, so there is no failing-first test: each is a wrong expectation of the test, and production does what its records say.
+
+- **MZB-941** (the first round the march tests ever ran in, read by the rows below):
+  - *They failed before the merge.* MZB-742 says the tests were written and "none run by the implementer (the build rule)", and
+    the records of M10 hold no round of them. The first rounds that ran them were M11c's, on M10's code plus M11's and none of main's
+    new changes (`feat/mowzie-m11` at 33d628e1, `MarchGameTests.java` identical to 1f200ee5's): `target/m11c-gt1-core.log` and
+    `m11c-gt2-core.log` there fail the same tests at the same checks, six of the seven both times (the pending test passed in
+    both). The 49fef870 round differs only in that one.
+  - *`theMarchRecordMatchesTheBodies`, "worst 1.60"* (the grid's position changes the figure only through the sign of an axis). The record's second leg began at tick
+    400, but the test sends its second steer at 460, after reading the turn: the column stood still for 60 ticks while the route
+    walked on, so the head trailed the chart by up to 1.2 blocks. The chart truncates toward zero (`MarchPath.chartAt`, "as the
+    engine's `as i32` does"), so on a negative axis its block leads the head by up to a block more, and the check measures to the
+    block's centre (0.5): 1.2 + 0.5 + the fraction read as 1.5 to 1.66 in three rounds (1.60, and 1.66 and 1.58 at M11c). The first leg,
+    on the negative x here, read 1.32 with no lag. Now the record holds the first leg's end from tick 400 to 460 (four waypoints, the
+    second at 460), as the steers do, and the tolerance is 1.75: 1.0 for the truncation, 0.5 for the centre, 0.25 for the ticks a steer
+    takes to be read (0.02 a tick, up to 7 ticks measured). With the lag gone the worst expected is about 1.3 on a negative axis and
+    0.6 on a positive one.
+  - *`aColumnAppearsInsideTheTickingArea` and `...AtTen`, "2 members moved back".* The check asked that no member be moved back
+    after the stacks came in. A body is placed 0.1 to 1 block inside the edge (the stack goes in the tick its last member is
+    inside, which the test also asserts), so any stroll or push takes one over it, and `checkPlaced` puts it back at its place in that
+    tick (`strays`, MZB-125: "a member out of it whose place still ticks is moved back"). Two bodies of twelve here, five and four at
+    M11c. What "stay in" means is that no stack goes back to pending: `flickers` (a placed stack seen not placed) and `requeued`
+    stay asserted at zero, each stack is still placed once, and the number moved back is logged (`members moved back`). The strays
+    count is not asserted. Everything in the test after that check has never run: the walk out and back in (each stack taken back
+    once, placed twice), the recalls and the envoy.
+  - *`aStoppedBandKeepsToThePlayersSquare` and `...AtSimulationDistanceFour`, "no place of W passed it either: -5168147.5".* W
+    appears outside the area and the square with its march not yet said, and its stacks are pending until the stop walks them in
+    (`walkIn` puts each anchor inside the square at the first beat: placed 3 ticks after the march). The sampler took the farthest east
+    from the tick the march was said, so it read W's own start, the chief's place `wx + 4.5` = -5168147.5, a place nobody walked to.
+    It now reads a stack's place once the stack has been placed (C's are all placed from the start, so its figure is unchanged,
+    -5168213.28 against the edge -5168208.0), and logs W's too (-3528784.50 against the edge -3528784.0 in the round on the fix: W's
+    walk-in puts the stacks at the square's edge, and the clamp keeps them off it by the half block of the chart; see the next
+    paragraph for what the round then found). The rest of the test after this check had not run (the casualty, the walk home).
+  - *The same two tests, the walk home ("stands 0.0 behind the point along the column (95.5 away)").* The first round on the fix
+    ran the tests on to this check, the first of a later part. The test sends the HOME march and the steer, then waits until each
+    stack of W has "arrived" (its place within 0.05 of its end), and reads the ends. The steer is read a step or more after it is
+    sent (2 to 7 ticks), and until then the stacks stand where the walk-in left them, which is arrived: the wait ended at once, on the
+    old ends, 95.5 blocks (31.5 at four) from the point. It now waits for the bridge's `steered` count to move first. The 0.02 the
+    check allows is the column's, and the test gives it nothing else to wait for.
+  - *`thePendingAreCutAtOnce...`, "7 ticks".* The check measured from the tick the record was sent to the tick the cut was seen,
+    and asserted at most 6. The cut is in the tick the record is read (the intake sets `trimNow` and the same tick's trim cuts a pending
+    member no one sees), but the read is the engine's: it comes a step after the order, and a step takes real time on a server that
+    ticks unthrottled: 2 ticks in each of M11c's two rounds (and 2 for the sibling test's chief in this round) and 7 in this one. `CutWatch`
+    samples every tick the tick the march count moved and the tick the cut count moved, and asserts they are the same tick. The
+    "no chief" check of `theTrimNeverCutsInSight...`, passing with 2 ticks, had the same fault (the same 6) and is changed the same way.
+  - *`aColumnFormsAgainAfterTheModuleIsSwitchedOffAndOn`, "the record was read (not within 6000 ticks)".* The test said a march
+    while the conflict module was off and waited for the bridge to read it, to prove it is not kept. The native engine never writes
+    it: `conflict::write_queue` (crates/rtsim-jni/src/engine/conflict.rs:1161, at 1f200ee5 as at 49fef870) clears the queue while the
+    module is off, as `NativeEngine.conflictCommand` says ("dropped unless the conflict module is on"), so no record reaches the
+    bridge and the count never moves. Only the stub engine writes it, and the bridge then reads it and `clearMarches` clears it that
+    tick. The wait is now 40 idle ticks and the check is the same, that no march is kept; the number of records read is logged (0
+    here, 1 on the stub). Production is right: an engine that has switched a module off decides and writes nothing for it. After that
+    wait the test had four steps left that have not run (the switch on, the column forming again, revision 1 kept, the recall).
+  - *The Mowzie module's round on the first fix commit (`target/m10fix-mowzie.log`, 80 tests, 6 failed) found the same kinds of fault in M10c's
+    and M10's tests there, none in production.* Core's helper, `ConflictKit.bodyName`, named only the goblin kit's three bodies, so a
+    survivor map of the Umvuthana read `{body 59=2}` and never equalled `Map.of(MowzieKit.WARRIOR, 2)`:
+    `aGroveThatIsOutRecalls...`, `theTrimAndTheRecallSeeAsFar...` and `aBandSetsOutAndComesHomeInPlainView` (also failed at M11c,
+    `{body 66=1}`). It now falls back to the name the journal's dictionary holds for the id. `aBandWalksHomeInViewAndIsHandedBack`
+    (also failed at M11c, 0.0 blocks; 2.08 here): the same unread steer as the stop test above, with a wait that "arrived" at the old
+    ends; it waits for `steered` to move first. `aHandBackWhoseJoinAnotherModCancels...` (also failed at M11c) ended by waiting for
+    `ConflictKit.party(agent) == null`, and `ConflictKit.party` throws when there is no party ("holds no party yet"): the gone party
+    that the wait is for made it fail; both reads there are `bridge().party` now (MZB-751's follow-up, which no round had run).
+    `aStrayInAHiddenChunkInsideTheRadiusIsListedOnceItsChunkShows` ("census 2 lists the stray as a chief (0)"): not explained, see
+    below.
+  - *Not explained.* That stray test lists no body in census 2. Main changed none of the Java under `conflict/`
+    (`git diff 44199d09 49fef870^2 -- neoforge/core/src/main/java/.../conflict` is empty), so the census and `Camps` are as they were at
+    M10; the test is M6's (MZB-660, MZB-661) and no round of M10's lineage is on record. It ran 24 s of wall time after its batch began
+    on a loaded machine (the create round of the lead's queue held 10 GB beside it). A census taken in the tick the chunk shows,
+    before its entities are listed, would clear `strayWatch` with nothing found (`Camps.java:981`); that is a guess, not seen. **It passed
+    in the Mowzie module's next round, on the fix head (9d123ab5, `target/m10m-mowziesmobs.log`: "All 80 required tests passed")**, with
+    nothing changed in what it exercises: a flake of load, not a fault the merge or M10 made, and still a flake until it has a cause.
+  - *Why production is right, in one line each.* The column and its bodies, the chart and the stop's square, the trim, and the
+    module switch did what their records say in all five; what each test asserted beyond that was the test author's guess, which the
+    first round could not have known (MZB-743 says as much of the tolerances: "if they prove too tight on a first run the failure
+    line holds the distance").
+  - *Not run.* Nothing past the first failed check of the five tests had ever run, so each could show a second fault in a later round;
+    two did (the stop tests' walk home above, and the Mowzie module's tests).
+  - *Rounds on the fix.* Core, fresh world, `target/m10fix-core2.log` at b7abd112: "All 154 required tests passed" (the first round on
+    the first fix commit, `m10fix-core-1.log`, failed the two stop tests at the walk home, 2 of 154, and passed the other five). The
+    figures it logged: the march walk's worst deviation 1.32 (was 1.60); members moved back 6 at simulation distance 10 and 1 at 8;
+    the cut in the tick the record was read (2 ticks after the send, both tests); W's farthest place once placed 0.5 inside the square's
+    edge, C's 5 inside it; the module switched off drops the order (0 records read in 40 ticks) and the column forms again. Mowzie's
+    Mobs, `target/m10fix-mowzie.log` on the first fix commit: 6 of 80 failed (above); `target/m10m-mowziesmobs.log` on 9d123ab5 (the
+    lead's queued round, which compiled the fix commits): "All 80 required tests passed". `cargo test -j 8 -p rtsim-conflict -p
+    rtsim-jni`: every binary passed; in the one run, `ack_never_resends::a_carried_answer_heard_with_industry_off_takes_its_queued_command`
+    hit its own 60 s wall-clock bound at load 38 (other sessions' builds) and passed alone in 3 s (MZB-940's family: a wall-clock
+    bound in a Rust rig, not touched here). `:core:test` passed.
 
 ## M11 Aloft
 
@@ -10967,6 +11814,205 @@ rounds of phase 2 are the check, and what they found is recorded after them.
   unchanged.
 - **MZB-906** (round 1; commit a69bff6d): the retired hand-back test read its band's epoch from the party after the puppet's death, when the party
   may be gone ("holds no party yet"). It reads the epoch while the band lives. The line's answer does not depend on the party.
+- **MZB-907** (the merge of feat/mowzie-m10 at 125ad528 into M11c at 33d628e1, commit aec7918b): M10's head carries main at 8703d216
+  (M8, MZB-760's grove tribute parking, the tribute earmark MZB-930, U-g, J6, U-h) and the march GameTests' fixes (MZB-940, MZB-941) and
+  fixtures. M11 was cut from M10 at 1c2644af, so the march itself is on both sides unchanged; what M10 added since is main's work.
+  - Two files conflicted, both keep-both. `rtsim-conflict` `engine.rs`: M11's `chief_ended` (the camps whose `Camp::ended` stands, by the
+    ended band's agent, MZB-853, saved in the meta page) and M10's `parked` (the tribute stacks parked on NOT_LOADED, MZB-760, in memory
+    only) were both added after `placing` in the `Conflict` struct and in `Conflict::new`'s initializer: both are kept, `chief_ended`
+    first (it sits with the saved fields), `parked` after it. `mic_rtsim_mowziesmobs.mixins.json`: M11's `EntityUmvuthiAccessor` and
+    `UmvuthiSummonsMixin` and M10's `MMEntityMoveHelperMixin` (the march's steering) are all listed, in alphabetical order.
+  - Nine files changed on both sides and merged without a conflict (MOWZIE.md, docs/boundary.md, docs/choices-mowzie-build.md,
+    docs/replay-gate.md, `engine/camp.rs`, `persist.rs`, `rtsim-jni/tests/protocol.rs`, `BridgeEvents.java`, `ConflictKit.java`). The
+    two places where the slices touch near each other are `camp.rs` (M10's earmark rewrote `owe_tribute`, `place_tribute`,
+    `tribute_placed` and `tribute_failed`; M11's `chief_paid`, with its PAID_PUPPET case, MZB-819, calls `pay_tribute`, which calls
+    `owe_tribute`, and the call is unchanged) and `ConflictKit.java` (M10's `bodyName` reads the journal's dictionary, MZB-941; M11
+    added its counters and `chiefBody` with an agent): the edits are in different functions and both behaviours stand, so no design choice was needed where the march and the aloft meet (M11's design already says how they
+    combine: the chief's stack walks at the column's rear and its puppet floats, MZB-805 to MZB-809, MZB-822).
+  - Record ids: no MZB id is defined on both sides (M11 adds 800 to 906; M10 and main add 694 to 699, 760 to 770, 920 and 930 to 941),
+    so none was renumbered.
+  - Save format: M11 follows M10's RTC11 / meta version 10 (magic `RTCB`) with RTC12 / meta version 11 (magic `RTCC`, MZB-853), and M10's
+    side changed no format after the common base (`parked` is not saved), so the merged format is M11's RTC12 / meta 11 and takes no
+    further bump. The viewer fixtures were RTC11 and unreadable ("meta page version 10, this build reads 11"): MZB-908.
+- **MZB-908** (the viewer fixtures, commit 5ef29843): `rtsim-view/tests/data/core` is a fresh core GameTest round's `rtsim` (no archive)
+  and `data/mic_rtsim_journal.dat`, `data/create` a fresh `create -Psec1fx` round's `rtsim` with its archive and journal, both run from
+  aec7918b (RTC12, conflict meta version 11); the header of `tests/fixtures.rs` names the runs. `rtsim-host` and `rtsim-view` pass with
+  them.
+- **MZB-909** (the full `create -PwithMowzie` round at aec7918b ran out of memory; no change, MZB-950's): the round ran at 6G (the heap this
+  branch carried) and the server hung in `theIceBallHitRatesAgainstAMovingTrain`, test 208 of 267, after the OutOfMemoryError in the
+  light engine's worker (a thread dump: the server thread in `EntityFrostmaw.tick`, `MMPathNavigateGround.followThePath`, `tryShortcut`,
+  `sweep`, `Level.getBlockState` loading a chunk; a class histogram: 315,000 chunk holders). That is MZB-950's float sweep of the jar
+  far from the origin, fixed on main's side by M10's head 36634dd2 (the rail tests at `nearBase`, the sweep mixin MZB-951, the heap back
+  to 4G). The round is not rerun on this branch before that merge; M10's earlier pass at 6G on the same test did not meet a sweep that
+  ran away. The server was stopped by hand and no heap was raised.
+- **MZB-910** (GameTest round 2 on the merge, test 23c `pushesAndPortalsLeaveItAloft`; MZB-810): it failed its first check on the control,
+  "blast 1 moved the control ((0.0, 0.0, 0.0) then (0.0, 0.0, 0.0))". The blast stood two blocks under each body, and the control stands
+  one block over the stone floor, so the explosion's centre was inside the floor: vanilla's exposure rays start in a block and are
+  blocked, the push is nil, and the knockback event still fires. The puppet's "did not move" check passed for the same reason (and the
+  count of one, since the event fires), so it tested nothing either. The blasts now stand two blocks beside each body at the height of
+  its middle, in the lane's air, so the control is pushed and the puppet's equality is a test of the hook. Passed in the round at 8391671a.
+- **MZB-911** (round 2, test 23d `aStuckUmvuthiRisesThenIsMoved`; MZB-811): its check "each is under the ceiling (-43.0, -43.0 under
+  -57.2)" failed. The room under the ceiling was `top + 6 - height` = -57.2 (a box 3.2 tall) and a floating puppet's foot is 3 over the
+  floor, at -57.0, so the ceiling's bottom face was inside the puppet's box from the start: vanilla's `move` ignores a block the box
+  already overlaps, the puppets rose through the stone, and both stood at the raised target over it (-43.0 = the ceiling's top, 7 over
+  the floor, + 2 + 8). The ceiling is now 8 over the floor, 1.8 blocks of room, with the rest of the test unchanged. In the round at 8391671a the two checks under the ceiling passed and the test failed at "B's raise read 8,
+  16 and 24 (337417, 0, 0)": B's raise read 8 once and then 0 again (which the test reads as B moved) without 16 or 24 coming and with no hold. The
+  stuck machine resets for headway (0.5 blocks nearer its place in 100 ticks) or for coming within 8 blocks of it. Cause not known: the check now
+  names the most raise read, the tick B moved, the stuck-move count, B's position, its place and the ceiling's room. In the round at 9cc86af5 B stood at y -58.9 (set down on the floor), its raise had read 8 once and
+  it was "moved" 613 ticks on: MZB-919 found the cause.
+- **MZB-912** (round 2, test 23b `anAloftUmvuthiSettlesAndRises`; MZB-809, MZB-812): "it rose no sooner than 200 ticks after its last
+  player target (-20)". The flag was dropped and the player put back in view in one tick, but the jar picks its target only every few
+  ticks, and the rule had seen no player target for 400 ticks, so it rose at once and the target came 20 ticks after it. The player is
+  now put back and waits to be the target while the flag is still set, and the flag drops after, so the rise waits on the target as the
+  test's comment says. Passed in the round at 8391671a.
+- **MZB-913** (round 2, test 36 of MZB-890 `aSecondPuppetsAnimationEndJournalsNothing`; MZB-890): "the puppet was gone (tick 823990) no later
+  than the BAND_DEMATERIALIZED (tick -1)". The wait saw S's BAND_DEMATERIALIZED and the next step read the tick the per-tick hook had
+  recorded for it, but the hook's listener may run after the sequence's in the tick the record is seen, so it was still -1. Two ticks are
+  waited before the read. The puppet was gone earlier, so "no later than" holds with the hook's tick. Passed in the round at 8391671a.
+- **MZB-914** (round 2, test 29b `aHeldTakeIsAnsweredStaleAsThePuppetComesHome`; MZB-823): "H's throne body has its own health still
+  (141.40073)". The throne body was set to 40, and the jar heals an Umvuthi out of battle 0.3 a tick (MZB-904): the puppet's walk home is
+  about 340 ticks, so the throne body came to 141 of 150, which `healthIs` (9 of slack) refused, and which could not be told from the
+  puppet's 150 that the merge writes. The throne bodies are now set to `THRONE_OWN` (10), the check is that H's is between that and 20
+  under the maximum (its own, healed on the way, not the merge's), and the merged check is unchanged. The round at 8391671a passed it, and 29b went on to fail at the next check (MZB-918).
+- **MZB-915** (round 2, test 29c-seam `anEdgeStopRecallReachesThePuppetAtItsTimeout`; MZB-827): "the recalls came and the control's puppet
+  went (838883, 0, 838883)": band B's recall tick was read from `party.recalling()`, but every body of B goes in the recall's own tick,
+  so its party is gone before the hook looks and the tick stayed 0. A missing party after the recall is now the recall's tick, the same
+  tick the puppet went. Band A's, whose puppet stands for the timeout, is read as before. Passed in the round at 8391671a.
+- **MZB-916** (round 2, test 31s `anAloftUmvuthiReadsAndTurns`; MZB-813, MZB-814): "the third turn is due ... since 114360 ticks ago",
+  which is `dueAfter[2]` still 0: the way never came 55 degrees off the facing in 198 ticks. The third leg's target x was estimated as
+  `x0 + 56 - 0.3 * (ticks since the second steer)`, which passes the west end (`x0 + 4`) where the anchor stops, so the target ran west
+  of the lane and the anchor went west-north-west: with the puppet east of it and closing at 0.1, its way stays within 46 degrees of
+  west for the 198 ticks. The x is clamped at the west end, so the leg is due north and the way is 55 degrees off its facing after
+  about 85 ticks. The check's message also names what it saw (`dueAfter`, the puppet's position, yaw, facing, lag and re-pairs). In the round at 8391671a it failed again and its own numbers contradict: `dueAfter`
+  printed all 0, though the second turn's check before it needs `dueAfter[1]` not 0 and passed, and "since 160927 ticks ago" puts the game time at the
+  tick after the second re-pair (160926), though the step waits 198 ticks after it. The message now also prints the game time, the tick the wait
+  began and the second steer's. The round at 9cc86af5 showed why they contradict: it printed `now 201015` (the tick after the second re-pair) and a wait began at 0.
+  A failing `thenExecute` of vanilla's `GameTestSequence` is caught inside the step and the sequence goes on with the next events of the same tick,
+  so the failure logged is the LAST of the tick's, not the first (this holds for every message of every test of the round, as each is read): the second
+  turn's check failed first, on `dueAfter[1]` 0, its lines after the check never ran (so `at[5]` stayed 0 and the 198-tick wait passed at once), and
+  the third step's check failed after it. The test measured when a turn is due from the body's move in a tick, and the gate reads the way from the
+  body to its place. The measure is now the gate's own (the slot's `placeXZ`, read by reflection), so the two agree. Not run yet.
+- **MZB-917** (round 2, test 24 `theChiefsSummonsArePuppets`; MZB-816): "and the throne body's (0)": the puppet's warriors came (three or
+  more tagged joins) and the throne body's, sent the same SPAWN message in the same step, made none, in 8,000 ticks. The cause is not
+  known (the ability needs no target in the jar's `SpawnFollowersAbility`, and no join handler in the module or the core cancels a
+  stray Umvuthana before the test's listener, at its highest priority, sees it). The check's message now names the throne body (alive,
+  removed, puppet, its ability, no AI, position) so the next round says whether the cast ran. The round at 8391671a showed the cast is not reliable: this time the puppet's own cast made no join either
+  (0 tagged of 0), where the earlier round had it make three. The wait now sends the message again every 40 ticks to a body that has made fewer
+  than three (for the warriors and for the cranes), and the message names the jar's gate (`canUse`, `isUsing`, the cooldown left). Adoption is
+  asserted over what joined, so the resends change no check. Passed in the round at 9cc86af5 (whether a resend was needed is not read).
+- **MZB-918** (round at 8391671a, test 29b `aHeldTakeIsAnsweredStaleAsThePuppetComesHome`; MZB-823): after MZB-914's check it failed at "the held line is
+  gone (1)". `Camps.handBack` holds the HAND_BACK of every chief puppet that floats aloft until it is home (MZB-822), and grove C's HAND_BACK
+  was sent in the step before H's walk home, with C's puppet 45 blocks off at 0.1 a tick, which is longer than H's walk to within
+  TAKE_STALE of its throne: so one line is held when H's take is answered, C's own. The check counts it (one while C's hand-back is
+  unanswered, none after) and names both. Passed in the round at 9cc86af5.
+- **MZB-919** (round at 9cc86af5, test 23d `aStuckUmvuthiRisesThenIsMoved`; MZB-811): "B's raise read 8, 16 and 24 (481443, 0, 0; the most read 8, moved at 482056, ... B at
+  (..., -58.9, ...)". B had been set down on the floor, not held under the ceiling. The test put the watching player 20 blocks from B's place in the
+  step before B's move, while B still stood 58 blocks from that place: 38 blocks from the player with a clear line under the ceiling. That is a player B
+  can see, so the stuck rule never found B unseen (which is B's point), and one the jar's AI targets, and a puppet settles on a player target in sight
+  (`AloftRules.settles`): after its first raise B sank, its stuck machine was replaced, and the raise read back as 0, which the test takes for a move.
+  The player is now put there after B has been moved, in the step that gives B the attack flag. Passed in the round at 793c463c up to its last
+  checks, which then failed on the control (MZB-953); passed in the round at feb803d7.
+- **MZB-953** (round at 793c463c, test 23d `aStuckUmvuthiRisesThenIsMoved`; MZB-811): "the control's raise was never above 0 (16) and it was never moved
+  (451588)": the control, on a clear lane, was raised to 16 and then reset. All three bands were steered at 0.5 a tick, five times the puppet's cap, so the
+  anchor outran the control's puppet as it did the stuck ones: the stuck rule counts no headway toward the puppet's place (the place moving away faster
+  than it closes) as stuck whatever the cause, and the reset when the anchor stopped is what the test read as a move. The control is now steered at PACE
+  (0.08), under the cap, so it stays within 8 blocks of its place and is never stuck. Passed in the round at feb803d7.
+- **MZB-952** (round at 793c463c, test 31s `anAloftUmvuthiReadsAndTurns`; MZB-813; the M11c range, MZB-890 to MZB-919, is used up and MZB-920 to MZB-951 are
+  taken by M10 and main, so this is the next id above them): the gate's own way (MZB-916) showed the second turn first due 212 ticks after the first
+  re-pair (`dueAfter[1]` 228294 for a re-pair at 228082), past the cooldown's 200, where the test asks for a turn due before it; the re-pair came at 248.
+  The way came 55 degrees off the facing 112 ticks after the west steer, which was given 100 ticks after the first re-pair. The steer is now given 60
+  ticks after it, so the turn is due at about 172, with the cooldown ending the wait as the test means. The third leg's lag, 46 blocks, gives it due
+  148 ticks after its steer by the same measure, inside the 198 ticks. In the round at feb803d7 the second turn came due 141 ticks after the first re-pair
+  and the second re-pair 202 after it, as meant; the third turn was never due (MZB-955).
+- **MZB-954** (round at feb803d7, test 22-aloft `anUmvuthiSetsOutAndComesHomeInPlainView`; MZB-822, MZB-830): "[tick 67082: the swap moved it 0.10000000000000142
+  blocks]". The test allows a swap (the puppet's last position to the throne body's) of 0.1 blocks, which is the puppet's own step in that tick, and the sum of
+  two doubles read 0.1 + 1.4e-15. The limit is 0.1 + 1e-6. Passed in the round at 6e912760.
+- **MZB-955** (round at feb803d7, test 31s `anAloftUmvuthiReadsAndTurns`; MZB-813, MZB-814): the second turn passed (MZB-952), and the third was never due in the 198 ticks: the puppet
+  stood at y -33.0, 24 blocks over its floor (-57), with a lag of 47 blocks. The test's anchors outrun the puppets on purpose (0.2 and 0.3 a tick against the
+  cap of 0.1), which is the stuck rule's case (MZB-811: no headway toward its place), so the rule raised the target 8 blocks a window, to 24, and a puppet that
+  rises takes no step across (`AloftRules.mayStepAcross`: 240 ticks for 24 blocks at 0.1), so its way, from a puppet that did not move toward a place that
+  did, never came 55 degrees off.
+  `UmvuthiAloft.clearStuck(memo)` starts the stuck machine over (its raise and its windows) and is called for each of the test's puppets in a per-tick
+  hook of the test, so the rule does not act while the anchors outrun them. It is a method of the plugin's class with the memo's other test reads
+  (`raised`, `target`, `settled`), and nothing in the game calls it; 23d, the rule's own test, does not. In the round at 6e912760 31s stopped earlier, at its first
+  ROAR check (below), so whether the third turn is now due is not read.
+- **MZB-956** (round at 6e912760: two tests failed, 102 of 104 passed, 23d and 22-aloft among them; not diagnosed, for the lead). Test 24
+  `theChiefsSummonsArePuppets` passed its summons checks (3 warriors and 3 cranes of the puppet tagged and listed, 6 strays of the throne body) and failed at
+  "the warrior's animation has ended (not within 8000 ticks of the last chunk wait)", the wait for a killed puppet's warrior to be removed, which it passed in the
+  three rounds before (MZB-917's resends do not change that step). Test 31s `anAloftUmvuthiReadsAndTurns` failed at "the ROAR was active for at least 20 ticks (17)": the
+  ROAR is a 70-tick animation ability of the jar and it was seen active for 17 ticks, so something cut it short; the same check passed in the three rounds before,
+  and the puppet's AI is on in that test (it can start abilities and targets). Neither failure is read as the merge's: neither code path is M10's or main's. What
+  the earlier rounds' messages meant is in MZB-916: the message of a failed test is the LAST failing check of its last tick, so a test's first failure can be one
+  of the checks before it; both tests were read that way here. Diagnosed below: 31s as MZB-957 and test 24 as MZB-958, each a test expectation.
+- **MZB-957** (round at 6e912760, test 31s `anAloftUmvuthiReadsAndTurns`; MZB-813, MZB-956; a test expectation, not a production fault; the cause is read
+  from the jar's code and the numbers, not seen): the ROAR the test counted was not a ROAR. The jar starts abilities of its own on an Umvuthi with nothing to
+  do, and `Ability.canUse` drops a message sent while another ability runs, without a word (of the Umvuthi's abilities only DIE and BLESS can cancel another, so a ROAR cancels none).
+  Read with cfr in the 1.8.2 jar, three starts meet this test. (1) Ambient talk, with the AI on or off: `Mob.baseTick` rolls `nextInt(1000) < ambientSoundTime++`
+  and `EntityUmvuthi.getAmbientSound` answers an idle roll by sending TALK_ABILITY, 23 ticks; the timer counts from -80 and the roll is a chance a tick once above
+  zero, so a TALK runs for about one tick in six. This is also why MZB-917's casts were dropped. (2) With the AI on, `EntityUmvuthi.tick` sends BELLY_ABILITY
+  (40 ticks, one time in 200 a tick, with no target) and ROAR_ABILITY on its own timer. (3) With the AI on it sends SPAWN_SUNBLOCKERS_ABILITY once `healthLost`
+  reaches the config's threshold, and the test sets the loss to 20. The test sent its ROAR at a tick and checked `getActiveAbility() != null`, which any ability
+  satisfies, and `Reading` counted the ticks of whichever ability ran: 17 is what a TALK (23 ticks) started 6 ticks before the send has left. The module did its part:
+  `AloftRules.Repair.gate` takes `ability` as busy, so no add came before the TALK ended and the re-pair followed its hold; the check that failed is the first of
+  its step (a failing `check` throws), so the checks after it did not run, and every later step of the test (the 200 to 260 window, "no ability" before the kill)
+  met the same chance. Fix: the step that arms the reading, 100 ticks before the ROAR, sets the puppet `setNoAi(true)` (test 24 does the same) and a per-tick hook
+  holds its `ambientSoundTime` at -1000 (as `Lurkers.hold` holds a Frostmaw's, MZB-937); the ROAR step checks that no ability runs before the send and that the
+  one running after it is the ROAR (`getActiveAbilityType() == ROAR_ABILITY`). The check of 20 ticks stays (the jar's ROAR is 70) and so does everything the test
+  asks of the module: no add while an ability is active, the re-pair 2 to 12 ticks after it ended, after two ticks held. The per-tick hook that clears the stuck
+  machine (MZB-955) ran before the parties were made and logged an error for each of the first ticks (`conflict agent ... holds no party yet`); it skips an agent
+  with no party (still logged by 23d's own hook and by the masked-player test's, which are not 31s's, and only logged). In the round at 53934bdc (before the merge of U-e) the ROAR checks passed, and so did the two re-pair windows, the third turn
+  (MZB-955's hook works: it was due) and the kill; 31s then failed at the last step (MZB-959). Passed in the round on the merged head (b37832e7).
+- **MZB-958** (round at 6e912760, test 24 `theChiefsSummonsArePuppets`; MZB-816, MZB-956; a test expectation, not a production fault; the cause is read from the code,
+  not seen): "the warrior's animation has ended (not within 8000 ticks of the last chunk wait)". The kill came about 180 ticks after the chunk wait and the wait
+  ran to its bound, 7,800 ticks (the progress bar prints a line each 20 ticks: 402 lines from the chunk wait to the failure). A warrior's death ends in
+  `MowzieEntity.tickDeath`, which `LivingEntity.baseTick` runs from the warrior's own tick: after the DIE ability's 70 ticks, or after the duration of the ability
+  running, or 20, when `MowzieKit.kill` fell back to `setHealth(0)` and `die` because `EntityUmvuthana.hurt` blocked the hit with its mask or refused it. Nothing in
+  the module stops a summons' tick or its removal: it cancels a summons' drops and books nothing for its death (`ConflictBridge.onDeath` finds no slot for it),
+  and `tickDying` is for chief puppets, whose loot waits on the animation. What does stop it is vanilla's: `ServerLevel.tick` ticks an entity only in a chunk in
+  the distance manager's entity-ticking range, and the lane forces one row of chunks, 16 blocks deep, with only loaded chunks round it. A warrior that stands
+  outside the row (the summons walk to the target, are pushed by the crowd of five others, and the warriors' own TELEPORT_ABILITY moves them) never ticks again,
+  so its corpse stays until the party ends (`adoptSummons` prunes the dead, the party's end removes the rest); it is no production loss, as its drops are
+  cancelled and it is never saved. The three rounds before had every warrior in the row. Fix: the test kills a warrior that stands in a chunk that ticks
+  entities (`RtsimSession.entitiesTickAt`) and, with none, teleports the first to the lane's middle, as the bridge puts back a stray; a record line says how many
+  of the warriors stood in a ticking chunk, and the wait's message gives the killed warrior's state (removed, dying, death time, health, ability, position, whether
+  its chunk ticks entities, ticks lived), so a failure with the chunk ticking is a different finding. What the test asks of the module is as before: a warrior
+  killed by a player books no BAND_CASUALTIES and no CHIEF_KILLED, the band keeps its members, the puppet stays the chief's, and none of the summons is saved.
+  Passed in the round at 53934bdc; failed in the next, at 790d2bc5, with the cause now seen: "(removed false, dying true, death time 12, health 0.0, ability ..., at (-4455079.29680371, -59.0, 3116752.0396923), in a chunk that ticks
+  entities false, ticks lived 125)". The warrior had been chosen from those in a ticking chunk and it died 12 ticks, then stood 0.04 blocks past the lane's northern edge
+  (z 3116752 is a chunk boundary: the lane is the row before it), in a chunk that does not tick, with the kill's knockback and its walk having carried it over: it is
+  the jar's own death that waits for the body's tick. The one killed is now put in the lane's middle at rest before the kill (the bridge's own put-back of a stray), and
+  the record line gives its state before and after. Passed in the round on the merged head (b37832e7): 3 of 3 warriors stood in a ticking chunk and the one moved to the middle died there.
+- **MZB-959** (round at 53934bdc, test 31s `anAloftUmvuthiReadsAndTurns`; MZB-813, MZB-873; a test expectation): "the server's body and the packets agreed in every re-pair:
+  [the bundle carries direction null, ... no glowing bit, ... the bundle's effects are []]", for both hearers at both re-pairs. The last step of the test was reached for
+  the first time (no round before it got past the third turn). `Reading.packets` read the run of packets after the re-pair's add packet while their class was one of
+  `BUNDLED`, and the second packet of a Mowzie body's pairing is not one: `ServerEntity.sendPairingData` asks the entity for its own pairing data right after the add
+  and before the synched data, and the jar's `MowzieEntity` is an `IEntityWithComplexSpawn`, so NeoForge adds a `ClientboundCustomPayloadPacket` carrying an
+  `AdvancedAddEntityPayload` there, which `Repairs` lets through on purpose (MZB-873) and the `Hearer` keeps (it records the packets of a bundle before it drops the
+  payloads from what it sends on). The run ended at once with nothing read. The module's bundle is as designed: the add, the payload, the synched data (the direction,
+  the flag byte), the attributes and the effects. The run now goes past a complex spawn payload (and no other custom payload), counts them, and the record line says how
+  many of the packets after the add were one; the note for a missing direction names the classes that follow the add, so a bundle that really lacks the data says what it
+  has instead. In the round at 790d2bc5 the direction and the glowing bit were read and only the effects differed (MZB-960). The round on the merged head (b37832e7) passed it:
+  both re-pairs came with 3 packets after the add, one of them the complex spawn payload, and 31s as a whole passed (the ROAR 71 ticks).
+- **MZB-960** (round at 790d2bc5, test 31s `anAloftUmvuthiReadsAndTurns`; MZB-813; a test expectation): "the bundle's effects are [], the body's [minecraft:fire_resistance/0,
+  mowziesmobs:sunblock/0]" at both re-pairs, for both hearers. The test asked the bundle for every effect the body has, and vanilla's pairing of a mob carries none:
+  `ServerEntity.sendPairingData` (1.21.1) sends the add, the entity's own pairing data, the synched data, the attributes, the equipment, the passengers and the leash, and
+  `LivingEntity.onEffectAdded` sends an effect to a rider only; a client learns a mob's effects from its flags and particles, and a mod sends its own (Mowzie's Sunblock is its
+  own payload, which the re-pair would skip as per-player data). The re-pair is "as if it had just come into view", so what it must carry is what the hearer's first pairing of the
+  body carried, and that is what the test compares now (the effect packets after the first add packet for the body against those after the re-pair's), with a note if there is
+  no first pairing. The module is unchanged and its bundle is the vanilla pairing's. Passed in the round on the merged head (b37832e7), with the other two.
+- **MZB-961** (round at 790d2bc5, test 23b `anAloftUmvuthiSettlesAndRises`; MZB-809, MZB-812; a test expectation): "the throne body has made a summons (not within 9000 ticks
+  of the last chunk wait)". The control sent SPAWN_ABILITY to the throne body once, and `Ability.canUse` drops a cast sent while an ability runs (the throne body's AI is on, so
+  an ambient TALK or a BELLY is one chance in several): the same drop as MZB-957 and MZB-917. The wait now sends the cast again every 40 ticks to a body with no ability that has made
+  nothing, and names the cast's state in its message; the puppet's own cast a few steps before gets the same resend. Passed in the round on the merged head (b37832e7).
+
+- **MZB-962** (a flake, not diagnosed; M10's test `aRaptorWhoseFollowerAPlayerSeesIsNotCutAndIsOnceNoneIs`, `MarchMowzieGameTests`; MZB-745, MZB-473): in the round at 53934bdc, before the merge,
+  it failed once with "the cut came on the beat (0 ticks)" (the check asks for 5 to 25 ticks from the follower's move at tick 10 of a beat to the cut); the same code passed in the round at 790d2bc5 and on
+  the merged head (b37832e7). A cut 0 ticks after the move means the trim ran in the tick of the move or the cut was already counted: the test moves the follower in a tick where the sequence has just
+  seen `level.getGameTime() % 20 == 10`, and the trim of that tick (`trimDue && now % STOP_BEAT == 0`) runs before or after the sequence in the tick by their order in the tick, which a loaded server
+  can change. Not changed; the first failure is the only one in five rounds of the file.
+  The merge of main d53dbafd brought MZB-1101: another failure of the same test (the raptor cut while its follower was
+  in sight), caused by the follower standing 20 blocks out, where the jar's raptor pulls a targetless follower back to 3
+  blocks; the follower now stands 16 blocks out. Whether that also explains this cut on the beat is not known.
 
 ## M12 S9
 
@@ -11548,9 +12594,11 @@ conservative option at its fork.
 | 0x0808 ENVOY_ANSWER | the envoy's | `ingest`'s fold; a copy, `ingest_copy`'s |
 | 0x0809 TRIBUTE_PAID | the envoy's (agent 0: at the camp, no party) | `ingest`'s fold, before the op-id dedupe; agent 0 names no party, so nothing to fold |
 | 0x080B BAND_LOOTED | the party's | `ingest`'s fold, before the op-id dedupe and the unheld fight's skip; a copy, `ingest_copy`'s |
-| 0x080D TRAIN_PASSED | the party's (the lurk table's) | Read since the M8 merge (`train_passed`, no longer a later kind, MZB-691): `ingest`'s fold while replaying, before `train_passed`'s stale check, which compares the party's epoch (RP-151, RP-152); a pass that is not stale is counted and, while replaying, rolls nothing (RP-154); a copy, `ingest_copy`'s fold, then the record is dropped (RP-150). Java journals it at once with no holder, so none is copied. Before the merge: a later kind, `ingest`'s fold before the `later` return; a copy went to `ingest_copy` from rtsim-jni's later-kind branch (changed here: it called `ingest`) |
+| 0x080D TRAIN_PASSED | the party's (the lurk table's) | Read since the M8 merge (`train_passed`, no longer a later kind, MZB-691): `ingest`'s fold while replaying, before `train_passed`'s stale check, which compares the party's epoch (RP-151, RP-152); a pass that is not stale is counted and rolls as live, at its journaled tick (since RP-187; RP-154's guard, which rolled nothing while replaying, is gone); a copy, `ingest_copy`'s fold, then the record is dropped (RP-150). Java journals it at once with no holder, so none is copied. Before the merge: a later kind, `ingest`'s fold before the `later` return; a copy went to `ingest_copy` from rtsim-jni's later-kind branch (changed here: it called `ingest`) |
 | 0x080F CAMP_CENSUS, 0x0812 CAMP_BODIES, 0x0813 CAMP_OUT | a camp's (u64) | Java's op id for the census, never an epoch the engine allocates, so it cannot name one the engine would issue again; `party_epoch` is None. M6's census body bit BODY_CRYSTAL names none either |
-| Every other conflict kind (FACTION_FOUND, TERRITORY_SIGNAL, POLLUTION, GIFT_GIVEN, CHIEF_STATE, HAVEN_CHEST, DIFFICULTY, RAIL_PASS, CAMP_DEATH, TRADED, NOTICE_SHOWN, CHIEF_PAID, HUNT_APPLIED) | none | Nothing to fold. `party_epoch` matches every `Obs` variant by name, so a new kind does not compile until it says. After the M6 merge: CHIEF_STATE is read and names a faction, held while replaying (RP-100); CAMP_DEATH's DEATH_CHIEF names a slot and generation, no epoch. After the M7 merge: RAIL_PASS is read (`rail_pass`, no longer a later kind) and names a faction, a train and an owner, no epoch; the industry's TRAIN_ARRIVED and TRAIN_UNWATCHED reach the conflict through `rail_call` with a train and a line only, so M7 adds nothing to fold (RP-102). After the M9 merge: HUNT_APPLIED (new, 0x0816) names a faction, a district and the hunt's op; HAVEN_CHEST (0x0817 now, journaled) a faction, a chest and its free slots; TRADED and CHIEF_PAID a faction and, for CHIEF_PAID, a camp slot and generation; none an epoch, and `party_epoch` names HUNT_APPLIED with the others. M9 changes no kind that names an epoch. A copy of any of them folds nothing; `ingest_copy` drops a HAVEN_CHEST copy (RP-130), and the others are skipped by op id (TRADED, CHIEF_PAID) or find no hunt (HUNT_APPLIED) |
+| 0x0817 HAVEN_CHEST (handling changed, MZB-764) | none | Nothing to fold. A grove's chest, free slots and place, latest wins. Changed: a HAVEN_CHEST with no free slot that names a parked stack's own chest no longer lets the stack go again (the plugin reports a chest full when it looks again after an answer and the chunk is gone). Every other HAVEN_CHEST lets a parked stack go again, to its own chest: a report with room, and a report of another chest, full or not (as the MZB-764 test asserts); so does CAMP_OUT |
+| 0x0111 COMMAND_RESULT of a tribute stack (handling changed, MZB-762, MZB-765, MZB-767) | none | Nothing to fold: a status for an op, not a party. Changed: a FAILED answer forgets the grove's chest and the lair's only if it is still the stack's own, and places the next stack at once if a chest is kept (`tribute_failed`, grove and dragons); the dragons place it only while they run, so a FAILED heard with ECOLOGY off books the coin back and makes no stack (RP-291, MZB-767), and the grove's answers heard off are kept and applied after the switch-on's reset (RP-292); the grove's status match is over `wire::CommandStatus`, with no `_` arm, and a status it does not know takes nothing, as before. NOT_LOADED is unchanged (MZB-760, MZB-761) |
+| Every other conflict kind (FACTION_FOUND, TERRITORY_SIGNAL, POLLUTION, GIFT_GIVEN, CHIEF_STATE, DIFFICULTY, RAIL_PASS, CAMP_DEATH, TRADED, NOTICE_SHOWN, CHIEF_PAID, HUNT_APPLIED) | none | Nothing to fold. `party_epoch` matches every `Obs` variant by name, so a new kind does not compile until it says. After the M6 merge: CHIEF_STATE is read and names a faction, held while replaying (RP-100); CAMP_DEATH's DEATH_CHIEF names a slot and generation, no epoch. After the M7 merge: RAIL_PASS is read (`rail_pass`, no longer a later kind) and names a faction, a train and an owner, no epoch; the industry's TRAIN_ARRIVED and TRAIN_UNWATCHED reach the conflict through `rail_call` with a train and a line only, so M7 adds nothing to fold (RP-102). After the M9 merge: HUNT_APPLIED (new, 0x0816) names a faction, a district and the hunt's op; HAVEN_CHEST (0x0817 now, journaled) a faction, a chest and its free slots; TRADED and CHIEF_PAID a faction and, for CHIEF_PAID, a camp slot and generation; none an epoch, and `party_epoch` names HUNT_APPLIED with the others. M9 changes no kind that names an epoch. A copy of any of them folds nothing; `ingest_copy` drops a HAVEN_CHEST copy (RP-130), and the others are skipped by op id (TRADED, CHIEF_PAID) or find no hunt (HUNT_APPLIED) |
 | A conflict record that does not decode | unknown | Skipped with a warning before any module code (rtsim-jni `journaled`), as before: its epoch cannot be read |
 | Any conflict record while the conflict is switched off (U10) | | Ignored whole, without its fold, as every journaled record is (MZB-30; rtsim-jni `engine/conflict.rs:565`). A residual, not built (the coordinator's ruling, fixes6 item 6; docs/boundary.md, the conflict's switch): a session crashes with the conflict on; the next start has it off and saves past the crashed window (the journal is trimmed); a later start turns it on, and that session can issue the crashed window's epochs again, from pages that never saw them. Not RG5 and RG6's old life (Java's, the whole directory, drawn only when the pages include no observation). The option not taken, no format change: the jni conflict module detects the gap at switch-on (its pages' `now` older than the journal's start) and raises every party's epoch past the window before it ingests |
 | Herds (HERD_*) | the herds' own | Built by slice H: RP-81 (every kind that names an epoch folds, `Obs::group_epoch`), RP-84 (the session's handle bound). |
@@ -11815,6 +12863,20 @@ conservative option at its fork.
   `a_copy_of_a_rail_pass_counts_nothing` (the copy counts and holds nothing; the control, the same
   pass live, is counted and held; without the arm the copy counts 1).
 
+### A held line waited for, not five ticks (MZB-920)
+
+- **MZB-920** (a flake the SEC-1 lead found in U-b's mowziesmobs round on d59f00a4, carried by M10):
+  `UmvuthiGameTests.aChiefSpawnWaitsForThePlayerToLeaveOrSixThousandTicks` failed "two more held
+  spawns (0)". The check ran a fixed `thenIdle(5)` after the two reconciles, and that second the
+  server logged "Can't keep up! Running 51754ms or 1035 ticks behind" under outside load. The
+  reconcile's lines come back through the engine in wall time, so a server catching up runs its five
+  ticks before they arrive. The four places in the file that checked a held count five ticks after a
+  reconcile now wait for it (`ChunkWait.logic`, bounded by the test's tick budget): the chief SPAWN
+  hold, the held TAKE and REMOVE (`stillHeld`), the epoch's end and the REMOVE of a second body. The
+  SPAWN test's 6,000-tick clock starts at the tick both lines show held, not at the reconcile, since
+  `Camps.HOLD_MAX` counts from the hold: a late arrival would otherwise push D's answer past the
+  window. No source change.
+
 ### The M9 merge (RP-130 to RP-132)
 
 M9 (feat/mowzie-m9 at 2f3941d0) merged M6 at 1290d0b7 (788820c9), M7 at 39c819f1 (56c55d8d) and main;
@@ -11917,7 +12979,9 @@ MZB-690 to MZB-692 the build records.
   the floors (§4.4). No ambush spot is chosen from a pass: the spot is the target's
   (`Target::Track`), fixed when the raid set out. Nothing is decided while replaying that §5 or §6
   would hold: a seen lurk embodies through BAND_MATERIALIZE's early returns, and sightings wait (§6).
-  No change beyond RP-154's.
+  No change beyond RP-154's. (Since the M8 merge with slice T, RP-187: RP-154's guard is gone, so a
+  replayed pass that is not stale rolls as live and its robbery is the live op, answered DUPLICATE;
+  the text above stands as it was written.)
 - **RP-152** (a pass stale while replaying after two crashes; the M8 merge, point 2; a residual, not
   built): `train_passed` compares the record's epoch with the party's, not with the floor, since
   `ingest`'s fold has put the record's epoch in the floor already (a check on the floor would pass
@@ -11931,7 +12995,10 @@ MZB-690 to MZB-692 the build records.
   Losing is the right direction (lose, never double), bounded by one world-save interval of passes.
   The option not taken: read the party's floor as it was before the record's fold (a per-record
   snapshot in `ingest`), for a case that needs two crashes inside one page interval and, since
-  RP-154, buys only the count.
+  RP-154, buys only the count. (RP-187 dropped RP-154's guard: a pass that is not stale rolls again
+  in the replay, keyed as live, so Java answers DUPLICATE for the goods the live robbery took.
+  A stale pass still rolls nothing, so its goods stay taken once and the count is still all it
+  costs.)
 - **RP-153** (the rest of the eight points; the M8 merge, points 3 to 7; no change):
   - Point 3, the camp claim. A lurk's puppet takes a camp body only through `Camps.claim`, which
     matches this hand-over's SET_OUT lines by agent, epoch and body, for a camp that is in at the
@@ -11977,6 +13044,20 @@ MZB-690 to MZB-692 the build records.
   `replay_done` the same pass live robs train 7; without the guard the test fails at "no attack on
   the train was asked", checked and undone). RP-151, RP-152, RP-57's 0x080D row, replay-gate.md
   §4.4 and boundary.md §9.3 say a replayed pass rolls nothing.
+  **Amendment (the M8 merge with slice T, RP-187).** The guard is gone. What it protected against
+  was the replayed robbery being a different op from the live one (industry's attack op came from
+  its present). Slice T's keyed op (RP-180, `attack_key`: the threat's id, source and class, and
+  the train) is the same op, so the replayed pass is ingested at its journaled tick, rolls the slot
+  it rolled live (`train ^ at`) and its threats carry the live ids: Java answers DUPLICATE and the
+  goods leave the train once. The option RP-154 did not take is the one that landed (A's keyed op,
+  RP-180). The loss RP-154 accepted, a robbery the live session never made, is gone with the
+  guard: the replayed pass makes it. `lurk_robberies` counts a replayed pass that robs again, as
+  the live session counted it; its TRAIN_ROBBED drops at the gate while replaying (a roar,
+  RP-12), so the counter can exceed the TRAIN_ROBBED told to Java (`Stats`'s doc says so). The
+  test `a_replayed_train_passed_is_counted_and_never_rolls`, whose first half asserted the guard,
+  is deleted; tests/train_passed_replay.rs replaces it (three tests, RP-187, MZB-699). The text
+  above is as the M8 fixes pass wrote it; RP-151, RP-152 and RP-57's 0x080D row carry the
+  correction, and so do replay-gate.md §4.4 and boundary.md §9.3.
 
 ### The M9 check (RP-133 to RP-134)
 
@@ -13144,6 +14225,12 @@ TRAIN_PASSED test is written for the M8 merge (RP-187).
   keys, DUPLICATE, the goods once. Its three tests mirror the dragons': both orders, industry
   holding the robbery, and the J1 to J4 table. Main's `Ev::Ambush` was given no guard: A is its
   fix, as the coordinator ruled.
+  **Done** (feat/mowzie-m8, the M8 merge with slice T): the guard, its comment and the lurk.rs
+  test are gone and the fn and `Stats` docs say what is true (258b9a14); tests/train_passed_replay.rs
+  is added (dae325da; MZB-699 says what was changed from the draft); the docs are de2436bd (RP-154's
+  amendment, RP-151, RP-152, the RP-57 row, replay-gate.md, boundary.md).
+  Without the guard the new tests pass; with it put back, two of the three fail on
+  `lurk_robberies` (0, not 1: the pass is counted and does not roll).
 - **RP-188** (the pirates' `defer`; the brief's question 4): `Outbox::defer()` is true while the
   outbox replays, and `coast_raid` returns at its top, counted deferred and never retried (RP-95).
   So a coast raid the live session made is either inside the replayed window, where the replay
@@ -14553,6 +15640,1214 @@ audit's D rows, so it is not edited; the rows are named here.
   is a flag test and an unsigned counter compare in `tick` and a pass over the unverified placed lairs
   every 20 ticks; every other cost is per placement, per worm join, per ADOPT, per chamber found (one
   entity query, RP-241) or per re-placement (one entity query round the box, RP-244).
+
+### Slice R (industry op ids, live and replayed)
+
+Step 1 is a proof; no engine code changed. Engine-level tests: crates/rtsim-industry/tests/replay_ids.rs
+(one `Industry` live, one restored from the pages of a step boundary with only the journaled records
+after them and no `advance_to` between; the commands compared by content, then by op id). Across the
+crash: crates/rtsim-jni/tests/industry.rs. Base bc669502. Two failures are real (RP-262, RP-263); both are
+`#[ignore = "slice R: ..."]`, and fail without the attribute.
+
+- **RP-260** (the derive sites and the tick each takes): every site passes `self.now` or a local `at`.
+  `self.now` at the site: `reconcile_round`'s immediate commands (engine.rs:3325) and ChunkReconcile
+  (3347); `apply_trims` ChunkReconcile (3662; the function has `at`); CarriageDelta Exchange in
+  `train_arrived` (3896; has `at`) and Loot in `attack_train` (5241; has `t.at`). Already `at`:
+  `store_write_wake` (2295), `write_packages` (3036), `pollution_wake` (4774). Step 2 changes the first
+  five to the decision's own tick. Which tick is path independent: `at` of a wake or breakpoint is (it
+  is the event's own tick; `fire_until` sets `now` to it for a wake). `at` of a record is
+  `max(t.at, now)` (engine.rs:843), so it follows the history of calls exactly when a record is stale
+  (RP-262). The flush tick is `now` at the flush, which is path independent only when RP-262 and RP-263
+  do not apply (RP-264). The decision's tick is therefore path independent if `ingest_obs` takes a
+  record's tick from `t.at` alone, and `reconcile_round`'s `at` is passed on to every derive.
+  Amended by step 2: every site but Loot (T's) now derives with the decision's tick, `decided`, not
+  `reconcile_round`'s `at` (which is the flush's clock, not the decision's), and the op-only kinds are
+  keyed without their amounts (RP-270, RP-272).
+- **RP-261** (candidate a, a breakpoint after the previous G; reasoned, holds with one untested path):
+  `after_cluster(h, bp_at)` (engine.rs:2392) leaves `now` unchanged, but the paths out of it derive with
+  the breakpoint's `at` (`write_packages` 3036, WriteChain 2295, pollution 4774) or not at all
+  (`season_boundary` -> `restart_sim`). The black-box path agrees: `now` at a first-record breakpoint is
+  the last record's tick on both runs. The one reachable derive with a stale `now` is glass-only:
+  `after_cluster` -> `glass_step` -> `glass_fallback` (2716) -> `sync_coverage` (1587) ->
+  `reconcile_round(Part)`, which derives with `self.now` while `at` is the breakpoint tick (and a glass
+  breakpoint can leave dirty marks that the live run flushes at G_k and the replay at the next record).
+  A glass fixture is heavy; no test drives it, so this is reachable and unproven. Step 2's change to
+  `at` closes it by construction. Amended by step 2: closed by construction as RP-270 says (the round
+  derives with `decided`, the breakpoint's tick, and the breakpoint's marks settle at that tick,
+  RP-271); still no glass fixture.
+- **RP-262** (candidate e, proven): a round from a record whose `t.at < self.now` live. Java's
+  `Journal.drainInto` (Journal.java:238) leaves records that do not fit the buffer for the next
+  hand-over, and a REASSERT keeps the original's GAME_TIME, so a record can reach hand-over k+1 stamped
+  before G_k. Live, `ingest_obs` takes it at `at = G_k`; replayed (no `advance_to` between), at `t.at`.
+  Tests (both fail): `a_round_from_a_record_stamped_before_the_last_hand_over_is_rederived_with_the_same_id`
+  (chunks loaded at 8,000 after G = 9,000: the content differs, live delta 445 against replayed 395, the
+  ends of `now` being 9,500 and 8,000) and `a_stale_record_gives_the_same_command_another_op_id_in_the_replay`
+  (the owed theft loaded at 8,000: the same content, live op 0x492cd7d0fd2f3291, replayed
+  0x49be17700102776d). The path driven is `set_presence(Live)` (1509, 1533). Controls that pass:
+  `a_round_from_a_record_stamped_after_the_last_hand_over_is_rederived_with_the_same_id`,
+  `a_stale_record_in_the_first_hand_over_after_the_pages_is_rederived_with_the_same_id` (the first
+  hand-over after the pages has the same `now` both ways). `approach` (4682, 4705) is a latest-wins
+  record and is never replayed (RP-267). Amended by step 2: the id half is fixed (RP-270; the
+  same-content test lost its ignore); the content half is not, and is a loss (RP-272; the 445 against
+  395 test stays ignored with that reason; RP-279 for the Java fix). Across a crash it doubled a station
+  exchange on bc669502 (RP-278), and several stale records of different ticks could double a chunk
+  reconcile through the epoch guard (RP-271).
+- **RP-263** (candidate f, found, proven): a replay of several hand-overs. Industry is not held
+  while replaying (docs/replay-gate.md §3.6, decided 2026-10-24), so `industry::simulate`
+  (rtsim-jni engine/industry.rs:778) runs on the first replayed hand-over: `begin_session` /
+  `session_start(present)` and `advance_to(present)`. The records of the later replayed hand-overs
+  are then taken at `max(t.at, present)`, as stale records. Test:
+  `a_replay_of_several_hand_overs_rederives_the_same_op_ids` (crates/rtsim-jni/tests/industry.rs,
+  ignored: 9 replay hand-overs on a minimum-size buffer with 8,000 fillers; the first run's ops
+  [4994e1dfa6787bdb, 49ddf5d62b413118], re-derived [495f4b06faf87903, 49bf652fc1cd5a75]; nothing applied
+  again and pending 0 in this fixture: the test did not find out why the restored world did not
+  apply the new ids, so a double apply is not excluded in other cases). Control that passes:
+  `a_one_hand_over_replay_rederives_the_same_op_ids` (1 replay hand-over, the same ids). The existing
+  `pages_behind_the_world_save_rederive_the_same_reconcile` (tests/industry.rs:913) only ever replays
+  one hand-over and asserts nothing about the ids. Step 2 fix: the same `at` change (RP-262), plus
+  `ingest_obs` taking the record's own `t.at` for the derive tick. Amended by step 2: why nothing
+  doubled is RP-277 (Java's chunk epoch guard answered the new ids DUPLICATE); the kinds guarded by op
+  alone do double (RP-277's exchange fixture). Fixed by the hold (RP-274) and the decision tick
+  (RP-270); the test asserts 9 replay hand-overs and lost its ignore.
+- **RP-264** (candidate b, the flush tick; holds): test
+  `the_flush_at_a_hand_overs_end_and_at_the_next_hand_overs_first_record_agree`. Live, `advance_to(G)`
+  flushes the dirty marks at the last record's tick T_last (flush_dirty 1568, called from `advance_to`
+  786 and `ingest_obs` 846); replayed, the next record's `ingest_obs` flushes at the old `now`
+  (T_last) before `fire_until`. Both flush at the same `now`, so `sync_coverage`'s round derives with
+  the same tick. It holds while the record is not stale (RP-262). Amended by step 2: it held for a
+  record's marks only; a breakpoint's marks waited for the next call (G live, the next record's tick
+  replayed), and stale records of different ticks were settled together live and apart replayed. Both
+  are fixed in RP-271.
+- **RP-265** (candidate c, latest-wins records moving `now`; holds): tests
+  `a_deferred_stock_sample_between_two_records_does_not_move_the_ids` and
+  `a_deferred_sample_after_the_last_record_flushes_the_marks_at_the_records_tick`. A deferred
+  StockSample at tick s between two journaled records raises `now` to s live, but `ingest_obs` flushes
+  at the old `now` before moving it (846), and the next journaled record's own `at` sets `now`
+  again before its handler. No derive sees s unless the sample is the last thing before a stale
+  record (RP-262).
+- **RP-266** (candidate d, threats; holds, and the war-band crash test misses the case):
+  `a_raid_delivered_at_the_hand_overs_time_is_rederived_with_the_same_id`. `threat_with` (4892) takes
+  `at = t.at.max(self.now)` and runs `advance_to(at)`; a re-delivered threat carries the same `t.at`,
+  so the raid derives at the same tick. A replayed hand-over does not re-decide a threat at all
+  (conflict's raids are held, the dragons' and pirates' are other slices), so the live raid's ids are
+  carried by the journal's records and the pages. `a_war_band_raids_a_district_while_away_and_lands_once_across_a_crash`
+  (tests/industry.rs:1061) passes because the pages it restores already contain the raid and its
+  reconcile: it never re-derives, so it pins the landing once but not the id equality. Amended by
+  step 2: `threat_with` now derives with the threat's own `t.at` whatever the clock (RP-270), and the
+  war-band test replays over several hand-overs (RP-276).
+- **RP-267** (limits, not defects of step 1): **wrong, see RP-275: `IndustryOps` is persisted** (the
+  engine's globals page, `e.ops.put(w)`, engine.rs:5922, restored at 6265). As first written: `IndustryOps`
+  is not persisted, so the 256-entry recent
+  window that breaks ties by ordinal restarts empty after a crash; two equal commands in one tick get
+  ordinals 0 and 1 live, and the replay re-decides them in the same order only if both are re-decided.
+  And the Approach round (latest-wins, 0x40..0x5F) is never replayed, so its Ahead round is never
+  re-decided (W3's documented limit).
+- **RP-268** (fix sketch for step 2): derive from the decision's own tick. Pass `at` (never `self.now`)
+  to every derive in the five `self.now` sites (RP-260). Have `ingest_obs` take `at = t.at` for the
+  derive tick and keep `max(t.at, now)` only for moving the clock. A per-district round counter is
+  not needed: the failures here are the tick alone. Hold industry's `simulate` (no `session_start`, no
+  `advance_to`) until the replay ends, or run it with the replayed records' own ticks (RP-263).
+  Amended by step 2: built as `decided` (RP-270), the breakpoint flush and record trigger (RP-271) and
+  the hold (RP-274), with what the sketch lacked: the op-only kinds keyed without their amounts
+  (RP-272), since the content differs too, and the exchange's books (RP-273).
+- **RP-269** (new traps): `Java::open` resets game time to 1000, below every replayed record, so the
+  harness hides RP-263 unless the test sets `j.game_time` to the present before running; fillers
+  (Damaged records of a ship the engine never had, about 56 bytes) span a minimum-size buffer
+  (`wire::MIN_CAPACITY`) into many replay hand-overs; the fixture's one reconcile is the vault chunk
+  (assert that a round ran: a pass without it proves nothing). Amended by step 2: in rtsim-jni's
+  harness `mc_tick` sets `game_time` to the fake world's time, so a test that runs the fake world after
+  the reopen reaches the present anyway; the reset bites a test that hands over without it, and the
+  first hand-overs before the first `mc_tick`.
+
+#### Step 2: the same ids live and replayed (RP-270 to RP-279)
+
+Step 2 is the fix (brief rp-slice-r2.md; base 523bd2c2, bc669502 plus step 1's tests). Engine:
+crates/rtsim-industry/src/engine.rs; the hold: crates/rtsim-jni/src/engine/industry.rs. Lines below are at
+the slice's head.
+
+- **RP-270** (every op id derives with the decision's own tick): `Engine::decided` (engine.rs:418; not
+  saved, `new` and `restore` set it to `now`, 578 and 6268; **amended by RP-259: saved in the globals
+  page after `now`, IGB2, since pages can be taken in the middle of a hand-over; `now` there when
+  no coverage mark is pending**) is the tick of the decision the engine makes:
+  `session_start` sets it to its `at` (817), each cluster breakpoint in `fire_until` to its tick (858),
+  each wake to its tick (871), `ingest_obs` to the record's own `t.at` once the clock has moved to
+  `max(t.at, now)` (918), and `threat_with` to the threat's `t.at` (4984). The sites:
+  - `reconcile_round`'s immediate DepositDeltas (3395) and its ChunkReconcile (3415): `self.now` became
+    `decided`;
+  - `apply_trims`' ChunkReconcile (3732): `self.now` became `decided`;
+  - `train_arrived`'s Exchange (3976): `self.now` became `decided`, the TrainArrived record's tick;
+  - `store_write_wake`'s WriteChain (2363), `write_packages` (3105) and `pollution_wake` (4861) already
+    took their event's own `at` and keep it (their keys change, RP-272);
+  - the glass path (RP-261): `after_cluster` -> `glass_step` -> `glass_fallback` (2784) -> `sync_coverage`
+    (1655) -> `reconcile_round(Part)` derives with `decided`, the breakpoint's tick; closed by
+    construction, still with no glass fixture;
+  - the coverage rounds of `flush_dirty` (1636) derive with the tick of the decision that marked them
+    (RP-271);
+  - `attack_train`'s Loot (5331) is left as main has it: slice T's decision A (`derive_keyed` on Threat.id,
+    source, class and train, no tick) replaces it when T is merged.
+
+  Why these ticks are path independent: a record's `t.at` is Java's GAME_TIME stamp, carried in the
+  journal, the same live and replayed; a threat carries its own `t.at`; a session start's is
+  SESSION_START's game time; a breakpoint's or a wake's comes from the engine's state as of the pages
+  and the records taken at their own ticks, the same on both runs while that state is (with the hold,
+  RP-274; RP-279 for where it is not). `now` is not: it is the step's G when a live run took a record
+  late (RP-262) and the present after a replay's first hand-over on bc669502 (RP-263).
+
+  **The ops that move (T2's ring):** a station Exchange (now named by train, reason and call tick; it
+  was its entries and `now`), a DepositDelta (deposit and decision tick; it was its delta and `now` in a
+  round, its delta and own tick in `pollution_wake`), a WritePackage and a WriteChain (their target and
+  goods, amounts out), and a ChunkReconcile (its content kept, `decided` for `now`). Loot is T's and keeps
+  decision A. No old-derivation id meets a new one within one build: the engine pages that carry ops
+  (`e.ops`, the pending exchanges and chunks, `e.out`) are written and read by the same build, and
+  Java's applied ops (and T2's ring) hold what that build sent. Only a crash on a build before R
+  replayed by R could compare the two; nothing is released, so there is no migration. No page, record or
+  wire format changes (`decided` is not saved). Amended by RP-259: two pages change (globals IGB2 for
+  `decided`; district IDS5 for the per-chunk epochs, each pending chunk's round and the package
+  numbers), a DepositDelta also hashes its district, a WritePackage carries one package named by its
+  number at its postbox, address and good (no tick), and a ChunkReconcile carries its chunk's own epoch:
+  those ops move again, within the same unreleased build.
+- **RP-271** (the flush tick, and what triggers the flush): on bc669502 a breakpoint's dirty marks waited
+  for the next flush, the step's G live and the next record's tick replayed, which differ in the tick
+  the round derived with and in the round itself (the replay stopped at another tick). Each breakpoint
+  now settles its own marks at its own tick, right after `after_cluster` (`fire_until`, 858 to 866), as a
+  wake did. A record's marks settle before the next record whose tick is past the last decision's
+  (`ingest_obs`, 910, `t.at > self.decided`), or at `advance_to`, with `decided` still the marking
+  record's tick on both runs. The trigger was the clock moving (`at > now`): a live run that took
+  several stale records at G (RP-262) put their marks in one round, while the replay settled between
+  them; the district's epoch rises per round, so the replay's later chunk carried an epoch past the one
+  the world applied, which Java's chunk epoch guard lets through. Test:
+  `stale_records_of_two_ticks_settle_in_the_same_rounds_live_and_replayed` (replay_ids.rs; chunks loaded
+  at 8,000 and 8,100 and the mill live at 8,200, after G = 9,000; the vault's 300 iron and the frogport's
+  600 used up while away). On bc669502 and with the clock trigger: live, both chunks at epoch 1;
+  replayed, the frogport's chunk at epoch 2 (-600), so the frogport would be emptied twice. After: the same
+  two rounds, epochs and ops. `decided` never passes `now` (every site sets it to a tick at or before
+  it), so the record trigger contains every move of the clock, and a run with no stale record flushes
+  exactly as before (the sims, below, do not move). Why the decision's tick: it is the tick of the event
+  that made the marks, which both runs take from the same record or breakpoint; the step's G and the
+  next record's tick are only when the next call happens to come. Records of one tick that a hand-over
+  splits (live settles at the step, the replay merges them) give the replay fewer rounds, so its epochs
+  only fall behind the world's: refused, a loss.
+- **RP-272** (what names an op: the amounts are out for the kinds Java guards by op alone; a fork):
+  `op_key` (engine.rs:314). Java guards IND_CARRIAGE_DELTA, IND_DEPOSIT_DELTA, IND_WRITE_PACKAGE and
+  IND_WRITE_CHAIN by op id alone (its applied ops, trimmed at the acknowledgement; a FAILED op is not
+  kept), and IND_CHUNK_RECONCILE by the chunk's epoch whatever its op. With the content hashed, a
+  decision taken again over other amounts is a new op, which Java applies on top of the first: the
+  doubles of RP-277 and RP-278. So the op-only kinds are named without their amounts: a CarriageDelta by
+  train and reason (entries empty), a DepositDelta by plugin, chunk and good (delta 0), a WritePackage
+  and a WriteChain by target and goods, each good once (count 0). A ChunkReconcile, ProbeSet, CountSet and
+  HeldDraw keep their whole content. **Fork:** the coordinator's caution was that an id matching over a
+  different content is worse than a new id, since the bridge answers DUPLICATE to a different change.
+  Taken: the keyed ids. For these kinds a decision taken again is the same event (the same train's
+  call at the same tick, the same deposit in the same decision), so DUPLICATE leaves the live change,
+  applied once, and loses only the difference; a new id applies both. The content cannot be made the
+  same in the engine: a replay has none of the latest-wins records, and a stale record is decided live
+  on a state the clock ran to G first (RP-279). Two distinct decisions with one key are told apart by
+  the ordinal (RP-275). The ChunkReconcile case: `a_stale_records_round_decided_again_meets_the_live_reconciles_epoch`
+  (replay_ids.rs): the 445 against 395 round of RP-262 differs in content and id, but both name the same
+  chunk at the same epoch, so Java applies the live one and refuses the replay's (a loss of 50 iron),
+  and the round decided nothing but chunk reconciles. RP-262's content test stays ignored, with that
+  reason. **Amended by RP-259, the review's table** (the coordinator's question: can two different
+  decisions under one key at one tick share an id in a live run?):
+  - Exchange: no in practice (one call per train per tick).
+  - DepositDelta: yes, two districts on one well written back by one `flush_dirty`; the ordinal told
+    them apart while fewer than 256 derivations lay between. Since RP-259 the district is hashed after
+    the key (`derive_with`). Test: `two_districts_on_one_well_write_back_at_one_tick_and_both_apply`
+    (replay_ids.rs), both applied; it passes on 2a975cc3 too (the ordinal), so it is coverage.
+  - WritePackage: yes as the review saw it (several `after_cluster` calls at one tick emit
+    PackagesReady for one Mail pool). Since RP-259 each package is its own command named by its number,
+    never by its tick, so no two packages share an op at any tick, and a replay that writes the live
+    run's nth package at another tick still meets its op (P1-4: the loss was one-sided, a make).
+  - WriteChain: unlikely: a pending write toward a frogport holds the next (`write_pending`,
+    engine.rs:2333), and its books follow Java's CHAIN_IN records, not the decision.
+
+  RP-275's window rule (amended there) closes the far-apart case for every kind.
+- **RP-273** (a station exchange settles against its own request): `carriage_result` (4036) corrected the
+  district's stock by `requested - applied` from the result's entries; it now takes the pending
+  exchange's own entries (what this decision booked) minus the result's `applied`. The same when the
+  contents agree (Java's result lists every entry with `requested` its delta, TrainWatch.carriageDelta).
+  When a call decided again books another content under the live op (RP-272), the replayed
+  IND_CARRIAGE_RESULT of the live application (journaled before the crash, so dispatched while replaying,
+  before the DUPLICATE that comes after the replay end) settles what the replay booked against what the
+  world did. When that result is lost with the journal (J3), T's RP-199 drops the pending exchange at the
+  DUPLICATE and the books keep the replay's booking: RP-199's residual, widened by the content
+  difference.
+- **RP-274** (industry is held while replaying; reverses §3.6's decision of 2026-10-24, as the
+  coordinator approved for slice R): `industry::simulate` returns while `st.replaying` (rtsim-jni
+  engine/industry.rs:799): no session start, no deferred latest-wins records, no threats, no run of the
+  clock to the hand-over's time, no commands into the queue. `journaled` does not flush the deferred
+  records while replaying (574, 588); its `begin_session` runs only for a record of this session, which
+  `replay_end_before` lets through only after the end. The replayed records still run the engine at
+  their own ticks, as the crashed session ran it between its hand-overs. The first step after the end
+  runs the held step: the session start at SESSION_START's game time, the deferred records, the threats,
+  the clock, the commands. The checks (rule 3):
+  - threats queued while replaying (`Orders::IndustryThreat` into `Link::threats`) wait and run after the
+    session start, as the first replayed hand-over ran them on bc669502, each at its own `t.at`
+    (RP-270);
+  - the deferred latest-wins records are this session's, stamped at its present, past every replayed
+    record (the world rolled back to its save), so holding them puts nothing later than it was;
+  - commands decided by replayed records stay in the engine's outbox and go after the end; Java answers
+    the ones it applied before the crash DUPLICATE by op (RP-272) and applies the rest once. Industry
+    embodies nothing and has no gate (§4.5's note keeps IndustryCommand ungated). **Amended by RP-259:
+    "applies the rest once" was wrong.** Java keeps only the ops it applied, so a copy of an op it
+    answered FAILED before the crash was applied after the end (the review's P1-2: 224 iron made on a
+    train). The link now keeps the FAILED answers it hears while replaying, and the first drain after
+    the end drops their copies unsent and takes them back (`unsent_answered`); a copy of an op answered
+    APPLIED is still written (DUPLICATE, or T2's ring in J4);
+  - the module switch: switched on while replaying, `set_enabled` sets the session start to the present
+    and it runs at the end; switched off, the threats are dropped at the end as before; `begin_session`
+    in `simulate` runs whether on or not, as on bc669502;
+  - the replay end's order: `replay_end_if_due` at the step's top runs before `industry::simulate`, so
+    the held step runs in the step the replay ends; `replay_end_before` runs before a record of this
+    session is dispatched. The other modules' ends are untouched;
+  - no page save is taken while replaying (as before), so no page holds a half-held engine;
+  - the books: the held step's work runs once, at the end, in the order the first replayed hand-over
+    ran it, and every replayed record's own work runs at its own tick as live. What a held step would
+    have done earlier is what a live run does when one hand-over carries all those records.
+  - Not closed here: the dragons' and pirates' raids reach industry through `IndustryLink`
+    (`threat_with` runs its clock to the raid's `t.at` while it is held); §3.6 leaves them to slices D
+    and S.
+
+  Without the hold and with RP-270 alone, the exchange double of RP-277 is already gone; the hold also
+  keeps the re-derived reconciles' ids (`a_replay_of_several_hand_overs_rederives_the_same_op_ids`).
+- **RP-275** (ordinals: the persisted window; amends RP-267): `IndustryOps` (cmd.rs:172 to 204, the last
+  256 (tick, low) pairs; `persist_struct!` at 322) is written in the engine's globals page (engine.rs:5922,
+  `e.ops.put(w)` beside `e.out`) and restored with it (6265). The replay starts with the window as of the
+  save, and with the hold and the decision ticks it re-decides the same decisions in the same order, so
+  it rebuilds the same ordinals. No new store, no per-district counter (which would be as path
+  dependent as the decisions it counts). Test: `a_collision_before_a_save_gives_the_same_ordinal_after_a_crash`
+  (replay_ids.rs): two identical deposit deltas at 4,000, the first before the save, forty other
+  derivations between; after the restore the second takes ordinal 1 again, the live op; the control, an
+  empty window, gives it ordinal 0, the first one's op, which Java has long forgotten (applied twice).
+  Where an ordinal can still differ: a (key, tick) decided on one run only (a latest-wins record's
+  round, the Approach round, never replayed) or more than 256 derivations between two same-key
+  decisions; the replay's decision then takes its twin's op, answered DUPLICATE (a loss), or resent
+  when the twin FAILED (an edge, not driven). **Amended by RP-259 (the review's P2-3):** the window
+  could collide in a live run, with no crash: two identical decisions of one tick more than 256
+  derivations apart both took ordinal 0 (`identical_decisions_of_one_tick_never_share_an_op_however_far_apart`,
+  cmd.rs; on 2a975cc3 both 0x4989eddb2487a481). `remember` now never forgets an id of the tick being
+  derived, so the window holds at most 256 or the busiest tick's derivations, whichever is more, and
+  trims back to 256 at the next tick's first derivation; slice T's key tags are counted and forgotten
+  apart. A deposit delta hashes its district. `a_collision_before_a_save_gives_the_same_ordinal_after_a_crash`
+  passes on 2a975cc3 too: it is coverage, not a regression test. The "more than 256 derivations"
+  edge above is closed for decisions of one tick, the only ones an ordinal separates. Amended again
+  by RP-259's step 3 (the re-check): the window keeps every tick at or above the step's oldest, not
+  only the tick being derived, and trims at the next step. Amended a third time by RP-259's step 3b:
+  at most 4,096 of those past the 256 (the cap; past it a long step forgets its oldest ticks' ids, a
+  loss), trimmed at the step's end to 256 plus the step's newest tick, and probed by a map. "A loss,
+  never a double" holds barring a 56-bit collision.
+- **RP-276** (crash tests replay over several hand-overs; the default shape): crates/rtsim-jni/tests/industry.rs
+  has `REPLAY_FILLERS` (2,000 filler records after the pages), `restart` (reopens on a minimum-size
+  buffer with the world's present as game time) and `replayed_over_several` (asserts at least 2 replay
+  hand-overs). Converted: `crash_run`'s three cases, `a_kept_command_is_resent_after_a_crash_with_its_sequence_and_op`,
+  `pages_behind_the_world_save_rederive_the_same_reconcile` (which now also asserts the ops are the live
+  ones), `failed_carriage(true)` and `a_war_band_raids_a_district_while_away_and_lands_once_across_a_crash`;
+  `a_replay_of_several_hand_overs_rederives_the_same_op_ids` asserts 9 (8,000 fillers) and lost its
+  ignore. The one-hand-over tests stay as controls. On bc669502's engine four fail:
+  `a_replay_of_several_hand_overs_rederives_the_same_op_ids` and `pages_behind_...` (other ops),
+  `a_station_exchange_replayed_over_several_hand_overs_is_applied_once` (the double), and
+  `a_reconcile_applies_once_when_the_world_save_holds_its_result`: an extra epoch 2 reconcile of chunk
+  (0,0) after the restart (op 5324139976339032470), the vault's bars 5,808 to 5,920, a double the
+  one-hand-over shape hid. All pass after. The harness: `mc_tick` sets `game_time` to the fake world's
+  time, so `restart` only has to start it there (RP-269). The rule for the other modules' crash tests is
+  docs/replay-gate.md §9's note; their tests are not changed here. **Amended by RP-259 (the review's
+  P3-1):** `mc_tick_until_durable` ticked the world while the IO lane wrote the pages (1 to 67 ticks
+  measured), so a test's world, journal and replay moved with the load; it now ticks until the engine
+  has applied `through` and waits for durability without ticking. `replayed_over_several` names the
+  path of a 0.
+- **RP-277** ((f) explained, and its double): step 1's 9-hand-over fixture applied nothing twice because
+  Java answered the new ids another way. The re-derived commands were ChunkReconciles, decided at the
+  present (the engine's `now` 72,109) in the 9th replayed hand-over: 0x49d718926bfc814f (-3,849 at chunk
+  (0,0)) and 0x494e6b16bdf39e3d (+3,848 at (2,0)). They were sent (industry has no gate) and Java answered
+  both DUPLICATE (status 2) by the chunk epoch guard: the world save held epoch 1 on both chunks, from the
+  live ops 0x49d7cee12c1e62af (-3,841) and 0x496d886096dbb57d (+3,840), applied with status 1. The
+  replayed IND_RECONCILE_RESULTs of the live ops found no pending op (`duplicate_results` 0 to 2), and the
+  new session's IND_CHUNK_LOADED (applied epoch 1) cleared the pending as applied as asked, with the
+  replay's content: an 8-bar book error, a loss. The kinds Java guards by op alone have no such guard.
+  The double: `a_station_exchange_replayed_over_several_hand_overs_is_applied_once` (`exchange_behind_the_save`:
+  the iron line, seed 11, pages at day 3, 8,000 fillers, train 1's exchange at 72,800 applied, the world
+  saved at 72,900, the crash at 73,500, 9 replay hand-overs). On bc669502: live op 0x49bde6767891a61f,
+  re-derived 0x491fe69c0e21e455, applied again 1, train 1's ore 224 then 448. After: the live op, applied
+  again 0, 224. Control: `a_station_exchange_replayed_in_one_hand_over_is_applied_once` (passes on both).
+- **RP-278** ((e) across a crash, and its double): `a_station_exchange_taken_late_live_is_applied_once_after_a_crash`
+  (`stale_exchange_behind_the_save`): the live engine runs on a minimum-size buffer and 3,000 fillers are
+  journaled the tick before train 1 calls, so the call (stamped 72,800) waits in Java's journal and the
+  live engine takes it in the hand-over of 72,803; the world saves at 72,900, the crash comes at 73,500,
+  and the restart on 1 MiB replays in one hand-over (so (f) is out) and takes the call at 72,800. On
+  bc669502: live op 0x49cd1079d0bd184b, replayed 0x49bde6767891a61f, applied again 1, 224 then 448. After:
+  0x49823c0440e26b17 both ways, applied again 0, 224. So (e)'s decisions reach Java, and on bc669502 a
+  stale record doubled the kinds guarded by op alone.
+- **RP-279** (what step 2 leaves): (1) the content of a stale record's decisions (RP-262): live, the
+  engine ran its clock to G before it took the record, so its round or call decides on another state.
+  The ids now agree where the content is not part of them (RP-272: a loss) and the ChunkReconcile
+  refuses by epoch (a loss); RP-262's ignored test pins the difference. The fix is Java's and not built:
+  a hand-over that leaves journal records for the next one (`Journal.drainInto`) says so (a bit in the
+  hand-over header, or an observation), and the live engine then does not run `advance_to` past them.
+  (2) W3's limit: a breakpoint or wake whose tick comes from a state that already differs (after (1),
+  or after a latest-wins record the replay lacks) decides at another tick, so its keyed ops are new and
+  a ChunkReconcile from an extra round can pass the world's epoch; the Java flag closes the first
+  cause. (3) RP-275's ordinal edges. (4) The raids of held modules (RP-274's last check). (5) Loot is
+  T's. Amended by RP-259: (2)'s ChunkReconcile now counts epochs per chunk, so only a replay that makes
+  more rounds on one chunk than the live run did passes that chunk's epoch; (3)'s live same-tick case
+  is closed (RP-275); a WritePackage is named by its number, so its content no longer differs under
+  one op (P1-4).
+
+**Checks.** `cargo test --workspace --no-fail-fast` at 471a65ed: 1,846 passed, 0 failed, 26 ignored
+(RP-262's content test is the slice's one ignore). `cargo clippy -p rtsim-industry -p
+rtsim-jni --all-targets -- -D warnings`: clean. rustfmt: engine.rs, replay_ids.rs, rtsim-jni's
+engine/industry.rs and tests/industry.rs (all clean on the base). The sims (`rtsim-cli sim industry`,
+`conflict`, `dragons`, `herds`, `ships` and `mowzie`, default seeds and days, the base's engine and the
+slice's built side by side and run to files in /tmp): identical but `wall_ms`, so no result moved and
+no checked-in result needs regenerating; none of them prints an industry op id, and none replays across
+a crash. The checked-in bench/results/sim-industry.json and scenario/results/sim-ships.json already
+differ from the base's runs (stale before this slice; left alone).
+
+#### The review's fixes (RP-259)
+
+An Opus review of 2a975cc3 said fix first (brief rp-slice-r2-fixes.md). Every fix below starts with a
+test that fails on 2a975cc3, with its numbers, unless it says it is coverage. Lines are at the fixes'
+head. Two pages change format (not released, so no migration; the lead regenerates the fixtures):
+the engine's globals IGB1 to IGB2 (`decided` after `now`), and the district IDS4 to IDS5
+(`chunk_epochs`, each pending chunk's `round`, `packages_decided`).
+
+- **RP-259** (the review's findings, each with its test and fix):
+  - **P1-1, `decided` saved.** Pages can be taken in the middle of a hand-over (right before the
+    first record past `through`), after a stale record whose marks wait for the next record, and
+    `restore` set `decided` to `now`, so the replay's next record settled nothing and merged two
+    rounds. `pages_taken_after_a_stale_record_rederive_its_rounds` (replay_ids.rs, the review's
+    fixture) on 2a975cc3: the live DepositDelta 0x4962c4fe7b7be699 against the replayed
+    0x49274e3eaf93756b (both -4,450, applied twice), and chunk (2,0)'s round at epoch 2 live
+    (0x49751b6c400ef275) against epoch 1 replayed (0x4936eee15bcf6a85). The globals page now holds
+    `decided` after `now` (engine.rs:5972 and 6317, IGB2). Passes. It holds `now` instead when no
+    coverage mark is pending (`dirty` empty), as `restore` set it before: nothing else reads
+    `decided` before the next decision sets it (the record trigger at 916 runs a flush with nothing
+    to flush and a drain the restore's own drain covers, every network's inputs as saved; the
+    derives at 3422, 3448, 3768 and 4012 run after a record, wake, breakpoint, threat or session
+    start has set it). Found by the workspace run: with `decided` always saved,
+    `gametest_worlds_open_in_the_host_with_their_saved_state` (rtsim-host, core world, "with seasons
+    turning, the fast stride agrees with 20 ticks") failed on `industry`, since the host's season
+    feed stamps IND_CONDITIONS at the hand-over's time, a stride late at the fast stride, and the
+    page took that tick; it passes with the page canonicalized. The other way round (`now` always
+    written) fails the P1-1 test (the live DepositDelta 0x493084c28fd26f77 against the replayed
+    0x497ebe941c4c243f). Residual, part of the latest-wins one (RP-279 (2), the re-check):
+    `decided` is in the page only while a mark is pending; a latest-wins record (never journaled,
+    so never replayed) that moves it in that state, before pages taken in the middle of a
+    hand-over, leaves a page no replay of the journal reproduces: a replay from earlier pages
+    settles those marks at a journaled record's tick instead, its round under another op, and its
+    page and state hash differ.
+  - **P1-2, a command answered FAILED live is never written after the replay end.** Java keeps only
+    the ops it applied (Journal.java:221), so a copy of an op it answered FAILED is applied.
+    `an_exchange_answered_failed_live_is_not_applied_after_a_crash` (rtsim-jni tests/industry.rs, 3
+    replay hand-overs) on 2a975cc3: train 1's exchange, failed live by `fail_carriage_deltas`, decided
+    again by the replay under the live op 0x49823c0440e26b17, was sent after the end and applied:
+    world iron (stores, carried, minted, burned) (328, 0, 2,864, 2,536) live against (328, 224, 2,864,
+    2,536) after the restart. The fix: while replaying, the link keeps the ops of every FAILED
+    COMMAND_RESULT it hears (`Link::heard`, rtsim-jni engine/industry.rs:158; `heard` at 659, called
+    by the core before `journaled` and `answered_again`, engine.rs:1926 and 1973), in memory only.
+    The first drain after the replay end (`simulate` 828, `unsent_answered` 874, called at 849 right
+    after `drain_commands`) drops every queued command under one of them unsent and takes it back
+    (`command_failed`, engine.rs:4031, idempotent), then empties the set. `write_queue` (1085, its
+    hold at 1090) is held while replaying, as `simulate` is (the re-check: not `write_resends`, as
+    this said). FAILED only, as the build lead narrowed it: a copy of an
+    op answered APPLIED is written on purpose, since Java's applied-op set answers it DUPLICATE and a
+    train's ring (T2, RP-196) applies it when the restored train never had it (J4); dropping it would
+    leave a restored train without an exchange the replayed carriage result booked. Controls: the six
+    op-id crash tests assert the copies are still sent under the live ops, none left unsent. Why
+    nothing past the end needs the set: every op it names was decided at or before its answer's game
+    time, so at or before the world save's and this session's present, and the held step runs the
+    clock to the present before that drain, so every decision the replay could make again is in the
+    queue by then; a later decision has a later tick, so another op. A package is named by its
+    number, not its tick (P1-4): one numbered as a package Java answered FAILED may be decided later
+    and is written, which is no double, since the engine never takes a package back. Kept until the
+    first drain with the module on (a module switched off at the end keeps it, and its drain, for
+    the step it comes on). **In memory only is safe only onto A** (the re-check): on R alone, pages
+    saved inside the replay-end hand-over, before that first drain, hold the copy decided again and
+    the FAILED answer's take-back but not the set, and a second crash restores them with an empty
+    set and no FAILED answer left to replay, so the copy is written and applied (a make: +224 iron
+    in the re-check's repro, +352 against the control's +128). A's `take_out` removes the copy from
+    the queue or the engine's `out` when the answer is heard, so no page holds it. **R lands only
+    onto A**; the repro becomes a test at the merge. **The FAILED WriteChain variant:** no crash fixture can reach it, since
+    the fake world answers a WriteChain APPLIED or DUPLICATE only (fake.rs:1427 to 1434); the link
+    unit test `a_command_heard_answered_while_replaying_is_never_written` covers it (the answer heard
+    before the replay's wake decides the write again, as a COMMAND_RESULT runs no `fire_until`), and
+    `command_failed` frees the frogport for it (`write_answered`, stores.rs:547). **SEC-1's option
+    A** (561aae96: `command_result` does `complete(op).or_else(|| unqueue(op))`, `unqueue` also
+    searching `engine.out` through `take_out`): the drop is in `simulate` -> `unsent_answered`
+    (engine/industry.rs:849 and 874) and acts on the copies in `l.queue` at the first drain after
+    the end; A's `unqueue`/`take_out` is in `command_result` (703) and acts on a copy present when
+    the answer is heard. Both can act on one op, never on one copy, and each copy's booking is taken
+    back once: `command_failed` finds nothing the second time (`exchanges.get` None for an exchange,
+    `writing_at` None for a chain write). Different functions, so the merge is A's hunk plus this
+    one. RP-274's "applies the rest once" was wrong (amended there). **Amended by RP-310:** A's
+    `take_out` acts on every answer, not on FAILED alone: merged as it was (7661ca04), a replayed
+    APPLIED took out the copy this record writes on purpose. Since RP-310 it takes a copy while
+    replaying only for a FAILED answer. **Corrected by RP-316:** that sentence names one of
+    two copies. Every answer, replayed or live, takes the outbox's copy (`complete`). The copy
+    still to be written (the queue's, or the engine's commands not drained yet: `unqueue` and
+    `take_out`) is what the gate decides. A live answer takes it whatever its status; a
+    replayed one only when it does not report an application (FAILED, or a status no industry op
+    gets, RP-316), so a replayed APPLIED or DUPLICATE leaves it to be written. With the module off
+    the same rule holds since RP-313; before it the off path (`keep_answer`, `answered_again`
+    while off) took both copies on every answer, replayed or not.
+  - **P1-3, one epoch counter per chunk.** Java's guard is per chunk (Reconciler.java:265), the
+    engine's counter was per district, so two chunks' rounds decided in another order by the replay
+    could swap epochs, the second chunk's above what it applied live. Not driven: the hold path
+    merges rather than splits (`hold_wake` 4912 -> `sync_coverage` 1664: while held `want` is empty
+    and the replay is carried, so the wake starts a new replay with no round); a round on one chunk
+    alone at a breakpoint comes from `glass_fallback` (2793 -> `sync_coverage`'s `Part(leaving)`, the
+    glass covering the loaded chunk until the fallback), which needs a glass fixture (none, as
+    RP-261); a trim round (`apply_trims` 3701) is decided at its result's record, ordered the same on
+    both runs. Built anyway, as the brief says: `District::chunk_epochs` (district.rs:324,
+    `next_chunk_epoch` 480), and each pending reconcile keeps its district round
+    (`PendingChunk.round`, 194), which still keys the round's books, reports and trims. Failing first
+    on 2a975cc3 for the counter, not the swap: `the_unloaded_part_of_a_district_keeps_running`
+    (rework.rs) gave the two chunks' first rounds epochs (1, 2); now (1, 1), in two ops. Residual: a
+    replay that makes more rounds on one chunk than the live run did can still take an epoch past
+    the world's (RP-279 (2)).
+  - **P2-1, no RP-57 floors: reversed with evidence.** The review asked for IND_CHUNK_LOADED's
+    `applied_epoch` and IND_RECONCILE_RESULT's `epoch` to raise the counter. Built, the floor failed
+    `a_reconcile_in_a_chunk_saved_ahead_of_the_journal_is_never_applied_twice` (rtsim-jni): the round
+    decided again took epoch 2, and the world made 3,840 bars from 3,841 ore a second time. A chunk
+    reconcile's epoch names its round, and Java refuses a round decided again after a crash because
+    it meets the epoch the chunk holds (a loss, RP-272); a floor puts it past that, applied twice. So
+    neither raises a floor (comments at engine.rs:1197 and 3561). The review's case (the engine
+    below the world, the next new round refused and booked applied by the done path) is a loss,
+    never a double. Its size (the re-check): with the engine's epoch for a chunk at b and the
+    world's at c, the rounds it numbers in (b, c] are refused and their content lost, one round's
+    for each round the live run made on that chunk beyond the replay's; bounded, since the counter
+    passes c after them. No rule avoids both this loss and the floors' double without Java
+    reporting the span it applied (a wire change, not built). RP-279 (2) is the double the other
+    way round and stands narrowed: since P1-3, only a replay that makes more rounds on one chunk
+    than the live run did passes that chunk's epoch, and its rounds past the world's apply content
+    the live run's rounds already applied (bounded by those extra rounds' content). Its causes are
+    a state the replay does not share: RP-279 (1)'s stale records (Java's hand-over flag would
+    close it) and a latest-wins record the replay lacks (stays). Floors would not help it (they
+    raise from the epochs Java names, the live run's); closing it needs the same wire change.
+    **Rule 4's table** (each industry kind that names an epoch, and its answer):
+    IND_CHUNK_RECONCILE names the chunk's next epoch, answered DUPLICATE by Java when the chunk's
+    attachment holds it or above or the op is applied; IND_CHUNK_LOADED's applied epoch settles the
+    pending reconciles at or below it as applied and raises no floor; IND_RECONCILE_RESULT's epoch
+    settles its round and raises no floor; the frontier epoch (IND_PACKAGE_STORE's StoreDecl,
+    CHAIN_HELD's HeldList and HeldDraw) is Java's, adopted by the engine (a declaration of another
+    epoch drops the old keys); no other industry kind names one. **Rule 5's test** (an ended epoch is
+    never reused with other content to Java's harm after a crash):
+    `a_round_decided_again_after_a_crash_meets_the_epoch_its_chunk_holds` (the round decided again
+    with other content takes epoch 1 again and is refused: the difference lost) and
+    `a_result_the_engine_does_not_wait_for_raises_no_epoch` (replay_ids.rs). Both pass on 2a975cc3:
+    controls that pin the choice.
+  - **P1-4, a package is named by its number.** Java journals no count for a written package
+    (WritePackages.java:134 to 141 answers APPLIED with no record), so the engine books the packages
+    it decides at the decision. `a_package_written_live_is_never_written_again_by_the_replay`
+    (replay_ids.rs) on 2a975cc3: the live run saw a postbox sample (latest-wins, never replayed) and
+    wrote 10 packages, the replay had room for 9 and wrote its 10th later, at another tick, so under
+    another op (live 0x494561505f07e75d, replayed 0x495a899725beb92b): 11 packages in the world
+    against the 10 booked out of the mail pool. Now each IND_WRITE_PACKAGE carries one package (count
+    1), named by the district's count of packages per postbox, address and good
+    (`District::next_package`, district.rs:488, saved; `IndustryOps::derive_numbered`, cmd.rs:210,
+    with a word no tick reaches in the tick's place): the replay's nth package is the live run's
+    nth, the same content under the same op, answered DUPLICATE whenever it is decided. After: (10,
+    10). **Fork:** the brief's two options were not computable. "Booked as unknown, corrected from
+    the next sample" needs to tell written packages from ones a train took meanwhile, and a postbox
+    sample (every postbox has one: it is a declared inventory, sampled latest-wins) counts only what
+    is there; "the larger of the two counts leaves the pool" needs the live count, which nothing
+    journals. Numbering needs no new record and makes the question moot. WriteChain is not one-sided:
+    its books follow Java's CHAIN_IN records (`chain_written`, engine.rs:2390), journaled, not the
+    decision. Residuals: a district removed and declared again restarts its count (an op Java still
+    remembers is answered DUPLICATE: a loss); a batch-size change racing a crash gives the nth
+    package another batch (the difference only).
+  - **P2-3, the window keeps the tick in hand.** Two identical decisions of one tick more than 256
+    derivations apart both took ordinal 0, one op: `identical_decisions_of_one_tick_never_share_an_op_however_far_apart`
+    (cmd.rs unit test) on 2a975cc3 gave both 0x4989eddb2487a481. `IndustryOps::remember` (cmd.rs:246)
+    never forgets an id of the tick being derived: the window holds at most 256 or the busiest tick's
+    derivations, whichever is more (one tick's decisions, a round per chunk and a write per pool and
+    good, are finite), and the next tick's first derivation trims it back to 256 (step 3: every
+    tick at or above the step's oldest, trimmed at the next step). The pairs are the
+    same bytes (`the_window_keeps_its_page_bytes`): no format change. A deposit delta hashes its
+    district after its key (`derive_with`, cmd.rs:201): two districts on one well in one
+    `flush_dirty` are two keys (`two_districts_on_one_well_write_back_at_one_tick_and_both_apply`,
+    which passes on 2a975cc3 too, the ordinal telling them apart: coverage).
+  - **P3-3, slice T's key tags.** They need their own rule: a burst of derived ids could push a
+    raid's key out, and `knows_key` would let the raid be decided again (a book error, the world
+    answering DUPLICATE). Built on this side: key tags (bit 63) are counted and forgotten apart, 256
+    of them (`a_burst_of_derived_ids_never_pushes_a_key_tag_out`). At T's merge its
+    `keyed_op_ids_come_from_the_key_alone` needs its last block changed: it derives 256 ids and
+    expects the key forgotten, which no longer happens.
+  - **P3-1, the crash tests' shape.** `replayed_over_several` saw 0 hand-overs under load on
+    hold-less engines. Not reproduced here (3 runs of the head and 5 of a hold-less engine under
+    load 13 to 33; a sweep of 0 to 69 extra ticks after the save, 48 of 48 with 3 hand-overs and
+    2,000 to 2,007 records). The load-dependent part found: `mc_tick_until_durable` ticked the world
+    while the IO lane wrote the pages, 1 to 67 ticks measured, so the world, journal and replay moved
+    with the load. It now ticks until the engine has applied `through` (the asked-for save is taken
+    in that step) and waits for durability without ticking (60 s cap). A 0 now names its path (the
+    replay ended at SESSION_START, or the engine failed before its first publish): replay ends,
+    records replayed, pages, journal span, engine error. The industry binary run 5 times under nice
+    19: 27 of 27 each.
+  - **P3-2, the flush gate in `journaled` stays** (engine/industry.rs:604). It is reachable: vanilla
+    saves each level's data (the journal) before level.dat (the game time), so a crash between the
+    two restarts the world below records its journal replays, and a latest-wins record of the
+    session is then stamped below a replayed one; without the gate, `flush` hands it over and runs
+    the session start in the middle of the replay. `a_session_record_stamped_below_a_replayed_one_waits_for_the_replay_end`
+    (unit test) gives (None, 0) without the gate against (Some(10,000), 1). No crash test reaches it:
+    the fake Java saves both at once. The module-off path (option A's included) returns before it, at
+    `journaled`'s `!l.enabled` return (590).
+
+  **Mutation checks** (one site's `decided` replaced by `self.now`, or the hold removed; rtsim-industry's
+  and rtsim-jni's lib and integration tests run; the source restored; the three `decided` sites run
+  again on the canonicalized head, with the same failures and numbers):
+  - `reconcile_round`'s immediate DepositDeltas (3422; 3395 on 2a975cc3):
+    `stale_records_rederive_their_rounds_deposit_deltas` fails (the live deposit op
+    0x49ef3d7ac3997437 against the replayed 0x493084c28fd26f77, `now` 9,500 against 8,200).
+  - `reconcile_round`'s ChunkReconcile (3448; 3417): `a_stale_record_gives_the_same_command_another_op_id_in_the_replay`
+    (the same content, live 0x492cd7d0fd2f3291 against replayed 0x49be17700102776d) and
+    `stale_records_rederive_their_rounds_deposit_deltas` (both chunks' rounds under other ops) fail.
+  - `train_arrived`'s Exchange (4012; 3976): `a_station_exchange_taken_late_live_is_applied_once_after_a_crash`
+    fails (applied again 1, train 1's iron 224 then 448).
+  - The hold removed (`simulate`'s `st.replaying` return, engine/industry.rs:829):
+    `a_replay_of_several_hand_overs_rederives_the_same_op_ids`,
+    `a_reconcile_applies_once_when_the_world_save_holds_its_result` and
+    `pages_behind_the_world_save_rederive_the_same_reconcile` fail (24 of 27 pass). The exchange
+    tests pass without the hold: RP-270 alone removes that double (RP-274's last paragraph).
+  - The globals page writing `now` always (engine.rs:5972's condition `true`):
+    `pages_taken_after_a_stale_record_rederive_its_rounds` fails (P1-1 above). Writing `decided`
+    always fails the host test (P1-1 above).
+
+  **Checks** (at 8702f936): the workspace tests, 1,851 passed, 7 failed, 26 ignored. The 7 are the
+  saved-world fixtures that IGB2 makes unreadable until the lead regenerates them: rtsim-cli's
+  glass (`glass_reads_a_create_gametest_save_and_writes_nothing`) and stores (2), rtsim-view's
+  fixtures (3) and unreadable (`a_district_whose_pages_go_away_is_not_cached_and_names_no_path`).
+  rtsim-host's GameTest worlds open with a fresh industry engine (`Link::load` starts afresh on a
+  format it cannot read) and pass. Clippy on rtsim-industry and rtsim-jni (all targets, `-D
+  warnings`): clean. Rustfmt (stdin, edition 2024) on the 8 touched Rust files, all clean at
+  2a975cc3: clean. The six sims (industry, conflict, dragons, herds, ships, mowzie) against
+  2a975cc3: only `wall_ms` differs; the sims make no crash and report the world and the books, not
+  op ids or command counts.
+
+#### The re-check's points (RP-259, step 3)
+
+An Opus re-check of a9886680 (brief rp-slice-r3-fixes.md) said ready to land after T, onto A, on
+conditions. These are the points on R alone. Lines here are at 13ca1423; those of the sections
+above are at a9886680 (engine.rs has moved by 9 lines past 846 since).
+
+- **P2-b, the package numbers and chunk epochs across a restore.** Mutation M2b (`packages_decided`
+  read but not restored from the district page, district.rs:1087) passed every test at a9886680:
+  under it, only the two new tests fail. `a_district_page_keeps_its_chunk_epochs_and_package_numbers`
+  (district.rs:1150, the page round trip with each counter going on from its last; under M2b the
+  restored numbers are empty) and `the_package_numbers_go_on_from_pages_taken_mid_run`
+  (replay_ids.rs:1524: pages taken after 6 of 10 packages, the replay's other 4 the live run's op
+  for op; under M2b they took new ops, 0x49c299622d2c687b and three more against the live
+  0x4942ba5a7ee65777 and three more, because the window the pages hold knew the first 4's: 4
+  packages more in the world than the engine booked, a make). The same mutation on `chunk_epochs`
+  was already caught by five tests (three glass paging tests in rtsim-industry's lib, and
+  `a_restored_engine_continues_exactly` and `a_run_restored_from_its_changed_pages_continues_exactly`
+  in tests/persist.rs), and the round trip now catches it too.
+- **P3, the window rule.** `remember` kept only the tick being derived (`b != by`), so a derivation
+  at an older tick in the same step (a stale record, a cluster that decides behind another) forgot
+  the step's newer ids once the class passed 256, and a later identical decision at the newer tick
+  took ordinal 0 again: one op for two changes, the second answered DUPLICATE (a loss).
+  `an_older_ticks_decision_never_makes_the_step_forget_a_newer_ticks_ids` (cmd.rs:581) on
+  a9886680: both decisions at 100 took 0x4989eddb2487a481, and the two at 90 both took
+  0x49b0d7a65a5fdff4. Now `IndustryOps` keeps the oldest tick derived in the step (`floor`,
+  cmd.rs:188) and `remember` (264) never forgets an id at or above it. The step ends at
+  `Engine::advance_to` (engine.rs:849, `IndustryOps::end_step` at cmd.rs:288), which a live step
+  calls once its records are in; the session start and a raid that lands while industry is held
+  run the clock with `run_to` (856) and do not end it; a replay in rtsim-jni is one step, since its
+  steps are held, and ends at the held step after the replay end. **What bounds the growth:** the
+  next step's first derivation trims the window back to 256 plus the ids at or above its own tick,
+  so it holds at most 256 plus one step's derivations plus the earlier steps' ids at or above the
+  step's oldest tick, which trails the clock by a step's staleness (a record a stride late, a
+  cluster catching up); the replay's step is its whole journal span. The floor is not saved (a
+  restored engine starts a step; the page bytes do not change). Why a window that forgets
+  differently on two runs is safe: ordinals are taken lowest free first, so the ops of one tick's
+  identical decisions are a prefix on each run, and two prefixes give at most a loss, never a
+  double. Two of RP-275's tests (`identical_decisions_of_one_tick_never_share_an_op_however_far_apart`
+  and `a_burst_of_derived_ids_never_pushes_a_key_tag_out`) end a step where they moved to the next
+  tick: the window now trims at the next step, not the next tick. This amends RP-275 and the P2-3
+  bullet above ("the next tick's first derivation trims it back").
+- **P3, the records**, corrected in the bullets above: the held writer is `write_queue`; `heard` in
+  memory only is safe only onto A, so R lands only onto A; P1-1's latest-wins residual; P2-1's loss
+  size and RP-279 (2)'s standing.
+
+  **Checks** (at 13ca1423): the workspace tests, 1,853 passed, 8 failed, 26 ignored: the 7 IGB2
+  fixtures above, and rtsim-cli's `at_100000_districts_a_full_world_request_keeps_the_budget_and_the_sidecar_its_cap`
+  (a district card still reading its chunks, under load average 27), which passes alone. Clippy on
+  rtsim-industry and rtsim-jni (all targets, `-D warnings`): clean. Rustfmt (stdin) on the 4
+  touched Rust files, all clean at a9886680: clean. The six sims against 2a975cc3: only `wall_ms`
+  differs (within the load's noise), so the window rule moves no result.
+
+#### The re-check's step 3b (RP-259): the window's cap and probe
+
+The lead's bench of 13ca1423's window rule, one step at nice 19: 1,000 derivations 2.3 ms, 10,000
+0.16 s, 30,000 1.45 s, 100,000 17.2 s. Each derivation walked the whole window three times (the
+probe's `any`, `remember`'s count, and its trim loop, which removed nothing while every id was at or
+above the floor), and a page saved at the step's end wrote the whole window. Long steps are real:
+rtsim-jni's replay since the last durable pages (one step), A's switch-on catch-up (`session_start`
+and `run_to`, one step over the whole time off), a restart whose world is far past its pages, and
+`glass_replay_offline`. Lines here are at the step 3b commit.
+
+- **The window** (`IndustryOps`, cmd.rs:176): the derived ids in a map keyed by (tick, order of
+  arrival), so the oldest tick's go first; the key tags in a queue of their own (256 of them, as
+  before); and a map of how many ids have each low 56 bits, which is the probe (one lookup,
+  cmd.rs:263). `remember` (285) inserts and trims from the oldest tick; each id goes in once and out
+  once, so a derivation costs O(log n) amortized. The ignored `one_step_of_derivations_timed`
+  (cmd.rs:827, the test profile, nice 19, load 10 to 15): 2bd1d828 2.7 ms, 257 ms, 2.1 s and 19.2 s
+  for 1,000, 10,000, 30,000 and 100,000; now 0.98 ms, 11.5 ms, 34 ms and 113 ms.
+- **The cap.** `CAP` (cmd.rs:223) = 4,096, TUNABLE, PLACEHOLDER: the ids at or above the step's
+  oldest tick kept past the 256. Past it the step forgets its own oldest ticks' ids, whatever the
+  floor, so the window never holds more than 4,352 derived ids and 256 key tags. **The loss
+  residual:** two identical decisions of one tick more than 4,352 derivations apart in one step, the
+  first's tick among the window's oldest by the second (a stale cluster deciding at one old tick
+  through a long catch-up): the second takes the first's op, answered DUPLICATE, a loss, live or
+  replayed. Never a double: ordinals are still taken lowest free first.
+- **The trim at the step's end.** `end_step` (cmd.rs:350, called by `Engine::advance_to`,
+  engine.rs:851) keeps the last 256 and every id at or above the step's newest tick (the next step
+  may decide at it again), so a page saved at a step's end (globals, engine.rs:5973) holds 256 or
+  the ids at or above that tick, whichever is more (4,352 at most), never the step's whole run. The session start and a held raid's `run_to`
+  still do not end a step; the cap bounds what a page saved before the next `advance_to` holds.
+- **The page bytes.** The same codec, a length and `(Tick, u64)` pairs (cmd.rs:476), now the derived
+  ids oldest tick first and the key tags last, where they were in arrival order; a restored window
+  numbers its ids again in page order, so it is the same window and trims the same way.
+- **"Barring a 56-bit collision."** The safety claim (a window that forgets differently on two runs
+  gives at most a loss) now says so in the code and here: the probe compares low 56 bits, so an
+  unrelated id with an ordinal's low bits in one run's window and not the other's moves that
+  decision to the next ordinal, past the prefix, and could double. The chance is about the window
+  over 2^56 a derivation (4,608 / 7.2e16, under 1e-13).
+- **The window bytes depend on the hand-over stride** once a step passes 256 derivations: which ids
+  a page holds depends on where steps end, and a live run ends one each hand-over while a jni replay
+  is one step and a catch-up another. So pages taken at one game time on two runs can differ in the
+  window there, and a page-equality test across such runs could fail on it; behaviour only loses,
+  since an id one run keeps and the other forgot gives at most a loss.
+- **Test** `a_step_of_100000_derivations_keeps_a_bounded_window_and_pages_the_trimmed_one`
+  (cmd.rs:755): a catch-up step of 100,000 derivations (ten a tick, a stale record every 1,000, a
+  last tick of 1,000 with twenty identical decisions of each of fifty commands) and three key tags.
+  Every 5,000 the page holds at most 4,352 derived ids and the three tags; the busy tick's 1,000 ops
+  are distinct; after `end_step` the page holds the busy tick's 1,000 and the tags, nothing older,
+  and a window restored from it derives the busy tick's next decision as the live window does. On
+  2bd1d828 (with a `CAP` constant added so it compiles) it fails: "after 5000 derivations the window
+  holds 5000 derived ids". Mutations: no cap fails it the same way; no trim at `end_step` fails it
+  (4,352 against 1,000) and `an_older_ticks_decision_never_makes_the_step_forget_a_newer_ticks_ids`
+  (cmd.rs:651, which now also asserts the trim at the step's end: 268, the 100s). The other window
+  tests read the page pairs; `the_window_keeps_its_page_bytes` (723) now pins the order with a stale
+  record and a key tag.
+
+  **Checks** (at 3fbd09f4): the workspace tests, 1,855 passed, 7 failed, 27 ignored: the 7 IGB2
+  fixtures above (rtsim-cli's glass and stores, rtsim-view's fixtures and unreadable). Clippy on
+  rtsim-industry and rtsim-jni (all targets, `-D warnings`): clean. Rustfmt (stdin) on cmd.rs, clean
+  at 2bd1d828: clean.
+
+#### At the merge with T and A (RP-259)
+
+7661ca04 merges slice T (5e832028, which carries main's slice A, SEC-1's option A). Conflicts in
+cmd.rs, tests/industry.rs and this file only.
+
+- **The op window.** R's window (derived ids by tick, key tags apart, the `lows` probe) keeps its
+  shape. T's keyed ids (RP-180) are ported onto it: `derive_keyed` finds its tag in `keys` and probes
+  `lows`, `knows_key` looks the tag up there, and `KEYED` (`u64::MAX`, where a derived id hashes its
+  tick) sits beside R's `NUMBERED` (`u64::MAX - 1`). T's `keyed_op_ids_come_from_the_key_alone`
+  changed in its last block only: a burst of 512 derived ids, each step ended, no longer pushes the
+  key out (RP-275's own budget); 256 later keys do, and the key is then decided anew under the same
+  op. T's copy of `the_window_keeps_its_page_bytes` is folded into R's (the keyed tag's round trip
+  and `knows_key` after the restore). `iron_java_with` takes both sides' arguments (a capacity and a
+  configuration closure).
+- **The re-check's repro as a test.**
+  `a_second_crash_after_a_save_before_the_first_drain_writes_no_failed_copy`: iron line seed 11,
+  carriage deltas failing from 72,100 to 72,850, the world saved at 72,900, a crash at 73,500, a
+  restart on MIN_CAPACITY whose world saves at once with its pages asked through the journal's end
+  and 40 fillers behind them (taken inside the replay end's hand-over, before the first drain), run
+  to 73,500; a second crash, that save restored, run to 73,500. The world against the engine's books
+  (`FakeWorld::conservation_with`, not `world_iron`: a restored world has its own baseline) equals
+  the first restart's at the same game time: crushed raw iron +128 and iron ingots +2,735 in both.
+  With `Link::unqueue` (A's `take_out`) disabled, R alone's protection, it fails as the re-check
+  found: +352 against +128.
+- **SEC-1's off path with a FAILED exchange.** `ack_never_resends::a_failed_exchange_restarted_with_industry_off`,
+  three arms: the pages after X's decision (right before the tick of its FAILED answer), before it
+  (the window is X's IND_TRAIN_ARRIVED, IND_TRAIN_DEPARTED and the answer), and before it with an
+  autosave and a second crash while still off. Industry goes off in the answer's tick. From copies
+  of the snapshot a restart with the module on and one with it off, switched on in its second
+  hand-over, each run a day and until every command is applied: X never sent, one FAILED booked
+  (`results_failed`), the exchange not left waiting, and the world against the books and the
+  trains' cargo equal between the two. The three arms pass. **Corrected by RP-310:** this said
+  "All pass", and the rtsim-jni industry suite did not: from this merge to fe4e80bf six of slice
+  R's op-id crash tests failed (6 of 61), each alone too. With both `Link::unqueue` and
+  `unsent_answered` disabled, the two before arms fail (the restart with the module on sends X
+  once) and so does `an_exchange_answered_failed_live_is_not_applied_after_a_crash`; with either
+  one alone they pass, so the two are redundant on one crash, and `take_out` is the one a second
+  crash needs. The after arm rests on A's keeping (its own failing-first tests).
+  - **No catch-up copy.** The case this was written to probe, a switch on whose catch-up decides X
+    again after the kept FAILED was booked against an op the engine had not decided, does not
+    arise for a station exchange: the engine decides one only from Java's IND_TRAIN_ARRIVED
+    (`train_arrived`, engine.rs:3905), which the replay with the module off ignores (U10), so a
+    restart off never decides X again. `answered_unsent` stays 0 in these shapes.
+- **Worlds.** A bumps `LINK_VERSION` to 2: every neoforge project's `run-gametest/world` in this
+  worktree is deleted before its GameTests.
+
+#### After the U-a merge (RP-310 onwards)
+
+The build lead's brief r-tmerge-diag.md: from 7661ca04 (the T merge) to fe4e80bf (the U-a merge),
+`cargo test -p rtsim-jni --test industry` failed 6 of 61, each alone too, and the merge's record
+said "All pass" (corrected above). Lines here are at the fix's commit.
+
+- **RP-310** (the six, broken by the merge, not stale; the fix):
+  - *The failures.* `a_one_hand_over_replay_rederives_the_same_op_ids`,
+    `a_replay_of_several_hand_overs_rederives_the_same_op_ids`,
+    `a_station_exchange_replayed_in_one_hand_over_is_applied_once`,
+    `a_station_exchange_taken_late_live_is_applied_once_after_a_crash`,
+    `a_station_exchange_replayed_over_several_hand_overs_is_applied_once` and
+    `pages_behind_the_world_save_rederive_the_same_reconcile`. Each failed on its one assertion
+    that the copies go out under the live ops: nothing was sent after the restart (`ind-ids-one: 1
+    replay hand-overs; first ops [..], sent after the restart []`), while nothing was applied
+    again, no reconcile was left pending and the trains held what they held.
+  - *The cause, a semantic conflict that merged without a textual one.* The link
+    (rtsim-jni engine/industry.rs) had no conflict: 7661ca04 over R (95dd787e) is exactly T's
+    change over the base bc669502, and over T (5e832028) exactly R's. T brought slice A's
+    `command_result`, `complete(op).or_else(|| unqueue(op))`, and `unqueue` falls back to the
+    engine's commands not drained yet (`Engine::take_out`, RP-285). R holds the engine while
+    replaying (RP-274), so every copy the replay decides again waits in the engine's `out` when
+    its replayed answer comes, and an APPLIED took it out: RP-259's rule (only a FAILED answer
+    drops a copy, the build lead's narrowing) was lost. RP-259 had read A's `take_out` as acting
+    on FAILED copies ("the merge is A's hunk plus this one", amended there).
+  - *Evidence.* A probe (an env-gated print in `journaled`, not committed) at fe4e80bf: in the
+    one-hand-over reconcile test the replayed APPLIED answers for 0x49613958dd7f73bf and
+    0x499289f0c9f63bea, the live ops, each found its copy in the engine's `out` (not in the outbox
+    or the queue); in the one-hand-over exchange test the replayed APPLIED for 0x49823c0440e26b17,
+    the live op, did too. So the engine re-derives the same op ids, and the merge's port of T's
+    keyed ids onto R's window (cmd.rs, the merge's one Rust conflict) is not the cause. A second
+    arm of the probe, the take skipped for a replayed APPLIED, passed all 61.
+  - *Why not stale.* The six are RP-259's controls ("the six op-id crash tests assert the copies
+    are still sent under the live ops"), and A does not make the rule wrong. Java's rings keep an
+    op another session answered, its answer unknown, until the engine sends it again
+    (`DurableOpRing.settle`; T2's rule, RP-250); only the acknowledgement of a live answer prunes,
+    and no replayed answer is live. A's own checker allows exactly this
+    (`ack_never_resends::a_replayed_answer_acknowledged_is_sent_again_and_its_refusal_never_after`,
+    case 4). And the reason for the rule holds: J4 (RP-196; since RP-200 only a failed tracks
+    write). RP-311's test at fe4e80bf: the copy never goes, the train restored without the op
+    stays empty, and the world against its books is crushed raw iron -96 against the control's
+    +128, the exchange's 224 short.
+  - *The fix.* `command_result` (engine/industry.rs:864) takes `replaying`, which `journaled`
+    passes (668): while replaying, only a FAILED answer takes a copy out of the queue or the
+    engine's commands (A's take, which RP-259's second crash needs); an APPLIED or DUPLICATE one
+    takes only the outbox's, as R did before the merge. Outside the replay (live answers, and
+    `book_kept_answers` at the switch on or a session start, 816) A's rule is unchanged, and so is
+    the module-off path (`keep_answer`, `answered_again` while off). **Amended by RP-313:** the
+    off path ignored the gate, and `book_kept_answers` booked every kept answer as live, though
+    it runs while replaying too. Both follow the gate now, by each answer's own flag.
+  - *Mutations.* No gate (fe4e80bf): the six and RP-311's test fail. The gate on every status,
+    FAILED too: `a_second_crash_after_a_save_before_the_first_drain_writes_no_failed_copy` fails
+    (+352 against the control's +128, as the merge's record found with `take_out` disabled), and
+    `an_exchange_answered_failed_live_is_not_applied_after_a_crash` passes (`unsent_answered`
+    covers one crash).
+  - *Left.* No test drives a replayed DUPLICATE meeting a copy decided again inside the replay: a
+    mutation that takes the copy on a replayed DUPLICATE passes every test (**closed by RP-312**:
+    its test needs two crashes, and fails under that mutation). Kept with APPLIED (the
+    copy is written; Java refuses it again and `answered_again` takes the answer, or J4 applies
+    it). The copy is written in the first drain after the replay end; the exposure of a durable
+    save's acknowledgement read by Java before it (the journal's op index forgets the op, the
+    rings do not) is the one RP-259 accepted before the merge, unchanged. **Corrected by
+    RP-315:** this understated it. The copy can wait well past the new session's first
+    acknowledgement, and only the second guards keep it from being applied twice. RP-315 names
+    the waits, the guards and the configurations with no second guard.
+- **RP-311** (the J4 test, the build lead's "show it with evidence"):
+  `a_station_exchange_whose_trains_save_was_lost_is_applied_again_after_the_replay`
+  (tests/industry.rs:2094). The iron line's exchange at 72,800 over a replay of several hand-overs,
+  as in `exchange_behind_the_save` (8,000 fillers, MIN_CAPACITY); the world restarts from its save
+  at 72,900 but for the exchange's train, whose cargo is from the tick before the world applied
+  it, and its op, dropped from the fake world's applied set (the ring, saved with the trains):
+  J4 built by hand on one train, so no other train's state moves (reverting every train to an
+  earlier tick moved train 2's cargo too). Its control is a restart from a copy of the pages with
+  the whole save (J1), which gives the restored world's own baseline (`books_delta`, as the merge's
+  second crash test compares). Asserts: the copy written under the live op, applied to the
+  restored train, its cargo as live at the crash, the world against its books as the control's,
+  the exchange settled. `copy_pages` moves from `ack_never_resends` to the top level for it.
+
+  **Checks** (at 33c79a65): `cargo test -p rtsim-industry -p rtsim-jni --no-fail-fast` all pass:
+  rtsim-industry 385 (3 ignored, as before), rtsim-jni 364, of them tests/industry.rs 62 (the
+  six and RP-311's test among them). `cargo clippy -p rtsim-industry -p rtsim-jni --all-targets
+  -- -D warnings` clean. engine/industry.rs was rustfmt-clean at its base and is after the fix;
+  tests/industry.rs was not clean at its base (`ack_never_resends`), so its new lines are wrapped
+  by hand. The workspace test and the GameTests were not run (the build lead runs them).
+- **RP-312** (the build lead's follow-up: a replayed DUPLICATE that meets a copy decided again
+  inside the replay): `ack_never_resends::a_replayed_duplicate_leaves_the_copy_the_replay_decided_again_to_be_sent`
+  (tests/industry.rs:4483), the checker's case 5.
+  - *Why two crashes.* The replay refuses an APPLIED or DUPLICATE answer for an op it heard
+    already (`op_of` in engine.rs; `Verdict::DuplicateOp` goes to `answered_again`, which takes
+    only the outbox's copy), so a replayed DUPLICATE reaches `command_result` only as its op's
+    first answer in the replay: the APPLIED gone with the journal (J3 on the ring, RP-199), and
+    the DUPLICATE journaled live by a later session whose pages never saved past the op's
+    decision. One crash gives only RP-199's live DUPLICATE.
+  - *The sequence.* The iron line, seed 11, the pages at day 2 (seq 265), autosaves off. Session
+    0: station exchange X (0x49658e5b8539fe23) is written and applied at S 268; the world
+    restarts in J3 (goods and the checker's rings saved after S, the journal file ending at 266).
+    Session 1: the replay decides X again, it is sent after the end, and the ring refuses it
+    DUPLICATE live at S2 270; the world saves, with no page save and no ack at or past S2.
+    Session 2, the pages still 265: the replay decides X again and hears S2, X's first answer,
+    while replaying; X is sent once (cmdSeq 16), refused live at S3 274, and Java's read of the
+    ack past S3 prunes it. Then to the line's end: no checker violation, the outbox empty, no
+    protocol error, conserved.
+  - *Mutation.* The take on a replayed DUPLICATE (`command_result`'s gate also excluding
+    DUPLICATE_OP, in a scratch worktree): the test fails, X never sent in session 2, so Java's
+    rings would keep it with its answer unknown for good (RP-250's leftovers). The rest of the
+    suite passes under it (four `*_with_industry_off_*` tests hit their 60 s wall clock at load
+    44 in the full run and pass alone).
+  - *Why the send is right.* As RP-310: at each start the pages are behind X's last answer, so
+    the settle keeps X with its answer unknown, and only a live answer's acknowledgement prunes
+    it. The fake world's applied set never prunes, so the assertion is the checker's ring model
+    (`gone` after the ack past S3, no ring keeps X at the end), beside the send itself.
+
+  **Checks** (at the test's commit, fd51c004): `cargo test -p rtsim-jni --test industry` 63
+  passed; `cargo clippy -p rtsim-jni --all-targets -- -D warnings` clean. The new lines are
+  rustfmt's own output for them (the file's base is not rustfmt-clean, so the file was not
+  formatted). No source changed. The workspace test and the GameTests were not run.
+- **RP-313** (P2-1 of the build lead's review of RP-310: the module-off path ignored the gate):
+  - *The bug.* With the module off, `keep_answer` (a journaled answer) and `answered_again` took
+    the copy out of the queue or the engine's commands not drained yet on every answer
+    (`complete(op)`, else `unqueue(op)`), whether or not the replay brought it, and
+    `book_kept_answers` booked every kept answer with `replaying` false, though it runs while
+    replaying too (at SESSION_START, and at a MODULES(on) inside a later replay hand-over). A
+    restart with the module off and a switch on later lost the copies RP-310 keeps on purpose:
+    J4's exchange (RP-311) and the replayed DUPLICATE's copy (RP-312).
+  - *Tests, failing first* (95fa116f, run at ed73334e: all three fail with X never sent):
+    `a_station_exchange_whose_trains_save_was_lost_is_applied_again_after_a_restart_with_industry_off`
+    (tests/industry.rs:2219) is RP-311's J4 restarted off. Session 0 crashes with exchange X
+    written and not applied; session 1 (on, MIN_CAPACITY) asks for its pages at its journal's
+    end with 40 records behind them, sends X again under its op and has it applied, saves the
+    world at `saved_at` and crashes with the pages still there. The restart is off: its replay
+    ends with X's APPLIED heard off, and the switch comes 300 ticks past the save. Control: the
+    whole save (J1); J4: X's train cargo from before the application and X dropped from the
+    applied set. Asserts X sent once after the switch and applied, the cargo and the world
+    against its books as the control's, X settled. At ed73334e X was never sent: crushed raw
+    iron -320 against the control's -96, the exchange's 224 short.
+    `ack_never_resends::a_replayed_duplicate_heard_with_industry_off_leaves_the_copy_for_the_switch`
+    (5020) is RP-312's case 5 with session 2 started off: its replay hears S2, X's first answer,
+    off; nothing is sent off; after the switch X goes once, is refused live at S3, and the ack
+    past S3 prunes it. `ack_never_resends::a_switch_on_inside_a_later_replay_hand_over_leaves_the_replayed_duplicates_copy`
+    (5041) is the same at MIN_CAPACITY with 2,000 records behind S2, and MODULES(on) written into
+    the hand-over after the one that carried S2: the switch books S2 while the replay still runs
+    (`sent_obs` below `replay_up_to`, no replay end yet), so `book_kept_answers` runs with
+    `replaying` true and the answer's own flag decides.
+  - *The fix* (3ad4363b). The gate is one function, `take_answered(l, op, replayed, applied)`
+    (engine/industry.rs:914), which `command_result` (957), `keep_answer` (819) and
+    `answered_again` while off (775) call. Each kept answer is a `KeptAnswer { record, replayed }`
+    (179), and `book_kept_answers` (860) passes its own flag. The comments that said Java prunes
+    at the ack whatever the switch (`keep_answer`, `set_enabled`) say now what Java does: it
+    prunes a ring entry at the acknowledgement of a live answer only (RP-209, T2, RP-250), and
+    trims its journal and op index at every acknowledgement.
+  - *No format change.* The link page saves the records alone, byte for byte as before
+    (`the_link_page_round_trips` compares the page with the old encoding), and an answer loaded
+    from it counts as replayed. That is right for every answer a page held: one heard live took
+    its copies at once, the engine was frozen from then until the switch (no decision, so no
+    copy), and a later replay brings only records past those pages, so no copy of its op is left
+    and booked as replayed it takes what booked live would take, nothing.
+  - *U-c.* fix/slice-u-c (ca4c822b) has the same field, page and functions (`answers`,
+    `LinkPage`, `keep_answer`, `answered_again`, `book_kept_answers`) and a `command_result`
+    without `replaying`. The flag lives in the elements of `Link::answers`, so R's merge carries
+    the gate onto U-c under the same names; the design does not change. One comment there needs
+    a clause at that merge: U-c's `begin_session` says only unanswered chain writes are handed
+    on, and a write whose replayed APPLIED or DUPLICATE was heard off now stays in the link and
+    is handed on too (`hand_on_again` leaves a write its store no longer awaits as it is).
+- **RP-314** (P3-2: a FAILED answer heard before the replay decides its copy again):
+  - *The claim.* `command_result` said pages saved before the first drain after the replay end
+    must not hold the copy. That holds for a copy decided before its FAILED answer (A's
+    `take_out` takes it at the answer; `a_second_crash_after_a_save_before_the_first_drain_writes_no_failed_copy`).
+    A copy decided again after the answer meets only `Link::heard`, in memory, at that drain
+    (`unsent_answered`), and `save_now` (engine.rs:1780) runs after `replay_end_before` (1770)
+    and before `simulate`'s drain. Older than RP-310 (RP-259's).
+  - *Which commands.* Never a station exchange: it is decided at its IND_TRAIN_ARRIVED, ingested
+    in journal order, and Java journals that before its answer to the command it led to; an
+    exchange taken late live is no different (the call's record still comes first). It takes a
+    decision no replayed record makes: a chain write at a store's wake (a COMMAND_RESULT runs no
+    `fire_until`; RP-259's unit test), or a raid's loot, which the held step decides at the first
+    `simulate` after the replay end (threats wait there, RP-274).
+  - *The test* (06c95da0):
+    `a_raid_answered_failed_and_decided_again_past_its_answer_is_booked_after_a_second_crash`
+    (tests/industry.rs:2596). The pages stop before a raid on laden train 1; the world fails
+    every carriage delta while the raid lands, so the loot is answered FAILED and taken back
+    (W10); the world saves and crashes. Session 1 has the raid ordered again before its first
+    step (the raider's own older pages, RP-183) and asks for its pages at its journal's end with
+    40 records behind them (as the second-crash test). The second crash restarts from those pages
+    and the world saved with them. Found: after one crash the loot is never sent
+    (`answered_unsent` 1, nothing stolen); after the second it goes under the live op
+    0x496960c7234a3896, the world applies it (one APPLIED), 22 is booked stolen, and the world
+    against its books is the control's (crushed raw iron +128, iron ingots +2,735 in both, the
+    restored world's own baseline). Benign, as asserted: the loot's booking stands and Java's
+    live answer settles it (applied here; a FAILED one would take it back).
+  - *Mutation.* `unsent_answered` replaced by emptying `heard`: the control sends the loot and
+    the test fails, so the drop after one crash is `heard`'s alone.
+  - *The chain write* has no crash fixture: the fake world has no package stores and answers an
+    IND_WRITE_CHAIN APPLIED or DUPLICATE only (fake.rs:1433). There the pages hold the copy
+    itself. By the same argument it is benign, not tested: written after the second crash, Java
+    answers it live, APPLIED with a `CHAIN_IN` carrying its op (the store books the packages), or
+    FAILED (`command_failed` frees the frogport and the store still owes it, SC113).
+  - *Also.* A raider that orders the raid again only after the first drain (at its own pace,
+    RP-252) has the loot written after one crash as well, benign the same way.
+  - *Comments* (66eac4d9): `command_result`, the `heard` field and `unsent_answered` say so.
+- **RP-315** (P3-1: how long a replayed answer's copy can wait, and what guards it then): RP-310's
+  "Left" (corrected there) and the `command_result` comment said the copy is written at the first
+  drain after the replay end. A MODULES(off) in a later replay hand-over, a full buffer or a name
+  wait (W21) can hold it past the new session's first acknowledgement, which trims Java's journal
+  op index; then only the second guards refuse it: the train ring, Diesel's oil ring,
+  LEVEL_APPLIED_OPS, the port rings, the chunk carry and the reconcile epoch. Java would apply it
+  again where the journal's index is the only guard. None of those is reachable in a supported
+  configuration, so they are residuals, not fixed (read in neoforge/, nothing changed there):
+  - *TrainRing off.* `TrainRing.available` (TrainRing.java:87) is false only when its probe
+    fails. The ring mixins (mic_rtsim_create_ring.mixins.json) are `required: false`,
+    `defaultRequire: 0`, so a Create that moved `Train.write` or `read` loads without them and
+    logs a WARN; IND_CARRIAGE_DELTA's dedup is then `ind.opApplied` (TrainWatch.java:682 to
+    685).
+  - *PortRing off.* `PortRing.available` (PortRing.java:80) is false when its probe fails (the
+    same config) or a GameTest switches it off (`fallbackForTest`); an offline buffer's
+    IND_WRITE_PACKAGE is then deduped by `ind.opApplied` alone (WritePackages.java:72 to 73).
+  - *No Diesel ring holder.* `DieselOilPlugin.depositRing` is null when `OilChunksSavedData` is
+    not an `OilRingHolder`, and `Industry.depositDelta` then has `opApplied` alone.
+  - *Why unreachable.* The pack ships Create 6.0.10 (pack/mods/create.pw.toml), the plugin
+    declares [6.0.10,6.1) and compiles against that jar, and its GameTests assert both rings on
+    (TrainRingGameTests and PortRingGameTests, "the ring is on", "the rings are on"). Diesel's
+    mixin config is `required: true`, `defaultRequire: 1`, so a Diesel the mixin no longer
+    matches fails the launch rather than run without the holder; the plugin requires
+    createdieselgenerators 1.21.1-1.3.15 or later, which the pack ships, and without Diesel it
+    does not load and no oil deposit exists. The other at-once deposits have rings too: Destroy's
+    level pollution has LEVEL_APPLIED_OPS, and Destroy's crude and Ore Excavation's veins are
+    written with their chunk's reconcile. The one way in is a pack update to a Create inside the
+    declared range that moves those methods, which the WARN names.
+  - *Comment* (67fa56c6): `command_result` names the waits, the guards and the residuals.
+- **RP-316** (P3-3 and P3-4):
+  - *P3-3* (ed73334e). RP-310's gate was `status != FAILED`, so an unknown status left the copy.
+    It is now `reports_applied` (engine/industry.rs:903), `matches!(status, APPLIED |
+    DUPLICATE_OP)`, and its comment names the rest: FAILED, NOT_FREE and VANILLA_KNOWS (Java's
+    answers to PLACE_HOUSE and WRITE_GOSSIP, never to an industry op) and a status this build
+    does not know take the copy as a live answer does. A decision: only an op Java reports
+    applied meets a guard that answers its copy again, so a copy left for any other status would
+    be applied as a new command.
+  - *P3-4.* RP-259's amendment said that since RP-310 a replayed answer takes a copy "only for a
+    FAILED answer". Every answer takes the outbox's copy; the gate decides only the copy still to
+    be written, and with the module off only since RP-313. Corrected there.
+
+  **Checks** (at 67fa56c6, the source head; only this record after it): `cargo test -p
+  rtsim-industry -p rtsim-jni --no-fail-fast` all pass: rtsim-industry 385 (3 ignored, as
+  before), rtsim-jni 369, of them tests/industry.rs 67 (RP-313's three and RP-314's one among
+  them). `cargo clippy -p rtsim-industry -p rtsim-jni --all-targets -- -D warnings` clean. The
+  new test lines are rustfmt's own output for them (tests/industry.rs is not rustfmt-clean at
+  its base, so it was not formatted); engine/industry.rs was rustfmt-clean at its base and is
+  after each commit. The workspace test and the GameTests were not run.
+- **RP-317** (the build lead's question on trap 4 of the RP-313 report, "J4's outbox copy can be
+  trimmed by lastAppliedCmdSeq"): a loss, not a double. Not fixed: reported to the build lead
+  first.
+  - *The sequence.* Station exchange X is decided and written (cmdSeq c) before the pages are
+    taken, and answered after them (S: its COMMAND_RESULT APPLIED and IND_CARRIAGE_RESULT). A world
+    save W0 while a step's commands are in flight does that: W0's pages are taken right before the
+    first record past W0's journal end (engine.rs `journaled`), after the step that wrote X, and
+    Java reads X only in the next tick. A later world save W1, after S, writes the journal's file
+    and fails the tracks write (J4; since RP-200 only a failed tracks write: vanilla's
+    `SavedData.save` logs the IOException and clears the dirty flag, and the journal's task still
+    runs at the chain's end), and the crash comes before W1's pages are durable (or the engine
+    lagged the save, RP-49). The copy is the outbox's: the pages hold X's decision, so the replay
+    decides nothing again.
+  - *What `lastAppliedCmdSeq` covers.* It is the journal's (`JournalSavedData`,
+    mic_rtsim_journal.dat), so in J4 it is W1's, past c, and `Link::resume`
+    (engine/industry.rs:379) trims X's copy by it at the start. The trim is not the cause. Scratch
+    mutations on the written test, each still 224 short: with the trim off, the replayed S takes
+    the copy (its IND_CARRIAGE_RESULT's `complete`, industry.rs:710, and its APPLIED's, RP-310's
+    gate); with those off too, the copy goes under c and Java skips it as stale
+    (BoundarySession.java:358; the fake world counts one stale command).
+  - *Found* (ace33cd7). `a_station_exchange_written_before_the_pages_is_lost_with_its_trains_save`
+    (tests/industry.rs:2527): the iron line, seed 11, X 0x49823c0440e26b17 under cmdSeq 36, the
+    pages through 382, S at 384, W1 100 ticks later with `lastAppliedCmdSeq` 36, the crash at
+    73,500. The control restarts the same pages with W1 whole (J1), J4 with train 1's cargo and
+    ring from the tick before S. Neither sends a carriage delta; the control holds what it held,
+    J4's train 1 lacks X's 224 crushed raw iron, and the books are the same in both (J4's world
+    against the control's books is its own result), so the world against its books is crushed raw
+    iron -96 against the control's +128. `a_station_exchange_answered_before_the_pages_is_lost_with_its_trains_save`
+    (2533) takes the pages at W1 instead (through 384, X answered inside them): no copy at all,
+    the same loss. So trap 4 is J4's direction A for every train op the restored pages decided, not
+    the trim's: RP-311's re-application covers only an op decided past the pages, and RP-196's J4
+    row was for a raider's pages older than the raid. Inferred, not tested: the same for the other
+    op whose effect is in the tracks file, the offline buffer's IND_WRITE_PACKAGE (K2).
+  - *Options for the build lead.* (a) Accept it as a residual of a failed tracks write: name it in
+    docs/replay-gate.md's residual list, and K1's and K2's A column ("cannot happen") reads "only
+    after a failed tracks write". (b) Java: the journal's task holds its write, as the barrier's
+    hold does (RP-205), when a SavedData write of its save failed, which makes J4 a J2 or J3, both
+    exact by the train ring. Vanilla's `SavedData.save` swallows the IOException, so this needs a
+    hook at its catch. The engine cannot repair it alone: only the train's ring knows the train
+    lost X.
+
+  **Checks** (at ace33cd7): `cargo test -p rtsim-jni --test industry` 69 passed;
+  `cargo clippy -p rtsim-jni --all-targets -- -D warnings` clean. The new test lines are
+  rustfmt's own output for them. No source changed; the mutations were reverted (engine/industry.rs
+  is at its base). The workspace test and the GameTests were not run.
+  - *Decision* (the build lead): (a), the conservative option. The residual is slice U's (RP-200's
+    "always B" assumed every SavedData write succeeds), not slice R's, and it needs a failed disk write
+    and a crash before that file is written again. docs/replay-gate.md §9.6: residual 10 (U-b's
+    residual 9, the double chest, lands first), crash class 1's "always B" names it, and the A column
+    of K1 and K2 (and, inferred, I4, I5, D1 and D3, each by its own mechanism and sign) names it. The
+    J4 sentence of "What slices T and T2 leave" points to it. (b) is slice U-g, the SEC-1 lead's, after
+    U-d (the coordinator's decision); it needs one more step than the option names: a failed write must
+    also mark its data dirty again, since vanilla clears the flag either way and the hold would
+    otherwise wait for an unrelated change to that file.
+  - *Closed at the merge with slice U-g* (docs/choices-journal-barrier.md U-g1, "Merged with slice R"):
+    the hold is (b). A failed write of Create's tracks or of our own SavedData now holds the journal's
+    file at the save before, so the written case of this record's two tests is exact: the first test,
+    restarted with the held journal, is now `a_station_exchange_written_before_the_pages_is_applied_once_
+    when_its_trains_save_fails`; the answered one stays lost, as P29 (slice U-h), and is residual 10 of
+    docs/replay-gate.md 9.6, which points at residual 11 for what the hold leaves.
+- **RP-318** (the build lead's re-check of RP-313: two tests it found missing, both on the module-off
+  path of a replayed answer). Tests only: no source changed, and each mutation was reverted
+  (engine/industry.rs is at its base). The record's sequences are in tests/industry.rs, `mod
+  ack_never_resends`.
+  - *Test 1* (`a_kept_duplicate_the_link_page_held_is_booked_as_replayed_at_a_restart_with_industry_on`,
+    tests/industry.rs:5276): pins `replayed: true` in `KeptAnswer::get` (engine/industry.rs:201), the
+    flag of an answer the link page loads. The sequence: `a_duplicate_restarted_off` (session 2 off, the
+    pages hold the copy of station exchange X in the queue, and the replay brings S2, X's DUPLICATE, as
+    its first answer for X: kept, replayed). The replay ends and the module is still off; the pages are
+    asked for through the journal's end and Java reads their ack; the world saves and the engine
+    crashes. Session 3 restarts from those pages with the module on, books the page's S2 at its start,
+    and sends X once: refused DUPLICATE live, its exchange dropped, no ring keeping X at the end. The
+    control is `a_duplicate_restarted_off` switched on in session 2 with no second crash, and the world
+    against the engine's books is the control's (Ok in both; `the_copy_goes_once_in_session` returns it
+    from the line's end, and `finish_with` asserts it closes).
+  - *Mutation 1*: `replayed: false` in `KeptAnswer::get`. The new test fails with "X sent in session 3:
+    not by Tick(48831)": the booking takes the copy out of the queue at the start, so X is never sent
+    and Java's rings keep it with its answer unknown for good. Test 2 passes under it (it never loads a
+    page).
+  - *Test 2* (`a_replayed_duplicate_refused_by_op_id_with_industry_off_leaves_the_queued_copy`,
+    tests/industry.rs:5333): pins `replaying` in `answered_again`'s off branch (engine/industry.rs:782,
+    `take_answered`) and, with it, the `replayed: replaying` of the DUPLICATE it keeps there.
+  - *The sequence, and why it differs from the brief's.* The brief had X's copy moved from the outbox to
+    the queue by `write_resends`. That cannot reach `answered_again` with two answers: a copy of X that
+    survives the start's trim (`Link::resume`, by the world save's lastAppliedCmdSeq) has a cmdSeq
+    above the save's, so the answer to it is not in that save's journal, and then session 2's replay
+    hears one answer for X, a first one, which `keep_answer` handles (test 1's route, not this one). A
+    copy in the pages' queue has no such limit, and a step takes its pages at its end, after `simulate`
+    drained the decided commands into the queue and before `write_commands` (engine.rs step_inner), so
+    pages asked for through a hand-over's last record hold the exchange that hand-over's step decided,
+    queued and unsent. Session 0 asks for the pages that way at every tick until the step that writes
+    X, then lets them land; the world applies X and answers APPLIED (S1), and saves, its journal holding
+    S1 and its lastAppliedCmdSeq the cmdSeq of X's write. The crash comes before any page save covers
+    S1. Session 1 restarts with the module on: the replay hears S1 (replayed, so it takes only the
+    outbox's copy, RP-310) and leaves the queued copy, which goes after the replay end under a new
+    sequence and is refused DUPLICATE live (S2). The world saves again, S1 and S2 in its journal, and
+    the engine crashes with no page save. Session 2 restarts from the same pages with the module off:
+    the replay brings S1 (X's first answer in it), then S2, which `Replay` refuses by op id, so S2 reaches
+    `answered_again` while replaying; the exchange waits for the kept carriage result. The module is
+    switched on: X is sent once in session 2, refused DUPLICATE live (S3), its exchange dropped, the
+    ack past S3 prunes it, and the world against the engine's books closes. A station exchange stands
+    for the op; the same holds for any command a page holds queued.
+  - *Mutation 2*: `false` in place of `replaying` in `answered_again`'s off branch, the call to
+    `take_answered`. Test 2 fails with "X sent in session 2: not by Tick(51121)" (S2 takes the queue's
+    copy; Java's rings keep X unknown). Test 1 passes under it. A third, kept in the same run and
+    reverted with it: `replayed: false` for the kept DUPLICATE `answered_again` pushes in the off
+    branch. The switch then books S2 as heard live and takes the copy, and test 2 fails with "X sent
+    in session 2: not by Tick(51527)", so the flag is pinned too.
+  - *Traps.* (1) `request_save` keeps the lower of two pending requests, so a loop that asks at every
+    tick must let each be taken: it does, since a request through the hand-over's last record is taken
+    at that hand-over's step end. (2) The `applied_ops` assertion on X (written, not applied) must come
+    before the run that lets the pages land: ticks pass and the world answers meanwhile. (3) The mid-hand-over
+    save (`journaled`, before the first record past `through`) would take the pages before the step's
+    decision; asking through the hand-over's last record avoids it, because no record of that
+    hand-over is past `through` and the step-end save takes it.
+
+  **Checks** (at the commit before this record): `cargo test -p rtsim-jni --test industry -j 4` 71
+  passed (the two new ones among them); `cargo clippy -p rtsim-jni --all-targets -- -D warnings` clean.
+  tests/industry.rs is not rustfmt-clean at its base (in the failed-exchange tests near its end, other
+  work's lines), so it was not formatted: the new test lines are rustfmt's own output for them (four lines were wrapped by hand
+  to match it) and `the_copy_goes_once_after_the_switch` keeps its signature (its body moved into
+  `the_copy_goes_once_in_session`, which takes the session). The workspace test and the GameTests were
+  not run.
+
+## MZB-1100 Five tests that failed once and passed on a rerun of the same code
+
+Five tests failed once each on code that passed on a rerun (the Rust `ack_never_resends` group in a loaded full workspace run,
+and four GameTests in M11's rounds). Branch `fix/flakes-1028`, from main 60c759a9. Ids MZB-1100 to MZB-1103; the core one is also
+U-h13 (docs/choices-journal-barrier.md). Tests and docs only: no production code changed, so there is no failing-first test; each
+fault is the test's, and the rows say which assumption and why it failed rarely.
+
+- **MZB-1100** (`ack_never_resends`, crates/rtsim-jni/tests/industry.rs: a 60 s wall clock in the rig's loops, and three tests that
+  still waited for their pages by ticking, MZB-940's "not checked"):
+  - *The guard.* `Rig::run` and fourteen more deadlines of the group's module and `held_journal` (loops that tick, and the waits on the
+    engine's step and on the IO lane), and five outside them, panicked after 60 s (20 s for those on a worker) of wall clock, counted
+    from the call. A test that ticks the world to day 8 or 9 runs 192,000 to 216,000 lockstep ticks, 3 to 4 s alone; in a full
+    workspace run on a machine at load 30 to 65 with twenty-five of them at once it took longer than 60 s, and twelve failed in one
+    run with "60 s of wall clock" (nothing wrong in any of them). The wall clock is no bound of a correct run, and every loop that
+    ticks has a bound that is: the world's clock (`run`'s `limit`, or `day(8.0)`), which a test that does not finish reaches in the
+    same ticks at any load. So the wall clock stays only as a guard against a hang (a worker that never answers, which no tick
+    count reaches): one constant, `HANG` (300 s), replaces all twenty deadlines of the file, the waits on a worker thread among them (the
+    IO lane's commit and confirm, the engine's step), which a loaded machine delays just the same.
+  - *The three waits.* `replayed_answer` (both cases), `a_replayed_duplicate_leaves_the_copy_the_replay_decided_again_to_be_sent`
+    and `a_duplicate_restarted_off` took their pages at day 2 with `r.run("the pages", ...)`, which ticks the world until the engine
+    confirms: as many ticks as the IO lane takes (2,000 to 4,100 of them measured in MZB-940), and then the test waits for an
+    event (a station exchange X, the raid's loot) and saves the world. So the world's save, and the window the restarts replay (the
+    pages to the save), held a number of exchanges and train moves that the load decided. MZB-940's note was that the ask for the
+    save is made between ticks, so a bare `wait_for_pages` would wait for a step that never comes; `Rig::until_durable` (hand-overs
+    with no world tick, which the RP-318 test's second restart already uses) is the non-ticking wait for that shape, and takes the save
+    in its first hand-over. All three use it now. Whether the exposure still failed anything: U-e (docs/choices-journal-barrier.md
+    U-e11) made the restart replay the window as its session lived it, so the books close at any window and the old -224 does not
+    come back; but the exposure is real for what the tests assert about the window (X is the first exchange after the pages; the
+    train is laden at the raid), and it is gone with a wait that does not move the world. `replayed_answer`'s loop (find the train
+    laden, take pages, find it laden still after the wait) had existed for that wait; it is one pass now with the second check as an
+    assertion, since nothing moves the train between the request and the pages.
+  - *Not changed.* The other files' waits (`confirm.rs` 30 s, `protocol.rs` and `ships_replay.rs` 60 s) are on worker threads
+    only (no ticking loop) and did not fail in the loaded run; they are as wide as MZB-1100's reasoning would allow and are left.
+
+- **MZB-1101** (`MarchMowzieGameTests.aRaptorWhoseFollowerAPlayerSeesIsNotCutAndIsOnceNoneIs`: "the raptor was not cut while a
+  follower was in sight (32 ticks saw a cut, trimmed 1)"):
+  - *The assumption.* The test holds one follower (no AI) where it puts it, 20 blocks from the raptor toward a player 140 blocks
+    off, so that it is 120 from the player (inside the 128 of sight) and the raptor is not (140). It trusts `setNoAi(true)` to hold
+    the follower. The jar's raptor does not: `EntityUmvuthanaRaptor.tick` (decompiled, `target/m11c-cfr-um` of the mz11 worktree)
+    walks its pack every tick and, for each follower with no target, `if (distanceTo(hunter) > 20.0f && onGround())
+    hunter.setPos(raptor + 3 blocks on a circle)`, whatever the follower's AI is. The follower stood at exactly 20.0 (3D, in a
+    `float`), so the first step the raptor made away from it, of 0.007 of a block or more, carried the follower back beside the
+    raptor, 140 blocks from the player. The raptor was then in no one's sight and the next beat cut it (`cutFrom`:
+    `pending || !inSight`). The first beat passed with the raptor still, the second (28 ticks in, the 32 ticks counted) did not.
+    Why it moved in one run of the rounds and not the others is not shown: a settling after the placement, or a step of the march's
+    chart (0.02 of a block a tick), or a push; the test's own records of the passing rounds show the follower 120.0 from the player
+    all through. The cause named is the threshold, which any of them crosses; the log of the failing run was not kept.
+  - *The test.* The follower now stands 16 blocks ahead (`PACK_AHEAD`) of the raptor, and the player 138 away (`PACK_PLAYER`):
+    the raptor is 10 beyond the 128 of sight, the follower 122, 6 inside it, and 4 inside the jar's 20, room for the raptor to
+    step. The test asserts that room (`distanceTo < 17`) where it places the follower, and its message at the end says the
+    follower's distance from the raptor as well as from the player, so a recall by the jar is read off the failure. The
+    later steps (the follower moved 8 behind the raptor, 146 from the player; the other three 6 behind, 144) are unchanged in
+    kind, and the promise is the same: a follower in a player's sight keeps its raptor, and the raptor goes on the beat
+    after none is.
+
+- **MZB-1102** (core `JournalBarrierGameTests.aHeldJournalHoldsTheEnginesAcknowledgement`, U-h's G1: "the file was not written";
+  also U-h13 in docs/choices-journal-barrier.md, and `theEnginesAcknowledgementNeverPassesTheWorldSavedMarker`, G2, which reads its
+  baseline the same way):
+  - *The assumption.* The check is `data.writtenThrough() == fileBefore`, with `fileBefore` read on the server thread at the
+    test's first step. `writtenThrough` moves only when a journal write lands on NeoForge's SavedData IO chain
+    (`writeWhenLanded`), and the chain runs behind the server thread: a world save an earlier batch (or the server's autosave, every
+    6,000 ticks, a second or so on an unthrottled server) queued before this test began can land its write of the journal's file
+    after the baseline was read and before the check 40 ticks later. The file then moved on a file the test never wrote.
+    `theWorldSavedMarkerNeverPassesTheJournalOnDisk` already read its baseline on the chain for this reason ("read on the chain,
+    after any write task of an earlier save still queued there"), and `aLevelSavedByItselfLeavesTheJournalOnDiskAsItWas` names the
+    same late write; G1 and G2 did not. The G1 record in U-h12's results says its only failure of the first round was the batch it
+    shared with the give-up test; it has had a batch of its own since.
+  - *The test.* Both tests queue a marker on the chain first (`queueDrain`) and wait for it, so every write queued before the test
+    has run when `fileBefore` (and `heldBefore`) are read. The overworld's autosaves are off during the test (`noSave`), so no new
+    write is queued behind the marker by anything but the test's own saves. The checks are unchanged.
+  - *Not shown.* No failing log was kept, so the late write is the cause the code allows, not one seen: the chain is FIFO, the
+    test's own saves cannot land a journal write while the Pad's failure holds it (the first step's `savedDataHeld` wait ends on
+    that hold), and no other test of the batch runs with it.
+
+- **MZB-1103** (create `SectionsChunkLoadGameTests.aBoilerOnAChainDrivesTheNextDistrict`, `-PwithMowzie` round: "a record poll
+  tick" after about 55 s of waiting): *the failure was masked, and one of its checks reads the server*.
+  - *Masked.* The step after both districts are LIVE again is `check("a record poll tick", time % 20 == 0)` followed by the
+    reconcile checks. Vanilla's `GameTestSequence` keeps the exception of the wait's last tick, and that check fails on 19 ticks
+    of 20, so a wait that ran to the test's timeout (24,000 ticks, 55 s at the 5 ms an `io()` tick sleeps) always reported "a record
+    poll tick", whichever of "A's reconcile lands", "B's reconcile lands" and "no reconcile held" had failed on the poll ticks before.
+    The wait is now the same checks, and the poll-tick message carries the failure of the last poll tick (which check, the number of
+    reconcile results and records, the districts' load state, the held count).
+  - *Global.* `ind().reconciler().held()` counts the commands held for every chunk of every district on the server, and the step
+    asked for 0. A command another test left held for a chunk that never loads again keeps it above 0 for the rest of the run, and the
+    wait could never end. Other tests read it against a baseline (`mark = held()`); this one now does (`heldBase`, read before
+    the chunks are forced). That is all of it that could be a fault of the test, and nothing shows it was the one that failed.
+  - *Not found.* Which check failed is not known, so the cause of the stuck wait is not: no log of the failing run was kept.
+    The next failure says which check it was.
+
+- **MZB-1104** (mowziesmobs `MowzieGameTests.aStrayInAHiddenChunkInsideTheRadiusIsListedOnceItsChunkShows`: "census 2 lists the
+  stray as a chief (0)"): *not found, left as it is.* The census waits for a hidden chunk of the stray radius while a stray's watch is
+  on (`Camps.strayHold`), and after the chunk shows `wideStrays` lists the loaded untagged bodies of the den's kind within 64 blocks;
+  the Frostmaw stands 32 blocks off (`DenKind.STRAY_RADIUS`) in a chunk the test forced, and `strayJoined` set the watch at its join.
+  Every path read for a census 2 that lists nothing needs the watch cleared by an earlier census (the test asserts there was none
+  while the chunk was hidden), the stray dead or out of the world (a hidden chunk is stored by an autosave, which the test names and
+  checks one step earlier), or the stray not visible to `level.getEntities` after `updateChunkStatus(ENTITY_TICKING)`; none was
+  found in the code and none was seen, and the eight passing runs on record (`target/m11*-mowziesmobs*.log` of the mz11 worktree) list the
+  stray. No log of the failing run was kept. Nothing was changed.
 
 ## M12a: S3, the site ledger and kill credit
 
