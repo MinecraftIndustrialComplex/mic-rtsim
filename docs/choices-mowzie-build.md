@@ -17303,12 +17303,16 @@ sweep mixin, the flake fixes MZB-1100 to MZB-1104) into this branch, commit 24fb
   range is MZB-1000 to MZB-1099.
 - **MZB-1036** (where the two designs meet, nothing contradicts): no choice between them was needed, and what follows is how they
   combine.
-  - **The chief's death, the tribute and the kill credit.** M11's grove earmark (MZB-930: what the grove owes its chest is held
-    apart from the haven market) and S3's credit act on different state and compose in the order a record is heard: a CHIEF_KILLED
-    or a chief's CAMP_DEATH is booked as before (the fall, the heir, `LossCause::from_credit` for the pressure), and the tribute owed
-    stays owed in `owed_tribute` and in the world's held books, untouched by the death and not part of the ledger row (the row
-    carries bodies, not goods). A reset that loses the engine loses both together (the earmark with the world model it is booked
-    in), so the ledger's hand-over never holds a tribute the new engine does not know.
+  - **The chief's death and its loot (M11, MZB-817) against the kill credit (S3, MZB-1008).** The credit is read once, at the
+    LivingDeathEvent (`ConflictBridge.onDeath`: `credit(dead, source)` for a chief puppet, `Camps.killer` for any other member), into
+    the slot's `pendingDeath`; `settleDeaths` writes the loss record (CHIEF_KILLED or BAND_CASUALTIES) with that code and player and
+    keeps the record's bytes. M11's dying chief (the puppet kept in its death animation, 115 ticks, for its drops) carries those same
+    bytes on its drops at the animation's end (`onDrops`, `endDying`). So the loot rides the record the death event's credit made
+    and nothing recomputes a credit at the end of the animation; a chief removed before its drops (`deathLootLost`) loses its loot,
+    not its credit, as before. Neither side's code changed for the other.
+  - **The grove's earmark (M11, MZB-930) and the ledger row.** What a grove owes its chest stays in `owed_tribute` and in the
+    world's held books; the row carries bodies and counts, not goods, so a chief's death (`chief_killed_home`, `chief_killed_by`,
+    unchanged by S3 but for `from_credit`) and the tribute are independent.
   - **The camp's census.** `camp_census` ends: the next recount is planned (S3, MZB-1015), the heir is looked at (M9), and the
     tribute owed goes (M11: `place_tribute` no longer reads a market, so it needs no clock). A camp going out forgets its chest,
     lets a parked stack go again (M11, MZB-760) and cancels its booked recount (S3) in the same arm; the order between them is of no
