@@ -12010,6 +12010,9 @@ rounds of phase 2 are the check, and what they found is recorded after them.
   the merged head (b37832e7). A cut 0 ticks after the move means the trim ran in the tick of the move or the cut was already counted: the test moves the follower in a tick where the sequence has just
   seen `level.getGameTime() % 20 == 10`, and the trim of that tick (`trimDue && now % STOP_BEAT == 0`) runs before or after the sequence in the tick by their order in the tick, which a loaded server
   can change. Not changed; the first failure is the only one in five rounds of the file.
+  The merge of main d53dbafd brought MZB-1101: another failure of the same test (the raptor cut while its follower was
+  in sight), caused by the follower standing 20 blocks out, where the jar's raptor pulls a targetless follower back to 3
+  blocks; the follower now stands 16 blocks out. Whether that also explains this cut on the beat is not known.
 
 ## M12 S9
 
@@ -16746,3 +16749,102 @@ said "All pass" (corrected above). Lines here are at the fix's commit.
   to match it) and `the_copy_goes_once_after_the_switch` keeps its signature (its body moved into
   `the_copy_goes_once_in_session`, which takes the session). The workspace test and the GameTests were
   not run.
+
+## MZB-1100 Five tests that failed once and passed on a rerun of the same code
+
+Five tests failed once each on code that passed on a rerun (the Rust `ack_never_resends` group in a loaded full workspace run,
+and four GameTests in M11's rounds). Branch `fix/flakes-1028`, from main 60c759a9. Ids MZB-1100 to MZB-1103; the core one is also
+U-h13 (docs/choices-journal-barrier.md). Tests and docs only: no production code changed, so there is no failing-first test; each
+fault is the test's, and the rows say which assumption and why it failed rarely.
+
+- **MZB-1100** (`ack_never_resends`, crates/rtsim-jni/tests/industry.rs: a 60 s wall clock in the rig's loops, and three tests that
+  still waited for their pages by ticking, MZB-940's "not checked"):
+  - *The guard.* `Rig::run` and fourteen more deadlines of the group's module and `held_journal` (loops that tick, and the waits on the
+    engine's step and on the IO lane), and five outside them, panicked after 60 s (20 s for those on a worker) of wall clock, counted
+    from the call. A test that ticks the world to day 8 or 9 runs 192,000 to 216,000 lockstep ticks, 3 to 4 s alone; in a full
+    workspace run on a machine at load 30 to 65 with twenty-five of them at once it took longer than 60 s, and twelve failed in one
+    run with "60 s of wall clock" (nothing wrong in any of them). The wall clock is no bound of a correct run, and every loop that
+    ticks has a bound that is: the world's clock (`run`'s `limit`, or `day(8.0)`), which a test that does not finish reaches in the
+    same ticks at any load. So the wall clock stays only as a guard against a hang (a worker that never answers, which no tick
+    count reaches): one constant, `HANG` (300 s), replaces all twenty deadlines of the file, the waits on a worker thread among them (the
+    IO lane's commit and confirm, the engine's step), which a loaded machine delays just the same.
+  - *The three waits.* `replayed_answer` (both cases), `a_replayed_duplicate_leaves_the_copy_the_replay_decided_again_to_be_sent`
+    and `a_duplicate_restarted_off` took their pages at day 2 with `r.run("the pages", ...)`, which ticks the world until the engine
+    confirms: as many ticks as the IO lane takes (2,000 to 4,100 of them measured in MZB-940), and then the test waits for an
+    event (a station exchange X, the raid's loot) and saves the world. So the world's save, and the window the restarts replay (the
+    pages to the save), held a number of exchanges and train moves that the load decided. MZB-940's note was that the ask for the
+    save is made between ticks, so a bare `wait_for_pages` would wait for a step that never comes; `Rig::until_durable` (hand-overs
+    with no world tick, which the RP-318 test's second restart already uses) is the non-ticking wait for that shape, and takes the save
+    in its first hand-over. All three use it now. Whether the exposure still failed anything: U-e (docs/choices-journal-barrier.md
+    U-e11) made the restart replay the window as its session lived it, so the books close at any window and the old -224 does not
+    come back; but the exposure is real for what the tests assert about the window (X is the first exchange after the pages; the
+    train is laden at the raid), and it is gone with a wait that does not move the world. `replayed_answer`'s loop (find the train
+    laden, take pages, find it laden still after the wait) had existed for that wait; it is one pass now with the second check as an
+    assertion, since nothing moves the train between the request and the pages.
+  - *Not changed.* The other files' waits (`confirm.rs` 30 s, `protocol.rs` and `ships_replay.rs` 60 s) are on worker threads
+    only (no ticking loop) and did not fail in the loaded run; they are as wide as MZB-1100's reasoning would allow and are left.
+
+- **MZB-1101** (`MarchMowzieGameTests.aRaptorWhoseFollowerAPlayerSeesIsNotCutAndIsOnceNoneIs`: "the raptor was not cut while a
+  follower was in sight (32 ticks saw a cut, trimmed 1)"):
+  - *The assumption.* The test holds one follower (no AI) where it puts it, 20 blocks from the raptor toward a player 140 blocks
+    off, so that it is 120 from the player (inside the 128 of sight) and the raptor is not (140). It trusts `setNoAi(true)` to hold
+    the follower. The jar's raptor does not: `EntityUmvuthanaRaptor.tick` (decompiled, `target/m11c-cfr-um` of the mz11 worktree)
+    walks its pack every tick and, for each follower with no target, `if (distanceTo(hunter) > 20.0f && onGround())
+    hunter.setPos(raptor + 3 blocks on a circle)`, whatever the follower's AI is. The follower stood at exactly 20.0 (3D, in a
+    `float`), so the first step the raptor made away from it, of 0.007 of a block or more, carried the follower back beside the
+    raptor, 140 blocks from the player. The raptor was then in no one's sight and the next beat cut it (`cutFrom`:
+    `pending || !inSight`). The first beat passed with the raptor still, the second (28 ticks in, the 32 ticks counted) did not.
+    Why it moved in one run of the rounds and not the others is not shown: a settling after the placement, or a step of the march's
+    chart (0.02 of a block a tick), or a push; the test's own records of the passing rounds show the follower 120.0 from the player
+    all through. The cause named is the threshold, which any of them crosses; the log of the failing run was not kept.
+  - *The test.* The follower now stands 16 blocks ahead (`PACK_AHEAD`) of the raptor, and the player 138 away (`PACK_PLAYER`):
+    the raptor is 10 beyond the 128 of sight, the follower 122, 6 inside it, and 4 inside the jar's 20, room for the raptor to
+    step. The test asserts that room (`distanceTo < 17`) where it places the follower, and its message at the end says the
+    follower's distance from the raptor as well as from the player, so a recall by the jar is read off the failure. The
+    later steps (the follower moved 8 behind the raptor, 146 from the player; the other three 6 behind, 144) are unchanged in
+    kind, and the promise is the same: a follower in a player's sight keeps its raptor, and the raptor goes on the beat
+    after none is.
+
+- **MZB-1102** (core `JournalBarrierGameTests.aHeldJournalHoldsTheEnginesAcknowledgement`, U-h's G1: "the file was not written";
+  also U-h13 in docs/choices-journal-barrier.md, and `theEnginesAcknowledgementNeverPassesTheWorldSavedMarker`, G2, which reads its
+  baseline the same way):
+  - *The assumption.* The check is `data.writtenThrough() == fileBefore`, with `fileBefore` read on the server thread at the
+    test's first step. `writtenThrough` moves only when a journal write lands on NeoForge's SavedData IO chain
+    (`writeWhenLanded`), and the chain runs behind the server thread: a world save an earlier batch (or the server's autosave, every
+    6,000 ticks, a second or so on an unthrottled server) queued before this test began can land its write of the journal's file
+    after the baseline was read and before the check 40 ticks later. The file then moved on a file the test never wrote.
+    `theWorldSavedMarkerNeverPassesTheJournalOnDisk` already read its baseline on the chain for this reason ("read on the chain,
+    after any write task of an earlier save still queued there"), and `aLevelSavedByItselfLeavesTheJournalOnDiskAsItWas` names the
+    same late write; G1 and G2 did not. The G1 record in U-h12's results says its only failure of the first round was the batch it
+    shared with the give-up test; it has had a batch of its own since.
+  - *The test.* Both tests queue a marker on the chain first (`queueDrain`) and wait for it, so every write queued before the test
+    has run when `fileBefore` (and `heldBefore`) are read. The overworld's autosaves are off during the test (`noSave`), so no new
+    write is queued behind the marker by anything but the test's own saves. The checks are unchanged.
+  - *Not shown.* No failing log was kept, so the late write is the cause the code allows, not one seen: the chain is FIFO, the
+    test's own saves cannot land a journal write while the Pad's failure holds it (the first step's `savedDataHeld` wait ends on
+    that hold), and no other test of the batch runs with it.
+
+- **MZB-1103** (create `SectionsChunkLoadGameTests.aBoilerOnAChainDrivesTheNextDistrict`, `-PwithMowzie` round: "a record poll
+  tick" after about 55 s of waiting): *the failure was masked, and one of its checks reads the server*.
+  - *Masked.* The step after both districts are LIVE again is `check("a record poll tick", time % 20 == 0)` followed by the
+    reconcile checks. Vanilla's `GameTestSequence` keeps the exception of the wait's last tick, and that check fails on 19 ticks
+    of 20, so a wait that ran to the test's timeout (24,000 ticks, 55 s at the 5 ms an `io()` tick sleeps) always reported "a record
+    poll tick", whichever of "A's reconcile lands", "B's reconcile lands" and "no reconcile held" had failed on the poll ticks before.
+    The wait is now the same checks, and the poll-tick message carries the failure of the last poll tick (which check, the number of
+    reconcile results and records, the districts' load state, the held count).
+  - *Global.* `ind().reconciler().held()` counts the commands held for every chunk of every district on the server, and the step
+    asked for 0. A command another test left held for a chunk that never loads again keeps it above 0 for the rest of the run, and the
+    wait could never end. Other tests read it against a baseline (`mark = held()`); this one now does (`heldBase`, read before
+    the chunks are forced). That is all of it that could be a fault of the test, and nothing shows it was the one that failed.
+  - *Not found.* Which check failed is not known, so the cause of the stuck wait is not: no log of the failing run was kept.
+    The next failure says which check it was.
+
+- **MZB-1104** (mowziesmobs `MowzieGameTests.aStrayInAHiddenChunkInsideTheRadiusIsListedOnceItsChunkShows`: "census 2 lists the
+  stray as a chief (0)"): *not found, left as it is.* The census waits for a hidden chunk of the stray radius while a stray's watch is
+  on (`Camps.strayHold`), and after the chunk shows `wideStrays` lists the loaded untagged bodies of the den's kind within 64 blocks;
+  the Frostmaw stands 32 blocks off (`DenKind.STRAY_RADIUS`) in a chunk the test forced, and `strayJoined` set the watch at its join.
+  Every path read for a census 2 that lists nothing needs the watch cleared by an earlier census (the test asserts there was none
+  while the chunk was hidden), the stray dead or out of the world (a hidden chunk is stored by an autosave, which the test names and
+  checks one step earlier), or the stray not visible to `level.getEntities` after `updateChunkStatus(ENTITY_TICKING)`; none was
+  found in the code and none was seen, and the eight passing runs on record (`target/m11*-mowziesmobs*.log` of the mz11 worktree) list the
+  stray. No log of the failing run was kept. Nothing was changed.

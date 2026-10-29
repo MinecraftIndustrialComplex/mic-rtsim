@@ -31,6 +31,13 @@ use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 const MILL: DistrictId = DistrictId(1);
 /// Java's dimension id for the overworld: the first entry of the harness's dictionary.
 const DIM: u32 = 1;
+/// The wall clock a wait may take before it counts as a hang: a worker thread that never answers,
+/// a loop nothing ends. A wide bound on purpose (MZB-1100): these tests run twenty-five at a time
+/// on a machine under load 30 to 65, a test of 3 to 4 s alone took more than the 60 s the rig's
+/// `run` allowed, and a correct test failed. Loops that tick the world end by the world's clock
+/// (their `limit`), which is the bound of a test that does not finish; this one only catches what
+/// no tick or step ever reaches, and no correct run comes near it.
+const HANG: Duration = Duration::from_secs(300);
 
 fn day(d: f64) -> Tick {
     Tick((d * TICKS_PER_DAY as f64) as u64)
@@ -165,7 +172,7 @@ fn bars(j: &Java, ids: &Ids) -> i64 {
 /// so the crash tests' worlds, journals and replays moved with the load. The pages are durable
 /// when the engine has confirmed the save, on the bridge's WORLD_SAVED for it (the journal's file
 /// holds `through`, P29); it goes in the first hand-over, ahead of the save it confirms, which
-/// the engine remembers (U-h2). Panics after 60 s of wall clock instead of spinning for ever: a
+/// the engine remembers (U-h2). Panics after `HANG` of wall clock instead of spinning for ever: a
 /// hung test binary holds the shared cargo lock.
 fn mc_tick_until_durable(j: &mut Java, through: u64) {
     lockstep_until_saved(j, through, true);
@@ -181,7 +188,7 @@ fn lockstep_until_saved(j: &mut Java, through: u64, confirmed: bool) {
         j.written_through = Some(through);
         j.world_saved(through);
     }
-    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    let deadline = std::time::Instant::now() + HANG;
     loop {
         j.mc_tick();
         if j.e.stats.applied_through.load(Acquire) >= through {
@@ -200,7 +207,7 @@ fn lockstep_until_saved(j: &mut Java, through: u64, confirmed: bool) {
 /// by ticking (`Rig::run`) runs as many world ticks as the IO lane takes, so a world save that
 /// follows lands at a tick the load decides (MZB-940).
 fn wait_for_pages(j: &Java, through: u64, confirmed: bool) {
-    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    let deadline = std::time::Instant::now() + HANG;
     let at = |j: &Java| {
         if confirmed {
             j.e.durable_obs_seq()
@@ -1398,7 +1405,7 @@ fn industry_save_tries(j: &mut Java, tries: u32) -> (u64, u64, u64) {
         let failed = j.e.stats_array()[15];
         j.e.order(vec![Order::SaveAtNextStep]).unwrap();
         j.mc_tick();
-        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        let deadline = std::time::Instant::now() + HANG;
         loop {
             if j.e.stats.saves_done.load(Acquire) != done {
                 break 'attempt;
@@ -1535,7 +1542,7 @@ fn a_failed_industry_save_is_written_again_by_the_next() {
     j.e.inject_store_fault(Some(Fault::TornLog));
     j.e.order(vec![Order::SaveAtNextStep]).unwrap();
     j.mc_tick();
-    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    let deadline = std::time::Instant::now() + HANG;
     while j.e.stats_array()[15] == failures {
         assert!(
             std::time::Instant::now() < deadline,
@@ -3458,9 +3465,9 @@ fn a_station_exchange_derived_again_after_a_crash_that_lost_its_result_is_droppe
 
 /// Ticks the world, one tick each 2 ms of wall clock, until `done`: a save on the IO lane lands
 /// without the world running on far past it (the raid decided again after the crash needs train 1
-/// still under way). Returns the ticks taken; panics after 20 s.
+/// still under way). Returns the ticks taken; panics after `HANG`.
 fn mc_tick_slowly_until(j: &mut Java, what: &str, mut done: impl FnMut(&Java) -> bool) -> u64 {
-    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    let deadline = std::time::Instant::now() + HANG;
     let mut ticks = 0;
     while !done(j) {
         assert!(
@@ -4542,7 +4549,7 @@ mod ack_never_resends {
             let gt = j.game_time;
             assert!(j.tick(), "a lockstep tick always submits");
             j.game_time = gt;
-            let deadline = Instant::now() + Duration::from_secs(20);
+            let deadline = Instant::now() + HANG;
             while j.e.stats_array()[1] < j.submitted {
                 assert!(
                     Instant::now() < deadline,
@@ -4584,11 +4591,12 @@ mod ack_never_resends {
             }
         }
 
-        /// Ticks until `done`; fails past world time `limit` or 60 s of wall clock.
+        /// Ticks until `done`; fails past world time `limit` (the bound of a test that does not finish)
+        /// or `HANG` of wall clock (a hang: no correct run comes near it, loaded or not).
         fn run(&mut self, what: &str, limit: Tick, mut done: impl FnMut(&Rig) -> bool) {
-            let deadline = Instant::now() + Duration::from_secs(60);
+            let deadline = Instant::now() + HANG;
             while !done(self) {
-                assert!(Instant::now() < deadline, "{what}: 60 s of wall clock");
+                assert!(Instant::now() < deadline, "{what}: {HANG:?} of wall clock");
                 assert!(
                     self.j.mc().t < limit,
                     "{what}: not by {limit:?} (durable {}, next_obs {}, protocol error {:?})",
@@ -4626,14 +4634,14 @@ mod ack_never_resends {
             s
         }
 
-        /// Hand-overs (no world tick) until the pages through `through` are durable, within 60 s of
+        /// Hand-overs (no world tick) until the pages through `through` are durable, within `HANG` of
         /// wall clock: the commit and the confirm run on the IO lane, outside the lockstep.
         fn until_durable(&mut self, through: u64) {
-            let deadline = Instant::now() + Duration::from_secs(60);
+            let deadline = Instant::now() + HANG;
             while self.j.e.durable_obs_seq() < through {
                 assert!(
                     Instant::now() < deadline,
-                    "the pages through {through}: 60 s of wall clock (durable {}, protocol error {:?})",
+                    "the pages through {through}: {HANG:?} of wall clock (durable {}, protocol error {:?})",
                     self.j.e.durable_obs_seq(),
                     self.j.e.protocol_error()
                 );
@@ -4892,7 +4900,7 @@ mod ack_never_resends {
         let past = |r: &Rig| r.c.lives_in(0).filter(|l| l.seq > pages).count();
         r.run("ten answers past the pages", day(6.0), |r| past(r) >= 10);
         let w = r.autosave();
-        let deadline = Instant::now() + Duration::from_secs(60);
+        let deadline = Instant::now() + HANG;
         let unread_ack = loop {
             let (ack, applied) = r.step(|_, _, ack| ack < w.end, |_, _| {});
             if !applied {
@@ -5039,20 +5047,18 @@ mod ack_never_resends {
                 .copied()
                 .collect()
         };
-        // The pages stop while the train is under way with cargo, before the raid.
-        loop {
-            r.run("train 1 under way with cargo", day(8.0), |r| laden(&r.j));
-            let through = r.j.next_obs - 1;
-            r.j.e.request_save(through);
-            r.j.written_through = Some(through);
-            r.j.world_saved(through);
-            r.run("the pages", day(8.0), |r| {
-                r.j.e.durable_obs_seq() >= through
-            });
-            if laden(&r.j) {
-                break;
-            }
-        }
+        // The pages stop while the train is under way with cargo, before the raid. The wait for
+        // them does not tick (MZB-1100, MZB-940's family): the IO lane's latency, thousands of
+        // ticks on a loaded machine, would move the world, the train and the exchanges its
+        // arrivals decide before the raid, and the world's save after it, so the train would
+        // have to be found laden again after the wait.
+        r.run("train 1 under way with cargo", day(8.0), |r| laden(&r.j));
+        let through = r.j.next_obs - 1;
+        r.j.e.request_save(through);
+        r.j.written_through = Some(through);
+        r.j.world_saved(through);
+        r.until_durable(through);
+        assert!(laden(&r.j), "train 1 is under way with cargo at the pages");
         let through = r.j.e.durable_obs_seq();
         let raid = Threat {
             id: 0xA11,
@@ -5187,9 +5193,9 @@ mod ack_never_resends {
         // The pages stop past the first simulated exchanges; then the next exchange, X.
         let through = r.j.next_obs - 1;
         r.j.e.request_save(through);
-        r.run("the pages", day(8.0), |r| {
-            r.j.e.durable_obs_seq() >= through
-        });
+        // The wait does not tick (MZB-1100, MZB-940's family): the IO lane's latency would decide
+        // how many exchanges fall between the pages and X, in the window the restarts replay.
+        r.until_durable(through);
         let through = r.j.e.durable_obs_seq();
         let before = exchanges(&r).len();
         r.run("a station exchange is written", day(8.0), |r| {
@@ -5324,9 +5330,9 @@ mod ack_never_resends {
         };
         let through = r.j.next_obs - 1;
         r.j.e.request_save(through);
-        r.run("the pages", day(8.0), |r| {
-            r.j.e.durable_obs_seq() >= through
-        });
+        // The wait does not tick (MZB-1100, MZB-940's family): the IO lane's latency would decide
+        // how many exchanges fall between the pages and X, in the window the restarts replay.
+        r.until_durable(through);
         let before = exchanges(&r).len();
         r.run("a station exchange is written", day(8.0), |r| {
             exchanges(r).len() > before
@@ -5485,9 +5491,9 @@ mod ack_never_resends {
             Window::OffThenOn,
         );
         assert!(on_seq > s2.seq + GAP as u64, "the switch is behind the gap");
-        let deadline = Instant::now() + Duration::from_secs(60);
+        let deadline = Instant::now() + HANG;
         while r.j.sent_obs < s2.seq {
-            assert!(Instant::now() < deadline, "60 s of wall clock");
+            assert!(Instant::now() < deadline, "{HANG:?} of wall clock");
             hand_over_only(&mut r);
         }
         assert!(
@@ -5499,7 +5505,7 @@ mod ack_never_resends {
             "off, S2 waits for the switch"
         );
         while r.j.sent_obs < on_seq {
-            assert!(Instant::now() < deadline, "60 s of wall clock");
+            assert!(Instant::now() < deadline, "{HANG:?} of wall clock");
             hand_over_only(&mut r);
         }
         assert!(
@@ -5652,10 +5658,10 @@ mod ack_never_resends {
         let before = exchanges(&r).len();
         // Pages through the last record of every hand-over, until the step that writes X: its
         // pages are taken at that step's end, after its simulate drained X into the queue.
-        let deadline = Instant::now() + Duration::from_secs(60);
+        let deadline = Instant::now() + HANG;
         let mut through = 0;
         while exchanges(&r).len() == before {
-            assert!(Instant::now() < deadline, "60 s of wall clock");
+            assert!(Instant::now() < deadline, "{HANG:?} of wall clock");
             assert!(r.j.mc().t < day(8.0), "a station exchange by day 8");
             r.step(
                 |_, _, _| true,
@@ -5893,12 +5899,12 @@ mod ack_never_resends {
     ) -> (u64, u64, Tick) {
         r.switch_pick = Some(Box::new(move |j, _, a| pick(j, a)));
         r.switched = None;
-        let deadline = Instant::now() + Duration::from_secs(60);
+        let deadline = Instant::now() + HANG;
         let limit = Tick(r.cfg.days * TICKS_PER_DAY);
         while r.switched.is_none() {
             r.step(|_, _, _| true, |_, _| {});
             r.after_tick();
-            assert!(Instant::now() < deadline, "60 s of wall clock");
+            assert!(Instant::now() < deadline, "{HANG:?} of wall clock");
             assert!(r.j.mc().t < limit, "{what}: not by the line's end");
         }
         r.switched.expect("the switch fired")
@@ -6195,7 +6201,7 @@ mod ack_never_resends {
                 .op;
         let mut carried: Option<(u64, Vec<u8>)> = None;
         let mut s1 = None;
-        let deadline = Instant::now() + Duration::from_secs(60);
+        let deadline = Instant::now() + HANG;
         while carried.is_none() {
             r.step(
                 |_, _, _| true,
@@ -6449,7 +6455,7 @@ mod ack_never_resends {
     /// not applied yet, whose carriage holds at least two of that entry's good: (op, train,
     /// carriage, good, what the world would move).
     fn delivered_unload(r: &mut Rig) -> (u64, TrainId, u32, Good, i64) {
-        let deadline = Instant::now() + Duration::from_secs(60);
+        let deadline = Instant::now() + HANG;
         loop {
             let seen = r.j.ind_commands.len();
             r.tick();
@@ -6471,7 +6477,7 @@ mod ack_never_resends {
             if let Some(f) = found {
                 return f;
             }
-            assert!(Instant::now() < deadline, "60 s of wall clock");
+            assert!(Instant::now() < deadline, "{HANG:?} of wall clock");
             assert!(r.j.mc().t < day(9.0), "an unloading exchange by day 9");
         }
     }
@@ -6688,7 +6694,7 @@ mod ack_never_resends {
         let gt = j.game_time;
         assert!(j.tick(), "a lockstep tick always submits");
         j.game_time = gt;
-        let deadline = Instant::now() + Duration::from_secs(20);
+        let deadline = Instant::now() + HANG;
         while j.e.stats_array()[1] < j.submitted {
             assert!(
                 Instant::now() < deadline,
@@ -6757,9 +6763,9 @@ mod ack_never_resends {
         let mut r = Rig::new("ack-off-same", false);
         r.run_to(day(3.0));
         r.every = 0;
-        let deadline = Instant::now() + Duration::from_secs(60);
+        let deadline = Instant::now() + HANG;
         let (x, first) = loop {
-            assert!(Instant::now() < deadline, "60 s of wall clock");
+            assert!(Instant::now() < deadline, "{HANG:?} of wall clock");
             let (x, train, ci, g, m) = delivered_unload(&mut r);
             {
                 let mc = r.j.mc_mut();
@@ -6806,7 +6812,7 @@ mod ack_never_resends {
             }
         };
         let window = r.j.next_obs - first;
-        let until = Instant::now() + Duration::from_secs(20);
+        let until = Instant::now() + HANG;
         while r.j.e.durable_obs_seq() < first - 1 {
             assert!(
                 Instant::now() < until,
@@ -7025,10 +7031,10 @@ mod ack_never_resends {
         // X: the first station exchange decided from now (the world fails it). With the pages
         // before X's decision, a page save is asked for at every step's end until X is decided,
         // so the last is taken right before the step that decides it.
-        let deadline = Instant::now() + Duration::from_secs(60);
+        let deadline = Instant::now() + HANG;
         let mut asked = 0;
         let (x, decided_from) = loop {
-            assert!(Instant::now() < deadline, "60 s of wall clock");
+            assert!(Instant::now() < deadline, "{HANG:?} of wall clock");
             assert!(r.j.mc().t < day(8.0), "a station exchange by day 8");
             if before {
                 asked = r.j.next_obs - 1;
@@ -7051,7 +7057,7 @@ mod ack_never_resends {
         // X's decision, they are asked for right before the tick's records.
         let mut hit: Option<u64> = None;
         while hit.is_none() {
-            assert!(Instant::now() < deadline, "60 s of wall clock");
+            assert!(Instant::now() < deadline, "{HANG:?} of wall clock");
             assert!(r.j.mc().t < day(8.0), "X answered by day 8");
             let first = r.j.next_obs;
             // The switch is journaled ahead of the tick's records: it is the record at `first`.
@@ -7077,7 +7083,7 @@ mod ack_never_resends {
         }
         let first = hit.unwrap();
         let through = if before { asked } else { first - 1 };
-        let until = Instant::now() + Duration::from_secs(20);
+        let until = Instant::now() + HANG;
         while r.j.e.durable_obs_seq() < through {
             assert!(Instant::now() < until, "the pages asked for never landed");
             std::thread::sleep(Duration::from_millis(1));
@@ -7109,7 +7115,7 @@ mod ack_never_resends {
                 a.j.e.request_save(w.end);
                 a.j.written_through = Some(w.end);
                 a.j.world_saved(w.end);
-                let until = Instant::now() + Duration::from_secs(20);
+                let until = Instant::now() + HANG;
                 while a.j.e.durable_obs_seq() < w.end {
                     assert!(
                         Instant::now() < until,

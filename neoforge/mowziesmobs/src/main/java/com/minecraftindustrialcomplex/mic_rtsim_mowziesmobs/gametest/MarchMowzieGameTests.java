@@ -1195,16 +1195,28 @@ public final class MarchMowzieGameTests {
                 .thenSucceed();
     }
 
+    /** Blocks between the player and the raptor in the pack test: beyond the 128 of sight. */
+    private static final int PACK_PLAYER = 138;
+    /** Blocks the held follower stands ahead of the raptor, toward the player: under the jar's 20 (the raptor's tick sets a follower farther back). */
+    private static final int PACK_AHEAD = 16;
+
     /**
      * A member is seen when any of its extras is (MZB-745): a raptor's pack. A band of a warrior and a raptor with its four followers
-     * stands placed and held, the march says the warrior only (the raptor is one too many), and a plain player stands 140 blocks
-     * from the raptor, beyond its 128:
+     * stands placed and held, the march says the warrior only (the raptor is one too many), and a plain player stands
+     * {@value #PACK_PLAYER} blocks from the raptor, beyond its 128:
      * <ul>
-     * <li>one follower, held where it is put (no AI), is 120 blocks from the player and the other three, as the raptor, are beyond 128:
-     * for 60 ticks nothing is cut and the party stays due (the leader is out of sight, a follower is not);</li>
-     * <li>that follower moved to 148 blocks: on the next beat the raptor is cut, and with it the raptor's body and all four
+     * <li>one follower, held where it is put (no AI), is {@value #PACK_PLAYER} less {@value #PACK_AHEAD} blocks from the player and the
+     * other three, as the raptor, are beyond 128: for 60 ticks nothing is cut and the party stays due (the leader is out of sight, a
+     * follower is not);</li>
+     * <li>that follower moved back behind the raptor: on the next beat the raptor is cut, and with it the raptor's body and all four
      * followers are out of the world; the warrior stands.</li>
      * </ul>
+     *
+     * <p>The follower stands {@value #PACK_AHEAD} blocks toward the player, inside the 20 blocks the jar's raptor keeps its pack within:
+     * {@code EntityUmvuthanaRaptor.tick} sets every follower with no target that is farther than {@code 20.0f} (3D, the raptor on the
+     * ground) back to a point 3 blocks from itself, whatever the follower's AI. The test put it at exactly 20, so any step the raptor
+     * made away from it (the march's, a settling) carried it back, 140 blocks from the player, and the raptor was cut on the next beat
+     * with "the raptor was not cut while a follower was in sight" (MZB-1101).
      */
     @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "mowzie_march_sight_pack", skyAccess = true)
     public static void aRaptorWhoseFollowerAPlayerSeesIsNotCutAndIsOnceNoneIs(GameTestHelper helper) {
@@ -1260,13 +1272,17 @@ public final class MarchMowzieGameTests {
                     check("the raptor has its pack of 4 (" + pack.size() + ")", member[1].entity() instanceof EntityUmvuthanaRaptor && pack.size() == 4);
                     Mob leader = member[1].entity();
                     lead[0] = leader.position();
-                    // Three followers stand behind the leader, one stands 20 blocks toward the player; all held where they are put.
+                    // Three followers stand behind the leader, one stands PACK_AHEAD blocks toward the player (inside the 20 the jar's
+                    // raptor keeps its pack within: its tick sets a follower farther than that back beside it, AI or none); all held
+                    // where they are put.
                     for (int i = 0; i < 4; i++) {
                         Mob f = pack.get(i);
                         f.setNoAi(true);
-                        f.moveTo(lead[0].x, lead[0].y, lead[0].z + (i == 0 ? 20 : -6), f.getYRot(), f.getXRot());
+                        f.moveTo(lead[0].x, lead[0].y, lead[0].z + (i == 0 ? PACK_AHEAD : -6), f.getYRot(), f.getXRot());
                     }
-                    player[0] = MowzieKit.player(helper, lead[0].add(0, 1, 140), "mowzie-sight-pack");
+                    player[0] = MowzieKit.player(helper, lead[0].add(0, 1, PACK_PLAYER), "mowzie-sight-pack");
+                    check("the held follower is inside the jar's 20 blocks of its raptor, with room for the raptor to step ("
+                            + leader.distanceTo(pack.get(0)) + ")", leader.distanceTo(pack.get(0)) < 20f - 3f);
                     StringBuilder log = new StringBuilder(String.format("the raptor %.1f blocks from the player; ", reach(player[0], leader)));
                     check("the raptor is out of its sight (" + reach(player[0], leader) + " against " + ConflictBridge.sightRange(leader, level) + ")",
                             reach(player[0], leader) > ConflictBridge.sightRange(leader, level));
@@ -1296,7 +1312,8 @@ public final class MarchMowzieGameTests {
                             cut[0] == 0 && ConflictKit.trimmed() == n[0]);
                     check("the band stayed due the whole time (" + notDue[0] + " ticks not due)", notDue[0] == 0 && ConflictKit.party(agent[0]).trimDue());
                     double d = reach(player[0], pack.get(0));
-                    check("the follower stayed where it was put: " + d + " blocks from the player", !pack.get(0).isRemoved() && Math.abs(d - 120) < 6);
+                    check("the follower stayed where it was put: " + d + " blocks from the player, " + member[1].entity().distanceTo(pack.get(0))
+                            + " from its raptor", !pack.get(0).isRemoved() && Math.abs(d - (PACK_PLAYER - PACK_AHEAD)) < 3);
                     check("the raptor stands (" + member[1].alive() + ")", member[1].alive() && !member[1].entity().isRemoved());
                     watching[0] = false;
                 })
