@@ -655,6 +655,7 @@ impl FakeIaf {
                             epoch: m.epoch,
                             dimension: m.dimension,
                             entity,
+                            home: m.flags & boundary::MAT_HOME_BODY != 0,
                         }),
                     );
                     if self.breaths > 0 && m.flags & boundary::MAT_OIL != 0 {
@@ -709,6 +710,8 @@ impl FakeIaf {
                                 killer: self.player,
                                 dimension: m.dimension,
                                 pos: m.pos,
+                                entity,
+                                lair: 0,
                             }),
                         ),
                     }
@@ -731,6 +734,7 @@ impl FakeIaf {
                         epoch: a.epoch,
                         dimension: 0,
                         entity: a.entity,
+                        home: a.flags & boundary::ADOPT_HOME_BODY != 0,
                     }),
                 ),
                 Cmd::PlaceLair(p) => {
@@ -820,7 +824,7 @@ impl FakeIaf {
                     }
                 }
                 Cmd::NestSortie(_) => self.sorties += 1,
-                Cmd::Discard(_) => {}
+                Cmd::Discard(_) | Cmd::HandBack(_) => {}
             }
         }
     }

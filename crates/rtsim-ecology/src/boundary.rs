@@ -44,6 +44,14 @@ pub const NEST_CENSUS: u16 = 0x050D;
 pub const NEST_LOSS: u16 = 0x050E;
 /// An oil nest's heart (its spawner) was broken.
 pub const NEST_HEART: u16 = 0x050F;
+/// A lair came in (EQUILIBRIUM.md S5, EQC112): the home bodies and untagged dragons standing in
+/// its footprint, once, and again each game day while it stays in.
+pub const LAIR_CENSUS: u16 = 0x0510;
+/// A lair went out: its footprint is no longer all loaded (EQC112).
+pub const LAIR_OUT: u16 = 0x0511;
+/// A home body went more than the leash from its lair, or changed dimension, and is a puppet now
+/// (EQC109).
+pub const DRAGON_LEFT_HOME: u16 = 0x0512;
 
 pub const DRAGON_MATERIALIZE: u16 = 0x8500;
 pub const DRAGON_STEER: u16 = 0x8501;
@@ -61,6 +69,8 @@ pub const PLACE_NEST: u16 = 0x8507;
 pub const NEST_RENEW: u16 = 0x8508;
 /// An oil nest's worms go up under a watched district and fight there.
 pub const NEST_SORTIE: u16 = 0x8509;
+/// A puppet settled at its lair becomes a home body, in place (EQC110).
+pub const DRAGON_HAND_BACK: u16 = 0x850A;
 
 pub type Uuid = (u64, u64);
 
@@ -78,11 +88,44 @@ pub const MAT_HOSTILE: u32 = 8;
 /// The dragon carries an oil reserve (`Materialize::oil`): the plugin counts its breaths and
 /// cancels fire at zero (OILGATE.md §4.3, OG-4, OG-13). Without it the body breathes freely.
 pub const MAT_OIL: u32 = 16;
+/// The body is a lair's home body (EQC116, EQC122): the plugin gives it the home attachment
+/// instead of the agent tag, so vanilla saves it.
+pub const MAT_HOME_BODY: u32 = 32;
+
+/// DRAGON_ADOPT flags: the dragon has a home (its lair), and the entity is to be a home body,
+/// synced from the engine's age, hunger and health (EQC108, EQC129).
+pub const ADOPT_HAS_HOME: u32 = 1;
+pub const ADOPT_HOME_BODY: u32 = 2;
+
+/// DRAGON_MATERIALIZED aux: the body the answer names is a home body (a spawn, an adoption or a
+/// hand-back; EQC122).
+pub const MATERIALIZED_HOME: u32 = 1;
+
+/// LAIR_CENSUS flags: a player is within `watchBlocks` of the lair's home (EQC115, EQC116).
+pub const CENSUS_WATCHED: u32 = 1;
+/// The most bodies one LAIR_CENSUS lists.
+pub const CENSUS_BODIES_MAX: usize = 16;
+/// LAIR_CENSUS body flags: asleep, flying, and with a home position of its own.
+pub const BODY_SLEEPING: u32 = 1;
+pub const BODY_FLYING: u32 = 2;
+pub const BODY_HAS_HOME: u32 = 4;
+
+/// DRAGON_DISCARD reasons (1 and 2 are the untagged path's: the sim owns the population, the lair
+/// already has its dragon): the dragon whose body stands is away (EQC115), and a second body of
+/// one dragon (EQC112).
+pub const DISCARD_SIM_OWNS: u32 = 1;
+pub const DISCARD_LAIR_FULL: u32 = 2;
+pub const DISCARD_AWAY: u32 = 3;
+pub const DISCARD_SECOND_BODY: u32 = 4;
 
 /// DRAGON_DEMATERIALIZED reasons the engine reads (docs/boundary.md §2.3's codes): the answer to a
 /// DRAGON_DEPART for a dragon the plugin holds no body of. It carries the agent and the epoch and
 /// nothing else (docs/replay-gate.md §5.8, RP-16).
 pub const DEMAT_NOT_EMBODIED: u32 = 6;
+/// DRAGON_DEMATERIALIZED reason 8: a home body whose lair went out, or whose chunk unloaded, or
+/// that the session's stop left standing. The body stays in the world and vanilla saves it; the
+/// engine keeps its belief that it stands (EQC117).
+pub const DEMAT_HOME_SAVED: u32 = 8;
 
 /// OIL_CHUNKS sources.
 pub const OIL_SOURCE_DEEP_TIME: u32 = 1;
@@ -193,6 +236,8 @@ pub struct Materialized {
     pub epoch: u32,
     pub dimension: u32,
     pub entity: Uuid,
+    /// The body is a home body ([`MATERIALIZED_HOME`], aux bit 1).
+    pub home: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -237,6 +282,11 @@ pub struct Died {
     pub killer: Uuid,
     pub dimension: u32,
     pub pos: (f64, f64, f64),
+    /// The dead body's entity, and the lair of its home attachment (0: none). With epoch 0 they
+    /// name a home body the engine had not met (a death between a body's load and its lair's
+    /// census, EQC131) or one it wrote off as missing (a stray's death, EQC114).
+    pub entity: Uuid,
+    pub lair: u64,
 }
 
 /// LAIR_FOUND aux: the lair's chunk was generated before the plugin met it (loaded from disk).
@@ -287,6 +337,54 @@ pub struct Untagged {
     pub home: (i32, i32, i32),
     /// The lair whose box holds it (0: none).
     pub lair: u64,
+    pub pos: (f64, f64, f64),
+}
+
+/// One body in a LAIR_CENSUS: a dragon standing in the lair's footprint that is a home body of the
+/// lair or an untagged Ice and Fire dragon (EQC112, EQC121).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CensusBody {
+    pub entity: Uuid,
+    /// The agent of its home attachment (0: it carries none).
+    pub agent: u64,
+    pub species: Species,
+    /// `BODY_*`.
+    pub flags: u32,
+    pub age_ticks: i32,
+    pub hunger: i32,
+    pub health: f32,
+    pub gender: Gender,
+    pub variant: u32,
+    pub pos: (f64, f64, f64),
+}
+
+/// A lair came in: what stands in its footprint now (EQC112). `epoch` is the plugin's op id for
+/// this stay in: the lines the engine answers with name it, and a LAIR_OUT of the same epoch ends
+/// it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LairCensus {
+    pub lair: u64,
+    pub epoch: u64,
+    pub dimension: u32,
+    /// `CENSUS_*`.
+    pub flags: u32,
+    pub bodies: Vec<CensusBody>,
+}
+
+/// A lair went out (EQC112): its census epoch is over.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LairOut {
+    pub lair: u64,
+    pub epoch: u64,
+}
+
+/// A home body is a puppet now (EQC109): the leash, or another dimension.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DragonLeftHome {
+    pub agent: u64,
+    pub epoch: u32,
+    pub dimension: u32,
+    pub entity: Uuid,
     pub pos: (f64, f64, f64),
 }
 
@@ -412,6 +510,9 @@ pub enum Obs {
     NestCensus(NestCensus),
     NestLoss(NestLoss),
     NestHeart(NestHeart),
+    LairCensus(LairCensus),
+    LairOut(LairOut),
+    DragonLeftHome(DragonLeftHome),
 }
 
 impl Obs {
@@ -435,6 +536,9 @@ impl Obs {
             Obs::NestCensus(_) => NEST_CENSUS,
             Obs::NestLoss(_) => NEST_LOSS,
             Obs::NestHeart(_) => NEST_HEART,
+            Obs::LairCensus(_) => LAIR_CENSUS,
+            Obs::LairOut(_) => LAIR_OUT,
+            Obs::DragonLeftHome(_) => DRAGON_LEFT_HOME,
         }
     }
 
@@ -457,6 +561,7 @@ impl Obs {
             Obs::Died(d) => (d.agent, d.epoch),
             Obs::Ate(a) => (a.agent, a.epoch),
             Obs::Breaths(b) => (b.agent, b.epoch),
+            Obs::DragonLeftHome(l) => (l.agent, l.epoch),
             Obs::LairChest(_)
             | Obs::LairFound(_)
             | Obs::HoardRobbed(_)
@@ -466,7 +571,9 @@ impl Obs {
             | Obs::NestFound(_)
             | Obs::NestCensus(_)
             | Obs::NestLoss(_)
-            | Obs::NestHeart(_) => return None,
+            | Obs::NestHeart(_)
+            | Obs::LairCensus(_)
+            | Obs::LairOut(_) => return None,
         };
         crate::dragon::dragon_of(agent).map(|_| (agent, epoch))
     }
@@ -523,16 +630,30 @@ pub struct Adopt {
     pub entity: Uuid,
     pub agent: u64,
     pub epoch: u32,
+    /// `ADOPT_*`.
     pub flags: u32,
     pub home: (i32, i32, i32),
+    /// With [`ADOPT_HOME_BODY`], the engine's closed forms the body is synced to (EQC108): Ice
+    /// and Fire's `AgeTicks`, `Hunger` and absolute health. Zero otherwise.
+    pub age_ticks: i32,
+    pub hunger: i32,
+    pub health: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Discard {
     pub entity: Uuid,
-    /// 1 the sim owns the population (a natural or spawner dragon), 2 its lair already has its
-    /// dragon.
+    /// `DISCARD_*`: 1 the sim owns the population (a natural or spawner dragon), 2 its lair
+    /// already has its dragon, 3 its dragon is away, 4 a second body of one dragon.
     pub reason: u32,
+}
+
+/// A puppet settled at its lair, the lair in: the plugin swaps its agent tag for the home
+/// attachment, in place, and answers MATERIALIZED with [`MATERIALIZED_HOME`] (EQC110).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HandBack {
+    pub agent: u64,
+    pub epoch: u32,
 }
 
 /// Place a lair structure near an oil field (`/place structure`'s code path, every biome allowed):
@@ -612,6 +733,7 @@ pub enum Cmd {
     PlaceNest(PlaceNest),
     NestRenew(NestRenew),
     NestSortie(NestSortie),
+    HandBack(HandBack),
 }
 
 impl Cmd {
@@ -627,6 +749,7 @@ impl Cmd {
             Cmd::PlaceNest(_) => PLACE_NEST,
             Cmd::NestRenew(_) => NEST_RENEW,
             Cmd::NestSortie(_) => NEST_SORTIE,
+            Cmd::HandBack(_) => DRAGON_HAND_BACK,
         }
     }
 
@@ -643,6 +766,7 @@ impl Cmd {
             Cmd::PlaceNest(_) => "PLACE_NEST",
             Cmd::NestRenew(_) => "NEST_RENEW",
             Cmd::NestSortie(_) => "NEST_SORTIE",
+            Cmd::HandBack(_) => "DRAGON_HAND_BACK",
         }
     }
 
@@ -652,6 +776,7 @@ impl Cmd {
             Cmd::Steer(s) => Some(s.agent),
             Cmd::Depart(d) => Some(d.agent),
             Cmd::Adopt(a) => Some(a.agent),
+            Cmd::HandBack(h) => Some(h.agent),
             Cmd::Discard(_)
             | Cmd::PlaceLair(_)
             | Cmd::OilSurvey(_)
@@ -666,8 +791,8 @@ impl Cmd {
         match self {
             Cmd::Materialize(_) => 136,
             Cmd::Steer(_) | Cmd::Depart(_) => 56,
-            Cmd::Adopt(_) => 64,
-            Cmd::Discard(_) | Cmd::OilSurvey(_) => 32,
+            Cmd::Adopt(_) => 80,
+            Cmd::Discard(_) | Cmd::OilSurvey(_) | Cmd::HandBack(_) => 32,
             Cmd::PlaceLair(_) => 48,
             Cmd::PlaceNest(_) | Cmd::NestRenew(_) | Cmd::NestSortie(_) => 40,
         }
@@ -901,7 +1026,11 @@ pub fn encode_obs(seq: u64, game_time: i64, o: &Obs, dict: &SpeciesDict, buf: &m
             w.u32(32, m.epoch);
             w.u32(36, m.dimension);
             w.uuid(40, m.entity);
-            w.finish(DRAGON_MATERIALIZED, 0, 56);
+            w.finish(
+                DRAGON_MATERIALIZED,
+                if m.home { MATERIALIZED_HOME } else { 0 },
+                56,
+            );
         }
         Obs::SpawnRejected(r) => {
             w.u64(24, r.agent);
@@ -935,7 +1064,9 @@ pub fn encode_obs(seq: u64, game_time: i64, o: &Obs, dict: &SpeciesDict, buf: &m
             w.u32(36, d.dimension);
             w.uuid(40, d.killer);
             w.pos(56, d.pos);
-            w.finish(DRAGON_DIED, d.killer_kind as u32, 80);
+            w.uuid(80, d.entity);
+            w.u64(96, d.lair);
+            w.finish(DRAGON_DIED, d.killer_kind as u32, 104);
         }
         Obs::LairFound(l) => {
             w.u64(24, l.lair);
@@ -1032,6 +1163,41 @@ pub fn encode_obs(seq: u64, game_time: i64, o: &Obs, dict: &SpeciesDict, buf: &m
             w.uuid(32, n.player);
             w.finish(NEST_HEART, 0, 48);
         }
+        Obs::LairCensus(c) => {
+            let n = c.bodies.len().min(CENSUS_BODIES_MAX);
+            w.u64(24, c.lair);
+            w.u64(32, c.epoch);
+            w.u32(40, c.dimension);
+            w.u32(44, c.flags);
+            w.u32(48, n as u32);
+            for (k, b) in c.bodies.iter().take(n).enumerate() {
+                let at = 56 + 80 * k;
+                w.uuid(at, b.entity);
+                w.u64(at + 16, b.agent);
+                w.u32(at + 24, dict.body_of(b.species));
+                w.u32(at + 28, b.flags);
+                w.i32(at + 32, b.age_ticks);
+                w.i32(at + 36, b.hunger);
+                w.f32(at + 40, b.health);
+                w.u32(at + 44, gender_u32(b.gender));
+                w.u32(at + 48, b.variant);
+                w.pos(at + 56, b.pos);
+            }
+            w.finish(LAIR_CENSUS, n as u32, 56 + 80 * n);
+        }
+        Obs::LairOut(o) => {
+            w.u64(24, o.lair);
+            w.u64(32, o.epoch);
+            w.finish(LAIR_OUT, 0, 40);
+        }
+        Obs::DragonLeftHome(l) => {
+            w.u64(24, l.agent);
+            w.u32(32, l.epoch);
+            w.u32(36, l.dimension);
+            w.uuid(40, l.entity);
+            w.pos(56, l.pos);
+            w.finish(DRAGON_LEFT_HOME, 0, 80);
+        }
     }
 }
 
@@ -1077,6 +1243,7 @@ pub fn decode_obs(b: &[u8], dict: &SpeciesDict) -> Result<(usize, u64, i64, Obs)
             epoch: r.u32(32)?,
             dimension: r.u32(36)?,
             entity: r.uuid(40)?,
+            home: aux & MATERIALIZED_HOME != 0,
         }),
         DRAGON_SPAWN_REJECTED => Obs::SpawnRejected(SpawnRejected {
             agent: r.u64(24)?,
@@ -1111,6 +1278,8 @@ pub fn decode_obs(b: &[u8], dict: &SpeciesDict) -> Result<(usize, u64, i64, Obs)
             killer: r.uuid(40)?,
             dimension: r.u32(36)?,
             pos: r.pos(56)?,
+            entity: r.uuid(80)?,
+            lair: r.u64(96)?,
         }),
         LAIR_FOUND => {
             let (species, kind) = dict
@@ -1231,6 +1400,48 @@ pub fn decode_obs(b: &[u8], dict: &SpeciesDict) -> Result<(usize, u64, i64, Obs)
             nest: r.u64(24)?,
             player: r.uuid(32)?,
         }),
+        LAIR_CENSUS => {
+            let n = aux as usize;
+            if n > CENSUS_BODIES_MAX || r.u32(48)? as usize != n || 56 + 80 * n > size {
+                return Err(CodecError::BadSize);
+            }
+            let mut bodies = Vec::with_capacity(n);
+            for k in 0..n {
+                let at = 56 + 80 * k;
+                bodies.push(CensusBody {
+                    entity: r.uuid(at)?,
+                    agent: r.u64(at + 16)?,
+                    species: dict
+                        .species_of(r.u32(at + 24)?)
+                        .ok_or(CodecError::BadValue("species"))?,
+                    flags: r.u32(at + 28)?,
+                    age_ticks: r.i32(at + 32)?,
+                    hunger: r.i32(at + 36)?,
+                    health: r.f32(at + 40)?,
+                    gender: gender_of(r.u32(at + 44)?)?,
+                    variant: r.u32(at + 48)?,
+                    pos: r.pos(at + 56)?,
+                });
+            }
+            Obs::LairCensus(LairCensus {
+                lair: r.u64(24)?,
+                epoch: r.u64(32)?,
+                dimension: r.u32(40)?,
+                flags: r.u32(44)?,
+                bodies,
+            })
+        }
+        LAIR_OUT => Obs::LairOut(LairOut {
+            lair: r.u64(24)?,
+            epoch: r.u64(32)?,
+        }),
+        DRAGON_LEFT_HOME => Obs::DragonLeftHome(DragonLeftHome {
+            agent: r.u64(24)?,
+            epoch: r.u32(32)?,
+            dimension: r.u32(36)?,
+            entity: r.uuid(40)?,
+            pos: r.pos(56)?,
+        }),
         k => return Err(CodecError::Unknown(k)),
     };
     Ok((size, seq, time, o))
@@ -1278,7 +1489,10 @@ pub fn encode_cmd(seq: u64, c: &Cmd, dict: &SpeciesDict, buf: &mut Vec<u8>) {
             w.u32(40, a.epoch);
             w.u32(44, a.flags);
             w.ipos(48, a.home);
-            w.finish(DRAGON_ADOPT, 0, 64);
+            w.i32(64, a.age_ticks);
+            w.i32(68, a.hunger);
+            w.f32(72, a.health);
+            w.finish(DRAGON_ADOPT, 0, 80);
         }
         Cmd::Discard(d) => {
             w.uuid(16, d.entity);
@@ -1322,6 +1536,11 @@ pub fn encode_cmd(seq: u64, c: &Cmd, dict: &SpeciesDict, buf: &mut Vec<u8>) {
             w.i32(32, n.z);
             w.u32(36, n.timeout_ticks);
             w.finish(NEST_SORTIE, n.count, 40);
+        }
+        Cmd::HandBack(h) => {
+            w.u64(16, h.agent);
+            w.u32(24, h.epoch);
+            w.finish(DRAGON_HAND_BACK, 0, 32);
         }
     }
 }
@@ -1376,6 +1595,9 @@ pub fn decode_cmd(b: &[u8], dict: &SpeciesDict) -> Result<(usize, u64, Cmd), Cod
             epoch: r.u32(40)?,
             flags: r.u32(44)?,
             home: r.ipos(48)?,
+            age_ticks: r.i32(64)?,
+            hunger: r.i32(68)?,
+            health: r.f32(72)?,
         }),
         DRAGON_DISCARD => Cmd::Discard(Discard {
             entity: r.uuid(16)?,
@@ -1423,6 +1645,10 @@ pub fn decode_cmd(b: &[u8], dict: &SpeciesDict) -> Result<(usize, u64, Cmd), Cod
             z: r.i32(32)?,
             timeout_ticks: r.u32(36)?,
         }),
+        DRAGON_HAND_BACK => Cmd::HandBack(HandBack {
+            agent: r.u64(16)?,
+            epoch: r.u32(24)?,
+        }),
         k => return Err(CodecError::Unknown(k)),
     };
     Ok((size, seq, c))
@@ -1452,6 +1678,14 @@ mod tests {
                 epoch: 1,
                 dimension: 1,
                 entity: (u64::MAX, 5),
+                home: false,
+            }),
+            Obs::Materialized(Materialized {
+                agent: 9,
+                epoch: 2,
+                dimension: 1,
+                entity: (u64::MAX, 6),
+                home: true,
             }),
             Obs::SpawnRejected(SpawnRejected {
                 agent: 9,
@@ -1485,6 +1719,39 @@ mod tests {
                 killer_kind: AttackerKind::Player,
                 killer: (1, 2),
                 dimension: 1,
+                pos: p,
+                entity: (31, 32),
+                lair: 1 << 40 | 99,
+            }),
+            Obs::LairCensus(LairCensus {
+                lair: 1 << 40 | 99,
+                epoch: 1 << 62 | 5,
+                dimension: 1,
+                flags: CENSUS_WATCHED,
+                bodies: (0..n.min(16))
+                    .map(|i| CensusBody {
+                        entity: (0xAB00 + u64::from(i), 7),
+                        agent: u64::from(i) * 9,
+                        species: Species::Lightning,
+                        flags: BODY_SLEEPING | BODY_HAS_HOME,
+                        age_ticks: 1_900_000 + i as i32,
+                        hunger: 61,
+                        health: 250.5,
+                        gender: Gender::Female,
+                        variant: 1,
+                        pos: (-14.5, 71.0, 912.25),
+                    })
+                    .collect(),
+            }),
+            Obs::LairOut(LairOut {
+                lair: 1 << 40 | 99,
+                epoch: 1 << 62 | 5,
+            }),
+            Obs::DragonLeftHome(DragonLeftHome {
+                agent: 9,
+                epoch: 3,
+                dimension: 1,
+                entity: (33, 34),
                 pos: p,
             }),
             Obs::LairFound(LairFound {
@@ -1625,7 +1892,7 @@ mod tests {
             Cmd::Materialize(Materialize {
                 agent: 9,
                 epoch: 4,
-                flags: MAT_CLAMP_ABOVE_SURFACE | MAT_HAS_HOME | MAT_HOSTILE,
+                flags: MAT_CLAMP_ABOVE_SURFACE | MAT_HAS_HOME | MAT_HOSTILE | MAT_HOME_BODY,
                 species: Species::Fire,
                 dimension: 1,
                 age_ticks: 2_000_000,
@@ -1656,9 +1923,13 @@ mod tests {
                 entity: (8, 9),
                 agent: 10,
                 epoch: 1,
-                flags: 1,
+                flags: ADOPT_HAS_HOME | ADOPT_HOME_BODY,
                 home: (1, 64, -1),
+                age_ticks: 1_850_000,
+                hunger: 37,
+                health: 288.5,
             }),
+            Cmd::HandBack(HandBack { agent: 10, epoch: 6 }),
             Cmd::Discard(Discard {
                 entity: (8, 9),
                 reason: 1,
@@ -1801,7 +2072,10 @@ mod tests {
         #[test]
         fn hoard_records_of_any_length_round_trip(n in 0u32..200) {
             let dict = SpeciesDict::default();
-            let o = all_obs(n).remove(7);
+            let o = all_obs(n)
+                .into_iter()
+                .find(|o| matches!(o, Obs::HoardRobbed(_)))
+                .unwrap();
             let mut buf = Vec::new();
             encode_obs(1, 2, &o, &dict, &mut buf);
             prop_assert!(buf.len() <= 65_528);
@@ -1812,7 +2086,10 @@ mod tests {
         #[test]
         fn oil_chunk_records_of_any_length_round_trip(n in 0u32..=OIL_CHUNKS_MAX as u32) {
             let dict = SpeciesDict::default();
-            let o = all_obs(n).remove(10);
+            let o = all_obs(n)
+                .into_iter()
+                .find(|o| matches!(o, Obs::OilChunks(_)))
+                .unwrap();
             let mut buf = Vec::new();
             encode_obs(1, 2, &o, &dict, &mut buf);
             prop_assert!(buf.len() <= 65_528);

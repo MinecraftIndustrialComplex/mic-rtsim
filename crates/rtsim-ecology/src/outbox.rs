@@ -77,6 +77,9 @@ pub(crate) fn gate(c: &Cmd) -> Gate {
         // A watched district's fight, re-derived: the raid's effect on the district is the
         // engine's and stands (§7.2, RP-15).
         Cmd::NestSortie(_) => verdicts(Q::Drop, R::Drop),
+        // A body's tag swap, ordered from a puppet's STATE: the puppet is a body of the session
+        // that ended, and the engine orders again after the replay (EQC123).
+        Cmd::HandBack(_) => verdicts(Q::Drop, R::Drop),
     }
 }
 
@@ -221,7 +224,11 @@ mod tests {
                 epoch: 1,
                 flags: 0,
                 home: (0, 0, 0),
+                age_ticks: 0,
+                hunger: 0,
+                health: 0.0,
             }),
+            Cmd::HandBack(boundary::HandBack { agent: 1, epoch: 1 }),
             Cmd::Discard(boundary::Discard {
                 entity: (1, 2),
                 reason: 1,
@@ -267,7 +274,7 @@ mod tests {
     }
 
     /// docs/replay-gate.md §4.5, one row per kind: (kind, queued, while replaying).
-    const TABLE: [(u16, Queued, Replaying); 10] = [
+    const TABLE: [(u16, Queued, Replaying); 11] = [
         (boundary::DRAGON_MATERIALIZE, Queued::Drop, Replaying::Never),
         (boundary::DRAGON_STEER, Queued::Drop, Replaying::Drop),
         (boundary::DRAGON_DEPART, Queued::Drop, Replaying::Drop),
@@ -278,6 +285,7 @@ mod tests {
         (boundary::PLACE_NEST, Queued::Keep, Replaying::Send),
         (boundary::NEST_RENEW, Queued::Keep, Replaying::Send),
         (boundary::NEST_SORTIE, Queued::Drop, Replaying::Drop),
+        (boundary::DRAGON_HAND_BACK, Queued::Drop, Replaying::Drop),
     ];
 
     #[test]
@@ -332,7 +340,7 @@ mod tests {
             ]
         );
         let want = GateCounts {
-            dropped: 5,
+            dropped: 6,
             ..GateCounts::default()
         };
         assert_eq!(o.counts(), want, "the drops are counted");
