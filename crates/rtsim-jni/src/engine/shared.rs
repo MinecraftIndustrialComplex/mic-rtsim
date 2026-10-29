@@ -16,7 +16,7 @@
 //!   interleaved in time order ([`run_to`]), so none ever meets a world that another already ran
 //!   past its time. A phase 1 input or a module's record runs them to its time first
 //!   ([`catch_up`]).
-//! - **One switch and one list of resets** (U-c's review, P2). MODULES sets every module's flag
+//! - **One switch and one list of resets** (U-c's review, P2). MODULE_SWITCH sets every module's flag
 //!   first and then runs the resets due ([`switch`]); the resets, and the records the modules
 //!   kept while switched off, run in one place in one order ([`resets`]).
 //!
@@ -40,7 +40,7 @@ use rtsim_settle::Pos;
 use rtsim_world::interest::Viewer;
 
 use super::paging::KeptRec;
-use super::{State, conflict, dragons, herds, log_info, phase1, ships};
+use super::{State, conflict, dragons, herds, industry, log_info, phase1, ships};
 use crate::wire::{self, Rec, obs};
 
 /// A player not reported for this many game ticks has left (phase 1's own rule, V8's
@@ -301,6 +301,20 @@ pub(super) fn simulate(st: &mut State) {
 
 // ---- the switch and the resets --------------------------------------------------------------------
 
+/// Every module's flag as `State::mask` leaves it, with none of the work of a switch (no queue
+/// dropped, no reset due): the pages' mask at an engine's start, or SESSION_START's when the pages
+/// hold none (docs/choices-journal-barrier.md U-e6). The replay then runs in that mask, and each
+/// MODULE_SWITCH moves it ([`switch`]).
+pub(super) fn start_flags(st: &mut State) {
+    let mask = st.mask;
+    industry::start_flag(st, mask);
+    phase1::start_flag(st, mask);
+    st.dragons.enabled = mask & dragons::MODULE_ECOLOGY != 0;
+    st.ships.enabled = mask & ships::MODULE_SHIPS != 0;
+    st.herds.enabled = mask & herds::MODULE_HERDS != 0;
+    st.conflict.enabled = mask & conflict::MODULE_CONFLICT != 0;
+}
+
 /// A module that shares the phase 1 world, as the resets name it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum Module {
@@ -318,7 +332,7 @@ const RESETS: [Module; 4] = [
     Module::Conflict,
 ];
 
-/// MODULES (U10), after the world, the industry engine and phase 1 heard it: the four modules'
+/// MODULE_SWITCH (U10, U-e), after the industry engine and phase 1 heard it: the four modules'
 /// switches, in two passes. First every module's flag, with a switch-off's own work (its queue
 /// dropped, its pages due once more, the ships' closures lifted) and a switch-on's reset made
 /// due; then the resets due, in one place ([`resets`], where phase 1's switch-on drain, due once
@@ -326,7 +340,7 @@ const RESETS: [Module; 4] = [
 /// to the herds and the conflict if they came on ([`introduce_herds`], [`introduce_conflict`]).
 ///
 /// One pass ran each module's reset as its switch came (U-c's review, P2): the dragons and the
-/// herds share ECOLOGY's bit and MODULES reached the dragons first, so the dragons' reset applied
+/// herds share ECOLOGY's bit and MODULE_SWITCH reached the dragons first, so the dragons' reset applied
 /// the records they kept while off with the herds still switched off. Each kept record's
 /// catch-up ran the dragons through the window with no prey (no hunt), and the herds' reset then
 /// ran it with no predator.
@@ -358,7 +372,7 @@ pub(super) fn switch(st: &mut State, mask: u32) {
 ///    order `Replay` admitted them (their observation numbers: a copy's is its REASSERT's), each
 ///    after its own catch-up and at its own tick ([`floor`]), each module's own in the order it
 ///    heard them ([`apply_kept`]);
-/// 3. phase 1's switch-on drain, if phase 1 came on in this MODULES record
+/// 3. phase 1's switch-on drain, if phase 1 came on in this MODULE_SWITCH record
 ///    ([`phase1::drain_when_due`], RP-300): the inputs it kept while off that the viewers' kept
 ///    records did not already draw in. Each of those records' catch-up ran phase 1's inputs up
 ///    to its own tick ([`run_to`]), so a viewer's record meets the world at its own tick, with
@@ -382,7 +396,7 @@ pub(super) fn resets(st: &mut State) {
 /// records make a module's reset due at its switch-on and run in [`resets`] there, or at the
 /// first record after a session start's DICTs. No phase 1 drain either: a reset of this kind runs
 /// inside the application of a module's record, often one of the kept ones, and phase 1's drain
-/// belongs to the MODULES record that made it due, after all of them.
+/// belongs to the MODULE_SWITCH record that made it due, after all of them.
 pub(super) fn reset_these(st: &mut State, these: &[Module]) {
     let begun = begin_these(st, these);
     finish(st, &begun, false);

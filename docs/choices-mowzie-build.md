@@ -5521,17 +5521,112 @@ RP-150 to RP-153 the replay records.
     beyond. Test only: the passes turn `ICE_ENDS` (24) from the track's ends, 16 for the lookahead, 2 for a tick's travel
     and slack. Passed in m8-r7-dbg2 (hits 4/4, 3/4, 1/4, 0/4 at 0.5, 1.0, 1.4 and 2.0, a rate, no gate).
   - **MZB-939** (`aRestoredBufferWhoseChunkOutlivedTheTracksTakesAPackageOnce`, "one package in the buffer, primed, the
-    op in its ring": not found, not fixed). Nothing of M8's or of the Mowzie plugin is on its path (PortRing,
-    WritePackages, TrainRing and the station mixins are main's, unchanged by M8). It failed in both `-PwithMowzie` rounds
-    at the same batch order (r6; r7 at ed1d23b1, "packages 0, primed false, the op in the ring false, answers [1]": the
-    write was answered APPLIED, and the port the test reads, the one it put in its station, got nothing), passed in the
-    same head's `-Psec1fx` round (257 of 257), where the batch runs one place later, and passed in r8 (261 of 262) and in r9 at the final head (262 of 262). So
-    the write went to some other port: `WritePackages.port` takes the first port at the postbox's position in any
-    graph's station, and the postbox's chunk is the station's plus 7300 chunks, a position another test's station
-    can reach (the GameTest grid's cells are placed by the batch order, which `-PwithMowzie` shifts by one). Not
-    shown, because the diagnostic that would show it (`portsAt`: every station's port at the position, named MINE or
-    OTHER, with its buffer, `primed` and ring) came after the failing runs and the test passed with it. It is in the
-    check's message now, with the buffer's packages, `primed`, the ring and the answers heard.
+    op in its ring"; test only, found and fixed). Not a wrong-port write and not another test's station: the failing
+    message of the round with the extended diagnostic lists one station with the port at the postbox, at (-10361743, -59,
+    13842531), which is exactly the test's own station position (the test's origin plus 16, the floor, plus 29), marked
+    OTHER, with `packages 1, primed true, op in ring true` (the write went where it should), and "the test's station is one
+    of them: false". The postbox lies 7300 chunks (116,800 blocks) from the station in x and z, by the test's own
+    arithmetic, so the listed postbox position is the test's frame, not a neighbour's. So the station object the test kept
+    from its first look is no longer on any graph, and the station on the graph at the same block is a new one. Create makes
+    a station's edge point anew when the track beside it is propagated again: `TrackBlock.tick` (one scheduled tick for each
+    block of the 30-block track) calls `TrackPropagator.onRailAdded`, which removes the graph nodes next to the block and with
+    them the edge points on their edges (`TrackGraph.removeNode`, `invalidate`), and the station's block entity makes a new
+    `GlobalStation` from the old one's migration data (ports and rings included, `GlobalStation.read` and the ring mixin
+    read them). A block's tick waits for its chunk to tick with its entities loaded (`ServerLevel.isPositionTickingWithEntitiesLoaded`),
+    which on the unthrottled GameTest server is real time, and the track crosses a chunk border, so the station (joined
+    from its own chunk's ticks) can be on the graph before the other chunk's blocks have ticked. `-PwithMowzie` shifts the
+    load and the order of chunk work, which is why it showed in half of those rounds and not in `-Psec1fx` ones.
+    Reproduced deterministically by `aRestoredBufferTakesAPackageOnceThoughCreateMadeItsStationAnewBeforeTheWrite` (the same
+    test with `TrackPropagator.onRailAdded` called on the track under the station before the write): it failed with the
+    message above (one station, "OTHER", the test's own position) on the test's old code. Fix, in `PortRingGameTests`:
+    every test waits (`settled`, paced) for the station on the graph and for no scheduled tick left on its track, and looks
+    the station up in its block entity at each use (`Station.get`). Production is unaffected: the new station keeps the
+    port, its package and its ring, and `WritePackages.port` finds it on the graph. Run: the debug copy of the class
+    (`mic_rtsim_create_dbg`, the old and the new text side by side, stub engine) failed the variant on the old text and
+    passed everything on the new; `create -PwithMowzie` at the fix passed 268 of 268 (a round is one draw of a roughly
+    even coin, so it shows the fix does not break the class, not that the flake is gone; the wait records, per test,
+    the track ticks still waiting when the station first joined and whether it was made anew since: 0 and false in all 13
+    of that round).
+  - **MZB-950** (the heap of the full `create -PwithMowzie` run: out of memory at 4G and at 6G in the light engine
+    worker, "passes only at 10G"; not a leak, not the U-g, J6, U-h or M8 code). Measured at `-Xmx10G`
+    (jcmd class histograms after a full collection; `target/heap-NN.txt`, `target/dense/`): through the first 207
+    tests the live heap sat between 0.3 and 1.0 GB (1.0 GB at 180 tests with 5,600 chunks waiting in the chunk
+    IOWorker, 0.56 GB at 207), no class of ours growing, no `Journal$Entry` (17), `ChunkWriteBarrier$Note` (1) or
+    district structure above a few hundred objects; then, in `theIceBallHitRatesAgainstAMovingTrain`, the server thread
+    sat in one tick for 15 minutes with the live heap going 0.56, 5.4, 6.6, 7.9, 8.8, 9.8, 10.0 GB (round 1, base
+    -6,724,212 / 6,945,462) and 2.0, 4.3, 7.3 GB (round 2, base -3,797,620 / 4,715,190): 33,700 loaded chunks and
+    402,000 chunk holders after 5 minutes, 37,700 after 8 (`LevelChunkSection` 177,000 to 10.5 million, `PalettedContainer`
+    21 million), the line of chunks growing along one axis. Every thread dump of the server thread: `EntityFrostmaw.tick` to
+    `MMPathNavigateGround.followThePath`, `tryShortcut`, `sweep` (jar line 139, the `getBlockState` or `getPathType` of a
+    cell), the chunk loaded by `Level.getBlockState` on the server thread. A temporary mixin that named any path node more
+    than 300 blocks from its mob logged nothing: the path was an ordinary one. The cause is the jar's (Mowzie's Mobs
+    1.8.2): `sweep` steps a grid in `float`, and the world coordinates of the mob's box are the floats. Above 2^22 blocks a
+    float is a multiple of 0.5 (2^21: 0.25); the trailing edge, advanced by a sum of about 0.28 a step, rounds up to 0.5
+    every step and overtakes the leading edge by the box's width after some 15 to 30 cells, and
+    `for (int z = z0; z != z1; z += step)` then starts beyond its end and counts through the whole int range, loading a line of
+    chunks out to the world border and past it. A copy of the algorithm in plain Java (400,000 random sweeps of 10 to 80
+    blocks, boxes 3 to 5 wide, per size) runs away in 0 sweeps at 100,000 to 800,000 blocks from the origin, 2 at 1.0
+    million, 3,543 (0.9%) at 2.0 million, 4,259 at 3.0 million, 17,131 (4.3%) at 4.5 million, 16,540 at 6.5 million; for
+    boxes 0.6 to 2 wide 0 up to 340,000 blocks, 310 at 520,000 and 7,695 at 1.0 million. The GameTests' far bases
+    (`ConflictKit.farBase`: x from -3 to -7.1 million, z from 3 to 7.1 million) are all in the range, and a Frostmaw that
+    follows a path for 16,000 ticks at 40 sweeps a tick should not miss. Why the ice-rates test passed earlier at
+    -6,085,297 (MZB-938) is not known: the sweeps it met did not hit the band, or its Frostmaw followed no long path. **Test fix:** `RailFrostmawGameTests` builds at `ConflictKit.nearBase()` (`PathSafeBase`: x -100,000
+    to -231,000, z 100,000 to 231,000, inside 2^18 blocks, where the copy never ran away), and `releaseFarChunks` also
+    releases that area. `PathSafeBaseTest` keeps every slot, the strip built from it and the sweep beyond it inside the
+    limit. **Not changed here, for the lead (done in MZB-951):** the jar's bug is a product one too (any Mowzie mob that follows a path
+    more than about 500,000 blocks from the origin can stall the server for minutes and load millions of chunks); a
+    mixin in this plugin that replaces `sweep` with a `double` one measured from the box removes it (MZB-951, PATCHES.md
+    row 97), and with it the same applies to `MowzieKit`'s tests (`farBase`), which have not been seen to run away. Away from
+    the ice test the run's live heap stayed under 1.4 GB (the chunk IOWorker's backlog included).
+    **Heap default:** `create/build.gradle` is back to `-Xmx4G` for every run (the 6G for `-PwithMowzie`, set on
+    2026-10-27 on the reading that the merges outgrew 4G, is gone); the fix's 4G round passed 267 of 267.
+  - **MZB-951** (the fix of MZB-950: a mixin that makes the jar's path sweep exact far from the origin; PATCHES.md row 97;
+    Ben approved it as a slice on `diag/gametest-heap`). **What:** `MMPathNavigateGroundMixin` is an `@Inject` at the head of
+    the jar's private `MMPathNavigateGround.sweep(Vec3, Vec3, Vec3)Z` (1.8.2; `require 1`, `allow 1`, cancellable) that always
+    answers, from `PathSweep.sweep`: the jar's grid walk in `double`, in a pure class with no Minecraft type, so the unit tests
+    run the code that ships. `PathColumns` reads the world for one column as the jar's loop body does (every cell of the column
+    pathfindable by land; the block under its first cell not water, lava or open air; the cell at it a malus of 0 up to 8 and not
+    fire or damage). Read from the jar (vineflower on `MMPathNavigateGround.class`): `followThePath` calls `tryShortcut`,
+    `tryShortcut` calls `sweep` once per path node from the path's far end down to the next node, and `EntityFrostmaw`,
+    `EntityWroughtnaut` and `EntityGrottol` make this navigation. **The walk:** the jar's algorithm, two changes. (1) Every
+    number is a `double` measured from the integer cell the box's low corner stands in (the cells are added back when a column
+    is handed over), so the arithmetic is on numbers a few blocks wide wherever the mob is: the same box moved by whole blocks
+    reads the same cells, to the bit when its edges are exact in a double. (2) The three cell loops end by direction (`x < x1`
+    for a step of +1, `x > x1` for -1) in place of `!=`: a range that starts past its end is empty, and cannot count through the
+    int range; and a walk ends, blocked, after as many crossings as its vector has cell boundaries (their sum, 8 more), a bound the
+    maths does not need and a bad input might. A NaN or a number past 1.0E9 is blocked with nothing read (the mob then walks its
+    path node by node, as it does when a shortcut is refused). **Why not only bound the loops:** that stops the runaway and leaves
+    the answer wrong: at 4.5 million blocks the float's trailing edge is off by up to a block, so a slab of the walk can come out
+    empty or in the wrong cells, and a shortcut through a wall can be approved. **Why `@Inject` and not `@Overwrite`:** the same
+    effect, and another mod's mixin on the method does not conflict with it; the jar's body stays in the class and is never run.
+    **What stays the jar's:** the order of crossings, the slab at each, and the first crossing after the vector's end, which the
+    jar's `do ... while (t <= max_t)` reads before it stops (so cells up to two past the end are read: the bound the tests keep);
+    an edge on an integer is in the cell above it (`floor`: the jar's `1.0E-8` nudge is lost in a float beyond a quarter block
+    from the world origin, and the double walk does not apply it either; the one difference this leaves near the origin is a box
+    edge exactly on 0.0 (within 1.0E-8 of it), which the jar's float puts one cell lower). **Equivalence, measured**
+    (`PathSweepTest`, `./gradlew :mowziesmobs:test`, against `JarFloatSweep`, a copy of the jar's float walk with its loop body
+    behind an interface): within 16 blocks of the origin, 12,000 random sweeps (boxes 0.5 to 5 wide and 5.5 tall, vectors of 1
+    to 80 blocks), the 7,859 whose cells do not move under twelve nudges of a ten thousandth of a block to the box and the
+    vector read exactly the jar's cells and columns (0 differ; the rest are decided by the float's own rounding, about 1e-5 of a
+    block, and are not compared); 8,000 sweeps along one axis with every edge on a multiple of a half (the integer-edge cases),
+    all the same; at 1,000 blocks, where the float is off by a ten thousandth, 61 of 10,000 sweeps differ, the worst by 37 cells
+    in a thousand (cells the box's trailing edge just touches). **Far out:** 6,000 sweeps at 0.5 to 7.1 million blocks
+    read only cells within two of the box and its target, none ran away; the jar's copy ran away in 40 of the first 1,500;
+    MZB-950's known sweep (a box 3.5 by 4.5, a node 38.6 blocks off) counts past 400,000 cells in the copy and reads under
+    10,000 in the shipped walk; 4,000 sweeps near the origin and the same shifted by 3 to 7.1 million blocks read the same
+    cells and columns, bit for bit. **GameTests** (`PathSweepGameTests`, mowziesmobs, batches `mowzie_path_sweep_near` and
+    `_far`): the jar's real `sweep` called by reflection on a real Frostmaw's navigation over a stone floor, near the origin
+    and at x -3,797,664, z 4,715,168 (a place built round MZB-950's known sweep, `PathSweepRunaway`): clear, blocked by a
+    wall, blocked by a missing strip of floor, clear again, the known sweep, and 120 random ones. Chosen because a runaway
+    can be kept from running three ways, all in the test: it fails before the first call if the jar's class has no mixin
+    handler (a method named `...$sweep`, so a broken mixin cannot let the first far call count through the int range); every call
+    runs under a `PathSweep.Budget` (12,000 block reads, 5 s: the walk stops, blocked, when it is spent, and the test fails on
+    it); and the place is 6 by 6 chunks that no sweep leaves, with a check that no more than 300 chunks loaded. The budget is
+    a static the shipped walk reads once per column (null outside a test). **Uninstalling:** the mixin holds no state and writes
+    nothing; a world saved with it loads without it, and the jar's float walk, with its runaway, comes back. **Not done:**
+    `RailFrostmawGameTests` still build at `nearBase` (MZB-950's test fix stays; with this mixin they could use the far bases
+    again, which is for the lead); a Mowzie's Mobs newer than 1.8.2 that fixes its own sweep still gets this mixin (the
+    answers are the same); another mod's navigation with the same bug is not touched.
 
 ## M9 Umvuthana
 
@@ -9387,6 +9482,19 @@ M10's, and no earlier test is needed. Rust, tests and docs; no Java.
   - *Checks.* The RP-318 test passed 40 of 40 alone and 120 of 120 in six processes at once (it failed 12 of
     167 before); `cargo test -p rtsim-jni --test industry ack_never_resends -- --test-threads=1` passed twice (26
     passed, 1 ignored, 54 and 63 s); the ignored test fails 5 of 5 with the -224. rustfmt is clean on tests/industry.rs.
+  - *Closed by slice U-e (RP-290, docs/choices-journal-barrier.md U-e11).* The "open, for the build lead"
+    question had a fourth answer: the off replay was wrong, not lossy. The module switch is a journaled
+    record now, the pages hold the mask as of their sequence, and `Engine::start` sets every module's
+    flag from it before the replay, so a restart whose config is off replays the crashed session's
+    window with industry on, as that session lived it, and applies the config as the session's own switch
+    after the replay. The replay hears the window's train arrivals and decides each exchange again, so
+    the carriage result meets its pending exchange and the station side is booked. `#[ignore]` is gone
+    from `a_world_saved_after_three_later_exchanges_closes_its_books_with_industry_off`: it passes 3 of
+    3 alone and in the serial `ack_never_resends` group (`-- --test-threads=1`, 29 passed, 0 ignored),
+    and U-e's own `a_window_of_exchanges_after_the_pages_makes_the_same_world_restarted_off_or_on`
+    (engine books and pages equal between the restart off and the restart on) covers the shape on its
+    own helpers. Failing first, on main's engine, U-e's test printed the same -224 as this one
+    (crushed_raw_iron -96 restarted on, +128 restarted off).
 
 ## MZB-941 Seven of M10c's march GameTests fail for the tests' own reasons
 

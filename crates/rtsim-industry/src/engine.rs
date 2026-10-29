@@ -897,6 +897,13 @@ impl Engine {
         self.ops.end_step();
     }
 
+    /// [`Engine::advance_to`] within a step, for a caller that holds the step open (a module switch
+    /// freezing the engine at the tick of its record, in a replay that is one step): every
+    /// breakpoint and wake due by `to` fires, and the step goes on.
+    pub fn run_in_step(&mut self, to: Tick) {
+        self.run_to(to);
+    }
+
     /// [`Engine::advance_to`] within a step (a session start, a raid that lands while industry is
     /// held): the step goes on.
     fn run_to(&mut self, to: Tick) {

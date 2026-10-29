@@ -308,7 +308,7 @@ pub(super) fn replay_end(st: &mut State) {
 /// end (their reset runs as soon as the ships run, now once every module's flag is set,
 /// `shared::resets`, or when switched on; it keeps the bodies the pages hold, which the replayed
 /// records count against: docs/replay-gate.md §5.1).
-pub(super) fn session_start(st: &mut State, module_mask: u32) {
+pub(super) fn session_start(st: &mut State) {
     st.ships.queue.clear();
     st.ships.java_items.clear();
     // The ships a record of this session's replay can name are the ones the engine holds now,
@@ -316,18 +316,17 @@ pub(super) fn session_start(st: &mut State, module_mask: u32) {
     // the live run's.
     st.ships.engine.begin_session();
     // The first record of the engine's only session: what it holds is its pages as read (the
-    // world they live in was read with them), so a switch that is off from the start keeps
-    // exactly those (no save writes them), but for a closure the pages still hold (the ships ran
-    // when they were saved): it is lifted, as a switch-off lifts it (PC101), and the next save
-    // writes the pages once.
-    st.ships.enabled = module_mask & MODULE_SHIPS != 0;
+    // world they live in was read with them). A module that is off from the start (the pages'
+    // mask, or SESSION_START's when they hold none) keeps exactly those (no save writes them), but
+    // for a closure the pages still hold (the ships ran when they were saved): it is lifted, as a
+    // switch-off lifts it (PC101), and the next save writes the pages once.
     if !st.ships.enabled {
         lift_closures(st);
     }
     st.ships.reset_due = true;
 }
 
-/// MODULES (U10), the first pass (`shared::switch`): the switch, if it changed. Off: every port
+/// MODULE_SWITCH (U10), the first pass (`shared::switch`): the switch, if it changed. Off: every port
 /// closure is lifted (PC101); what the ships hold is then written once more as it is and kept;
 /// queued commands are dropped (all per session). On: the reset is due, and runs in the second
 /// pass with every module's (`shared::resets`). Returns whether the ships came on.
@@ -394,7 +393,7 @@ pub(super) fn begin_reset(st: &mut State) -> bool {
     true
 }
 
-/// A record that is not journaled: Java's DICT entries and SHIP_STATE. MODULES goes to
+/// A record that is not journaled: Java's DICT entries and SHIP_STATE. MODULE_SWITCH goes to
 /// `shared::switch`.
 pub(super) fn observe_state(st: &mut State, rec: &Rec<'_>) {
     let b = rec.bytes;

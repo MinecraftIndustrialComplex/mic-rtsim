@@ -77,7 +77,7 @@ pub mod obs {
     pub const SESSION_START: u16 = 0x0001;
     pub const DICT: u16 = 0x0002;
     pub const TICK: u16 = 0x0003;
-    pub const MODULES: u16 = 0x0004;
+    // 0x0004 was MODULES, a latest-wins copy of the module mask: retired by U-e (MODULE_SWITCH), never reused.
     pub const WORLD_SAVED: u16 = 0x0005;
     pub const PLAYER: u16 = 0x0010;
     pub const PUPPET_STATE: u16 = 0x0011;
@@ -95,6 +95,9 @@ pub mod obs {
     /// A copy of a record a chunk or entity carried (docs/boundary.md §3.2): the record whole,
     /// after the generation it was first journaled in.
     pub const REASSERT: u16 = 0x0131;
+    /// A module switch (docs/choices-journal-barrier.md U-e, RP-290): the mask the bridge's
+    /// modules are in from this record on, at its place among the journaled records.
+    pub const MODULE_SWITCH: u16 = 0x0132;
 
     pub const fn is_journaled(kind: u16) -> bool {
         kind >= 0x0100 && kind < 0x8000
@@ -110,6 +113,7 @@ pub mod obs {
         pub const LAST_APPLIED_CMD_SEQ: usize = 16;
         pub const JOURNAL_FIRST_OBS_SEQ: usize = 24;
         pub const WORLD_NEXT_OBS_SEQ: usize = 32;
+        /// The mask the session starts in: the engine's starting mask when its pages hold none.
         pub const MODULE_MASK: usize = 40;
         pub const SIZE: usize = 48;
     }
@@ -122,11 +126,6 @@ pub mod obs {
 
     pub mod tick {
         pub const GAME_TIME: usize = 8;
-        pub const SIZE: usize = 16;
-    }
-
-    pub mod modules {
-        pub const MASK: usize = 8;
         pub const SIZE: usize = 16;
     }
 
@@ -244,6 +243,12 @@ pub mod obs {
     /// JOURNAL_GEN: 24 u64 the session's nonce (random, never 0).
     pub mod journal_gen {
         pub const GEN: usize = 24;
+        pub const SIZE: usize = 32;
+    }
+
+    /// MODULE_SWITCH: 24 u32 the mask (bit = `Module.ordinal()`), 28 reserved.
+    pub mod module_switch {
+        pub const MASK: usize = 24;
         pub const SIZE: usize = 32;
     }
 

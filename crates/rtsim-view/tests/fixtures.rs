@@ -8,7 +8,13 @@
 //!   (Mowzie's Mobs M11, the Umvuthi aloft, with M10 merged in, which carries main 8703d216; M11's
 //!   formats: the conflict's pages are RTC12 (magic `RTCC`) with meta version 11, a camp's ledger
 //!   ending with the end of the band its chief came home with and the resident state ending with
-//!   those ends' index by agent, after the tribute stacks, MZB-853); before that, 9d123ab5
+//!   those ends' index by agent, after the tribute stacks, MZB-853); before that, 1762b1e8
+//!   (replay-gate slice U-e, the module switch as a journaled record, RP-290, merged with Mowzie's
+//!   Mobs M10 36634dd2, which carries main c7d0f6e2: U-f, U-i, MZB-939, MZB-950; U-e's format: the
+//!   engine's meta page RTJM is version 3, the mask the modules are in as of the pages' sequence
+//!   appended after the outbox, docs/boundary.md 3.3, docs/choices-journal-barrier.md U-e5; the
+//!   conflict's pages are M10's RTC11, magic `RTCB`, meta version 10; U-i changes no format);
+//!   before that, 9d123ab5
 //!   (Mowzie's Mobs M10, the march, merged with main 8703d216, which carries U-g, J6, U-h and
 //!   MZB-760, plus the march GameTests' fixes, MZB-941; M10's formats: the conflict's pages are
 //!   RTC11 (magic `RTCB`) with meta version 10, a party's row ending with its march revision, its
@@ -83,8 +89,9 @@
 //!   had every herd staying put. So the route layer is not required here; it still has to draw or
 //!   say why.
 //! - `tests/data/create`: neoforge/create's GameTest world, run from aec7918b with `-Psec1fx`
-//!   (M11 with M10 merged in; the core save's formats, M11's); before that, 49fef870
-//!   (M10 merged with main 8703d216; the core save's formats, M10's); before that, da5aea80
+//!   (M11 with M10 merged in; the core save's formats, M11's); before that, 1762b1e8
+//!   (U-e merged with M10 and main c7d0f6e2; the core save's formats, U-e's and M10's); before
+//!   that, 49fef870 (M10 merged with main 8703d216; the core save's formats, M10's); before that, da5aea80
 //!   (the core save's formats, M8's); before that, 2acae5ba (8e3eda72 merged
 //!   with main 13051753, the grove tribute earmark, which changes no format: the core save's
 //!   formats, R's); before that, 012f1fa2 (abe7bad3 merged

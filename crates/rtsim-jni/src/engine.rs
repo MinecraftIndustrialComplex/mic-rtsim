@@ -121,7 +121,9 @@ pub const DEFAULT_CAPACITY: usize = 256 * 1024;
 pub const KEY_META: PageKey = PageKey::new(1, 0);
 pub const KEY_WORLD: PageKey = PageKey::new(1, 1);
 const META_MAGIC: u32 = u32::from_le_bytes(*b"RTJM");
-const META_VERSION: u16 = 2;
+/// Version 3 (slice U-e, docs/choices-journal-barrier.md U-e5) ends with the module mask as of the
+/// sequence the pages include.
+const META_VERSION: u16 = 3;
 /// The journal's closed generations (docs/boundary.md §3.2), [`GEN_BLOCK`] a page from id 0:
 /// written once, when a block gains one.
 pub const GEN_TABLE: u16 = 2;
@@ -241,16 +243,27 @@ impl Decode for TransferCmd {
     }
 }
 
-fn encode_meta(replay: &Replay, outbox: &Outbox<TransferCmd>) -> Vec<u8> {
+/// The meta page's mask field when the engine knew no mask yet: a save taken before the first
+/// SESSION_START (the stop of an engine that never had a hand-over). Module bits are one per
+/// module, never 32 of them, so no mask is this (docs/choices-journal-barrier.md U-e14).
+const MASK_UNKNOWN: u32 = u32::MAX;
+
+fn encode_meta(replay: &Replay, outbox: &Outbox<TransferCmd>, mask: Option<u32>) -> Vec<u8> {
     let mut w = Writer::with_capacity(256);
     w.u32(META_MAGIC);
     w.u16(META_VERSION);
     replay.encode(&mut w);
     outbox.encode(&mut w);
+    w.u32(mask.unwrap_or(MASK_UNKNOWN));
     w.into_bytes()
 }
 
-fn decode_meta(b: &[u8]) -> codec::Result<(Replay, Outbox<TransferCmd>)> {
+/// The engine's meta page: its replay state, its outbox and the module mask the records applied
+/// through `applied_through` left it in (None: the engine had none yet, so the next start takes
+/// SESSION_START's).
+type Meta = (Replay, Outbox<TransferCmd>, Option<u32>);
+
+fn decode_meta(b: &[u8]) -> codec::Result<Meta> {
     let mut r = Reader::new(b);
     if r.u32()? != META_MAGIC {
         return Err(CodecError::Invalid("not an rtsim-jni meta page".into()));
@@ -263,8 +276,9 @@ fn decode_meta(b: &[u8]) -> codec::Result<(Replay, Outbox<TransferCmd>)> {
     }
     let replay = Replay::decode(&mut r)?;
     let outbox = Outbox::decode(&mut r)?;
+    let mask = r.u32()?;
     r.finish()?;
-    Ok((replay, outbox))
+    Ok((replay, outbox, (mask != MASK_UNKNOWN).then_some(mask)))
 }
 
 /// One observation record the engine read (TEST mode), for `nDrainReceived`.
@@ -449,6 +463,12 @@ struct State {
     gens_failures: u64,
     pages_obs_seq: u64,
     last_applied_cmd: u64,
+    /// The module mask the engine is in (docs/choices-journal-barrier.md U-e): the pages' at a start,
+    /// then each MODULE_SWITCH applied. Saved in the meta page, as of the sequence the pages include.
+    mask: u32,
+    /// The pages held a mask (`mask` is theirs). A start with none (a new world, or pages deleted)
+    /// takes SESSION_START's mask as its starting one (U-e6).
+    mask_known: bool,
     /// Steps in a row that began with a world save waiting for its WORLD_SAVED
     /// ([`Engine::awaiting`]); 0 when none waits. A step past [`BUDGET_HOLD_HANDOVERS`] lets a
     /// budget save through. Not saved.
@@ -525,6 +545,8 @@ impl State {
             gens_failures: 0,
             pages_obs_seq: 0,
             last_applied_cmd: 0,
+            mask: 0,
+            mask_known: false,
             budget_hold: 0,
             rewind: None,
             game_time: 0,
@@ -1026,6 +1048,18 @@ impl Engine {
         )
     }
 
+    /// The module mask the engine is in (docs/choices-journal-barrier.md U-e): the pages' at a
+    /// start, then each switch that has been applied. Takes the state lock: tests only.
+    pub fn module_mask(&self) -> u32 {
+        lock(&self.state).mask
+    }
+
+    /// Whether the engine knows its mask yet: the pages' at a start, else SESSION_START's. Takes
+    /// the state lock: tests only.
+    pub fn module_mask_known(&self) -> bool {
+        lock(&self.state).mask_known
+    }
+
     /// How many inputs phase 1 heard while it was switched off and has not applied yet (RP-300).
     /// Takes the state lock: tests only.
     pub fn phase1_kept(&self) -> usize {
@@ -1171,9 +1205,11 @@ impl Engine {
         let world = store
             .get(KEY_WORLD)
             .map_err(|e| format!("cannot read the engine's world page: {e}"))?;
-        let (mut replay, outbox) = match meta {
-            Some(b) => decode_meta(&b).map_err(|e| format!("the engine's meta page: {e}"))?,
-            None => (Replay::new(ObsSeq(0)), Outbox::new()),
+        let (mut replay, outbox, mask) = match meta {
+            Some(b) => {
+                decode_meta(&b).map_err(|e| format!("the engine's meta page: {e}"))?
+            }
+            None => (Replay::new(ObsSeq(0)), Outbox::new(), None),
         };
         load_gens(&mut store, &mut replay)?;
         let world = match world {
@@ -1282,6 +1318,13 @@ impl Engine {
         st.worldmodel = wlink;
         st.pages_obs_seq = pages_obs;
         st.session_first = pages_obs + 1;
+        // The flags come from the pages' mask, before any record: the replay starts from the mask
+        // the pages were saved in (U-e6). With no mask in the pages SESSION_START's is the first.
+        if let Some(m) = mask {
+            st.mask = m;
+            st.mask_known = true;
+            shared::start_flags(&mut st);
+        }
         // Every module has loaded (phase 1 replayed its input log): their tapes go on now.
         if let Some(a) = archive {
             archive::start(&mut st, &a, serial);
@@ -1392,7 +1435,26 @@ impl Engine {
     /// Ends the session. `save`: a final save through the IO lane, waited for; otherwise queued
     /// saves are dropped, as a crash would (a save already writing finishes, so the folder is
     /// never left to two stores at once). Waits up to `timeout` for a step in flight.
+    ///
+    /// The final save is confirmed at once: this is [`Engine::close_through`] for a caller whose
+    /// journal file holds everything (a test with no journal, the headless host that has just
+    /// written it). Java's stop names what its file holds.
     pub fn close(self: &Arc<Self>, save: bool, timeout: Duration) -> Result<(), String> {
+        self.close_through(save, u64::MAX, timeout)
+    }
+
+    /// [`Engine::close`] for a stop that knows its journal file: `written_through` is the last
+    /// observation sequence the world's journal file on disk holds (Java's
+    /// `JournalSavedData.writtenThrough`, read after the stop's flush save). The final save is
+    /// confirmed at once only if the file holds every observation it includes; otherwise it stays
+    /// a pending generation, which the restart from that older file rolls back (slice U-i,
+    /// docs/choices-journal-barrier.md U-i1).
+    pub fn close_through(
+        self: &Arc<Self>,
+        save: bool,
+        written_through: u64,
+        timeout: Duration,
+    ) -> Result<(), String> {
         if self.closing.swap(true, Ordering::AcqRel) {
             return Ok(());
         }
@@ -1423,7 +1485,18 @@ impl Engine {
             log_info("closed while the session's replay runs: the pages stay as they were");
         }
         if save && !replaying {
-            let save = self.take_save(&mut lock(&self.state), self.close_kind());
+            let save = {
+                let mut st = lock(&self.state);
+                let kind = self.close_kind(st.replay.applied_through().0, written_through);
+                if kind == SaveKind::World {
+                    log_warn(&format!(
+                        "the stop's final save includes observations through {} but the world's journal file holds only through {}: the save stays pending, and a restart from that file rolls it back and replays what it lacks",
+                        st.replay.applied_through().0,
+                        written_through.max(self.world_saved.load(Ordering::Acquire))
+                    ));
+                }
+                self.take_save(&mut st, kind)
+            };
             let this = Arc::clone(self);
             result = self.run_io_waiting(move || this.commit(save));
         } else {
@@ -1435,14 +1508,24 @@ impl Engine {
         result
     }
 
-    /// What the stop's final save is, in one place. Confirmed at once ([`SaveKind::Script`]): the
-    /// engine closes after the world's last save has been asked for, and the folder a viewer or the
-    /// next start reads holds it. A stop whose journal write was held (U-g's hold on a failed
-    /// SavedData write) then leaves pages ahead of the journal file: the start's both-ahead case,
-    /// logged as EngineAhead. Slice U-i changes this one line: `nClose` carries `writtenThrough` and
-    /// the save is [`SaveKind::World`] unless the file holds it.
-    fn close_kind(&self) -> SaveKind {
-        SaveKind::Script
+    /// What the stop's final save is, in one place. No WORLD_SAVED reaches a closed engine, so the
+    /// stop's own word on the journal's file decides (`nClose`'s `writtenThrough`, Java's
+    /// `JournalSavedData.writtenThrough` read after the flush save; slice U-i, U-h8's option C).
+    /// If the file holds every observation the save includes (`final_obs`, the engine's applied
+    /// sequence) the save is confirmed at once ([`SaveKind::Script`]): the folder a viewer or the
+    /// next start reads holds it, and a clean stop always lands here. Otherwise it is a pending
+    /// generation ([`SaveKind::World`]) that nothing confirms, so the restart from the older file
+    /// (a stop whose last journal write was held, U-g7) rolls it back and replays what it lacks,
+    /// as it does a held WORLD_SAVED, and no longer finds both generations ahead (EngineAhead).
+    /// A WORLD_SAVED the engine already heard says the same of the file, so the larger of the two
+    /// counts; for a pending save it confirms nothing more than the file holds.
+    fn close_kind(&self, final_obs: u64, written_through: u64) -> SaveKind {
+        let file = written_through.max(self.world_saved.load(Ordering::Acquire));
+        if file >= final_obs {
+            SaveKind::Script
+        } else {
+            SaveKind::World
+        }
     }
 
     fn run_io_waiting(&self, f: impl FnOnce() + Send + 'static) -> Result<(), String> {
@@ -1834,16 +1917,22 @@ impl Engine {
                     ));
                 }
                 st.world.session_start();
-                st.world.module_mask = wire::u32_at(b, obs::session_start::MODULE_MASK);
                 st.world.game_time = wire::i64_at(b, obs::session_start::GAME_TIME);
-                let (game_time, mask) = (st.world.game_time, st.world.module_mask);
-                industry::session_start(st, game_time, mask);
-                let mask = st.world.module_mask;
-                phase1::session_start(st, mask);
-                dragons::session_start(st, mask);
-                ships::session_start(st, mask);
-                herds::session_start(st, mask);
-                conflict::session_start(st, mask);
+                // The flags are the pages' mask, set at the start; the replay runs in it and the
+                // session's own MODULE_SWITCH moves it (U-e6, U-e7). Pages that held no mask start
+                // from the session's.
+                if !st.mask_known {
+                    st.mask = wire::u32_at(b, obs::session_start::MODULE_MASK);
+                    st.mask_known = true;
+                    shared::start_flags(st);
+                }
+                let game_time = st.world.game_time;
+                industry::session_start(st, game_time);
+                phase1::session_start(st);
+                dragons::session_start(st);
+                ships::session_start(st);
+                herds::session_start(st);
+                conflict::session_start(st);
                 // Every flag first, then the resets in one order (U-c's review, P2); a module
                 // with kept records waits for the DICTs (`dict_wait`).
                 shared::resets(st);
@@ -1907,11 +1996,6 @@ impl Engine {
                 topology::observe_state(st, rec);
                 industry::observe_state(st, rec);
                 phase1::observe_state(st, rec);
-                if rec.kind == obs::MODULES && rec.size() >= obs::modules::SIZE {
-                    // The four modules that share the world hear the switch in two passes: every
-                    // flag, then the resets (U-c's review, P2).
-                    shared::switch(st, wire::u32_at(b, obs::modules::MASK));
-                }
                 dragons::observe_state(st, rec);
                 ships::observe_state(st, rec);
                 herds::observe_state(st, rec);
@@ -2091,6 +2175,30 @@ impl Engine {
         st.applying_copy = None;
     }
 
+    /// MODULE_SWITCH (docs/choices-journal-barrier.md U-e, RP-290): the module mask from this record
+    /// on, applied at its place among the journaled records, live and in a replay. A record that
+    /// changes nothing does nothing. Else the modules run to its tick first (`shared::catch_up`: the
+    /// events due before the switch fire with the modules as they were), then each module's own
+    /// switch, the ones the retired MODULES used to reach: industry, phase 1, and the four that share the
+    /// phase 1 world in two passes, every flag and then the resets (U-c's review, P2). The record
+    /// carries the switch's time, so a replay freezes and thaws the modules at the ticks the live
+    /// run did (U-e4).
+    fn module_switch(&self, st: &mut State, rec: &Rec<'_>) {
+        if rec.size() < obs::module_switch::SIZE {
+            self.set_protocol_error(format!("a MODULE_SWITCH is only {} bytes", rec.size()));
+            return;
+        }
+        let mask = wire::u32_at(rec.bytes, obs::module_switch::MASK);
+        if mask == st.mask {
+            return;
+        }
+        shared::catch_up(st, rec);
+        industry::switched(st, rec, mask & industry::MODULE_INDUSTRY != 0);
+        phase1::switched(st, phase1::phase1_on(mask));
+        st.mask = mask;
+        shared::switch(st, mask);
+    }
+
     /// A journaled record admitted by sequence, to the module that claims it.
     fn dispatch(&self, st: &mut State, rec: &Rec<'_>, seq: u64, verdict: Verdict) {
         let b = rec.bytes;
@@ -2106,6 +2214,7 @@ impl Engine {
             st.replay_records += 1;
         }
         match verdict {
+            Verdict::Apply if rec.kind == obs::MODULE_SWITCH => self.module_switch(st, rec),
             Verdict::Apply if industry::claims(rec) => {
                 industry::heard(st, rec);
                 industry::journaled(st, rec)
@@ -2183,7 +2292,7 @@ impl Engine {
         let obs_seq = st.replay.applied_through().0;
         // The events up to the state this save holds (§10.3).
         let events = archive::take(st, &self.stats);
-        let meta = encode_meta(&st.replay, &st.outbox);
+        let meta = encode_meta(&st.replay, &st.outbox, st.mask_known.then_some(st.mask));
         let world = st.world.to_bytes();
         let ind = industry::save(st);
         let mut whole = ind.put;
@@ -2574,14 +2683,16 @@ impl Engine {
 enum SaveKind {
     /// A save Java asked for (`requestSave`, at a world save): a pending generation until the
     /// bridge's WORLD_SAVED says the journal's file holds every observation it includes. Neither
-    /// the acknowledgement, `saves_done` nor the archive's confirmed serial moves before.
+    /// the acknowledgement, `saves_done` nor the archive's confirmed serial moves before. The stop's
+    /// final save is one too when the journal's file lacks part of it ([`Engine::close_kind`]);
+    /// no WORLD_SAVED can come for it, so it stays pending.
     World,
     /// A save for a paged module's budget (PF15): a pending generation too, taken only when no
     /// world save waits for its WORLD_SAVED (or past the valve, [`BUDGET_HOLD_HANDOVERS`]). It is
     /// confirmed if the journal's file already holds its observations.
     Budget,
-    /// A test's SaveAtNextStep and the stop's final save ([`Engine::close_kind`]): committed
-    /// confirmed, with every generation under it.
+    /// A test's SaveAtNextStep and the stop's final save when the journal's file holds it
+    /// ([`Engine::close_kind`]): committed confirmed, with every generation under it.
     Script,
 }
 
@@ -2901,7 +3012,13 @@ mod tests {
             },
             OpId(4242),
         );
-        let (mut r, o) = decode_meta(&encode_meta(&replay, &outbox)).unwrap();
+        let (mut r, o, mask) =
+            decode_meta(&encode_meta(&replay, &outbox, Some(0b1010_0111))).unwrap();
+        assert_eq!(mask, Some(0b1010_0111), "the module mask as of the pages (U-e5)");
+        let (_, _, none) = decode_meta(&encode_meta(&replay, &outbox, None)).unwrap();
+        assert_eq!(none, None, "no mask known yet (U-e14)");
+        let (_, _, zero) = decode_meta(&encode_meta(&replay, &outbox, Some(0))).unwrap();
+        assert_eq!(zero, Some(0), "every module off is a mask");
         assert_eq!(r.closed_expected(), GEN_BLOCK + 2);
         for k in 0..r.closed_expected().div_ceil(GEN_BLOCK) {
             r.load_closed_block(&replay.closed_block(k)).unwrap();
@@ -2915,6 +3032,18 @@ mod tests {
         );
         assert!(!r.copy_is_new(100, ObsSeq(7)), "its last");
         assert!(r.copy_is_new(100, ObsSeq(8)), "past its last");
+    }
+
+    /// U-e5: a meta page of version 2 (no mask) is refused, as every version bump before release.
+    #[test]
+    fn a_meta_page_without_the_mask_is_refused() {
+        let replay = Replay::new(ObsSeq(0));
+        let outbox: Outbox<TransferCmd> = Outbox::new();
+        let mut page = encode_meta(&replay, &outbox, Some(7));
+        page[4..6].copy_from_slice(&2u16.to_le_bytes());
+        page.truncate(page.len() - 4);
+        let err = decode_meta(&page).expect_err("version 2 is not read");
+        assert!(format!("{err:?}").contains("version 2"), "{err:?}");
     }
 
     #[test]

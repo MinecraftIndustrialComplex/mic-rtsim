@@ -3,7 +3,8 @@
 //! generation until the bridge's WORLD_SAVED says the journal's file holds it. The confirm, on the
 //! IO lane, moves the acknowledgement, `saves_done` and the archive's confirmed serial; a start
 //! selects the generation the journal on disk holds; a module's budget save waits behind a world
-//! save that is not confirmed; a stop confirms its final save at once.
+//! save that is not confirmed; a stop confirms its final save at once, if the journal's file holds it
+//! (slice U-i: `close_through`; a stop whose last journal write was held leaves it pending).
 //!
 //! The fake Java side (`common::Java`) sends WORLD_SAVED as the bridge does (`Java::world_saved`,
 //! `Java::save_world`) and clamps the trim to the journal file's `writtenThrough` (JB9).
@@ -83,7 +84,7 @@ fn a_world_save_is_acknowledged_only_after_its_world_saved() {
     transfers(&mut j, 100, 10);
     j.idle();
     let t = j.next_obs - 1;
-    assert_eq!(t, 11, "the session's JOURNAL_GEN, then ten transfers");
+    assert_eq!(t, 12, "the session's JOURNAL_GEN and its module switch, then ten transfers");
     e.request_save(t);
     settle(&e, &mut j, 1);
     assert_eq!(e.committed_obs_seq(), t, "the save holds the journal's end");
@@ -481,6 +482,170 @@ fn a_stop_confirms_its_final_save_at_once() {
     let (current, confirmed) = generations(&dir);
     assert_eq!(current, confirmed, "and confirmed");
     assert_eq!(current.obs_seq, applied);
+}
+
+// ---- a stop whose last journal write was held (slice U-i) --------------------------------------------
+
+/// A world stopped after two world saves, the second of which the journal's file may not hold.
+struct Stopped {
+    dir: PathBuf,
+    /// The journal's file at the first world save, which landed and was confirmed: `through_first`.
+    first: WorldSave,
+    through_first: u64,
+    /// The journal as the stop's world save serialized it: the file that would have landed, had its
+    /// write not been held.
+    second: WorldSave,
+    /// What the engine's final save includes (the stop's world save took the same).
+    final_obs: u64,
+}
+
+/// Five transfers and a world save that lands (the file `first`, confirmed), five more and the
+/// stop's world save, whose pages are committed and whose WORLD_SAVED never comes (its journal write
+/// was held, as U-g7's flush save is), then the stop: `close_through` with what
+/// `written_through(through_first, final_obs)` names as the file's last observation.
+fn stop(tag: &str, written_through: impl FnOnce(u64, u64) -> u64) -> Stopped {
+    let dir = tmpdir(tag);
+    let e = engine(&dir, wire::MIN_CAPACITY);
+    let mut j = Java::open(e.clone(), WorldSave::fresh());
+    transfers(&mut j, 100, 5);
+    j.idle();
+    let first = j.save_world();
+    let through_first = j.next_obs - 1;
+    j.idle();
+    wait_for("the first save's confirm", || {
+        e.durable_obs_seq() == through_first
+    });
+    j.idle();
+    assert_eq!(ledger(&e, 2), 5);
+    transfers(&mut j, 200, 5);
+    j.idle();
+    let through_second = j.next_obs - 1;
+    e.request_save(through_second);
+    let second = j.world_save();
+    settle(&e, &mut j, 2);
+    assert_eq!(e.committed_obs_seq(), through_second);
+    assert!(
+        e.durable_obs_seq() < through_second,
+        "the stop's world save has no WORLD_SAVED"
+    );
+    assert_eq!(ledger(&e, 2), 10);
+    let final_obs = e.stats.applied_through.load(Acquire);
+    assert_eq!(final_obs, through_second, "nothing came after the save");
+    let through = written_through(through_first, final_obs);
+    e.close_through(true, through, Duration::from_secs(5))
+        .unwrap();
+    Stopped {
+        dir,
+        first,
+        through_first,
+        second,
+        final_obs,
+    }
+}
+
+/// The restart: the engine opens on `dir` against the journal's file `save`.
+fn restart(dir: &Path, save: WorldSave) -> (std::sync::Arc<Engine>, Java) {
+    let e = engine(&dir.to_path_buf(), wire::MIN_CAPACITY);
+    let mut j = Java::open(e.clone(), save);
+    j.idle();
+    j.idle();
+    assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+    (e, j)
+}
+
+/// The journal's file holds the final save (`writtenThrough` equal to what the save includes, the
+/// edge, or past it, a clean stop): the save is confirmed at once, and the restart from that file
+/// keeps it.
+#[test]
+fn a_stop_whose_journal_file_holds_its_final_save_confirms_it_at_once() {
+    for (what, past) in [("equal", 0), ("past", 100)] {
+        let s = stop(&format!("ui-f15-{what}"), |_, fin| fin + past);
+        let (current, confirmed) = generations(&s.dir);
+        assert_eq!(current, confirmed, "{what}: the final save is confirmed");
+        assert_eq!(current.obs_seq, s.final_obs, "{what}");
+        let (e, j) = restart(&s.dir, s.second);
+        assert_eq!(j.pages_obs, s.final_obs, "{what}: the restart keeps it");
+        assert_eq!(ledger(&e, 2), 10, "{what}");
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+}
+
+/// The journal's file lacks part of the final save (the last write was held: `writtenThrough` is
+/// the older file's, or just one observation short of the save): the final save stays a pending
+/// generation, the older one confirmed, and nothing is acknowledged by the stop.
+#[test]
+fn a_stop_whose_journal_write_was_held_leaves_its_final_save_pending() {
+    for (what, short) in [("older-file", None), ("one-short", Some(1))] {
+        let s = stop(&format!("ui-f16-{what}"), |first, fin| {
+            short.map_or(first, |n| fin - n)
+        });
+        let (current, confirmed) = generations(&s.dir);
+        assert_ne!(
+            current, confirmed,
+            "{what}: the final save is pending, not confirmed"
+        );
+        assert_eq!(current.obs_seq, s.final_obs, "{what}");
+        assert_eq!(
+            confirmed.obs_seq, s.through_first,
+            "{what}: the confirmed generation is the first world save"
+        );
+    }
+}
+
+/// The open case of U-h8: a stop whose last journal write was held, and a restart from the older
+/// journal file. The pages the stop saved are rolled back with the journal (the start selects the
+/// generation the file holds, no `EngineAhead`), the replay brings the world to what the file
+/// holds, and the engine's books are the file's: five transfers, as a world whose last save was the
+/// first one. The control stops the same world with its file landed and restarts from it: ten.
+#[test]
+fn a_restart_from_the_older_file_rolls_back_the_pages_of_a_stop_whose_journal_write_was_held() {
+    let held = stop("ui-f17-held", |first, _| first);
+    let (e, j) = restart(&held.dir, held.first);
+    assert_eq!(
+        j.pages_obs, held.through_first,
+        "the start selected the generation the older journal file holds, not the final save's ({})",
+        held.final_obs
+    );
+    assert_eq!(
+        ledger(&e, 2),
+        5,
+        "the books are the older file's: the second batch died with its journal write"
+    );
+    let (current, confirmed) = generations(&held.dir);
+    assert_eq!(current, confirmed, "the start rolled the pending save back");
+    assert_eq!(current.obs_seq, held.through_first);
+    e.close(true, Duration::from_secs(5)).unwrap();
+
+    let control = stop("ui-f17-control", |_, fin| fin);
+    let (e, j) = restart(&control.dir, control.second);
+    assert_eq!(j.pages_obs, control.final_obs, "the landed file keeps it");
+    assert_eq!(
+        ledger(&e, 2),
+        10,
+        "the control's books: both batches, from the file that landed"
+    );
+    e.close(true, Duration::from_secs(5)).unwrap();
+}
+
+/// The first stop of a new world whose first journal write was held: the file does not exist
+/// (`writtenThrough` is 0), the world starts over from an empty journal, and the engine's final
+/// save rolls back to the empty pages with it.
+#[test]
+fn a_stop_of_a_new_world_whose_first_journal_write_was_held_rolls_back_to_empty_pages() {
+    let dir = tmpdir("ui-f18");
+    let e = engine(&dir, wire::MIN_CAPACITY);
+    let mut j = Java::open(e.clone(), WorldSave::fresh());
+    transfers(&mut j, 100, 5);
+    j.idle();
+    j.idle();
+    assert_eq!(ledger(&e, 2), 5);
+    e.close_through(true, 0, Duration::from_secs(5)).unwrap();
+    let (current, confirmed) = generations(&dir);
+    assert_ne!(current, confirmed, "the final save is pending");
+    let (e, j) = restart(&dir, WorldSave::fresh());
+    assert_eq!(j.pages_obs, 0, "the empty pages the world starts over from");
+    assert_eq!(ledger(&e, 2), 0, "the engine did not keep the world it lost");
+    e.close(true, Duration::from_secs(5)).unwrap();
 }
 
 /// A confirm that fails (its log record torn) leaves the generation pending and the engine

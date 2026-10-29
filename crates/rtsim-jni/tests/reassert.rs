@@ -275,8 +275,10 @@ fn copy_dir(from: &std::path::Path, to: &std::path::Path) {
 
 /// Pages restored from a backup a session older than the kept JOURNAL_GEN: the replay skips to
 /// it, it closes the pages' own generation where the pages left it, and every copy is judged
-/// against what those pages hold. Session A: records 2 to 6, the backup taken with the pages at
-/// 3. Session B: records 8 to 11, a trim through 9 (the kept JOURNAL_GEN is B's).
+/// against what those pages hold. The numbers below are the records' stores; the sequences are
+/// one above (each session's JOURNAL_GEN is followed by its module switch, U-e3). Session A:
+/// records 2 to 6 (sequences 3 to 7), the backup taken with the pages at 4. Session B: records 8
+/// to 11 (sequences 10 to 13), a trim through 11 (the kept JOURNAL_GEN is B's).
 #[test]
 fn copies_against_pages_restored_from_an_older_backup() {
     let dir = tmpdir("reassert-backup");
@@ -289,27 +291,30 @@ fn copies_against_pages_restored_from_an_older_backup() {
     }
     j.idle();
     save_pages(&mut j);
-    assert_eq!(j.e.durable_obs_seq(), 3);
+    assert_eq!(j.e.durable_obs_seq(), 4);
     for s in 4..=6 {
         held.insert(s, carried(&mut j, s, 1));
     }
     j.idle();
     let saved = j.world_save();
-    let _ = j.crash(); // the pages stay at 3
+    let _ = j.crash(); // the pages stay at 4
     copy_dir(&dir, &backup);
 
     let mut j = start(&dir, saved);
-    assert_eq!(j.journal.front().unwrap().0, 4, "the trim kept 4 to 6");
-    assert_eq!(j.next_obs, 8, "7 is session B's JOURNAL_GEN");
+    assert_eq!(j.journal.front().unwrap().0, 5, "the trim kept 5 to 7");
+    assert_eq!(
+        j.next_obs, 10,
+        "8 is session B's JOURNAL_GEN and 9 its module switch"
+    );
     for s in 8..=9 {
         held.insert(s, carried(&mut j, s, 1));
     }
     j.idle();
     save_pages(&mut j);
     j.run_until("the acknowledgement", |j| {
-        j.journal.front().is_none_or(|(s, _)| *s > 9)
+        j.journal.front().is_none_or(|(s, _)| *s > 11)
     });
-    assert_eq!(j.pinned_gen.as_ref().map(|(s, _)| *s), Some(7));
+    assert_eq!(j.pinned_gen.as_ref().map(|(s, _)| *s), Some(8));
     j.hold_acks = true;
     for s in 10..=11 {
         held.insert(s, carried(&mut j, s, 1));
@@ -464,10 +469,13 @@ fn the_replay_ends_right_before_each_sessions_journal_gen() {
     for session in 0..3u64 {
         let e = engine(&dir, wire::MIN_CAPACITY);
         let mut j = Java::open(e.clone(), saved);
-        let gen_seq = j.journal.back().unwrap().0;
+        // The session journals its JOURNAL_GEN, then its module switch (U-e3).
+        let (gen_seq, gen_rec) = j.journal.iter().rev().nth(1).unwrap();
+        let gen_seq = *gen_seq;
+        assert_eq!(wire::u16_at(gen_rec, wire::R_KIND), obs::JOURNAL_GEN);
         assert_eq!(
             wire::u16_at(&j.journal.back().unwrap().1, wire::R_KIND),
-            obs::JOURNAL_GEN
+            obs::MODULE_SWITCH
         );
         let live = 20 + session;
         carried(&mut j, live, 1);
