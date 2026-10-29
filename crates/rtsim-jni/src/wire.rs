@@ -77,7 +77,7 @@ pub mod obs {
     pub const SESSION_START: u16 = 0x0001;
     pub const DICT: u16 = 0x0002;
     pub const TICK: u16 = 0x0003;
-    pub const MODULES: u16 = 0x0004;
+    // 0x0004 was MODULES, a latest-wins copy of the module mask: retired by U-e (MODULE_SWITCH), never reused.
     pub const WORLD_SAVED: u16 = 0x0005;
     pub const PLAYER: u16 = 0x0010;
     pub const PUPPET_STATE: u16 = 0x0011;
@@ -95,6 +95,9 @@ pub mod obs {
     /// A copy of a record a chunk or entity carried (docs/boundary.md §3.2): the record whole,
     /// after the generation it was first journaled in.
     pub const REASSERT: u16 = 0x0131;
+    /// A module switch (docs/choices-journal-barrier.md U-e, RP-290): the mask the bridge's
+    /// modules are in from this record on, at its place among the journaled records.
+    pub const MODULE_SWITCH: u16 = 0x0132;
 
     pub const fn is_journaled(kind: u16) -> bool {
         kind >= 0x0100 && kind < 0x8000
@@ -110,6 +113,7 @@ pub mod obs {
         pub const LAST_APPLIED_CMD_SEQ: usize = 16;
         pub const JOURNAL_FIRST_OBS_SEQ: usize = 24;
         pub const WORLD_NEXT_OBS_SEQ: usize = 32;
+        /// The mask the session starts in: the engine's starting mask when its pages hold none.
         pub const MODULE_MASK: usize = 40;
         pub const SIZE: usize = 48;
     }
@@ -122,11 +126,6 @@ pub mod obs {
 
     pub mod tick {
         pub const GAME_TIME: usize = 8;
-        pub const SIZE: usize = 16;
-    }
-
-    pub mod modules {
-        pub const MASK: usize = 8;
         pub const SIZE: usize = 16;
     }
 
@@ -247,6 +246,12 @@ pub mod obs {
         pub const SIZE: usize = 32;
     }
 
+    /// MODULE_SWITCH: 24 u32 the mask (bit = `Module.ordinal()`), 28 reserved.
+    pub mod module_switch {
+        pub const MASK: usize = 24;
+        pub const SIZE: usize = 32;
+    }
+
     /// REASSERT: 24 u64 the generation the copied record was first journaled in (0 for none
     /// known), 32 the copied record whole, its own header and first sequence included.
     pub mod reassert {
@@ -267,6 +272,9 @@ pub mod obs {
         pub const NOT_FREE: u32 = 4;
         /// WRITE_GOSSIP refused: vanilla records that act first-hand itself.
         pub const VANILLA_KNOWS: u32 = 5;
+        /// TRANSFER_TO_CONTAINER: the container's chunk is not loaded, so Java could not look for
+        /// the op in it (RP-210). Nothing was put; the op may be there already.
+        pub const NOT_LOADED: u32 = 6;
     }
 
     // ---- phase 1 (docs/boundary.md §4.1) ----------------------------------------------------------
@@ -473,6 +481,56 @@ pub mod obs {
         pub const ROTATION: usize = 84;
         pub const MIRROR: usize = 85;
         pub const SIZE: usize = 88;
+    }
+}
+
+/// A COMMAND_RESULT's status (its `aux`, [`obs::command_result`]), typed so that a `match` over it
+/// needs no `_` arm: the compiler then names the sites a new status must reach, which it cannot
+/// for a `u32`. A number this link does not know is `Unknown`, whole (MZB-765). Only the grove's
+/// tribute answer (`conflict::answer_tribute`) reads it so far; the other readers compare the
+/// number still.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CommandStatus {
+    Applied,
+    DuplicateOp,
+    Failed,
+    /// PLACE_HOUSE found no free plot.
+    NotFree,
+    /// WRITE_GOSSIP refused: vanilla records that act first-hand itself.
+    VanillaKnows,
+    /// TRANSFER_TO_CONTAINER: the container's chunk is not loaded (RP-210).
+    NotLoaded,
+    /// A number no variant above carries: a newer Java's, or a corrupt record's.
+    Unknown(u32),
+}
+
+impl CommandStatus {
+    /// The status a COMMAND_RESULT's `aux` names.
+    pub fn from_wire(n: u32) -> CommandStatus {
+        use obs::command_result as r;
+        match n {
+            r::APPLIED => CommandStatus::Applied,
+            r::DUPLICATE_OP => CommandStatus::DuplicateOp,
+            r::FAILED => CommandStatus::Failed,
+            r::NOT_FREE => CommandStatus::NotFree,
+            r::VANILLA_KNOWS => CommandStatus::VanillaKnows,
+            r::NOT_LOADED => CommandStatus::NotLoaded,
+            n => CommandStatus::Unknown(n),
+        }
+    }
+
+    /// The wire number, the inverse of [`CommandStatus::from_wire`].
+    pub fn wire(self) -> u32 {
+        use obs::command_result as r;
+        match self {
+            CommandStatus::Applied => r::APPLIED,
+            CommandStatus::DuplicateOp => r::DUPLICATE_OP,
+            CommandStatus::Failed => r::FAILED,
+            CommandStatus::NotFree => r::NOT_FREE,
+            CommandStatus::VanillaKnows => r::VANILLA_KNOWS,
+            CommandStatus::NotLoaded => r::NOT_LOADED,
+            CommandStatus::Unknown(n) => n,
+        }
     }
 }
 
@@ -916,6 +974,33 @@ impl<'a> RecordWriter<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// MZB-765: a COMMAND_RESULT's status is typed where a match must name every status. Each wire
+    /// number maps to its own variant (the numbers are Java's, `CommandStatus::wire` gives them
+    /// back), and a number this link does not know is `Unknown`, whole.
+    #[test]
+    fn a_command_status_names_every_wire_number_and_keeps_the_rest() {
+        use obs::command_result as r;
+        let known = [
+            (r::APPLIED, CommandStatus::Applied),
+            (r::DUPLICATE_OP, CommandStatus::DuplicateOp),
+            (r::FAILED, CommandStatus::Failed),
+            (r::NOT_FREE, CommandStatus::NotFree),
+            (r::VANILLA_KNOWS, CommandStatus::VanillaKnows),
+            (r::NOT_LOADED, CommandStatus::NotLoaded),
+        ];
+        for (n, status) in known {
+            assert_eq!(CommandStatus::from_wire(n), status, "status {n}");
+            assert_eq!(status.wire(), n, "{status:?} goes back to its number");
+        }
+        let numbers: std::collections::BTreeSet<u32> = known.iter().map(|k| k.0).collect();
+        assert_eq!(numbers.len(), known.len(), "no two statuses share a number");
+        // 0 is no answer, 7 and up are a newer Java's: kept, not folded into a known status.
+        for n in [0, 7, 8, 255, u32::MAX] {
+            assert_eq!(CommandStatus::from_wire(n), CommandStatus::Unknown(n));
+            assert_eq!(CommandStatus::Unknown(n).wire(), n);
+        }
+    }
 
     #[test]
     fn writer_and_reader_round_trip() {

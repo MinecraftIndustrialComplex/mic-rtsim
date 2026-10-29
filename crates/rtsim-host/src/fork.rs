@@ -6,8 +6,9 @@
 //! A fork is laid out as a world, so the save viewer opens one as it opens a world:
 //!
 //! ```text
-//! <dir>/rtsim/                        the pages: the world's confirmed generation (what the
-//!                                     engine's start opens), page for page; then the host's saves
+//! <dir>/rtsim/                        the pages: the world's confirmed generation (one world
+//!                                     save behind while a save waits for its WORLD_SAVED,
+//!                                     slice U-h), page for page; then the host's saves
 //! <dir>/rtsim/archive/                the world's archive (§10.3), when it has one, less the chunks
 //!                                     above the copied generation's save serial (§10.5)
 //! <dir>/**/data/surveyor/             Surveyor's terrain summaries of each dimension, when there

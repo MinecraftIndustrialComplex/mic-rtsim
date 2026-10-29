@@ -956,7 +956,8 @@ public final class MowzieGameTests {
                     MowzieKit.allOutcomes("HAND_BACK with the join cancelled", ConflictKit.outcomes(grove.faction, op[0]), STALE);
                     check("nothing handed back", MowzieKit.camps().handedBack == handed[0]);
                     check("the camp holds no body", MowzieKit.held(grove.faction).isEmpty());
-                    ConflictBridge.Party party = ConflictKit.party(agent[0]);
+                    // bridge().party, not ConflictKit.party: that one throws for a party that is gone, which is one of the answers (MZB-941).
+                    ConflictBridge.Party party = ConflictKit.bridge().party(agent[0]);
                     check("the band is walked home all the same", party == null || party.recalling());
                     // The engine's slot is Owed with no party: its next order is a SPAWN, the join no longer cancelled.
                     MowzieKit.cancelCampJoins = false;
@@ -970,7 +971,7 @@ public final class MowzieGameTests {
                             MowzieKit.held(grove.faction, 0, 1).size() == 1);
                 })
                 .thenWaitUntil(waits.logic(() -> {
-                    check("the party is gone", ConflictKit.party(agent[0]) == null);
+                    check("the party is gone", ConflictKit.bridge().party(agent[0]) == null); // ConflictKit.party throws for a gone one (MZB-941)
                     check("the first puppet is gone", puppet[0][0].isRemoved());
                     check("the second puppet is gone", puppet[0][1].isRemoved());
                 }))
@@ -1702,9 +1703,15 @@ public final class MowzieGameTests {
             MowzieKit.discardRecordMarkers(level, den.area());
             MowzieKit.discardRecordMarkers(level, grove.area());
         });
+        // The premise: no page save acknowledges the adopt answer before the marker is checked. A world save asks for
+        // one, and vanilla's autosave (every 6,000 ticks, a few seconds of an unthrottled GameTest server) can come
+        // in the middle; it is off until then, as /save-off does, and back to what it was however the test ends.
+        boolean saving = level.noSave;
+        ConflictKit.onEnd(helper, () -> level.noSave = saving);
 
         MowzieKit.seq(helper)
                 .thenExecute(() -> {
+                    level.noSave = true;
                     den.force();
                     grove.force();
                 })
@@ -1788,8 +1795,10 @@ public final class MowzieGameTests {
                     // was saved with one: the marker that takes over its records keeps each one's generation
                     // (MZB-652), since a copy is judged by the generation that journaled the record.
                     PendingRecords had = f[0].getExistingDataOrNull(RtsimAttachments.PENDING);
-                    check("the Frostmaw carries its adopt answer, journaled in this session", had != null && had.entries().size() == 1
-                            && had.entries().get(0).gen() == RtsimSession.current().boundary().gen());
+                    long gen = RtsimSession.current().boundary().gen();
+                    check("the Frostmaw carries its adopt answer, journaled in this session (" + (had == null ? "no records"
+                            : had.entries().size() + " of generations " + had.entries().stream().map(e -> Long.toHexString(e.gen())).toList())
+                            + ", this session's " + Long.toHexString(gen) + ")", had != null && had.entries().size() == 1 && had.entries().get(0).gen() == gen);
                     f[0].setData(RtsimAttachments.PENDING, had.plusEntries(had.life(),
                             List.of(new PendingRecords.Entry(EARLIER_GEN, had.entries().get(0).bytes().clone()))));
                     fell[1] = f[0].position();
@@ -1823,6 +1832,7 @@ public final class MowzieGameTests {
                     // the chunk leaves, so this leg was not run against it. The leg is for the reload path: the
                     // generation surviving the save and the load, the REASSERT naming it, and the engine
                     // applying the copy that names it (MZB-655).
+                    level.noSave = saving;
                     den.release();
                 })
                 .thenWaitUntil(waits.chunks(MowzieKit.unloadedWithout(level, den.cx, den.cz, () -> deathMarkerObject[0])))

@@ -101,6 +101,12 @@ checked against what landed and amended where main differs from what they assume
   neither dispatches it or touches `replaying`. RP-29's end at the arm, before it comes, is harmless:
   `the_replay_ends_right_before_each_sessions_journal_gen` (tests/reassert.rs) runs three sessions
   and counts one end, one stale skip and exactly the replayed tail in each.
+- **U-e (RP-290):** the SESSION_START arm no longer sets any module's `enabled`. The flags are the
+  mask the pages were saved in (the engine's meta page, set at `Engine::start`, before any record), or
+  SESSION_START's `moduleMask` when the pages hold none; the replay runs in that mask, and every
+  MODULE_SWITCH in the journal moves it at its place (docs/boundary.md §3.3). The session's own switch
+  (its JOURNAL_GEN's sequence plus 1) comes after the replay end, so a restart whose config differs
+  from the journal's last mask is a live switch, in the session's first step.
 - **SEC-1 fact 4 (pinnedGen):** S4p keeps the newest acknowledged JOURNAL_GEN outside the trimmed
   entries (SC130: `Journal.pinnedGen` in Java, `pinned_gen` in rtsim-host) and sends it first at each
   session start. Pages that include it skip it (`stale_skipped` + 1 a session) and `applied_through`
@@ -693,8 +699,9 @@ party, reaches `train_passed` and counts stale).
   lurk_robberies). Save and load read the same fields in the same order. No migration.
 - **The eight points:** the gate covers every M8 push (§4.4's M8 paragraph); M8 adds no `Cmd` kind,
   so the verdict test's sample already has both of its kinds. RP-57's table has TRAIN_PASSED read
-  now, and `ingest_copy` drops a TRAIN_PASSED copy after its fold (RP-150). A replayed pass is counted
-  and rolls nothing (RP-151, RP-154); after two crashes every pass of the second session up to
+  now, and `ingest_copy` drops a TRAIN_PASSED copy after its fold (RP-150). A replayed pass that is
+  not stale is counted and rolls as live, at its journaled tick (RP-151; the M8 fixes pass's guard
+  RP-154, which rolled nothing, is gone since slice T, RP-187); after two crashes every pass of the second session up to
   its world save can be stale while replaying (RP-152, a residual). The lurk's camp claim meets no camp hold (RP-153). RP-66, MZB-589's fillers,
   the arrive order, M7's `rail_held` and the FactionRow pin need no change (RP-153).
 - **GameTests:** M8's (FrostmawGameTests from `aLurkPuppetTakenByAPlayerIsLetGoLikeAnyOrdinaryFrostmaw` on,
@@ -725,8 +732,11 @@ party, reaches `train_passed` and counts stale).
 **The M8 fixes and the second-pass merges** (feat/mowzie-m8 from 14c896ee; RP-154 to RP-156).
 The merge check's P2: a replayed TRAIN_PASSED is counted and rolls nothing (RP-154, §4.4), so the
 replay never robs a train the live session may have robbed; RP-151, RP-152 (every pass of the
-second session up to its world save, not one train's roll) and RP-57's 0x080D row say so, and
-`lurk_robberies` counts only robberies told to Java. Then M9's merge-check fixes at 42e8fcc3 (RP-133,
+second session up to its world save, not one train's roll) and RP-57's 0x080D row said so, and
+`lurk_robberies` counted only robberies told to Java. That held until the M8 merge with slice T:
+slice T's keyed attack op (RP-180) made the guard unnecessary and RP-187 dropped it, so a replayed
+pass that is not stale rolls again as live and Java answers DUPLICATE for the robbery the live
+session made (§4.4). Then M9's merge-check fixes at 42e8fcc3 (RP-133,
 RP-134, MZB-672 amended, MZB-673; two doc conflicts; the FactionRow pin is M9's 216 again with
 hunts boxed, RP-155) and main at a11311aa (M6 landed with its P3s, its fixtures at RTC7 / META 6,
 slice S's ships; no conflict, RP-156). No format change: RTC10 / META 9. The sims regenerated on the
@@ -747,7 +757,7 @@ same five as on the earlier merges (listed under Fixtures above); the next fixtu
   `session_first`; the step's top once `applied_through + 1 >= session_first`; the SESSION_START
   arm's end once `max(applied_through + 1, jf) >= session_first` (RP-29). Not the predicate latched:
   RP-29's journal check can clear it while `applied_through + 1 < session_first`.
-- A module switched on in the middle of a session (MODULES, U10) resets as today
+- A module switched on in the middle of a session (MODULE_SWITCH, U10; in the replay too, U-e) resets as today
   (`reset_due`, `reset_if_due`); its replay end runs at once when `st.replaying` is false, else at the
   session's replay end.
 
@@ -870,8 +880,8 @@ ahead:
   clock to the hand-over's time. It founds nothing while replaying: the regions stay pending (in
   memory, as today between steps) and are founded after the replay end.
 - **Industry** keeps its own clock (`industry::simulate` runs first in the step,
-  `advance_to(tick(game_time))`) and its own replay rules; it is not held. The modules meet it in two
-  ways. Explicit-time lookups, `trains_crossed(frame, regions, from, to)` over industry's legs:
+  `advance_to(tick(game_time))`) and its own replay rules. It was not held; since slice R it is
+  (below, and RP-274 in docs/choices-mowzie-build.md). The modules meet it in two ways. Explicit-time lookups, `trains_crossed(frame, regions, from, to)` over industry's legs:
   conflict's ambush at a segment's start (rtsim-conflict engine.rs about L2943), dragons'
   `train_scan` (rtsim-ecology engine.rs about L1596) and ships' `coast_raid` (rtsim-ships engine.rs
   about L3493). While held, a module asks about a window that industry has already passed, and a leg
@@ -898,7 +908,27 @@ ahead:
   four cases; only if the ring's mixin did not apply does Java fall back to the journal's index
   (§6.1). **Decided by the coordinator,
   2026-10-24:** industry is not held during the replay, a known limit (holding it would put RP into
-  industry's own replay); the long-replay tests run with industry on and off.
+  industry's own replay); the long-replay tests run with industry on and off. Slice R found that a replay of several hand-overs then derives different industry op ids
+  (RP-262, RP-263 in docs/choices-mowzie-build.md), and that a station exchange is then loaded
+  twice (RP-277). **Reversed for slice R, as the coordinator approved (RP-274):** industry is held
+  while replaying, by its own flag check rather than the replay clock. `industry::simulate` returns
+  while `st.replaying` (no session start, no deferred latest-wins records, no threats, no run of the
+  clock, no commands into the queue), and `journaled` does not flush the deferred records then; the
+  replayed records still run the engine at their own ticks. The first step after the replay end
+  (`replay_end_if_due` runs before `industry::simulate`) runs the held step in the order the first
+  replayed hand-over ran it before: the session start at SESSION_START's game time, the deferred
+  records, the threats, the clock to the hand-over's time, the commands. The reasons above still
+  hold or are answered: industry has no gate and embodies nothing, so the commands its replayed
+  records decide wait in its outbox and go after the end, answered DUPLICATE by op where Java
+  applied them (RP-272), and dropped unsent where Java answered them FAILED while the replay ran
+  (Java keeps only the ops it applied; the link keeps those answers in memory until the first drain
+  after the end, RP-259, which is safe only with SEC-1's option A removing the copy when its answer
+  is heard: pages taken before that drain would otherwise hold the copy without the answer); the
+  threats and the deferred records are this session's, at its present,
+  past every replayed record; the module switch sets the session start that runs at the end. Every
+  industry op id derives with its decision's own tick, never the clock (RP-270, RP-271). The
+  dragons' and pirates' raids still run industry's clock to their own tick when they land while
+  it is held (`IndustryLink`): slices D and S.
 - **Rail and trains:** M7's TRAIN_ARRIVED and TRAIN_UNWATCHED reach conflict through
   `industry::journaled` after `shared::catch_up` to the record's time, so they follow the records
   like every other journaled record (§4.4's note).
@@ -1073,7 +1103,13 @@ OwedHunt, with its row above, and new push sites for two kinds that had rows:
   places the next stack. A stack the session that went on decided and had answered after the
   pages' save is booked from its replayed COMMAND_RESULT: no placing holds it, so `tribute_placed`
   (or `tribute_failed`) looks the op up among the camps that owe tribute in the replay, at the
-  indexes from the camp's count, and books it as that session did (RP-134). The census then
+  indexes from the camp's count, and books it as that session did (RP-134). A NOT_LOADED answer
+  (Java did not look in the chest's chunk) parks the stack and books nothing (MZB-760, as the
+  dragons', RP-210): it stays in flight under its op id, its goods still earmarked (MZB-930), and is not
+  written again until a HAVEN_CHEST arrives (any, but one naming the stack's own chest with no
+  free slot: MZB-764) or the camp goes out.
+  A replayed NOT_LOADED parks the stack the pages hold again, so the session start sends nothing
+  for it; one for a stack no placing holds books nothing (MZB-761). The census then
   decides the next index, not that stack again from a stock that has moved. A stack in flight at
   the crash, whose answer the journal does not hold, is decided again at its index: the same op
   when the stock and what is owed have not moved, which Java answers DUPLICATE_OP if it put it
@@ -1122,12 +1158,16 @@ through `push` and the gate:
   AMBUSH_SPOT still in the outbox first, as `resend_notices` drops a NOTICE; with the gate's drops
   there is none (rtsim-jni's `replay_end` asserts the same of its queue).
 - **TRAIN_ROBBED** goes from `train_passed` when the robbery took anything, which a live session
-  alone makes (a replayed pass rolls nothing, RP-154). Queued "keep" and "drop" while replaying: it
-  is the station's roar (RP-12), and none is decided then.
+  makes and a replayed pass makes again (RP-187; RP-154's guard, under which a replayed pass rolled
+  nothing, is gone). Queued "keep" and "drop" while replaying: it is the station's roar (RP-12), so
+  a replayed pass's TRAIN_ROBBED is dropped (counted at the gate), and `lurk_robberies` can exceed
+  the TRAIN_ROBBED told to Java.
 - **A robbery's goods** are no `Cmd`: `train_passed` calls `ambush`, whose `infra.raid_train` takes
   them from industry at industry's present, as M7's `Ev::Ambush` does (industry is not held). A
-  replayed pass is counted and never calls it (RP-154): the live session may have robbed the
-  train, and the replay's attack would be another op that Java applies again.
+  replayed pass that is not stale calls it again, at its journaled tick (RP-187): the live session
+  may have robbed the train already, but the attack's op is the threat's identity (RP-180), so the
+  replay's attack is the live one, Java answers DUPLICATE and the goods leave the train once. Until
+  RP-187 a guard (RP-154) kept a replayed pass from calling it, for want of that op.
 - **The swipe and the roar** are Java's: the swipe is a held lurk puppet's strike when a carriage
   comes in its reach (`ConflictBridge`'s strike through the `Lurker`), and the roar plays at the
   station of a train TRAIN_ROBBED names. Neither sends a record the engine acts on.
@@ -1136,8 +1176,9 @@ through `push` and the gate:
   AMBUSH_SPOT. A camp body is handed to a puppet only from this hand-over's SET_OUT lines, which no
   lurk meets (RP-153).
 - **TRAIN_PASSED** is an observation with no op id and no holder (ConflictBridge journals it at
-  once). `ingest` folds its epoch while replaying (RP-57), then `train_passed` counts it and, while
-  replaying, rolls nothing (RP-154); a copy is folded and dropped (RP-150).
+  once). `ingest` folds its epoch while replaying (RP-57), then `train_passed` counts it and, if it
+  is not stale, rolls it as live, at the journaled tick (RP-187; RP-154's guard, which rolled
+  nothing while replaying, is gone); a copy is folded and dropped (RP-150).
 
 ### 4.5 Dragons and nests (rtsim-ecology boundary.rs `Cmd`)
 
@@ -1703,7 +1744,9 @@ RP-205); the re-decided raid's op is one Java forgot, and it is applied again. J
 journal on disk after the raid, the train's goods from before it; Java remembers the op and answers
 DUPLICATE, so the restored train keeps its goods while the re-decided raid credits the raider
 again. Since slice U the journal's file is the last SavedData a world save writes (RP-200), so J4
-needs a tracks write that failed while the journal's succeeded.
+needs a tracks write that failed while the journal's succeeded; since slice U-g such a write holds the
+journal's file until the tracks have written (U-g1), so the resend is applied against the train's ring,
+exact. An op answered inside the engine's pages was still lost then (§9.6's residual 10, RP-317, P29); since slice U-h the held journal keeps the engine's save pending and the restart rolls it back, so the op is decided again and applied once.
 
 **Slice U and the ring's bound** (RP-192, RP-205): the 256 ops cover the ops a train takes while the
 journal's file is behind, which RP-192 put at four autosaves at most. Since RP-205 a hold a later save
@@ -1829,6 +1872,19 @@ rustfmt only on files whose base is clean (protocol.rs is not: hand-format). The
 player positions only in the first hand-over at each game time. A long replay needs enough fillers
 to span three or more hand-overs on a `MIN_CAPACITY` engine (`MAX_RECORD + 128`, about 64 KB):
 4,000 small records, not 1,500.
+
+**Crash tests replay over several hand-overs (slice R, RP-276 in docs/choices-mowzie-build.md).** A
+replay of one hand-over hides every fault that needs a later replayed hand-over to meet what an earlier
+one did: slice R's industry crash tests passed on one hand-over and failed on several (other op ids, a
+station exchange loaded twice, a chunk reconciled twice). So every crash test of a module's own slice
+replays at least two hand-overs (fillers after the pages and a `MIN_CAPACITY` reopen), asserts the count
+(`stats.replay_handovers`), and the slice has one test with nine or more; a one-hand-over test stays
+only as a control. Start the reopened harness at the world's present (`Java::open` resets game time to
+1000; `mc_tick` then follows the fake world). Take the crash test's save by call count, not by load:
+tick until the engine has applied the save's `through`, then wait for durability without ticking
+(rtsim-jni tests/industry.rs `mc_tick_until_durable`, RP-259); ticking while the IO lane writes moves
+the world, the journal and the replay with the machine's load. This is filed for the dragons' (§9.2), herds' (§9.4),
+ships' (§9.5) and conflict's crash tests, in their own slices; slice R changed none of their tests.
 
 ### 9.1 Slice C: the flag, the replay end, the clock, conflict
 
@@ -2180,7 +2236,7 @@ The paths that hand the ships engine a command or a decision, each with its verd
 
 ### 9.6 Slice U: a crash inside a world save
 
-Slice U (SEC-1; records RP-200 to RP-208 in docs/choices-journal-barrier.md, slice U-b's RP-210 on)
+Slice U (SEC-1; records RP-200 to RP-208 in docs/choices-journal-barrier.md, slice U-b's RP-210 on, slice U-g's U-g1 on)
 audited every op kind that changes persisted state against a crash that splits a world save: some of
 its files on disk, the rest from the save before. Two directions:
 - **A:** the journal's file on disk, the op's effect from before. Java's journal knows the op, so the
@@ -2193,7 +2249,10 @@ its files on disk, the rest from the save before. Two directions:
 **The crash classes.**
 1. A process crash between two SavedData files of one save. Since RP-200 the journal's file is the last
    SavedData a world save writes, so this is always B, and every SavedData effect of an op now has a
-   ring in its own file (RP-204, RP-206, RP-207, T2's train ring): exact. Before, the direction followed
+   ring in its own file (RP-204, RP-206, RP-207, T2's train ring): exact. A write that fails does not
+   break it for the files the journal depends on: vanilla logs the failure and clears the data's dirty
+   flag, but the journal's file is held until that data has written (U-g1; the Diesel oil file and
+   NeoForge's level attachments are not marked yet: residual 11). Before, the direction followed
    the overworld's SavedData map capacity, unknown on the pack (the audit's U1; moot now).
 2. A process crash between chunk or entity writes and the journal's. A chunk the barrier notes is on
    disk before the journal's file (JB1 to JB5), so its effect is B, and its carried record or epoch
@@ -2203,25 +2262,30 @@ its files on disk, the rest from the save before. Two directions:
    handle it (docs/boundary.md §3.1).
 4. A power loss. RP-201 syncs the directories so a rename cannot outlive an earlier one; region files
    are synced by DSYNC or the barrier's force. Not on Windows (residual 1).
-5. A held journal write (RP-205). Every SavedData store is in B until the next written save: exact, by
-   the rings. A hold has no round limit.
+5. A held journal write (RP-205, or a failed SavedData write, U-g1). Every SavedData store is in B until
+   the next written save: exact, by the rings. A hold has no round limit. The engine's pages are held with
+   it since slice U-h (P29): its save for that world save is a pending generation that WORLD_SAVED never
+   confirms, so a restart from the older file rolls it back with the journal (docs/choices-journal-barrier.md
+   U-h1 to U-h3). A stop with a write outstanding is held the same way since slice U-i: `nClose` carries
+   the journal file's `writtenThrough`, and the engine's final save is confirmed at once only if the file
+   holds it, else it stays pending and the restart from the older file rolls it back (U-i1 to U-i3).
 6. A given-up note (RP-205): A for that chunk (residual 2).
 
 **The rows, after slice U** (the audit's row ids; "exact" means the dedup is saved with the effect):
 
 | Row | Op, effect | A | B | After a give-up | Owner of what is left |
 |---|---|---|---|---|---|
-| C1 | TRANSFER_TO_CONTAINER (dragon tribute), chest | exact (noted) | exact when the chest's chunk is loaded at the resend; not loaded: FAILED, then the chunk's REASSERTed APPLIED is admitted as new and the coin sent again, a dupe (inferred) | loss | slice U-b |
+| C1 | TRANSFER_TO_CONTAINER (dragon and grove tribute), chest | exact (noted) | exact (RP-210, MZB-760; a vanilla double chest across a chunk border takes the stack in the half the transfer names, slice U-f, RP-215, so that chunk's carried result covers it; a mod's double chest, residual 9): an unloaded chest answers NOT_LOADED and the dragons and the Umvuthana grove park the stack under its op id, so the chunk's REASSERTed APPLIED books it placed and a resend under the same op answers DUPLICATE. The grove's parking is the dragons' (U-b took its NOT_LOADED as FAILED and went again under a new op: dupe) | loss | none (MZB-760 gave the grove the dragons' parking) |
 | C2 | WRITE_GOSSIP, villagers | exact | exact (the villager's ring; a minor loss past its 64 entries) | n/a | none |
-| C3 | PLACE_HOUSE, house box | origin chunk exact; another box chunk skipped by the 10 s cooldown: a partial house, loss | villages newer than the origin chunk: the house missing, loss; another box chunk newer: a second house, dupe | loss | slice U-b |
-| C4 | SPAWN_RESIDENT, resident | resident lost | resident's entity section newer: a second resident, dupe | loss | slice U-b |
-| I1 | reconcile container and energy deltas | exact (epoch, noted) | exact; a double chest across a chunk border: by the delta's sign, dupe or loss (inferred) | negative delta: dupe; positive: loss | slice U-b's test, then the coordinator |
-| I2 | reconcile block destroys, drops | drops lost | drops' section newer: the block back, destroyed again, second drops, dupe | the block back while booked destroyed; with the drops, dupe | slice U-b |
+| C3 | PLACE_HOUSE, house box | exact (RP-211: every loaded box chunk carries the result and is noted) | the half house in the newer chunks stands, the villages without it: loss (was a second house, RP-211: a searching build looks for its op on every candidate plot, the unloaded ones as saved); a candidate chunk not read within 10 s is searched past, a second house possible there, logged and counted | loss | none (RP-211) |
+| C4 | SPAWN_RESIDENT, resident | exact (RP-212: the resident carries its result as a noted holder) | exact (RP-212: entities around the spot loaded first, the op checked every tick, the result carried, the UUID from the op); a resident that walked out of reach before it was stored and its second: one lost when both load, loss | loss | none (RP-212) |
+| I1 | reconcile container and energy deltas | exact (epoch, noted); a vanilla double chest across a chunk border: exact too (slice U-f, RP-215: each half is its own inventory, so a reconcile changes only the chunk it names); a mod's double chest, a Create vault or another multi-block storage across a border: the other parts' chunks are not noted (residuals 9 and 12) | exact; a vanilla double chest across a chunk border: exact too, by the epoch of the half's own chunk (before slice U-f, measured: a positive delta 40 for 20, a dupe, and a negative one 0 left of 40 for a booked 20, taken twice, a loss); a mod's double chest: as the vanilla one was; a vault: as the double chest was (inferred, not run) | negative delta: dupe; positive: loss | residual 9 for a mod's double chest; residual 12 for the rest; residual 13 for what a split pair costs the glass and the players |
+| I2 | reconcile block destroys, drops | exact (RP-213: the drops join only once the broken blocks' chunks are on disk) | exact; the drops a loss on a write failure or a stop before they join, logged and counted (was a dupe) | the block back while booked destroyed, the drops never joined: no dupe (was a dupe) | none (RP-213); a double chest inside one chunk booked as dropped whole: residual 14, not a dupe |
 | I3 | reconcile deposit draws (Ore Excavation, Destroy crude and chunk pollution) | chunk exact; the pollution ledger cannot be A now | chunk exact; the ledger's ring refuses a second booking (RP-207) | not drawn but delivered, dupe | given-up notes |
-| I4 | IND_DEPOSIT_DELTA, Diesel `cdg_oil_chunks` | cannot happen (RP-200) | exact: the oil file's ring (RP-204) | n/a (not noted) | none |
-| I5 | IND_DEPOSIT_DELTA, Destroy level pollution and the ledger | cannot happen | exact: one ring per file (RP-207); the ledger lost alone: short by the delta | n/a | none (residual 4) |
-| K1 | IND_CARRIAGE_DELTA, `create_tracks` | cannot happen | exact: T2's train ring (RP-190 on, pruned at the engine's acknowledgement, RP-250), with its mixin applied | n/a | slice T2's limits (residual 6) |
-| K2 | IND_WRITE_PACKAGE, offline buffer | cannot happen | the tracks newer than the chunk: exact, the port's buffer ring (RP-206, pruned at the engine's acknowledgement, RP-209), with its mixins applied. The postbox's chunk newer (its background save, the usual state between world saves): exact through RP-206's hooks, the chunk carrying the ops a restore brought in and the first offline write reading the chunk as saved; residual 8 where they do not reach | n/a | residual 8 |
+| I4 | IND_DEPOSIT_DELTA, Diesel `cdg_oil_chunks` | cannot happen (RP-200), except after a failed write of the oil file, which is not marked yet (residual 11) | exact: the oil file's ring (RP-204) | n/a (not noted) | none |
+| I5 | IND_DEPOSIT_DELTA, Destroy level pollution and the ledger | cannot happen (RP-200; the ledger's failed write is held, U-g1), except level pollution after a failed write of `neoforge_data_attachments` (residual 11) | exact: one ring per file (RP-207); the ledger lost alone: short by the delta | n/a | none (residual 4) |
+| K1 | IND_CARRIAGE_DELTA, `create_tracks` | cannot happen (RP-200; a failed tracks write holds the journal's file, U-g1), (an op answered inside the engine's pages was lost, residual 10; closed by slice U-h, P29: the pages stay pending until WORLD_SAVED, so the restart from the held journal rolls them back, pinned) | exact: T2's train ring (RP-190 on, pruned at the engine's acknowledgement, RP-250), with its mixin applied | n/a | slice T2's limits (residual 6) |
+| K2 | IND_WRITE_PACKAGE, offline buffer | cannot happen (RP-200; U-g1 as K1), (an op answered inside the engine's pages was lost, residual 10; closed by slice U-h as K1's, inferred) | the tracks newer than the chunk: exact, the port's buffer ring (RP-206, pruned at the engine's acknowledgement, RP-209), with its mixins applied. The postbox's chunk newer (its background save, the usual state between world saves): exact through RP-206's hooks, the chunk carrying the ops a restore brought in and the first offline write reading the chunk as saved; residual 8 where they do not reach | n/a | residual 8 |
 | K3 | IND_WRITE_PACKAGE, loaded postbox | exact (noted) | exact: the chunk's carried result when loaded at the resend, the port's postbox ring when not (RP-206). The tracks newer than the chunk (either file can be the newer: chunks save between world saves, the tracks only at one): written again when loaded, exact; refused when unloaded, the package only in Create's unprimed mirror, a loss. Goods moved out of the chunk before it saved, then the write reapplied: dupe | loss | the coordinator (Create slice) |
 | K4 | IND_WRITE_CHAIN, frogport | exact (noted) | exact when loaded; unloaded: FAILED then REASSERT, a possible double booking (inferred); goods pushed out before the save: dupe | loss | the coordinator (Create slice) |
 | K5 | reconcile through PostboxAccess, the tracks mirror | exact | the mirror taken by a train while the postbox is unloaded, then reapplied: dupe, independent of the journal | loss or dupe by sign | the coordinator (Create slice) |
@@ -2229,7 +2293,7 @@ its files on disk, the rest from the save before. Two directions:
 | K8 | repair schematics from I2's destroys | schematic lost (low value) | a second schematic (low value) | n/a | the coordinator (Create slice) |
 | F1 to F3 | camp spawn, adopt, take and remove | exact (noted by holder) | exact | F1 written off after 3 misses and 2 days, loss; F2, F3 exact | none |
 | F4 | ENVOY tribute | cannot happen (player data first) | paid, not credited: loss | n/a | none |
-| D1, D3 | PLACE_LAIR and PLACE_NEST requests (module SavedData) | cannot happen | exact | n/a | none |
+| D1, D3 | PLACE_LAIR and PLACE_NEST requests (module SavedData) | cannot happen (RP-200; a failed write is held, U-g1), (a request answered inside the engine's pages was lost, residual 10; closed by slice U-h as K1's, inferred) | exact | n/a | none |
 | D2, D4, D6, D8 | lair placement, nest carve, worms, adopt | loss | a second roost, a second chamber, worms placed again; the adopted dragon lost (D8) | n/a | the Mowzie lead, slice N2 |
 | D5 | NEST_RENEW | loss or exact | worms owed twice (RP-14); JL widens its route at map capacities of 32 and up | n/a | slice N, which lands before slice U |
 | D7 | NEST_SORTIE | a raid decided again in the replayed window is dropped (§7.2, RP-15): its visible worms are lost, never shown twice (the audit read a doubled raid: harm, no goods) | same | n/a | none (§10 item 1) |
@@ -2245,10 +2309,11 @@ its files on disk, the rest from the save before. Two directions:
    counted `late` in `/rtsim perf`. Follow-on: take a given-up note's ops out of the applied set and have
    the engine resend them by op (a per-op resend list), which turns A into B.
 3. **Chunk and entity effects the barrier does not note** (the audit's 3.6): the transfer's surplus
-   item entity (C1, rare), the other half of a double chest (I1), house box chunks other than the origin
-   (C3), the resident (C4), a reconcile's drops (I2), Frontier keying when a package is already keyed
-   (K7), goods moved out of a postbox or frogport before its chunk saved (K3, K4), the repair schematic
-   (K8), and the X rows' bodies and drops. Owners in the table.
+   item entity (C1, rare), the other parts of a vault or another multi-block storage (I1, residual 12; a vanilla double chest is closed, a mod's is residual 9), Frontier keying when a
+   package is already keyed (K7), goods moved out of a postbox or frogport before its chunk saved (K3,
+   K4), the repair schematic (K8), and the X rows' bodies and drops. Owners in the table. Slice U-b
+   covers the house box chunks other than the origin (C3, RP-211), the resident (C4, RP-212) and a
+   reconcile's drops (I2, RP-213).
 4. **The pollution ledger's under-count** (RP-207): a crash that keeps the level's pollution and loses
    the ledger leaves the district's total short by the delta. Attribution only: the engine learns a
    slightly lower rate; no pollution is created or removed.
@@ -2292,6 +2357,187 @@ its files on disk, the rest from the save before. Two directions:
    - a postbox changed in this life while its station did not attach it, after the port's mirror was
      marked fresh, and a chunk saved between the postbox's unload and Create's next save of it into the
      buffer: the mirror older than the chunk, primed by the write, a dupe of what automation took since.
+9. **A mod's double chest, and any other `CompoundContainer`, across a chunk border** (I1, RP-215). Closed by slice U-f
+   for a vanilla chest and a vanilla trapped chest: each half of such a double chest across a chunk border is its
+   own inventory of 27 slots (docs/choices-journal-barrier.md, U-f1 to U-f8), so a command at a half changes that
+   half, in the chunk it names, and that chunk's epoch and carried result cover it. What is left is the mechanism
+   that was measured before the fix, for a chest the fix does not match. NeoForge's chest handler is the pair's
+   (`InvWrapper` over `ChestBlock.getContainer`, a `CompoundContainer`) and reads the other half through
+   `Level.getBlockState`. A reconcile of one chunk changes the pair's other half, in the next chunk, through it;
+   that chunk gets no epoch and no note. With it newer than the reconciled one and the journal, the resend puts the
+   goods in a second time. Measured on the pair's handler (slice U-b's test and two of slice U-f's first round; each
+   resends under the same op after a crash that keeps the other half's chunk and rolls back the reconciled chunk
+   and the journal): a reconcile of +20 into the pair, 40 for 20 (a dupe); a transfer of 20 (C1), 40 for 20 (a
+   dupe); a reconcile of -20 from a half holding 40, 0 left (40 taken for a booked 20: taken twice, a loss in the
+   world, which the audit had inferred to be a dupe). It still holds for:
+   - a `ChestBlock` subclass of a mod (the match is `Blocks.CHEST` or `Blocks.TRAPPED_CHEST`, exactly: a mod's
+     subclass keeps the handler it registers, which may be the pair's, one per half, or none, as Lootr's);
+   - a `CompoundContainer` that a mod builds for a block that is not a `ChestBlock`: its two halves are private
+     fields, and no block state names them. None was looked for in the pack.
+   The fix, where one occurs, is the same: `StockAccess.splitPair` widened to name it, and its half's own container
+   as the handler. Owner: the coordinator; nothing in the pack is known to need it.
+10. **A failed SavedData write, answered inside the pages** (RP-317, found by slice R; numbered 10 because
+    slice U-b's residual 9, the double chest, landed first). Vanilla's `SavedData.save` (NeoForge's patch)
+    clears the dirty flag and queues the write on the IO worker, which logs an IOException and goes on, so
+    the journal's task, last in that chain, still wrote the journal's file: crash class 1's "always B"
+    assumed every write succeeded, and a crash before a later save wrote that file again was direction A for
+    the ops whose effect the file holds (the journal remembers the op, its resend is trimmed, refused or
+    never made, and the effect is missing while the engine books it). Closed for the files the journal
+    depends on by slice U-g (U-g1): a failed write of Create's tracks or of our own SavedData marks the data
+    dirty again and holds the journal's file at the save before until the data has written, which is B, exact
+    by the rings. **Closed by slice U-h** for the case that stayed: an op **answered inside the pages**.
+    The pages were written, and acknowledged, whatever happened to the data (P29), so after a failed tracks
+    write and a crash the engine did not send the op again, the held journal and the older tracks file did
+    not have it, and it was lost, with the hold or without (224 crushed raw iron missing from the train, still
+    on the books; K2, D1 and D3 inferred, the placement request lost for D1 and D3 where the placer dedups by
+    field, not by the journal). Now the engine's world save is a pending generation until WORLD_SAVED, which
+    a held journal never sends, so the restart from the older journal file rolls the pages back to the save
+    before, and X is decided again from them under the same op, sent under a new sequence, and applied once
+    by the ring that came back without it (RP-311). Pinned by rtsim-jni `tests/industry.rs`
+    `a_station_exchange_written_before_the_pages_is_applied_once_when_its_trains_save_fails` and
+    `a_station_exchange_answered_before_the_pages_is_applied_once_when_its_trains_save_fails` (slice R's
+    two J4 tests restarted with the held journal; the second was
+    `..._answered_before_the_pages_is_lost_with_its_trains_save` and asserted the loss), and by
+    `held_journal`'s `a_station_exchange_written_before_the_pages_is_applied_once_with_the_journal_held` and
+    `a_station_exchange_answered_inside_the_pages_is_applied_once_with_the_journal_held_p29` (the second was
+    `..._is_still_lost_with_the_journal_held_p29`): train, totals and books are the control's. The restart
+    without the hold (`unheld`, W1's journal) still shows the loss, which is what the hold is for. What this
+    leaves is residual 11. The whole item needed a failed disk write and then a crash before that file was
+    written again, and it was slice U's (RP-200), not slice R's (the build lead, RP-317).
+11. **A failed SavedData write: what the hold leaves** (RP-317, slice U-g, docs/choices-journal-barrier.md
+    U-g1 to U-g12). Item 10 has the mechanism. A failed write of a `JournalDependent` file (Create's tracks,
+    our own SavedData) re-marks the data dirty and holds the journal's file at the save before until the
+    data has written: B, which the rings make exact. The hold has a limit (U-g12): a file that fails at 12
+    world saves in a row (PLACEHOLDER) stops holding, logged once, and the journal goes on without it: A for
+    that file until it writes again. Left:
+    - ~~**The engine's pages are ahead (P29).**~~ **Closed by slice U-h** (docs/choices-journal-barrier.md
+      U-h1 to U-h12; docs/choices-leg-purge.md LP12 option (a)). The pages were requested at the save's
+      start and written, and acknowledged, whatever happened to the data. Now the save is a pending
+      generation until WORLD_SAVED, which reports `min(through, writtenThrough)`: a held journal
+      leaves it pending, and the restart from the older file rolls it back. A station exchange in the
+      pages' outbox when they were saved (written, not answered) and one answered inside the pages are
+      now both applied once (rtsim-jni `held_journal`, the two tests; X is decided again from the
+      older pages under the same op). The case that stays open under it is the stop's, below.
+    - **Files not marked:** Diesel's `cdg_oil_chunks` (I4) and NeoForge's `neoforge_data_attachments`
+      (Destroy's level pollution, I5, and every plugin's rings): a failed write of one is still A. For
+      the deposit deltas (inferred, not run) `Industry` checks the journal's applied index before the
+      ring, so a resent deposit op the journal holds is refused DUPLICATE on either side of the pages;
+      the sign follows the delta: a draw stays in the ground while the engine books it drawn, a dupe.
+    - ~~**A stop with a write outstanding** keeps the older journal file (U-g7), and the pages the stop
+      saves are ahead of it.~~ **Closed by slice U-i** (docs/choices-journal-barrier.md U-i1 to U-i6): the
+      stop's final save was confirmed at once (U-h8); `nClose` now carries the journal file's
+      `writtenThrough` and the engine confirms the final save only through it, so a stop whose last
+      journal write was held leaves the save pending and the restart from the older file rolls it back,
+      as it does a world save whose WORLD_SAVED never came (rtsim-jni `tests/confirm.rs`,
+      `a_restart_from_the_older_file_rolls_back_the_pages_of_a_stop_whose_journal_write_was_held`).
+    - The data whose level was dropped is abandoned and the journal goes on without it (U-g5), and a
+      file given up on (U-g12) no longer holds it: A for each of them, logged.
+12. **A Create vault, and other multi-block storages, across a chunk border** (I1, found in slice U-f, not
+   fixed). In Create 6.0.10 (`ItemVaultBlockEntity`, read from the jar's bytecode, there is no sources jar) every
+   vault block entity keeps its own `ItemStackHandler` and saves it with its own chunk (`write`, offsets 95 to
+   124: for a save that is not a client packet each part writes `StorageType: CombinedInv` and its own
+   `Inventory`). The controller's capability (`initCapability`, offsets 167 to 261) is a
+   `VersionedInventoryWrapper` over a `SameSizeCombinedInvWrapper` of every part's handler, found by
+   `ConnectivityHandler.partAt` over the vault's box; a part that is not the controller hands out the
+   controller's. One vault can span two chunks, and up to four at a corner: `getMaxWidth()` is 3 and
+   `getMaxLength(width)` is 3 times the width, so a vault is up to 3 by 3 by 9. The note matters, and it is the
+   double chest's mechanism: the engine names the controller's position (`CreatePlugin.canonicalInventory`), so
+   a reconcile's epoch and result are in the controller's chunk only, while the goods land in the parts' block
+   entities in their own chunks. With a part's chunk newer than the controller's and the journal, the resend
+   would put the goods in again. Not run. A fix would be a hook on `IndustryPlugin` that names the chunks of
+   a position's parts (the vault's box) so that the reconcile and the transfer note and carry in each of them
+   (slice U-f's first design did that for the double chest and was dropped for per-half inventories, which a vault's
+   one controller cannot have). Other multi-block storages (Create fluid tanks and others) were not read: the
+   shape is the same wherever a handler combines parts that sit in several block entities.
+13. **A split double chest is two stores to the sim and one chest to everything else** (I1, slice U-f; the price of
+   the per-half decision: fidelity, never goods). A vanilla double chest across a chunk border is two inventories of 27
+   slots to the sim: the sweeps, the reconciles, the transfers, the glass probes and the district's stock count
+   each half on its own. Create's funnels, hoppers, hopper minecarts and players see one chest of 54
+   (the capability is the pair's). Where the two views meet:
+   - A glass mover or a glass STORE node at a half sees that half's 27 slots: a mover that fills "the chest" stops
+     when its half is full where the pair has room, and one that draws finds nothing in a half whose goods are in
+     the other.
+   - A station port and a player's session (`PlayerPorts.stockAt`) at a half see that half only.
+   - Create's glass compile (`CreateCompile.storeContents` and `seedContents`) reads a store's goods through
+     `Loaded.capability`, which guards the half's own chunk and Create's multiblocks but not a chest's other half.
+     At a split half it still lists both halves' goods in the store's reach set, and with the other chunk not yet
+     FULL the chest's provider reads it (`Level.getBlockState` waits for the load: R2-11's hazard, as before this
+     slice, which did not change that guard). Read from the code, not run; a planning-set matter, not goods.
+   - A reconcile that adds more than the half has room for is applied in part (`applied` below `requested`), and
+     the engine owes the rest as it does for any full chest. A transfer into a full half answers FAILED while the
+     other half has room. A removal whose goods sit in the other half is a shortfall, applied 0, which the engine
+     books as it books any.
+   - **Create's movers fill the pair, so a split half gets no counted flows.** Funnels, mechanical arms, chutes and
+     packagers insert and extract through NeoForge's chest handler, which covers both halves: a mover facing half Q can
+     put goods into half P's slots in the other chunk. A count credited to Q's store would disagree with both halves'
+     stocks, so `Counting.moved` credits a move at a split half to neither half: it discards the move as it does one it
+     cannot attribute, and raises its own counter (`Counting.splitMovesDiscarded`, beside `movesCounted`). A split pair
+     fed or drawn by Create movers therefore has no counted flows, and the glass compile learns no rates for it. How
+     Create fills a chest is unchanged (the coordinator's decision). Test: create's
+     `IndustryGameTests.aMoveIntoAHalfOfASplitChestIsDiscardedNotCounted`.
+   - **A player's session at a half is booked to the district alone.** Vanilla's chest menu is the pair's
+     `CompoundContainer`, so what a player takes from or puts into the other half must not be booked against the clicked
+     half. `PlayerPorts.rightClicked` marks a click on a split half and takes the player's snapshot as for any stock; the
+     session is a session (`opened` keeps it, counts it in `PlayerPorts.splitSessions`), so tosses and pickups made with
+     the menu open defer to it as for any session. At close the player's change is booked as a PLAYER_SESSION port to the
+     district with `NO_INVENTORY`, the way a toss is: the engine merges it into the district's ports (the learner's
+     differences, so the stock change in either half is explained wherever the goods sat) and sends the glass no
+     port for any store (`Engine::port` calls `glass.port` only when the port names an inventory). The session's diff is
+     the player's own, not a diff of the menu's container, so what a hopper or a mover does to the pair meanwhile is not
+     booked as the player's. Booked at close, however long the menu stays open: a window that rolls over meanwhile sees
+     the stock change before the port, as for every session. Tests: create's
+     `IndustryGameTests.aSessionAtAHalfOfASplitChestIsBookedToTheDistrictAlone` (a menu held open across sweeps, goods
+     moved after them, a throw out of the menu, and a single-chest control booked against its own inventory).
+   - **The audit of every path that books goods to a store (slice U-f, found in review rounds 1 and 2).**
+     (a) Counted movers: chutes, funnel and arm points, a basin's overflow, packagers, repackagers, unpackers, frogports
+     and `InvManipulationBehaviour` all report through `Counting.moved`, the one place a counted move is keyed to a
+     store: discarded at a split half (the first bullet). (b) Player sessions: booked to the district with no inventory (above). A player's click that
+     opens no menu books nothing at a split half (no snapshot is taken). (c) A player's break (`PlayerPorts.breaking`):
+     drops the half's own block entity slots, which is the half's inventory: exact, no change. Tosses and pickups name
+     the district and no store. (d) Vanilla hoppers, droppers, dispensers and hopper minecarts reach a pair through
+     `getContainerAt` (the `CompoundContainer`) and can fill either half; nothing counts them (no count point, no
+     mixin), so no flow is booked at all and the sweeps read each half's real stock: the change shows as a stock
+     delta in the half it landed in. Nothing to fix for books; the glass models a hopper at a half with no counted flow
+     (as for the Create movers above). (e) Comparators read the pair's fullness and book nothing (`splitWritten`
+     tells the far half's). (f) The sweeps, reconciles, transfers (`CommandDispatcher`) and station ports
+     (`PlayerPorts.stockAt`) go through `StockAccess.items`, which is the half's own slots. (g) The glass compile's
+     probes: `GlassCompiler.swept` reads a split half through `splitHalf`; `CreateCompile.storeContents` and
+     `seedContents` still list the pair's goods through the capability (the planning-set note above, not goods). (h)
+     `TrainWatch.reached` and `GraphBuilder.inventoryAt` resolve a position to the half through `canonicalInventory`
+     and book nothing. (i) Create's package and port buffers (`MailWatch`, `PostboxAccess`, `WritePackages`,
+     `WriteChains`, the train cargo) are not chests and are not at a half. A mod's `ChestBlock` subclass is not a
+     split pair here (residual 9).
+   No number the engine books is a quantity the chunk it names did not hold or take, so a resend or a crash cannot
+   create or remove goods because of the split. A pair inside one chunk is one inventory of 54 and is not affected.
+   Test: `ChestPairLoadGameTests.aSplitDoubleChestIsTwoInventoriesInOneDistrict` and slice U-f's
+   `SavedAheadGameTests` (docs/choices-journal-barrier.md, U-f1 to U-f5). Owner: none.
+14. **A reconcile's block destroy of a double chest inside one chunk** (I2, traced in slice U-f; no dupe and no loss
+   of goods, measured, and a ledger over-count that is left). The pair is one inventory of 54 slots to the engine, named
+   by its lower half (`Districts.canonicalInventory`), so the engine's doomed inventory holds both halves' goods. When
+   the lower half breaks, the engine books `inv.effective()`, both halves' goods, as dropped
+   (`crates/rtsim-industry/src/engine.rs`, the block-destroy result: `books.dropped.merge`, `dist.ports.subtract`,
+   `glass.port`), while the world drops what that half holds (`Containers.dropContentsOnDestroy` reads the half's own
+   block entity, 27 slots) and the chest. The other half stays, now a single chest, with its goods. Measured, in a
+   reconcile of one chunk that breaks one half:
+   - `SavedAheadGameTests.aSimBreakOfAPairsFirstHalfDropsOnlyThatHalf` (the lower half P holds 100 diamonds, the
+     higher half Q 30 emeralds): 100 diamonds and one chest on the ground, no emeralds, and Q a single chest holding
+     its 30. Q describes as an inventory of 27 slots at its own position (`Districts.describeInventory`), which is
+     how the next detection declares it.
+   - `SavedAheadGameTests.aSimBreakOfAPairsSecondHalfDropsOnlyThatHalf` (the same pair, Q breaks): 30 emeralds and one
+     chest on the ground, no diamonds, and P a single chest holding its 100. The engine dooms only the inventory's
+     lower half, so Q's break reaches it as a machine block with no inventory index, and the pair's inventory stays
+     in the engine, declared at 54 slots over a chest that now holds 27, until the next detection.
+   Either way the world spawns nothing beyond what it held and keeps what it did not drop: 130 goods before and 130
+   after (on the ground plus in the survivor), so no dupe, and nothing the survivor holds is lost, since it stays in
+   a chest the next detection finds. What is inexact is the engine's books. After P's break they say 130 dropped
+   where 100 were, and the district's stock lacks Q's 30 until a detection declares Q (the periodic full
+   detection, `IndustryConfig.PERIODIC_RESCAN` in `Districts.tick`; a reconcile's own break marks nothing dirty, as
+   only a player's break does, so it is the periodic one, argued from the code and not run), when they appear as a
+   new inventory. `books.dropped` is read in production by nothing (only the fake engine's conservation sum reads it,
+   `crates/rtsim-industry/src/fake.rs`), `ports` is the learner's differences (a window the break discards,
+   `dist.learner.discard()`), and the glass port books the same goods out of that inventory. So the over-count is a
+   ledger and an attribution effect, not goods.
+   Nothing to fix for goods; the ledger's over-count is left. Owner: none.
 
 **Rings and the module switch (a rule for every ring).** Saving and loading a ring of applied ops never
 depends on a module switch: the train's, the station port's, the oil file's, level pollution's, the
@@ -2331,6 +2577,17 @@ removing a plugin, not of the rings.
 `PollutionCrashGameTests` (4), create `PortRingGameTests` (12: K2's crash cases, the loaded postbox, the
 chunk newer than the tracks file, the fallbacks, the module switch and the acknowledgement), core
 `JournalBarrierGameTests` (the hold, give-up and flush tests), `DurableOpRingTest`, `DirectorySyncTest`.
+Slice U-g: core `SavedDataWriteHoldGameTests` (3: a failed write of a marked data holds the journal's file
+byte for byte until the data writes; the industry data; no hold for another directory or an unmarked
+data), create `TracksWriteHoldGameTests` (a real `RailwaySavedData`), core `SavedDataWritesTest`, and
+rtsim-jni `held_journal` (the written exchange and, since slice U-h, the answered one, each applied once with the journal held)
+and slice R's two J4 tests, restarted with the held journal (the written one applied once; the answered one, which
+slice U-h flips to applied once too).
+Slice U-h: rtsim-jni `confirm` (F1 to F8, F14: the confirm on WORLD_SAVED, the start's selection, the budget hold and
+its valve, the stop), the pressure tests in `archive` and `protocol`, `ack_never_resends`' held autosave, rtsim-host
+`the_viewer_and_the_fork_read_the_save_before_an_unconfirmed_one`, `BoundaryProtocolTest` (the trim clamp and the start's
+argument), core GameTests `SavedDataWriteHoldGameTests` and `JournalBarrierGameTests` (the acknowledgement never passes
+the marker).
 The crash GameTests hold the prunes (`holdPrunesForTest`): the scripted engine acknowledges an answer
 once its own save holds it and the emulated crash then sends the op again, which a real engine does not
 (RP-209).
@@ -2356,11 +2613,27 @@ answer, a store's op ring) at the engine's acknowledgement of the answer, whatev
 engine that acknowledges a record it ignored, and then sends the op again or decides the same goods
 again at the switch-on, applies them twice.
 
-**The preamble order stays.** A hand-over's preamble writes MODULES ahead of the journal's drain
-(`BoundarySession.flushPreamble`), so every record of the switch's tick reaches the engine after the
-switch. Under the rule that order no longer matters for correctness; do not reorder it to "fix" a hole,
-fix the module's off path instead. There is no Java-side freeze of puppets at the switch either: the
-engine's own capture (the despawn it sends) ends a puppet, and what happens to it before then is heard.
+**The switch is a record (U-e, RP-290).** MODULES, a latest-wins record the preamble wrote ahead of the
+journal's drain, is retired. The switch is MODULE_SWITCH (0x0132), a journaled kind: Java journals it
+at its real place among the records (`BoundarySession.setModuleMask`), and again with the session's
+mask right after each session's JOURNAL_GEN; the engine applies it in the journaled dispatch, live and
+in a replay, and the pages hold the mask as of their sequence (docs/boundary.md §3.3). So the order
+that used to matter ("every record of the switch's tick reaches the engine after the switch") is the
+journal's, not the preamble's: a record journaled before the switch is heard with the module on, one
+after it with the module off, and a crash and a restart replay the window exactly as it was lived: the
+records before the switch with the module on, the switch (the modules run to its tick first, the
+industry engine freezes there), the records after it kept, and a switch-on that applies them at their
+own ticks. A restart whose config differs from the journal's last mask is the session's own switch,
+made live after the replay. The live path and the replayed path are equal for the records the
+modules keep; what they do at the switch-off and the switch-on themselves (the puppets captured back,
+the viewers' bodies abstract again) is the same code in both. There is no Java-side freeze of
+puppets at the switch either: the engine's own capture (the despawn it sends) ends a puppet, and
+what happens to it before then is heard. RP-285's A/B ("a restart off, switched on later, against
+a restart on") and RP-300's D1 are restated for it: a restart that replays an off window against a
+run that never had the window (the same journal with the switches patched to the mask the module was
+already in) makes the world the same, and the replay of the window itself is shown by a record
+before the switch being booked in the replay and one after it kept
+(`crates/rtsim-jni/tests/protocol.rs`, module `module_switch`).
 
 **The modules** (a sweep at fdfa88e0; each row is updated when its slice lands):
 

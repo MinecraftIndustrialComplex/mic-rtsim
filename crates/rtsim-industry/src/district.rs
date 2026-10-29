@@ -187,7 +187,11 @@ pub struct SimSpan {
 /// A chunk's reconcile waiting for the chunk and then for Java's result.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PendingChunk {
+    /// Its `epoch` is the chunk's ([`District::chunk_epochs`]), which Java's guard reads.
     pub cmd: ChunkReconcile,
+    /// The round that made it ([`District::epoch`]): the key of the round's books
+    /// (`round_added`, `round_short`, the reports) and of its trims.
+    pub round: u32,
     /// Removals to trim outputs already applied (their shortfalls are untracked mints).
     pub trim: bool,
     /// Sent to Java: it may be applied at any moment, so it is never edited again (a trim makes
@@ -306,7 +310,23 @@ pub struct District {
     /// that sweep is current: its well was found drilling then (OG-9e's nests wake on it, OGC71).
     pub last_sweep: u32,
     pub sim: Option<SimSpan>,
+    /// The district's reconcile rounds so far: the key of each round's books. Not what Java's
+    /// guard reads, which is per chunk ([`District::chunk_epochs`]).
     pub epoch: u32,
+    /// Each chunk's last reconcile epoch, the epoch its next IND_CHUNK_RECONCILE takes one past
+    /// (docs/choices-mowzie-build.md RP-259). Java guards a chunk's reconciles by the epoch its
+    /// attachment holds for the district (Reconciler.java `apply`), per chunk, so a counter per
+    /// district let two rounds on two chunks that a crash's replay decides in the other order swap
+    /// epochs, and the second chunk take an epoch above the one it applied live. Only the
+    /// engine's own rounds move it: an epoch Java names (IND_CHUNK_LOADED's, IND_RECONCILE_RESULT's)
+    /// raises no floor, since a round decided again after a crash must meet the epoch the chunk
+    /// holds to be refused, and one past it would be applied twice.
+    pub chunk_epochs: BTreeMap<ChunkPos, u32>,
+    /// The packages written into each postbox's offline buffer so far, per address and good: the
+    /// number each IND_WRITE_PACKAGE is named by ([`District::next_package`], RP-259). Saved with
+    /// the pages, so a replay after a crash numbers its packages from the save as the live run
+    /// did, whatever ticks it decides them at.
+    pub packages_decided: BTreeMap<(u32, u32), GoodVec>,
     pub pending: BTreeMap<ChunkPos, Vec<PendingChunk>>,
     pub pending_ops: BTreeMap<OpId, ChunkPos>,
     /// What the replay made in the span each epoch reconciled, which trims are capped by.
@@ -356,8 +376,9 @@ pub const EDITORS_KEPT: usize = 8;
 /// A district page starts with this (OGC54: "IDS2" is the first format with one; before it a
 /// district page had no magic and no editors; "IDS3" adds the stations' ports and per-call
 /// amounts, choices SG32 and SG34; "IDS4", OG-9e: the latest sweep merged, and a fifth threat
-/// class in the defence record). No older page opens.
-pub const DISTRICT_MAGIC: u32 = u32::from_le_bytes(*b"IDS4");
+/// class in the defence record; "IDS5", slice R's review: reconcile epochs per chunk, each
+/// pending reconcile's round, and the packages written per postbox, RP-259). No older page opens.
+pub const DISTRICT_MAGIC: u32 = u32::from_le_bytes(*b"IDS5");
 
 /// A player heading for an unloaded district, as the Java side last reported it (IND_APPROACH).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -391,6 +412,8 @@ impl District {
             last_sweep: 0,
             sim: None,
             epoch: 0,
+            chunk_epochs: BTreeMap::new(),
+            packages_decided: BTreeMap::new(),
             pending: BTreeMap::new(),
             pending_ops: BTreeMap::new(),
             round_added: BTreeMap::new(),
@@ -451,6 +474,24 @@ impl District {
             }
             Phase::Learned => None,
         }
+    }
+
+    /// The epoch of `chunk`'s next IND_CHUNK_RECONCILE: one past its last (RP-259).
+    pub fn next_chunk_epoch(&mut self, chunk: ChunkPos) -> u32 {
+        let e = self.chunk_epochs.entry(chunk).or_insert(0);
+        *e += 1;
+        *e
+    }
+
+    /// The number of the next package of `good` for `address` written into postbox `inventory`:
+    /// one past the last (RP-259).
+    pub fn next_package(&mut self, inventory: u32, address: u32, good: Good) -> u64 {
+        let v = self
+            .packages_decided
+            .entry((inventory, address))
+            .or_default();
+        v.add(good, 1);
+        v.get(good) as u64
     }
 
     pub fn push_report(&mut self, r: ReconcileReport) {
@@ -893,7 +934,12 @@ mod persist_impls {
         glass,
         folded
     });
-    persist_struct!(PendingChunk { cmd, trim, sent });
+    persist_struct!(PendingChunk {
+        cmd,
+        round,
+        trim,
+        sent
+    });
     persist_struct!(ReconcileReport {
         epoch,
         at,
@@ -983,6 +1029,8 @@ mod persist_impls {
             self.last_sweep.put(w);
             self.sim.put(w);
             self.epoch.put(w);
+            self.chunk_epochs.put(w);
+            self.packages_decided.put(w);
             self.pending.put(w);
             self.pending_ops.put(w);
             self.round_added.put(w);
@@ -1035,6 +1083,8 @@ mod persist_impls {
                 last_sweep: Persist::get(r)?,
                 sim: Persist::get(r)?,
                 epoch: Persist::get(r)?,
+                chunk_epochs: Persist::get(r)?,
+                packages_decided: Persist::get(r)?,
                 pending: Persist::get(r)?,
                 pending_ops: Persist::get(r)?,
                 round_added: Persist::get(r)?,
@@ -1089,5 +1139,49 @@ mod tests {
         let back: District = from_bytes(&bytes).unwrap();
         assert_eq!(back, d);
         assert!(from_bytes::<District>(&bytes[4..]).is_err());
+    }
+
+    /// The chunk epochs and the package numbers come back with the page (P2-b of the slice R
+    /// re-check, RP-259): a replay from pages that lost them would number its next round on a
+    /// chunk, or its next package, from 1 again: refused by the chunk's epoch, or a package under
+    /// an op the world holds (a loss) or, while the window still knows that op, under a new one (a
+    /// make).
+    #[test]
+    fn a_district_page_keeps_its_chunk_epochs_and_package_numbers() {
+        let mut d = District::new(DistrictId(3));
+        let (a, b) = (
+            ChunkPos {
+                dim: 0,
+                x: 2,
+                z: -1,
+            },
+            ChunkPos {
+                dim: 0,
+                x: 3,
+                z: -1,
+            },
+        );
+        let iron = Good(4);
+        for _ in 0..3 {
+            d.next_chunk_epoch(a);
+        }
+        d.next_chunk_epoch(b);
+        for _ in 0..5 {
+            d.next_package(1, 7, iron);
+        }
+        d.next_package(1, 8, iron);
+        let mut back: District = from_bytes(&to_bytes(&d)).unwrap();
+        assert_eq!(back.chunk_epochs, d.chunk_epochs);
+        assert_eq!(back.packages_decided, d.packages_decided);
+        assert_eq!(
+            (
+                back.next_chunk_epoch(a),
+                back.next_chunk_epoch(b),
+                back.next_package(1, 7, iron),
+                back.next_package(1, 8, iron),
+            ),
+            (4, 2, 6, 2),
+            "each counter goes on from its last"
+        );
     }
 }

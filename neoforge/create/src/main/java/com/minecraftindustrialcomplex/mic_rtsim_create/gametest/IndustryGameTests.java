@@ -18,7 +18,9 @@ import com.minecraftindustrialcomplex.mic_rtsim.industry.StockAccess;
 import com.minecraftindustrialcomplex.mic_rtsim_create.CreateIds;
 import com.minecraftindustrialcomplex.mic_rtsim_create.MicRtsimCreate;
 import com.minecraftindustrialcomplex.mic_rtsim_create.TrainWatch;
+import com.simibubi.create.AllBlocks;
 import com.simibubi.create.content.logistics.box.PackageItem;
+import com.simibubi.create.content.logistics.chute.ChuteBlockEntity;
 import com.simibubi.create.content.logistics.packagePort.PackagePortBlockEntity;
 import com.simibubi.create.content.trains.bogey.AbstractBogeyBlock;
 import com.simibubi.create.content.trains.entity.Carriage;
@@ -861,6 +863,217 @@ public final class IndustryGameTests {
                 .thenSucceed();
     }
 
+    /**
+     * A vanilla double chest across a chunk border is two boundary inventories, one per half, each its own 27 slots
+     * (RP-215): the pair's handler reads the other half through {@code Level.getBlockState} and writes into either, so a
+     * command at one half would change a chunk it does not name. The two chunks are one district all the same. Either
+     * half leads to itself, and an unloaded position still has none.
+     */
+    @GameTest(template = YARD, batch = "industry_14b", timeoutTicks = 400)
+    public static void aDoubleChestAcrossAChunkBorderIsTwoInventories(GameTestHelper helper) {
+        fastConfig();
+        forget(helper);
+        int bx = borderX(helper), y = floorY(helper), z = midZ(helper);
+        BlockPos a = new BlockPos(bx - 1, y, z), b = a.east();
+        set(helper, a, Blocks.CHEST.defaultBlockState().setValue(net.minecraft.world.level.block.ChestBlock.FACING, Direction.NORTH)
+                .setValue(net.minecraft.world.level.block.ChestBlock.TYPE, net.minecraft.world.level.block.state.properties.ChestType.LEFT));
+        set(helper, b, Blocks.CHEST.defaultBlockState().setValue(net.minecraft.world.level.block.ChestBlock.FACING, Direction.NORTH)
+                .setValue(net.minecraft.world.level.block.ChestBlock.TYPE, net.minecraft.world.level.block.state.properties.ChestType.RIGHT));
+        playerPlaced(helper, a);
+        playerPlaced(helper, b);
+        helper.startSequence()
+                .thenWaitUntil(() -> {
+                    District d = districtAt(helper, a);
+                    check("district", d != null);
+                    check("the other half's chunk is in it", districtAt(helper, b) == d && d.chunks.size() == 2);
+                    check("an inventory for each half, at its own position: " + d.inventories, d.inventories.size() == 2
+                            && d.inventoryAt(a) != null && d.inventoryAt(b) != null);
+                    check("27 slots each: " + d.inventories, d.inventoryAt(a).itemSlots() == 27 && d.inventoryAt(b).itemSlots() == 27);
+                    check("either half leads to itself", a.equals(com.minecraftindustrialcomplex.mic_rtsim.industry.Districts.canonicalInventory(helper.getLevel(), a))
+                            && b.equals(com.minecraftindustrialcomplex.mic_rtsim.industry.Districts.canonicalInventory(helper.getLevel(), b)));
+                })
+                .thenSucceed();
+    }
+
+    /**
+     * A counted move into one half of a vanilla double chest across a chunk border is credited to neither half
+     * (RP-215, residual 13). Create's movers put goods into a chest through NeoForge's chest item handler, which
+     * is the whole pair's, so a mover facing half Q may fill half P in the other chunk, and a count credited to
+     * Q's store would disagree with the stocks of both halves. A chute over the east half is held as a counted
+     * mover of that half and given 4 ingots: they land in the pair (the stock of the two halves rose by 4), the
+     * east half's counter stays at 0, and the move is in {@code splitMovesDiscarded}, not in
+     * {@code movesCounted}. The control is the same chute over a single chest, whose move is counted as before.
+     */
+    @GameTest(template = YARD, batch = "industry_14c", timeoutTicks = 400)
+    public static void aMoveIntoAHalfOfASplitChestIsDiscardedNotCounted(GameTestHelper helper) {
+        String t = "aMoveIntoAHalfOfASplitChestIsDiscardedNotCounted";
+        fastConfig();
+        forget(helper);
+        int bx = borderX(helper), y = floorY(helper), z = midZ(helper);
+        net.minecraft.world.level.block.state.BlockState chest = Blocks.CHEST.defaultBlockState().setValue(net.minecraft.world.level.block.ChestBlock.FACING, Direction.NORTH);
+        BlockPos west = new BlockPos(bx - 1, y, z), east = west.east();
+        BlockPos single = new BlockPos(bx + 6, y, z + 4);
+        set(helper, west, chest.setValue(net.minecraft.world.level.block.ChestBlock.TYPE, net.minecraft.world.level.block.state.properties.ChestType.LEFT));
+        set(helper, east, chest.setValue(net.minecraft.world.level.block.ChestBlock.TYPE, net.minecraft.world.level.block.state.properties.ChestType.RIGHT));
+        set(helper, single, chest);
+        BlockPos chuteSplit = east.above(), chuteSingle = single.above();
+        set(helper, chuteSplit, AllBlocks.CHUTE.getDefaultState());
+        set(helper, chuteSingle, AllBlocks.CHUTE.getDefaultState());
+        ServerLevel level = helper.getLevel();
+        com.minecraftindustrialcomplex.mic_rtsim.industry.glass.Counting counting = ind().counting();
+        long district = 0x5f5f0001L;
+        long[] before = new long[3]; // moves counted, moves discarded, the pair's stock
+        helper.startSequence()
+                .thenExecute(() -> {
+                    check("the east half is a half of a split pair", StockAccess.splitPair(level.getBlockState(east), east) != null);
+                    check("the single chest is not", StockAccess.splitPair(level.getBlockState(single), single) == null);
+                    long now = level.getGameTime();
+                    counting.holdForTest(district, level.dimension(), chuteSplit, east, now);
+                    counting.holdForTest(district, level.dimension(), chuteSingle, single, now);
+                    before[0] = counting.movesCounted();
+                    before[1] = counting.splitMovesDiscarded();
+                    before[2] = pairStock(level, west) + pairStock(level, east);
+                    check("the east half is a counted store of its chute", counting.holds(district, chuteSplit, east));
+                    ((ChuteBlockEntity) level.getBlockEntity(chuteSplit)).setItem(new ItemStack(Items.IRON_INGOT, 4), 1f);
+                    ((ChuteBlockEntity) level.getBlockEntity(chuteSingle)).setItem(new ItemStack(Items.IRON_INGOT, 4), 1f);
+                })
+                .thenWaitUntil(() -> {
+                    check("both chutes emptied into their chests", ((ChuteBlockEntity) level.getBlockEntity(chuteSplit)).getItem().isEmpty()
+                            && ((ChuteBlockEntity) level.getBlockEntity(chuteSingle)).getItem().isEmpty());
+                })
+                .thenExecute(() -> {
+                    long stock = pairStock(level, west) + pairStock(level, east) - before[2];
+                    long[] k = counting.counters(district, chuteSplit, east), c = counting.counters(district, chuteSingle, single);
+                    record(t, "counts", "pair stock +" + stock + ", split pair counters " + java.util.Arrays.toString(k) + ", control " + java.util.Arrays.toString(c)
+                            + ", moves counted +" + (counting.movesCounted() - before[0]) + ", discarded +" + (counting.splitMovesDiscarded() - before[1]));
+                    check("the 4 ingots landed in the split pair: +" + stock, stock == 4);
+                    check("the control chute's move was counted: " + java.util.Arrays.toString(c), c != null && c[1] == 4);
+                    check("the east half was credited nothing: " + java.util.Arrays.toString(k), k != null && k[1] == 0 && k[2] == 0);
+                    check("one move was counted (the control's), not two: +" + (counting.movesCounted() - before[0]), counting.movesCounted() - before[0] == 1);
+                    check("the split half's move is in its own counter: +" + (counting.splitMovesDiscarded() - before[1]), counting.splitMovesDiscarded() - before[1] == 1);
+                })
+                .thenSucceed();
+    }
+
+    /**
+     * A player's container session at a half of a vanilla double chest across a chunk border is booked at close as a
+     * port to the district that names no inventory (RP-215, residual 13): vanilla's chest menu is the
+     * {@code CompoundContainer} of both halves, so the goods may sit in the half the player did not click, and a port
+     * against the clicked half would be wrong. A fake player clicks the west half, opens the pair's menu, lets sweeps
+     * pass (a learning window can roll over meanwhile), then takes 5 ingots from the east half and throws 3 of them
+     * out of the open menu. The session still stands, so: one PLAYER_SESSION port of -2 iron with no inventory, no
+     * PLAYER_TOSS for the throw (the session's diff has it), no unattributed discard, and the session is counted in
+     * {@code splitSessions}. The control is a session on a single chest in the same chunk and district, booked against
+     * that chest's own inventory index as before.
+     */
+    @GameTest(template = YARD, batch = "industry_14d", timeoutTicks = 600)
+    public static void aSessionAtAHalfOfASplitChestIsBookedToTheDistrictAlone(GameTestHelper helper) {
+        String t = "aSessionAtAHalfOfASplitChestIsBookedToTheDistrictAlone";
+        fastConfig();
+        forget(helper);
+        int bx = borderX(helper), y = floorY(helper), z = midZ(helper);
+        net.minecraft.world.level.block.state.BlockState chest = Blocks.CHEST.defaultBlockState().setValue(net.minecraft.world.level.block.ChestBlock.FACING, Direction.NORTH);
+        BlockPos west = new BlockPos(bx - 1, y, z), east = west.east();
+        BlockPos single = new BlockPos(bx + 6, y, z); // the east half's chunk, so the same district
+        set(helper, west, chest.setValue(net.minecraft.world.level.block.ChestBlock.TYPE, net.minecraft.world.level.block.state.properties.ChestType.LEFT));
+        set(helper, east, chest.setValue(net.minecraft.world.level.block.ChestBlock.TYPE, net.minecraft.world.level.block.state.properties.ChestType.RIGHT));
+        set(helper, single, chest);
+        playerPlaced(helper, west);
+        playerPlaced(helper, east);
+        playerPlaced(helper, single);
+        ServerLevel level = helper.getLevel();
+        net.neoforged.neoforge.common.util.FakePlayer fp = net.neoforged.neoforge.common.util.FakePlayerFactory.getMinecraft(level);
+        var ports = ind().ports();
+        long[] id = {0};
+        long[] before = new long[3]; // unattributed, split sessions, session ports
+        net.minecraft.world.CompoundContainer[] pair = {null};
+        net.minecraft.world.inventory.ChestMenu[] menu = {null};
+        helper.startSequence()
+                .thenWaitUntil(() -> {
+                    District d = districtAt(helper, west);
+                    check("the pair's district", d != null && d.inventoryAt(west) != null && d.inventoryAt(east) != null);
+                    check("the single chest is in it", districtAt(helper, single) == d && d.inventoryAt(single) != null);
+                    id[0] = d.id;
+                })
+                .thenExecute(() -> {
+                    ((net.minecraft.world.level.block.entity.ChestBlockEntity) level.getBlockEntity(east)).setItem(0, new ItemStack(Items.IRON_INGOT, 5));
+                    before[0] = ports.unattributedSessions();
+                    before[1] = ports.splitSessions();
+                    before[2] = ports.sessionPorts();
+                    fp.setPos(west.getX() + 0.5, west.getY() + 1, west.getZ() + 0.5);
+                    fp.getInventory().clearContent();
+                    pair[0] = new net.minecraft.world.CompoundContainer((net.minecraft.world.Container) level.getBlockEntity(west), (net.minecraft.world.Container) level.getBlockEntity(east));
+                    menu[0] = net.minecraft.world.inventory.ChestMenu.sixRows(1, fp.getInventory(), pair[0]);
+                    net.neoforged.neoforge.common.NeoForge.EVENT_BUS.post(new net.neoforged.neoforge.event.entity.player.PlayerInteractEvent.RightClickBlock(
+                            fp, net.minecraft.world.InteractionHand.MAIN_HAND, west,
+                            new net.minecraft.world.phys.BlockHitResult(Vec3.atCenterOf(west), Direction.UP, west, false)));
+                    net.neoforged.neoforge.common.NeoForge.EVENT_BUS.post(new net.neoforged.neoforge.event.entity.player.PlayerContainerEvent.Open(fp, menu[0]));
+                })
+                .thenIdle(60) // sweeps (every 20 ticks in the test config) pass with the menu open
+                .thenExecute(() -> {
+                    // The goods leave Q, the half the player did not click, and 3 are thrown out of the open menu.
+                    fp.getInventory().setItem(0, pair[0].removeItem(27, 5));
+                    fp.getInventory().setItem(0, new ItemStack(Items.IRON_INGOT, 2));
+                    ItemEntity thrown = new ItemEntity(level, fp.getX(), fp.getY(), fp.getZ(), new ItemStack(Items.IRON_INGOT, 3));
+                    net.neoforged.neoforge.common.NeoForge.EVENT_BUS.post(new net.neoforged.neoforge.event.entity.item.ItemTossEvent(thrown, fp));
+                    net.neoforged.neoforge.common.NeoForge.EVENT_BUS.post(new net.neoforged.neoforge.event.entity.player.PlayerContainerEvent.Close(fp, menu[0]));
+                })
+                .thenExecute(() -> {
+                    // The control: a session on a single chest, 4 coal in.
+                    fp.getInventory().clearContent();
+                    fp.getInventory().setItem(0, new ItemStack(Items.COAL, 4));
+                    net.minecraft.world.inventory.ChestMenu m = net.minecraft.world.inventory.ChestMenu.threeRows(2, fp.getInventory(), chest(helper, single));
+                    net.neoforged.neoforge.common.NeoForge.EVENT_BUS.post(new net.neoforged.neoforge.event.entity.player.PlayerInteractEvent.RightClickBlock(
+                            fp, net.minecraft.world.InteractionHand.MAIN_HAND, single,
+                            new net.minecraft.world.phys.BlockHitResult(Vec3.atCenterOf(single), Direction.UP, single, false)));
+                    net.neoforged.neoforge.common.NeoForge.EVENT_BUS.post(new net.neoforged.neoforge.event.entity.player.PlayerContainerEvent.Open(fp, m));
+                    chest(helper, single).setItem(0, fp.getInventory().removeItem(0, 4));
+                    net.neoforged.neoforge.common.NeoForge.EVENT_BUS.post(new net.neoforged.neoforge.event.entity.player.PlayerContainerEvent.Close(fp, m));
+                })
+                .thenIdle(10)
+                .thenExecute(() -> {
+                    long splitIron = 0, controlCoal = 0;
+                    int splitSessionRecords = 0, controlRecords = 0, tosses = 0;
+                    int singleIndex = ind().district(id[0]).inventoryAt(single).index();
+                    for (ByteBuffer p : received(IndRecords.IND_PORT, IndRecords.Port.DISTRICT, id[0])) {
+                        int kind = p.getInt(IndRecords.Port.PORT_KIND), inventory = p.getInt(IndRecords.Port.INVENTORY);
+                        if (kind == IndRecords.Port.PLAYER_TOSS)
+                            tosses++;
+                        if (kind != IndRecords.Port.PLAYER_SESSION)
+                            continue;
+                        for (int i = 0; i < aux(p); i++) {
+                            int e = IndRecords.Port.ENTRIES + i * IndRecords.ENTRY16;
+                            String good = javaName(p.getInt(e));
+                            if (inventory == IndRecords.NO_INVENTORY) {
+                                splitSessionRecords++;
+                                if (good.equals("i/64/minecraft:iron_ingot"))
+                                    splitIron += p.getLong(e + 8);
+                            } else if (inventory == singleIndex) {
+                                controlRecords++;
+                                if (good.equals("i/64/minecraft:coal"))
+                                    controlCoal += p.getLong(e + 8);
+                            }
+                        }
+                    }
+                    record(t, "counts", "split session records " + splitSessionRecords + " (iron " + splitIron + "), control records " + controlRecords + " (coal " + controlCoal
+                            + "), tosses " + tosses + ", unattributed +" + (ports.unattributedSessions() - before[0]) + ", split sessions +" + (ports.splitSessions() - before[1])
+                            + ", session ports +" + (ports.sessionPorts() - before[2]));
+                    check("the pair's session was booked to the district with no inventory: -2 iron, not " + splitIron, splitIron == -2);
+                    check("the throw out of the open menu was not a PLAYER_TOSS: " + tosses, tosses == 0);
+                    check("the session was not discarded as unattributed: +" + (ports.unattributedSessions() - before[0]), ports.unattributedSessions() == before[0]);
+                    check("and was counted as a split pair's: +" + (ports.splitSessions() - before[1]), ports.splitSessions() - before[1] == 1);
+                    check("the control: a session on a single chest is booked against that chest, +4 coal, not " + controlCoal, controlCoal == 4);
+                    check("two session ports in all: +" + (ports.sessionPorts() - before[2]), ports.sessionPorts() - before[2] == 2);
+                    fp.getInventory().clearContent();
+                })
+                .thenSucceed();
+    }
+
+    /** The ingots in one chest half's own slots (not the pair's). */
+    private static long pairStock(ServerLevel level, BlockPos half) {
+        return level.getBlockEntity(half) instanceof net.minecraft.world.level.block.entity.ChestBlockEntity c ? count(c, Items.IRON_INGOT) : 0;
+    }
+
     private static String engineName(int engineGoodId) {
         return ind().engineName(IndRecords.DICT_GOOD, engineGoodId);
     }
@@ -1000,9 +1213,11 @@ public final class IndustryGameTests {
     /**
      * Damage (C18, I23): a reconcile's destroy entry whose block still has its expected state is broken
      * with drops, so the chest's 12 emeralds lie on the ground; one whose state changed is skipped; no
-     * fire. The result names the block broken.
+     * fire. The result names the block broken. The drops join the level only once the chunk is on disk
+     * (docs/choices-journal-barrier.md RP-213), which takes wall time: that wait is paced, and the timeout
+     * (at least 60 s at 5 ms a failed check) covers {@code ChunkWriteBarrier.WRITE_NOW_MILLIS}.
      */
-    @GameTest(template = YARD, batch = "industry_08", timeoutTicks = 400)
+    @GameTest(template = YARD, batch = "industry_08", timeoutTicks = 12_000)
     public static void aBrokenBlockDropsItsContents(GameTestHelper helper) {
         fastConfig();
         forget(helper);
@@ -1034,20 +1249,22 @@ public final class IndustryGameTests {
                     check("the broken block is the chest", r.getInt(p) == chestPos.getX() && r.getInt(p + 4) == chestPos.getY() && r.getInt(p + 8) == chestPos.getZ());
                     check("the chest is gone", level.getBlockState(chestPos).isAir());
                     check("the barrel stands", level.getBlockState(barrelPos).is(Blocks.BARREL));
-                    int emeralds = 0;
-                    for (ItemEntity it : level.getEntitiesOfClass(ItemEntity.class, new AABB(chestPos).inflate(3)))
-                        if (it.getItem().is(Items.EMERALD))
-                            emeralds += it.getItem().getCount();
-                    check("its 12 emeralds dropped: " + emeralds, emeralds == 12);
                     boolean fire = false;
                     for (BlockPos q : BlockPos.betweenClosed(chestPos.offset(-3, -1, -3), chestPos.offset(3, 2, 3)))
                         if (level.getBlockState(q).is(Blocks.FIRE))
                             fire = true;
                     check("no fire", !fire);
+                })
+                .thenWaitUntil(paced(() -> {
+                    int emeralds = 0;
+                    for (ItemEntity it : level.getEntitiesOfClass(ItemEntity.class, new AABB(chestPos).inflate(3)))
+                        if (it.getItem().is(Items.EMERALD))
+                            emeralds += it.getItem().getCount();
+                    check("its 12 emeralds dropped once the chunk is on disk: " + emeralds, emeralds == 12);
                     record("aBrokenBlockDropsItsContents", "dropped emeralds", emeralds);
                     for (ItemEntity it : level.getEntitiesOfClass(ItemEntity.class, new AABB(chestPos).inflate(3)))
                         it.discard();
-                })
+                }))
                 .thenSucceed();
     }
 
@@ -1419,7 +1636,7 @@ public final class IndustryGameTests {
                                     && !received(IndRecords.IND_LOAD_STATE, IndRecords.LoadState.DISTRICT, d.id).isEmpty());
                 }))
                 .thenExecute(() -> {
-                    // Off: the engine is told the switch (a MODULES record) and Java goes quiet.
+                    // Off: the engine is told the switch (a journaled MODULE_SWITCH record) and Java goes quiet.
                     RtsimConfig.Test.setModule(Module.INDUSTRY, false);
                     BridgeEvents.moduleSwitchesChanged(server);
                 })

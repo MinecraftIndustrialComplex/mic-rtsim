@@ -156,8 +156,10 @@ pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_Nat
     .resolve::<ThrowRuntimeExAndDefault>()
 }
 
-/// `static native int nStart(long handle, long lastAppliedCmdSeq, long[] out)`: out[0] the
-/// observation sequence the pages include, out[1] the next command sequence.
+/// `static native int nStart(long handle, long lastAppliedCmdSeq, long worldNextObsSeq, long[] out)`:
+/// out[0] the observation sequence the pages include, out[1] the next command sequence.
+/// `worldNextObsSeq` is the world's journal's `nextObsSeq`: the engine opens the page generation the
+/// journal's file holds (P29, docs/choices-leg-purge.md LP12).
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_NativeEngine_nStart<
     'l,
@@ -166,6 +168,7 @@ pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_Nat
     _class: JClass<'l>,
     handle: jlong,
     last_applied: jlong,
+    world_next_obs_seq: jlong,
     out: JLongArray<'l>,
 ) -> jint {
     env.with_env(|env| -> Result<jint, JniError> {
@@ -175,7 +178,7 @@ pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_Nat
             set_last_error("nStart needs a long[2]");
             return Ok(abi::MIC_ERR_INVALID_ARGUMENT);
         }
-        match e.start(last_applied as u64) {
+        match e.start(last_applied as u64, world_next_obs_seq as u64) {
             Ok((pages, next)) => {
                 out.set_region(env, 0, &[pages as jlong, next as jlong])?;
                 Ok(abi::MIC_OK)
@@ -231,9 +234,12 @@ pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_Nat
     .resolve::<ThrowRuntimeExAndDefault>()
 }
 
-/// `static native int nClose(long handle, boolean save, int timeoutMs)`: ends the session and
-/// frees the handle. 0, or a negative status with the reason in `nLastError()` (the handle is
-/// freed either way).
+/// `static native int nClose(long handle, boolean save, long writtenThrough, int timeoutMs)`: ends
+/// the session and frees the handle. `writtenThrough` is the last observation sequence the world's
+/// journal file holds (Java's `JournalSavedData.writtenThrough`); the final save is confirmed at
+/// once only if the file holds it, else it stays pending (slice U-i), and it is unused when `save`
+/// is false. 0, or a negative status with the reason in `nLastError()` (the handle is freed
+/// either way).
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_NativeEngine_nClose<
     'l,
@@ -242,6 +248,7 @@ pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_Nat
     _class: JClass<'l>,
     handle: jlong,
     save: jboolean,
+    written_through: jlong,
     timeout_ms: jint,
 ) -> jint {
     env.with_env(|_env| -> Result<jint, JniError> {
@@ -250,7 +257,11 @@ pub extern "system" fn Java_com_minecraftindustrialcomplex_mic_1rtsim_engine_Nat
         }
         // SAFETY: Java's contract: a live handle, closed once. The box is ours again.
         let e = unsafe { Box::from_raw(handle as usize as *mut Arc<Engine>) };
-        let r = e.close(save, Duration::from_millis(timeout_ms.max(0) as u64));
+        let r = e.close_through(
+            save,
+            written_through.max(0) as u64,
+            Duration::from_millis(timeout_ms.max(0) as u64),
+        );
         drop(e);
         Ok(match r {
             Ok(()) => abi::MIC_OK,

@@ -101,6 +101,7 @@ public final class Industry {
     /** The session ends: nothing is counted any more (the count points' static pointer is cleared). */
     public void close() {
         counting.clear();
+        reconciler.close();
     }
 
     /** Counting at the movers (SEC-1 S3). */
@@ -592,6 +593,11 @@ public final class Industry {
      */
     public void journalDependsOn(net.minecraft.world.level.chunk.LevelChunk chunk) {
         session.journal().chunks().dependsOn(chunk);
+    }
+
+    /** Puts {@code chunks} on disk now; true once they are there (ChunkWriteBarrier.writeNow, RP-213). */
+    java.util.concurrent.CompletableFuture<Boolean> writeNow(ServerLevel level, java.util.Collection<net.minecraft.world.level.chunk.LevelChunk> chunks) {
+        return session.journal().chunks().writeNow(level, chunks);
     }
 
     /** True when {@code chunk} still carries the COMMAND_RESULT of this op id (applied into it, not yet acknowledged). */

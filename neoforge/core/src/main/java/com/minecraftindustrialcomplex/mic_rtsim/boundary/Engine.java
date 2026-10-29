@@ -37,9 +37,13 @@ public interface Engine extends AutoCloseable {
     /**
      * Once per session, before the first hand-over: the engine loads its pages and reports what they
      * include. {@code lastAppliedCmdSeq} is the journal's; the engine's commands this session carry
-     * sequences above it. May block (it runs at server start, not on a tick).
+     * sequences above it. {@code worldNextObsSeq} is the world's journal's {@code nextObsSeq}: the
+     * journal file on disk holds every observation through {@code worldNextObsSeq - 1}, and the engine
+     * opens the page generation that file holds (a generation it took for a world save whose file
+     * never landed is rolled back, one the file holds is kept and confirmed; P29,
+     * docs/choices-leg-purge.md LP12). May block (it runs at server start, not on a tick).
      */
-    SessionStart start(long lastAppliedCmdSeq);
+    SessionStart start(long lastAppliedCmdSeq, long worldNextObsSeq);
 
     /**
      * Starts step {@code handover}: read observation buffer {@code handover & 1}, mark it consumed,
@@ -51,8 +55,10 @@ public interface Engine extends AutoCloseable {
     /**
      * Minecraft is saving, and its journal holds every observation up to {@code throughObsSeq}. The
      * engine snapshots its pages after applying exactly the observations up to that sequence (no
-     * further: pages ahead of the world save are Proposal P29's case), writes them off-thread, and once
-     * they are on disk a later command header acknowledges them. A signal only: never blocks.
+     * further) and writes them off-thread as a pending generation. The pages are acknowledged only once
+     * the bridge reports the journal's file written, with a WORLD_SAVED record
+     * ({@link BoundarySession#worldSaveDurable}): the engine confirms the generation then, and a later
+     * command header acknowledges it (P29, docs/choices-leg-purge.md LP12). A signal only: never blocks.
      */
     void requestSave(long throughObsSeq);
 
@@ -62,4 +68,17 @@ public interface Engine extends AutoCloseable {
     /** Ends the session. May block briefly to let a step in flight finish and pages be written. */
     @Override
     void close();
+
+    /**
+     * Ends the session at a stop, naming what the world's journal file holds: {@code writtenThrough} is
+     * the last observation sequence the file on disk holds ({@code JournalSavedData.writtenThrough}, read
+     * after the stop's flush save). The engine's final save is confirmed at once only if the file holds
+     * every observation it includes; otherwise it stays a pending generation, and the restart from the
+     * older file rolls it back as it does a world save whose WORLD_SAVED never came (slice U-i,
+     * docs/choices-journal-barrier.md U-i1). {@link #close()} is this with a file that holds everything.
+     * An engine that keeps one generation just closes.
+     */
+    default void close(long writtenThrough) {
+        close();
+    }
 }

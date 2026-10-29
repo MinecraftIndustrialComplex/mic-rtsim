@@ -21,7 +21,6 @@ import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.phys.Vec3;
-import net.neoforged.neoforge.capabilities.Capabilities;
 import net.neoforged.neoforge.items.IItemHandler;
 import net.neoforged.neoforge.items.ItemHandlerHelper;
 
@@ -287,9 +286,11 @@ final class CommandDispatcher implements Handover.CommandSink {
 
     /**
      * An engine-to-Minecraft cross-store transfer. Applied at most once per op id: an op id whose
-     * COMMAND_RESULT(APPLIED) is still in the journal is skipped as a duplicate (an engine that a crash
-     * rolled back re-derives the same op under a new command sequence). All or nothing: the items go in
-     * only when the whole stack fits.
+     * COMMAND_RESULT(APPLIED) is still in the journal, or that the container's chunk carries, is skipped as
+     * a duplicate (an engine that a crash rolled back re-derives the same op under a new command sequence).
+     * A chunk that is not loaded is answered NOT_LOADED, never FAILED: it may hold the op already (written
+     * ahead of the journal), and FAILED would let the engine send the items again under a new op (RP-210).
+     * All or nothing: the items go in only when the whole stack fits.
      */
     private void transferToContainer(ByteBuffer b, int at, long now) {
         long cmdSeq = b.getLong(at + Cmd.CMD_SEQ);
@@ -305,8 +306,12 @@ final class CommandDispatcher implements Handover.CommandSink {
         // getChunkNow, not isLoaded: isLoaded reads the ticket level only, and the capability lookup
         // below would then wait on the server thread for the chunk to finish loading.
         net.minecraft.world.level.chunk.LevelChunk chunk = level == null ? null : level.getChunkSource().getChunkNow(pos.getX() >> 4, pos.getZ() >> 4);
-        if (level == null || item == null || count <= 0 || chunk == null) {
+        if (level == null || item == null || count <= 0) {
             transferResult(cmdSeq, opId, Obs.CommandResult.FAILED, now, level, pos);
+            return;
+        }
+        if (chunk == null) {
+            transferResult(cmdSeq, opId, Obs.CommandResult.NOT_LOADED, now, level, pos);
             return;
         }
         // The chunk itself remembers what was applied into it (PendingRecords): it may have been saved
@@ -316,7 +321,10 @@ final class CommandDispatcher implements Handover.CommandSink {
             session.dropFromChunkWhenAcked(chunk, opId, dup.getLong(Obs.OBS_SEQ));
             return;
         }
-        IItemHandler handler = level.getCapability(Capabilities.ItemHandler.BLOCK, pos, null);
+        // StockAccess.items, as the sweeps and the reconciles read an inventory: a vanilla double chest's half in another
+        // chunk than its other half is its own 27 slots, so the stack goes into this chunk only, which carries the result
+        // (RP-215). The pair's capability would put it into either half and read the other half's chunk.
+        IItemHandler handler = com.minecraftindustrialcomplex.mic_rtsim.industry.StockAccess.items(level, pos);
         if (handler == null) {
             transferResult(cmdSeq, opId, Obs.CommandResult.FAILED, now, level, pos);
             return;
@@ -338,6 +346,7 @@ final class CommandDispatcher implements Handover.CommandSink {
             MicRtsim.LOGGER.warn("[mic_rtsim] transfer {} left {} x {} over at {}; dropped there", opId, rest.getCount(), item, pos);
             net.minecraft.world.Containers.dropItemStack(level, pos.getX() + 0.5, pos.getY() + 1, pos.getZ() + 0.5, rest);
         }
+        com.minecraftindustrialcomplex.mic_rtsim.industry.StockAccess.splitWritten(level, pos);
         session.carryInChunk(chunk, transferResult(cmdSeq, opId, Obs.CommandResult.APPLIED, now, level, pos));
     }
 

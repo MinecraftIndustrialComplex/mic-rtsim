@@ -893,7 +893,7 @@ fn an_epoch_named_before_the_ships_had_a_dock_is_not_reused() {
 /// found (the haven first, or last), the haven's pirate (handle 0 when the haven is first, the
 /// replay's own either way) is materialized at epoch 3 between 4,000 fillers and 4,000 more, then
 /// a crash. With `switch` the ships are switched off and on again after the replay's first
-/// hand-over (a MODULES pair), which begins their replay again. Returns whether the pirate was
+/// hand-over (a pair of MODULE_SWITCH records), which begins their replay again. Returns whether the pirate was
 /// ever seen embodied between hand-overs, and its (embodied, epoch) and next epoch after the
 /// replay end.
 fn pirate_on_empty_pages(switch: bool, haven_first: bool) -> (bool, (bool, u32), u32) {
@@ -981,7 +981,7 @@ fn a_replayed_materialization_is_a_floor_for_the_first_activating_havens_pirate(
     }
 }
 
-/// RP-120: the switch off and on inside the replay (a MODULES pair) begins the ships' replay
+/// RP-120: the switch off and on inside the replay (a pair of MODULE_SWITCH records) begins the ships' replay
 /// again, when the arena holds the replay's own ships too; the bound stays the session's.
 #[test]
 fn a_switch_off_and_on_inside_the_replay_does_not_widen_the_honour() {

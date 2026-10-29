@@ -103,7 +103,8 @@ import static com.minecraftindustrialcomplex.mic_rtsim_create.gametest.glass.Gla
  * Mowzie class. The tests wait with plain {@code thenWaitUntil(Runnable)} steps, one purpose each, and a hard
  * failure is {@link Line#stop} (a wait swallows the failures of its check until the timeout).
  *
- * <p>The track is {@value #LENGTH} blocks of real track along x at a far base (its chunks forced, a stone floor
+ * <p>The track is {@value #LENGTH} blocks of real track along x at a base within 231,000 blocks of the origin
+ * ({@link ConflictKit#nearBase}, not the far bases: a Frostmaw's path sweep runs away beyond ~500,000 blocks, MZB-950; its chunks forced, a stone floor
  * under it and the air cleared above, all taken out again at the end so Create's saved graph holds nothing of
  * it), a station in the middle on the south side, and the train built beside the station as
  * {@code RailFixtureGameTests} builds its own: two small bogeys, controls on the first, a chest on the second,
@@ -135,6 +136,14 @@ public final class RailFrostmawGameTests {
     /** Test 8, moving: the Frostmaw's distance off the rail, the speeds, the passes each, the window it is given its target in, the quiet between passes. */
     static final int ICE_OFF = 18, PASSES = 4, NEAR_X = 40, GAP = 220;
     static final double[] ICE_SPEEDS = {0.5, 1.0, 1.4, 2.0};
+    /**
+     * Test 8, moving: how far from the track's ends a pass turns. The rider is a player, and Create holds a train
+     * with a player aboard still while the point 16 blocks ahead of its carriage is not in an entity-ticking chunk
+     * ({@code Carriage.alignEntity}, {@code Train.carriageWaitingForChunks}); the forced chunks end where the track
+     * does. A pass turns 16 blocks in from an end, the most a tick travels (2) and some slack more, so the point
+     * ahead stays inside the chunks (MZB-938).
+     */
+    static final int ICE_ENDS = 16 + 2 + 6;
 
     /**
      * Test 9: the lurk point is this far ahead of the train, the spot this far off the rail (the engine's own:
@@ -270,7 +279,8 @@ public final class RailFrostmawGameTests {
             this.level = helper.getLevel();
             this.side = side;
             this.northRows = northRows;
-            int[] base = ConflictKit.farBase();
+            // Not farBase(): a Frostmaw walks a path here, and the jar's float sweep of it runs away beyond ~500,000 blocks (PathSafeBase)
+            int[] base = ConflictKit.nearBase();
             x0 = base[0];
             z0 = base[1] + 8; // the middle of a chunk, with the station's block beside the track in it
             stations.add(STATION_AT);
@@ -890,8 +900,8 @@ public final class RailFrostmawGameTests {
                     t.settle();
                     t.train.speed = 0.0;
                     t.mountRider(0);
-                    bounds[0] = t.x0 + 15;
-                    bounds[1] = t.x0 + LENGTH - 15;
+                    bounds[0] = t.x0 + ICE_ENDS;
+                    bounds[1] = t.x0 + LENGTH - ICE_ENDS;
                     frostX[0] = t.x0 + STATION_AT + 0.5;
                     t.frost = frostmawAt(t.level, frostX[0], t.y + 0.25, t.z0 + 0.5 - ICE_OFF);
                     t.lastBall = t.level.getGameTime() - GAP; // ready now
@@ -1066,7 +1076,7 @@ public final class RailFrostmawGameTests {
                 targeted = true;
         }
 
-        /** Each poll of the pass: the swipe's first hit on the rider, and a carriage touching the puppet. */
+        /** Each poll of the pass: the swipe's first hit on the rider, and a carriage's block touching the puppet's box. */
         void sampleSwipe() {
             if (!hit && rider.getHealth() < health0) {
                 hit = true;
@@ -1075,10 +1085,25 @@ public final class RailFrostmawGameTests {
             }
             for (Carriage c : train.carriages) {
                 Entity e = c.anyAvailableEntity();
-                if (e != null && e.getBoundingBox().intersects(puppet.getBoundingBox()))
+                if (e instanceof AbstractContraptionEntity ce && touches(ce, puppet.getBoundingBox()))
                     overlapped = true;
             }
         }
+    }
+
+    /**
+     * Whether a block of a carriage's contraption, where it stands in the world now, touches {@code box} (MZB-935). The
+     * contraption entity's own box is the contraption's bounds moved to its anchor, and Create's assembly widens those to a
+     * square about the anchor as far as the carriage's farthest block and two more, whatever its yaw (a long carriage's, 9
+     * blocks, is 19 blocks square), so it reaches a body 5 blocks off the rail, which no block of the carriage does.
+     */
+    private static boolean touches(AbstractContraptionEntity e, AABB box) {
+        for (BlockPos p : e.getContraption().getBlocks().keySet()) {
+            Vec3 c = e.toGlobalVector(Vec3.atCenterOf(p), 1.0f);
+            if (new AABB(c, c).inflate(0.5).intersects(box))
+                return true;
+        }
+        return false;
     }
 
     private static long soundsOf(FakePlayers.Hearer h) {
@@ -1102,8 +1127,8 @@ public final class RailFrostmawGameTests {
      * spot's distance), whatever its stand.
      * <li>The bait goes, and the train passes at 1.0 blocks a tick: exactly one TRAIN_PASSED with PASSED_WATCHED and
      * a carriage in range; {@code lurkStrikes} up by one or more; at the tick the zombie's health first drops, the
-     * puppet's {@code yBodyRot} within 30 degrees of the bearing to the zombie; the zombie hurt; no carriage box
-     * ever touching the puppet's; the contraptions' block count unchanged; the train on the rail.
+     * puppet's {@code yBodyRot} within 30 degrees of the bearing to the zombie; the zombie hurt; no block of a
+     * carriage ever touching the puppet's box (MZB-935); the contraptions' block count unchanged; the train on the rail.
      * <li>A scripted IND_CARRIAGE_DELTA for the train lands in the second carriage's storage.
      * <li>A scripted TRAIN_ROBBED. The train's arrival at the far station, with nobody within 64 blocks, plays
      * nothing and the entry stays; then its arrival at the first, with a hearer {@value #HEARER_BEHIND} blocks off: the hearer's
@@ -1319,11 +1344,13 @@ public final class RailFrostmawGameTests {
                     t.settle();
                     t.train.speed = 0.0;
                     t.dim = level.dimension().location().toString();
-                    // The track point two blocks past carriage 0's bogey toward carriage 1, on the block's centre line
+                    // The track point three blocks past carriage 0's bogey toward carriage 1, on the block's centre line: the bogey is 5.83
+                    // from the puppet (inside the strike reach, 6.0) and the near plank 6.16 in 3D (inside the swipe's 6.8 by the
+                    // margin the premise below wants); two blocks left the plank at 6.71, outside it (MZB-936)
                     Vec3 lead = t.train.carriages.get(0).getLeadingPoint().getPosition(t.train.graph);
                     double dirx = Math.signum(t.entityOf(1).getX() - t.entityOf(0).getX());
                     check("carriage 1 lies along x from carriage 0 (" + dirx + ")", dirx != 0.0);
-                    double lx = Math.floor(lead.x + dirx * 2.0) + 0.5;
+                    double lx = Math.floor(lead.x + dirx * 3.0) + 0.5;
                     t.agent = ConflictKit.newAgent();
                     Vec3 track = new Vec3(lx, t.railY(), t.z0 + 0.5), spot = new Vec3(lx, t.railY(), t.z0 + 0.5 - LATERAL);
                     Holder<SoundEvent> roar = BuiltInRegistries.SOUND_EVENT.getHolder(ResourceLocation.parse(ROAR))
@@ -1574,7 +1601,7 @@ public final class RailFrostmawGameTests {
                     check("the lurk struck at " + t.speed + " (" + strikes + ")", strikes >= 1);
                     check("the zombie was hurt at " + t.speed + " (health " + t.rider.getHealth() + " of " + t.health0 + ")", t.hit);
                     check("the puppet faced the zombie within 30 degrees at the hit (" + t.hitDeviation + ")", t.hitDeviation >= 0 && t.hitDeviation <= 30.0);
-                    check("no carriage box touched the puppet's", !t.overlapped);
+                    check("no block of a carriage touched the puppet's box", !t.overlapped);
                     check("the contraptions' block count is unchanged (" + t.blocks() + " of " + t.blocks0 + ")", t.blocks() == t.blocks0);
                 })
                 .thenIdle(60)

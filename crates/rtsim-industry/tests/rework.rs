@@ -294,11 +294,11 @@ fn the_unloaded_part_of_a_district_keeps_running() {
     w.run_until(day(3.0) + 100);
     let ore_chunk = ChunkPos { dim: 0, x: 0, z: 0 };
     let bar_chunk = ChunkPos { dim: 0, x: 2, z: 0 };
-    let first = w
+    let (first, first_op) = w
         .reconciled
         .iter()
         .find(|r| r.3 == ore_chunk)
-        .map(|r| r.2)
+        .map(|r| (r.2, r.0))
         .expect("the ore vault's chunk reconciled at its load");
     assert!(
         !w.reconciled.iter().any(|r| r.3 == bar_chunk),
@@ -313,17 +313,21 @@ fn the_unloaded_part_of_a_district_keeps_running() {
     assert_eq!(stock(&w, BAR), bars_world, "nor does it run for real");
 
     w.run_until(day(4.0) + 200);
-    let last = w
+    let (last, last_op) = w
         .reconciled
         .iter()
         .filter(|r| r.3 == bar_chunk)
-        .map(|r| r.2)
+        .map(|r| (r.2, r.0))
         .max()
         .expect("the bar vault's chunk reconciled at the full load");
-    assert!(
-        last > first,
+    // Epochs count per chunk, as Java's guard does (RP-259): each chunk's first round is its
+    // epoch 1, in its own command.
+    assert_eq!(
+        (first, last),
+        (1, 1),
         "each chunk on its own epoch: {first} then {last}"
     );
+    assert_ne!(first_op, last_op, "two rounds, one per load");
     // Ten days of ore at 8 per 100 ticks were never short: the bars made are the replay's two
     // days unloaded and its half day in part loaded, plus the loaded days.
     let held: i64 = w

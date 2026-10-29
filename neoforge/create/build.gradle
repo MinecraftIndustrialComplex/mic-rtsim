@@ -72,7 +72,9 @@ neoForge {
             // unless -PrtsimEngine=stub. The industry commands the tests script go to the native engine as
             // INDUSTRY_COMMAND orders (choice W17; before it, H25 pinned this run to the stub).
             systemProperty 'mic_rtsim.engine', (project.findProperty('rtsimEngine') ?: 'native').toString()
-            jvmArgument '-Xmx4G'
+            // -PgametestXmx overrides. The -PwithMowzie run's out-of-memory failures at 4G and 6G were the
+            // Mowzie's Mobs jar's float path sweep loading chunks far from the origin, not our heap (MZB-950).
+            jvmArgument "-Xmx${project.findProperty('gametestXmx') ?: '4G'}"
             if (project.hasProperty('gametestDebugLog')) logLevel = org.slf4j.event.Level.DEBUG
             gameDirectory = file('run-gametest')
         }

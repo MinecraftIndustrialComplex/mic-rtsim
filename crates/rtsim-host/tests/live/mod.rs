@@ -165,6 +165,9 @@ pub fn populated(tag: &str, days: i64) -> PathBuf {
     assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
     let through = j.next_obs - 1;
     j.e.request_save(through);
+    // WORLD_SAVED confirms the engine's pages (P29).
+    j.written_through = Some(through);
+    j.world_saved(through);
     j.run_until("the world's save", |j| j.e.durable_obs_seq() >= through);
     Journal {
         save: j.world_save(),
@@ -367,7 +370,11 @@ pub fn serve(dir: &Path, days: i64, stride: i64, tick_every: Duration) -> Served
             std::thread::sleep(rest);
         }
         if host.j.game_time >= next_save {
-            host.e.request_save(host.j.next_obs - 1);
+            let through = host.j.next_obs - 1;
+            host.e.request_save(through);
+            // The bridge's WORLD_SAVED, once the journal's file is written (P29).
+            host.j.written_through = Some(through);
+            host.j.world_saved(through);
             next_save += 10 * DAY;
         }
         host.j.game_time += stride - 1;

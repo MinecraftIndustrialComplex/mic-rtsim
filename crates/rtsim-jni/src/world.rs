@@ -149,13 +149,12 @@ pub struct World {
     pub ledger: BTreeMap<u64, i64>,
     /// Engine op ids Minecraft reported applied (COMMAND_RESULT applied or duplicate).
     pub done_ops: BTreeSet<u64>,
-    /// Engine op ids Minecraft reported failed.
+    /// Engine op ids Minecraft reported failed (FAILED, or NOT_LOADED: not applied this time).
     pub failed_ops: BTreeSet<u64>,
     // ---- not saved: per session ----
     /// Java's dictionary for this session (Java resends it at every session start): (kind, id) to name.
     pub java_dict: HashMap<(u32, u32), String>,
     pub players: HashMap<(u64, u64), (u32, [f64; 3])>,
-    pub module_mask: u32,
     pub game_time: i64,
     captured: Vec<Captured>,
     /// The captures of the last journaled event, after it applied: what a member held when it
@@ -203,9 +202,6 @@ impl World {
             }
             obs::TICK if rec.size() >= obs::tick::SIZE => {
                 self.game_time = wire::i64_at(b, obs::tick::GAME_TIME)
-            }
-            obs::MODULES if rec.size() >= obs::modules::SIZE => {
-                self.module_mask = wire::u32_at(b, obs::modules::MASK)
             }
             obs::PLAYER if rec.size() >= obs::player::SIZE => {
                 let key = (
@@ -448,7 +444,9 @@ impl World {
                         }
                         self.failed_ops.remove(&op);
                     }
-                    obs::command_result::FAILED if !self.done_ops.contains(&op) => {
+                    obs::command_result::FAILED | obs::command_result::NOT_LOADED
+                        if !self.done_ops.contains(&op) =>
+                    {
                         self.failed_ops.insert(op);
                     }
                     _ => {}

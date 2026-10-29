@@ -88,9 +88,43 @@ pub const META_MAGIC: u32 = u32::from_le_bytes(*b"RTP1");
 /// Version 2: a snapshot and a tail (S1). Version 3: the snapshot's world writes its market rows
 /// as a row table (`World::save` RTW2, docs/choices-paging-modules.md). Version 4: the world pages
 /// through the store (`World::save_paged`, PF17), the snapshot pieces hold the link's part only,
-/// and the state hash is written in TEST mode only (0 otherwise, PF16). Before release a version
+/// and the state hash is written in TEST mode only (0 otherwise, PF16). Version 5: the inputs kept
+/// while phase 1 was switched off follow the queue (`Link::kept`, RP-300). Before release a version
 /// this build does not read is dropped (S5, [`when_pages_unreadable`]); there is no migration.
-pub const META_VERSION: u16 = 4;
+pub const META_VERSION: u16 = 5;
+
+/// The most inputs the list of those heard while phase 1 is off ([`Link::kept`]) holds before
+/// reports are dropped, talks first, then hurts and rescues, then residents killed, each the
+/// oldest first ([`drop_rank`]; RP-300, docs/choices-journal-barrier.md). A busy synthetic day of
+/// switch-off (40 players on average for 24 hours) is about 19,850 inputs, 11,930 of them loss
+/// records and structure the list never drops; the cap holds that day with a quarter to spare. The
+/// meta page, rewritten at every save, is then about 0.77 MB (under 1 MiB, the budget chosen: the
+/// page store itself limits a page to 4 GiB).
+pub const KEPT_CAP: usize = 24_576;
+
+/// The classes of report the cap may drop, in the order it drops them ([`drop_rank`]).
+const DROP_RANKS: usize = 3;
+
+/// Where an input stands in the order the cap drops reports, or `None` when it is never dropped.
+/// Every one of these costs a nudge to a village's sentiment or a player's reputation and nothing
+/// else. In order: **0** a talk (a ribbit credited); **1** a caravan or resident hurt or rescued;
+/// **2** a resident killed, the dearest of the three (a killing moves a village's sentiment by
+/// -125 for 30 days, an assault by -25 and a rescue by +25 for 10). Within
+/// a class the oldest goes first, whatever the age of the others. Never dropped: a trade, a
+/// robbery, a taken or killed member (goods that left the sim's row), an adoption or base (a
+/// village or base for good), a house placed or a work's answer (a resident or a work for good).
+fn drop_rank(input: &Input) -> Option<usize> {
+    match input {
+        Input::Talked { .. } => Some(0),
+        Input::CaravanReport { .. } => Some(1),
+        Input::VillageReport { kind: 8, .. } => Some(2),
+        Input::VillageReport { .. } => Some(1),
+        _ => None,
+    }
+}
+
+/// What the warning line calls each class of [`drop_rank`].
+const DROP_NAMES: [&str; DROP_RANKS] = ["talk", "hurt or rescue", "resident-killed"];
 pub const SNAP_MAGIC: u32 = u32::from_le_bytes(*b"RTPS");
 
 fn chunk_key(k: usize) -> PageKey {
@@ -298,11 +332,43 @@ pub(super) struct Link {
     last_interest: i64,
     last_market: i64,
     spawn_near: Vec<SpawnNear>,
-    /// U10 (Ben: "Ignore everything"): with phase 1 switched off, its records are admitted by
-    /// `Replay` and then ignored, its world does not run, nothing new is decided or materialized,
-    /// and on again it catches up at once ([`set_enabled`]).
+    /// U10 (Ben: "Ignore everything"), with the rule of RP-300: **the switch gates only new
+    /// decisions; every record of what already happened is heard; a record applied while off goes
+    /// in at its own tick, never at the frozen clock.** With phase 1 switched off its own world
+    /// does not run, nothing new is decided, materialized or sent; the latest-state census is
+    /// ignored; but the journaled records (a robbery, a trade, a taken member, a house placed...)
+    /// are the engine's acknowledged record of what happened, which Java will not send again, so
+    /// they are heard by the same code as when on and their world inputs are kept in
+    /// [`Link::kept`] at the records' own ticks, applied when the world next runs
+    /// ([`drain_kept`]). On again they are applied in time order, before it catches up
+    /// ([`drain_when_due`]).
     enabled: bool,
-    /// Records ignored while phase 1 was switched off (U10).
+    /// The inputs heard while phase 1 was switched off, not applied yet: `(tick, input)` in time
+    /// order (RP-300). The tick is the record's own world tick (`wt(GAME_TIME)`), the input was
+    /// built when it was heard (a taken member's chest as the capture then showed it). Saved in
+    /// the meta page with the pages of the save that acknowledged their records. Applied, each
+    /// after the shared modules' catch-up to its tick, at the switch-on, at the next `simulate`
+    /// when on, and before a viewer module runs the shared clock past them ([`shared::run_to`]).
+    kept: VecDeque<Logged>,
+    /// Phase 1 came on in a MODULE_SWITCH record whose switch-on drain has not run yet, with what the
+    /// window held when it came on ([`SwitchOn`]): set by [`switched`] (none when nothing was
+    /// kept), taken by `shared::resets` ([`drain_when_due`]), after the viewer modules that came
+    /// on in the same record have applied the records they kept (RP-300, the joint switch-on).
+    /// Not saved.
+    pub(super) switch_on_due: Option<SwitchOn>,
+    /// How many of [`Link::kept`] are in each class the cap may drop ([`drop_rank`]): the scan for
+    /// the oldest of a class is skipped when there is none.
+    kept_soft: [usize; DROP_RANKS],
+    /// The most inputs [`Link::kept`] holds before [`Link::keep`] drops reports ([`KEPT_CAP`]; a
+    /// test lowers it). Not saved.
+    kept_cap: usize,
+    /// Reports ([`drop_rank`]) dropped to stay within the cap, this session.
+    pub(super) kept_dropped: u64,
+    /// Inputs kept that left the list over the cap because no report was left to drop (loss
+    /// records alone passed the cap), this session.
+    pub(super) kept_over: u64,
+    /// Census records ignored while phase 1 was switched off (U10): a census is latest state, sent
+    /// again, and the one kind phase 1 does not hear while off.
     pub(super) ignored: u64,
     pub(super) stats: [u64; STATS],
     /// Captured cargo that did not match the sim's row at a despawn (logged, not reconciled).
@@ -382,6 +448,12 @@ impl Link {
             last_market: i64::MIN,
             spawn_near: Vec::new(),
             enabled: true,
+            kept: VecDeque::new(),
+            switch_on_due: None,
+            kept_soft: [0; DROP_RANKS],
+            kept_cap: KEPT_CAP,
+            kept_dropped: 0,
+            kept_over: 0,
             ignored: 0,
             stats: [0; STATS],
             capture_mismatches: 0,
@@ -548,9 +620,87 @@ impl Link {
         // them again and threw them away, so they go out from here (their op ids are their
         // identity: one Java already applied is answered DUPLICATE).
         link.queue = m.queued.into();
+        link.kept = m.kept.into();
+        link.kept_soft = [0; DROP_RANKS];
+        for k in &link.kept {
+            if let Some(r) = drop_rank(&k.input) {
+                link.kept_soft[r] += 1;
+            }
+        }
         link.stats[stat::INPUTS] = link.base_inputs + link.log.len() as u64;
         link.stats[stat::VILLAGES] = link.nodes.len() as u64;
         Ok(link)
+    }
+
+    /// How many inputs heard while phase 1 was off wait to be applied (RP-300).
+    pub(super) fn kept_len(&self) -> usize {
+        self.kept.len()
+    }
+
+    /// Keeps an input heard while phase 1 is off, in time order (equal ticks in the order heard).
+    /// Over the cap a report goes ([`drop_rank`]: the oldest talk, else the oldest hurt or rescue,
+    /// else the oldest resident killed; the new one if it is the oldest of its class) until the
+    /// list fits or none is left: loss records and structure are never dropped, so a list of
+    /// those alone stays over the cap. Returns a warning line when a report was dropped or the
+    /// list stayed over, for the caller to log; rate limited, the first time and then at each
+    /// power of two of its counter.
+    fn keep(&mut self, entry: Logged) -> Option<String> {
+        let pos = self.kept.partition_point(|k| k.at <= entry.at);
+        if let Some(r) = drop_rank(&entry.input) {
+            self.kept_soft[r] += 1;
+        }
+        self.kept.insert(pos, entry);
+        let mut warning = None;
+        while self.kept.len() > self.kept_cap {
+            let Some(rank) = self.kept_soft.iter().position(|&n| n > 0) else {
+                break;
+            };
+            let oldest = self
+                .kept
+                .iter()
+                .position(|k| drop_rank(&k.input) == Some(rank))
+                .expect("kept_soft counts them");
+            self.kept.remove(oldest);
+            self.kept_soft[rank] -= 1;
+            self.kept_dropped += 1;
+            if self.kept_dropped.is_power_of_two() {
+                warning = Some(format!(
+                    "phase 1 is over the cap on inputs heard while switched off (cap {}): dropped the \
+                     oldest {} report (talks go first, then hurts and rescues, then residents \
+                     killed), {} so far; trades, robberies, taken members, adoptions, bases, houses \
+                     and work answers are never dropped",
+                    self.kept_cap, DROP_NAMES[rank], self.kept_dropped
+                ));
+            }
+        }
+        if self.kept.len() > self.kept_cap {
+            self.kept_over += 1;
+            if self.kept_over.is_power_of_two() {
+                warning = Some(format!(
+                    "phase 1 holds {} inputs heard while switched off, over the cap (cap {}): only \
+                     loss records and structure are left, none is dropped ({} inputs over so far)",
+                    self.kept.len(),
+                    self.kept_cap,
+                    self.kept_over
+                ));
+            }
+        }
+        warning
+    }
+
+    /// How many of the kept inputs are reports the cap may drop ([`drop_rank`]).
+    #[cfg(test)]
+    fn soft_len(&self) -> usize {
+        self.kept_soft.iter().sum()
+    }
+
+    /// The oldest kept input, taken out to be applied.
+    fn take_kept(&mut self) -> Option<Logged> {
+        let k = self.kept.pop_front()?;
+        if let Some(r) = drop_rank(&k.input) {
+            self.kept_soft[r] -= 1;
+        }
+        Some(k)
     }
 
     /// Whether the world came back from its pages: the dragons' page is only good with the world
@@ -643,12 +793,13 @@ struct Meta {
     outbox: Vec<(u64, u64, P1Cmd)>,
     agents: BTreeMap<u64, u64>,
     queued: Vec<P1Cmd>,
+    kept: Vec<Logged>,
 }
 
 /// The meta page, written at every save: where the world is (tick and hash, for the replay
 /// check), where its snapshot and tail are, and the link's own state: scripted villages, the
 /// kept outbox, the caravan identity map (review 3, P2) and the kept commands still queued
-/// (review 3, P1).
+/// (review 3, P1), then the inputs kept while phase 1 was switched off (RP-300).
 /// The world's state hash is a whole pass over its rows, so only a TEST engine writes it (`test`;
 /// 0 otherwise, PF16).
 fn encode_meta(l: &Link, test: bool) -> Vec<u8> {
@@ -681,6 +832,10 @@ fn encode_meta(l: &Link, test: bool) -> Vec<u8> {
     w.var_u64(queued.len() as u64);
     for c in queued {
         cmds::encode_kept(&mut w, c);
+    }
+    w.var_u64(l.kept.len() as u64);
+    for k in &l.kept {
+        k.encode(&mut w);
     }
     w.into_bytes()
 }
@@ -729,6 +884,10 @@ fn decode_meta(b: &[u8]) -> codec::Result<Meta> {
     for _ in 0..r.len_prefix(1)? {
         queued.push(cmds::decode_kept(&mut r)?);
     }
+    let mut kept = Vec::new();
+    for _ in 0..r.len_prefix(3)? {
+        kept.push(Logged::decode(&mut r)?);
+    }
     r.finish()?;
     Ok(Meta {
         now,
@@ -744,6 +903,7 @@ fn decode_meta(b: &[u8]) -> codec::Result<Meta> {
         outbox,
         agents,
         queued,
+        kept,
     })
 }
 
@@ -930,27 +1090,39 @@ pub(super) fn catalog_item(st: &State, g: GoodId) -> Option<&'static str> {
 // ---- hooks: session and latest-wins records -------------------------------------------------------
 
 /// SESSION_START: puppets never outlive a session, and Java forgot the latest-wins snapshots.
-pub(super) fn session_start(st: &mut State, module_mask: u32) {
+pub(super) fn session_start(st: &mut State) {
     let l = &mut st.phase1;
     l.puppets.clear();
     l.players.clear();
     l.markets_sent.clear();
     l.spawn_near.clear();
     l.queue.retain(|c| c.kept_op().is_some());
-    l.enabled = phase1_on(module_mask);
     l.last_interest = i64::MIN;
     l.last_market = i64::MIN;
 }
 
-/// The switch changed (MODULES; U10, Ben: "Ignore everything"). **Off:** every phase 1 puppet is
+/// The flag as the pages' mask (or SESSION_START's, when the pages hold none) leaves it, before any
+/// record (docs/choices-journal-barrier.md U-e6): no work of a switch, only the flag.
+pub(super) fn start_flag(st: &mut State, mask: u32) {
+    st.phase1.enabled = phase1_on(mask);
+}
+
+/// The switch changed (MODULE_SWITCH; U10, Ben: "Ignore everything"). **Off:** every phase 1 puppet is
 /// captured back, one last write, so no caravan trades or is robbed in game while the sim ignores
 /// it; what was queued for this session (MARKET, MERCHANT_OFFERS, SENTIMENT, spawns, steering)
 /// is dropped. Commands the bridge answers by op id (gossip, houses, residents) decided before the
 /// switch wait unsequenced until it is on again ([`write_queue_off`]); resends of ones already
 /// written still go out with their sequences, and answers are still taken: that is the protocol
-/// finishing, not the module running (choice PR13). **On:** the world runs to now at the next
-/// simulate (its missed events at once) and materializes again.
-fn set_enabled(st: &mut State, on: bool) {
+/// finishing, not the module running (choice PR13). Journaled records of what happened (a robbery,
+/// a trade, a taken member, a house placed, an adoption, a report...) are still heard: kept at
+/// their own ticks while off ([`Link::kept`], RP-300). **On:** the kept inputs are applied in
+/// time order, each at its own tick ([`drain_kept`]), by [`drain_when_due`] in the reset step of
+/// the same MODULE_SWITCH record (`shared::switch`), not here: a viewer module that comes on in that
+/// record (ECOLOGY, the conflict) has records of its own kept from the same window, and each of
+/// them must meet the world at its own tick, between phase 1's inputs, not after all of them
+/// (the joint switch-on). Then the world runs to now at the next simulate (its missed events at
+/// once) and materializes again.
+pub(super) fn switched(st: &mut State, on: bool) {
     let l = &mut st.phase1;
     let was = l.enabled;
     l.enabled = on;
@@ -976,20 +1148,94 @@ fn set_enabled(st: &mut State, on: bool) {
         }
         l.spawn_near.clear();
         l.market_dirty.clear();
+        l.switch_on_due = None;
     }
     if on && !was {
         l.last_interest = i64::MIN;
         l.last_market = i64::MIN;
         l.markets_sent.clear();
+        l.switch_on_due = SwitchOn::heard(l);
     }
+}
+
+/// What phase 1's window held when it came on, for the line of its switch-on drain
+/// ([`switch_on_drain`]): taken when the MODULE_SWITCH record is heard, because on a joint switch-on the
+/// viewers' kept records drain part of the window (each one's catch-up applies the inputs up to
+/// its own tick) before the drain itself runs, and a line counted at the drain would cover only
+/// the rest, or none of it.
+pub(super) struct SwitchOn {
+    /// The inputs kept when phase 1 came on.
+    kept: usize,
+    /// How many of them were base marks, the dearest to apply.
+    marks: usize,
+    /// When it came on.
+    started: std::time::Instant,
+}
+
+impl SwitchOn {
+    /// The window as it is now; `None` when nothing was kept (no drain, no line).
+    fn heard(l: &Link) -> Option<SwitchOn> {
+        if l.kept.is_empty() {
+            return None;
+        }
+        Some(SwitchOn {
+            kept: l.kept.len(),
+            marks: l
+                .kept
+                .iter()
+                .filter(|k| matches!(k.input, Input::MarkBase { .. }))
+                .count(),
+            started: std::time::Instant::now(),
+        })
+    }
+}
+
+/// The switch-on's drain, if [`switched`] made it due: the third step of the resets
+/// `shared::resets` runs for a MODULE_SWITCH record, after the viewer modules that came on with
+/// phase 1 have applied the records they kept (each after the catch-up that already applied
+/// phase 1's inputs up to its own tick, `shared::run_to`) and before their replay ends. What is
+/// left is the rest of the window: phase 1's inputs after the viewers' last kept record (none, if
+/// a viewer's record was the later). It runs at that MODULE_SWITCH record also when no viewer came on
+/// with it. Logs the line of [`switch_on_drain`], which covers the whole window, once.
+pub(super) fn drain_when_due(st: &mut State) {
+    if let Some(line) = switch_on_drain(st) {
+        log_info(&line);
+        #[cfg(test)]
+        st.switch_on_lines.push(line);
+    }
+}
+
+/// The switch-on's drain ([`drain_kept`] of everything kept) and the line that says what the
+/// switch-on did, for the caller to log: how many of the inputs kept when phase 1 came on were
+/// applied by the time it ended (the viewers' catch-ups among them, [`SwitchOn`]), how many of
+/// them were base marks, and how long it took from the record that switched phase 1 on; `None`
+/// when nothing was due (nothing kept, or the line already given). The window is not bounded
+/// beyond the cap on reports: bases, like every loss record, are never dropped, and each base mark
+/// is a node built into the world's graph (about 25 ms apiece in the bench of RP-300, where the
+/// other inputs together took 7 ms), so a long switch-off grows the drain, and the step that runs
+/// it, linearly with its marks. Inputs a replay's clock has not reached yet stay kept and are
+/// counted as waiting ([`shared::clock_target`]).
+fn switch_on_drain(st: &mut State) -> Option<String> {
+    let on = st.phase1.switch_on_due.take()?;
+    drain_kept(st, None);
+    let took = on.started.elapsed();
+    let left = st.phase1.kept_len();
+    let before = on.kept;
+    let marks = on.marks;
+    let mut line = format!(
+        "phase 1 is on again: applied {} of the {before} inputs heard while it was off (base marks \
+         among them: {marks}) in {took:.1?}",
+        before.saturating_sub(left)
+    );
+    if left > 0 {
+        line.push_str(&format!("; {left} wait for the replay clock"));
+    }
+    Some(line)
 }
 
 pub(super) fn observe_state(st: &mut State, rec: &Rec<'_>) {
     let b = rec.bytes;
     match rec.kind {
-        obs::MODULES if rec.size() >= obs::modules::SIZE => {
-            set_enabled(st, phase1_on(wire::u32_at(b, obs::modules::MASK)));
-        }
         obs::PLAYER if rec.size() >= obs::player::SIZE => {
             let key = (
                 wire::u64_at(b, obs::player::UUID_MOST),
@@ -1041,8 +1287,9 @@ pub(super) fn observe_state(st: &mut State, rec: &Rec<'_>) {
                 return;
             };
             if defs != st.phase1.world.works_catalog {
-                // Taken while switched off too, at the frozen clock (as HOUSE_PLACED, PR13): the
-                // catalogue is sent once a session.
+                // Latest state, not a record of what happened (RP-300 leaves it alone): the whole
+                // catalogue, sent once a session and not journaled, so a replay never brings it
+                // back at another tick. Taken while switched off too, at the frozen clock.
                 if st.phase1.enabled {
                     input_now(st, Input::Works { defs });
                 } else {
@@ -1246,20 +1493,14 @@ fn item_name(st: &State, id: u32) -> Option<String> {
     st.world.java_dict.get(&(wire::DICT_ITEM, id)).cloned()
 }
 
-/// A phase 1 record `Replay` admitted. Switched off, phase 1 ignores it (U10), except HOUSE_PLACED:
-/// the answer to a house it booked while on, taken at its frozen clock (the world does not run) so
-/// the house's resident comes once it is on again (choice PR13).
+/// A phase 1 record `Replay` admitted. **Heard whether phase 1 is on or off** (RP-300: the switch
+/// gates only new decisions, and this is a record of what already happened, which the engine has
+/// acknowledged and Java will not send again). Its tick is the record's own, `wt(GAME_TIME)`,
+/// always; on, its input is applied now, off it is kept at that tick and applied when the world
+/// next runs ([`book`]). The only thing that differs off is when the world moves.
 pub(super) fn journaled(st: &mut State, rec: &Rec<'_>) {
-    if !st.phase1.enabled && rec.kind != obs::HOUSE_PLACED {
-        st.phase1.ignored += 1;
-        return;
-    }
     let b = rec.bytes;
-    let at = if st.phase1.enabled {
-        st.phase1.wt(wire::i64_at(b, obs::GAME_TIME))
-    } else {
-        st.phase1.world.now().0
-    };
+    let at = st.phase1.wt(wire::i64_at(b, obs::GAME_TIME));
     match rec.kind {
         obs::VILLAGE_ADOPTED if rec.size() >= obs::village_adopted::SIZE => adopted(st, rec, at),
         obs::TRADE if rec.size() >= obs::trade::SIZE => trade(st, rec, at),
@@ -1288,13 +1529,12 @@ pub(super) fn journaled(st: &mut State, rec: &Rec<'_>) {
             } else {
                 Input::UnmarkBase { key, player }
             };
-            st.phase1.input(input, at);
-            take_world_commands(st);
+            book(st, input, at);
         }
         obs::HOUSE_PLACED if rec.size() >= obs::house_placed::SIZE => {
             let op = wire::u64_at(b, obs::house_placed::OP_ID);
             let village = wire::u64_at(b, obs::house_placed::VILLAGE);
-            if st.phase1.scripted.contains(&village) || !st.phase1.nodes.contains_key(&village) {
+            if st.phase1.scripted.contains(&village) || !known(&st.phase1, village) {
                 return;
             }
             // A work placed (SINK.md): its COMMAND_RESULT, right after, is what the world takes;
@@ -1302,10 +1542,166 @@ pub(super) fn journaled(st: &mut State, rec: &Rec<'_>) {
             if st.phase1.world.is_work_op(op) {
                 return;
             }
-            st.phase1.input(Input::HousePlaced { op }, at);
-            take_world_commands(st);
+            book(st, Input::HousePlaced { op }, at);
         }
         _ => {}
+    }
+}
+
+// ---- booking: the one path an input takes, on or off -----------------------------------------------
+
+/// Whether the phase 1 world has, or will have once its kept inputs are applied, a node for this
+/// village or base key: a record naming one that is only in [`Link::kept`] (a deferred adoption or
+/// base mark) is about a node, not about nothing.
+fn known(l: &Link, key: u64) -> bool {
+    l.nodes.contains_key(&key)
+        || l.kept.iter().any(|k| {
+            matches!(&k.input, Input::Join { key: j, .. } | Input::MarkBase { key: j, .. } if *j == key)
+        })
+}
+
+/// [`known`] for a village (a base is a node too, and has no ribbits).
+fn known_village(l: &Link, key: u64) -> bool {
+    l.nodes
+        .get(&key)
+        .and_then(|&i| l.world.nodes.get(i))
+        .is_some_and(|n| matches!(n.kind, NodeKind::Village(_)))
+        || l.kept
+            .iter()
+            .any(|k| matches!(&k.input, Input::Join { key: j, .. } if *j == key))
+}
+
+/// Whether a kept input moves goods in or out of this caravan's row (what a despawn's capture
+/// check compares against).
+fn moves_goods_of(input: &Input, bits: u64) -> bool {
+    match input {
+        Input::Rob { caravan, .. }
+        | Input::CargoIn { caravan, .. }
+        | Input::CaravanTrade { caravan, .. }
+        | Input::Member { caravan, .. }
+        | Input::MemberHeld { caravan, .. } => *caravan == bits,
+        _ => false,
+    }
+}
+
+/// Books `input` at world tick `at`, the record's own (RP-300). On: applied now, logged, its
+/// bookkeeping done, its commands taken. Off: kept at `at` in time order (after the kept inputs of
+/// the same tick), nothing else moves; it is applied by [`drain_kept`] when the world next runs.
+fn book(st: &mut State, input: Input, at: u64) {
+    if st.phase1.enabled {
+        apply_booked(st, input, at);
+    } else {
+        if let Some(warning) = st.phase1.keep(Logged { at, input }) {
+            log_warn(&warning);
+        }
+    }
+}
+
+/// Applies a booked input at `at` (the world runs there first, `Link::input`) and does what the
+/// record's handler did after it: the counters of its kind. The world's commands are taken only
+/// when phase 1 is on: while off a drain (a viewer module running the clock) leaves them in the
+/// world's buffer, where today's viewer-run commands are ([`write_queue_off`]).
+fn apply_booked(st: &mut State, input: Input, at: u64) {
+    if let Input::WorkStyle { key, .. } = &input
+        && !st.phase1.nodes.contains_key(key)
+    {
+        return; // its adoption was refused: a style of nothing is not logged
+    }
+    let out = st.phase1.input(input.clone(), at);
+    let l = &mut st.phase1;
+    match &input {
+        Input::Join { .. } => l.stats[stat::VILLAGES] = l.nodes.len() as u64,
+        Input::Trade { key, .. } => {
+            if out.refused {
+                l.stats[stat::TRADES_REFUSED] += 1;
+            } else {
+                l.stats[stat::RESIDENT_TRADES] += 1;
+            }
+            if l.enabled {
+                l.market_dirty.insert(*key);
+            }
+        }
+        Input::CaravanTrade { .. } => {
+            if out.refused {
+                l.stats[stat::TRADES_REFUSED] += 1;
+            } else {
+                l.stats[stat::CARAVAN_TRADES] += 1;
+            }
+        }
+        Input::Rob { player, .. } => {
+            if !out.refused && *player != (0, 0) {
+                l.stats[stat::ROBBERIES] += 1;
+            }
+        }
+        Input::CaravanReport { .. } | Input::VillageReport { .. } => {
+            if !out.refused {
+                l.stats[stat::REPORTS] += 1;
+            }
+        }
+        Input::MemberHeld { player, .. } => {
+            if *player != (0, 0) {
+                l.stats[stat::REPORTS] += 1;
+            }
+        }
+        Input::WorkResult { placed, .. } => {
+            if *placed {
+                l.stats[stat::WORKS_PLACED] += 1;
+            } else {
+                l.stats[stat::WORKS_REFUSED] += 1;
+            }
+        }
+        Input::Talked { .. } => {
+            if out.refused {
+                super::talk::refuse_talked(st, "a TALKED the world refused");
+            } else {
+                st.talk.stats.talked += 1;
+            }
+        }
+        _ => {}
+    }
+    if st.phase1.enabled {
+        take_world_commands(st);
+    }
+}
+
+/// Applies the kept inputs with tick up to `bound` (all when `None`) in time order, each at its own
+/// tick after the shared modules ran their events up to it (the catch-up a journaled record gets,
+/// `shared::catch_up_to`), so no input meets a world another module ran past it and none is
+/// booked at the frozen clock (RP-300, hazard J3). Called at the switch-on (a step of
+/// `shared::resets`, [`drain_when_due`]: after the records the viewer modules kept, each of which
+/// has already drawn in the inputs up to its own tick), at the top of
+/// `simulate`, and at the top of `shared::run_to` (a viewer module running the clock while phase 1
+/// is off). Does nothing while phase 1 is off and no viewer module runs the world (nothing moves
+/// it); a module about to run the world itself calls [`drain_before_run`] instead. While the
+/// session's replay runs with a module that shares the world, no further than the replay clock
+/// ([`shared::clock_target`]). Each input is removed before it is applied: applying runs the clock
+/// again, which comes back here.
+pub(super) fn drain_kept(st: &mut State, bound: Option<Tick>) {
+    drain(st, bound, false);
+}
+
+/// [`drain_kept`] up to `at` for a module whose engine is about to run the shared world to `at`
+/// itself: the dragons' and the ships' `ingest` (their `run_until` ends with the world's, whether
+/// or not they have anything in the world yet). A module that is switched on with no lair, dock or
+/// oil yet is no viewer ([`shared::any_viewer`]), so the guard of [`drain_kept`] would let its
+/// first record run the world past inputs it has not heard, and they would be booked at `at`
+/// instead of their own ticks (RP-300).
+pub(super) fn drain_before_run(st: &mut State, at: Tick) {
+    drain(st, Some(at), true);
+}
+
+fn drain(st: &mut State, bound: Option<Tick>, running_the_world: bool) {
+    while !st.phase1.kept.is_empty() {
+        if !running_the_world && !st.phase1.enabled && !shared::any_viewer(st) {
+            return;
+        }
+        let limit = shared::clock_target(st, bound.unwrap_or(Tick(u64::MAX)));
+        if st.phase1.kept[0].at > limit.0 {
+            return;
+        }
+        let k = st.phase1.take_kept().expect("not empty");
+        shared::run_rounds(st, Tick(k.at));
+        apply_booked(st, k.input, k.at);
     }
 }
 
@@ -1313,7 +1709,7 @@ fn adopted(st: &mut State, rec: &Rec<'_>, at: u64) {
     use obs::village_adopted as k;
     let b = rec.bytes;
     let key = wire::u64_at(b, k::VILLAGE);
-    if st.phase1.scripted.contains(&key) || st.phase1.nodes.contains_key(&key) {
+    if st.phase1.scripted.contains(&key) || known(&st.phase1, key) {
         return; // a test's village, or one seen again after a crash (C22: a no-op)
     }
     let culture_name = st
@@ -1344,14 +1740,13 @@ fn adopted(st: &mut State, rec: &Rec<'_>, at: u64) {
         pop: catalog::population(wire::u32_at(b, k::PIECES), culture),
         resources,
     };
-    st.phase1.input(input, at);
-    // Its village type: which of the catalogue's styled works it buys (SINK.md §4.2).
+    book(st, input, at);
+    // Its village type: which of the catalogue's styled works it buys (SINK.md §4.2). Booked
+    // after the adoption whatever its outcome: `apply_booked` drops it when there is no node.
     let style = works::style_of(&structure);
-    if style != 0 && st.phase1.nodes.contains_key(&key) {
-        st.phase1.input(Input::WorkStyle { key, style }, at);
+    if style != 0 {
+        book(st, Input::WorkStyle { key, style }, at);
     }
-    st.phase1.stats[stat::VILLAGES] = st.phase1.nodes.len() as u64;
-    take_world_commands(st);
 }
 
 /// The caravan row a phase 1 agent is: this session's puppet, else what the pages remember (a
@@ -1404,52 +1799,35 @@ fn trade(st: &mut State, rec: &Rec<'_>, at: u64) {
         l.stats[stat::TRADES_REFUSED] += 1;
         return;
     }
-    if agent == 0 {
-        if l.scripted.contains(&node) || !l.nodes.contains_key(&node) {
+    let input = if agent == 0 {
+        if l.scripted.contains(&node) || !known(l, node) {
             return;
         }
-        let out = l.input(
-            Input::Trade {
-                key: node,
-                player,
-                good: g.0,
-                items,
-                coins,
-                buy: sells,
-            },
-            at,
-        );
-        if out.refused {
-            l.stats[stat::TRADES_REFUSED] += 1;
-        } else {
-            l.stats[stat::RESIDENT_TRADES] += 1;
+        Input::Trade {
+            key: node,
+            player,
+            good: g.0,
+            items,
+            coins,
+            buy: sells,
         }
-        l.market_dirty.insert(node);
     } else {
         let Some(bits) = caravan_of(l, agent) else {
             return;
         };
         let at_node = if l.scripted.contains(&node) { 0 } else { node };
-        let out = l.input(
-            Input::CaravanTrade {
-                caravan: bits,
-                at_node,
-                player,
-                good: g.0,
-                currency: c.0,
-                buy: sells,
-                items,
-                coins,
-            },
-            at,
-        );
-        if out.refused {
-            l.stats[stat::TRADES_REFUSED] += 1;
-        } else {
-            l.stats[stat::CARAVAN_TRADES] += 1;
+        Input::CaravanTrade {
+            caravan: bits,
+            at_node,
+            player,
+            good: g.0,
+            currency: c.0,
+            buy: sells,
+            items,
+            coins,
         }
-    }
-    take_world_commands(st);
+    };
+    book(st, input, at);
 }
 
 fn hurt(st: &mut State, rec: &Rec<'_>, at: u64) {
@@ -1473,7 +1851,7 @@ fn hurt(st: &mut State, rec: &Rec<'_>, at: u64) {
         }
         k::RESIDENT_HURT | k::RESIDENT_KILLED => {
             let node = wire::u64_at(b, k::NODE);
-            if l.scripted.contains(&node) || !l.nodes.contains_key(&node) {
+            if l.scripted.contains(&node) || !known(l, node) {
                 return;
             }
             // Flagged VANILLA_GOSSIP: vanilla wrote its own gossip. The report still counts for
@@ -1487,10 +1865,7 @@ fn hurt(st: &mut State, rec: &Rec<'_>, at: u64) {
         }
         _ => return,
     };
-    if !l.input(input, at).refused {
-        l.stats[stat::REPORTS] += 1;
-    }
-    take_world_commands(st);
+    book(st, input, at);
 }
 
 /// A TALKED `Replay` admitted (docs/boundary.md §13.7): the village credits the player's talk with
@@ -1508,12 +1883,7 @@ fn talked(st: &mut State, rec: &Rec<'_>, at: u64) {
     if l.scripted.contains(&t.village) {
         return;
     }
-    let is_village = l
-        .nodes
-        .get(&t.village)
-        .and_then(|&i| l.world.nodes.get(i))
-        .is_some_and(|n| matches!(n.kind, NodeKind::Village(_)));
-    if !is_village {
+    if !known_village(l, t.village) {
         return super::talk::refuse_talked(
             st,
             &format!(
@@ -1522,18 +1892,14 @@ fn talked(st: &mut State, rec: &Rec<'_>, at: u64) {
             ),
         );
     }
-    let out = st.phase1.input(
+    book(
+        st,
         Input::Talked {
             key: t.village,
             player: t.player,
         },
         at,
     );
-    if out.refused {
-        return super::talk::refuse_talked(st, "a TALKED the world refused");
-    }
-    st.talk.stats.talked += 1;
-    take_world_commands(st);
 }
 
 fn rescue(st: &mut State, rec: &Rec<'_>, at: u64) {
@@ -1554,7 +1920,7 @@ fn rescue(st: &mut State, rec: &Rec<'_>, at: u64) {
         }
         k::RESIDENT => {
             let node = wire::u64_at(b, k::NODE);
-            if l.scripted.contains(&node) || !l.nodes.contains_key(&node) {
+            if l.scripted.contains(&node) || !known(l, node) {
                 return;
             }
             Input::VillageReport {
@@ -1565,10 +1931,7 @@ fn rescue(st: &mut State, rec: &Rec<'_>, at: u64) {
         }
         _ => return,
     };
-    if !l.input(input, at).refused {
-        l.stats[stat::REPORTS] += 1;
-    }
-    take_world_commands(st);
+    book(st, input, at);
 }
 
 fn cargo(st: &mut State, rec: &Rec<'_>, at: u64) {
@@ -1597,35 +1960,32 @@ fn cargo(st: &mut State, rec: &Rec<'_>, at: u64) {
             *inn.entry(g.0).or_default() += delta;
         }
     }
-    let l = &mut st.phase1;
-    let Some(bits) = caravan_of(l, agent) else {
+    let Some(bits) = caravan_of(&st.phase1, agent) else {
         return;
     };
     if !out.is_empty() {
-        let refused = l
-            .input(
-                Input::Rob {
-                    caravan: bits,
-                    player,
-                    goods: out.into_iter().collect(),
-                },
-                at,
-            )
-            .refused;
-        if !refused && player != (0, 0) {
-            l.stats[stat::ROBBERIES] += 1;
-        }
-    }
-    if !inn.is_empty() {
-        l.input(
-            Input::CargoIn {
+        let goods = out.into_iter().collect();
+        book(
+            st,
+            Input::Rob {
                 caravan: bits,
-                goods: inn.into_iter().collect(),
+                player,
+                goods,
             },
             at,
         );
     }
-    take_world_commands(st);
+    if !inn.is_empty() {
+        let goods = inn.into_iter().collect();
+        book(
+            st,
+            Input::CargoIn {
+                caravan: bits,
+                goods,
+            },
+            at,
+        );
+    }
 }
 
 /// A core record about a phase 1 puppet or command, after the core world applied it.
@@ -1666,15 +2026,9 @@ pub(super) fn after_core(st: &mut State, rec: &Rec<'_>) {
             }
         }
         obs::TAKEN | obs::DIED => {
-            if !st.phase1.enabled {
-                // U10: ignored, as every phase 1 record is while it is off.
-                if rec.size() >= obs::taken::SIZE.min(obs::died::SIZE)
-                    && caravan_of(&st.phase1, wire::u64_at(b, obs::taken::AGENT)).is_some()
-                {
-                    st.phase1.ignored += 1;
-                }
-                return;
-            }
+            // Heard on or off like every journaled phase 1 record (RP-300), at the record's own
+            // tick. (Before RP-300 this booked at the world's tick when it was heard, which a
+            // replay after a crash heard at another tick: hazard J3.)
             let (agent, epoch, member, player, killed) = if rec.kind == obs::TAKEN {
                 if rec.size() < obs::taken::SIZE {
                     return;
@@ -1717,8 +2071,9 @@ pub(super) fn after_core(st: &mut State, rec: &Rec<'_>) {
                     *held.entry(g.0).or_default() += i64::from(it.count) * MILLI;
                 }
             }
-            let at = l.world.now().0;
-            l.input(
+            let at = l.wt(wire::i64_at(b, obs::GAME_TIME));
+            book(
+                st,
                 Input::MemberHeld {
                     caravan: bits,
                     member,
@@ -1728,10 +2083,6 @@ pub(super) fn after_core(st: &mut State, rec: &Rec<'_>) {
                 },
                 at,
             );
-            if player != (0, 0) {
-                l.stats[stat::REPORTS] += 1;
-            }
-            take_world_commands(st);
         }
         obs::COMMAND_RESULT if rec.size() >= obs::command_result::SIZE => {
             let op = wire::u64_at(b, obs::command_result::OP_ID);
@@ -1740,23 +2091,20 @@ pub(super) fn after_core(st: &mut State, rec: &Rec<'_>) {
             l.resend.retain(|(_, o, _)| *o != op);
             // A kept command queued again after a restart that Java applied before the crash.
             l.queue.retain(|c| c.kept_op() != Some(op));
-            // A bought work's answer (SINK.md MS-11): placed, or its kind is full. Taken while
-            // switched off too, at the frozen clock, as HOUSE_PLACED is (PR13).
-            if l.world.is_work_op(op) {
+            // A bought work's answer (SINK.md MS-11): placed, or its kind is full. A record of what
+            // happened: heard on or off, at its own tick, kept while off like the rest (RP-300; it
+            // was taken at the frozen clock while off before). Not again if the same answer is
+            // already kept.
+            if l.world.is_work_op(op)
+                && !l
+                    .kept
+                    .iter()
+                    .any(|k| matches!(k.input, Input::WorkResult { op: o, .. } if o == op))
+            {
                 use obs::command_result as r;
                 let placed = rec.aux == r::APPLIED || rec.aux == r::DUPLICATE_OP;
-                let at = if l.enabled {
-                    l.wt(wire::i64_at(b, obs::GAME_TIME))
-                } else {
-                    l.world.now().0
-                };
-                l.input(Input::WorkResult { op, placed }, at);
-                if placed {
-                    l.stats[stat::WORKS_PLACED] += 1;
-                } else {
-                    l.stats[stat::WORKS_REFUSED] += 1;
-                }
-                take_world_commands(st);
+                let at = l.wt(wire::i64_at(b, obs::GAME_TIME));
+                book(st, Input::WorkResult { op, placed }, at);
             }
         }
         _ => {}
@@ -1769,6 +2117,18 @@ fn check_capture(st: &mut State, agent: u64, p: &Puppet) {
     let PuppetOf::Caravan(bits) = p.of else {
         return;
     };
+    // Inputs of this caravan's goods still kept (heard while phase 1 was off, RP-300): the row
+    // has not heard them yet, so it cannot match what the chest holds now. The comparison is a
+    // diagnostic and the row agrees once they are applied; this despawn is not checked, the next
+    // one is.
+    if st
+        .phase1
+        .kept
+        .iter()
+        .any(|k| moves_goods_of(&k.input, bits))
+    {
+        return;
+    }
     let Some(a) = st.world.agents.get(&agent) else {
         return;
     };
@@ -1872,6 +2232,9 @@ pub(super) fn simulate(st: &mut State) {
     }
     // Held at the replay clock while replaying with a module that shares the world (§3.6).
     let target = shared::hand_over_target(st).0;
+    // Inputs heard while it was off and not yet applied (a start with phase 1 on after a crash
+    // while off, or a replay clock that held them): at their own ticks first, RP-300.
+    drain_kept(st, Some(Tick(target)));
     if target > st.phase1.world.now().0 {
         st.phase1.world.run_until(Tick(target));
     }
@@ -3296,25 +3659,27 @@ mod tests {
         b
     }
 
-    fn modules(st: &mut State, mask: u32) {
-        let b = record(obs::MODULES, obs::modules::SIZE, 0, |b| {
-            wire::put_u32(b, obs::modules::MASK, mask)
-        });
-        observe_state(
-            st,
-            &Rec {
-                kind: obs::MODULES,
-                aux: 0,
-                bytes: &b,
-            },
-        );
+    /// A MODULE_SWITCH as phase 1 alone hears it (`switched`).
+    fn hear_modules(st: &mut State, mask: u32) {
+        switched(st, phase1_on(mask));
     }
 
-    /// U10 (Ben: "Ignore everything"): switched off, phase 1 captures its puppets back, ignores
-    /// its records (a village adopted, a census), and its world does not run; on again it runs
-    /// to now at once. Phase 1 runs only with all four of its modules on (choice PR13).
+    /// A MODULE_SWITCH record's phase 1 side: phase 1 hears the mask, and the resets the engine runs for
+    /// it after every flag is set (`shared::resets`) take the switch-on's drain, if it is due
+    /// (RP-300). The other modules' flags are left as the test set them: [`switch_all`] sets them
+    /// too.
+    fn modules(st: &mut State, mask: u32) {
+        hear_modules(st, mask);
+        shared::resets(st);
+    }
+
+    /// U10 (Ben: "Ignore everything"), with the rule of RP-300: switched off, phase 1 captures its
+    /// puppets back and its world does not run, and nothing new is decided; the journaled records
+    /// of what happened (a village adopted) are heard, kept at their own ticks, and applied there
+    /// when it is on again; on again it then runs to now at once. Phase 1 runs only with all four
+    /// of its modules on (choice PR13).
     #[test]
-    fn a_switched_off_phase1_ignores_everything_and_catches_up() {
+    fn a_switched_off_phase1_keeps_its_records_and_catches_up() {
         let mut st = state();
         st.world
             .java_dict
@@ -3404,14 +3769,37 @@ mod tests {
         assert!(st.phase1.outbox.is_empty());
         let second = adopt(2, 2_000);
         journaled(&mut st, &rec(&second));
-        assert_eq!(st.phase1.nodes.len(), 1, "a record while off is ignored");
-        assert_eq!(st.phase1.ignored, 1);
+        assert_eq!(
+            st.phase1.nodes.len(),
+            1,
+            "a record while off is not applied yet"
+        );
+        // The join and its village type, both at the record's tick.
+        assert_eq!(st.phase1.kept.len(), 2, "it is kept, at its own tick");
+        assert!(st.phase1.kept.iter().all(|k| k.at == 2_000));
+        assert_eq!(st.phase1.ignored, 0, "a record of what happened is heard");
+        // The same record again (a copy): one adoption, not two.
+        journaled(&mut st, &rec(&second));
+        assert_eq!(st.phase1.kept.len(), 2);
         st.game_time = 50_000;
         simulate(&mut st);
         assert_eq!(st.phase1.world.now().0, 1_000, "its world does not run");
-        // On again: it runs to now at once.
+        // On again: the kept input goes in at its own tick, then it runs to now at once.
         modules(&mut st, 0b1111);
         assert!(st.phase1.enabled);
+        assert!(st.phase1.kept.is_empty());
+        assert_eq!(st.phase1.nodes.len(), 2);
+        let join = st
+            .phase1
+            .log
+            .iter()
+            .find(|l| matches!(l.input, Input::Join { key: 2, .. }))
+            .expect("the adoption is in the log");
+        assert_eq!(
+            join.at, 2_000,
+            "at its own tick, not the frozen clock or now"
+        );
+        assert_eq!(st.phase1.world.now().0, 2_000);
         simulate(&mut st);
         assert_eq!(st.phase1.world.now().0, 50_000);
         let mut w = RecordWriter::new(&mut buf);
@@ -3419,6 +3807,1142 @@ mod tests {
         assert!(
             st.phase1.outbox.iter().any(|(_, op, _)| *op == 0x77),
             "the held command goes out once phase 1 is on"
+        );
+    }
+
+    /// A human village's Join for the tests that book inputs by hand.
+    fn join_of(key: u64, x: i32) -> Input {
+        Input::Join {
+            key,
+            culture: 0,
+            frame: 1,
+            x,
+            z: 0,
+            pop: 20,
+            resources: catalog::resources("minecraft:village_plains", Culture::Human)
+                .into_iter()
+                .map(|(r, a)| (r.0, a))
+                .collect(),
+        }
+    }
+
+    /// RP-300: the inputs kept while phase 1 is off are in the saved meta, in order, with their own
+    /// ticks. A crash while it is off brings them back; a save with none reads back with none.
+    #[test]
+    fn the_kept_inputs_come_back_from_a_save_in_order() {
+        let mut l = Link::empty();
+        for e in [
+            Logged {
+                at: 1_000,
+                input: Input::Rob {
+                    caravan: 7,
+                    player: (1, 2),
+                    goods: vec![(3, 4 * MILLI)],
+                },
+            },
+            Logged {
+                at: 1_000,
+                input: Input::UnmarkBase {
+                    key: 9,
+                    player: (1, 2),
+                },
+            },
+            Logged {
+                at: 5_000,
+                input: Input::MemberHeld {
+                    caravan: 7,
+                    member: 1,
+                    player: (0, 0),
+                    killed: true,
+                    held: vec![(3, MILLI)],
+                },
+            },
+        ] {
+            l.keep(e);
+        }
+        let back = reload(&l, "kept");
+        assert_eq!(back.kept, l.kept, "the same inputs at the same ticks");
+        assert_eq!(back.kept_len(), 3);
+        assert!(reload(&Link::empty(), "kept-none").kept.is_empty());
+    }
+
+    // ---- the cap on the kept list (RP-300) -------------------------------------------------------
+
+    fn trade_of(key: u64, n: i64) -> Input {
+        Input::Trade {
+            key,
+            player: (1, 2),
+            good: 3,
+            items: n,
+            coins: 2 * n,
+            buy: n % 2 == 0,
+        }
+    }
+
+    fn rob_of(caravan: u64, goods: usize) -> Input {
+        Input::Rob {
+            caravan,
+            player: (1, 2),
+            goods: (0..goods as u16).map(|g| (g, MILLI * 3)).collect(),
+        }
+    }
+
+    fn hurt_of(caravan: u64) -> Input {
+        Input::CaravanReport {
+            caravan,
+            player: (1, 2),
+            rescue: false,
+        }
+    }
+
+    fn talked_of(key: u64) -> Input {
+        Input::Talked {
+            key,
+            player: (1, 2),
+        }
+    }
+
+    fn at_(at: u64, input: Input) -> Logged {
+        Logged { at, input }
+    }
+
+    /// RP-300, the cap: over it a report goes (a talk first, then a hurt or rescue, then a resident
+    /// killed, each the oldest first) and never a loss record or structure, whatever its age.
+    #[test]
+    fn an_overflowing_kept_list_drops_the_oldest_report_and_never_a_loss_record() {
+        let mut l = Link::empty();
+        l.kept_cap = 5;
+        for e in [
+            at_(10, rob_of(7, 1)),
+            at_(20, hurt_of(7)),
+            at_(30, trade_of(1, 4)),
+            at_(40, talked_of(1)),
+            at_(50, join_of(2, 300)),
+        ] {
+            l.keep(e);
+        }
+        assert_eq!(l.kept.len(), 5);
+        assert_eq!(l.kept_dropped, 0, "at the cap, nothing yet");
+        // One more: the talk goes, though the hurt is older, and not the older robbery.
+        l.keep(at_(60, rob_of(8, 2)));
+        let ats: Vec<u64> = l.kept.iter().map(|k| k.at).collect();
+        assert_eq!(ats, [10, 20, 30, 50, 60], "the talk at 40 went");
+        assert_eq!(l.kept_dropped, 1);
+        // And again: no talk is left, the hurt at 20.
+        l.keep(at_(70, trade_of(2, 5)));
+        let ats: Vec<u64> = l.kept.iter().map(|k| k.at).collect();
+        assert_eq!(ats, [10, 30, 50, 60, 70], "the hurt at 20 went");
+        assert_eq!(l.kept_dropped, 2);
+        // No report is left: a loss record goes over the cap rather than push one out.
+        l.keep(at_(80, trade_of(3, 6)));
+        assert_eq!(l.kept.len(), 6, "over the cap, nothing dropped");
+        assert_eq!(l.kept_dropped, 2);
+        assert_eq!(l.kept_over, 1);
+        // A new report over a list of loss records is the only report there is: it goes itself.
+        l.keep(at_(90, hurt_of(9)));
+        assert_eq!(l.kept.len(), 6);
+        assert!(l.kept.iter().all(|k| drop_rank(&k.input).is_none()));
+        assert_eq!(l.kept_dropped, 3);
+        // The trade and robbery at the front of the list are all still there.
+        assert!(matches!(l.kept[0].input, Input::Rob { caravan: 7, .. }));
+        assert_eq!(
+            l.kept
+                .iter()
+                .filter(|k| matches!(k.input, Input::Trade { .. } | Input::Rob { .. }))
+                .count(),
+            5
+        );
+    }
+
+    fn resident_report(key: u64, kind: u8) -> Input {
+        Input::VillageReport {
+            key,
+            player: (1, 2),
+            kind,
+        }
+    }
+
+    fn rescue_of(caravan: u64) -> Input {
+        Input::CaravanReport {
+            caravan,
+            player: (1, 2),
+            rescue: true,
+        }
+    }
+
+    /// The class of a kept input for the drop-order tests: 0 a talk, 1 a hurt or rescue, 2 a
+    /// resident killed, 3 anything the cap never drops.
+    fn class_of(input: &Input) -> usize {
+        match input {
+            Input::Talked { .. } => 0,
+            Input::CaravanReport { .. } => 1,
+            Input::VillageReport { kind: 8, .. } => 2,
+            Input::VillageReport { .. } => 1,
+            _ => 3,
+        }
+    }
+
+    /// RP-300, the order of the drops (review P3): over the cap the talks go first, then the hurts
+    /// and rescues, then the residents killed: a kill is the dearest of the reports, it moves a
+    /// village's sentiment most. Each class is dropped oldest first, whatever the age of the
+    /// others: a talk dropped before a hurt that is older, a hurt before an older kill.
+    #[test]
+    fn the_cap_drops_talks_first_then_hurts_and_rescues_then_kills() {
+        let mut l = Link::empty();
+        l.kept_cap = 6;
+        // The oldest entry is a kill, then a hurt, a talk, three loss records.
+        for e in [
+            at_(10, resident_report(1, 8)),
+            at_(20, hurt_of(7)),
+            at_(30, talked_of(1)),
+            at_(40, trade_of(1, 4)),
+            at_(50, resident_report(2, 7)),
+            at_(60, talked_of(2)),
+        ] {
+            assert!(l.keep(e).is_none());
+        }
+        let left = |l: &Link| -> Vec<u64> { l.kept.iter().map(|k| k.at).collect() };
+        l.keep(at_(70, trade_of(1, 6)));
+        assert_eq!(left(&l), [10, 20, 40, 50, 60, 70], "the oldest talk (30)");
+        l.keep(at_(80, trade_of(1, 8)));
+        assert_eq!(left(&l), [10, 20, 40, 50, 70, 80], "the last talk (60)");
+        l.keep(at_(90, rescue_of(7)));
+        assert_eq!(left(&l), [10, 40, 50, 70, 80, 90], "the oldest hurt (20)");
+        // A new talk over a list of hurts and kills is dropped at once, whatever its age.
+        l.keep(at_(100, talked_of(3)));
+        assert_eq!(left(&l), [10, 40, 50, 70, 80, 90], "the new talk itself");
+        // Hurts and rescues next, oldest first (the resident hurt at 50, then the rescue at 90).
+        l.keep(at_(110, trade_of(1, 10)));
+        assert_eq!(left(&l), [10, 40, 70, 80, 90, 110]);
+        l.keep(at_(120, trade_of(1, 12)));
+        assert_eq!(left(&l), [10, 40, 70, 80, 110, 120]);
+        // Only the kill is left of the reports: now it goes.
+        l.keep(at_(130, trade_of(1, 14)));
+        assert_eq!(left(&l), [40, 70, 80, 110, 120, 130], "the kill (10) last");
+        assert_eq!(l.kept_dropped, 7);
+        assert!(l.kept.iter().all(|k| class_of(&k.input) == 3));
+        // The list counts what is left of each class by itself: a load finds the same.
+        l.kept_cap = 100;
+        for (at, e) in [
+            (200, resident_report(1, 8)),
+            (210, hurt_of(7)),
+            (220, talked_of(1)),
+        ] {
+            l.keep(at_(at, e));
+        }
+        let back = reload(&l, "kept-ranks");
+        assert_eq!(back.kept, l.kept);
+        assert_eq!(back.soft_len(), 3);
+    }
+
+    /// RP-300, the order at the real cap (review P3): a list filled to `KEPT_CAP` with a mix of
+    /// loss records and reports, the oldest entry a kill, then loss records heard until each class
+    /// of report has gone in its order: the survivors are what the order says.
+    #[test]
+    fn a_mix_past_the_real_cap_keeps_what_the_drop_order_keeps() {
+        let mut l = Link::empty();
+        assert_eq!(l.kept_cap, KEPT_CAP);
+        let mut at = 0u64;
+        let mut next = || {
+            at += 10;
+            at
+        };
+        // 24,576 entries: 18,000 trades, 3,000 talks, 2,000 hurts or rescues, 1,576 kills, in the
+        // cycle of a busy day (the oldest a kill), nothing over the cap yet.
+        let (mut trades, mut talks, mut hurts, mut kills) = (18_000, 3_000, 2_000, 1_576);
+        let first = next();
+        assert!(l.keep(at_(first, resident_report(1, 8))).is_none());
+        kills -= 1;
+        let mut i = 0u64;
+        while trades + talks + hurts + kills > 0 {
+            i += 1;
+            let at = next();
+            let input = match i % 12 {
+                0 | 4 | 7 if talks > 0 => {
+                    talks -= 1;
+                    talked_of(i)
+                }
+                1 | 5 if hurts > 0 => {
+                    hurts -= 1;
+                    if i.is_multiple_of(3) {
+                        rescue_of(i)
+                    } else {
+                        resident_report(i, 7)
+                    }
+                }
+                2 if kills > 0 => {
+                    kills -= 1;
+                    resident_report(i, 8)
+                }
+                _ if trades > 0 => {
+                    trades -= 1;
+                    trade_of(1 + i % 7, 4 + 2 * (i % 13) as i64)
+                }
+                _ if talks > 0 => {
+                    talks -= 1;
+                    talked_of(i)
+                }
+                _ if hurts > 0 => {
+                    hurts -= 1;
+                    hurt_of(i)
+                }
+                _ => {
+                    kills -= 1;
+                    resident_report(i, 8)
+                }
+            };
+            assert!(l.keep(at_(at, input)).is_none(), "not over at entry {i}");
+        }
+        let count = |l: &Link, c: usize| l.kept.iter().filter(|k| class_of(&k.input) == c).count();
+        assert_eq!(l.kept.len(), KEPT_CAP);
+        assert_eq!(l.kept_dropped, 0);
+        assert_eq!(
+            [count(&l, 0), count(&l, 1), count(&l, 2), count(&l, 3)],
+            [3_000, 2_000, 1_576, 18_000]
+        );
+        let oldest_kill = l.kept.iter().find(|k| class_of(&k.input) == 2).unwrap().at;
+        assert_eq!(oldest_kill, 10, "the oldest entry is a kill");
+        // 3,500 loss records heard on: the 3,000 talks go, then the 500 oldest hurts.
+        let hurts_before: Vec<u64> = l
+            .kept
+            .iter()
+            .filter(|k| class_of(&k.input) == 1)
+            .map(|k| k.at)
+            .collect();
+        for _ in 0..3_500 {
+            let at = next();
+            l.keep(at_(at, trade_of(1, 4)));
+        }
+        assert_eq!(l.kept.len(), KEPT_CAP);
+        assert_eq!(l.kept_dropped, 3_500);
+        assert_eq!(
+            [count(&l, 0), count(&l, 1), count(&l, 2), count(&l, 3)],
+            [0, 1_500, 1_576, 21_500]
+        );
+        let hurts_now: Vec<u64> = l
+            .kept
+            .iter()
+            .filter(|k| class_of(&k.input) == 1)
+            .map(|k| k.at)
+            .collect();
+        assert_eq!(hurts_now, hurts_before[500..], "the 500 oldest hurts went");
+        // 2,000 more: the 1,500 hurts go, then the 500 oldest kills (the oldest entry of the list).
+        for _ in 0..2_000 {
+            let at = next();
+            l.keep(at_(at, trade_of(1, 4)));
+        }
+        assert_eq!(l.kept.len(), KEPT_CAP);
+        assert_eq!(
+            [count(&l, 0), count(&l, 1), count(&l, 2), count(&l, 3)],
+            [0, 0, 1_076, 23_500]
+        );
+        let oldest_kill = l.kept.iter().find(|k| class_of(&k.input) == 2).unwrap().at;
+        assert!(oldest_kill > 10, "the kill at the head of the list went");
+        // 1,000 more: all but the 76 newest kills go; and nothing but a report ever went.
+        for _ in 0..1_000 {
+            let at = next();
+            l.keep(at_(at, trade_of(1, 4)));
+        }
+        assert_eq!(l.kept.len(), KEPT_CAP);
+        assert_eq!(
+            [count(&l, 0), count(&l, 1), count(&l, 2), count(&l, 3)],
+            [0, 0, 76, 24_500]
+        );
+        assert_eq!(l.kept_dropped, 6_500);
+        assert_eq!(l.kept_over, 0, "reports paid for every loss record");
+        // The loss records past the cap are all kept, and the list is in time order.
+        l.keep(at_(next(), trade_of(1, 6)));
+        assert_eq!(l.kept.len(), KEPT_CAP, "a kill went for it");
+        for _ in 0..76 {
+            l.keep(at_(next(), trade_of(1, 6)));
+        }
+        assert_eq!(
+            l.kept.len(),
+            KEPT_CAP + 1,
+            "no report is left: over the cap"
+        );
+        assert_eq!(l.kept_over, 1);
+        assert!(
+            l.kept
+                .iter()
+                .zip(l.kept.iter().skip(1))
+                .all(|(a, b)| a.at <= b.at)
+        );
+    }
+
+    /// RP-300: a drop and the passing of the cap each count and give a warning to log, the first
+    /// time and then at each power of two (a long switch-off must not flood the log).
+    #[test]
+    fn the_cap_counts_and_warns_on_the_first_drop_and_at_powers_of_two() {
+        let mut l = Link::empty();
+        l.kept_cap = 2;
+        l.keep(at_(1, trade_of(1, 4)));
+        l.keep(at_(2, trade_of(1, 6)));
+        let mut warned = Vec::new();
+        for i in 0..9u64 {
+            if let Some(w) = l.keep(at_(10 + i, hurt_of(i))) {
+                warned.push((l.kept_dropped, w));
+            }
+        }
+        assert_eq!(l.kept_dropped, 9);
+        let at: Vec<u64> = warned.iter().map(|(n, _)| *n).collect();
+        assert_eq!(at, [1, 2, 4, 8], "the first drop and each power of two");
+        assert!(
+            warned[0].1.contains("cap 2"),
+            "the line says what the cap is: {}",
+            warned[0].1
+        );
+        // Loss records past the cap warn too, once and then at powers of two.
+        let mut over = Vec::new();
+        for i in 0..5u64 {
+            if let Some(w) = l.keep(at_(100 + i, trade_of(2, 4 + 2 * i as i64))) {
+                over.push((l.kept_over, w));
+            }
+        }
+        assert_eq!(l.kept_over, 5);
+        let at: Vec<u64> = over.iter().map(|(n, _)| *n).collect();
+        assert_eq!(at, [1, 2, 4]);
+        assert_eq!(l.kept.len(), 7, "all the loss records are kept");
+    }
+
+    /// RP-300: loss records and structure past the cap are all kept and all applied at the
+    /// switch-on; the cap only ever cost reports.
+    #[test]
+    fn loss_records_over_the_cap_are_all_kept_and_applied_at_the_switch_on() {
+        let mut st = state();
+        modules(&mut st, 0b0111);
+        st.phase1.kept_cap = 3;
+        // Three villages first seen while off, 40 trades at them and reports among them.
+        for k in 1..=3u64 {
+            book(&mut st, join_of(k, 300 * k as i32), 100 * k);
+        }
+        for i in 0..40u64 {
+            book(
+                &mut st,
+                trade_of(1 + i % 3, 4 + 2 * i as i64),
+                1_000 + 10 * i,
+            );
+            book(&mut st, hurt_of(i), 1_005 + 10 * i);
+        }
+        assert_eq!(
+            st.phase1.kept_len(),
+            43,
+            "3 joins and 40 trades, over the cap of 3"
+        );
+        assert_eq!(st.phase1.kept_dropped, 40, "and every report dropped");
+        assert!(st.phase1.kept_over > 0);
+        modules(&mut st, 0b1111);
+        assert!(st.phase1.kept.is_empty());
+        assert_eq!(st.phase1.nodes.len(), 3, "every village is adopted");
+        let trades = st.phase1.stats[stat::RESIDENT_TRADES] + st.phase1.stats[stat::TRADES_REFUSED];
+        assert_eq!(trades, 40, "every trade was heard by the world");
+    }
+
+    /// RP-300: a list that was capped saves and loads as it was, in order, and the load works out
+    /// which entries a further overflow may drop.
+    #[test]
+    fn a_capped_list_survives_a_save_and_load() {
+        let mut l = Link::empty();
+        l.kept_cap = 6;
+        for i in 0..14u64 {
+            let input = match i % 4 {
+                0 => trade_of(1, 4 + 2 * i as i64),
+                1 => hurt_of(i),
+                2 => rob_of(i, 2),
+                _ => talked_of(i),
+            };
+            l.keep(at_(10 * (i + 1), input));
+        }
+        assert_eq!(l.kept.len(), 7, "the 7 loss records are over the cap of 6");
+        assert!(l.kept_dropped > 0);
+        let mut back = reload(&l, "kept-capped");
+        assert_eq!(back.kept, l.kept, "the same inputs at the same ticks");
+        assert_eq!(back.soft_len(), 0);
+        back.kept_cap = 6;
+        // The load knows which entries are reports: a report arriving is the one that goes.
+        back.keep(at_(500, talked_of(99)));
+        assert_eq!(back.kept.len(), 7);
+        assert_eq!(back.kept_dropped, 1);
+        // And with room, a report is kept.
+        back.kept_cap = 9;
+        back.keep(at_(510, talked_of(100)));
+        assert_eq!(back.kept.len(), 8);
+        assert_eq!(back.soft_len(), 1);
+    }
+
+    /// RP-300, the size of the cap: a list filled to `KEPT_CAP` with the mix of the synthetic busy
+    /// day saves in a Meta page under 1 MiB (the budget chosen for it), loads back equal, and
+    /// drains. Prints the bytes per entry for the record.
+    #[test]
+    fn a_list_filled_to_the_cap_saves_loads_and_drains() {
+        let mut l = Link::empty();
+        // The mix of the synthetic busy day in docs/choices-journal-barrier.md (RP-300), per mille of
+        // the entries: resident trades 484, caravan trades 24, robbery stacks 48, members taken
+        // or killed 12, hurts 145, rescues 12, talks 242, adoptions 15, houses 8, work answers 8,
+        // bases 2.
+        let human = join_of(1, 0);
+        for i in 0..KEPT_CAP as u64 {
+            let at = 1_000 + i * 80; // a day's 2,000,000 ticks spread over the list
+            let player = (3, 4 + i % 40);
+            let input = match i % 1000 {
+                0..=483 => trade_of(1 + i % 7, 4 + 2 * (i % 13) as i64),
+                484..=507 => Input::CaravanTrade {
+                    caravan: 7 + i % 5,
+                    at_node: 1 + i % 7,
+                    player,
+                    good: 3,
+                    currency: 1,
+                    buy: i % 2 == 0,
+                    items: 5,
+                    coins: 12,
+                },
+                508..=555 => rob_of(7 + i % 5, 1 + (i % 4) as usize),
+                556..=567 => Input::MemberHeld {
+                    caravan: 7 + i % 5,
+                    member: (i % 6) as u32,
+                    player,
+                    killed: i % 3 == 0,
+                    held: (0..1 + (i % 5) as u16).map(|g| (g, 2 * MILLI)).collect(),
+                },
+                568..=640 => hurt_of(7 + i % 5),
+                641..=712 => Input::VillageReport {
+                    key: 1 + i % 7,
+                    player,
+                    kind: 7,
+                },
+                713..=724 => Input::CaravanReport {
+                    caravan: 7 + i % 5,
+                    player,
+                    rescue: true,
+                },
+                725..=966 => talked_of(1 + i % 7),
+                967..=974 => human.clone(),
+                975..=981 => Input::WorkStyle {
+                    key: 1 + i % 7,
+                    style: 2,
+                },
+                982..=989 => Input::HousePlaced { op: 0xAB00 + i },
+                990..=997 => Input::WorkResult {
+                    op: 0xCD00 + i,
+                    placed: true,
+                },
+                _ => Input::MarkBase {
+                    key: 0xB000 + i,
+                    frame: 1,
+                    x: 100,
+                    z: 200,
+                    player: (3, 4),
+                },
+            };
+            assert!(l.keep(at_(at, input)).is_none(), "not over at entry {i}");
+        }
+        assert_eq!(l.kept.len(), KEPT_CAP);
+        let bytes = encode_meta(&l, false);
+        let per_entry = bytes.len() as f64 / KEPT_CAP as f64;
+        eprintln!(
+            "kept list at the cap: {KEPT_CAP} entries, Meta {} bytes, {per_entry:.1} per entry",
+            bytes.len()
+        );
+        assert!(bytes.len() < PIECE, "the Meta page is under 1 MiB");
+        // The worst case: every entry the widest a robbery can be (10 goods).
+        let mut worst = Link::empty();
+        for i in 0..KEPT_CAP as u64 {
+            worst.keep(at_(1_000 + i, rob_of(7, 10)));
+        }
+        eprintln!(
+            "kept list at the cap, every entry a 10-good robbery: Meta {} bytes",
+            encode_meta(&worst, false).len()
+        );
+        let t = std::time::Instant::now();
+        let back = reload(&l, "kept-cap-bench");
+        eprintln!("save and load: {:?}", t.elapsed());
+        assert_eq!(back.kept, l.kept);
+        // Drained in time order into a state at the switch-on.
+        let mut st = state();
+        modules(&mut st, 0b0111);
+        st.phase1.kept = back.kept;
+        st.phase1.kept_soft = back.kept_soft;
+        let t = std::time::Instant::now();
+        modules(&mut st, 0b1111);
+        // Measured: the inputs themselves take 7 ms in all; the 1.2 s is the 49 bases the mix
+        // marks, about 25 ms each, which is the world adding a node (as it does live).
+        eprintln!("drain at the switch-on: {:?}", t.elapsed());
+        assert!(st.phase1.kept.is_empty());
+        assert_eq!(st.phase1.soft_len(), 0);
+    }
+
+    /// RP-300: kept inputs are applied in time order (equal ticks in the order heard), each at its
+    /// own tick after the world has run to it, never at the frozen clock; nothing moves while
+    /// phase 1 is off and no viewer module runs the clock.
+    #[test]
+    fn kept_inputs_drain_in_time_order_each_at_its_own_tick() {
+        let mut st = state();
+        modules(&mut st, 0b0111);
+        assert!(!st.phase1.enabled);
+        // Heard out of order, two at one tick.
+        book(&mut st, join_of(3, 600), 3_000);
+        book(&mut st, join_of(1, 0), 1_000);
+        book(&mut st, join_of(2, 300), 2_000);
+        book(&mut st, Input::Population { key: 2, pop: 30 }, 2_000);
+        let ats: Vec<u64> = st.phase1.kept.iter().map(|k| k.at).collect();
+        assert_eq!(ats, [1_000, 2_000, 2_000, 3_000], "time order");
+        assert!(
+            matches!(st.phase1.kept[1].input, Input::Join { key: 2, .. })
+                && matches!(st.phase1.kept[2].input, Input::Population { key: 2, .. }),
+            "equal ticks keep the order they were heard in"
+        );
+        // Off with no viewer: a drain moves nothing.
+        drain_kept(&mut st, None);
+        assert_eq!(st.phase1.kept.len(), 4);
+        assert_eq!(st.phase1.world.now().0, 0);
+        // On again: all four, in order, the world at the last one's tick.
+        modules(&mut st, 0b1111);
+        assert!(st.phase1.kept.is_empty());
+        let log: Vec<(u64, u64)> = st
+            .phase1
+            .log
+            .iter()
+            .filter_map(|l| match l.input {
+                Input::Join { key, .. } | Input::Population { key, .. } => Some((l.at, key)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(log, [(1_000, 1), (2_000, 2), (2_000, 2), (3_000, 3)]);
+        assert_eq!(st.phase1.world.now().0, 3_000);
+        assert_eq!(st.phase1.nodes.len(), 3);
+    }
+
+    /// RP-300: with phase 1 off and a viewer module running the shared clock, `run_to` applies the
+    /// kept inputs it passes (each at its tick) and leaves the later ones.
+    #[test]
+    fn a_run_to_with_a_viewer_running_drains_the_inputs_it_passes() {
+        let mut st = state();
+        modules(&mut st, 0b0111);
+        st.herds.enabled = true;
+        st.herds.engine.add_herd(
+            rtsim_ecology::herds::NewHerd {
+                name: "flock".into(),
+                species: rtsim_ecology::herds::HerdSpecies::Sheep,
+                frame: 1,
+                pos: (0, 0),
+                count: 12,
+                seed: Some(1),
+            },
+            Tick(0),
+        );
+        assert!(shared::any_viewer(&st), "the herds run the clock");
+        book(&mut st, join_of(2, 300), 9_000);
+        book(&mut st, join_of(1, 0), 2_000);
+        shared::run_to(&mut st, Tick(5_000));
+        assert!(!st.phase1.enabled);
+        assert_eq!(st.phase1.nodes.len(), 1, "the one before 5_000 is in");
+        assert!(st.phase1.nodes.contains_key(&1));
+        assert_eq!(st.phase1.kept.len(), 1, "the one after waits");
+        assert_eq!(st.phase1.kept[0].at, 9_000);
+        let at = st
+            .phase1
+            .log
+            .iter()
+            .find(|l| matches!(l.input, Input::Join { key: 1, .. }))
+            .map(|l| l.at);
+        assert_eq!(at, Some(2_000), "at its own tick, not the frozen clock");
+        assert_eq!(
+            st.herds.engine.now().0,
+            5_000,
+            "the viewer ran to the target"
+        );
+        assert!(st.phase1.world.now().0 >= 2_000);
+        shared::run_to(&mut st, Tick(10_000));
+        assert!(st.phase1.kept.is_empty());
+        assert_eq!(st.phase1.nodes.len(), 2);
+    }
+
+    /// RP-300, review P3: the switch-on says how many of the kept inputs it applied (the base marks
+    /// among them, the dearest to apply) and how long it took, so a long switch-off whose drain
+    /// stalls a step is a line in the log, and says nothing when nothing was kept.
+    #[test]
+    fn the_switch_on_says_how_many_inputs_it_applied_and_how_long_it_took() {
+        let mut st = state();
+        modules(&mut st, 0b0111);
+        assert!(
+            switch_on_drain(&mut st).is_none(),
+            "nothing kept, nothing said"
+        );
+        for k in 1..=3u64 {
+            book(&mut st, join_of(k, 300 * k as i32), 100 * k);
+        }
+        for k in 0..2u64 {
+            let mark = Input::MarkBase {
+                key: 0xB000 + k,
+                frame: 1,
+                x: 600 + 100 * k as i32,
+                z: 100,
+                player: (5, 6),
+            };
+            book(&mut st, mark, 2_000 + k);
+        }
+        for i in 0..40u64 {
+            book(
+                &mut st,
+                trade_of(1 + i % 3, 4 + 2 * i as i64),
+                1_000 + 10 * i,
+            );
+        }
+        assert_eq!(st.phase1.kept_len(), 45);
+        st.phase1.enabled = true;
+        st.phase1.switch_on_due = SwitchOn::heard(&st.phase1);
+        let line = switch_on_drain(&mut st).expect("45 inputs were kept");
+        assert!(st.phase1.kept.is_empty());
+        assert!(line.contains("applied 45 of the 45 inputs"), "{line}");
+        assert!(line.contains("base marks among them: 2"), "{line}");
+        assert!(line.contains(" in "), "the duration: {line}");
+        assert!(!line.contains("wait"), "none left: {line}");
+        assert!(
+            switch_on_drain(&mut st).is_none(),
+            "and nothing the next time"
+        );
+        // While the replay runs with a module that shares the world, the drain stops at the replay
+        // clock: the line says how many wait.
+        let mut st = state();
+        modules(&mut st, 0b0111);
+        st.herds.enabled = true;
+        st.herds.engine.add_herd(
+            rtsim_ecology::herds::NewHerd {
+                name: "flock".into(),
+                species: rtsim_ecology::herds::HerdSpecies::Sheep,
+                frame: 1,
+                pos: (0, 0),
+                count: 12,
+                seed: Some(1),
+            },
+            Tick(0),
+        );
+        book(&mut st, join_of(1, 0), 2_000);
+        book(&mut st, join_of(2, 300), 9_000);
+        st.phase1.enabled = true;
+        st.replaying = true;
+        st.replay_clock = Tick(5_000);
+        st.phase1.switch_on_due = SwitchOn::heard(&st.phase1);
+        let line = switch_on_drain(&mut st).expect("two were kept");
+        assert!(line.contains("applied 1 of the 2 inputs"), "{line}");
+        assert!(line.contains("1 wait for the replay clock"), "{line}");
+        assert_eq!(st.phase1.kept_len(), 1);
+    }
+
+    /// The engine's MODULE_SWITCH step as the lib sees it: phase 1 hears the mask, then the four
+    /// modules switch together (`shared::switch`: every flag, then the resets).
+    fn switch_all(st: &mut State, mask: u32) {
+        hear_modules(st, mask);
+        shared::switch(st, mask);
+    }
+
+    /// The dragons' DRAGON_DIED of an agent nobody here knows, journaled at `game_time` under
+    /// observation `seq`: a record the dragons keep while off, and one a lair's dragon would book
+    /// at its own tick when it is applied.
+    fn dragon_died(seq: u64, game_time: i64) -> Vec<u8> {
+        use rtsim_ecology::boundary::{AttackerKind, Died, Obs, SpeciesDict, encode_obs};
+        let mut b = Vec::new();
+        let died = Obs::Died(Died {
+            agent: 0xD0D0,
+            epoch: 1,
+            killer_kind: AttackerKind::Player,
+            killer: (7, 8),
+            dimension: 0,
+            pos: (0.0, 64.0, 0.0),
+        });
+        encode_obs(seq, game_time, &died, &SpeciesDict::default(), &mut b);
+        b
+    }
+
+    /// The window of a joint switch-on (RP-300, review P2): phase 1 and the modules of `on`
+    /// (without phase 1's bit, every viewer off too) are switched off together; phase 1 hears a
+    /// village at tick 1,000, `keep` has a viewer module keep a record of tick 2,000 (journal it
+    /// off), and phase 1 hears another village at tick 3,000. Then everything is switched on in
+    /// one MODULE_SWITCH record. Returns the state with what each kept record of a viewer met when it
+    /// was applied (`State::kept_probe`).
+    fn a_joint_window(on: u32, keep: impl FnOnce(&mut State)) -> State {
+        const OFF: u32 = 0b0_0111;
+        let mut st = state();
+        st.dragons.engine.add_lair(
+            &mut st.phase1.world,
+            0x1234,
+            "Cinder Roost",
+            rtsim_ecology::species::Species::Fire,
+            rtsim_ecology::dragon::LairKind::Roost,
+            Pos::new(0, 1_500, 1_200),
+            70,
+            Tick(0),
+        );
+        switch_all(&mut st, OFF);
+        assert!(!st.phase1.enabled && !st.dragons.enabled && !st.conflict.enabled);
+        book(&mut st, join_of(1, 0), 1_000);
+        keep(&mut st);
+        book(&mut st, join_of(2, 300), 3_000);
+        assert_eq!(st.phase1.kept_len(), 2);
+        st.game_time = 4_000;
+        switch_all(&mut st, on);
+        assert!(st.phase1.enabled);
+        assert!(st.phase1.kept.is_empty(), "the window drained");
+        let joins: Vec<(u64, u64)> = st
+            .phase1
+            .log
+            .iter()
+            .filter_map(|l| match l.input {
+                Input::Join { key, .. } => Some((key, l.at)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(joins, vec![(1, 1_000), (2, 3_000)], "each at its own tick");
+        assert!(st.phase1.world.now().0 >= 3_000);
+        st
+    }
+
+    /// RP-300, the joint switch-on (review P2): phase 1 and ECOLOGY, which share a MODULE_SWITCH, come
+    /// on in one record, after a window off in which phase 1 heard a village (tick 1,000), the
+    /// dragons heard a death (tick 2,000), and phase 1 heard another village (tick 3,000). The
+    /// death meets the world at its own tick: the village before it is in, the one after it is
+    /// not yet, and the world's present is the death's, not the last input's. Phase 1's drain
+    /// ran first, at its own switch, with the dragons still off, so the whole window went in and
+    /// the world ran to 3,000 before the death was booked (and the dragons' events from the
+    /// switch-off to 2,000 ran on a world that already held a village of 3,000).
+    #[test]
+    fn a_joint_switch_on_applies_the_viewers_record_between_phase_1s_own_inputs() {
+        let st = a_joint_window(0b1_1111, |st| {
+            let died = dragon_died(5, 2_000);
+            super::super::dragons::journaled(
+                st,
+                &Rec {
+                    kind: rtsim_ecology::boundary::DRAGON_DIED,
+                    aux: 0,
+                    bytes: &died,
+                },
+            );
+            assert!(!st.dragons.kept.is_empty(), "the dragons kept the death");
+        });
+        assert_eq!(
+            st.kept_probe,
+            vec![(2_000, 2_000, 1)],
+            "(its tick, the world's present, phase 1 inputs still waiting) once the death was in"
+        );
+        // The line covers the whole window, the one input the death's catch-up drew in included.
+        assert_eq!(st.switch_on_lines.len(), 1, "{:?}", st.switch_on_lines);
+        assert!(
+            st.switch_on_lines[0].contains("applied 2 of the 2 inputs"),
+            "{}",
+            st.switch_on_lines[0]
+        );
+    }
+
+    /// RP-300, review P3 of the joint switch-on: the line of the switch-on counts the window as
+    /// phase 1 found it when it came on, not what is left when the drain runs. A viewer's record
+    /// later than phase 1's last input (here a dragon's death at 3,000, after a village at 1,000,
+    /// a base mark at 1,500 and a village at 2,000) has its catch-up draw in the whole window, and
+    /// the drain finds nothing: counted at the drain the line said nothing at all, and with the
+    /// record in the middle it said "applied 1 of the 1". Once, with the full count and the base
+    /// mark.
+    #[test]
+    fn the_joint_switch_ons_line_covers_the_whole_window_when_a_viewer_record_is_the_last() {
+        const OFF: u32 = 0b0_0111;
+        const ON: u32 = 0b1_1111;
+        let mut st = state();
+        st.dragons.engine.add_lair(
+            &mut st.phase1.world,
+            0x1234,
+            "Cinder Roost",
+            rtsim_ecology::species::Species::Fire,
+            rtsim_ecology::dragon::LairKind::Roost,
+            Pos::new(0, 1_500, 1_200),
+            70,
+            Tick(0),
+        );
+        switch_all(&mut st, OFF);
+        book(&mut st, join_of(1, 0), 1_000);
+        let mark = Input::MarkBase {
+            key: 0xB000,
+            frame: 1,
+            x: 600,
+            z: 100,
+            player: (5, 6),
+        };
+        book(&mut st, mark, 1_500);
+        book(&mut st, join_of(2, 300), 2_000);
+        let died = dragon_died(5, 3_000);
+        super::super::dragons::journaled(
+            &mut st,
+            &Rec {
+                kind: rtsim_ecology::boundary::DRAGON_DIED,
+                aux: 0,
+                bytes: &died,
+            },
+        );
+        assert_eq!(st.phase1.kept_len(), 3);
+        st.game_time = 4_000;
+
+        switch_all(&mut st, ON);
+        assert_eq!(
+            st.kept_probe.iter().map(|p| (p.0, p.2)).collect::<Vec<_>>(),
+            vec![(3_000, 0)],
+            "(its tick, phase 1 inputs still waiting): the death's catch-up drew in all three"
+        );
+        assert!(st.phase1.kept.is_empty());
+        assert_eq!(st.switch_on_lines.len(), 1, "{:?}", st.switch_on_lines);
+        let line = &st.switch_on_lines[0];
+        assert!(line.contains("applied 3 of the 3 inputs"), "{line}");
+        assert!(line.contains("base marks among them: 1"), "{line}");
+        assert!(!line.contains("wait"), "none left: {line}");
+    }
+
+    /// The same with the conflict as the viewer (its bit is not ECOLOGY's): a record of its own
+    /// kept at 2,000, between the two villages, goes in at 2,000. With no camp the conflict does
+    /// not run the world to its record, so the world's present is the village before it, 1,000;
+    /// the village after it still waits.
+    #[test]
+    fn a_joint_switch_on_applies_the_conflicts_record_between_phase_1s_own_inputs() {
+        use rtsim_conflict::boundary::{Difficulty, Obs, encode_obs};
+        let st = a_joint_window(0b10_1111, |st| {
+            let mut b = Vec::new();
+            encode_obs(
+                6,
+                2_000,
+                &Obs::Difficulty(Difficulty { difficulty: 2 }),
+                &mut b,
+            );
+            super::super::conflict::journaled(
+                st,
+                &Rec {
+                    kind: rtsim_conflict::boundary::DIFFICULTY,
+                    aux: 0,
+                    bytes: &b,
+                },
+            );
+            assert!(!st.conflict.kept.is_empty(), "the conflict kept the record");
+        });
+        assert_eq!(
+            st.kept_probe,
+            vec![(2_000, 1_000, 1)],
+            "(its tick, the world's present, phase 1 inputs still waiting) once it was in"
+        );
+    }
+
+    /// A switch-on of phase 1 alone (no viewer module comes on with it, so no reset begins) still
+    /// drains in its MODULE_SWITCH record, in the resets' step for it, not before: phase 1 hearing the
+    /// record leaves the inputs kept, and the drain takes them in time order, each at its own
+    /// tick.
+    #[test]
+    fn a_switch_on_of_phase_1_alone_drains_in_the_resets_of_its_record() {
+        let mut st = state();
+        switch_all(&mut st, 0b1_0111);
+        assert!(!st.phase1.enabled && st.dragons.enabled);
+        book(&mut st, join_of(2, 300), 3_000);
+        book(&mut st, join_of(1, 0), 1_000);
+        st.game_time = 4_000;
+        hear_modules(&mut st, 0b1_1111);
+        assert!(st.phase1.enabled);
+        assert_eq!(st.phase1.kept_len(), 2, "heard, not drained yet");
+        assert!(st.phase1.switch_on_due.is_some());
+        shared::switch(&mut st, 0b1_1111);
+        assert!(st.phase1.kept.is_empty(), "the resets drained it");
+        assert!(st.phase1.switch_on_due.is_none(), "once");
+        let joins: Vec<(u64, u64)> = st
+            .phase1
+            .log
+            .iter()
+            .filter_map(|l| match l.input {
+                Input::Join { key, .. } => Some((key, l.at)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(joins, vec![(1, 1_000), (2, 3_000)], "in time order");
+    }
+
+    /// A reset a module runs in the middle of a session (a first record of its own, applied while
+    /// the kept records of a joint switch-on go in) is not the MODULE_SWITCH record's resets: it must
+    /// not take phase 1's drain, which would run before the kept records that follow it.
+    #[test]
+    fn a_modules_own_reset_inside_a_kept_record_does_not_take_phase_1s_drain() {
+        let mut st = state();
+        switch_all(&mut st, 0b0_0111);
+        book(&mut st, join_of(1, 0), 1_000);
+        hear_modules(&mut st, 0b1_1111);
+        assert!(st.phase1.switch_on_due.is_some());
+        shared::reset_these(&mut st, &[shared::Module::Dragons]);
+        shared::end_resets(&mut st, &[]);
+        assert!(
+            st.phase1.switch_on_due.is_some(),
+            "still due: not this reset's"
+        );
+        assert_eq!(st.phase1.kept_len(), 1);
+        shared::switch(&mut st, 0b1_1111);
+        assert!(st.phase1.kept.is_empty());
+    }
+
+    /// A state with phase 1 off and a village adopted at tick 2,000 that is kept, not applied: the
+    /// switch-off window of the module-record tests. `lair` gives the dragons a lair, so they run
+    /// the shared clock (a viewer); without one they are switched on and have nothing in the world.
+    fn off_with_a_kept_join(lair: bool) -> State {
+        let mut st = state();
+        modules(&mut st, 0b0111);
+        st.dragons.enabled = true;
+        st.ships.enabled = true;
+        if lair {
+            st.dragons.engine.add_lair(
+                &mut st.phase1.world,
+                0x1234,
+                "Cinder Roost",
+                rtsim_ecology::species::Species::Fire,
+                rtsim_ecology::dragon::LairKind::Roost,
+                Pos::new(0, 1_500, 1_200),
+                70,
+                Tick(0),
+            );
+        }
+        assert_eq!(shared::any_viewer(&st), lair);
+        book(&mut st, join_of(1, 0), 2_000);
+        assert_eq!(st.phase1.kept_len(), 1);
+        st.game_time = 9_000;
+        st
+    }
+
+    /// The Join kept at 2,000 must have gone in at 2,000, with the shared world already at the
+    /// hand-over's 9,000: the record ran it there only after the kept input was applied.
+    fn assert_the_kept_join_went_in_first(st: &mut State) {
+        assert!(
+            st.phase1.world.now().0 >= 9_000,
+            "the record ran the shared world to the hand-over"
+        );
+        assert!(
+            st.phase1.kept.is_empty(),
+            "the kept input was applied first"
+        );
+        let at = st
+            .phase1
+            .log
+            .iter()
+            .find(|l| matches!(l.input, Input::Join { key: 1, .. }))
+            .map(|l| l.at);
+        assert_eq!(at, Some(2_000), "at its own tick, not the hand-over's");
+        modules(st, 0b1111);
+        let at = st
+            .phase1
+            .log
+            .iter()
+            .find(|l| matches!(l.input, Input::Join { key: 1, .. }))
+            .map(|l| l.at);
+        assert_eq!(at, Some(2_000), "and still, once on again");
+    }
+
+    fn dragon_state() -> Vec<u8> {
+        record(rtsim_ecology::boundary::DRAGON_STATE, 64, 0, |b| {
+            wire::put_u64(b, 8, 0xD0D0);
+            wire::put_u32(b, 16, 1);
+            wire::put_f32(b, 24, 100.0);
+            wire::put_f32(b, 28, 100.0);
+        })
+    }
+
+    /// RP-300, review P3: DRAGON_STATE is applied at the hand-over's time and the dragons' engine
+    /// runs the shared world there first. With phase 1 off, the kept inputs before that time must
+    /// be applied first, each at its own tick, as the ships' `ingest` does: otherwise the world is
+    /// already at the hand-over when the drain applies them, and they are booked there, up to one
+    /// hand-over late.
+    #[test]
+    fn a_dragon_state_applies_the_kept_inputs_before_it_runs_the_world_to_the_hand_over() {
+        let mut st = off_with_a_kept_join(true);
+        let state = dragon_state();
+        super::super::dragons::observe_state(
+            &mut st,
+            &Rec {
+                kind: rtsim_ecology::boundary::DRAGON_STATE,
+                aux: 0,
+                bytes: &state,
+            },
+        );
+        assert_the_kept_join_went_in_first(&mut st);
+    }
+
+    /// The same with dragons that are switched on and have nothing in the world yet (no lair, no
+    /// dragon, no oil): no viewer runs the shared clock, so the drain of `run_to` has no reason to
+    /// run, but the engine's `run_until` ends with the world's all the same. A record of theirs
+    /// (here a state, the same `ingest` as a first LAIR_FOUND) must not run it past the kept
+    /// inputs.
+    #[test]
+    fn a_dragon_state_of_dragons_with_nothing_yet_applies_the_kept_inputs_first() {
+        let mut st = off_with_a_kept_join(false);
+        let state = dragon_state();
+        super::super::dragons::observe_state(
+            &mut st,
+            &Rec {
+                kind: rtsim_ecology::boundary::DRAGON_STATE,
+                aux: 0,
+                bytes: &state,
+            },
+        );
+        assert_the_kept_join_went_in_first(&mut st);
+    }
+
+    /// The ships' `ingest` drains before it runs its engine, but through the guard of `run_to`:
+    /// ships that are switched on with no dock or ship yet are no viewer, and their engine runs the
+    /// world to the hand-over all the same.
+    #[test]
+    fn a_ship_state_of_ships_with_nothing_yet_applies_the_kept_inputs_first() {
+        let mut st = off_with_a_kept_join(false);
+        let state = record(rtsim_ships::boundary::SHIP_STATE, 56, 0, |b| {
+            wire::put_u64(b, 8, 0x5101);
+            wire::put_u32(b, 16, 1);
+            wire::put_u32(b, 24, 1_000);
+        });
+        super::super::ships::observe_state(
+            &mut st,
+            &Rec {
+                kind: rtsim_ships::boundary::SHIP_STATE,
+                aux: 0,
+                bytes: &state,
+            },
+        );
+        assert_the_kept_join_went_in_first(&mut st);
+    }
+
+    /// RP-300: a base marked while phase 1 is off is kept at its own tick and is a node (a place the
+    /// world's records may name) once it is on again; a record naming it while it is only kept is
+    /// about a node, not about nothing.
+    #[test]
+    fn a_base_marked_while_off_is_a_node_once_it_is_on_again() {
+        let mut st = state();
+        modules(&mut st, 0b0111);
+        let marked = record(obs::BASE, obs::base::SIZE, obs::base::MARKED, |b| {
+            wire::put_u64(b, obs::OBS_SEQ, 1);
+            wire::put_i64(b, obs::GAME_TIME, 4_000);
+            wire::put_u64(b, obs::base::BASE, 0xBA5E);
+            wire::put_u32(b, obs::base::DIM, 1);
+            wire::put_f64(b, obs::base::X, 600.0);
+            wire::put_f64(b, obs::base::Z, 100.0);
+            wire::put_u64(b, obs::base::PLAYER_MOST, 5);
+            wire::put_u64(b, obs::base::PLAYER_LEAST, 6);
+        });
+        journaled(
+            &mut st,
+            &Rec {
+                kind: obs::BASE,
+                aux: obs::base::MARKED,
+                bytes: &marked,
+            },
+        );
+        assert!(!st.phase1.nodes.contains_key(&0xBA5E), "not applied yet");
+        assert_eq!(st.phase1.kept.len(), 1);
+        assert_eq!(st.phase1.kept[0].at, 4_000);
+        assert!(
+            known(&st.phase1, 0xBA5E),
+            "a record naming it is about a node"
+        );
+        modules(&mut st, 0b1111);
+        assert!(st.phase1.kept.is_empty());
+        assert!(st.phase1.nodes.contains_key(&0xBA5E));
+        assert!(
+            st.phase1
+                .log
+                .iter()
+                .any(|l| l.at == 4_000 && matches!(l.input, Input::MarkBase { key: 0xBA5E, .. })),
+            "at its own tick"
         );
     }
 
