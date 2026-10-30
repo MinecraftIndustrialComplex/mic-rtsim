@@ -1,4 +1,4 @@
-# Overnight choices: EQUILIBRIUM.md slices S1, S2 and S4 (2026-10-22), S5 and S6 (designed and built 2026-10-29)
+# Overnight choices: EQUILIBRIUM.md slices S1, S2 and S4 (2026-10-22), S5 and S6 (designed and built 2026-10-29), S7 (designed 2026-10-30)
 
 Reversible choices made while Ben was asleep, each with its reason, numbered EQC#. None is final
 until Ben reviews it. The work is EQUILIBRIUM.md §4's slices S1 (the who-is-alive census), S2
@@ -7,7 +7,8 @@ pressure, fed share, starve-leave, arrival gate, newcomer direction, oil visitor
 lairs). DECISIONS.md is unchanged; EQUILIBRIUM.md marks the slices built. Branches `feat/eq-s1-s2`
 and `feat/eq-s4`. The last two sections are S5 and S6. S5 is the design of the dragon home bodies (EQ-2 (a); records EQC100 to
 EQC144) and, after the design, what the build found (EQC145 to EQC149; branch `feat/eq-s5-dragon-bodies`). S6 (villages and
-Ribbits; EQC150 to EQC192) is designed and built on `feat/eq-s6-villages`.
+Ribbits; EQC150 to EQC193) is designed and built on `feat/eq-s6-villages`. S7 (conflict pressure; EQC200 to EQC249) is designed on
+`feat/eq-s7-conflict` and not built.
 
 ## S1: the census
 
@@ -863,3 +864,430 @@ player on day 100, the same seed's control with no wipe), median [5th, 95th] ove
 | EQC191 | **Test files.** Rust: `rtsim-world/tests/villages.rs` (step 1, the census and formats), `settlers.rs` (step 2, which sets `village_growth_per_day` to 0 so a growth order never sits between a pair and its census), `village_growth.rs` (step 3), `quiet.rs`; `rtsim-jni/tests/villages.rs` (steps 4 and 5, including `villages_renew_end_to_end` and the crash between an order and its result, which live there and not in `rtsim-host` because the fake Java they drive is the host's, in `rtsim-host/src/java.rs`); `rtsim-cli/src/sim/census.rs` (the `villages` scenario, `Villages`) and `equilibrium.rs`. Java: `gametest/VillageRenewalGameTests.java` (core) and `gametest/RibbitRenewalGameTests.java` (Ribbits). | The names in "S6 tests" are the tests' names. |
 | EQC192 | **A TEST-mode view of a village's row** (`Engine::phase1_village`, `nPhase1Village`, `NativeEngine.phase1Village`) and a census counter (stat 25) were added for the tests: the engine's belief about one village was otherwise readable only through its markets. | Stats are 0 to 25; Java's `PHASE1_STATS` is 26. |
 | EQC193 | **The renewal GameTests wait on far chunks, and the server ticks unthrottled.** Three rounds on code that differed only in the tests failed three different waits: the first core round at the walk-in's "walking: 0", a second at "the reach is loaded" of `aVillageNeverSeenAliveIsNotSettled`, the first Ribbits round at the Ribbit's walk, and on the merged head the core walk-in again, at "both walked to within 12 blocks". Two causes. (1) A wait's timeout in ticks passes in less wall time than the chunks need on the IO threads, so a failing `check` in both classes now sleeps 5 ms (as `RtsimTests.io` does for the waits that use it). (2) A walker stops in a chunk that does not tick; the walk tests forced the census reach and the ring round each spawn point but not what lies between, and which bearing the engine draws decides whether a gap sits on it. Both walk tests now force the whole corridor, 16 blocks apart from the bell to the edge, and carry a trace of the walk (every 500 ticks, where each settler is and what holds it) in their failure message. | Test-only. In the game a settler that cannot go on is placed at the village when the 6,000-tick deadline passes (`Walkers`), so a gap costs a walk and never a body. The runs: `:core:test` and core 178 of 178, Ribbits 15 of 15, `create -Psec1fx` 266 of 266 on the merged head (the rounds that failed first are the ones named above). |
+
+## S7: conflict pressure
+
+**Designed 2026-10-30, not built.** EQUILIBRIUM.md §4's S7 row: pressure on the recruits of a camp whose members have no
+bodies at home, and its break and refound. When a war party goes out is `CONFLICT-LIFE.md`'s build plan (EQ-5 rejected the
+gate), and S7 stays out of it (EQC226). Branch `feat/eq-s7-conflict`, cut from main 9389b4e5 (S5's dragon home bodies and
+S6's villages have both landed). Ids EQC200 to EQC249 are S7's: the records use EQC200 to EQC236, and EQC237 to EQC249 are
+kept for the build's own findings. Choices that are Ben's are marked **FOR BEN**, each with its options and a recommendation,
+and are gathered after the records. Nothing is built and no engine code changes here; the only other file is the model the
+numbers come from, `research/equilibrium-s7-camps/camps.py`.
+
+**Words used.** A *pool camp* is a conflict culture whose members have no body at home: its warriors are a number, and its
+parties are the only bodies it ever has. Today that is goblin, bandit and raider (`camp_bodies` absent, `renewal` absent,
+`recruits_per_day` 2, 1.5 and 2, caps 60, 40 and 50). A *body camp* is a culture with `camp_bodies` (the Frostmaw den and the
+Umvuthana grove, MOWZIE.md §4.9); they are S9's, and S7 changes nothing at a den or a grove. The *anchor* is the faction's
+`pool` and `pool_at`: the pool is a line from the anchor, and every event that moves the pool moves the anchor. A camp is
+*thin* when its members (pool and members away) are under a tenth of its cap, *idle* when it has no party in any phase and no
+feud with an open demand, *broken* between its break and its refound. A *new band* is a refounded camp's fresh chief and heir.
+
+### The shape
+
+1. A pool camp gets a **strain**: one boxed record on its faction row holding its pressure, its break, and the stamp of its one
+   wheel event (EQC201). A culture opts in with a new `pool_renewal` block in its JSON (EQC202); the body cultures have none, so
+   their code paths and numbers do not move.
+2. The recruit rate is `max(r x 2^-P, 1/96)` a day with P read at the anchor, in the three places that read
+   `recruits_per_day` today. The pool stays a line between events, so `pool_ready` is the exact inverse of `pool_at` (EQC203).
+3. A player's loss is a credited kill of a party member (`BAND_CASUALTIES`, which the engine does not book for anyone today), a
+   war chief killed by a player, and a party lost at a player's district; at a district every death that no wild mob dealt is
+   the player's, as the abstract fight books it (EQC204, EQC205). Raids on villages and camps, and mobs, add nothing.
+4. A thin, idle camp at P 2 breaks; one with a party out or a demand open waits, looked at again each game day (EQC207, EQC208).
+5. A broken camp is inert both ways: nothing leaves it and nothing is sent at it, its grievance keeps its closed form, its
+   node and market are untouched (EQC209, EQC210).
+6. `min(384, 48 x 2^P)` days after the break a **new band** takes it with a quarter of the cap, new chief and heir, no old
+   fights; the pressure it carries is what is left of the old one (EQC211, EQC212).
+7. **The finding that moves a number.** At the engine's recruit rates a player who kills every whole warrior every two days
+   holds a goblin camp at P 1.58, a bandit camp at 1.67 and a raider camp at 1.72, so the break at P 2 never fires and the
+   row's `farmed_camp_breaks_and_refounds` could not pass. Taken: a half-life of 192 days for pool camps (the farmed P is then
+   2.13 to 2.29). **FOR BEN** FB-1 (EQC203).
+8. The ledger row, the found tail, the census and the archive carry it with no new record kind: a broken pool camp's row is
+   `EMPTY | BROKEN | WAITING` with the refound wait left (EQC214, EQC216, EQC218). Formats: the conflict pages RTCD to
+   RTCE, meta 12 to 13 (EQC217).
+9. No production Java changes. **Nothing in the shipped pack reports a pool camp** (`RtsimApi.reportCamp` has no caller outside
+   the tests; the one `declareCamp` caller is the Mowzie plugin, for dens and groves), so S7 is engine groundwork whose first
+   player-visible effect waits on a plugin that reports pool camps (FB-5, EQC221).
+10. Tests: `kill_all_camps` (90% of the control within 96 days; the model's rule reads 45 to 54), `farmed_camp_breaks_and_refounds`, and failing-first tests for every behaviour that changes (EQC230 to EQC232).
+
+### S7 base and reads
+
+Read for this design, all at 9389b4e5: EQUILIBRIUM.md (§1, §2.2 and §2.3, §2.4.5 and §2.4.7, §2.6, §2.7, §2.8, §3.3 with its note on K
+above 1, §3.6 to §3.8, §4's S7, S9 and S11 rows, §5.1's EQ-5 and EQ-6, §5.2's camp rows); `CONFLICT-LIFE.md` (0, 1, 2.1 to 2.3, 2.9 to
+2.11 with the build order of 2.11, and the decisions CL-D19 to CL-D34 of §7, for CL-D23, CL-D26 and CL-D31 to CL-D33); `MOWZIE.md` §4.10
+(the recruits row, the loot supply, the five things it asks of the shared rule), with §4.9's rules as EQUILIBRIUM.md §2.6 and the code
+state them; `docs/choices-mowzie-build.md` M12a (the summary above MZB-1000 and MZB-1016's note on the grove's recruits), with the
+M6, M9 and M12a records the engine's comments cite (MZB-251 to MZB-259, MZB-826, MZB-1006 to MZB-1008, MZB-1014) read in the code; this
+file's S1, S2, S4, S5 and S6 sections; the conflict engine (`crates/rtsim-conflict`: `engine.rs` Faction 112, Ev 506, `census` 1289,
+`camp_site_state` 1327, `add_faction` 1647, `pool_at` 1874, `pool_add` 1886, `pool_ready` 1900, `signal` 2087, `plan_feud` 2458,
+`send_party` 3379, `lose_units` 4973, `home` 5241, `plunder` 5377, `handle` 6305, `casualties` 7365, `chief_killed_by` 7556, `check`
+7842; `engine/camp.rs` `camp_found` 681, `camp_restore` 750, `whole_at` 905, `pool_return` 932, `renewal_bump` 1046, `plan_arrival`
+1071, `party_lost` 1445; `culture.rs`, `persist.rs`, `tunables.rs`, `data/cultures/*.json`, `synth.rs`); `crates/rtsim-kernel`
+`renewal.rs`, `sites.rs`, `census.rs`; `crates/rtsim-jni/src/orders.rs`; the core Java that declares camps and reports deaths
+(`ConflictBridge`, `Camps`, `RtsimApi`, `NativeCodec`, `SiteTestHooks`) and the Mowzie plugin's `MowzieCamps`; `docs/boundary.md`
+(the SITE_STATE and found-tail text); `crates/rtsim-archive/src/kinds.rs`; `research/equilibrium-2026-10-21/model.py` (`camps`,
+`kill_camp`) and its summary. Not read: MOWZIE.md §4.5 and §4.9 in full, CONFLICT-LIFE.md §2.4 to §2.8, §2.12 to §2.17 and §4 to §6, and
+the M9 and M11 records, beyond what is cited. S5 and S6 are on main, so no id below is drafted against an unlanded branch; no branch
+other than this one touches `crates/rtsim-conflict`.
+
+**What is true in the repo (file and line at 9389b4e5):**
+
+| # | Fact | Where |
+|---|---|---|
+| R1 | The pool is a line: `pool + recruits_per_day x (t - pool_at)`, clamped to the cap less the members away. Three places read `recruits_per_day`: `pool_at`, `pool_ready` and the camp ledger's `whole_at`. Every writer of the anchor goes through `pool_add`, `pool_return` or `pool_shift`. | `engine.rs:1874-1910`, `camp.rs:905, 932-952` |
+| R2 | Pressure and a renewal exist only for a body culture: a `renewal` needs `camp_bodies` and `recruits_per_day` 0; the pressure lives on the `Camp` ledger, which a pool camp does not have; `renewal_bump` returns at once for a culture with no `renewal`. | `culture.rs:585-607`, `camp.rs:232, 1046-1049` |
+| R3 | The five cultures: goblin 60 at 2 a day, bandit 40 at 1.5, raider 50 at 2 (no `renewal`, no bodies); Frostmaw cap 1 with a boss `renewal` (6, 192, 96); Umvuthana cap 9 at 2 a day with `camp_bodies` and only a `chief_renewal`. The grove's warriors therefore still regrow by recruits (the M12a note on `uninstallLeavesHomeBodies`, MZB-1016), which is S9's. | `data/cultures/*.json` |
+| R4 | A loss is booked (`renewal_bump`, `chief_lost`) in `lose_units` (cause `Player` for a party lost at a player's district, `Faction` for a raid on a village or a rival camp), `chief_killed_by`, `camp_death`, a stray's death, a write-off and the chief's deaths. **`casualties()`, which handles BAND_CASUALTIES, books none**: it takes the units off the party and calls `party_lost`. The record carries `by` and the killer, and Java fills them from the full kill credit (`ConflictBridge.onDeath` takes `Camps.killer` for a member, MZB-826); the doc comments at `ConflictBridge.java:2519` and `Camps.java:2144` ("BAND_CASUALTIES keep byKind, nothing reads them") are stale. | `engine.rs:4744, 5027, 5102, 7365-7470, 7582`, `camp.rs:2147, 2934, 2972, 2990, 3173` |
+| R5 | A party ends in one place, `home()`, after a wiped or routed band has walked home; a band that lost every unit is still a party until then. The district resolve loses `missing x abstract_loss_share` (0.5) of the units a fortress did not leave standing, and the survivors straggle home. | `engine.rs:5241-5352, 4744` |
+| R6 | The Peaceful world is the engine's one precedent for an inert camp: `plan_feud` books no step, `plunder` reschedules itself and sends nothing, `send_party` and the muster refuse, and `set_difficulty` plans every feud again when it ends. | `engine.rs:2418, 2487, 3607, 4141, 5378, 6571-6600` |
+| R7 | `send_party` is the one place a party is made; `plunder` picks its target among nodes the culture hates, rival camps included, by the node's pop and `haven_defence_per_pop`, which is fixed at join (`pool_cap / 4`) and does not follow the pool. | `engine.rs:3379, 1669, 5377-5420, 5084` |
+| R8 | Every faction already sends a SITE_STATE row (kind Camp, K the cap, the floor of the pool as count, SHORT and EMPTY), but `p` comes from the `Camp` ledger only, so a pool camp's row says P 0 and never WAITING. `camp_found` for a camp with no bodies restores only the row's count ("the gap is not backdated", fork F14). The found tail's flags are ROW 1, GAP 2, WAITING 4, EXISTED 8; `state_flags::BROKEN` (4) exists but does not reach the tail. | `engine.rs:1327-1380`, `camp.rs:681-700`, `sites.rs:56-96` |
+| R9 | `Conflict::census` reports `conflict.camp` with members the floor of the pool, K the cap, **P 0, broken false and no renewals**, with a comment that names this slice. | `engine.rs:1286-1296` |
+| R10 | The conflict pages are RTCD (`RTC13`), meta 12; the wheel's `Ev` has tags 0 to 11 (`CampRecount` is 11); the faction row ends with its optional camp. The archive's conflict kinds end at `conflict.party_home`; no kind or name has "broken" or "refound" in it. | `persist.rs:89-95, 342-380, 1040-1140`, `kinds.rs:71-85` |
+| R11 | No shipped plugin reports a pool camp: `RtsimApi.reportCamp` (whose Javadoc names `minecraft:pillager_outpost` and `goblinstyranny:goblin_camp`) is called by tests and by nothing in production, and the one production caller of `declareCamp` is the Mowzie plugin, for dens and groves. The `mic_rtsim:conflict/*` structure ids are test stand-ins. | `RtsimApi.java:185-226`, `MowzieCamps.java:177, 211`, `ConflictGameTests` |
+| R12 | A faction's chief and heir are made at `add_faction` (seeds from `StreamKey(seed, SYS_CHIEF, key)` and the `chiefs` counter) and replaced by `succeed`; `observed` (real fights seen, newest last) is the floor `village_outcome` uses against the faction. | `engine.rs:1647-1750, 2010-2060` |
+| R13 | An envoy is not drawn from the pool (`kind.is_war()` is false), so `envoy_insult_kills` (2) is a grievance count, not a loss. | `engine.rs:3396-3455` |
+
+**What the numbers say** (`research/equilibrium-s7-camps/camps.py`, a day-stepped model with the engine's own recruit rates):
+
+| Check | goblin 60 at 2 | bandit 40 at 1.5 | raider 50 at 2 |
+|---|---|---|---|
+| Recruits a day as a share of the cap (the model of §3.1 used 8%) | 3.3% | 3.75% | 4.0% |
+| Farmed to the cap by a player who kills every whole warrior every 2 days: P reaches, half-life 96 | 1.58 | 1.67 | 1.72 |
+| The same, half-life 192 | 2.13 | 2.24 | 2.29 |
+| Breaks a year and broken share, farmed, half-life 96, break at 2 | 0 | 0 | 0 |
+| The same, half-life 192, break at 2: breaks a year, broken share, day of the first break | 0.23, 0.47, 218 | 0.28, 0.57, 162 | 0.30, 0.60, 144 |
+| The same, half-life 96, break at 1.25 | 0.57, 0.68, 38 | 0.60, 0.72, 30 | 0.63, 0.74, 28 |
+| Share of its recruits a player must kill, steadily, to reach the break: half-life 192, P 2 / half-life 96, P 1.25 | 87% / 64% | 77% / 57% | 72% / 54% |
+| One kill-all (P 1.0): days to 50% and 90% of the cap, P read at the last event | 30 and 54 | 27 and 48 | 25 and 45 |
+| The same, P read every step | 29 and 51 | 26 and 45 | 24 and 43 |
+
+The farmed P is the continuum `P = (r H / (cap ln 2)) 2^-P`; it does not depend on how often the player kills, only on the
+share of the recruits he takes. Reading P at the last event instead of every step moves a kill-all's 90% by 3 to 6 days and
+changes no break (rows C and D of the script).
+
+### What S7 changes, by place
+
+| Place | Change |
+|---|---|
+| Culture data (`rtsim-conflict`) | A `pool_renewal` block (`PoolRenewalDef`, resolved to `PoolRenewal`) on goblin, bandit and raider; refused with `renewal` or `camp_bodies`. The Frostmaw and Umvuthana files are untouched. |
+| Engine (`rtsim-conflict`) | `Faction.strain: Option<Box<Strain>>`; `recruit_rate` in `pool_at`, `pool_ready` and `whole_at`; `pool_bump` (re-anchor, then bump) behind `renewal_bump`; a bump in `casualties` for pool cultures; `strain_check`, `break_camp`, `refound`, `reband`; `Ev::Strain` (wheel tag 12); the `camp_active` gates; `slay`; census, ledger row and found restore; stats. |
+| Boundary | **No record kind, no flag, no aux bit.** SITE_STATE and the found tail carry a broken pool camp as `EMPTY | BROKEN | WAITING` and count 0, with the refound wait as the wait left (EQC214). |
+| Formats | The conflict pages RTCD to RTCE and the meta 12 to 13; the site ledger file is unchanged (version 1). rtsim-view's fixtures are regenerated. |
+| Archive | Two kinds appended: `conflict.broken`, `conflict.refounded`. |
+| Java | Production: none. Test only: test order 41 `CONFLICT_SLAY` and two GameTests in core; the stale comments at R4 are corrected. |
+| `rtsim-cli` | The `camps` scenario of `sim census`; `sim::equilibrium` gains the camps harness, `kill_all_camps`, `farmed_camp_breaks_and_refounds`, the long-horizon run. |
+| Documents | EQUILIBRIUM.md §2.4.5, §3.3, §4's S7 row, §5.2's camp row; `docs/boundary.md` (the pool camp's row); this section's findings. |
+| Kernel | Nothing: `Pressure`, `RenewalRule`, `LossCause` and `FoundRow` are used as they are. |
+
+### S7 records: pressure and the recruit rate
+
+| # | Choice | Why |
+|---|---|---|
+| EQC200 | (2026-10-30, slice S7 design) **Scope.** S7 gives a pool camp pressure on its recruits, a break and a refound (EQUILIBRIUM.md §2.4.5). It does not decide when a party goes out (CONFLICT-LIFE.md), does not touch a den or a grove (S9), a village, a dragon or the economy, adds no body, no block, no item and no record kind (D3), and changes no number a body culture reads: the Mowzie suites must pass unchanged, and a test pins the Frostmaw and the grove (EQC230). | The row's words, EQ-5's answer, and the rule that S9 owns the grove's warriors (§2.6 item 2 turns the grove into arrivals, not into a slower rate). |
+| EQC201 | **Where pressure lives: `Faction.strain: Option<Box<Strain>>`, `Some` only for a culture with `pool_renewal`.** `Strain { pressure: Pressure, broken: Option<Broken>, stamp: u32, check_at: Option<Tick> }` with `Broken { since: Tick, due: Tick }`: about 56 bytes for each pool camp and a null pointer for every other faction. Fork F1: on the `Camp` ledger (rejected: it exists only for bodies, and a ledger for a pool camp would be a slot table with no slots); a bare `Pressure` field on every faction (rejected: 8 bytes for the Frostmaw and the grove that nothing reads, and a second pressure beside the `Camp`'s). | The plan puts a site's state in its engine's site row (§2.2). One box keeps a body culture's row as it is. |
+| EQC202 | **Culture data: a `pool_renewal` block** beside `renewal` (`PoolRenewalDef`, resolved with `RenewalDef::rule`'s checks): `half_life_days` 192 (FB-1), `recruit_cap_days` 96, `break_share` 0.1, `break_pressure` 2.0, `refound_base_days` 48, `refound_cap_days` 384, `refound_share` 0.25; goblin, bandit and raider carry the same block. `Culture::resolve` refuses it with a `renewal` (a culture's members come back by one rule), with `camp_bodies` (a body camp's pool is a slot table that follows a line the same way, but S9 decides the grove, and a rate that moves under a ledger of owed bodies is not S7's risk), with `recruits_per_day` 0 (there must be a rate to slow), and with any number not finite, `break_share` outside (0, 1), `refound_share` outside (0, 1], `refound_cap_days` below `refound_base_days`. Fork F13: reuse `renewal` with a flag (rejected: its meaning, an arrival after a wait, is the opposite of a rate). | One block, one validator, the Frostmaw and Umvuthana files untouched. A culture JSON is data, so S9 can opt the grove in or out with no engine change. |
+| EQC203 | **The recruit rate: `max(r x 2^-P, 1 / recruit_cap_days)` a day, which is the kernel's own rule read as a rate (`1 / RenewalRule { base_days: 1/r, cap_days: 96, half_life_days: H }.delay_days(P)`), with P read at the anchor and a half-life of 192 days for pool camps. FOR BEN (FB-1).** One helper, `Conflict::recruit_rate(f)` (per tick; 0 while the camp is broken; `r` for a culture with no strain), replaces the three reads of `recruits_per_day`. P at the anchor is the strain's pressure at `pool_at`'s game day. **Every pressure bump re-anchors the pool first**: `pool_bump` calls `pool_add(f, 0, at)` before it changes the pressure, so the gap before a loss is integrated at the pressure it had (today `lose_units` bumps before `party_lost` re-anchors, so the order is fixed inside one function and tested, EQC230). Forks: **F2** how P is read: at the last event (taken); every step (no closed form, and `pool_ready` would need the root of an exponential integral); or a booked re-read every few days (a wheel entry for each pressured camp, and an answer from `pool_ready` that moves). The script shows the first costs 3 to 6 days on a kill-all's 90% and nothing on the break, and the plan itself reads P "at the last event" (§3.8). **F3** a floor of one recruit in 96 days (taken; the plan has none): P would have to pass 7 for it to bind, and it keeps a corrupt ledger row (a huge `p`) from making an absorbing zero (§2.1, no absorbing zero). **F12** the half-life, below. | §2.4.5: "recruits at `recruits_per_day / 2^P`", with "P read at the last event that touched the pool", so the pool stays a line and `pool_ready` (the inverse) is never early. **The finding.** The model of §3.1 recruits 8% of a camp a day; the engine's camps recruit 3.3% to 4%. Recruiting less, a camp is slower to refill, so the same killing leaves a player's pressure lower than the model's: a player who kills every whole warrior every 2 days holds P at 1.58, 1.67 and 1.72 on the plan's half-life of 96 (the table above), because he can only take what the camp has recruited. §2.4.5's break at P 2 therefore never fires, and the row's `farmed_camp_breaks_and_refounds` could not pass. **Taken: half-life 192 for pool camps.** The same farmer reaches 2.13, 2.24 and 2.29; the first break comes on day 144 to 218; 0.23 to 0.30 breaks a year when he farms to the limit; the wait at P 2 to 2.3 is 192 to 236 days, the plan's "two to four game years" at its low end. The break stays at 2, the 10% and the 48 and 384 days of §2.4.5. A pool camp's memory is then two game years, level with the years its refound takes. The options are under FB-1. |
+| EQC204 | **What is a player's loss at a pool camp** (the credit codes are MZB-1006's: a credited kill, a pet's, a death after the player's hit within 100 ticks, and every A10 removal are `Player`; a FakePlayer's, a trap's and an unknown source's are `Other`; a mob's is `Predator`; for a body that carries no boss loot an `Other` adds nothing, §2.2). By source: (1) **BAND_CASUALTIES** `by` PLAYER: `Player`; MOB: `Predator`; NONE and OTHER: `Other`, **except when the party's target is a player's district** (FB-2): there NONE and OTHER are `Player`, because the district's defences are the player's (turrets, traps, walls, lava) and the abstract fight books exactly that (R5); (2) the **abstract resolve at a district** (`lose_units`, `LossCause::Player`, already): the units that fall; (3) a **war chief** killed by a player (`chief_killed_by`, already calls `renewal_bump`): `1/cap`; (4) a **raid on a village or a rival camp** (`LossCause::Faction`): nothing, so the world does not learn to empty itself (§2.2); (5) an **envoy or scouts** killed: nothing (R13: they are no pool draw); (6) a death by age: none exists for a pool member. Each loss adds `n / cap`, cap the faction's `cap` (the culture's `pool_cap` for a pool camp). Fork F4: credited kills only everywhere (rejected for districts: a watched fight at a trap-defended base would book less pressure than the same raid resolved unwatched, a difference the engine's two ways of resolving one raid must not have). | §2.2's four cases and §5.2's "a player's loss is vanilla's kill credit". The district rule is §2.2's own third case ("any death no wild mob is credited with") applied where the player is the only one who defends, and it keeps the watched and unwatched fights equal. |
+| EQC205 | **`casualties()` books the loss for a pool culture.** After `party_lost(p, t, at)` and only when `t > 0` and the culture has `pool_renewal`, call `renewal_bump(f, t, cause, at)` with the cause of EQC204; the bump is once per counted op, because the function has already returned for a `casualty_ops` repeat and for a copy it resolved unwatched, so a reassert, a replay and a copy book it once (`a_replayed_casualty_bumps_once`). It does not run for a body culture: the Frostmaw's chief dies through CHIEF_KILLED, and the grove's warriors killed on a march book no pressure today (finding for S9: when the grove gets a member `renewal`, `casualties()` is where an away warrior's death must bump, and CAMP_DEATH's "a member that died away was lost then" must not bump twice). `renewal_bump` itself grows a second arm: the body culture's as it is, then `pool_bump` for a culture with a strain. | R4: the loss that a player inflicts on a pool camp is mostly this one, and nothing books it. Gating on `pool_renewal` and not on "any renewal" keeps S9's choice free and Mowzie's behaviour bit for bit. |
+| EQC206 | **A test hook: `Conflict::slay(w, f, n, at) -> u32`** (pub, as `Dragons::slay` and `Herds::cull` are): the player kills up to `n` of the camp's warriors, the pool first (`pool_bump` with cause `Player`), then the units of its parties through `lose_units(.., Player)`; returns how many fell. `n = u32::MAX` kills all. It is the scripted players' and the tests' only way to kill a pool camp's members "at home", where they have no bodies, and the JNI test order 41 (EQC221) calls it. | The kill-all and farm tests need a wipe that books like any death; the real game reaches the same bump through parties (EQC204). |
+
+### S7 records: break, refound and the inert camp
+
+| # | Choice | Why |
+|---|---|---|
+| EQC207 | **The break rule.** A camp with a strain breaks when all three hold: it is **thin** (`floor(pool_at) + away < break_share x cap`, strict: under 6 of a goblin camp's 60, 4 of 40, 5 of 50), its pressure now is at least `break_pressure`, and it is **idle** (no `Party` of the faction in any phase, and no feud of it with an open `demand`). Fork F6: break at once and recall or end its parties and withdraw its demands (rejected: three recall paths, a withdrawn envoy in front of a player, and a march record to end, all to save a few days); break counting only the pool (rejected: a party of eight out with an empty pool is a camp that has not lost its people yet). Only a player's pressure can make P reach 2 (§5.2: only players break camps), but the thinning that completes the break may be a feud's or a village's, as in the model (`camps()`: `pool < 0.1 cap` and `P >= 2`). | §2.4.5 and the model. Waiting for idle costs days (a wiped band walks home at about 480 blocks a day) and removes every path that would act on a camp that is leaving. |
+| EQC208 | **When it is looked at: `strain_check(f, at)` and one wheel event, `Ev::Strain { faction, stamp }` (wheel tag 12).** `strain_check` runs after a pool camp's pressure bump, at the end of `home()` (a party ended), and from the event. Not thin or P under the break: it clears any booked check (bumps the stamp). Thin, pressured and idle: `break_camp` now. Thin, pressured and not idle: it books the event `strain_recheck_ticks` (one game day) ahead if none is booked (`check_at`), and the event looks again; a Siege band that lingers for its patience costs at most a few dozen events, one at a time. A broken camp's event is its refound, with the same stamp rule: a stale stamp is dropped and counted in `stats.stale`. Fork F7: a daily poll of every pool camp (rejected: D1; a camp that is not thin and pressured is never looked at). | Every way a camp becomes breakable is an event the engine already runs; the one wait is for parties and demands to end, which have no hook of their own that is worth adding. |
+| EQC209 | **What a break does** (`break_camp`). `strain.broken = Some { since: at, due: at + min(refound_cap, refound_base x 2^P) days }` with P read now; the pool becomes 0 (`pool_add` to 0) and the recruit rate 0 until the refound; the faction's `chief_out` and `cowed_until` are cleared; every booked `Ev::Feud` of the faction is voided (each feud's stamp bumped, O(its feuds) once) and `plunder_stamp` is bumped; `Ev::Strain` is booked at `due`; the row is marked (EQC214); `stats.breaks`, the tape event `conflict.broken` (EQC218) and a `note`. The camp's **node, market, stock and haven pop are untouched**, and no report, notice or news is made (FB-4). Fork F8: pop to the floor while broken (rejected for S7: a Haven's pop is the economy's, a change of it is two market events and a conservation case, and a broken camp that other camps do not raid (EQC210) needs no weaker defence). | "Its survivors scatter and its node goes quiet" (§2.4.5): quiet in the conflict engine's sense, nothing that acts or is acted on. The economy stays S7's reading, not its business. |
+| EQC210 | **The inert camp: one predicate, `Conflict::camp_active(f)`, true unless the faction is broken, and every place that makes a camp act asks it.** (1) `plan_feud` returns before it books (as Peaceful does); (2) the `Ev::Feud` handler drops a wake for a broken faction; (3) `plunder` returns without rescheduling (a refound books the next); (4) `send_party` returns `None`; (5) the plunder target filter skips a broken rival camp (a node whose faction is broken), and so does any other target search of a camp the build finds by grep (the list is closed by the `Conflict::check` invariant below); (6) `pool_ready` answers BLOCKED while the rate is 0. **Not gated:** `signal` and `set_emission` still reach a broken camp's feuds, so grievance keeps its closed form and a player who logs the ruin's forest for a year is hated by whoever comes (decay is the forgetting; the plan's half-lives are days, a continuous source is steady, and both are the world's physics). The refound re-arms every item above: `plan_feud` for each feud and `schedule_plunder` (the way `set_difficulty` ends Peaceful). The invariant `check()` gains: a broken faction has no party, `away` 0, pool 0, no live `Ev::Feud` stamp and no live `Ev::Plunder` stamp; a faction with no strain is never broken. | The Peaceful gate is the proven shape (R6). One predicate is what CONFLICT-LIFE.md's council reads before it sits (EQC226), so its `Ev::Council` is the first thing it gates. |
+| EQC211 | **The refound** (`Ev::Strain` at `due`, camp still broken). `refound(f, at)`: `broken = None`; pool `floor(refound_share x cap)` (15, 10 and 12 of 60, 40 and 50) anchored at `at` with the rate of the pressure then; `away` 0; `reband` (below); `schedule_plunder`; `plan_feud` for each feud; `stats.refounds`; tape `conflict.refounded`; the row marked. **`reband(w, f, at)`: a new chief and heir** (two `create_notable` calls from the next `StreamKey(seed, SYS_CHIEF, key)` blocks of `chiefs`, `chiefs += 2`, the code `add_faction` runs, factored out and called from both), `observed` cleared, `cowed_until` zero, `crystal` true. The old chief and heir are not killed and make no news: they are left to age out as notables do (a goblin chief lives 120 days, its heir 240), so the new band holds none of their grudges (C24's heir takes grudges at a succession; a refound is not one). | §2.4.5: "a new band takes the empty camp with a quarter of the cap". A band that was scattered is not the one that comes back, and CONFLICT-LIFE.md's council (temperaments drawn from the chief's seeds) gets a different camp, not the same one waking. |
+| EQC212 | **Pressure survives the break and decays on its own clock.** The strain keeps its `Pressure`; at the refound it has had `min(384, 48 x 2^P)` days of half-life 192 (P 2.1 at the break is about 1.0 at the refound). The refounded camp therefore recruits at about half its rate, climbs from a quarter of its cap, and cannot break again at once: its pool is a quarter of the cap (not thin) and the next player's loss is a new bump (`a_refounded_camp_does_not_break_again_at_once`). Fork F10: reset P at the refound (rejected: the place is still a death trap to the next band, and §2.2 makes pressure the site's). | §2.2: pressure belongs to the site, and a site left alone forgets in a few years. |
+
+### S7 records: the ledger, the census and the formats
+
+| # | Choice | Why |
+|---|---|---|
+| EQC213 | **Counts.** A pool camp's `members` for the break is the floor of the pool plus `away`; for the census it stays the floor of the pool (EQC5), so a camp with parties out reads short, as it did. K is the cap. | S1's rule, unchanged; the S7 bands read members and away together where they need to (EQC233). |
+| EQC214 | **The ledger row, and no wire change.** `camp_site_state` already sends every faction's row; for a pool camp `p` becomes the strain's pressure now, and a broken camp's row is `EMPTY | BROKEN | WAITING`, count 0, away 0, `wait_left` the ticks to the refound. The found tail has no BROKEN bit and S7 does not add one (fork F11: a new `tail_flags::BROKEN` bit 16, rejected: a change to core's `SiteLedger` and every plugin's tail reader for a state that `WAITING` with count 0 already says; a pool camp never waits for an arrival, so WAITING means "refound due"). `camp_found`'s no-bodies branch, with a row, now restores: the pool to the row's count at `now`, the pressure by `Pressure::handed_over(row.p, row.elapsed, day, half_life)`, and a `waiting()` row with count 0 as a **broken camp** with `due = now + wait_now_ticks()` and its `Ev::Strain` booked; it voids the plunder `add_faction` booked. A row with count above 0 and WAITING is read as not broken (a row from another build). Without a row the camp is found full at P 0, as today. | R8. The tail is core's and every plugin's; this uses the fields that exist, and the build's protocol test pins the convention (`a_pool_camps_found_tail_restores_its_pressure_and_break`). |
+| EQC215 | **Reset, reinstall, uninstall (UR-1).** S7 adds no body and no world change, so there is nothing to leave behind. A reset with the ledger keeps a farmed pool camp farmed and a broken one broken (the row, as above). A reset **with no row** (the plugin never reported the camp before, or the file was deleted) finds it full and unpressured: a pool camp is never "found empty" (it has no census), so §2.3's cap wait has nothing to attach to, and what the reset mints is warriors that carry no boss loot. Parties away at an uninstall are lost as before and booked `Other` (no pressure) at a reinstall. | §2.3 for kinds with no bodies; the plan's item 6 ("a site found empty with no ledger row") is about boss sites. |
+| EQC216 | **The S1 census for `conflict.camp`.** `Conflict::census` gives each camp its pressure now (a body culture's from its `Camp`, a pool camp's from its strain), `broken` from the strain, and the kind's `renewals` as `stats.arrivals + stats.refounds`: a recruit is a rate, not an event, so the flat-events requirement of S11 reads arrivals and refounds, and `stats.breaks` beside them for the model's `events` (which counts breaks and refounds both, `camps()` in `model.py`). EQC4's "camps book none yet" and EQC5's "mean P reads 0 until S7" are superseded here. `rtsim-cli sim census` gains a `camps` scenario: `synth::many(villages, factions, seed)`, a grid of villages with goblin, bandit and raider camps in turn, nobody watching. | The numbers the long runs and S11 compare against. |
+| EQC217 | **Formats.** Conflict pages **RTCD to RTCE** (`RTC14`) and the meta **12 to 13**: the faction row ends with `put_opt(strain)` after the camp (pressure `f32` and day `u32`, the optional break `since` and `due` as `u64`, `stamp` and `check_at`), the wheel's tag 12 is `Ev::Strain { faction, stamp }`, and the stats end with `breaks`, `refounds`, `break_deferrals` and `slain`. The state hash covers the strain. An older page is refused as any other (UR-1: no compatibility before a release); rtsim-view's conflict fixtures are regenerated. The site ledger's file (`mic_rtsim_sites.dat`, version 1) is unchanged. | The M12a precedent: the camp ledger is one more optional record on the faction row (MZB-1014), and so is this. |
+| EQC218 | **Archive and tape.** Two kinds are appended to `kinds!` (ids are positions, no compatibility): `CONFLICT_BROKEN = "conflict.broken", "Camp breaks", Notable` and `CONFLICT_REFOUNDED = "conflict.refounded", "Camp refounded", Notable`; the tape events carry the faction and, for a break, P and the wait. Archive names and the viewer's dictionary are checked by `kinds_are_unique` and a grep of `viewer/`. | Both are events a timeline should show; neither is news (FB-4). |
+| EQC219 | **Tunables** (each in the culture's `pool_renewal` unless named, every one TUNABLE, PLACEHOLDER until the S7 checks): `half_life_days` 192, `recruit_cap_days` 96, `break_share` 0.1, `break_pressure` 2.0, `refound_base_days` 48, `refound_cap_days` 384, `refound_share` 0.25; engine (`ConflictTunables`): `strain_recheck_ticks` 24,000, `district_unclaimed_is_players` true (the FB-2 switch). | One list for the build and the tests. |
+| EQC220 | **Cost (D1).** Per pool camp about 56 bytes; `pool_at` gains one `exp2` (called per query, none per tick); a loss is O(1); the break check scans the faction's parties and feuds (tens) at most once per loss, party end and event, and only for a camp that is thin and pressured; the wheel holds at most one `Ev::Strain` per pool camp, and only while it is thin, pressured and busy, or broken. Nothing grows with time: a camp's strain is one row, a broken camp one event, and the model's break and refound events per day are flat. | EQUILIBRIUM.md §2.8's "conflict: one more float per faction, break and refound are one event each". |
+| EQC221 | **Java: nothing in production, and the first visible effect is not S7's (FB-5).** The shipped pack reports no pool camp (R11), so no player meets a pool camp's pressure or break until a plugin reports one. What changes in Java is test-only: (1) the JNI test order **41 `CONFLICT_SLAY`** (`u64 faction key, u32 n, f32 pressure`: `slay` of `n`, `u32::MAX` all, then the pressure added as if that many kills had happened, so a GameTest need not run a hundred game days to reach a break; TEST mode only; 33 and 35 to 39 stay free for the peers' codes as `NativeCodec` leaves them) with its encoder in `NativeCodec` and a `RtsimTests.slayCamp`; (2) three core GameTests (EQC231); (3) the stale comments at `ConflictBridge.java:2519` and `Camps.java:2144` are corrected, because the engine now reads BAND_CASUALTIES' credit and Java already fills it fully (R4; checked by `aPetsKillOfAPartyMemberIsThePlayersLoss`, EQC231). No `Camps` or `ConflictBridge` logic changes. | The row's tests are Rust; the ledger path through a real reset is the one thing a Rust test cannot show. |
+
+### S7 records: Mowzie, Peaceful, replay and CONFLICT-LIFE.md
+
+| # | Choice | Why |
+|---|---|---|
+| EQC222 | **What stays exactly as it is for the body cultures.** The Frostmaw's `renewal` (6, 192, 96, boss), its arrivals and its pressure on the `Camp` ledger; the Umvuthana grove's `recruits_per_day` 2 and its `chief_renewal`; `renewal_cause` with its boss rule; `camp_death`, `chief_killed_by` and the written-off bump; `plan_refill` and `plan_arrival`. `pool_at`, `pool_ready` and `whole_at` return what they returned for a culture with no strain (`recruit_rate` is `r`), so the whole M4 to M12a conflict suite (`tests/camp.rs`, `grove.rs`, `frostmaw.rs`, `mowzie_*.rs`, `cultures.rs`) and the Mowzie GameTests must pass with no edit. **For S9, found on the way:** the grove's warriors killed on a march by a player book no pressure (R4), and the grove's refill is a rate; S9's `renewal` on the grove is a data change plus a bump in `casualties()` for body cultures, and it must not double the bump `camp_death` makes for a body killed at the camp. | EQC200 and the S9 row; stated so that S9's author does not have to rediscover R4. |
+| EQC223 | **Peaceful.** A broken camp is not Peaceful's business and Peaceful is not its: `set_difficulty` ending Peaceful plans every feud again, and `plan_feud` returns for a broken faction, so the two inert states compose. A camp that breaks while the world is Peaceful breaks as usual (parties are already held; idle is the normal case). | The only other inert gate the engine has (R6). |
+| EQC224 | **Replay and the journal.** S7 adds no record, so no verdict in `outbox.rs` and nothing in `docs/replay-gate.md`. The new bump rides a journaled BAND_CASUALTIES that the engine already counts once per op (`casualty_ops`), so a replayed or reasserted record books pressure once; the break, the refound and the recruit rate are functions of the pages and the wheel, so a restored engine continues exactly (`a_restart_changes_no_decision`, EQC230). `slay` and test order 41 are TEST-mode and not journaled: a GameTest that uses them saves through (`SiteTestHooks.requestSave`) before it resets, as S3's do. | The replay gate is about records; S7 introduces none. |
+| EQC225 | **Rows that exist only when a culture opts in.** `pool_renewal` is checked at `Culture::resolve`, so a malformed block stops the engine at start (as `renewal` does) and a world with the three cultures edited out of `pool_renewal` is today's world (the "renewal off" test: every existing conflict test passes with the blocks removed). | Every earlier slice kept the "as before" switch testable (S6's `renewal_off_is_todays_world`). |
+| EQC226 | **How S7 stays out of CONFLICT-LIFE.md's build plan.** CL's order (2.11): (1) the council on the harness, (2) persistence of its fields, (3) the envoy's reason and the news kinds, (4) the lurk, (5) the stolen crystal, (6) BAND_MARCH and the walk-in, (7) caravan ambushes, (8) alliances. S7 touches none: no council, no sitting, no occasion, no party kind, no march, no record. S7 and CL meet at **four code points**, and each is an addition or a read, never a decision about when: (a) the gates of EQC210 are where CL's `Ev::Council` and `Ev::Clash` handlers begin; (b) `pool_at`, `pool_ready` and `bodies_ready` keep their signatures and meanings, so a muster reads them as today (a pressured camp's party is later or smaller, which is the point); (c) `reband` is the one function CL adds its per-camp state to (EQC227); (d) the faction row and the pages: CL adds its fields and S7 adds its strain, and **whichever lands second takes the next page letter** and regenerates the viewer fixtures, with a merge of the row's tail by hand. CL-D23 ("renewal, pressure, break and refound unchanged") is what S7 builds, and CL-D26's guard share reads `pool_at`, so a thinned camp defends less once both are in. Defender losses CL adds (a camp that holds pays for it) are a rival camp's or a village's work: cause `Faction`, no pressure. | The coordinator's instruction and EQC200: "when parties go out is CL's". The four points are listed so the second author finds them. |
+| EQC227 | **What S7 asks of CONFLICT-LIFE.md (FB-3).** (1) Every act of a camp is gated by `camp_active(f)`; a council does not sit for a broken camp and a neighbour does not weigh one (preemption, plunder reach, a pact's partner: a pact with a camp that breaks ends as a lapse). (2) `reband(w, f, at)` is the one place a new band is made: CL initialises its per-camp state there as `add_faction` does (stores at a season's start, fear 0, standings 1.0, 0.7 and 0.6, sittings 0, temperaments from the new seeds) and clears the camp's own feud memories, beliefs, trust, pride and truces; other camps' memories of it stay and fade. (3) A pool camp's `pool_at` is the members at home, and S7 makes it follow pressure; CL may not keep a second count. (4) A broken or refounded camp is told to nobody by S7 (FB-4). | An interface another plan follows (FB-3). |
+| EQC228 | **Documents the build changes.** EQUILIBRIUM.md §2.4.5 (the half-life, the finding, the break and refound as built, the stale "No Java exists yet for conflict" line, "what the player sees"), §3.3 (a pool camp's row, with the rate form), §2.8's conflict row, §4's S7 row (built), §5.2's camp row; `docs/boundary.md` (§9: a pool camp's SITE_STATE and tail convention, EQC214); this file's findings (EQC237 onward). `docs/replay-gate.md`, `docs/choices-mowzie-build.md` and MOWZIE.md are not edited. | |
+
+### S7 forks
+
+Each is in the record named; the option taken is the conservative one where I was unsure (fewest changes to what exists, nothing
+a player sees that Ben has not approved, nothing minted).
+
+| Fork | Options | Taken | Record |
+|---|---|---|---|
+| F1 where a pool camp's pressure lives | a box on the faction; the `Camp` ledger; a field on every faction | the box, `Some` only with `pool_renewal` | EQC201 |
+| F2 how P is read for the rate | at the last event; every step; a booked re-read | at the last event (the plan's reading; 3 to 6 days on a kill-all's 90%, none on the break) | EQC203 |
+| F3 a floor on the rate | none; one recruit in 96 days | the floor | EQC203 |
+| F4 which deaths are the player's | credited kills only; plus every non-mob death at a player's district | the second, so a watched and an unwatched raid book the same (FB-2) | EQC204 |
+| F5 where the new bump runs | for every culture; for pool cultures only | pool cultures only; S9 decides the grove | EQC205 |
+| F6 the break with a party out | break at once and end its parties; wait until idle | wait until idle | EQC207 |
+| F7 how breakability is noticed | a daily poll; events at the points that change it plus one daily recheck while busy | events and the recheck | EQC208 |
+| F8 a broken camp's node | untouched; pop to the floor | untouched | EQC209 |
+| F9 who comes back | the old chief and heir; a new band | a new band | EQC211 |
+| F10 pressure at the refound | kept and decaying; reset | kept | EQC212 |
+| F11 the broken state across a reset | a new BROKEN tail bit; WAITING with count 0 | WAITING with count 0, no wire change | EQC214 |
+| F12 the half-life and the break (FB-1) | 192 and break at 2; 96 and break at 1.25; faster recruits; the plan's numbers | 192 and break at 2 | EQC203 |
+| F13 where the numbers live | `pool_renewal`; reuse `renewal`; engine tunables | `pool_renewal` in the culture | EQC202 |
+| F14 news of a break or a refound | none; gossip kinds | none (FB-4) | EQC209 |
+| F15 how a test kills a pool camp | `slay`; drive parties through a fake Java only | both: `slay` for the long runs, the fake Java for the credit paths | EQC206 |
+| F16 what a census calls a renewal | every recruit; arrivals and refounds | arrivals and refounds | EQC216 |
+
+### FOR BEN
+
+Everything else in S7 can be undone and is decided here. These are what a player sees at a camp, a number of the plan Ben
+approved, or an interface another plan follows. Each is built as recommended; a different answer is a data change or a few
+lines, as noted.
+
+**FB-1 (EQC203, F12). The break does not fire at the engine's recruit rates. Which number moves?** EQUILIBRIUM.md §2.4.5 breaks a
+camp at P 2 with the pool under 10%, on the shared half-life of 96 days. The model that chose those numbers recruits 8% of a
+camp a day; the engine's goblin, bandit and raider camps recruit 3.3%, 3.75% and 4%. A player who kills every whole warrior
+every two days holds P at 1.58, 1.67 and 1.72 and never reaches 2 (`camps.py`, section A and B), so a pool camp can never be
+broken by any player, and the row's test would have to inject its pressure.
+- (a) **Half-life 192 days for pool camps, break at 2 (Recommended).** The same farmer reaches 2.13, 2.24 and 2.29; the first
+  break comes on day 144 to 218, then 0.23 to 0.30 breaks a year with the camp empty about half the time; a wait of 192 to
+  236 days (two game years and a little, the plan's "two to four"). A player must take 72% to 87% of what the camp recruits,
+  for months. Breaks are rare and deliberate, which is the conservative reading of "only players break camps".
+- (b) Half-life 96, break at P 1.25. A player taking 54% to 64% of what it recruits breaks it; the first break on day 28 to 38,
+  0.57 to 0.63 a year, empty 70% of the time, a wait of 114 days at the break (a little over a game year). Camps go quiet
+  readily, so the world has fewer raids from a harried camp.
+- (c) Raise the three cultures' recruit rates to the model's 8% a day. Changes the size of every party a camp can field.
+- (d) Keep the plan's numbers. A pool camp never breaks; the refound exists and is tested by an injected pressure.
+Why it is Ben's: a number of a plan he approved that changes how a camp he is hunting behaves. Switching is two JSON numbers.
+
+**FB-2 (EQC204, F4). Do a trap's, a turret's and an unclaimed kill at a player's district count as his loss?** A pool camp's
+members die in a player's fights in two ways: an unwatched raid is resolved by the engine against the district's defences, and
+every unit that falls is the player's loss; a watched raid is fought in the world, and Java credits each death.
+- (a) **At a player's district every death no wild mob dealt is his (Recommended).** Lava, a Create contraption, a turret, a fake
+  player: the base is his defence. The watched and the unwatched raid book the same pressure, and a trap-defended base thins
+  the camp as a sword-defended one does. On the road and at a village only a credited kill counts.
+- (b) Credited kills only, everywhere. A base defended by machines never thins its attackers' camp, and the same raid books
+  pressure unwatched and none watched.
+Why it is Ben's: how fights feel at a base he builds. (b) is the literal §2.2 for a body that carries no boss loot.
+
+**FB-3 (EQC226, EQC227, F9). The interface CONFLICT-LIFE.md must follow.** `camp_active(f)` gates every act (a council does not
+sit for a broken camp, a broken camp is nobody's neighbour); `reband` is the one place a new band is made and where CL's
+per-camp state starts afresh; a pool camp's `pool_at` is the one count of members at home; the page letter goes to whoever
+lands second.
+- (a) **S7 defines them and CL's build follows (Recommended).**
+- (b) Defer the break and the refound until the council is built, so the gates are written once. S7 is then pressure on recruits
+  alone, and `farmed_camp_breaks_and_refounds` waits for CL.
+Why it is Ben's: an interface another plan follows, and it touches CL's scope. The gates are one-line reads either way.
+
+**FB-4 (EQC209, F14). Is a break or a refound news?** CL-D56 makes all faction news in-world gossip, carried by traders and
+villagers (CONFLICT-LIFE.md 2.17, TALK). A camp that breaks, or a new band that takes a ruined camp, is the kind of thing a
+villager would say.
+- (a) **No news in S7 (Recommended).** The archive's timeline and the census show it; no `ReportKind`, no talk line.
+- (b) Two report kinds (`CampBroken`, `CampRefounded`) witnessed by the nearest villages and told as gossip, with their lines.
+Why it is Ben's: it touches CL's news design and what players hear. (b) is a TALK slice's work and does not block S7.
+
+**FB-5 (EQC221, R11). Nothing in the shipped pack reports a pool camp. Does S7 get a reporter?** `RtsimApi.reportCamp` is for a
+plugin to call, and none calls it for goblin, bandit or raider camps; the Mowzie plugin declares groves and dens. Raider
+camps could be the vanilla pillager outposts and the Illager Invasion forts (the culture's `structures` already name them),
+reported by a small plugin whose camps have no bodies at home. Reporting them turns on today's ladder (EQUILIBRIUM.md §2.5: 13
+to 14 raids a year lost at a fortress, an arms race with a player who keeps building walls) in real worlds, with S7's pressure
+and break on top.
+- (a) **No reporter now; S7 is engine groundwork (Recommended).** The first visible pool camps wait for CL's decision on when
+  parties go out.
+- (b) A raider reporter for vanilla outposts in S7's scope, so the pressure and break are met in the pack.
+Why it is Ben's: it decides whether raiders raid in his worlds, and what he sees at a pillager outpost. S7 changes nothing at a
+den or a grove either way.
+
+**Told, not asked** (all inside EQ-5, EQ-6 and the rules above): the conflict pages RTCD to RTCE (the engine's own save, no
+migration); a refounded camp has a new chief and heir; a broken camp's market is untouched; a camp with a party out breaks
+only when it is idle; the three cultures carry `pool_renewal` and the body cultures do not; the stale comments about
+BAND_CASUALTIES are corrected.
+
+### Ids S7 takes
+
+Checked against `docs/boundary.md` (§2.3, §9.1 and the ranges of §6.1 to §13.1), `crates/rtsim-conflict/src/boundary.rs` and
+`persist.rs`, `crates/rtsim-jni/src/orders.rs` and `wire.rs`, `NativeCodec.java`, `ConflictRecords.java`, `Obs.java` and
+`Cmd.java`, `rtsim-kernel/src/sites.rs` and `renewal.rs`, `rtsim-archive/src/kinds.rs`, and this file's S5 and S6 tables, at
+9389b4e5 and on every local branch (`git grep`; no branch other than this one touches the conflict crate).
+
+| Space | Taken by S7 | Used today | Free left nearby |
+|---|---|---|---|
+| Observation record kinds | none | conflict 0x0090, 0x0091, 0x0800 to 0x0817; S5's 0x0510 to 0x0512; core 0x0001 to 0x0005, 0x0010, 0x0011, 0x0100 to 0x0111, 0x0130 to 0x0132; M12a's SITE_STATE is a command | 0x0818 and up in the conflict range |
+| Command record kinds | none | conflict 0x8800 to 0x880C (BAND_MARCH 0x880B); S5's 0x850A; core 0x8001 to 0x8006 | 0x880D and up |
+| Flags, aux bits, dictionary kinds, `SiteKind`, `ReportKind`, JNI exports | none | SITE_STATE flags 1, 2, 4, 8; found tail flags 1, 2, 4, 8; `SiteKind` 1 to 3 | tail flag 16 (not taken, F11) |
+| Conflict `Ev` wheel tag | 12 `Strain` | 0 to 11 | 13 and up |
+| Conflict page magic and meta | `RTCE`, meta 13 | `RTCD`, meta 12 | `RTCF` (whoever lands second) |
+| Test orders (`orders.rs`, `NativeCodec`) | 41 `CONFLICT_SLAY` | 1 to 9, 16 to 32, 34, 40 | 33 and 35 to 39 (the codec leaves them for peers), 42 and up |
+| Archive kind names | `conflict.broken`, `conflict.refounded` | the fifteen `conflict.*` kinds; no other name with `broken` or `refound` | |
+| Culture JSON | `pool_renewal` | `renewal`, `chief_renewal`, `camp_bodies`, `chief_body`, `chief_leads`, and the rest | |
+| RNG systems | none (`reband` uses `SYS_CHIEF`'s next blocks) | | |
+| Formats | conflict pages RTCD to RTCE, meta 12 to 13 | the site ledger file is untouched (version 1) | |
+| EQC ids | EQC200 to EQC236 | S6 used EQC150 to EQC193 | EQC237 to EQC249 kept for the build |
+
+### S7 tests
+
+Test names are the build's. Rust tests go in `crates/rtsim-conflict/tests/strain.rs` (new) unless a crate is named; every long
+run is `#[ignore]`d with a short always-run version, as EQC21 did, and runs `nice -n 10 cargo test --release`. The camps
+harness is `synth::many(villages, factions, seed)` (EQC216), with a Roamer (the model's: every second day a step among the nine
+regions around it, refused beyond `min(6, 2 + day / 48)` regions of spawn, and with chance 0.2 a `slay` of the camps in its
+region) and a Farmer (the model's: a `slay` of every whole warrior of one camp every second day).
+
+#### EQC230: Rust, each change with its failing-first test
+
+| Change | Test (names are the build's) | Failing first because |
+|---|---|---|
+| Culture data (EQC202, EQC225) | `pool_renewal_parses_and_validates` (the three cultures carry it, the Frostmaw and Umvuthana do not; refused with a `renewal`, with `camp_bodies`, with `recruits_per_day` 0, with a number not finite, a share outside its range, a cap under its base); `with_the_blocks_removed_every_existing_test_passes` (run as `renewal_off_is_todays_conflict`) | the field does not exist |
+| The rate (EQC203) | `recruits_slow_by_two_to_the_p` (a kill-all at P 1.0: 1 a day for a goblin camp, not 2); `the_rate_floor_holds_at_absurd_pressure` (a row with p 40 recruits one in 96 days); `a_bump_integrates_the_gap_at_the_old_pressure` (a long quiet gap then a loss: the pool before the loss is the unpressured line); `pool_ready_agrees_with_pool_at` (property over random sequences of slay, muster, return and gaps: `pool_at(pool_ready(n)) >= n` and never earlier by a tick) | `pool_at` reads `recruits_per_day` alone; `renewal_bump` bumps before `party_lost` re-anchors |
+| Losses (EQC204, EQC205) | `a_credited_kill_of_a_party_member_adds_one_over_cap` and `a_mob_kill_adds_nothing` (BAND_CASUALTIES through the fake Java); `an_unclaimed_death_at_a_players_district_is_his` and `an_unclaimed_death_on_the_road_is_not` (FB-2 (a)); `a_raid_lost_at_a_players_walls_adds_the_lost_share` (the abstract resolve, 0.5 of the missing); `a_raid_lost_to_a_village_adds_nothing`; `a_war_chief_killed_by_a_player_adds_one_over_cap`; `a_killed_envoy_adds_nothing`; `a_replayed_casualty_bumps_once` (a copy, a reassert and a replay of one op); `the_body_cultures_book_what_they_booked` (the Frostmaw den's and the grove's pressure, counters and stats unchanged over the M9 and M12a scripts, and a BAND_CASUALTIES of a grove warrior books none) | `casualties()` books no pressure for anyone; `renewal_bump` returns for a culture with no `renewal` |
+| Break (EQC207, EQC208) | `a_camp_breaks_when_thin_at_p_two`; `a_camp_does_not_break_under_p_two_or_when_not_thin` (59 of 60 at P 3; 0 of 60 at P 1.9); `a_camp_with_a_party_out_waits_and_breaks_when_it_ends` (rechecked each game day, one event at a time, breaks at the party's `home`); `a_demand_open_defers_the_break`; `a_pool_that_recovers_clears_the_check` (the stamp is bumped, no stale event acts) | no break exists |
+| The inert camp (EQC209, EQC210, EQC223) | `a_broken_camp_sends_nothing` (a plunder, a feud step, an envoy, scouts, a muster, with grievance high and signals arriving); `a_broken_camp_is_not_a_plunder_target`; `a_broken_camps_grievance_keeps_its_closed_form`; `a_broken_camp_in_a_peaceful_world_wakes_correctly` (set_difficulty twice); property `no_broken_camp_ever_acts` over random slay, ticks, signals, difficulty and restarts, with `Conflict::check` extended: a broken faction has no party, `away` 0, pool 0, no live feud or plunder stamp; a faction with no strain is never broken | no gate |
+| Refound (EQC211, EQC212) | `a_camp_refounds_after_the_rule_with_a_quarter_pool` (`min(384, 48 x 2^P)` days, 15, 10 and 12); `a_refounded_camp_has_a_new_chief_and_heir_and_no_old_fights` (handles differ, `observed` empty, no feud keeps a booked step); `a_refounded_camp_keeps_its_decayed_pressure_and_does_not_break_at_once`; `a_refounded_camp_plans_its_plunder_and_its_feuds` | no refound |
+| Ledger and found (EQC214, EQC215) | `a_pool_camps_row_carries_pressure_and_the_refound_wait` (flags `EMPTY | BROKEN | WAITING` when broken, `SHORT` when thin, `p` now); `a_reset_resumes_a_pool_camps_pressure_and_its_break` (`FoundRow::from_state` of a row, aged by `elapsed`, into a new engine); `a_camp_found_with_no_row_is_full_and_unpressured`; `a_row_with_count_and_waiting_is_not_broken` | the row has `p` 0 and `camp_found` keeps only the count |
+| Formats (EQC217) | `pages_round_trip_rtce` (a strained, a broken and a plain camp, paged and whole); `an_older_conflict_format_is_named_not_read` (RTCD); `the_state_hash_covers_the_strain`; `a_restart_changes_no_decision` (`CampRun::round_trip` mid-wait, mid-break and across a refound) | the codec has no strain |
+| The census (EQC216) | in `rtsim-cli` `sim/census.rs`: `census_reports_pressure_broken_and_renewals` and `census_counts_every_kind` extended with the `camps` scenario | `Conflict::census` reads P 0, broken false and no renewals |
+| The row's tests | in `rtsim-cli` `sim/equilibrium.rs`, **`kill_all_camps`**: every camp of the `camps` world killed by a player (`slay`) in year 10, the control the same seed with no kill; members (pool and away) over the control, median over seeds; passes when the median reaches 90% of the control within **96 days** (the rule reads 45 to 54) and every seed within 120, and no camp breaks (a kill-all is P 1.0). **`farmed_camp_breaks_and_refounds`**: the Farmer on one camp for 60 years; asserts the first break at day 150 to 260 for a goblin camp (the script: 218), the break's wait equal to `min(384, 48 x 2^P)` read at the break within a day, the refound pool a quarter of the cap, breaks a year within 25% of the script's (goblin 0.23, bandit 0.28, raider 0.30) and the broken share within 0.1 of it; a second assertion with the half-life 96 and break 2: **no break in 60 years** (the finding, pinned) | the first needs P on the recruit rate; the second needs the break |
+
+#### EQC231: protocol and GameTests
+
+**rtsim-jni** (`tests/protocol.rs`, conflict): `a_pool_camps_found_tail_restores_its_pressure_and_break` (SITE_STATE out, a reset, FACTION_FOUND in with the tail the host's fake ledger hands back), `a_test_order_slays_a_camp` (order 41 round trip, TEST mode only, refused otherwise), `a_credited_band_casualty_bumps_the_pool_camp` (the record as Java writes it, through the native engine).
+
+**GameTests** (`neoforge/core`, native engine only, each its own batch on its own far base as S3's, skipping recorded on the stub; `ConflictKit`'s goblin camp declared by `reportCamp`, `SiteTestHooks` for the save and the reset, order 41 for the kill):
+
+| Test | What it asserts | Failing first on 9389b4e5 because |
+|---|---|---|
+| `aPoolCampKeepsItsPressureAndItsBreakAcrossAReset` | a camp is wiped with order 41 and given pressure 2.5, so it breaks; its ledger row names P and WAITING with the wait left; a plain reset (`plainReset`): the new engine's camp is broken with that wait left and the same P; after the refound the row says count 12 and a P that has decayed, not zero | the row says P 0 and never WAITING for a pool camp, and `camp_found` restores only the count |
+| `aBrokenPoolCampSendsNoParty` | a broken camp with grievance high and a player in its territory sends nothing for 30 game days (`P1_ADVANCE`); the refound sends one | no break |
+| `aPetsKillOfAPartyMemberIsThePlayersLoss` | a tamed wolf's kill of a party member of a pool camp raises its pressure by 1/cap (the credit chain Java to engine) | the engine reads no BAND_CASUALTIES credit |
+
+#### EQC232: tests that change
+
+None change meaning. `tests/cultures.rs` lines 325 to 393 (the pool's closed form with `pool_at` set by hand) hold at P 0; `rtsim-cli` `sim/census.rs` `conflict` scenario gains the camps' P column (the goblin camp's P is 0 there); the viewer fixtures that hold conflict pages are regenerated (EQC217). Any test that kills a pool camp's party at a district and then reads `pool_at` over a long gap now sees the slower line: the build greps `LossCause::Player` and `abstract` in `tests/` and lists them (UNVERIFIED 4).
+
+### S7 bands (EQC233)
+
+The pass bands in the test names are the model's, and the build replaces them with the engine's own, recorded in EQC237 onward as S2, S4 and S6 did. Provisional, from `camps.py` and §3.6:
+
+| Check | Band | Basis |
+|---|---|---|
+| No player, 60 years: no camp breaks, pool and away over cap | 0 breaks; within 0.05 of the same engine with `pool_renewal` removed | pressure is zero without a player: pools are today's |
+| `kill_all_camps` | median 90% of the control within 96 days; every seed within 120; no break | §4's row; the rule reads 45 to 54 |
+| `farmed_camp_breaks_and_refounds` | first break day 150 to 260 (goblin); 0.23 to 0.30 a year; broken share 0.47 to 0.60; wait `min(384, 48 x 2^P)` | `camps.py` B and E |
+| The roamer, 60 years, years 30 to 60 | pool and away over the control's: median at least 0.9; camps broken at any time at most 5%; the model's 0.97 is the target, the engine's lower recruit rate the reason for the margin | §3.6's "camp pools over cap, roamer 0.97" |
+| Unattended, 2,739 game years (S11's `who_is_alive_soak`) | `conflict.camp` flat by century: 0 breaks, 0 refounds, mean P 0, members near cap less the parties out | §3.6 (camps 1.00, events flat) |
+| Cost | breaks and refounds a day in the roamer run at most 0.01 per camp; wheel entries for strain at most 2 per camp ever pending | EQC220 |
+
+### S7 walkthrough: Ben wipes a raider outpost every forty days
+
+A raider camp (K 50, 2 recruits a day, the pool block of EQC202), found full. Ben is hunting it: each time he stands where its
+parties arrive he kills whatever the camp has sent, which in the engine's terms is all of its whole warriors. (Nothing in the
+shipped pack reports a raider camp today, FB-5; this is what the engine does with one.) The numbers are `camps.py` section E.
+
+| When | What happens | P after | Pool |
+|---|---|---|---|
+| Day 0 | 50 killed; the camp is thin, P is under 2, nothing breaks. Recruits fall from 2 to 1 a day. | 1.00 | 0, then 40 by day 40 |
+| Day 40 | 40 killed. | 1.67 | 0, rate 0.63 a day |
+| Day 80 | 25 killed. | 1.94 | 0, rate 0.52 |
+| Day 120 | 21 killed. P is 2.10 and the pool is under 5: the camp is thin and pressured. It is idle (no party, no demand), so it breaks that tick: `conflict.broken`, pool 0, the plunder clock and every feud's step voided. The refound is `48 x 2^2.10 = 206` days away. | 2.10 | 0 |
+| Days 120 to 326 | Nothing leaves the camp and no rival camp raids it. Ben's walls are quiet. His grievance with it, if he had any, decays by the closed form. | 1.0 by the end | 0 |
+| Day 326 | A new band takes the camp: `conflict.refounded`, 12 warriors, a new chief and heir, no old fights. It recruits at about 1 a day and plans its plunder. | 1.0 | 12 |
+| Day 326 on | If Ben leaves it alone P halves every 192 days and the camp is back to 90% in about 35 days. If he wipes its twelve at once P is about 1.25: the camp is thin, but under 2, so it does not break. | | |
+
+A mob's kills, a raid lost at a village and a Peaceful world add nothing at any step.
+
+### S7 what it leaves (EQC234)
+
+- **No pool camp is reported by the shipped pack** (FB-5), so none of this is met in play yet.
+- **No news** of a break or a refound (FB-4); the timeline and the census show them.
+- **The grove and the den** are S9's; the grove's warriors still regrow by `recruits_per_day` 2 and a grove warrior killed on a
+  march still books no pressure (R4, EQC222).
+- **A broken camp's market** is untouched and still trades and holds its stock (EQC209, F8).
+- **Home kills.** A pool camp has no body at home, so a player can lower its pool only through its parties: one who stands where a
+  party arrives and kills it does the work, and one who never meets a party never raises its pressure.
+- **A camp found by a plugin with no ledger row after a reset** comes back full and unpressured (EQC215).
+- **Recruiting while a party is out** is the existing room rule: a band's survivors always have their slots (ledger 6).
+- **The viewer** has no camp card for P or broken; the timeline shows the two kinds and `sim census` the numbers.
+- **The model's camp feuds** (§3.6: camps at strength do not attack each other) are not S7's: they were the rejected gate's, and
+  camp against camp is CL's.
+
+### S7 risks
+
+1. **The finding is a number of Ben's plan.** If FB-1 goes another way, `pool_renewal` is two JSON numbers (a), (b) and (d) or
+   three cultures' recruit rates (c) plus all the tests that read their pool; the farm test pins the finding so a later change of
+   the recruit rates re-opens it.
+2. **The re-anchor invariant.** The rate is read from the pressure at the anchor's day, so a bump that does not re-anchor first
+   changes the pool backwards in time. `pool_bump` does it inside one function and `a_bump_integrates_the_gap_at_the_old_pressure`
+   plus the closed-form property are the guard; any later code that sets `pool_at` by hand (tests do, `cultures.rs`) is fine at
+   P 0.
+3. **A gate missed.** A broken camp that sends one party is a camp that acts while it is scattered. The list of EQC210 is closed
+   by `check()` and by the property test over random operations; a new party-making path added by CL must go through
+   `send_party` or ask `camp_active`.
+4. **A camp that never goes idle.** A Siege band that lingers or a demand that stays open defers the break, a day at a time;
+   each recheck is one event and ends with the party. A camp whose parties are always out is not thin (its members count).
+5. **Pressure thins the parties a camp can field** (a pressured camp's muster takes `min(want, pool)` and none below half): a
+   player who has just wiped a camp sees smaller, later raids from it. That is the intent, and CL's council reads the same pool.
+6. **The BAND_CASUALTIES credit** now matters. Java fills it from the full kill credit (R4); a regression there (a pet's kill
+   read as a mob's) would under-count the pressure silently. `aPetsKillOfAPartyMemberIsThePlayersLoss` pins it.
+7. **The second landing of CL or S7 takes the page letter** (EQC226 (d)): a merge of two optional tails on the faction row, by
+   hand, and a fixture regeneration.
+8. **The model is a model.** Its camps recruit 8% a day, have no parties, no districts and no demands; the engine's bands come
+   from the S7 checks and go in EQC237 onward.
+
+### UNVERIFIED, for the build to check first
+
+1. That `Pressure::now` at the anchor's whole day gives the same line `pool_ready` inverts across a day boundary (the rate changes
+   at midnight only when a bump or the decay of `p` crosses a day: P is read at `pool_at`'s day and held until the next event;
+   EQC203's property test is the check).
+2. That every party-making path goes through `send_party` or `plan_feud` or `plunder` (EQC210's list is from grep at 9389b4e5:
+   `send_party`, `plunder`, the feud steps, the lurk and the ambush, `Ev::Ambush`'s train legs). The invariant test is what closes it.
+3. That an `Ev::Feud` already on the wheel at a break is voided by bumping the feud's stamp and nothing else holds a copy (a
+   `Party`'s `plan` is separate and no party exists at a break).
+4. Which existing tests kill a pool camp's party at a district and then read the pool over a long gap (EQC232), and whether any
+   asserts the old unslowed line.
+5. That `FoundRow.wait_now_ticks()` and `Pressure::handed_over` behave for a pool camp as for a body camp (they are the same
+   code, `camp_restore`), including a reset with `elapsed` longer than the wait: the camp is refounded at once.
+6. That `synth::many` camps stay quiet enough to measure (their ladder raids villages and loses parties to them, cause
+   `Faction`, no pressure): the control is the same seed with no kill, and the Roamer's and Farmer's kills are the only difference.
+7. The Illager Invasion fort id in `raider.json` and the `mic_rtsim:conflict/*` ids (EQUILIBRIUM.md §2.4.5: "unverified") are not
+   S7's to check, and FB-5 (b) would need them.
+
+### S7 work split
+
+Each step is one commit on `feat/eq-s7-conflict` (commit early: an uncommitted agent worktree is removed after an interruption),
+builds and tests under `nice -n 10`, and stops with the tests of its row green and the whole conflict suite unchanged. Before any
+Gradle or GameTest step, check the laptop is on AC (`cat /sys/class/power_supply/AC/online` prints 1), that `ps -eo args | grep -c
+'[m]odFolders=mic_rtsim_mowziesmobs'` prints 0, and that no GameTest run holds the lock. Steps 1 to 7 are Rust and need no Minecraft.
+
+1. **Culture data** (`culture.rs`, the three JSONs). `PoolRenewalDef`, `PoolRenewal`, `Culture::pool_renewal`, the validation.
+   Tests: `pool_renewal_parses_and_validates`, `renewal_off_is_todays_conflict`.
+2. **The strain and the rate** (`engine.rs`, `camp.rs`). `Strain`, `Faction.strain` made in `add_faction`, `recruit_rate` in
+   `pool_at`, `pool_ready`, `whole_at`, `pool_bump`, `pressure_now`. Tests: the rate rows of EQC230.
+3. **Losses** (`engine.rs`, `camp.rs`). `renewal_bump`'s second arm, the bump in `casualties()`, the district rule and
+   `district_unclaimed_is_players`, `slay`. Tests: the loss rows, `the_body_cultures_book_what_they_booked` (green before and after: it pins what must not move).
+4. **Break and the inert camp** (`engine.rs`). `strain_check`, `break_camp`, `Ev::Strain`, `camp_active` and its gates, the
+   `check()` extension, the archive kinds. Tests: the break and inert rows, the property.
+5. **Refound** (`engine.rs`). `refound`, `reband` (factored out of `add_faction`). Tests: the refound rows.
+6. **Ledger, census and formats** (`engine.rs`, `camp.rs`, `persist.rs`). The pool camp's row, the found restore, the census, RTCE
+   and meta 13, stats. Tests: the ledger, format and census rows; regenerate rtsim-view's conflict fixtures.
+7. **The checks** (`rtsim-cli`, `rtsim-jni`). The `camps` scenario, `sim::equilibrium`'s harness, `kill_all_camps`,
+   `farmed_camp_breaks_and_refounds`, the long run (run the 30-seed versions, record the bands in EQC237 onward, set the knobs if
+   a band fails); the jni order 41 and the three protocol tests.
+8. **Java core** (test only). `NativeCodec.CONFLICT_SLAY`, `RtsimTests.slayCamp`, the three GameTests, the two stale comments.
+9. **Documents** (EQC228).
+10. **Land.** Merge `origin/main`, check `git diff --name-only --diff-filter=U`, run the tests the branch changes (the whole
+    conflict suite, `rtsim-jni`, `rtsim-cli`, then `:core` GameTests and `create -PwithMowzie` and `mowziesmobs`, which share the
+    clock and the ledger), then the pull request and review as CLAUDE.md says.
