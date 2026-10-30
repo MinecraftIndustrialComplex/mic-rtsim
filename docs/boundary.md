@@ -2478,6 +2478,36 @@ footprint (MZB-1015). CHIEF_BODY is written into a chief's body (health, crystal
   still answered), once by its (op, line), and only while its epoch is the latest a census named; a
   CAMP_DEATH by its slot and generation, with no op id kept (MZB-168 to MZB-170).
 
+### 9.7 Pool-camp pressure and the outpost reporter (EQUILIBRIUM.md slice S7; records EQC200 to EQC299 in `docs/overnight-choices-equilibrium.md`)
+
+**No new record kind, no new field of an existing record and no new found-tail flag.** A pool camp (a culture with a
+`pool_renewal` block: goblin, bandit, raider) keeps a pressure P, a break and a check inside the engine; what Java sees is
+(1) the rows it already gets and (2) fewer parties from a camp that is thin or broken.
+
+- **The site ledger** (SITE_STATE, §2.5): a pool camp's row carries `p` = the pressure now, as every renewing site's does. A
+  broken camp's row is `SHORT | EMPTY | BROKEN | WAITING` with count 0, away 0 and `wait_left` = the ticks to the refound;
+  the engine hands the pressure and the wait back through the found tail after a reset (§2.5), where a `WAITING` row with
+  count 0 for a pool camp is a broken camp, with its refound `wait_now` after the gap (a gap longer than the wait refounds
+  the camp at once).
+- **Pages.** The conflict's pages are `RTCE` (magic `RTCE`, was `RTCD`) with meta version 13: a faction row ends with an
+  optional strain (`put_opt`: pressure, `broken` as since and due ticks, the stamp, the check tick), the wheel's events may
+  be tag 12 `Ev::Strain` (a break check or a refound), and the stats end with `breaks`, `refounds` and `break_deferrals`. An
+  older page is refused by name ("conflict save format RTCD, this build reads RTCE").
+- **Archive kinds** `conflict.broken` and `conflict.refounded`, appended after the fifteen existing `conflict.*` kinds (kind
+  indices are saved). A break and a refound carry no news (FB-4).
+- **Test order 41, `CONFLICT_SLAY`** (TEST mode only; `NativeCodec.CONFLICT_SLAY`, `RtsimTests.slayCamp`): `u64 faction, u32 n,
+  f32 pressure`. Applied at unit take after the replay's end: the engine kills `n` of the faction's warriors as a player's
+  kill (its pool first, then its war parties; `u32::MAX` kills all), then adds `pressure` to its P. A key that is no faction is refused (logged); the order waits for
+  the replay's end like the other test orders that act on the conflict.
+- **The reporter** (core Java, `conflict/Outposts`; no wire change). A vanilla `minecraft:pillager_outpost` start (and
+  `illagerinvasion:illager_fort`, if its mod is ever present) in a loaded chunk is reported through `RtsimApi.reportCamp` as a
+  camp of the raider culture, with no bodies: key `Obs.villageId(dim, start chunk)`, block (the start chunk's middle x, the
+  start's minimum y, the middle z), FACTION_FOUND flagged LATE when the chunk was not new and `outpostsJoinExisting` is true
+  (otherwise a late outpost is not reported). The camp's `kin` predicate: a mob of the `minecraft:raiders` tag but the witch,
+  not a sim puppet, inside the start's box widened by `outpostKinMargin` (24) blocks. Reported once per session and again at
+  the conflict module's switch-on edge; nothing is reported while the module or `outpostsJoin` is off. Config keys
+  `outpostsJoin`, `outpostsJoinExisting`, `outpostKinMargin` in the `[conflict]` group.
+
 ## 10. The world model: HABITAT (PLAN.md §5.1, SCALE.md §2, §4; the core's habitat sampler)
 
 **Status: a boundary addition made overnight on 2026-10-20 for Ben's review.** Choice Y4 in

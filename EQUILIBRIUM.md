@@ -498,25 +498,52 @@ as today (Y20).
 
 #### 2.4.5 Conflict factions (goblin, bandit, raider)
 
-- **Site:** the camp; K = the culture's `pool_cap` (goblin 60, bandit 40, raider 50).
-- **Losses:** warriors killed by a player, at home or in a party, add `killed/K`; war-party losses to
-  another faction or a village add nothing. In a joint attack (CONFLICT-LIFE.md §2.16) each camp books
-  only its own contingent's dead, against its own K.
-- **Renewal (Regrow):** recruits at `recruits_per_day / 2^P` (goblin 2, bandit 1.5, raider 2): word
-  gets around that the camp is a death trap. Closed form between events: P is read at the last event
-  that touched the pool (a muster, a loss, a census), so the pool stays linear in time.
-- **Break and refound:** a camp whose pool is below 10% of its cap while P is at least 2 breaks: its
-  survivors scatter and its node goes quiet. After `min(384, 48 x 2^P)` days a new band takes the empty
-  camp with a quarter of the cap (Frontier). A faction can never break another; only players do.
+**Built (slice S7, 2026-10-30; docs/overnight-choices-equilibrium.md EQC200 to EQC299).** Only the pool camps
+are on this rule: the goblin, bandit and raider camps, whose warriors are a number with no home bodies. The
+Frostmaw den and the Umvuthana grove are bodies and S9's (their `renewal` block is unchanged).
+
+- **Site:** the camp; K = the culture's `pool_cap` (goblin 60, bandit 40, raider 50). The pressure lives in
+  `Faction.strain`, present only for a culture with a `pool_renewal` block in its JSON.
+- **Losses:** a warrior of a war party killed by a player (vanilla's kill credit: his hit, his pet, his
+  trap) adds `1/K`, and so does a war chief killed by one; the loss is booked once, at the casualty (a
+  replay books it once, a killed envoy adds nothing). An unclaimed death of a party member at a player's
+  district counts as his (the rule for boss kinds, `district_unclaimed_is_players`, FB-2); one on the road
+  does not. A raid lost to another faction or a village adds nothing, and a mob's kill adds nothing.
+- **Renewal (Regrow):** the pool recruits at `max(r x 2^-P, 1/96)` a day (`r` is `recruits_per_day`: goblin 2,
+  bandit 1.5, raider 2; the floor is one a camp per `recruit_cap_days`), and P halves every **192 days**
+  (Ben's FB-1 (a): at the plan's 96 a farmer who kills every whole warrior every second day holds P under 2
+  for ever and nothing breaks; EQC202). `Conflict::recruit_rate` is the one rate behind `pool_at`,
+  `pool_ready` and `whole_at`, so the pool stays a line between events: P is read at the day of the event
+  that last touched the pool, and a bump re-anchors the line first. With P 0 the rate is bit-for-bit
+  `recruits_per_day / 24,000` a tick: a world no player touches is the world before S7 (a 60-year test).
+- **Break and refound:** a camp whose pool and away together are under 10% of its cap while P is at least 2
+  and which is idle (no war party out, no feud with a demand open) **breaks**: its pool and its recruit
+  rate go to zero, its plunder and feud steps are voided, and it sends nothing and is nobody's target (a
+  broken rival haven is skipped by plunder). A busy camp is looked at again a game day later until it is
+  idle. After `min(384, 48 x 2^P)` days (read at the break) a new band takes the camp: a quarter of the cap
+  (12 of a raider's 50), a new chief and heir, no old fights, the pressure kept and decaying (it does not
+  break again at once). A faction can never break another; only players do. There is no news of either
+  event (FB-4); the archive has `conflict.broken` and `conflict.refounded` and `sim census` the numbers.
 - **(b):** when war parties and plunders go out is `CONFLICT-LIFE.md`'s (EQ-5: Ben rejected the gate
-  of §2.5); the pool they draw on is this section's.
+  of §2.5); the pool they draw on is this section's. S7 changes one clock: the raider's `plunder_mean_days`
+  is 48, not 8, because with the reporter below a village meets real outposts (FB-8 (b)).
 - **Bounds:** pool at most its cap; factions at most the camps found.
-- **What the player sees:** a camp he keeps emptying recruits more and more slowly, then breaks and
-  stands empty for two to four game years. How camps feud with each other is `CONFLICT-LIFE.md`'s.
-- **Body:** there is no camp mod in the pack (Goblin's Tyranny is absent; the camp structure ids in
-  the conflict culture files are unverified), so only parties have bodies (puppets). No Java exists
-  yet for conflict; these rules bind the engine now and the plugin when it is written.
-- **Cost:** one more float per faction (pressure); break and refound are one event each.
+- **What the player sees:** a camp he keeps emptying recruits more and more slowly (and fields smaller,
+  later parties), then breaks and stands empty for about 100 to 384 game days, and comes back as a new band
+  under a new chief. A hunter who wipes a camp once in 400 days or less often does not break it; a farmer
+  who wipes it every half year does (EQC270 and the bands there).
+- **Body:** there is no camp mod in the pack, so only parties have bodies (puppets). **The outposts of the
+  raiders are vanilla's pillager outposts** (Ben's FB-5 (b)): core's `conflict/Outposts` finds one when its
+  chunk loads (`ChunkEvent.Load`, `getAllStarts()`; no mixin), reports it as a raider camp with no bodies
+  (`reportCamp`), once per session and at the conflict module's switch-on, and a player's kill of a raider
+  (the `minecraft:raiders` tag but the witch) inside its box widened by 24 blocks is the camp's killing
+  signal. The outpost's own pillagers (the structure's spawn override) and vanilla's patrols and raids stay
+  vanilla's and are nobody's body (FB-7 (a)). An outpost found in a chunk generated before the mod is
+  reported flagged LATE unless `outpostsJoinExisting` is off (FB-9 (a)). Uninstall leaves every outpost as
+  vanilla made it (nothing is written to the world).
+- **Cost:** one boxed `Strain` (a few tens of bytes) on a pool camp's faction row, a ledger row that carries P and
+  the refound wait, one wheel event per camp at most (`Ev::Strain`, tag 12); a chunk load with no start is
+  one empty map read.
 
 #### 2.4.6 Pirates and ships
 
@@ -1052,7 +1079,7 @@ follow it.
 | Dragons | + fed share 4 B | the fed share updates at hunts, which exist | none |
 | Herds | + nothing (M per species is a constant) | yearly decision (exists) reads 4 neighbours | none; frontier is one wheel entry per empty range |
 | Villages | + logistic read at load | one census (exists) | none |
-| Conflict | + pressure | pool closed form with P at the last event | none |
+| Conflict (pool camps) | + a boxed `Strain` (pressure, break, check) | pool closed form with P at the last event; at most one wheel event per camp (`Ev::Strain`), booked only while it is broken or waiting to break | none; an outpost found is one chunk-load read |
 | Site ledger | about 32 B per site plus 16 B per tracked boss body, Java | a row update on SITE_STATE; the file is written at vanilla's world saves | none |
 | Missing members | the UUIDs above | one lookup per `EntityJoinLevelEvent` of a tracked kind, and per death of a stray | none |
 
@@ -1149,6 +1176,16 @@ form gives 44.4 days a worm and the chained one 37.6; the engine's farmed test m
 form within 5% (`a_farmed_nest_renews_at_the_chained_rate`). A K 1 site, or one farmed a member at a
 time, still reads the table; the table's rows with K above 1 (the grove, the villages) are worth
 checking against a farm-to-empty run before their numbers are relied on.
+
+**A pool camp, and why its half-life is 192 days** (found building S7, 2026-10-30; EQC202, EQC270). A camp's
+warriors are a number, so a farmer kills them at home with no site wait to hide in: he kills every whole
+warrior every second day, the camp recruits at `max(r x 2^-P, 1/96)` a day, and each kill adds `1/K`. At the
+plan's half-life of 96 days the steady P of that farmer is about 1.6 to 1.7 (goblin 1.58, bandit 1.67, raider
+1.72 in 60 years, `farmed_camps_do_not_break_at_a_half_life_of_96`): it never reaches the break at 2, and the
+rule of §2.4.5 would never fire. At 192 days (Ben's FB-1 (a)) P reaches 2.00 at day 144 to 218 and the camps
+break 0.23 to 0.30 times a year (the model's 0.23 to 0.30), broken 55% of the time. A hunter is another
+player: one who wipes a camp every 800 days leaves 0.97 of its warriors and never breaks it; every 400 days,
+0.81 and it is broken 6% of the time; every 180 days (a farmer, in effect) 0.53 and broken 26% of the time.
 
 ### 3.4 Predator and prey
 
@@ -1346,7 +1383,7 @@ GameTest lock.
 | S4 | Dragons: lair pressure, fed share, starve-leave, arrival gate, newcomer direction, oil visitors only into due lairs. **Built 2026-10-22, but for the GameTest** (`crates/rtsim-ecology/src/engine.rs`, `dragon.rs`, `oil.rs`, `tunables.rs`, `persist.rs`; docs/overnight-choices-equilibrium.md EQC22 to EQC33, and its S4 findings: lairs held about 0.06 below the model's, the kill-all's 90% at 72 days at the median; S3 is not built, so a late-found lair starts at P 0 and `resetDoesNotMintADragon` waits for S3, EQC31) | `kill_all_dragons` (90% back within 72 days), `farmed_lair_yields_closed_form` (60 years, at most 1.2 a year), `starving_dragon_leaves_and_returns_when_fed`, `visitor_claims_only_a_due_lair`, `long_horizon_dragons_and_herds_with_kills` (60 years, roamer script, the §3.6 bands); GameTest `resetDoesNotMintADragon` (`crates/rtsim-ecology/tests/lair_renewal.rs`; `oil.rs`; `crates/rtsim-cli/src/sim/equilibrium.rs`, the 30-seed versions `#[ignore]`d) | S2, S3 |
 | S5 | Dragon home bodies (EQ-2 a): vanilla while roosting, puppet away, lair census. **Built 2026-10-29** (`crates/rtsim-ecology/src/engine/home.rs`, `boundary.rs`, `persist.rs` (pages RTDA and RTNA), `crates/rtsim-jni`, core's `sites/ChunkWatch`, the plugin's `HomeBodies`; `docs/boundary.md` §6.9, `docs/replay-gate.md` §4.5; docs/overnight-choices-equilibrium.md EQC100 to EQC149, with the UNVERIFIED facts settled in EQC146). A lured dragon is a puppet and no loss (Ben's FB-1 (a)), so the fourth test is `aDragonLuredFromItsLairIsAwayNotMissing`, with `aVanishedHomeBodyIsMissingNotDead` for the body that vanishes | Rust `tests/home_bodies.rs` (29), `tests/home_bodies_long.rs` (S4's bands with bodies on, H1 and H2 over random histories); GameTests `roostingDragonIsSavedByVanilla`, `awayDragonIsAPuppetAndTheCensusReconciles`, `uninstallKeepsRoostingDragons`, `aDragonLuredFromItsLairIsAwayNotMissing`, `aVanishedHomeBodyIsMissingNotDead`, and seven more in `HomeBodyGameTests` | S4 (EQ-2 a, decided) |
 | S6 | Villages and Ribbits (EQ-1 a): census both ways, settlers, unloaded growth, Ribbit refill before build, pop on spawn. **Built 2026-10-29** (`crates/rtsim-world/src/villages.rs`, `ribbits.rs`, `config.rs` (pages RTW5), `crates/rtsim-jni` (the census filter, RTP1 version 6), core's `village/Census`, `village/Walkers`, `api/Arrivals`, `growth/ResidentSpawner`, the Ribbits plugin's profession chooser; `docs/boundary.md`; docs/overnight-choices-equilibrium.md EQC150 to EQC193). Ben's FB-1 (b): a village the engine has not seen alive is never settled; FB-2: every bed in the box counts, capped at 32; FB-4: a refilled Ribbit is a merchant when the village has none, else a profession by the order's hash; FB-3 (the coordinator): an additive registry `walkers` list and core's `Arrivals` | Rust `rtsim-world/tests/{villages,settlers,village_growth}.rs`, `rtsim-jni/tests/villages.rs` (`village_pop_follows_census_down`, `census_flapping_never_reaches_the_world`, `villages_renew_end_to_end`), `kill_all_villagers` (settlers in 32 days, 90% within 600: the median 525), `kill_all_ribbits` (90% within 300: 122), `census_counts_villages_by_k`, `sim_quiet_stays_quiet_with_settlers` (rewritten: the renewal stops); GameTests `VillageRenewalGameTests` (ten, among them `settlersWalkInFromTheExploredEdge`, `noArrivalIntoAWatchedVillage`) and `RibbitRenewalGameTests` (three) | S1 (EQ-1 a, decided) |
-| S7 | Conflict: pressure on recruits, break and refound; when parties go out is `CONFLICT-LIFE.md`'s build plan (EQ-5 rejected the gate) | `kill_all_camps` (90% within 96 days), `farmed_camp_breaks_and_refounds` | S0 |
+| S7 | Conflict: pressure on recruits, break and refound; when parties go out is `CONFLICT-LIFE.md`'s build plan (EQ-5 rejected the gate). **Built 2026-10-30** (`crates/rtsim-conflict/src/engine/strain.rs`, `engine.rs`, `culture.rs`, `persist.rs` (pages RTCE, meta 13), `crates/rtsim-jni` (test order 41), `rtsim-cli`'s `camps` census and the harness of `sim::equilibrium`; core's `conflict/Outposts`, the reporter of Ben's FB-5 (b): vanilla pillager outposts as raider camps; `docs/boundary.md` §9.7; docs/overnight-choices-equilibrium.md EQC200 to EQC299, with the measured bands in EQC270). Ben's FB-1 (a): half-life 192 days; FB-2 (a): an unclaimed death at a player's district is his; FB-4: no news; FB-6 (a) to FB-9 (a) and the raider's plunder mean of 48 days | Rust `crates/rtsim-conflict/tests/strain.rs` (44), `kill_all_camps` (90% back in a median of 51 days over 30 seeds, 48 to 69), `farmed_camp_breaks_and_refounds` (0.23 to 0.30 breaks a year), `farmed_camps_do_not_break_at_a_half_life_of_96`, `no_player_no_pressure_for_60_years`, the wanderer and wipe tests, `a_test_order_slays_a_camp`; GameTests `PoolCampGameTests` (a reset keeps the pressure and the break; a broken camp sends no party) and `OutpostGameTests` (eight: found once, the module switch, existing worlds, the kin rule, the envoy, a farmed outpost breaks and refounds, vanilla's raiders left alone, uninstall) | S0 |
 | S8 | Ships: hires and cap, refit pressure, EV lanes. **Built 2026-10-22** (`crates/rtsim-ships/src/engine.rs`, docs/overnight-choices-ships.md T32 to T39) | `kill_all_pirates` (90% within 180 days), `crew_pool_is_bounded`, `a_haven_with_no_lane_worth_hunting_rests`, `pirates_survive_unattended_1000_years` (hunting havens inside their §3.6 band; the engine holds the floor and sits at 1.00, T37) (`crates/rtsim-ships/tests/equilibrium.rs`) | S0 |
 | S8b | Havens and ports that rise and fall (§2.4.6a): the toll, starving, navy assaults, shut down and refound, port raids, ports closed by blockade. **Built 2026-10-22 and 23**: S8b-1 (rules 1, 2, 4 and 5), S8b-2 (rule 3), S8b-3 (rule 6) and rule 8's PortRaided and HavenFell (PC10, PC45) on main; S8b-4 (rule 7) and its news, Blockade, PortClosed and PortReopened (PC100), on branch `ports/close` (`docs/choices-ports.md`) | `unattended_havens_rise_and_fall` (many worlds: havens neither all die nor fill every site; pirates still hunt), `a_starving_haven_shuts_and_refounds`, `a_navy_breaks_a_weak_haven`, `a_port_raid_conserves_goods`, `a_port_raid_is_news`, `a_blockaded_port_closes_and_reopens`, `a_port_change_is_news`, `blockade_min_open_sweep` | S8 |
 | S9 | MOWZIE on the shared rule (in its plan, §2.6) | `kill_all_dens`, `kill_all_groves`, `farmed_den_yields_closed_form`, GameTests `resetDoesNotMintAFrostmaw`, `aLuredFrostmawIsAPlayerLoss`, `aStrayFrostmawsDeathRaisesItsDensPressure`, `aPetOrTrapKillAtADenIsAPlayerLoss`, `anUmvuthiHeirTakesAWarrior` | S0, S3, MOWZIE |
@@ -1424,6 +1461,11 @@ boss loot, how fights feel, an interface another plan must follow).
 | The Ribbit refill takes no prosperity test (a house still does) | The S6 checks: with the test on, a wiped Ribbit world never reached 90% of the control in 700 days; off, it did in 122 (EQC184). |
 | A site is watched when a player is within 128 blocks | A chunk normally loads at the server's view distance, past 128 blocks, so a body placed as it loads is there before it can be seen; a player within 128 blocks at a load (a login or a teleport) could see it appear, so the arrival waits. A war party on the march is not an arrival (MZ-15): its bodies come where its march puts them, stack by stack at the entity-ticking edge (128 to 144 blocks off along an axis at a simulation distance of 8, 160 to 176 at 10), having walked toward the player from about a kilometre in the far view, and only the Umvuthi, at the rear, can be seen to appear (128 to 132 blocks off at 8); one that reaches a watched target bodiless walks in along its route from the ticking edge. |
 | Camps break at pressure 2 with the pool under 10%, and refound after `min(384, 48 x 2^P)` days with a quarter of the cap | A camp the player keeps emptying goes quiet for months instead of feeding him warriors for ever; only players break camps. |
+| A pool camp's pressure halves in 192 days, not 96 | Ben, 2026-10-30 (FB-1 (a)): at 96 the farmer's P settles under 2 and no camp ever breaks (EQC202, EQC270). The recruit rate has a floor of one a day per 96 (`recruit_cap_days`), so no pressure empties a camp for ever. |
+| An unclaimed death of a camp's party member at a player's district is the player's loss; one on the road is not | Ben, 2026-10-30 (FB-2 (a)): the district's turrets, traps and walls are the player's; the tunable `district_unclaimed_is_players` switches it. |
+| A break and a refound make no news | Ben, 2026-10-30 (FB-4): the timeline (`conflict.broken`, `conflict.refounded`) and `sim census` show them. |
+| Vanilla pillager outposts are raider camps; a kill of a raider (the `minecraft:raiders` tag but the witch) in the outpost's box widened by 24 blocks is the camp's killing signal; the outpost's own pillagers and vanilla's patrols stay vanilla's; existing worlds' outposts join flagged LATE | Ben, 2026-10-30 (FB-5 (b), FB-6 (a), FB-7 (a), FB-9 (a)): the raid ladder then runs in real worlds without a mod that places camps, and nothing is written to the world (UR-1). |
+| The raider's plunder clock is 48 game days, not 8 | Ben, 2026-10-30 (FB-8 (b)): with real outposts a village meets the clock of every outpost its players have explored; CONFLICT-LIFE.md's council replaces the clock. |
 | Pirate crew pools capped at 18 and fed by hires at 0.25 a day; refit after `min(96, 4 x 2^P)`; a haven with no lane worth hunting rests | Today the pool has no source but captures, so fleets die out; the cap keeps a haven from hoarding crews; a haven that rests is the best response to strong lanes, and a lane's odds move with escorts and navy. |
 | Merchant and navy ships unchanged | They are the economy's carriers, not a population; their 2-day refill already works. |
 | ~~The gate's numbers~~ (gone with EQ-5's answer; CONFLICT-LIFE.md sets its own) | Ben rejected the gate, 2026-10-21. |
