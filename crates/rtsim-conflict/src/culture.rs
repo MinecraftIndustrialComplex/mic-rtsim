@@ -495,6 +495,11 @@ pub struct CultureDef {
     /// and `camp_bodies` (`Culture::resolve`). Absent: the pool refills by its rate, as M4 built.
     #[serde(default)]
     pub renewal: Option<RenewalDef>,
+    /// K of a camp found with no member and no ledger row (MZB-1216): the cap it takes instead of
+    /// a count of one. The jar's least, so that the least is minted. Needs `renewal` and
+    /// `camp_bodies`, and is at least 1 and at most `pool_cap`. Absent: the count found, at least 1.
+    #[serde(default)]
+    pub found_cap: Option<u32>,
     /// How a pool camp feels a player's kills: its recruiting slows, it can break, and it is
     /// refounded (EQC202). Needs `recruits_per_day` above 0 and no `camp_bodies` and no
     /// `renewal`. Absent: the pool refills by its rate whatever is killed, as before.
@@ -686,6 +691,19 @@ impl Culture {
                 Ok(Renewal { rule, boss: r.boss })
             })
             .transpose()?;
+        // K of a camp found with nothing (MZB-1216, MZB-1235): a body camp's number to take, so it
+        // needs the renewal that makes the missing members come back and the bodies that are counted.
+        if let Some(k) = def.found_cap {
+            if renewal.is_none() {
+                return Err(format!("{n}: found_cap needs a renewal"));
+            }
+            if !(1..=def.pool_cap).contains(&k) {
+                return Err(format!(
+                    "{n}: found_cap must be at least 1 and at most pool_cap ({})",
+                    def.pool_cap
+                ));
+            }
+        }
         // A pool camp's pressure (EQC202): the rate it slows is the culture's own, so there must
         // be one, and a body camp's pool is a slot table (S9's) and a renewal's members come back
         // by one rule.
@@ -1123,9 +1141,16 @@ mod tests {
             (6.0, 192.0, 96.0)
         );
         assert!(r.boss);
-        // The grove still recruits: its chief's wait is not its members' (MZB-407).
-        assert!(um.renewal.is_none());
-        assert_eq!(um.def.recruits_per_day, 2.0);
+        // The grove's warriors come back one at a time by the shared rule, a wait of their own
+        // beside the chief's (MZB-407, MZB-1210): 6 days at no pressure, at most 96, no boss.
+        let m = um.renewal.expect("a member renewal");
+        assert_eq!(
+            (m.rule.base_days, m.rule.cap_days, m.rule.half_life_days),
+            (6.0, 96.0, 96.0)
+        );
+        assert!(!m.boss, "the warriors are no boss kind (MZB-253)");
+        assert_eq!(um.def.recruits_per_day, 0.0);
+        assert_eq!(um.def.found_cap, Some(5));
         assert_eq!(um.chief_leads, vec![PartyKind::Invasion]);
         assert!(um.leads(PartyKind::Invasion) && !um.leads(PartyKind::Raid));
         assert_eq!(um.def.chief_strength, 5.0);
@@ -1188,16 +1213,13 @@ mod tests {
         assert!(e.contains("plunder_goods"), "{e}");
         let e = with(&|d| d.hunt_cap = 0).expect("refused");
         assert!(e.contains("hunt_cap"), "{e}");
-        // A renewal for the members stands apart from the chief's (MZB-407).
-        let e = with(&|d| {
-            d.renewal = Some(d.chief_renewal.unwrap());
-        })
-        .expect("refused");
+        // A renewal for the members stands apart from the chief's (MZB-407) and replaces the
+        // rate: the grove's has a rate of 0 (MZB-1210), so a rate beside it is the mistake.
+        let e = with(&|d| d.recruits_per_day = 2.0).expect("refused");
         assert!(e.contains("recruits_per_day"), "{e}");
         // A boss's renewal and a camp chief slot are two ways to lose a chief: refused together
         // (the re-check, R5), while a renewal that is no boss's stands beside a chief_body.
         let e = with(&|d| {
-            d.recruits_per_day = 0.0;
             d.renewal = Some(d.chief_renewal.unwrap());
             assert!(d.renewal.unwrap().boss);
         })
@@ -1206,13 +1228,27 @@ mod tests {
         assert!(e.contains("chief_body"), "{e}");
         assert_eq!(
             with(&|d| {
-                d.recruits_per_day = 0.0;
                 d.renewal = Some(d.chief_renewal.unwrap());
                 d.renewal.as_mut().unwrap().boss = false;
             }),
             None,
             "a renewal that is no boss's"
         );
+        // The member renewal is the grove's data: without it the grove is the old rate, and the
+        // pool renewal of a pool camp stays refused beside it (EQC202).
+        let e = with(&|d| {
+            d.pool_renewal = Some(PoolRenewalDef {
+                half_life_days: 192.0,
+                recruit_cap_days: 24.0,
+                break_share: 0.3,
+                break_pressure: 3.0,
+                refound_base_days: 48.0,
+                refound_cap_days: 384.0,
+                refound_share: 0.5,
+            });
+        })
+        .expect("refused");
+        assert!(e.contains("pool_renewal"), "{e}");
     }
 
     #[test]
@@ -1290,14 +1326,43 @@ mod tests {
         assert_eq!(fm.def.recruits_per_day, 0.0);
         assert!(fm.def.camp_bodies);
         assert_eq!(fm.def.renewal.unwrap().boss, r.boss);
-        // The others keep the rate: no renewal, and `boss` is false when a renewal leaves it out.
-        for n in ["goblin", "bandit", "raider", "umvuthana"] {
+        // The pool camps keep the rate: no renewal, and `boss` is false when a renewal leaves it
+        // out. The grove's is no boss's (MZB-1210).
+        for n in ["goblin", "bandit", "raider"] {
             assert!(c.get(c.index_of(n).unwrap()).renewal.is_none(), "{n}");
         }
+        let um = c.get(c.index_of("umvuthana").unwrap());
+        assert!(um.renewal.is_some_and(|r| !r.boss));
         let d: RenewalDef =
             serde_json::from_str(r#"{"base_days": 6, "cap_days": 96, "half_life_days": 96}"#)
                 .unwrap();
         assert!(!d.boss);
+    }
+
+    /// MZB-1235: `found_cap` is K of a camp found with no member and no row; it needs a renewal
+    /// and `camp_bodies`, and is at least 1 and at most `pool_cap`.
+    #[test]
+    fn found_cap_is_accepted_and_refused() {
+        let with = |edit: &dyn Fn(&mut CultureDef)| {
+            let mut d: CultureDef = serde_json::from_str(UMVUTHANA_JSON).unwrap();
+            edit(&mut d);
+            Culture::resolve(d).err()
+        };
+        assert_eq!(with(&|d| d.found_cap = Some(1)), None);
+        assert_eq!(with(&|d| d.found_cap = Some(9)), None, "up to pool_cap");
+        assert_eq!(with(&|d| d.found_cap = None), None, "absent is the count");
+        let e = with(&|d| d.found_cap = Some(0)).expect("refused");
+        assert!(e.contains("found_cap"), "{e}");
+        let e = with(&|d| d.found_cap = Some(10)).expect("refused");
+        assert!(e.contains("found_cap") && e.contains("pool_cap"), "{e}");
+        // A camp with no renewal has the rate and no use for it.
+        let e = with(&|d| d.renewal = None).expect("refused");
+        assert!(e.contains("found_cap") && e.contains("renewal"), "{e}");
+        // Nor does a camp without bodies (the renewal check speaks first, both are the mistake).
+        assert!(with(&|d| d.camp_bodies = false).is_some());
+        // The Frostmaw's data sets none: its K is the one jar-placed Frostmaw.
+        let c = Cultures::builtin();
+        assert_eq!(c.get(c.index_of("frostmaw").unwrap()).def.found_cap, None);
     }
 
     /// MZB-251: each way a renewal can be wrong is its own error.
