@@ -18,6 +18,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.village.Village;
 import com.minecraftindustrialcomplex.mic_rtsim_iceandfire.DragonRecords.Adopt;
 import com.minecraftindustrialcomplex.mic_rtsim_iceandfire.DragonRecords.Depart;
 import com.minecraftindustrialcomplex.mic_rtsim_iceandfire.DragonRecords.Discard;
+import com.minecraftindustrialcomplex.mic_rtsim_iceandfire.DragonRecords.HandBack;
 import com.minecraftindustrialcomplex.mic_rtsim_iceandfire.DragonRecords.Materialize;
 import com.minecraftindustrialcomplex.mic_rtsim_iceandfire.DragonRecords.Steer;
 import net.minecraft.core.BlockPos;
@@ -77,6 +78,8 @@ public final class DragonBridge implements SessionPlugin {
     public static final int CLAMP_MARGIN = 8;
     /** A DEPART with timeout 0 is captured after this many ticks at most (PLACEHOLDER, choice Z11). */
     public static final int DEFAULT_DEPART_TIMEOUT = 6000;
+    /** A home body's lair is the nearest one this session reported within this many blocks of where it stands (EQC105). */
+    public static final double HOME_LAIR_RADIUS = 64.0;
     /** A puppet's breaths are summed into one DRAGON_BREATHS at most this often (OILGATE.md §4.3). */
     public static final int BREATH_INTERVAL = 20;
     /** Fire events this many ticks apart or more are two bursts in a puppet's breath log (GameTests). */
@@ -109,6 +112,12 @@ public final class DragonBridge implements SessionPlugin {
         Snapshot precaptured;
         Death pendingDeath;
         boolean removing;
+        /**
+         * The body is a lair's home body (S5, EQC105): it carries {@link HomeBodies.HomeTag} instead of the agent tag,
+         * so vanilla saves it, and {@link #lair} is the lair it is home at.
+         */
+        boolean home;
+        long lair;
         /** The oil reserve the engine gave the body (MAT_OIL), spent a point a breath; -1 breathes freely. */
         int oil = -1;
         /** Breaths since the last DRAGON_BREATHS. */
@@ -201,6 +210,9 @@ public final class DragonBridge implements SessionPlugin {
 
     private record Kill(Puppet by, LivingEntity victim, double x, double y, double z) {}
 
+    /** A home body the engine holds as saved (no registered puppet) that died while loaded: reported at the end of the tick. */
+    private record Orphan(DragonBaseEntity dragon, HomeBodies.HomeTag tag, Death death) {}
+
     private RtsimSession session;
     private final Map<Long, Puppet> byAgent = new HashMap<>();
     private final Map<UUID, Puppet> byUuid = new HashMap<>();
@@ -209,6 +221,7 @@ public final class DragonBridge implements SessionPlugin {
     private final Set<UUID> untaggedReported = new HashSet<>();
     private final Map<HurtKey, HurtSum> hurts = new LinkedHashMap<>();
     private final List<Kill> kills = new ArrayList<>();
+    private final List<Orphan> orphans = new ArrayList<>();
     private final Map<AteKey, AteSum> meals = new LinkedHashMap<>();
     /** Prey a puppet picked up: the village it was taken from (0 none), for its DRAGON_ATE. */
     private final Map<UUID, Long> pickedUpFrom = new HashMap<>();
@@ -219,6 +232,8 @@ public final class DragonBridge implements SessionPlugin {
     public final OilSampler sampler = new OilSampler(this);
     /** PLACE_NEST, NEST_RENEW and NEST_SORTIE: the Death Worm nests under oil fields (OG-9e). */
     public final Nests nests = new Nests(this);
+    /** Home bodies: the lair census, the leash and the hand-back (EQUILIBRIUM.md S5). */
+    public final HomeBodies homes = new HomeBodies(this);
 
     // Counters for logs and the GameTests (this session).
     public long materialized, rejected, adopted, discarded, captured, died, hurtRecords, ateRecords, untagged, stateRecords,
@@ -263,12 +278,14 @@ public final class DragonBridge implements SessionPlugin {
         untaggedReported.clear();
         hurts.clear();
         kills.clear();
+        orphans.clear();
         meals.clear();
         pickedUpFrom.clear();
         lairs.clear();
         placer.clear();
         sampler.clear();
         nests.clear();
+        homes.clear();
         materializeFlags.clear();
         materialized = rejected = adopted = discarded = captured = died = hurtRecords = ateRecords = untagged = stateRecords = steered = malformed = 0;
         breathRecords = breathsReported = fireCancelled = chargesStopped = oilConfigs = superseded = 0;
@@ -305,7 +322,7 @@ public final class DragonBridge implements SessionPlugin {
         long now = s.gameTime();
         endOfTickRecords(now);
         for (Puppet p : List.copyOf(byAgent.values()))
-            capture(p, DragonRecords.Dematerialized.SESSION_END, now);
+            capture(p, p.home ? DragonRecords.Dematerialized.HOME_SAVED : DragonRecords.Dematerialized.SESSION_END, now); // a home body stays and is saved
         // The journal holding their deaths is saved with this world save: the corpses are ordinary from now.
         for (UUID id : List.copyOf(corpses.keySet()))
             untagCorpse(id);
@@ -318,6 +335,10 @@ public final class DragonBridge implements SessionPlugin {
             return;
         long now = s.gameTime();
         for (Puppet p : List.copyOf(byAgent.values())) {
+            if (p.home) {
+                unregister(p); // it stays in the world with its attachment; the next session's census finds it
+                continue;
+            }
             try {
                 capture(p, DragonRecords.Dematerialized.SESSION_END, now);
             } catch (RuntimeException e) {
@@ -430,6 +451,10 @@ public final class DragonBridge implements SessionPlugin {
                         new UUID(b.getLong(at + Discard.ENTITY_MOST), b.getLong(at + Discard.ENTITY_LEAST)), now);
                 yield true;
             }
+            case DragonRecords.DRAGON_HAND_BACK -> {
+                homes.handBack(b.getLong(at + HandBack.AGENT), b.getInt(at + HandBack.EPOCH), now);
+                yield true;
+            }
             case DragonRecords.PLACE_LAIR -> {
                 placer.request(b.getLong(at + DragonRecords.PlaceLair.FIELD), names.name(Obs.DICT_DIMENSION, b.getInt(at + DragonRecords.PlaceLair.DIM)),
                         names.name(Obs.DICT_STRUCTURE, b.getInt(at + DragonRecords.PlaceLair.STRUCTURE)), b.getInt(at + DragonRecords.PlaceLair.X),
@@ -497,6 +522,12 @@ public final class DragonBridge implements SessionPlugin {
             reject(agent, epoch, cmdSeq, DragonRecords.SpawnRejected.NOT_TICKING, now);
             return true;
         }
+        boolean homeBody = (flags & Materialize.FLAG_HOME_BODY) != 0;
+        Lairs.Lair homeLair = homeBody ? lairs.nearestKnown(level, new Vec3(x, y, z), HOME_LAIR_RADIUS) : null;
+        if (homeBody && homeLair == null) {
+            reject(agent, epoch, cmdSeq, DragonRecords.SpawnRejected.SPAWN_FAILED, now); // the engine orders it at a lair this session reported
+            return true;
+        }
         if (!session.spendSpawnBudget(1))
             return false; // waits for the next tick, with every command after it
         if ((flags & Materialize.FLAG_CLAMP_ABOVE_SURFACE) != 0) {
@@ -538,8 +569,13 @@ public final class DragonBridge implements SessionPlugin {
         float health = b.getFloat(at + Materialize.HEALTH);
         d.setHealth(health > 0 ? Math.min(health, d.getMaxHealth()) : d.getMaxHealth());
         d.setPersistenceRequired();
-        d.setData(RtsimAttachments.AGENT, new AgentTag(agent, epoch));
+        if (homeBody)
+            d.setData(MicRtsimIceAndFire.HOME, new HomeBodies.HomeTag(homeLair.id(), agent)); // vanilla saves it
+        else
+            d.setData(RtsimAttachments.AGENT, new AgentTag(agent, epoch));
         Puppet p = new Puppet(agent, epoch, d, now);
+        p.home = homeBody;
+        p.lair = homeBody ? homeLair.id() : 0L;
         if ((flags & Materialize.FLAG_OIL) != 0)
             p.oil = Math.max(0, b.getInt(at + Materialize.OIL));
         p.lastBreathFlush = now;
@@ -623,9 +659,10 @@ public final class DragonBridge implements SessionPlugin {
                 Math.round(targetY), ceiling, ceiling);
     }
 
-    private void journalMaterialized(Puppet p, ServerLevel level, long now) {
+    void journalMaterialized(Puppet p, ServerLevel level, long now) {
         int dim = session.dimId(level.dimension());
-        ByteBuffer r = session.boundary().beginJournaled(DragonRecords.DRAGON_MATERIALIZED, DragonRecords.Materialized.SIZE, 0, now);
+        int aux = p.home ? DragonRecords.Materialized.AUX_HOME_BODY : 0; // the engine books a body only from this answer (H3)
+        ByteBuffer r = session.boundary().beginJournaled(DragonRecords.DRAGON_MATERIALIZED, DragonRecords.Materialized.SIZE, aux, now);
         r.putLong(DragonRecords.Materialized.AGENT, p.agent);
         r.putInt(DragonRecords.Materialized.EPOCH, p.epoch);
         r.putInt(DragonRecords.Materialized.DIM, dim);
@@ -705,6 +742,13 @@ public final class DragonBridge implements SessionPlugin {
             reject(agent, epoch, cmdSeq, DragonRecords.SpawnRejected.ALREADY_EMBODIED, now);
             return;
         }
+        boolean homeBody = (b.getInt(at + Adopt.FLAGS) & Adopt.FLAG_HOME_BODY) != 0;
+        if (held != null && held.home) {
+            // A home body the plugin holds, counted again (a recount, a recall): the same entity under the newer epoch, or
+            // another of the dragon's bodies the engine is removing. Nothing is captured or discarded here: it stays.
+            unregister(held);
+            held = null;
+        }
         if (held != null) {
             // The engine adopts again (adopt_again) under a newer epoch a dragon it holds, and the body it held at
             // the older one is not its body any more: every record of it is dropped at that epoch (RP-245). The old
@@ -720,12 +764,30 @@ public final class DragonBridge implements SessionPlugin {
             reject(agent, epoch, cmdSeq, DragonRecords.SpawnRejected.SPAWN_FAILED, now);
             return;
         }
-        d.setData(RtsimAttachments.AGENT, new AgentTag(agent, epoch));
+        boolean hasHome = (b.getInt(at + Adopt.FLAGS) & Adopt.FLAG_HAS_HOME) != 0;
+        BlockPos homePos = hasHome ? new BlockPos(b.getInt(at + Adopt.HOME_X), b.getInt(at + Adopt.HOME_Y), b.getInt(at + Adopt.HOME_Z)) : null;
+        Lairs.Lair homeLair = null;
+        if (homeBody) {
+            Vec3 near = homePos != null ? Vec3.atCenterOf(homePos) : d.position();
+            homeLair = lairs.nearestKnown(level, near, HOME_LAIR_RADIUS);
+            if (homeLair == null) {
+                reject(agent, epoch, cmdSeq, DragonRecords.SpawnRejected.SPAWN_FAILED, now);
+                return;
+            }
+            // Vanilla saves it: the home attachment, not the agent tag. Aging off, and age, hunger and health to the
+            // engine's closed forms (EQC108).
+            d.setData(MicRtsimIceAndFire.HOME, new HomeBodies.HomeTag(homeLair.id(), agent));
+            IafDragons.sync(d, b.getInt(at + Adopt.AGE_TICKS), b.getInt(at + Adopt.HUNGER), b.getFloat(at + Adopt.HEALTH));
+        } else {
+            d.setData(RtsimAttachments.AGENT, new AgentTag(agent, epoch));
+            d.setAgingDisabled(true);
+        }
         d.setPersistenceRequired();
-        d.setAgingDisabled(true);
-        if ((b.getInt(at + Adopt.FLAGS) & Adopt.FLAG_HAS_HOME) != 0)
-            IafDragons.setHome(d, level, new BlockPos(b.getInt(at + Adopt.HOME_X), b.getInt(at + Adopt.HOME_Y), b.getInt(at + Adopt.HOME_Z)));
+        if (homePos != null)
+            IafDragons.setHome(d, level, homePos);
         Puppet p = new Puppet(agent, epoch, d, now);
+        p.home = homeBody;
+        p.lair = homeBody ? homeLair.id() : 0L;
         register(p);
         journalMaterialized(p, level, now);
         adopted++;
@@ -739,6 +801,9 @@ public final class DragonBridge implements SessionPlugin {
     private void discardCommand(long cmdSeq, UUID id, long now) {
         Entity e = find(id);
         int status = Obs.CommandResult.APPLIED;
+        Puppet heldHome = byUuid.get(id);
+        if (heldHome != null && heldHome.home)
+            unregister(heldHome); // the engine ordered it removed: its books already say so
         if (e != null && !e.isRemoved()) {
             if (RtsimAttachments.isTagged(e) || (e instanceof DragonBaseEntity d && d.isTame())) {
                 status = Obs.CommandResult.FAILED;
@@ -775,6 +840,34 @@ public final class DragonBridge implements SessionPlugin {
     Puppet live(Entity e) {
         Puppet p = byUuid.get(e.getUUID());
         return p != null && p.entity == e ? p : null;
+    }
+
+    /** The registered body of an agent, or null. */
+    Puppet puppetOf(long agent) {
+        return byAgent.get(agent);
+    }
+
+    /** The registered body an entity UUID is, or null. */
+    Puppet puppetOfEntity(UUID id) {
+        return byUuid.get(id);
+    }
+
+    /** The registered home bodies (a copy). */
+    List<Puppet> homePuppets() {
+        List<Puppet> out = new ArrayList<>();
+        for (Puppet p : byAgent.values())
+            if (p.home)
+                out.add(p);
+        return out;
+    }
+
+    /** The registered home bodies of one lair (a copy). */
+    List<Puppet> homePuppetsOf(long lair) {
+        List<Puppet> out = new ArrayList<>();
+        for (Puppet p : byAgent.values())
+            if (p.home && p.lair == lair)
+                out.add(p);
+        return out;
     }
 
     /** The agent a live puppet embodies, or 0 (GameTests). */
@@ -816,6 +909,7 @@ public final class DragonBridge implements SessionPlugin {
         nests.tick(now);
         lairs.scanChests(now);
         reportUntagged(now);
+        homes.endOfTick(now);
         endOfTickRecords(now);
         pass(now);
         lairs.flushRobberies(now);
@@ -846,11 +940,13 @@ public final class DragonBridge implements SessionPlugin {
             }
             Entity e = p.entity;
             if (e == null || e.isRemoved()) {
-                capture(p, DragonRecords.Dematerialized.UNLOADED, now);
+                capture(p, p.home ? DragonRecords.Dematerialized.HOME_SAVED : DragonRecords.Dematerialized.UNLOADED, now);
                 continue;
             }
+            // A home body is kept while its lair is in (the census releases it at LAIR_OUT): not ticking is not a capture.
             if (!(e.level() instanceof ServerLevel level) || !RtsimSession.entitiesTickAt(level, e.blockPosition())) {
-                capture(p, DragonRecords.Dematerialized.NOT_TICKING, now);
+                if (!p.home)
+                    capture(p, DragonRecords.Dematerialized.NOT_TICKING, now);
                 continue;
             }
             DragonBaseEntity d = p.dragon();
@@ -862,6 +958,11 @@ public final class DragonBridge implements SessionPlugin {
             }
             if (p.mode == Mode.DEPART && (now >= p.deadline || !inAnyPlayersRange(level, e))) {
                 capture(p, DragonRecords.Dematerialized.COMMAND, now);
+                continue;
+            }
+            if (p.home) {
+                if (now - p.lastState >= STATE_INTERVAL)
+                    state(p, d, level, now);
                 continue;
             }
             if (p.oil == 0)
@@ -1051,7 +1152,7 @@ public final class DragonBridge implements SessionPlugin {
 
     // ---- capture --------------------------------------------------------------------------------
 
-    private static Snapshot snapshot(Entity e) {
+    static Snapshot snapshot(Entity e) {
         DragonBaseEntity d = e instanceof DragonBaseEntity x ? x : null;
         return new Snapshot(e.level().dimension(),
                 d == null ? 0f : d.getHealth(), d == null ? 0f : d.getMaxHealth(),
@@ -1067,7 +1168,10 @@ public final class DragonBridge implements SessionPlugin {
     void capture(Puppet p, int reason, long now) {
         Entity e = p.entity;
         Snapshot s = p.precaptured != null ? p.precaptured : e == null ? null : snapshot(e);
-        if (e != null && !e.isRemoved()) {
+        // A home body released because its lair went out, its chunk unloaded or the session stops stays in the world,
+        // saved by vanilla with its attachment (reason 8): only the engine's books change.
+        boolean keep = p.home && reason == DragonRecords.Dematerialized.HOME_SAVED;
+        if (!keep && e != null && !e.isRemoved()) {
             for (Entity passenger : List.copyOf(e.getPassengers())) {
                 passenger.stopRiding();
                 if (isPrey(passenger) && !RtsimAttachments.isTagged(passenger) && passenger instanceof LivingEntity prey) {
@@ -1165,12 +1269,26 @@ public final class DragonBridge implements SessionPlugin {
             p.pendingDeath = new Death(c.by(), c.player() != null ? c.player() : killer == null ? null : killer.getUUID());
             return;
         }
+        if (dead instanceof DragonBaseEntity d && !d.isTame()) {
+            HomeBodies.HomeTag tag = d.getExistingDataOrNull(MicRtsimIceAndFire.HOME);
+            if (tag != null) {
+                // A home body released with its lair (the engine holds it as saved) died in a loaded chunk (EQC131).
+                KillCredit.Credit c = KillCredit.of(dead, source);
+                orphans.add(new Orphan(d, tag, new Death(c.by(), c.player() != null ? c.player() : killer == null ? null : killer.getUUID())));
+                return;
+            }
+        }
         Puppet by = killer == null ? null : live(killer);
         if (by != null && isPrey(dead))
             kills.add(new Kill(by, dead, dead.getX(), dead.getY(), dead.getZ()));
     }
 
     private void settleDeaths(long now) {
+        if (!orphans.isEmpty()) {
+            for (Orphan o : orphans)
+                settleOrphan(o, now);
+            orphans.clear();
+        }
         for (Puppet p : List.copyOf(byAgent.values())) {
             if (p.pendingDeath == null)
                 continue;
@@ -1195,10 +1313,17 @@ public final class DragonBridge implements SessionPlugin {
             r.putDouble(DragonRecords.Died.X, e.getX());
             r.putDouble(DragonRecords.Died.Y, e.getY());
             r.putDouble(DragonRecords.Died.Z, e.getZ());
+            r.putLong(DragonRecords.Died.ENTITY_MOST, p.uuid.getMostSignificantBits());
+            r.putLong(DragonRecords.Died.ENTITY_LEAST, p.uuid.getLeastSignificantBits());
+            r.putLong(DragonRecords.Died.LAIR, p.home ? p.lair : 0L);
             long seq = session.boundary().commit(r);
             unregister(p);
             died++;
-            if (!e.isRemoved()) {
+            if (p.home) {
+                // Vanilla saves a home body, so its corpse is an ordinary one at once (the journal holds the death).
+                if (!e.isRemoved())
+                    e.removeData(MicRtsimIceAndFire.HOME);
+            } else if (!e.isRemoved()) {
                 // Ice and Fire keeps the body as a corpse to harvest. It stays tagged (never saved) until
                 // the engine's saved pages hold the death, then becomes an ordinary entity (choice Z6).
                 UUID id = p.uuid;
@@ -1206,6 +1331,34 @@ public final class DragonBridge implements SessionPlugin {
                 session.afterAck(seq, () -> untagCorpse(id));
             }
         }
+    }
+
+    /** DRAGON_DIED for a home body the engine held as saved: it names the entity and the lair, not an epoch (EQC131). */
+    private void settleOrphan(Orphan o, long now) {
+        DragonBaseEntity d = o.dragon();
+        if (!IafDragons.dead(d)) {
+            return; // another mod cancelled it
+        }
+        ResourceKey<Level> dimKey = d.level().dimension();
+        int dim = session.dimId(dimKey);
+        ByteBuffer r = session.boundary().beginJournaled(DragonRecords.DRAGON_DIED, DragonRecords.Died.SIZE, o.death().killerKind(), now);
+        r.putLong(DragonRecords.Died.AGENT, o.tag().agent());
+        r.putInt(DragonRecords.Died.EPOCH, 0);
+        r.putInt(DragonRecords.Died.DIM, dim);
+        if (o.death().killer() != null) {
+            r.putLong(DragonRecords.Died.KILLER_MOST, o.death().killer().getMostSignificantBits());
+            r.putLong(DragonRecords.Died.KILLER_LEAST, o.death().killer().getLeastSignificantBits());
+        }
+        r.putDouble(DragonRecords.Died.X, d.getX());
+        r.putDouble(DragonRecords.Died.Y, d.getY());
+        r.putDouble(DragonRecords.Died.Z, d.getZ());
+        r.putLong(DragonRecords.Died.ENTITY_MOST, d.getUUID().getMostSignificantBits());
+        r.putLong(DragonRecords.Died.ENTITY_LEAST, d.getUUID().getLeastSignificantBits());
+        r.putLong(DragonRecords.Died.LAIR, o.tag().lair());
+        session.boundary().commit(r);
+        died++;
+        if (!d.isRemoved())
+            d.removeData(MicRtsimIceAndFire.HOME);
     }
 
     private void untagCorpse(UUID id) {
@@ -1301,8 +1454,8 @@ public final class DragonBridge implements SessionPlugin {
     private void reportUntagged(long now) {
         while (!joined.isEmpty()) {
             Entity e = joined.poll();
-            if (e.isRemoved() || RtsimAttachments.isTagged(e) || !(e instanceof DragonBaseEntity d) || !(e.level() instanceof ServerLevel level)
-                    || level.getServer() != session.server())
+            if (e.isRemoved() || RtsimAttachments.isTagged(e) || e.hasData(MicRtsimIceAndFire.HOME) || !(e instanceof DragonBaseEntity d)
+                    || !(e.level() instanceof ServerLevel level) || level.getServer() != session.server())
                 continue;
             if (IafDragons.dead(d) || !RtsimConfig.on(Module.ECOLOGY))
                 continue;
@@ -1314,6 +1467,8 @@ public final class DragonBridge implements SessionPlugin {
             Lairs.Lair lair = lairs.at(level, e.blockPosition(), now);
             MobSpawnType type = e.getExistingDataOrNull(MicRtsimIceAndFire.SPAWN_TYPE.get());
             int kind = spawnKind(type, lair != null);
+            if (lair != null && kind == DragonRecords.Untagged.SPAWN_STRUCTURE)
+                continue; // a lair's own dragon is listed by the lair's census once the lair is in (EQC113)
             int flags = 0;
             if (d.isTame())
                 flags |= DragonRecords.Untagged.FLAG_TAMED;
@@ -1341,7 +1496,7 @@ public final class DragonBridge implements SessionPlugin {
                 r.putInt(DragonRecords.Untagged.HOME_Y, home.getY());
                 r.putInt(DragonRecords.Untagged.HOME_Z, home.getZ());
             }
-            r.putLong(DragonRecords.Untagged.LAIR, lair == null ? 0L : lair.id());
+            r.putLong(DragonRecords.Untagged.LAIR, 0L); // always 0 since S5: a dragon in a lair's box is the census's
             r.putDouble(DragonRecords.Untagged.X, e.getX());
             r.putDouble(DragonRecords.Untagged.Y, e.getY());
             r.putDouble(DragonRecords.Untagged.Z, e.getZ());
@@ -1382,6 +1537,7 @@ public final class DragonBridge implements SessionPlugin {
         r.putDouble(DragonRecords.Died.Z, e.getZ());
         session.boundary().commit(r);
         e.removeData(RtsimAttachments.AGENT);
+        e.removeData(MicRtsimIceAndFire.HOME);
         unregister(p);
     }
 

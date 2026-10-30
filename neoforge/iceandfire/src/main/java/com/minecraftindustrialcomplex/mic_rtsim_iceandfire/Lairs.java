@@ -201,6 +201,29 @@ public final class Lairs {
         s.boundary().commit(r);
         known.put(lair.id(), lair);
         lairsFound++;
+        bridge.homes.lairKnown(lair);
+    }
+
+    /** A lair reported this session, by id, or null. */
+    public Lair known(long id) {
+        return known.get(id);
+    }
+
+    /** The lair reported this session in {@code level} whose home is nearest {@code pos} within {@code radius} blocks (horizontally), or null. */
+    Lair nearestKnown(ServerLevel level, net.minecraft.world.phys.Vec3 pos, double radius) {
+        Lair best = null;
+        double bestD = radius * radius;
+        for (Lair l : known.values()) {
+            if (l.level() != level)
+                continue;
+            double dx = l.home().getX() + 0.5 - pos.x, dz = l.home().getZ() + 0.5 - pos.z;
+            double d = dx * dx + dz * dz;
+            if (d <= bestD) {
+                best = l;
+                bestD = d;
+            }
+        }
+        return best;
     }
 
     /**

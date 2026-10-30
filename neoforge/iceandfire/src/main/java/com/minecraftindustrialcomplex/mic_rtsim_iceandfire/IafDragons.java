@@ -180,6 +180,21 @@ public final class IafDragons {
             setHome(d, level, home);
     }
 
+    /**
+     * Syncs a live body to the engine's closed forms (EQC108, ADOPT_HOME_BODY): age, hunger and health, through Ice and
+     * Fire's setters. The setters only set entity data, so {@code refreshDirtyAttributes} follows (max health and speed
+     * come from the age); {@code write} is not used on a live dragon (its save removes the multipart parts). Aging stays
+     * disabled: the engine owns the age while it holds the body.
+     */
+    public static void sync(DragonBaseEntity d, int ageTicks, int hunger, float health) {
+        d.setAgingDisabled(true);
+        d.setAgeInTicks(Math.max(0, ageTicks));
+        d.setHunger(Math.max(0, Math.min(100, hunger)));
+        d.refreshDirtyAttributes();
+        if (health > 0f)
+            d.setHealth(Math.min(health, d.getMaxHealth()));
+    }
+
     public static void setHome(DragonBaseEntity d, ServerLevel level, BlockPos home) {
         d.homePos = new HomePosition(home, level);
         d.hasHomePosition = true;

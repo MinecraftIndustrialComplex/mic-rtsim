@@ -291,3 +291,52 @@ fn an_untagged_dragon_reported_again_after_a_restart_is_adopted_once() {
             .all(|c| !matches!(c, Cmd::Adopt(_)))
     );
 }
+
+/// RTD10 / RTN10 (EQC135): a dragon's home body and misses, and a lair's gap flag, left-behind,
+/// missing and expected UUIDs and misses, read back byte for byte, and covered by the state hash.
+#[test]
+fn pages_round_trip_rtd10() {
+    let seed = 6;
+    let (mut w, _) = synth::world(seed);
+    let mut d = Dragons::new(seed, DragonTunables::default(), Tick::ZERO);
+    let lp = Pos::new(0, 4000, 4000);
+    let l = d.add_lair(
+        &mut w,
+        9,
+        "Lair",
+        Species::Fire,
+        LairKind::Roost,
+        lp,
+        100,
+        Tick(0),
+    );
+    let x = d.add_dragon(&mut w, adult("Scorch", l), Tick(0));
+    let clean = d.state_hash();
+    {
+        let dragon = d.dragons.get_mut(x).unwrap();
+        dragon.body = Some((0xAAAA, 0xBBBB));
+        dragon.miss = (2, Tick(5_000));
+        let lair = &mut d.lairs[l as usize];
+        lair.left_behind = vec![(1, 2), (3, 4)];
+        lair.missing = vec![(5, 6)];
+        lair.expect = vec![(7, 8)];
+        lair.miss = (1, Tick(77));
+        lair.gap = true;
+    }
+    d.stats.home_adopts = 3;
+    d.stats.stray_deaths = 1;
+    assert_ne!(d.state_hash(), clean, "the hash covers the bodies");
+    let (w2, d2) = restart(&w, &d, seed);
+    let _ = w2;
+    assert_eq!(d2.save(), d.save(), "the dragons read back byte for byte");
+    assert_eq!(d2.state_hash(), d.state_hash());
+    assert_eq!(d2.dragon(x).unwrap().body, Some((0xAAAA, 0xBBBB)));
+    assert_eq!(d2.dragon(x).unwrap().miss, (2, Tick(5_000)));
+    let lair = &d2.lairs[l as usize];
+    assert_eq!(lair.left_behind, vec![(1, 2), (3, 4)]);
+    assert_eq!(lair.missing, vec![(5, 6)]);
+    assert_eq!(lair.expect, vec![(7, 8)]);
+    assert_eq!(lair.miss, (1, Tick(77)));
+    assert!(lair.gap);
+    assert_eq!((d2.stats.home_adopts, d2.stats.stray_deaths), (3, 1));
+}

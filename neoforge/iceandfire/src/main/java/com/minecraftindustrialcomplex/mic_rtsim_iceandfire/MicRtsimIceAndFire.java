@@ -28,6 +28,7 @@ import net.neoforged.neoforge.event.entity.living.LivingDeathEvent;
 import net.neoforged.neoforge.event.entity.player.PlayerContainerEvent;
 import net.neoforged.neoforge.event.level.BlockEvent;
 import net.neoforged.neoforge.event.level.ChunkEvent;
+import net.neoforged.neoforge.event.level.ChunkTicketLevelUpdatedEvent;
 import net.neoforged.neoforge.registries.DeferredRegister;
 import net.neoforged.neoforge.registries.NeoForgeRegistries;
 import org.slf4j.Logger;
@@ -59,6 +60,14 @@ public final class MicRtsimIceAndFire {
     public static final Supplier<AttachmentType<MobSpawnType>> SPAWN_TYPE =
             ATTACHMENTS.register("spawn_type", () -> AttachmentType.builder(() -> MobSpawnType.NATURAL).build());
 
+    /**
+     * {@code mic_rtsim_iceandfire:home}: a lair's home body (S5, EQC105): the lair it is home at and the agent it embodies.
+     * Saved with the entity, on purpose: bodies at home are Ice and Fire's own entities, saved by vanilla; a puppet carries
+     * core's agent tag instead and is never saved.
+     */
+    public static final Supplier<AttachmentType<HomeBodies.HomeTag>> HOME =
+            ATTACHMENTS.register("home", () -> AttachmentType.builder(() -> new HomeBodies.HomeTag(0L, 0L)).serialize(HomeBodies.HomeTag.CODEC).build());
+
     public MicRtsimIceAndFire(IEventBus modBus, ModContainer container) {
         ATTACHMENTS.register(modBus);
         DragonConfig.register(container);
@@ -74,6 +83,8 @@ public final class MicRtsimIceAndFire {
         bus.addListener(EventPriority.LOWEST, false, AnimalTameEvent.class, MicRtsimIceAndFire::onTame);
         bus.addListener(EventPriority.LOWEST, false, EntityMountEvent.class, MicRtsimIceAndFire::onMount);
         bus.addListener(MicRtsimIceAndFire::onChunkLoad);
+        bus.addListener(MicRtsimIceAndFire::onChunkUnload);
+        bus.addListener(EventPriority.LOWEST, false, ChunkTicketLevelUpdatedEvent.class, MicRtsimIceAndFire::onTicket);
         bus.addListener(EventPriority.LOWEST, false, BlockEvent.BreakEvent.class, MicRtsimIceAndFire::onBreak);
         bus.addListener(MicRtsimIceAndFire::onContainerOpen);
         bus.addListener(MicRtsimIceAndFire::onContainerClose);
@@ -122,6 +133,10 @@ public final class MicRtsimIceAndFire {
         }
         if (!(event.getEntity() instanceof DragonBaseEntity d) || RtsimAttachments.isTagged(d))
             return;
+        if (d.hasData(HOME)) {
+            DragonBridge.INSTANCE.homes.joined(d); // a home body the engine's census will count; never an untagged dragon
+            return;
+        }
         // Queued even before the session exists (the spawn chunks load first); reported once it does.
         DragonBridge.INSTANCE.onUntaggedJoin(d);
     }
@@ -163,8 +178,12 @@ public final class MicRtsimIceAndFire {
     }
 
     private static void onLeave(EntityLeaveLevelEvent event) {
-        if (!event.getLevel().isClientSide() && event.getEntity() instanceof DeathWormEntity w)
+        if (event.getLevel().isClientSide())
+            return;
+        if (event.getEntity() instanceof DeathWormEntity w)
             DragonBridge.INSTANCE.nests.left(w);
+        else if (event.getEntity() instanceof DragonBaseEntity d && d.hasData(HOME) && live() != null)
+            DragonBridge.INSTANCE.homes.left(d);
     }
 
     private static void onTame(AnimalTameEvent event) {
@@ -183,8 +202,20 @@ public final class MicRtsimIceAndFire {
         if (event.getLevel().isClientSide() || !(event.getChunk() instanceof LevelChunk chunk))
             return;
         DragonBridge.INSTANCE.lairs.loaded(chunk, event.isNewChunk()); // drained once the session exists
+        if (event.getLevel() instanceof ServerLevel level)
+            DragonBridge.INSTANCE.homes.chunkLoaded(level, chunk.getPos().toLong());
         DragonBridge.INSTANCE.sampler.loaded(chunk, event.isNewChunk());
         DragonBridge.INSTANCE.nests.loaded(chunk);
+    }
+
+    private static void onChunkUnload(ChunkEvent.Unload event) {
+        if (!event.getLevel().isClientSide() && event.getLevel() instanceof ServerLevel level)
+            DragonBridge.INSTANCE.homes.chunkUnloaded(level, event.getChunk().getPos().toLong());
+    }
+
+    /** An early hint of a lair footprint chunk's level moving; the poll is the authority (MZB-249). */
+    private static void onTicket(ChunkTicketLevelUpdatedEvent event) {
+        DragonBridge.INSTANCE.homes.onTicket(event.getLevel(), event.getChunkPos(), event.getNewTicketLevel());
     }
 
     private static void onBreak(BlockEvent.BreakEvent event) {

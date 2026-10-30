@@ -29,6 +29,10 @@ public final class DragonRecords {
     public static final int NEST_CENSUS = 0x050D;
     public static final int NEST_LOSS = 0x050E;
     public static final int NEST_HEART = 0x050F;
+    // Home bodies (EQUILIBRIUM.md S5, EQC121): a lair came in, a lair went out, a home body past the leash.
+    public static final int LAIR_CENSUS = 0x0510;
+    public static final int LAIR_OUT = 0x0511;
+    public static final int DRAGON_LEFT_HOME = 0x0512;
 
     public static final int DRAGON_MATERIALIZE = 0x8500;
     public static final int DRAGON_STEER = 0x8501;
@@ -41,6 +45,8 @@ public final class DragonRecords {
     public static final int PLACE_NEST = 0x8507;
     public static final int NEST_RENEW = 0x8508;
     public static final int NEST_SORTIE = 0x8509;
+    /** A puppet settled at its lair becomes a home body, in place (EQC110). */
+    public static final int DRAGON_HAND_BACK = 0x850A;
 
     public static boolean isDragonCommand(int kind) {
         return kind >= 0x8500 && kind <= 0x85FF;
@@ -67,9 +73,10 @@ public final class DragonRecords {
         public static final int LAIR = 8, DIM = 16, X = 20, Y = 24, Z = 28, SIZE = 32;
     }
 
-    /** DRAGON_MATERIALIZED (aux 0). */
+    /** DRAGON_MATERIALIZED (aux bit 1: the body is a home body, EQC122). */
     public static final class Materialized {
         public static final int AGENT = 24, EPOCH = 32, DIM = 36, ENTITY_MOST = 40, ENTITY_LEAST = 48, SIZE = 56;
+        public static final int AUX_HOME_BODY = 1;
     }
 
     /** DRAGON_SPAWN_REJECTED (aux = reason: docs/boundary.md §2.3's codes, plus 9 unknown species). */
@@ -84,6 +91,8 @@ public final class DragonRecords {
         public static final int AGENT = 24, EPOCH = 32, DIM = 36, HEALTH = 40, MAX_HEALTH = 44, HUNGER = 48,
                 AGE_TICKS = 52, X = 56, Y = 64, Z = 72, SIZE = 80;
         public static final int COMMAND = 1, NOT_TICKING = 2, UNLOADED = 3, SESSION_END = 4, NOT_EMBODIED = 6;
+        /** A home body stays in the world and vanilla saves it: its lair went out, its chunk unloaded, the session stopped. */
+        public static final int HOME_SAVED = 8;
     }
 
     /** DRAGON_HURT (aux = attacker kind). */
@@ -101,7 +110,7 @@ public final class DragonRecords {
     /** DRAGON_DIED (aux = killer kind). */
     public static final class Died {
         public static final int AGENT = 24, EPOCH = 32, DIM = 36, KILLER_MOST = 40, KILLER_LEAST = 48,
-                X = 56, Y = 64, Z = 72, SIZE = 80;
+                X = 56, Y = 64, Z = 72, ENTITY_MOST = 80, ENTITY_LEAST = 88, LAIR = 96, SIZE = 104;
     }
 
     /** LAIR_FOUND (aux = flags, 1 LATE). */
@@ -135,6 +144,38 @@ public final class DragonRecords {
         public static final int SPAWN_STRUCTURE = 1, SPAWN_NATURAL = 2, SPAWN_SPAWNER = 3, SPAWN_EGG = 4,
                 SPAWN_COMMAND = 5, SPAWN_HATCHED = 6, SPAWN_OTHER = 7;
         public static final int FLAG_TAMED = 1, FLAG_HAS_HOME = 2, FLAG_SLEEPING = 4, FLAG_AGING_DISABLED = 8;
+    }
+
+    /**
+     * LAIR_CENSUS (aux = n bodies, at most 16): the home bodies and untagged dragons standing in the lair's footprint
+     * when it came in, and again each game day while it stays in (EQC112). {@code EPOCH} is the plugin's op id for this
+     * stay in; the engine's lines name it.
+     */
+    public static final class LairCensus {
+        public static final int LAIR = 24, EPOCH = 32, DIM = 40, FLAGS = 44, N = 48, BODIES = 56;
+        /** One body: entity (16), agent (16, 0 for none), species (24), flags (28), age (32), hunger (36), health f32 (40),
+         * gender (44), variant (48), x, y, z f64 (56, 64, 72). */
+        public static final int BODY = 80, B_ENTITY_MOST = 0, B_ENTITY_LEAST = 8, B_AGENT = 16, B_SPECIES = 24,
+                B_FLAGS = 28, B_AGE_TICKS = 32, B_HUNGER = 36, B_HEALTH = 40, B_GENDER = 44, B_VARIANT = 48,
+                B_X = 56, B_Y = 64, B_Z = 72;
+        public static final int FLAG_WATCHED = 1;
+        public static final int BODY_SLEEPING = 1, BODY_FLYING = 2, BODY_HAS_HOME = 4;
+        public static final int MAX_BODIES = 16;
+
+        public static int size(int n) {
+            return BODIES + BODY * n;
+        }
+    }
+
+    /** LAIR_OUT (aux 0): the census epoch ended. */
+    public static final class LairOut {
+        public static final int LAIR = 24, EPOCH = 32, SIZE = 40;
+    }
+
+    /** DRAGON_LEFT_HOME (aux 0): a home body went past the leash and is a puppet now (EQC109). */
+    public static final class LeftHome {
+        public static final int AGENT = 24, EPOCH = 32, DIM = 36, ENTITY_MOST = 40, ENTITY_LEAST = 48,
+                X = 56, Y = 64, Z = 72, SIZE = 80;
     }
 
     /** DRAGON_ATE (aux = count). */
@@ -215,6 +256,8 @@ public final class DragonRecords {
         public static final int FLAG_CLAMP_ABOVE_SURFACE = 1, FLAG_HAS_HOME = 2, FLAG_SLEEPING = 4, FLAG_HOSTILE = 8;
         /** The body carries an oil reserve ({@link #OIL}): its breaths are counted, its fire stops at zero (OG-4, OG-13). */
         public static final int FLAG_OIL = 16;
+        /** The body is a lair's home body: the home attachment instead of the agent tag (EQC116, EQC122). */
+        public static final int FLAG_HOME_BODY = 32;
     }
 
     /** DRAGON_STEER (aux = flags, 1 settle at the target). */
@@ -228,16 +271,25 @@ public final class DragonRecords {
         public static final int AGENT = 16, EPOCH = 24, TIMEOUT_TICKS = 28, X = 32, Y = 40, Z = 48, SIZE = 56;
     }
 
-    /** DRAGON_ADOPT (aux 0). */
+    /** DRAGON_ADOPT (aux 0). With {@link #FLAG_HOME_BODY} the body is synced to AGE_TICKS, HUNGER and HEALTH (EQC108). */
     public static final class Adopt {
         public static final int ENTITY_MOST = 16, ENTITY_LEAST = 24, AGENT = 32, EPOCH = 40, FLAGS = 44,
-                HOME_X = 48, HOME_Y = 52, HOME_Z = 56, SIZE = 64;
-        public static final int FLAG_HAS_HOME = 1;
+                HOME_X = 48, HOME_Y = 52, HOME_Z = 56, AGE_TICKS = 64, HUNGER = 68, HEALTH = 72, SIZE = 80;
+        public static final int FLAG_HAS_HOME = 1, FLAG_HOME_BODY = 2;
     }
 
-    /** DRAGON_DISCARD (aux = reason: 1 the sim owns the population, 2 its lair has its dragon). */
+    /**
+     * DRAGON_DISCARD (aux = reason: 1 the sim owns the population, 2 its lair has its dragon, 3 its dragon is away,
+     * 4 a second body of one dragon).
+     */
     public static final class Discard {
         public static final int ENTITY_MOST = 16, ENTITY_LEAST = 24, SIZE = 32;
+        public static final int SIM_OWNS = 1, LAIR_FULL = 2, AWAY = 3, SECOND_BODY = 4;
+    }
+
+    /** DRAGON_HAND_BACK (aux 0): swap the named puppet's agent tag for the home attachment, in place (EQC110). */
+    public static final class HandBack {
+        public static final int AGENT = 16, EPOCH = 24, SIZE = 32;
     }
 
     /**
@@ -286,6 +338,7 @@ public final class DragonRecords {
             case DRAGON_DEPART -> Depart.SIZE;
             case DRAGON_ADOPT -> Adopt.SIZE;
             case DRAGON_DISCARD -> Discard.SIZE;
+            case DRAGON_HAND_BACK -> HandBack.SIZE;
             case PLACE_LAIR -> PlaceLair.SIZE;
             case OIL_SURVEY -> OilSurvey.SIZE;
             case PLACE_NEST -> PlaceNest.SIZE;

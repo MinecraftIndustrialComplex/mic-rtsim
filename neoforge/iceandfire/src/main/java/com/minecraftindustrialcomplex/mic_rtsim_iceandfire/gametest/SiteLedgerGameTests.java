@@ -131,6 +131,8 @@ public final class SiteLedgerGameTests {
                 .thenExecute(() -> {
                     bridge().lairs.declareForTest(level, lair, ROOST, arenaBox(helper), BlockPos.containing(c), level.getGameTime());
                     d[0] = roostDragon(level, c);
+                    // A lair's own dragon is adopted by the lair's census (S5, EQC113), as the lair comes in.
+                    bridge().homes.testIn(lair, false, level.getGameTime());
                 })
                 .thenWaitUntil(adopted(d))
                 .thenExecute(() -> agent[0] = bridge().agentOf(d[0]))
@@ -181,6 +183,7 @@ public final class SiteLedgerGameTests {
                         check("the wait is the cap, 192 days (" + r.waitLeft() + ")", r.waitLeft() <= cap && r.waitLeft() >= cap - 400);
                     }
                     d[0] = roostDragon(level, c);
+                    bridge().homes.testIn(adopting, false, level.getGameTime());
                 })
                 .thenWaitUntil(adopted(d))
                 .thenWaitUntil(RtsimTests.io(() -> {

@@ -464,14 +464,19 @@ public final class OilFieldGameTests {
                             own[0] = d;
                     check("Ice and Fire spawned the roost's own fire dragon", own[0] != null);
                 })
-                .thenWaitUntil(waits.logic(() -> check("DRAGON_UNTAGGED for it", !DragonKit.untagged(own[0].getUUID()).isEmpty())))
                 .thenExecute(() -> {
-                    ScriptedEngine.Received u = DragonKit.untagged(own[0].getUUID()).get(0);
-                    check("spawned by a structure (" + u.aux() + ")", u.aux() == DragonRecords.Untagged.SPAWN_STRUCTURE);
-                    check("in the placed lair", u.view().getLong(DragonRecords.Untagged.LAIR) == got[0].lair());
+                    // A lair's own dragon is not reported untagged: the lair's census lists it once the lair is in (S5, EQC113).
+                    // Nobody is near the far site, so the test brings the lair in by hand.
+                    if (nat)
+                        bridge().homes.testIn(got[0].lair(), false, level.getGameTime());
+                })
+                .thenWaitUntil(waits.logic(() -> check("the lair's census reached the engine and listed the dragon", !nat || DragonKit.received(
+                        DragonRecords.LAIR_CENSUS, DragonRecords.LairCensus.LAIR, got[0].lair()).stream().anyMatch(r -> r.aux() >= 1))))
+                .thenExecute(() -> {
+                    check("not reported untagged", DragonKit.untagged(own[0].getUUID()).isEmpty());
                     record(test, "dragon", "its own fire dragon " + own[0].getUUID() + " at " + own[0].blockPosition().toShortString()
-                            + ", age " + IafDragons.ageTicks(own[0]) / 24_000 + " days, reported DRAGON_UNTAGGED kind STRUCTURE in lair "
-                            + Long.toHexString(got[0].lair()));
+                            + ", age " + IafDragons.ageTicks(own[0]) / 24_000 + " days, in lair " + Long.toHexString(got[0].lair())
+                            + (nat ? ", listed by the lair's census" : ""));
                     if (!nat)
                         record(test, "adopted", "skipped on the stub (it decides nothing)");
                 })
@@ -505,8 +510,8 @@ public final class OilFieldGameTests {
                     record(test, "saved", d.fields.size() + " fields asked for, " + d.placed.size() + " lairs placed in the saved state ("
                             + before.fields + " fields and " + before.placed + " lairs from earlier runs: the state outlives restarts)");
                     record(test, "answer", "§7 test 2: the /place path places a fire roost outside world generation (any biome); "
-                            + "Ice and Fire spawns the roost's own dragon while it builds; the plugin reports it DRAGON_UNTAGGED kind "
-                            + "STRUCTURE in the placed lair" + (nat ? ", and the engine adopts it" : ""));
+                            + "Ice and Fire spawns the roost's own dragon while it builds; the lair's census lists it"
+                            + (nat ? ", and the engine adopts it" : ""));
                     unforce.run();
                     if (nat)
                         DragonKit.restoreOilConfig();
