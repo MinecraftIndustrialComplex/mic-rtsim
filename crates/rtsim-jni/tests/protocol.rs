@@ -7914,6 +7914,26 @@ mod conflict {
         let (casualties, chiefs) =
             e.with_conflict(|c, _| (c.stats.casualties, c.stats.chiefs_killed));
         assert!(casualties > 0, "casualties booked");
+        // Each credited loss is the pool camp's pressure (slice S7, EQC205): BAND_CASUALTIES by a
+        // player, Java to engine, one over the cap a warrior (the fight is days old, so a little
+        // decayed).
+        let (loss, cap, stored) = e.with_conflict(|c, _| {
+            let x = &c.factions[0];
+            (
+                c.stats.renewal_losses,
+                x.cap,
+                x.strain.as_ref().expect("a pool camp").pressure.parts().0,
+            )
+        });
+        let owed = loss as f32 / cap as f32;
+        assert!(
+            loss > 0 && loss <= casualties,
+            "booked {loss} of {casualties}"
+        );
+        assert!(
+            stored > 0.9 * owed && stored <= owed + 1e-4,
+            "pressure {stored} for {loss} lost of {cap}"
+        );
         let chief_before = e.with_conflict(|c, _| c.factions[0].chief);
         let ck = O::ChiefKilled(cb::ChiefKilled {
             agent: inv.agent,
@@ -10163,6 +10183,172 @@ mod conflict {
     /// Waits (the answers journaled as the plugin sends them) until `done`.
     fn camp_until(j: &mut Java, what: &str, mut done: impl FnMut(&mut Java) -> bool) {
         advance_until(j, 50, 2 * DAY, what, |j| done(j));
+    }
+
+    /// A goblin camp found with no bodies: a pool camp (slice S7), the order's target.
+    fn pool_camp(name: &str) -> (std::path::PathBuf, std::sync::Arc<Engine>, Java) {
+        camp_of(
+            name,
+            "goblinstyranny:goblin_camp",
+            "mic_rtsim:conflict/goblin/warrior",
+            0,
+            0,
+            false,
+        )
+    }
+
+    fn strain_of(e: &Engine) -> (u32, f32, bool) {
+        e.with_conflict(|c, _| {
+            let f = c.faction_of_key(CAMP).expect("the camp");
+            (
+                c.pool_at(f, c.now()).floor() as u32,
+                c.pressure_now(f, c.now()),
+                !c.camp_active(f),
+            )
+        })
+    }
+
+    /// Order 41 (TEST): the camp loses warriors as a player's loss and takes more pressure on top;
+    /// all of them, with the pressure over 2, break it, and its ledger row says so (SITE_STATE:
+    /// empty, broken, waiting, the pressure, the wait left).
+    #[test]
+    fn a_test_order_slays_a_camp() {
+        use rtsim_kernel::sites::{SiteKind, state_flags};
+        let (_dir, e, mut j) = pool_camp("pool-slay");
+        let cap = e.with_conflict(|c, _| c.factions[0].cap);
+        assert_eq!(cap, 60);
+        let (pool, p, broken) = strain_of(&e);
+        assert_eq!((pool, p, broken), (60, 0.0, false));
+        e.order(vec![Order::ConflictSlay {
+            faction: CAMP,
+            n: 25,
+            pressure: 0.0,
+        }])
+        .unwrap();
+        j.idle();
+        j.idle();
+        let (pool, p, broken) = strain_of(&e);
+        assert_eq!(pool, 35, "25 of 60 killed");
+        assert!((p - 25.0 / 60.0).abs() < 1e-3, "{p}");
+        assert!(!broken);
+        // A refused key changes nothing.
+        e.order(vec![Order::ConflictSlay {
+            faction: 0xBAD,
+            n: u32::MAX,
+            pressure: 9.0,
+        }])
+        .unwrap();
+        j.idle();
+        assert_eq!(strain_of(&e).0, 35);
+        // The rest, with the pressure as if more had died: over 2, thin and idle, the camp breaks.
+        e.order(vec![Order::ConflictSlay {
+            faction: CAMP,
+            n: u32::MAX,
+            pressure: 1.8,
+        }])
+        .unwrap();
+        j.idle();
+        j.idle();
+        let (pool, p, broken) = strain_of(&e);
+        assert_eq!(pool, 0);
+        assert!(p > 2.0 && broken, "P {p}, broken {broken}");
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        let row = j
+            .sites
+            .row(SiteKind::Camp, CAMP)
+            .expect("the camp's row")
+            .clone();
+        let want =
+            state_flags::SHORT | state_flags::EMPTY | state_flags::BROKEN | state_flags::WAITING;
+        assert_eq!((row.count, row.flags), (0, want), "{row:?}");
+        assert!((row.p - p).abs() < 1e-3, "{row:?}");
+        // The wait: 48 x 2^P days, capped at 384.
+        let days = (48.0 * p.exp2()).min(384.0);
+        let left = row.wait_left as f32 / TICKS_PER_DAY as f32;
+        assert!((left - days).abs() < 0.5, "{left} days against {days}");
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// The found tail across a reset (slice S7, EQC212): a pool camp that broke, found again three
+    /// days later by a new engine that knows only core's ledger, is broken for the wait that was
+    /// left less the days gone, with the pressure aged, and sends its own row at once; a camp with
+    /// warriors home and a pressure comes back with both.
+    #[test]
+    fn a_pool_camps_found_tail_restores_its_pressure_and_break() {
+        use rtsim_kernel::sites::{SiteKind, state_flags};
+        let (_dir, e, mut j) = pool_camp("pool-sites");
+        e.order(vec![Order::ConflictSlay {
+            faction: CAMP,
+            n: u32::MAX,
+            pressure: 1.8,
+        }])
+        .unwrap();
+        j.idle();
+        j.idle();
+        let (_, p0, broken) = strain_of(&e);
+        assert!(broken && p0 > 2.0, "P {p0}");
+        let row = j.sites.row(SiteKind::Camp, CAMP).expect("a row").clone();
+        let left_at = j.game_time;
+        let saved = j.world_save();
+        e.close(true, Duration::from_secs(5)).unwrap();
+        let mut reset = WorldSave::fresh();
+        reset.dict = saved.dict;
+        reset.sites = saved.sites;
+        reset.sites.gap();
+        let dir = tmpdir("pool-sites-reset");
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), reset);
+        j.module_mask = MODULES;
+        let gone: u64 = 3 * TICKS_PER_DAY;
+        j.game_time = left_at + gone as i64;
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        let base = [f64::from(BASE.0) + 0.5, 64.0, f64::from(BASE.1) + 0.5];
+        j.players = vec![(PLAYER, dim, base)];
+        j.conflict_plugin = synth::FakeConflict::new(PLAYER);
+        j.idle();
+        found(&mut j, CAMP_AT);
+        j.idle();
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        let (broken, left, p) = e.with_conflict(|c, _| {
+            let f = c.faction_of_key(CAMP).expect("found again");
+            let b = c.factions[f as usize].strain.as_ref().unwrap().broken;
+            (
+                b.is_some(),
+                b.map_or(0, |b| b.due.0.saturating_sub(c.now().0)),
+                c.pressure_now(f, c.now()),
+            )
+        });
+        assert!(broken, "found broken");
+        let want = row.wait_left - gone;
+        assert!(
+            left.abs_diff(want) <= 400,
+            "the wait left: {left} against {want}"
+        );
+        let aged = p0 * (-3.0f32 / 192.0).exp2();
+        assert!(
+            (p - aged).abs() < 0.01,
+            "aged three days: {p} against {aged}"
+        );
+        let again = j
+            .sites
+            .row(SiteKind::Camp, CAMP)
+            .expect("the new engine's row");
+        assert_eq!(
+            again.flags,
+            state_flags::SHORT | state_flags::EMPTY | state_flags::BROKEN | state_flags::WAITING
+        );
+        assert!(again.wait_left.abs_diff(want) <= 400, "{again:?}");
+        // The camp acts no more than a broken camp does: nothing leaves it in 30 days.
+        let sent = e.with_conflict(|c, _| c.stats.parties.iter().sum::<u64>());
+        j.game_time += 30 * DAY;
+        j.idle();
+        assert_eq!(
+            e.with_conflict(|c, _| c.stats.parties.iter().sum::<u64>()),
+            sent
+        );
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        e.close(true, Duration::from_secs(5)).unwrap();
     }
 
     /// The site ledger's hand-over of a camp across a reset (EQUILIBRIUM.md §2.3, slice S3,

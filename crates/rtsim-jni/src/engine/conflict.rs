@@ -1104,6 +1104,23 @@ pub(super) fn order_command(st: &mut State, names: &[(u32, u32, String)], record
     }
 }
 
+/// A player's kills at a pool camp (`Order::ConflictSlay`, slice S7, EQC206): the camp of
+/// `faction` loses up to `n` warriors as a player's loss at the conflict's own time, then takes
+/// `pressure` more. Refused (logged) when the key is no camp.
+pub(super) fn slay(st: &mut State, faction: u64, n: u32, pressure: f32) {
+    let st_ref = &mut *st;
+    let Some(f) = st_ref.conflict.engine.faction_of_key(faction) else {
+        log_warn(&format!("CONFLICT_SLAY refused: {faction:#x} is no camp"));
+        return;
+    };
+    let at = st_ref.conflict.engine.now();
+    let world = &mut st_ref.phase1.world;
+    st_ref.conflict.engine.slay(world, f, n, at);
+    st_ref.conflict.engine.pool_press(f, pressure, at);
+    st_ref.phase1.taint();
+    take_commands(st);
+}
+
 // ---- commands -----------------------------------------------------------------------------------
 
 /// The name of an id a queued command carries: a test's own names first, else the culture data's
