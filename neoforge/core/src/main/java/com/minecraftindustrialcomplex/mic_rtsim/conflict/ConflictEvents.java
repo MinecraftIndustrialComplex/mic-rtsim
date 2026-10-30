@@ -56,6 +56,9 @@ public final class ConflictEvents {
         bus.addListener(EventPriority.LOWEST, false, BlockEvent.BreakEvent.class, ConflictEvents::onBreak);
         bus.addListener(EventPriority.LOWEST, false, BlockEvent.EntityPlaceEvent.class, ConflictEvents::onPlace);
         bus.addListener(ServerStoppedEvent.class, e -> ConflictBridge.INSTANCE.serverStopped());
+        // The vanilla pillager outposts, found as their chunks load and reported at the end of the tick (S7, EQC237).
+        bus.addListener(net.neoforged.neoforge.event.level.ChunkEvent.Load.class, Outposts::onChunkLoad);
+        bus.addListener(ServerStoppedEvent.class, e -> Outposts.serverStopped());
         // The camp reconciler's (M5): kept whatever the module's state, so its index and levels stay true.
         bus.addListener(EventPriority.LOWEST, false, ChunkTicketLevelUpdatedEvent.class, ConflictEvents::onTicket);
         bus.addListener(EventPriority.LOWEST, false, EntityJoinLevelEvent.class, ConflictEvents::onJoin);

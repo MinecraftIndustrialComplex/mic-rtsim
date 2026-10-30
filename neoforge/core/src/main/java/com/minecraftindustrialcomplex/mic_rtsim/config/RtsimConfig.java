@@ -27,6 +27,9 @@ public final class RtsimConfig {
     private static final ModConfigSpec.IntValue SHADOW_INTERVAL;
     private static final ModConfigSpec.IntValue PLAYER_INTERVAL;
     private static final ModConfigSpec.ConfigValue<String> ENGINE;
+    private static final ModConfigSpec.BooleanValue OUTPOSTS_JOIN;
+    private static final ModConfigSpec.BooleanValue OUTPOSTS_JOIN_EXISTING;
+    private static final ModConfigSpec.IntValue OUTPOST_KIN_MARGIN;
 
     /** {@code engine.implementation}: the Rust engine through mic_native. */
     public static final String ENGINE_NATIVE = "native";
@@ -39,6 +42,8 @@ public final class RtsimConfig {
     public static final int DEFAULT_SHADOW_INTERVAL = 20;
     /** PLAN.md §6.3: players are observed every 20 ticks. */
     public static final int DEFAULT_PLAYER_INTERVAL = 20;
+    /** The blocks round a pillager outpost's structure box within which a player's kill of a raider is the camp's kin (PLACEHOLDER). */
+    public static final int DEFAULT_OUTPOST_KIN_MARGIN = 24;
 
     static {
         ModConfigSpec.Builder b = new ModConfigSpec.Builder();
@@ -63,6 +68,20 @@ public final class RtsimConfig {
                 .defineInRange("puppetStateInterval", DEFAULT_SHADOW_INTERVAL, 1, 1200);
         PLAYER_INTERVAL = b.comment("Ticks between PLAYER observations (PLAN.md §6.3 says every 20 ticks).")
                 .defineInRange("playerInterval", DEFAULT_PLAYER_INTERVAL, 1, 1200);
+        b.pop();
+
+        b.comment("The conflict module's camps that the game itself holds (slice S7, EQUILIBRIUM.md).")
+                .push("conflict");
+        OUTPOSTS_JOIN = b.comment("Vanilla pillager outposts (and Illager Invasion's forts) are raider camps of the conflict:",
+                        "a pool camp of 50 warriors whose war parties march as pillagers, vindicators and ravagers.",
+                        "Off, no outpost is reported and the conflict knows no raiders; the outposts stay vanilla's.")
+                .define("outpostsJoin", true);
+        OUTPOSTS_JOIN_EXISTING = b.comment("An outpost found in a chunk that was already generated when rtsim first saw it joins too",
+                        "(a world that began without the mod). Off, only outposts that generate while rtsim runs join.")
+                .define("outpostsJoinExisting", true);
+        OUTPOST_KIN_MARGIN = b.comment("Blocks round an outpost's structure box within which a player's kill of a raider",
+                        "(any of the minecraft:raiders tag but the witch) is a killing of the camp's kin (PLACEHOLDER).")
+                .defineInRange("outpostKinMargin", DEFAULT_OUTPOST_KIN_MARGIN, 0, 256);
         b.pop();
 
         b.push("engine");
@@ -137,6 +156,25 @@ public final class RtsimConfig {
         return loaded() ? PLAYER_INTERVAL.get() : DEFAULT_PLAYER_INTERVAL;
     }
 
+    /** Whether vanilla pillager outposts are reported as raider camps ({@code conflict.outpostsJoin}). */
+    public static boolean outpostsJoin() {
+        if (Test.joinOverride != null)
+            return Test.joinOverride;
+        return !loaded() || OUTPOSTS_JOIN.get();
+    }
+
+    /** Whether outposts of chunks that existed before rtsim saw them join too ({@code conflict.outpostsJoinExisting}). */
+    public static boolean outpostsJoinExisting() {
+        if (Test.joinExistingOverride != null)
+            return Test.joinExistingOverride;
+        return !loaded() || OUTPOSTS_JOIN_EXISTING.get();
+    }
+
+    /** The margin round an outpost's box within which a raider's death is the camp's kin's ({@code conflict.outpostKinMargin}). */
+    public static int outpostKinMargin() {
+        return loaded() ? OUTPOST_KIN_MARGIN.get() : DEFAULT_OUTPOST_KIN_MARGIN;
+    }
+
     /**
      * The engine to open at server start: {@link #ENGINE_NATIVE} or {@link #ENGINE_STUB}. A GameTest
      * server may override it with {@code -Dmic_rtsim.engine} (only with {@code -Dmic_rtsim.gametest=true}).
@@ -164,6 +202,22 @@ public final class RtsimConfig {
 
         public static final boolean ENABLED = Boolean.getBoolean("mic_rtsim.gametest");
         private static final Map<Module, Boolean> OVERRIDES = new EnumMap<>(Module.class);
+
+        private static volatile Boolean joinOverride, joinExistingOverride;
+
+        /** Overrides {@code conflict.outpostsJoin}; null removes the override. */
+        public static void setOutpostsJoin(Boolean on) {
+            if (!ENABLED)
+                throw new IllegalStateException("config overrides need -Dmic_rtsim.gametest=true");
+            joinOverride = on;
+        }
+
+        /** Overrides {@code conflict.outpostsJoinExisting}; null removes the override. */
+        public static void setOutpostsJoinExisting(Boolean on) {
+            if (!ENABLED)
+                throw new IllegalStateException("config overrides need -Dmic_rtsim.gametest=true");
+            joinExistingOverride = on;
+        }
 
         /** Overrides one module switch; null removes the override. */
         public static void setModule(Module m, Boolean on) {
