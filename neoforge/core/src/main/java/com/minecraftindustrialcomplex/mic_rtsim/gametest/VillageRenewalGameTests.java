@@ -119,6 +119,9 @@ public final class VillageRenewalGameTests {
             }
         }
 
+        /** The distances of a whole corridor from the meeting point out to the edge, 16 blocks apart (a chunk). */
+        static final int[] CORRIDOR = {0, 16, 32, 48, 64, 80, 96, 112, 128, 144, 160, 176, 192};
+
         /** Forces the chunks round the points {@code distances} blocks from the meeting point toward (x, z). */
         void forceRay(double toX, double toZ, int[] distances) {
             double dx = toX - meet.getX(), dz = toZ - meet.getZ();
@@ -509,6 +512,9 @@ public final class VillageRenewalGameTests {
         ServerPlayer player = FakePlayers.add(level, new Vec3(s.meet.getX() + 0.5, s.meet.getY(), s.meet.getZ() + 12.5),
                 "renewal_watcher");
         long[] arrived0 = {0};
+        List<java.util.UUID> settlers = new ArrayList<>();
+        long[] lastSample = {0};
+        StringBuilder trace = new StringBuilder();
         helper.startSequence()
                 .thenWaitUntil(() -> {
                     check("the reach is loaded", s.complete());
@@ -543,7 +549,9 @@ public final class VillageRenewalGameTests {
                         if (o.village == s.village.id) {
                             record("renewalWalk", "the order's source", (long) o.x + ", " + (long) o.z + " from the bell " + s.meet
                                     + " flags " + o.flags + " body " + o.body);
-                            s.forceRay(o.x, o.z, ResidentSpawner.WALK_DISTANCES);
+                            // The whole corridor, not only the spawn points: a villager that walks into a chunk that is not
+                            // loaded stops there, and this test is about the walk, not about what a player's view loads.
+                            s.forceRay(o.x, o.z, Site.CORRIDOR);
                             break;
                         }
                 })
@@ -560,6 +568,7 @@ public final class VillageRenewalGameTests {
                             continue;
                         Entity settler = level.getEntity(w.id);
                         check("the settler is in the level", settler != null);
+                        settlers.add(w.id);
                         double out = Math.hypot(settler.getX() - (s.meet.getX() + 0.5), settler.getZ() - (s.meet.getZ() + 0.5));
                         record("renewalWalk", "spawned this far out", out);
                         check("96 to 176 blocks out: " + out, out >= 94 && out <= 178);
@@ -568,7 +577,22 @@ public final class VillageRenewalGameTests {
                     }
                 })
                 .thenWaitUntil(() -> {
-                    check("both walked to within 12 blocks of the bell, not put there",
+                    // Where each settler is every 500 ticks and what holds it, for the failure message.
+                    long tick = helper.getTick();
+                    if (tick - lastSample[0] >= 500) {
+                        lastSample[0] = tick;
+                        trace.append(" t").append(tick);
+                        for (java.util.UUID id : settlers) {
+                            Entity settler = level.getEntity(id);
+                            trace.append(settler == null ? " gone" : " " + (int) Math.hypot(settler.getX() - (s.meet.getX() + 0.5),
+                                    settler.getZ() - (s.meet.getZ() + 0.5)) + (settler.isAlive() ? "" : " dead")
+                                    + (level.isPositionEntityTicking(settler.blockPosition()) ? "" : " NOT ticking"));
+                        }
+                        trace.append(';');
+                    }
+                    check("both walked to within 12 blocks of the bell, not put there: arrived "
+                            + (RtsimTests.session().phase1.walkers.arrived() - arrived0[0]) + ", placed "
+                            + RtsimTests.session().phase1.walkers.placed() + ", trace" + trace,
                             RtsimTests.session().phase1.walkers.arrived() >= arrived0[0] + 2);
                 })
                 .thenWaitUntil(() -> {
