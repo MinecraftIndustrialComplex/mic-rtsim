@@ -2025,6 +2025,89 @@ pub fn many_dens(villages: usize, dens: usize, seed: u64) -> (World, Conflict, V
     (w, c, out)
 }
 
+/// The key of the first grove of [`mowzie_world`]; grove `k` is `GROVE_KEY + k`.
+pub const GROVE_KEY: u64 = 0x6A0E_0000;
+/// Dictionary kind 4's ids the world of dens and groves names their structures by.
+pub const DEN_STRUCTURE: u32 = 20;
+pub const GROVE_STRUCTURE: u32 = 21;
+
+/// A grid world of `villages` villages with `dens` Frostmaw dens and `groves` Umvuthana groves
+/// between them (S9, MZB-1219), each found by FACTION_FOUND at the start with its own bodies
+/// counted (a den its Frostmaw, a grove `warriors` warriors, no Umvuthi) and so with a camp ledger,
+/// spaced as [`many_dens`]'s are. Nobody watches and no plugin answers: no census ever reaches
+/// them, so their members are owed slots and the arrivals add more. Returns the camps' keys.
+pub fn mowzie_world(
+    villages: usize,
+    dens: usize,
+    groves: usize,
+    warriors: u16,
+    seed: u64,
+) -> (World, Conflict, Vec<u64>) {
+    let (goods, ids) = rtsim_world::synth::goods();
+    let book = rtsim_world::synth::recipes(&ids);
+    let mut data = rtsim_world::synth::grid(villages, seed);
+    let side = (villages as f64).sqrt().ceil() as i32;
+    let span = side * 544;
+    let n = dens + groves;
+    let fside = (n as f64).sqrt().ceil() as i32;
+    let at = |k: usize| {
+        let (gx, gz) = ((k as i32) % fside.max(1), (k as i32) / fside.max(1));
+        let step = span / fside.max(1);
+        Pos::new(0, step / 2 + gx * step, step / 2 + gz * step)
+    };
+    let key = |k: usize| {
+        if k < dens {
+            DEN_KEY + k as u64
+        } else {
+            GROVE_KEY + (k - dens) as u64
+        }
+    };
+    for k in 0..n {
+        data.push(rtsim_world::NodeData {
+            key: key(k),
+            kind: rtsim_settle::NodeKind::Haven(rtsim_settle::Culture::Human),
+            pos: at(k),
+            pop: 10,
+            resources: BTreeMap::new(),
+        });
+    }
+    let mut w = World::build(world_config(seed), goods, book, data);
+    let mut c = conflict(seed, &w);
+    for (id, name) in [(DEN_STRUCTURE, "frostmaw"), (GROVE_STRUCTURE, "umvuthana")] {
+        let ci = c.cultures.index_of(name).expect("a built-in culture");
+        let structure = c.cultures.get(ci).def.structures[0].clone();
+        c.define(4, id, &structure);
+    }
+    let mut keys = Vec::with_capacity(n);
+    for k in 0..n {
+        let den = k < dens;
+        let p = at(k);
+        c.ingest(
+            &mut w,
+            &mut rtsim_ecology::infra::NoInfrastructure,
+            &Obs::FactionFound(boundary::FactionFound {
+                faction: key(k),
+                flags: 0,
+                dimension: u32::from(p.frame),
+                structure: if den { DEN_STRUCTURE } else { GROVE_STRUCTURE },
+                pos: (p.x, 64, p.z),
+                home_bodies: if den { 1 } else { warriors },
+                census: if den {
+                    (boundary::CENSUS_CHIEF | boundary::CENSUS_CRYSTAL) as u8
+                } else {
+                    0
+                },
+                row: FoundRow::none(),
+            }),
+            Tick(1),
+        );
+        if c.faction_of_key(key(k)).is_some() {
+            keys.push(key(k));
+        }
+    }
+    (w, c, keys)
+}
+
 // ---- a camp against the emulated plugin (MOWZIE.md §4.9) --------------------------------------
 
 /// Dictionary kind 4's id the camp runs name their structure by.
