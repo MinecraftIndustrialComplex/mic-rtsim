@@ -1042,8 +1042,15 @@ impl Conflict {
     /// `n` members of a renewal culture's camp were lost at `at` from `cause`: only a player's loss
     /// (`LossCause::Player`) adds `n / cap` to the camp's pressure, as of the loss's day (MZB-258).
     /// It goes before whatever plans the next wait (`unblock`), which reads it. A camp with no
-    /// ledger has nowhere to keep it.
+    /// ledger has nowhere to keep it; a pool camp's pressure is its strain's (`pool_bump`).
     pub(super) fn renewal_bump(&mut self, f: u32, n: u32, cause: LossCause, at: Tick) {
+        // A pool camp keeps its pressure in its strain (EQC205), a body camp in its ledger.
+        if self.culture(f).pool_renewal.is_some() {
+            if cause == LossCause::Player {
+                self.pool_bump(f, n, at);
+            }
+            return;
+        }
         let Some(r) = self.culture(f).renewal else {
             return;
         };

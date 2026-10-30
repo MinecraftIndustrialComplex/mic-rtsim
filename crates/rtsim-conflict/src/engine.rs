@@ -1963,17 +1963,50 @@ impl Conflict {
         self.site_touch(f);
     }
 
-    /// Test hook (EQC206): a player kills `n` of the faction's warriors at `at`, the pool's whole
-    /// warriors first. Each takes `1 / cap` of pressure. Returns how many fell.
-    pub fn slay(&mut self, _w: &mut World, f: u32, n: u32, at: Tick) -> u32 {
-        self.run_to(at);
-        let have = self.pool_at(f, at).floor() as u32;
-        let k = n.min(have);
-        if k > 0 {
-            self.pool_add(f, -f64::from(k), at);
-            self.pool_bump(f, k, at);
+    /// Whose loss a pool camp's member is when `by` credits its death (EQC204): the credit's own
+    /// cause (a player's kill or take is a player's, a mob's is a predator's), and a death that
+    /// credits no one is a player's loss when the band was at a player's district (FB-2 (a), the
+    /// `district_unclaimed_is_players` switch: a trap, a turret or a FakePlayer killed it there),
+    /// no one's elsewhere.
+    pub(super) fn pool_cause(&self, p: Handle<Party>, by: u32) -> LossCause {
+        let cause = LossCause::from_credit(by, false);
+        if cause == LossCause::Other
+            && self.tun.district_unclaimed_is_players
+            && matches!(self.parties[p].target, Target::District(..))
+        {
+            return LossCause::Player;
         }
-        k
+        cause
+    }
+
+    /// Test hook (EQC206): a player kills `n` of the faction's warriors at `at`, the pool's whole
+    /// warriors first and then its war parties' members away, in the order the parties were
+    /// made. Each is a player's loss and takes `1 / cap` of pressure. `u32::MAX` kills all.
+    /// Returns how many fell.
+    pub fn slay(&mut self, w: &mut World, f: u32, n: u32, at: Tick) -> u32 {
+        self.run_to(at);
+        let at = self.now;
+        let have = self.pool_at(f, at).floor() as u32;
+        let mut slain = n.min(have);
+        if slain > 0 {
+            self.pool_add(f, -f64::from(slain), at);
+            self.pool_bump(f, slain, at);
+        }
+        let parties: Vec<Handle<Party>> = self
+            .parties
+            .iter()
+            .filter(|(_, x)| x.faction == f && x.kind.is_war())
+            .map(|(h, _)| h)
+            .collect();
+        for p in parties {
+            if slain >= n {
+                break;
+            }
+            let before = self.parties[p].alive();
+            self.lose_units(w, p, |_| true, n - slain, LossCause::Player);
+            slain += before - self.parties[p].alive();
+        }
+        slain
     }
 
     /// The pool changes by `n` at `at`. A camp with a ledger first adds the slots the pool gained
@@ -7547,6 +7580,13 @@ impl Conflict {
             }
         }
         self.stats.casualties += u64::from(t);
+        // A pool camp feels what a player kills (EQC205): its members away are its warriors, and
+        // nothing booked their loss before. The pressure goes before `party_lost`, whose `unblock`
+        // plans the wait from it, as `lose_units` has it. A body camp books what it booked (S9's).
+        if t > 0 && c.pool_renewal.is_some() && self.parties[p].kind.is_war() {
+            let cause = self.pool_cause(p, cs.by);
+            self.renewal_bump(f, t, cause, at);
+        }
         self.party_lost(p, t, at);
         let killer = (cs.by == boundary::BY_PLAYER).then(|| self.player(w, cs.killer));
         if let Some(k) = killer {
