@@ -1157,7 +1157,8 @@ impl Java {
                 match db::decode_cmd(b, &dict) {
                     Ok((_, _, c)) => match c {
                         db::Cmd::Materialize(db::Materialize { agent, epoch, .. })
-                        | db::Cmd::Adopt(db::Adopt { agent, epoch, .. }) => {
+                        | db::Cmd::Adopt(db::Adopt { agent, epoch, .. })
+                        | db::Cmd::HandBack(db::HandBack { agent, epoch }) => {
                             self.dragon_obs(&db::Obs::SpawnRejected(db::SpawnRejected {
                                 agent,
                                 epoch,
@@ -1671,6 +1672,7 @@ impl Java {
                     epoch,
                     dimension,
                     entity: (0xD0D0, agent),
+                    home: m.flags & db::MAT_HOME_BODY != 0,
                 }));
             }
             D::Adopt(a) => {
@@ -1680,6 +1682,7 @@ impl Java {
                     epoch,
                     dimension: overworld,
                     entity,
+                    home: a.flags & db::ADOPT_HOME_BODY != 0,
                 }));
             }
             D::Discard(_) => {
@@ -1700,6 +1703,17 @@ impl Java {
             D::NestRenew(r) => r.dimension = self.java_dim(r.dimension),
             D::NestSortie(o) => o.dimension = self.java_dim(o.dimension),
             D::Steer(_) | D::Depart(_) => {}
+            // A puppet settled at its lair: it is a home body now, in place (EQC110).
+            D::HandBack(h) => {
+                let (agent, epoch) = (h.agent, h.epoch);
+                self.dragon_obs(&db::Obs::Materialized(db::Materialized {
+                    agent,
+                    epoch,
+                    dimension: overworld,
+                    entity: (0xD0D0, agent),
+                    home: true,
+                }));
+            }
         }
         self.iaf.push((seq, c));
     }

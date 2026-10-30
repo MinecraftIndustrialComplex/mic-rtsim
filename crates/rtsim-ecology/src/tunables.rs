@@ -163,6 +163,17 @@ pub struct DragonTunables {
     /// Control's desert fire dragons (OGB-6, docs/choices-oilgate.md OGC66). TUNABLE, default
     /// false (OGC47).
     pub adopt_natural_dragons: bool,
+    /// Home bodies a lair keeps at most: a pair's (EQUILIBRIUM.md S5, EQC106, H2). A third
+    /// occupant stays a puppet. PLACEHOLDER 2.
+    pub home_bodies_max: usize,
+    /// Censuses that must miss a home body before it is written off, and the game days that must
+    /// have passed since the first miss (the camps' numbers, EQC114). PLACEHOLDER 3 and 2.
+    pub miss_writeoff: u8,
+    pub miss_span_days: u64,
+    /// A settled puppet this close to its lair horizontally, and within `hand_back_height`
+    /// vertically, is handed back as a home body (EQC110). PLACEHOLDER 24 and 16 blocks.
+    pub hand_back_blocks: f64,
+    pub hand_back_height: f64,
     /// The oil gate (OILGATE.md §4): the reserve, refuelling, field flights, sensing.
     pub oil: OilTunables,
 }
@@ -221,6 +232,11 @@ impl Default for DragonTunables {
             victims_kept: 4,
             herd_risk: 2,
             adopt_natural_dragons: false,
+            home_bodies_max: 2,
+            miss_writeoff: 3,
+            miss_span_days: 2,
+            hand_back_blocks: 24.0,
+            hand_back_height: 16.0,
             oil: OilTunables::default(),
         }
     }

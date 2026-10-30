@@ -538,6 +538,39 @@ pub struct Body {
     pub leaving: bool,
 }
 
+/// A home body the fake plugin keeps (EQUILIBRIUM.md S5): standing in the world, loaded (a live
+/// entity in control) or saved (vanilla's chunk holds it).
+#[derive(Clone, Debug, PartialEq)]
+pub struct HomeBody {
+    pub agent: u64,
+    pub epoch: u32,
+    pub lair: u64,
+    pub species: Species,
+    pub age_ticks: i32,
+    pub hunger: i32,
+    pub health: f32,
+    pub gender: Gender,
+    pub variant: u32,
+    pub pos: (f64, f64, f64),
+    pub loaded: bool,
+}
+
+/// The fake plugin's lairs and home bodies: off by default, so every earlier scenario is as it was.
+/// With `on`, the plugin keeps the bodies it is told to make, lists them when a lair comes in,
+/// and removes them when told. `set_lair_in` and `set_lair_out` are the scenario's chunk loading.
+#[derive(Clone, Debug, Default)]
+pub struct HomeModel {
+    pub on: bool,
+    /// Lair key to its home block (x, z), so a command that names the block finds the lair.
+    pub lairs: BTreeMap<u64, (i32, i32)>,
+    /// The bodies standing, by entity.
+    pub bodies: BTreeMap<Uuid, HomeBody>,
+    /// The lairs that are in, with their census epoch.
+    pub in_epoch: BTreeMap<u64, u64>,
+    next: u64,
+    epochs: u64,
+}
+
 /// The plugin's side, headless: commands through the codec in, observations through the codec
 /// out, each a tick or more late (docs/boundary.md §1.2). Cloned, it is the same plugin at the
 /// same moment (a restore test copies it with the engine's save).
@@ -582,6 +615,8 @@ pub struct FakeIaf {
     pub nest_no_room: bool,
     /// NEST_SORTIE commands received.
     pub sorties: u32,
+    /// The home bodies (EQUILIBRIUM.md S5).
+    pub home: HomeModel,
 }
 
 impl FakeIaf {
@@ -608,7 +643,112 @@ impl FakeIaf {
             renewals_repeated: 0,
             nest_no_room: false,
             sorties: 0,
+            home: HomeModel::default(),
         }
+    }
+
+    /// The lair comes in (its footprint is loaded): a census of the bodies standing there.
+    pub fn set_lair_in(&mut self, lair: u64, watched: bool, at: Tick) {
+        if !self.home.on || self.home.in_epoch.contains_key(&lair) {
+            return;
+        }
+        self.home.epochs += 1;
+        let epoch = self.home.epochs;
+        self.home.in_epoch.insert(lair, epoch);
+        let bodies = self
+            .home
+            .bodies
+            .iter()
+            .filter(|(_, b)| b.lair == lair)
+            .take(boundary::CENSUS_BODIES_MAX)
+            .map(|(&entity, b)| boundary::CensusBody {
+                entity,
+                agent: b.agent,
+                species: b.species,
+                flags: boundary::BODY_SLEEPING | boundary::BODY_HAS_HOME,
+                age_ticks: b.age_ticks,
+                hunger: b.hunger,
+                health: b.health,
+                gender: b.gender,
+                variant: b.variant,
+                pos: b.pos,
+            })
+            .collect();
+        self.push(
+            at,
+            Obs::LairCensus(boundary::LairCensus {
+                lair,
+                epoch,
+                dimension: 0,
+                flags: if watched { boundary::CENSUS_WATCHED } else { 0 },
+                bodies,
+            }),
+        );
+    }
+
+    /// The lair goes out: each loaded body is saved where it stands (DEMATERIALIZED reason 8), then
+    /// the census epoch ends.
+    pub fn set_lair_out(&mut self, lair: u64, at: Tick) {
+        let Some(epoch) = self.home.in_epoch.remove(&lair) else {
+            return;
+        };
+        let loaded: Vec<Uuid> = self
+            .home
+            .bodies
+            .iter()
+            .filter(|(_, b)| b.lair == lair && b.loaded)
+            .map(|(&e, _)| e)
+            .collect();
+        for e in loaded {
+            let b = self.home.bodies.get_mut(&e).expect("listed");
+            b.loaded = false;
+            let (agent, epoch, pos) = (b.agent, b.epoch, b.pos);
+            let (hunger, health, age) = (b.hunger, b.health, b.age_ticks);
+            self.push(
+                at,
+                Obs::Dematerialized(boundary::Dematerialized {
+                    agent,
+                    epoch,
+                    reason: boundary::DEMAT_HOME_SAVED,
+                    dimension: 0,
+                    health,
+                    max_health: health.max(1.0),
+                    hunger,
+                    age_ticks: age,
+                    pos,
+                }),
+            );
+        }
+        self.push(at, Obs::LairOut(boundary::LairOut { lair, epoch }));
+    }
+
+    /// A player (or anything) kills the home body `entity`: DRAGON_DIED, with its epoch while it is
+    /// loaded and epoch 0 while it is saved (EQC131). The body is gone.
+    pub fn kill_home_body(&mut self, entity: Uuid, killer: Uuid, at: Tick) {
+        let Some(b) = self.home.bodies.remove(&entity) else {
+            return;
+        };
+        self.push(
+            at,
+            Obs::Died(boundary::Died {
+                agent: b.agent,
+                epoch: if b.loaded { b.epoch } else { 0 },
+                killer_kind: boundary::AttackerKind::Player,
+                killer,
+                dimension: 0,
+                pos: b.pos,
+                entity,
+                lair: b.lair,
+            }),
+        );
+    }
+
+    fn lair_at(&self, home: (i32, i32, i32)) -> u64 {
+        self.home
+            .lairs
+            .iter()
+            .find(|(_, xz)| **xz == (home.0, home.2))
+            .map_or(0, |(&k, _)| k)
     }
 
     /// Queues an observation the scripted world makes (a hoard robbed, a dragon untagged).
@@ -628,6 +768,37 @@ impl FakeIaf {
             assert_eq!(back, c, "the codec changed a command");
             self.commands.push((at.0, format!("{c:?}")));
             match back {
+                Cmd::Materialize(m) if self.home.on && m.flags & boundary::MAT_HOME_BODY != 0 => {
+                    self.home.next += 1;
+                    let entity = (0x4800_0000_0000_0000 | self.home.next, 1);
+                    let lair = self.lair_at(m.home);
+                    self.home.bodies.insert(
+                        entity,
+                        HomeBody {
+                            agent: m.agent,
+                            epoch: m.epoch,
+                            lair,
+                            species: m.species,
+                            age_ticks: m.age_ticks,
+                            hunger: m.hunger,
+                            health: if m.health > 0.0 { m.health } else { 100.0 },
+                            gender: m.gender,
+                            variant: m.variant,
+                            pos: m.pos,
+                            loaded: true,
+                        },
+                    );
+                    self.push(
+                        at + 1,
+                        Obs::Materialized(boundary::Materialized {
+                            agent: m.agent,
+                            epoch: m.epoch,
+                            dimension: m.dimension,
+                            entity,
+                            home: true,
+                        }),
+                    );
+                }
                 Cmd::Materialize(m) => {
                     let entity = (m.agent, u64::from(m.epoch));
                     let max = crate::species::SpeciesData::of(m.species)
@@ -655,6 +826,7 @@ impl FakeIaf {
                             epoch: m.epoch,
                             dimension: m.dimension,
                             entity,
+                            home: m.flags & boundary::MAT_HOME_BODY != 0,
                         }),
                     );
                     if self.breaths > 0 && m.flags & boundary::MAT_OIL != 0 {
@@ -709,11 +881,27 @@ impl FakeIaf {
                                 killer: self.player,
                                 dimension: m.dimension,
                                 pos: m.pos,
+                                entity,
+                                lair: 0,
                             }),
                         ),
                     }
                 }
                 Cmd::Steer(_) => {}
+                Cmd::Depart(dp)
+                    if self.home.on
+                        && dp.reason == 5
+                        && self
+                            .home
+                            .bodies
+                            .values()
+                            .any(|b| b.agent == dp.agent && b.epoch == dp.epoch && b.loaded) =>
+                {
+                    // The engine needs it back: a home body is discarded.
+                    self.home
+                        .bodies
+                        .retain(|_, b| !(b.agent == dp.agent && b.epoch == dp.epoch));
+                }
                 Cmd::Depart(dp) => {
                     if let Some(b) = self.bodies.get_mut(&dp.agent)
                         && b.epoch == dp.epoch
@@ -724,6 +912,37 @@ impl FakeIaf {
                         self.capture(dp.agent, 1, t);
                     }
                 }
+                Cmd::Adopt(a) if self.home.on && a.flags & boundary::ADOPT_HOME_BODY != 0 => {
+                    // The body must stand; adopting it makes it loaded and the engine's.
+                    if let Some(b) = self.home.bodies.get_mut(&a.entity) {
+                        b.agent = a.agent;
+                        b.epoch = a.epoch;
+                        b.loaded = true;
+                        b.age_ticks = a.age_ticks;
+                        b.hunger = a.hunger;
+                        b.health = a.health;
+                        self.push(
+                            at + 1,
+                            Obs::Materialized(boundary::Materialized {
+                                agent: a.agent,
+                                epoch: a.epoch,
+                                dimension: 0,
+                                entity: a.entity,
+                                home: true,
+                            }),
+                        );
+                    } else {
+                        self.push(
+                            at + 1,
+                            Obs::SpawnRejected(boundary::SpawnRejected {
+                                agent: a.agent,
+                                epoch: a.epoch,
+                                reason: 5,
+                                cmd_seq: self.cmd_seq,
+                            }),
+                        );
+                    }
+                }
                 Cmd::Adopt(a) => self.push(
                     at + 1,
                     Obs::Materialized(boundary::Materialized {
@@ -731,6 +950,7 @@ impl FakeIaf {
                         epoch: a.epoch,
                         dimension: 0,
                         entity: a.entity,
+                        home: a.flags & boundary::ADOPT_HOME_BODY != 0,
                     }),
                 ),
                 Cmd::PlaceLair(p) => {
@@ -820,7 +1040,10 @@ impl FakeIaf {
                     }
                 }
                 Cmd::NestSortie(_) => self.sorties += 1,
-                Cmd::Discard(_) => {}
+                Cmd::Discard(dc) => {
+                    self.home.bodies.remove(&dc.entity);
+                }
+                Cmd::HandBack(_) => {}
             }
         }
     }
@@ -888,6 +1111,7 @@ impl FakeIaf {
                 b.health = h.health_after;
             }
             if let Obs::Died(dd) = &o
+                && !(self.home.on && dd.entity != (0, 0))
                 && self.bodies.remove(&dd.agent).is_none()
             {
                 continue;

@@ -76,9 +76,56 @@ pub struct Lair {
     /// waits the cap, and a dragon adopted into it while it waits resets its pressure (the
     /// history was lost, not its dragon). Cleared when a dragon moves in (MZB-1012).
     pub found_unknown: bool,
+    /// Home bodies of dragons that left this lair or died of age (EQUILIBRIUM.md S5, EQC118):
+    /// the sim no longer counts them, so a census that finds one removes it. At most
+    /// [`LEFT_BEHIND_KEPT`], the oldest dropped first.
+    pub left_behind: Vec<Uuid>,
+    /// Home bodies written off as missing (EQC114): home again if one turns up while the lair is
+    /// short, a stray after it has refilled (its death still presses the lair). At most
+    /// [`MISSING_KEPT`], the oldest dropped first.
+    pub missing: Vec<Uuid>,
+    /// After a reset, the home bodies the site ledger's row names (EQC119): the lair's census
+    /// adopts each as an occupant. At most [`MISSING_KEPT`].
+    pub expect: Vec<Uuid>,
+    /// Misses of `expect`: the count and the tick of the first.
+    pub miss: (u8, Tick),
+    /// The ledger row said rtsim did not run through the time since it was written (the found
+    /// tail's GAP): a body found missing is Other, not a player's loss (EQC114). Cleared by a
+    /// census that leaves no miss pending.
+    pub gap: bool,
 }
 
+/// Bodies a lair remembers having left behind (EQC111).
+pub const LEFT_BEHIND_KEPT: usize = 4;
+/// Bodies a lair remembers as missing or expects after a reset: a pair's.
+pub const MISSING_KEPT: usize = 2;
+
+/// An entity's UUID as (most, least) bits, as the boundary carries it.
+pub type Uuid = (u64, u64);
+
 impl Lair {
+    /// Remembers `u` as left behind.
+    pub fn leave_body_behind(&mut self, u: Uuid) {
+        if !self.left_behind.contains(&u) {
+            self.left_behind.push(u);
+        }
+        let n = self.left_behind.len();
+        if n > LEFT_BEHIND_KEPT {
+            self.left_behind.drain(..n - LEFT_BEHIND_KEPT);
+        }
+    }
+
+    /// Remembers `u` as missing.
+    pub fn lose_body(&mut self, u: Uuid) {
+        if !self.missing.contains(&u) {
+            self.missing.push(u);
+        }
+        let n = self.missing.len();
+        if n > MISSING_KEPT {
+            self.missing.drain(..n - MISSING_KEPT);
+        }
+    }
+
     /// The fed share at `at`, with `share` (a hunt's catch over its need) folded in: the
     /// moving average weighs the new share by the time since the last one, `1 - e^(-dt / tau)`.
     pub fn fold_fed(&mut self, share: f32, at: Tick, tau_days: f32) {
@@ -335,6 +382,12 @@ pub struct Dragon {
     /// Districts it sensed lately and the day it did (OG-8: one report per district per day),
     /// newest last, at most [`SENSED_KEPT`].
     pub sensed: Vec<(u64, u32)>,
+    /// Its home body, the entity the engine believes stands in the world, loaded or saved by
+    /// vanilla (EQUILIBRIUM.md S5, EQC107). Set only from the plugin's answers; see
+    /// [`Dragons::census`](crate::Dragons).
+    pub body: Option<Uuid>,
+    /// The censuses that did not find `body`: how many, and the tick of the first (EQC114).
+    pub miss: (u8, Tick),
 }
 
 /// Districts a dragon remembers sensing (for the once-a-day rule).
@@ -517,6 +570,8 @@ mod tests {
             oil_at: Tick(0),
             visitor: None,
             sensed: Vec::new(),
+            body: None,
+            miss: (0, Tick(0)),
         }
     }
 

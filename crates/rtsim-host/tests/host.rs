@@ -24,7 +24,7 @@ use mic_viewer::http::{Config, Server};
 use mic_viewer::viewer::App;
 
 use rtsim_conflict::boundary as cb;
-use rtsim_ecology::boundary::{self as db, SpawnKind};
+use rtsim_ecology::boundary as db;
 use rtsim_ecology::dragon::LairKind;
 use rtsim_ecology::species::{Gender, Species};
 use rtsim_host::fork;
@@ -106,23 +106,29 @@ fn populate(j: &mut Java) {
         home: LAIR_HOME,
         row: Default::default(),
     }));
-    j.dragon_obs(&db::Obs::Untagged(db::Untagged {
-        entity: (0xD1, 0x1),
-        spawn: SpawnKind::Structure,
-        species: Species::Fire,
-        dimension: dim,
-        flags: db::UNTAGGED_HAS_HOME,
-        age_ticks: 110 * 24_000,
-        hunger: 60,
-        gender: Gender::Female,
-        variant: 1,
-        home: LAIR_HOME,
+    // The lair comes in with its own dragon standing in the footprint (S5, EQC112): a census,
+    // where an untagged record with a lair key was sent before.
+    j.dragon_obs(&db::Obs::LairCensus(db::LairCensus {
         lair: LAIR,
-        pos: (
-            f64::from(LAIR_HOME.0),
-            f64::from(LAIR_HOME.1),
-            f64::from(LAIR_HOME.2),
-        ),
+        epoch: 1,
+        dimension: dim,
+        flags: 0,
+        bodies: vec![db::CensusBody {
+            entity: (0xD1, 0x1),
+            agent: 0,
+            species: Species::Fire,
+            flags: db::BODY_HAS_HOME,
+            age_ticks: 110 * 24_000,
+            hunger: 60,
+            health: 0.0,
+            gender: Gender::Female,
+            variant: 1,
+            pos: (
+                f64::from(LAIR_HOME.0),
+                f64::from(LAIR_HOME.1),
+                f64::from(LAIR_HOME.2),
+            ),
+        }],
     }));
     let structure = j.dict_id(wire::DICT_STRUCTURE, "goblinstyranny:goblin_camp");
     j.conflict_obs(&cb::Obs::FactionFound(cb::FactionFound {

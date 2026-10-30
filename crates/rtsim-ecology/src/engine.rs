@@ -57,6 +57,8 @@ use rtsim_travel::legs::{Meeting, Path, Stamp};
 use rtsim_world::World;
 use serde::Serialize;
 
+mod home;
+
 use crate::boundary::{self, AttackerKind, Cmd, Obs, SpawnKind, Uuid};
 use crate::calendar::Season;
 use crate::dragon::{
@@ -277,6 +279,23 @@ pub struct DragonStats {
     pub starved_away: u64,
     pub arrivals_gated: u64,
     pub heirs_sent: u64,
+    /// Home bodies (EQUILIBRIUM.md S5, EQC137): lair censuses taken, bodies adopted (a census
+    /// finding the dragon's own, a hand-back), spawned (an owed body), removed (an away or
+    /// second body, a left-behind one), dragons recalled from a hunt by a watched lair, bodies
+    /// the lair's going out left saved, bodies that went past the leash, hand-backs ordered,
+    /// bodies written off as missing, strays adopted as occupants, and strays that died after
+    /// being written off.
+    pub lair_censuses: u64,
+    pub home_adopts: u64,
+    pub home_spawns: u64,
+    pub home_removed: u64,
+    pub home_recalled: u64,
+    pub home_saved: u64,
+    pub home_left: u64,
+    pub home_hand_backs: u64,
+    pub home_missing: u64,
+    pub strays_adopted: u64,
+    pub stray_deaths: u64,
 }
 
 /// A village that pays a lair tribute (SINK.md §4.6): the lair whose dragon raided it last, the
@@ -483,6 +502,16 @@ pub struct Dragons {
     /// refresh that heals a set lost with a crash); taken by [`Dragons::take_site_states`]
     /// outside the replay. Not saved, and no decision reads it (MZB-1012).
     pub(crate) site_dirty: BTreeSet<LairId>,
+    /// The lairs that are in (EQUILIBRIUM.md S5, EQC112): every chunk of the footprint loaded and
+    /// ticking, by the census epoch the plugin minted when it came in. Not saved: at a session
+    /// start every lair is out (`begin_replay`), and the first census of the session marks it in.
+    pub(crate) lairs_in: BTreeMap<LairId, u64>,
+    /// Dragons being given a home body, by an adoption, a spawn or a hand-back, until the plugin
+    /// answers (EQC110, EQC116). Not saved.
+    pub(crate) pending_home: BTreeSet<DragonId>,
+    /// A dragon whose home spawn the plugin refused is not asked again before this tick, so a
+    /// refusal that stands does not make a record a step (EQC116). Not saved.
+    pub(crate) home_hold: BTreeMap<DragonId, Tick>,
 }
 
 /// How a lair new to the engine starts its wait ([`Dragons::found_lair`], MZB-1012).
@@ -645,6 +674,9 @@ impl Dragons {
             far: crate::far::FarFeed::default(),
             nests: Nests::default(),
             site_dirty: BTreeSet::new(),
+            lairs_in: BTreeMap::new(),
+            pending_home: BTreeSet::new(),
+            home_hold: BTreeMap::new(),
         }
         .with_oil_flags()
     }
@@ -726,9 +758,11 @@ impl Dragons {
         self.site_dirty.contains(&l)
     }
 
-    /// Lair `l`'s row for the site ledger at `at`: K 1, its occupants at home, the pressure
-    /// now, and while it waits the wait left (ticks). A lair has no home bodies (its dragons are
-    /// puppets until EQ-2), so no UUIDs.
+    /// Lair `l`'s row for the site ledger at `at`: K 2 (a pair; EQC106, EQC120), its occupants,
+    /// the pressure now, and while it waits the wait left (ticks). The row names its home bodies,
+    /// the bodies its dragons left behind and the ones written off as missing, each bounded to K.
+    /// The census (`dragon.lair`) keeps K 1: the row's K is the bodies' bound, not the site's
+    /// capacity.
     pub fn lair_site_state(&self, l: LairId, at: Tick) -> Option<SiteState> {
         let lair = self.lairs.get(l)?;
         let h = self.tun.respawn_half_life_days as f32;
@@ -740,21 +774,32 @@ impl Dragons {
         if waiting {
             flags |= state_flags::WAITING;
         }
-        Some(SiteState {
+        let held: Vec<Option<Uuid>> = lair
+            .occupants
+            .iter()
+            .map(|d| self.dragons.get(*d).and_then(|x| x.body))
+            .collect();
+        let mut s = SiteState {
             key: lair.key,
             kind: SiteKind::Lair,
             flags,
             p: lair.pressure.now(day_num(at), h),
-            k: 1,
+            k: 2,
             count: u16::try_from(lair.occupants.len()).unwrap_or(u16::MAX),
-            away: 0,
+            away: u16::try_from(held.iter().filter(|b| b.is_none()).count()).unwrap_or(u16::MAX),
             wait_left: if waiting {
                 lair.due.0.saturating_sub(at.0)
             } else {
                 0
             },
-            bodies: Default::default(),
-        })
+            bodies: rtsim_kernel::sites::Bodies {
+                home: held.into_iter().flatten().collect(),
+                left_behind: lair.left_behind.clone(),
+                missing: lair.missing.clone(),
+            },
+        };
+        s.bound();
+        Some(s)
     }
 
     /// Maps a plugin item dictionary id to a ledger item (for HOARD_ROBBED).
@@ -914,6 +959,11 @@ impl Dragons {
             fed: 1.0,
             fed_at: at,
             found_unknown: false,
+            left_behind: Vec::new(),
+            missing: Vec::new(),
+            expect: Vec::new(),
+            miss: (0, Tick(0)),
+            gap: false,
         });
         debug_assert_eq!(self.lairs.get(id).map(|l| l.key), Some(key));
         self.lair_by_key.insert(key, id);
@@ -934,6 +984,14 @@ impl Dragons {
             LairStart::Row(row) => {
                 self.lairs[id as usize].pressure =
                     Pressure::handed_over(row.p, row.elapsed, day, rule.half_life_days);
+                // The row's bodies (EQC119): the lair's census adopts each home body as an
+                // occupant, and the ones it left behind or lost are remembered.
+                let lair = &mut self.lairs[id as usize];
+                lair.gap = row.gap();
+                lair.expect = row.bodies.home.clone();
+                lair.expect.truncate(crate::dragon::MISSING_KEPT);
+                lair.left_behind = row.bodies.left_behind.clone();
+                lair.missing = row.bodies.missing.clone();
                 if row.waiting() {
                     // The wait it had, less the game time since (due at once when it ran out).
                     self.start_wait_for(id, row.wait_now_ticks(), at);
@@ -1161,6 +1219,8 @@ impl Dragons {
             oil_at: at,
             visitor: None,
             sensed: Vec::new(),
+            body: None,
+            miss: (0, Tick(0)),
         };
         let d = self.dragons.insert(row);
         // The floor of an agent that had none to hold it (a replayed record of the last session's
@@ -1569,12 +1629,25 @@ impl Dragons {
                     self.stats.seen_stale += 1;
                     return;
                 }
+                // Its body stands (a home body the census finds), or it was refused one and waits.
+                if self.dragons[d].body.is_some()
+                    || self.pending_home.contains(&d)
+                    || self.home_hold.get(&d).is_some_and(|t| at < *t)
+                {
+                    return;
+                }
                 // As `seen`: the area booked again at the replay end sees the lair again.
                 if self.outbox.defer() {
                     return;
                 }
                 self.stats.seen += 1;
-                self.materialize(w, d, player, false, false, None, at);
+                // A roosting dragon is a home body (EQC116), the first two of a pair; a third
+                // occupant is a puppet as before.
+                if self.home_candidates(lair, at).contains(&d) {
+                    self.home_spawn(w, d, at);
+                } else {
+                    self.materialize(w, d, player, false, false, None, at);
+                }
             }
             Ev::Depart { d, plan, reason } => {
                 if self.live(d, plan) {
@@ -3302,6 +3375,13 @@ impl Dragons {
                 x.last_grudge = Some(at);
             }
         }
+        // Away as a puppet, its old home body stands saved at the lair: left behind (EQC107).
+        if let Some(l) = self.dragons[d].lair
+            && let Some(u) = self.dragons.get_mut(d).and_then(|x| x.body.take())
+        {
+            self.lairs[l as usize].leave_body_behind(u);
+            self.site_dirty.insert(l);
+        }
         self.track(d);
         self.cancel_leg(w, d);
         let what = format!(
@@ -3493,6 +3573,10 @@ impl Dragons {
         self.outbox.begin_replay();
         self.chests.clear();
         self.parked.clear();
+        // At a session start every lair is out and nothing is being given a body (EQC123).
+        self.lairs_in.clear();
+        self.pending_home.clear();
+        self.home_hold.clear();
     }
 
     /// The session's replay has caught up (docs/replay-gate.md §5.6): puppets never outlive a
@@ -3508,8 +3592,15 @@ impl Dragons {
         let at = at.max(self.now);
         let embodied: Vec<DragonId> = self.embodied.iter().copied().collect();
         for d in embodied {
-            self.resume(w, d, at, true);
+            if self.dragons[d].body.is_some() {
+                // A home body stays in the world: its dragon roosts, and the lair's census
+                // finds the body or counts a miss (EQC123).
+                self.roost(w, d, at);
+            } else {
+                self.resume(w, d, at, true);
+            }
         }
+        self.pending_home.clear();
         self.by_entity.clear();
         let players: Vec<ActorId> = self.players.keys().copied().collect();
         for p in players {
@@ -3560,6 +3651,9 @@ impl Dragons {
             purpose: Purpose::Home,
             harass: false,
         };
+        if m.home {
+            self.dragons.get_mut(d).expect("live").body = Some(m.entity);
+        }
         self.by_entity.insert(m.entity, d);
         self.track(d);
         self.note(
@@ -3590,6 +3684,8 @@ impl Dragons {
         let finds_no_body = o.agent_epoch().is_some();
         match o {
             Obs::Materialized(_) => {}
+            // A recount of an ended session: its lines are decided again (EQC123).
+            Obs::LairCensus(_) | Obs::LairOut(_) => {}
             _ if finds_no_body => {}
             _ => self.ingest(w, infra, o, at),
         }
@@ -3636,6 +3732,12 @@ impl Dragons {
                 }
                 if let Some(d) = self.embodied(m.agent, m.epoch) {
                     self.by_entity.insert(m.entity, d);
+                    if m.home {
+                        self.home_answered(d, m.entity);
+                    } else {
+                        // A puppet: the plugin made no home body of it (a third occupant).
+                        self.pending_home.remove(&d);
+                    }
                 } else if self.outbox.replaying() && self.replay_from_pages {
                     // The last session's answer to a decision after the pages (§5.2); a fresh
                     // engine's only raised the floor above (RP-31).
@@ -3644,6 +3746,10 @@ impl Dragons {
             }
             Obs::SpawnRejected(r) => {
                 if let Some(d) = self.embodied(r.agent, r.epoch) {
+                    // A refused home spawn is not asked again for a day (EQC116).
+                    if self.pending_home.remove(&d) {
+                        self.home_hold.insert(d, at + TICKS_PER_DAY);
+                    }
                     self.resume(w, d, at, false);
                 }
             }
@@ -3658,9 +3764,14 @@ impl Dragons {
                 // Ice and Fire's Hunger is 0 to 100; anything else from the plugin is clamped.
                 x.set_fullness(s.hunger.clamp(0, full), at);
                 x.rest = Some((here, s.pos.1 as i32));
-                if s.hunger <= starving && matches!(x.state, State::Embodied { .. }) {
+                // A home body is the Ice and Fire AI's to feed (EQC117).
+                if s.hunger <= starving
+                    && matches!(x.state, State::Embodied { .. })
+                    && x.body.is_none()
+                {
                     self.depart(d, 2, at);
                 }
+                self.maybe_hand_back(d, s);
             }
             Obs::Hurt(h) => self.hurt(w, h, at),
             Obs::Died(dd) => {
@@ -3680,12 +3791,22 @@ impl Dragons {
                         dd.pos.1 as i32,
                     );
                     self.kill(w, d, killer, pos, at);
+                } else if dd.entity != (0, 0) {
+                    // A home body the engine had no body of the epoch for (EQC131).
+                    self.unmet_death(w, dd, at);
                 }
             }
+            Obs::LairCensus(c) => self.lair_census(w, c, at),
+            Obs::LairOut(o) => self.lair_out(o),
+            Obs::DragonLeftHome(h) => self.left_home(h, at),
             Obs::Dematerialized(m) => {
                 let Some(d) = self.embodied(m.agent, m.epoch) else {
                     return;
                 };
+                if m.reason == boundary::DEMAT_HOME_SAVED {
+                    self.home_saved(w, d, m, at);
+                    return;
+                }
                 if m.reason == boundary::DEMAT_NOT_EMBODIED {
                     // The plugin's answer to a DRAGON_DEPART for a dragon it holds no body of
                     // (docs/boundary.md §2.3): it carries the agent and the epoch and nothing
@@ -3705,7 +3826,10 @@ impl Dragons {
                     x.set_health(m.health, at);
                     x.set_fullness(m.hunger.clamp(0, full), at);
                     x.rest = Some((here, m.pos.1 as i32));
+                    // Any capture but a home body's own ends its body: nothing stands (EQC107).
+                    x.body = None;
                 }
+                self.pending_home.remove(&d);
                 self.by_entity.retain(|_, v| *v != d);
                 self.adopted.retain(|_, v| *v != d);
                 let leaving = matches!(self.dragons[d].state, State::Leaving { .. });
@@ -4311,6 +4435,14 @@ impl Dragons {
         self.end_visit(d);
         self.release_claim(d, at);
         self.cancel_leg(w, d);
+        // A loaded body is discarded (a home body too) or already dead: no body is left behind.
+        if self.dragons.get(d).is_some_and(Dragon::is_embodied)
+            && let Some(x) = self.dragons.get_mut(d)
+        {
+            x.body = None;
+        }
+        self.pending_home.remove(&d);
+        self.home_hold.remove(&d);
         // A body still in the world goes with it.
         if let Some(State::Embodied { epoch, .. } | State::Leaving { epoch, .. }) =
             self.dragons.get(d).map(|x| x.state)
@@ -4374,6 +4506,10 @@ impl Dragons {
         lair.occupants.retain(|o| *o != d);
         if let Some(x) = self.dragons.get_mut(d) {
             x.lair = None;
+            // Its home body stands where it was: the lair remembers it to remove (EQC118).
+            if let Some(u) = x.body.take() {
+                lair.leave_body_behind(u);
+            }
             if x.rest.is_none() && !matches!(x.state, State::Flying(_) | State::Hunting { .. }) {
                 x.rest = Some(here);
             }
@@ -4792,34 +4928,17 @@ impl Dragons {
         {
             return;
         }
-        let lair = (u.lair != 0).then(|| self.lair_of_key(u.lair)).flatten();
-        let discard = match u.spawn {
-            SpawnKind::Natural | SpawnKind::Spawner => Some(1),
-            SpawnKind::Structure
-                if lair.is_some_and(|l| !self.lairs[l as usize].occupants.is_empty()) =>
-            {
-                Some(2)
-            }
-            _ => None,
-        };
-        if let Some(reason) = discard {
+        // A dragon in a lair's box is the lair census's (EQC113): the plugin no longer reports it
+        // untagged, and the lair field of this record is always 0. What comes here has no lair.
+        if matches!(u.spawn, SpawnKind::Natural | SpawnKind::Spawner) {
             self.outbox.push(Cmd::Discard(boundary::Discard {
                 entity: u.entity,
-                reason,
+                reason: boundary::DISCARD_SIM_OWNS,
             }));
             self.stats.discarded += 1;
             return;
         }
         let pos = self.canon(u.dimension, u.pos.0, u.pos.2);
-        // Its lair found late with no ledger row waits the cap (MZB-1012); its own dragon adopted
-        // during that wait shows its history was lost, not its dragon: no pressure.
-        if let Some(l) = lair
-            && self.lairs[l as usize].found_unknown
-            && self.lairs[l as usize].occupants.is_empty()
-        {
-            self.lairs[l as usize].pressure = Pressure::default();
-            self.site_dirty.insert(l);
-        }
         let d = self.add_dragon(
             w,
             NewDragon {
@@ -4828,7 +4947,7 @@ impl Dragons {
                 gender: u.gender,
                 variant: (u.variant % 4) as u8,
                 age_ticks: u.age_ticks.max(0) as u64,
-                lair,
+                lair: None,
                 fullness: u.hunger,
                 health: None,
                 seed: Some(fnv1a64(
@@ -4842,16 +4961,15 @@ impl Dragons {
         // It is a live entity now: adopt it as embodied, so the plugin keeps it until it leaves
         // view and then hands it back.
         let epoch = self.next_epoch(d);
-        let home = lair.map_or((0, 0, 0), |l| {
-            let l = &self.lairs[l as usize];
-            (l.pos.x, l.y, l.pos.z)
-        });
         self.outbox.push(Cmd::Adopt(boundary::Adopt {
             entity: u.entity,
             agent: agent_of(d),
             epoch,
-            flags: lair.is_some() as u32,
-            home,
+            flags: 0,
+            home: (0, 0, 0),
+            age_ticks: 0,
+            hunger: 0,
+            health: 0.0,
         }));
         self.by_entity.insert(u.entity, d);
         self.adopted.insert(u.entity, d);
@@ -4901,6 +5019,9 @@ impl Dragons {
             epoch,
             flags: lair.is_some() as u32,
             home,
+            age_ticks: 0,
+            hunger: 0,
+            health: 0.0,
         }));
         self.by_entity.insert(u.entity, d);
     }
@@ -5024,6 +5145,7 @@ impl Dragons {
                 self.embodied
             ));
         }
+        self.check_homes()?;
         // Tribute: what the villages paid is what the ledger booked, and every coin of it is in a
         // lair (unplaced or placed) or on its way to a chest.
         let paid: BTreeMap<GoodId, i128> = w
@@ -5093,6 +5215,16 @@ impl Dragons {
             wr.raw(&x.oil.to_le_bytes());
             wr.u64(x.oil_at.0);
             wr.u64(x.visitor.map_or(u64::MAX, u64::from));
+            match x.body {
+                Some((most, least)) => {
+                    wr.u64(1);
+                    wr.u64(most);
+                    wr.u64(least);
+                }
+                None => wr.u64(0),
+            }
+            wr.u64(u64::from(x.miss.0));
+            wr.u64(x.miss.1.0);
             if let Some(l) = x.leg {
                 for v in [l.path.x0, l.path.z0, l.path.x1, l.path.z1] {
                     wr.raw(&v.to_le_bytes());
@@ -5121,6 +5253,16 @@ impl Dragons {
             wr.raw(&l.fed.to_bits().to_le_bytes());
             wr.u64(l.fed_at.0);
             wr.u64(u64::from(l.found_unknown));
+            wr.u64(u64::from(l.gap));
+            for list in [&l.left_behind, &l.missing, &l.expect] {
+                wr.u64(list.len() as u64);
+                for u in list {
+                    wr.u64(u.0);
+                    wr.u64(u.1);
+                }
+            }
+            wr.u64(u64::from(l.miss.0));
+            wr.u64(l.miss.1.0);
         }
         wr.u64(u64::from(self.tribute_stamp));
         for (n, r) in &self.tribute {

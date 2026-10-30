@@ -18,6 +18,12 @@ public final class DragonConfig {
     private static final ModConfigSpec.BooleanValue PLACE_LAIRS;
     private static final ModConfigSpec.BooleanValue PLACE_NESTS;
     private static final ModConfigSpec.IntValue SAMPLES_PER_TICK;
+    private static final ModConfigSpec.IntValue HOME_LEASH;
+    private static final ModConfigSpec.IntValue LAIR_FOOTPRINT;
+    private static final ModConfigSpec.IntValue CENSUS_PERIOD;
+    private static final ModConfigSpec.IntValue CENSUS_GAP;
+    private static final ModConfigSpec.IntValue LEASH_SCAN;
+    private static final ModConfigSpec.IntValue WATCH_BLOCKS;
 
     /** PLACEHOLDER: oil samples (CDG's getBaseOilAmount, one chunk each) per server tick. */
     public static final int DEFAULT_SAMPLES_PER_TICK = 4;
@@ -39,6 +45,24 @@ public final class DragonConfig {
         SAMPLES_PER_TICK = b.comment("Chunks whose oil is sampled per tick, new chunks and the engine's surveys together",
                         "(PLACEHOLDER). One sample is one call to Create: Diesel Generators' getBaseOilAmount.")
                 .defineInRange("samplesPerTick", DEFAULT_SAMPLES_PER_TICK, 1, 4096);
+        b.pop();
+        b.comment("Dragon home bodies (EQUILIBRIUM.md S5, EQ-2 (a)): a dragon roosting at its lair is a vanilla body that",
+                "vanilla saves; away from it, a puppet.").push("home");
+        HOME_LEASH = b.comment("A home body this many blocks (horizontally) from its lair, or in another dimension, becomes a",
+                        "puppet where it stands: it stays the lair's dragon and costs the lair nothing (EQC109).")
+                .defineInRange("homeLeash", 48, 16, 512);
+        LAIR_FOOTPRINT = b.comment("A lair is in while every chunk within this many blocks of its home is loaded and ticking",
+                        "(a disc, at most 7 by 7 chunks at 48): its census counts the dragons standing there (EQC128).")
+                .defineInRange("lairFootprint", 48, 16, 64);
+        CENSUS_PERIOD = b.comment("Game ticks between a lair's recounts while it stays in (a game day).")
+                .defineInRange("censusPeriod", 24000, 1200, 240000);
+        CENSUS_GAP = b.comment("Ticks a lair that went out waits before it can come in again (no record storm at a boundary).")
+                .defineInRange("censusGap", 200, 0, 24000);
+        LEASH_SCAN = b.comment("Ticks between looks at each loaded home body's distance from its lair.")
+                .defineInRange("leashScan", 20, 1, 200);
+        WATCH_BLOCKS = b.comment("A lair is watched when a player is within the larger of this and the distance their client",
+                        "tracks an entity at (view distance times 16): a body in view is never removed (EQC115, EQC128).")
+                .defineInRange("watchBlocks", 128, 16, 1024);
         b.pop();
         SPEC = b.build();
     }
@@ -73,6 +97,35 @@ public final class DragonConfig {
         if (Test.samplesPerTick != null)
             return Test.samplesPerTick;
         return loaded() ? SAMPLES_PER_TICK.get() : DEFAULT_SAMPLES_PER_TICK;
+    }
+
+    public static int homeLeash() {
+        return Test.homeLeash != null ? Test.homeLeash : loaded() ? HOME_LEASH.get() : 48;
+    }
+
+    public static int lairFootprint() {
+        return loaded() ? LAIR_FOOTPRINT.get() : 48;
+    }
+
+    public static int censusPeriod() {
+        return Test.censusPeriod != null ? Test.censusPeriod : loaded() ? CENSUS_PERIOD.get() : 24000;
+    }
+
+    public static int censusGap() {
+        return loaded() ? CENSUS_GAP.get() : 200;
+    }
+
+    public static int leashScan() {
+        return Test.leashScan != null ? Test.leashScan : loaded() ? LEASH_SCAN.get() : 20;
+    }
+
+    public static int watchBlocks() {
+        return loaded() ? WATCH_BLOCKS.get() : 128;
+    }
+
+    /** Lairs are followed in and out by the chunk watch; the GameTests drive them by hand ({@link HomeBodies#testIn}). */
+    public static boolean watchLairs() {
+        return Test.watchLairs == null || Test.watchLairs;
     }
 
     /** Chunks are sampled as they first generate (OG-2). */
@@ -124,6 +177,11 @@ public final class DragonConfig {
         public static Boolean answerSurveys = ENABLED ? Boolean.FALSE : null;
         public static Integer samplesPerTick = null;
         public static Boolean breathPerBurst = null;
+        /** Lairs followed by the chunk watch (GameTests drive them by hand, off). */
+        public static Boolean watchLairs = ENABLED ? Boolean.FALSE : null;
+        public static Integer homeLeash = null;
+        public static Integer censusPeriod = null;
+        public static Integer leashScan = null;
 
         /** Back to the GameTest defaults. */
         public static void reset() {
@@ -138,6 +196,10 @@ public final class DragonConfig {
             answerSurveys = Boolean.FALSE;
             samplesPerTick = null;
             breathPerBurst = null;
+            watchLairs = Boolean.FALSE;
+            homeLeash = null;
+            censusPeriod = null;
+            leashScan = null;
         }
     }
 }
