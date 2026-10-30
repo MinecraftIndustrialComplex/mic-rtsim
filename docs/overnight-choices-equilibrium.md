@@ -1414,3 +1414,70 @@ Gradle or GameTest step, check the laptop is on AC (`cat /sys/class/power_supply
 13. **Land.** Merge `origin/main`, check `git diff --name-only --diff-filter=U`, run the tests the branch changes (the whole
     conflict suite, `rtsim-jni`, `rtsim-cli`, then `:core` GameTests and `create -PwithMowzie` and `mowziesmobs`, which share the
     clock and the ledger), then the pull request and review as CLAUDE.md says.
+
+## What the S7 build found (2026-10-30)
+
+Built on `feat/eq-s7-conflict` in the steps of "S7 work split" (each a commit, the engine side failing-first). Ben's FB-6 to FB-9 had
+not been answered when the reporter was built; it is built on the recommendations, each a one-line change (below). The numbers are
+the engine's own, from `cargo test --release -p rtsim-cli --bins -- camp wanderer wipe_every --include-ignored` (nine tests, 4 s) and the
+GameTest rounds recorded in the final report.
+
+### S7 bands (EQC270)
+
+These replace the provisional table of EQC233. Every row is a test that fails outside its band.
+
+| Check | Engine | Band kept | Model |
+|---|---|---|---|
+| No player, 60 years (`no_player_no_pressure_for_60_years`) | 0 breaks, 0 refounds, 0 broken days, P 0 for all three cultures; the same warriors every day as with `pool_renewal` removed | exactly the pre-S7 world | the same |
+| `kill_all_camps`, seed 1 (a full camp wiped on day 100, 148 killed) | half back in 30 days, 90% in 54; no break | 90% within 120, no break | 45 to 54 |
+| `kill_all_camps_30_seeds` | half: median 28 days [5th 28, 95th 32]; 90%: **median 51 [48, 69]**, worst 83 (seed 5, end 0.987 of the control); 0 breaks in 30 | median at most 96, each within 120 | 48 |
+| `farmed_camp_breaks_and_refounds` (a farmer kills every whole warrior every second day, 60 years) | first break goblin day 218, bandit 162, raider 144; **0.233, 0.283 and 0.300 breaks a year**; P at the break 2.00 to 2.01; the wait 192.0 to 193.0 days (`min(384, 48 x 2^P)`); refound pools 15, 10 and 12 (a quarter of 60, 40, 50); broken **0.547** of the time | first break day 100 to 300, 0.15 to 0.40 a year, broken 0.35 to 0.70 | 150 to 260, 0.23 to 0.30, 0.47 to 0.60 |
+| The same farmer at the plan's half-life of 96 (`farmed_camps_do_not_break_at_a_half_life_of_96`) | **no break in 60 years**; max P 1.58, 1.67, 1.72 | the finding that decided FB-1 | 1.58, 1.67, 1.72 |
+| A wanderer, a wipe of what is home in one camp in three every 800 days (`a_wanderer_leaves_the_camps_near_their_caps`) | 0.970 of the control's warriors over years 30 to 60; max P 1.45 to 1.61; **no break** | at least 0.90, broken at most 5% | 0.97 |
+| The wanderer every 400 days | **0.806**; 5 breaks in 60 years (raider 4, bandit 1); broken 0.062 of camp-days | at least 0.75, broken at most 10% | not run |
+| The wanderer every 180 days (`a_wipe_every_half_year_breaks_the_camps_in_the_end`) | 0.527; 21 breaks; broken 0.255 | breaks (share above 5%), below 0.9 | not run |
+
+What this says to Ben: a hunter who comes back to a camp once in about two game years never breaks it; one who comes every 400 days
+breaks one now and then; one who comes every half year (a farmer) breaks them and finds each camp empty about a quarter of the time.
+EQC233's roamer band (0.9 and 5%) holds at 800 days, not at 400: the provisional band assumed the model's roamer, which visits camps
+it has not wiped lately, and a wanderer who wipes what is home takes P to 1.0 per visit, so two visits inside about a half-life
+(192 days) put P over 2. The knob is `pool_renewal.break_pressure` (a number in the three JSONs).
+
+### S7 deviations from the design (EQC271)
+
+| # | What | Why |
+|---|---|---|
+| EQC271 | **`strain_check` runs at the end of `party_lost` too** (EQC208 named `pool_bump`, `home()`, the event and the found restore). A member killed in a party leaves `away` stale at `pool_bump`'s check, so a camp whose last warriors died on the march would not break until the next day's recheck; the break test with parties out found it. | `a_camp_with_a_party_out_waits_and_breaks_when_it_ends`. |
+| EQC272 | **Three new stats, not four.** `breaks`, `refounds` and `break_deferrals` (EQC217 added `slain`). `slay` returns how many fell and keeps no counter; a counter of a test hook would be page bytes for nothing. | The pages are smaller by eight bytes. |
+| EQC273 | **The order's pressure is added by `pool_press`, not by kills.** Order 41 kills `n` warriors as a player's (each adding `1/K`) and then adds `pressure` as a number, so a GameTest sets P exactly (P 2.0 for a break) without 100 kills. `pool_press` is the same function `pool_bump` ends in. | The tests need a precise P. |
+| EQC274 | **`camp_found` for a camp with no bodies** restores through `strain_found`: the pressure by `Pressure::handed_over`, a `waiting()` row with count 0 as a broken camp whose `due = at + wait_now_ticks().max(1)` (a gap longer than the wait refounds it at once, one tick on), `Ev::Strain` booked and the plunder stamp bumped; any other row goes to `strain_check`. | EQC214, as designed. |
+| EQC275 | **The ledger row for a broken camp has no new flag** (F11 stands): `SHORT | EMPTY | BROKEN | WAITING`, count 0, away 0. `a_row_with_count_and_waiting_is_not_broken` pins the one ambiguity (a row with a count is never a break). | |
+| EQC276 | **`rail.rs`'s row-size assertion grew by one pointer (8 bytes)**: the only existing test that changed. | `Faction.strain` is an `Option<Box<Strain>>`. |
+| EQC277 | **`synth::camps` exists** (a quiet world: villages and camps far apart, no player): UNVERIFIED 6 was wrong. `synth::many`'s camps raid villages and lose parties to them (cause `Faction`, no pressure), so their pool never sits at the cap and a control against a player's run needs its own seed's twin. | Every S7 long run uses `synth::camps` and `camp_run`'s paired control. |
+| EQC278 | **The archive kinds are appended at the end of `kinds!`**, after the other crates' kinds, because a kind's saved id is its position. | |
+| EQC279 | **The stale kill-credit comments** in `ConflictBridge.onDeath` and `Camps` (they said a pet's kill was no loss; R4 made it one) are corrected; no code changed. | |
+
+### UNVERIFIED, settled (EQC280)
+
+| # | Result | Where |
+|---|---|---|
+| 1 | The line `pool_ready` inverts is the line `pool_at` runs: both read P at the anchor's day through `recruit_rate`; the engine agrees within a last bit of the float (the test's "two ticks before" check allows 1e-9) | `pool_ready_agrees_with_pool_at`, `a_bump_integrates_the_gap_at_the_old_pressure` |
+| 2 | Every party-making path goes through `send_party`, `plan_feud` or `plunder`; the lurk and the ambush are already behind `send_party`. `Conflict::check` now also verifies that no broken faction has a party, a feud wake or a plunder booked (`check_strains`), and the property test over random histories holds | `no_broken_camp_ever_acts`, `a_broken_camp_sends_nothing` |
+| 3 | An `Ev::Feud` on the wheel at a break is voided by bumping the feud's stamp and nothing else holds a copy | `a_broken_camp_sends_nothing`, `a_refounded_camp_plans_its_plunder_and_its_feuds` |
+| 4 | No existing test read a pool camp's pool over a long gap in a way the slower line changed: with P 0 the rate is bit-for-bit the old one (`a_culture_with_no_strain_recruits_at_its_rate`, the f64 path), and the whole conflict suite passed unchanged but for `rail.rs` (EQC276) | the suites |
+| 5 | `FoundRow.wait_now_ticks()` and `Pressure::handed_over` behave for a pool camp as for a body camp, including a gap longer than the wait (the camp refounds at once) | `a_reset_resumes_a_pool_camps_break`, `a_camp_found_with_no_row_is_full_and_unpressured`; GameTests `aPoolCampKeepsItsPressureAndItsBreakAcrossAReset`, `aFarmedOutpostBreaksAndTheNewBandRefounds` |
+| 6 | Wrong: `synth::many`'s camps are not quiet (EQC277) | |
+| 7 | The `illagerinvasion:illager_fort` id is still unchecked (the mod is not in the pack); the reporter reads the registry and skips an id it lacks | |
+| 8 | Not tested: a GameTest that places the generated pieces and counts pillagers was not written. The reporter does not depend on it: it neither counts nor adopts vanilla's pillagers either way (EQC239). `aVanillaPatrolAndTheOutpostsOwnPillagersAreLeftAlone` pins that two pillagers standing in a found outpost's box stay untagged and unremoved | |
+| 9 | `ChunkEvent.Load` gives `getAllStarts()` the start of a generated jigsaw outpost (the test generates one with `Structure.generate`, sets it as `ChunkGenerator.tryGenerateStructure` does, and posts the load as the game does); `isNewChunk` false gives FACTION_FOUND flag LATE (aux 1), true gives a plain one | `anOutpostIsFoundOnceWhenItsChunkLoads`, `existingWorldsOutpostsJoinLate` |
+| 10 | The raider culture's makeups materialize with the stand-in bodies in the real arena: the envoy (a herald and two pillagers) came after 36 asks of 1,200 ticks and was placed as `Pillager`s. A `Raid` object was not looked for | `aProvokedOutpostSendsItsEnvoy` |
+| 11 | The ladder test fits: 36 asks of 1,200 ticks (about 1.8 game days) in under twenty seconds of real time at unthrottled ticks | |
+
+### S7 reporter findings (EQC281)
+
+| # | What |
+|---|---|
+| EQC281 | **A reinstall's clock jump ends a test's logic waits** (`SiteTestHooks.gapRestart` moves the game time on by the gap, and a `ChunkWait` logic wait counts from the last chunk wait): `aFarmedOutpostBreaksAndTheNewBandRefounds` failed at once with "not within 8000 ticks of the last chunk wait" until it took `SiteLedgerGameTests.clockMoved`'s steps (wait a tick, then a chunk wait on a forced chunk). The reporter itself was right: the outposts re-report to the new session by `Outposts.tick`, with no help. |
+| EQC282 | **The raiders' territory radius is 300 blocks** (pollution 500, reach +200), not 400: my first test had it wrong, the culture file and EQC243 had it right. |
+| EQC283 | **FB-6 to FB-9, as built (pending Ben):** FB-6 (a) `kin` is a `minecraft:raiders` mob but the witch inside the box widened by `outpostKinMargin` 24 (a config key; 0 means the box itself); FB-7 (a) the outposts' pillagers are vanilla's; FB-8 (b) `raider.json`'s `plunder_mean_days` 48 (one number); FB-9 (a) `outpostsJoinExisting` true. |
+| EQC284 | **Test overrides.** `RtsimConfig.Test.setOutpostsJoin` and `setOutpostsJoinExisting` (GameTest runs only, the property `mic_rtsim.gametest`), read before the config. |
