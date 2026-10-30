@@ -480,6 +480,22 @@ class NativeCodecTest {
         assertEquals(bytes.length, r.b.position());
     }
 
+    /** CONFLICT_SLAY (test order 41), pinned against orders.rs OP_CONFLICT_SLAY: the faction, the count, the pressure. */
+    @Test
+    void conflictSlayEncodesEveryFieldInOrder() {
+        byte[] bytes = new NativeCodec.Orders().conflictSlay(0xC0B1_0001_1234_5678L, -1, 1.5f).toBytes();
+        Reader r = new Reader(bytes);
+        int start = r.b.position();
+        int end = r.header(NativeCodec.CONFLICT_SLAY);
+        assertEquals(41, NativeCodec.CONFLICT_SLAY, "the agreed opcode");
+        assertEquals(0xC0B1_0001_1234_5678L, r.u64(), "faction");
+        assertEquals(-1, r.u32(), "n: u32 max");
+        assertEquals(1.5f, r.f32(), "pressure");
+        assertEquals(end, r.b.position());
+        assertEquals(8 + 8 + 4 + 4, end - start);
+        assertEquals(bytes.length, r.b.position());
+    }
+
     /** One received-log entry as rtsim-jni writes it. */
     private static byte[] entry(long handover, long obsSeq, int flags, byte[] record) {
         ByteBuffer b = ByteBuffer.allocate(NativeCodec.RECEIVED_HEADER + record.length).order(ByteOrder.LITTLE_ENDIAN);

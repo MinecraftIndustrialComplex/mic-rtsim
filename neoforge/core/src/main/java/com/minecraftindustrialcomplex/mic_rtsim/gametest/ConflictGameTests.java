@@ -5,6 +5,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.api.RtsimApi;
 import com.minecraftindustrialcomplex.mic_rtsim.api.Talker;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs;
 import com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession;
+import com.minecraftindustrialcomplex.mic_rtsim.bridge.SiteTestHooks;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictBridge;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictNews;
 import com.minecraftindustrialcomplex.mic_rtsim.conflict.ConflictRecords;
@@ -18,6 +19,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.industry.IndustryApi;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.IndustryPlugin;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.ThreatConfig;
 import com.minecraftindustrialcomplex.mic_rtsim.puppet.RtsimAttachments;
+import com.minecraftindustrialcomplex.mic_rtsim.sites.SiteLedger;
 import com.minecraftindustrialcomplex.mic_rtsim.talk.RateLimit;
 import com.minecraftindustrialcomplex.mic_rtsim.talk.Talkers;
 import net.minecraft.core.BlockPos;
@@ -1647,6 +1649,33 @@ public final class ConflictGameTests {
                     check("the war chief comes with it", chief);
                     check("every body in Minecraft (" + bridge().bodies(r.agent).size() + " of " + bodies + ")",
                             bridge().bodies(r.agent).size() == bodies);
+                    // A tamed wolf's kill of a band member is its owner's loss for the camp's pressure (S7, EQC204): the
+                    // credit chain from Java's kill credit to BAND_CASUALTIES to the pool camp's strain. The goblin camp is a
+                    // pool camp, and nothing before this killed one of its warriors, so its pressure is 1/60 and no more.
+                    SiteLedger.Row before = SiteTestHooks.row(level.getServer(), SiteLedger.CAMP, faction[0]);
+                    mark[2] = before == null ? 0 : (long) (before.p() * 1_000_000f);
+                    mark[3] = about(ConflictRecords.BAND_CASUALTIES, r.agent).size();
+                    Mob victim = bridge().bodies(r.agent).get(0);
+                    net.minecraft.world.entity.animal.Wolf wolf = EntityType.WOLF.create(level);
+                    wolf.tame(player[0]);
+                    wolf.moveTo(victim.getX() + 1, victim.getY(), victim.getZ());
+                    level.addFreshEntity(wolf);
+                    victim.hurt(level.damageSources().mobAttack(wolf), 1000f);
+                })
+                .thenWaitUntil(waits.logic(() -> {
+                    keep.run();
+                    List<ScriptedEngine.Received> cs = about(ConflictRecords.BAND_CASUALTIES, raid[0].agent);
+                    check("a BAND_CASUALTIES for the wolf's kill", cs.size() == mark[3] + 1);
+                    check("credited to the owner, a player's kill (aux " + cs.get(cs.size() - 1).aux() + ")",
+                            cs.get(cs.size() - 1).aux() == ConflictRecords.BY_PLAYER);
+                }))
+                .thenWaitUntil(waits.engine(() -> {
+                    keep.run();
+                    SiteLedger.Row after = SiteTestHooks.row(level.getServer(), SiteLedger.CAMP, faction[0]);
+                    check("the camp's pressure is a sixtieth more (" + (after == null ? "no row" : after.p()) + ")",
+                            after != null && Math.abs(after.p() - (mark[2] / 1_000_000f + 1f / 60f)) < 0.005f);
+                }))
+                .thenExecute(() -> {
                     FakePlayers.remove(player[0]);
                     unforce.run();
                 })

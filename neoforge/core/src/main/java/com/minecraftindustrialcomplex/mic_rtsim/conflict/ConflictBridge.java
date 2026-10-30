@@ -2516,8 +2516,8 @@ public final class ConflictBridge implements SessionPlugin {
     /**
      * The kill credit of a death (MZB-261): core's {@link KillCredit#of} (MZB-1008), so a pet's kill, and a death within
      * five seconds of a player's hit, are the player's (EQUILIBRIUM item 9), and a FakePlayer's is a machine's (MZB-111).
-     * Used for a camp body's CAMP_DEATH and a chief puppet's CHIEF_KILLED; BAND_CASUALTIES keep {@link #byKind}, since
-     * nothing reads them.
+     * Used for a camp body's CAMP_DEATH, a chief puppet's CHIEF_KILLED and a band member's BAND_CASUALTIES
+     * ({@code onDeath}); the engine reads them all (S7: a pool camp's pressure takes the player's losses).
      */
     static Credit credit(LivingEntity dead, DamageSource source) {
         KillCredit.Credit c = KillCredit.of(dead, source);

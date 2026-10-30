@@ -117,6 +117,17 @@ public final class RtsimTests {
         };
     }
 
+    /**
+     * A player's kills at a pool camp, as a test order (slice S7, EQC206): the camp of {@code faction} loses
+     * {@code n} warriors (-1: all of them) as a player's loss and takes {@code pressure} more. The native engine
+     * only; the stub keeps no camps.
+     */
+    public static void slayCamp(long faction, int n, float pressure) {
+        if (!(engine() instanceof NativeEngine e))
+            throw new GameTestAssertException("a camp's pressure is the native engine's: " + engine().describe());
+        e.conflictSlay(faction, n, pressure);
+    }
+
     /** The arena's middle, standing on the floor, in absolute coordinates. */
     public static Vec3 centre(GameTestHelper helper) {
         // Relative y 1 is the arena's floor (the structure sits one block above the test's structure

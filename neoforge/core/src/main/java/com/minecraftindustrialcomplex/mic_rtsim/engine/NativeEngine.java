@@ -593,6 +593,17 @@ public final class NativeEngine implements ScriptedEngine {
         order(new NativeCodec.Orders().nestDay(ticks), "NEST_DAY");
     }
 
+    /**
+     * Test only (an engine opened with {@link #FLAG_TEST}): a player's kills at a pool camp (slice S7): the camp of
+     * faction key {@code faction} loses {@code n} warriors as a player's loss (its pool's whole warriors first, then
+     * its war parties' members; {@code -1} is all of them) and takes {@code pressure} more, as if that many had also
+     * died. A pool camp thin and under 2 or more of pressure, with nothing out, breaks. The engine refuses it (logged)
+     * when the key is no camp. At the next step.
+     */
+    public void conflictSlay(long faction, int n, float pressure) {
+        order(new NativeCodec.Orders().conflictSlay(faction, n, pressure), "CONFLICT_SLAY");
+    }
+
     /** An actor a test report names: a TALK ref's class ({@code TalkRecords.C_*}) and its two ids (docs/boundary.md §13.2). */
     public record TalkActor(int cls, long a, long b) {
         public static final TalkActor NONE = new TalkActor(0, 0, 0);
