@@ -220,10 +220,28 @@ DRAGON_COMMAND orders, and the native engine answers untagged dragons itself; ea
 | `adragonmaterializeswiththeenginesstateandsteerstoitstarget` | the engine's AgeTicks (aging disabled), Hunger, Gender, Variant (`bronze`), health and home on a tagged, persistence-required dragon; it flies to its first target and turns on DRAGON_STEER; DRAGON_STATE; DRAGON_DEPART captures it with health, hunger, age and position |
 | `aplayershitishurtandakillisdiedwiththekiller` | two hits in a tick are one DRAGON_HURT with the player; a kill is DRAGON_DIED naming the killer, after the lethal blow's HURT; the corpse stays tagged until the engine's save has the death |
 | `untaggedeggdragonisadoptedandnaturaloneleftalone` | a spawn-egg dragon and a NATURAL one (In Control's spawn type) reported DRAGON_UNTAGGED; the first adopted, the second left alone (R18a) |
-| `alairsdragonisadoptedanditshoardrobbed` | a dragon with no spawn type in a lair's box is that lair's STRUCTURE dragon (after LAIR_FOUND), adopted with the lair's home; a gold pile broken and ingots taken from a lair chest are one HOARD_ROBBED |
+| `alairsdragonisadoptedanditshoardrobbed` | a dragon with no spawn type in a lair's box is that lair's STRUCTURE dragon: not reported untagged, listed by the lair's census (after LAIR_FOUND) and adopted as a home body with the lair's home; a gold pile broken and ingots taken from a lair chest are one HOARD_ROBBED |
 | `apuppetdragonisneversavedandacopyneverjoins` | vanilla's entity-chunk save leaves the dragon out; copies built from its NBT (new UUID, older epoch) never join |
 | `atamedorfarawaypuppetleavesthesim` | a tamed puppet leaves the sim as a DRAGON_DIED with no killer (no TAKEN for dragons) and stays the player's; one carried out of the ticking area is captured and removed |
 | `adragonsmealinavillageisreported` | a kill of a village's cow is DRAGON_ATE for the village; a cow carried at departure is eaten with the capture (C25) |
+
+The dragons' home bodies (EQUILIBRIUM.md S5, EQ-2 (a); `HomeBodyGameTests`, native engine only, each in its own batch;
+docs/overnight-choices-equilibrium.md EQC139): a lair is declared over the arena and brought in by hand (`HomeBodies.testIn`),
+except in `aheldlaircomesinandgoesoutbyitself`.
+
+| Test | What it shows |
+|---|---|
+| `roostingdragonissavedbyvanilla` | the census adopts a lair's own dragon as a home body (attachment, no agent tag); vanilla's entity-chunk save returns it with the attachment; the lair's row names its UUID |
+| `awaydragonisapuppetandthecensusreconciles` | past the leash the tags swap in place (DRAGON_LEFT_HOME) and vanilla does not save it; an old body found at the next census is removed (DISCARD reason 3); captured out of range it rests owed and an unwatched census spawns its body |
+| `uninstallkeepsroostingdragons` | stopped (an uninstall), the dragon stands; with the attachment type unknown and a reinstall after a gap, the census adopts it by UUID: no second body, no newcomer |
+| `adragonluredfromitslairisawaynotmissing` | a lured home body is a puppet and still the occupant: no pressure, nothing missing or left behind; captured out of range it is not saved |
+| `avanishedhomebodyismissingnotdead` | a released body that vanishes is missed three times over two game days, then a player's loss with its UUID in the row's `missing`; the same body put back is home again |
+| `ahomebodyskillcreditisthelairsloss` | a player's kill, a tamed wolf's kill and a lava kill each press their lair once and leave a corpse with no attachment |
+| `resetfindstheroostingdragonbycensus` | a plain reset: the new engine expects the row's body, the census adopts it, no wait is left |
+| `awatchedroostspawnsnothingandanunwatchedonespawnstheowedbody` | the plugin's watched rule (a player at 60 blocks) and the engine's: a watched census spawns nothing, an unwatched one spawns the owed body |
+| `aheldlaircomesinandgoesoutbyitself` | core's chunk watch end to end at a far site held by a ticket: the lair comes in and goes out by itself, the body is released as saved (reason 8) |
+| `asettledpuppetataninlairbecomesahomebody` | DRAGON_HAND_BACK: a puppet landed at an in lair swaps its tags in place and vanilla's save returns it |
+| `aLiveBodysAgeSyncRefreshesItsAttributes`, `aHomeSurvivesVanillasSaveUnlessACoordinateIsZero` | the plan's UNVERIFIED facts 2 and 4 (EQC146) |
 
 The industry GameTests (`mic_rtsim_create` namespace; Create 6.0.10's own jar; always the stub engine,
 which scripts the engine's industry commands; each in its own batch):
