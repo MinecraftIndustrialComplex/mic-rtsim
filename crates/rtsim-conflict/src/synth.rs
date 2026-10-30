@@ -78,8 +78,8 @@ pub fn conflict_with(seed: u64, w: &World, cultures: Cultures) -> Conflict {
 
 /// The built-in cultures with the Frostmaw refilling by rate again (MZB-286): the renewal off and
 /// `recruits_per_day` back at 1/6, the rate it had before M6. For the engine tests of the refill
-/// path (a renewal faction with a rate of 0 and no ledger never refills), which the grove still
-/// uses.
+/// path (a renewal faction with a rate of 0 and no ledger never refills); the grove's is
+/// [`rate_grove_cultures`].
 pub fn rate_den_cultures() -> Cultures {
     let mut cultures = Cultures::builtin();
     let i = cultures.index_of("frostmaw").expect("the Frostmaw") as usize;
@@ -87,6 +87,21 @@ pub fn rate_den_cultures() -> Cultures {
     def.renewal = None;
     def.recruits_per_day = 1.0 / 6.0;
     cultures.list[i] = crate::culture::Culture::resolve(def).expect("a Frostmaw with a rate");
+    cultures
+}
+
+/// The built-in cultures with the Umvuthana grove recruiting by rate again (MZB-1260): the
+/// warriors' renewal off, `recruits_per_day` back at 2 and no `found_cap`, the grove as M4 built
+/// it. For the engine tests of the refill path (a rate that refills a pool two a day), which the
+/// den's `rate_den_cultures` is for the Frostmaw. The Umvuthi's wait is unchanged.
+pub fn rate_grove_cultures() -> Cultures {
+    let mut cultures = Cultures::builtin();
+    let i = cultures.index_of("umvuthana").expect("the Umvuthana") as usize;
+    let mut def = cultures.list[i].def.clone();
+    def.renewal = None;
+    def.found_cap = None;
+    def.recruits_per_day = 2.0;
+    cultures.list[i] = crate::culture::Culture::resolve(def).expect("a grove with a rate");
     cultures
 }
 

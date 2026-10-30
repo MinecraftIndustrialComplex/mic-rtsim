@@ -36,7 +36,9 @@
     "plunder": [["raptor", 1]]
   },
   "pool_cap": 9,
-  "recruits_per_day": 2.0,
+  "recruits_per_day": 0.0,
+  "renewal": { "base_days": 6.0, "cap_days": 96.0, "half_life_days": 96.0, "boss": false },
+  "found_cap": 5,
   "march_blocks_per_tick": 0.02,
   "muster_days": 1.0,
   "patience_days": 2.0,

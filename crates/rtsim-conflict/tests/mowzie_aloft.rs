@@ -20,7 +20,11 @@ use rtsim_settle::Pos;
 
 /// A grove that never plunders, so the only parties are the ones a test orders.
 fn quiet_grove(seed: u64) -> CampRun {
-    let mut cultures = Cultures::builtin();
+    quiet_grove_on(seed, Cultures::builtin())
+}
+
+/// [`quiet_grove`] on the given cultures (the built-in ones, or the grove refilling by rate).
+fn quiet_grove_on(seed: u64, mut cultures: Cultures) -> CampRun {
     for k in &mut cultures.list {
         k.def.plunder_mean_days = None;
     }
@@ -88,7 +92,11 @@ fn pay_at_home(r: &mut CampRun, generation: u32) {
 /// An Invasion led by the seated Umvuthi, paid once at home, ordered now on the refinery and out on
 /// the road past its muster: the party.
 fn led_invasion_out(seed: u64) -> (CampRun, Handle<Party>) {
-    let mut r = quiet_grove(seed);
+    led_invasion_out_on(seed, Cultures::builtin())
+}
+
+fn led_invasion_out_on(seed: u64, cultures: Cultures) -> (CampRun, Handle<Party>) {
+    let mut r = quiet_grove_on(seed, cultures);
     let generation = seat_chief(&mut r);
     pay_at_home(&mut r, generation);
     let at = r.c.now();
@@ -969,10 +977,14 @@ fn a_payment_to_the_puppet_is_remembered() {
 #[test]
 fn a_chief_killed_away_after_the_pool_grew_dies_in_its_own_slot() {
     for (left, seed) in [(true, 112), (false, 116)] {
+        // The grove refills by rate here (S9, MZB-1260): the test is about a pool that grew while
+        // the band was out and the ledger had not followed. A grove on the shared renewal rule
+        // grows by one owed warrior a wait (6 days or more), so in two days it grows by none; the
+        // ledger's following a gain is the rate's path, which `rate_grove_cultures` keeps.
         let (mut r, p) = if left {
-            left_invasion_out(seed)
+            left_invasion_out_on(seed, synth::rate_grove_cultures())
         } else {
-            led_invasion_out(seed)
+            led_invasion_out_on(seed, synth::rate_grove_cultures())
         };
         let (_, generation) = chief(&r).expect("a chief");
         let warriors = |r: &CampRun| -> Vec<(u32, u32, SlotState)> {
@@ -1165,7 +1177,11 @@ fn hold_despawn(r: &mut CampRun, agent: u64) -> Obs {
 /// A4 case 2's band: the grove goes out before the muster's end, so the chief's slot is Left, its
 /// throne body standing, and stays out. On the road.
 fn left_invasion_out(seed: u64) -> (CampRun, Handle<Party>) {
-    let mut r = quiet_grove(seed);
+    left_invasion_out_on(seed, Cultures::builtin())
+}
+
+fn left_invasion_out_on(seed: u64, cultures: Cultures) -> (CampRun, Handle<Party>) {
+    let mut r = quiet_grove_on(seed, cultures);
     let generation = seat_chief(&mut r);
     pay_at_home(&mut r, generation);
     let at = r.c.now();
