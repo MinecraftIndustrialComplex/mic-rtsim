@@ -904,7 +904,7 @@ impl Conflict {
     /// When the pool reached `k` whole warriors, by the closed form (never after `at`).
     fn whole_at(&self, f: u32, k: u32, at: Tick) -> Tick {
         let x = &self.factions[f as usize];
-        let rate = self.culture(f).def.recruits_per_day / TICKS_PER_DAY as f64;
+        let rate = self.recruit_rate(f);
         if x.pool >= f64::from(k) || rate <= 0.0 {
             return x.pool_at.min(at);
         }
