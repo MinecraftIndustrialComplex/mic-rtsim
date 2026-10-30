@@ -228,8 +228,12 @@ pub struct Camp {
     pub slots: Vec<Slot>,
     pub retired: Vec<Retired>,
     pub throne: Option<Throne>,
-    /// Recent player-caused losses of a renewal culture's camp (EQUILIBRIUM.md §2.2, MZB-254).
+    /// Recent player-caused losses of a renewal culture's camp (EQUILIBRIUM.md §2.2, MZB-254): its
+    /// members' (a den's Frostmaw, a grove's warriors; `1 / cap` a member).
     pub pressure: Pressure,
+    /// Recent player-caused losses of a camp's chief (a grove's Umvuthi: 1 a chief, a boss kind),
+    /// apart from the members' so that farming either does not slow the other (S9, MZB-1211).
+    pub chief_pressure: Pressure,
     /// The stamp of the booked arrival event, and its tick: a renewal culture's wait for its next
     /// member, booked whether the camp is in or out.
     pub arrival: u32,
@@ -700,8 +704,11 @@ impl Conflict {
             let cap = u32::from(row.k).max(1).min(ceiling);
             (cap, u32::from(row.count).min(cap))
         } else {
+            // A camp found with no member and no row takes the culture's `found_cap` for K, the
+            // jar's least so that the least is minted (MZB-1216); one found short keeps its count.
             let n = u32::from(bodies).min(ceiling);
-            (n.max(1).min(ceiling), n)
+            let least = self.culture(f).def.found_cap.unwrap_or(1);
+            (if n == 0 { least } else { n }.min(ceiling), n)
         };
         let x = &mut self.factions[f as usize];
         x.cap = cap;
@@ -750,7 +757,8 @@ impl Conflict {
     /// chief as it does with no row.
     fn camp_restore(&mut self, f: u32, row: &FoundRow, at: Tick) {
         let c = self.culture(f);
-        let half_life = c.renewal.or(c.chief_renewal).map(|r| r.rule.half_life_days);
+        let half_life = c.renewal.map(|r| r.rule.half_life_days);
+        let chief_half_life = c.chief_renewal.map(|r| r.rule.half_life_days);
         let renewal = c.renewal.is_some();
         let x = &self.factions[f as usize];
         let cap = x.cap;
@@ -759,6 +767,11 @@ impl Conflict {
         let camp = self.camp_mut(f).expect("created");
         if let Some(h) = half_life {
             camp.pressure = Pressure::handed_over(row.p, row.elapsed, day, h);
+        }
+        // The Umvuthi's pressure is the row's second (MZB-1231): a standing chief goes on with it,
+        // and a grove found without its chief takes the cap's in `found_empty_heir`.
+        if let Some(h) = chief_half_life {
+            camp.chief_pressure = Pressure::handed_over(row.p2, row.elapsed, day, h);
         }
         let mut home = row.bodies.home.iter().filter(|u| **u != (0, 0));
         for s in camp
@@ -797,7 +810,7 @@ impl Conflict {
         let day = (at.0 / TICKS_PER_DAY) as u32;
         let pressure = Pressure::at_cap(&r.rule, day);
         let due = at + r.rule.delay_ticks(pressure, day).max(1);
-        self.camp_mut(f).expect("a ledger").pressure = pressure;
+        self.camp_mut(f).expect("a ledger").chief_pressure = pressure;
         self.site_touch(f);
         self.set_heir(f, due, true, at);
     }
@@ -1033,10 +1046,17 @@ impl Conflict {
     /// kind this build does not know) is a player's too when the culture's renewal is a boss's
     /// (EQUILIBRIUM.md §2.2: an unclaimed death of a boss kind) and no one's otherwise, and a
     /// mob's kill is a predator's.
-    pub(super) fn renewal_cause(&self, f: u32, by: u32) -> LossCause {
-        let c = self.culture(f);
-        let boss = c.renewal.or(c.chief_renewal).is_some_and(|r| r.boss);
+    pub(super) fn member_cause(&self, f: u32, by: u32) -> LossCause {
+        let boss = self.culture(f).renewal.is_some_and(|r| r.boss);
         // The kernel's one table of the credit codes (MZB-1006): the `BY_*` codes are its codes.
+        LossCause::from_credit(by, boss)
+    }
+
+    /// Why a camp's chief was lost, by who killed it: the chief's own rule (a grove's Umvuthi is a
+    /// boss kind, so a death no one is credited with is a player's), apart from the members' (S9,
+    /// MZB-1211): a grove's warriors are no boss kind.
+    pub(super) fn chief_cause(&self, f: u32, by: u32) -> LossCause {
+        let boss = self.culture(f).chief_renewal.is_some_and(|r| r.boss);
         LossCause::from_credit(by, boss)
     }
 
@@ -1134,6 +1154,9 @@ impl Conflict {
             self.factions[f as usize].crystal = true;
         }
         self.stats.arrivals += 1;
+        if self.culture(f).def.chief_body.is_some() {
+            self.stats.grove_arrivals += 1;
+        }
         self.note(
             at,
             Some(f),
@@ -2048,8 +2071,9 @@ impl Conflict {
                 dropped_wait = true;
                 camp.heir = None;
                 camp.heir_stamp = camp.heir_stamp.wrapping_add(1);
-                // As if the camp had never been found empty: the cap's pressure was only a stand-in.
-                camp.pressure = Pressure::default();
+                // As if the camp had never been found empty: the cap's pressure was only a stand-in
+                // (the Umvuthi's; the warriors' is not).
+                camp.chief_pressure = Pressure::default();
                 let g = derive_gen(fkey, CHIEF_SLOT, at, camp.retired_gen(CHIEF_SLOT));
                 camp.alloc_chief(
                     g,
@@ -2941,7 +2965,7 @@ impl Conflict {
         }
         // A member that died away was lost then: its body's death at the camp is no second loss.
         // The bump goes first: the `unblock` that follows plans the wait from it.
-        let cause = self.renewal_cause(f, d.by);
+        let cause = self.member_cause(f, d.by);
         if state != SlotState::Dead {
             self.renewal_bump(f, 1, cause, at);
         }
@@ -2999,7 +3023,7 @@ impl Conflict {
         }
         let killer = named.then(|| self.player(w, d.killer));
         self.chief_killed_at_camp(w, f, body_of, killer, at);
-        self.chief_lost(f, self.renewal_cause(f, d.by), at);
+        self.chief_lost(f, self.chief_cause(f, d.by), at);
     }
 
     /// The chief's slot is lost to the books, by `cause` (a player's, which steps the camp's
@@ -3014,10 +3038,10 @@ impl Conflict {
         let day = (at.0 / TICKS_PER_DAY) as u32;
         let camp = self.camp_mut(f).expect("a ledger");
         if cause == LossCause::Player {
-            camp.pressure.bump(day, 1.0, r.rule.half_life_days);
+            camp.chief_pressure.bump(day, 1.0, r.rule.half_life_days);
         }
         camp.traded = Vec::new();
-        let due = cowed.max(at + r.rule.delay_ticks(camp.pressure, day).max(1));
+        let due = cowed.max(at + r.rule.delay_ticks(camp.chief_pressure, day).max(1));
         if cause == LossCause::Player {
             self.stats.renewal_losses += 1;
         }
@@ -3182,7 +3206,7 @@ impl Conflict {
             .map(|s| self.line(f, s, ACTION_REMOVE, 0, 0));
         let killer = (ck.by == boundary::BY_PLAYER).then(|| self.player(w, ck.killer));
         self.chief_killed_at_camp(w, f, body_of, killer, at);
-        self.chief_lost(f, self.renewal_cause(f, ck.by), at);
+        self.chief_lost(f, self.chief_cause(f, ck.by), at);
         if let Some(l) = remove {
             self.send_lines(f, vec![l], at);
         }
@@ -3521,6 +3545,27 @@ impl Conflict {
             && c.heir.is_some()
         {
             bad.push("MZB-420: a memory kept for a chief that is gone".into());
+        }
+        // The two pressures (S9, MZB-1211): each is a finite, non-negative number and is kept only
+        // by the culture whose rule it is (members by `renewal`, the chief by `chief_renewal`), and
+        // a culture on the shared renewal rule books no rate refill (its rate is 0).
+        let cu = self.culture(f);
+        for (name, p, kept) in [
+            ("members'", c.pressure, cu.renewal.is_some()),
+            ("chief's", c.chief_pressure, cu.chief_renewal.is_some()),
+        ] {
+            let (v, _) = p.parts();
+            if !(v.is_finite() && v >= 0.0) {
+                bad.push(format!("MZB-1211: the {name} pressure is {v}"));
+            }
+            if !kept && v != 0.0 {
+                bad.push(format!(
+                    "MZB-1211: the {name} pressure is {v} in a culture with no such rule"
+                ));
+            }
+        }
+        if cu.renewal.is_some() && c.refill_at.is_some() {
+            bad.push("MZB-1210: a refill by rate is booked for a camp on the renewal rule".into());
         }
         bad
     }
