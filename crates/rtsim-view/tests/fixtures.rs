@@ -4,7 +4,16 @@
 //! copied without its `rtsim/archive` (the event timeline): `events.rs` needs a real save with no
 //! archive and writes its own archive onto a copy of this one. The create save keeps its archive.
 //!
-//! - `tests/data/core`: neoforge/core's GameTest world, a fresh one, run from the S5 build of
+//! - `tests/data/core`: neoforge/core's GameTest world, a fresh one, run from the S6 build of
+//!   `feat/eq-s6-villages` at db46b196 (Villages and Ribbits, EQUILIBRIUM.md S6, EQ-1 (a),
+//!   merged with main c9111cc0, which carries S5; docs/overnight-choices-equilibrium.md EQC150 to
+//!   EQC193; S6's formats on top of S5's: the world model's page is RTW5, a village's row after its
+//!   market (the engine's count and K, the settlers' bookings and when they were made, whether it
+//!   was seen alive, its kill pressure, the settlers' and the growth clocks' stamps), the wheel's
+//!   events may be a settlers' or a breeding step and the resident ops are kept;
+//!   phase 1's meta page RTP1 is version 6, the census and the resident answer joining its log
+//!   as inputs 22 and 23 and the snapshot part losing its censused list; the dragons' pages stay
+//!   RTD10 and RTN10); before that, the S5 build of
 //!   `feat/eq-s5-dragon-bodies` (Dragon home bodies, EQUILIBRIUM.md S5, EQ-2 (a), on the base
 //!   43062c0b, which is main with M12a; docs/overnight-choices-equilibrium.md EQC100 to EQC149;
 //!   S5's formats: the dragons' pages are RTD10 (magic `RTDA`, four bytes) and their meta page
@@ -108,7 +117,10 @@
 //!   when the server stops: 6638edc's save had one, while both runs of 98d6d34 and main's 7e4042a
 //!   had every herd staying put. So the route layer is not required here; it still has to draw or
 //!   say why.
-//! - `tests/data/create`: neoforge/create's GameTest world, run from the S5 build of
+//! - `tests/data/create`: neoforge/create's GameTest world, run from the S6 build of
+//!   `feat/eq-s6-villages` at db46b196 (merged with main c9111cc0) with `-Psec1fx` (the core
+//!   save's formats, S6's: RTW5 and RTP1 version 6, as the core entry says, and S5's under them; a
+//!   fresh world copied to `target/` after its JVM exited); before that, the S5 build of
 //!   `feat/eq-s5-dragon-bodies` with `-Psec1fx` (the core save's formats, S5's: RTD10 and RTN10,
 //!   as the core entry says; a fresh world copied to `target/` after its JVM exited); before that,
 //!   129de219 with `-Psec1fx`
