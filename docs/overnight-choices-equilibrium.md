@@ -1,12 +1,12 @@
-# Overnight choices: EQUILIBRIUM.md slices S1, S2 and S4 (2026-10-22), and the design of S5 (2026-10-29)
+# Overnight choices: EQUILIBRIUM.md slices S1, S2 and S4 (2026-10-22), and S5 (designed and built 2026-10-29)
 
 Reversible choices made while Ben was asleep, each with its reason, numbered EQC#. None is final
 until Ben reviews it. The work is EQUILIBRIUM.md §4's slices S1 (the who-is-alive census), S2
 (herds: density term, refuge, dispersal, frontier founding, tombstone removal) and S4 (dragons: lair
 pressure, fed share, starve-leave, arrival gate, newcomer direction, oil visitors only into due
 lairs). DECISIONS.md is unchanged; EQUILIBRIUM.md marks the slices built. Branches `feat/eq-s1-s2`
-and `feat/eq-s4`. The last section, S5, is a design only (dragon home bodies, EQ-2 (a); records EQC100 to
-EQC149; branch `feat/eq-s5-dragon-bodies`): nothing in it is built.
+and `feat/eq-s4`. The last section, S5, is the design of the dragon home bodies (EQ-2 (a); records EQC100 to
+EQC144) and, after the design, what the build found (EQC145 to EQC149; branch `feat/eq-s5-dragon-bodies`).
 
 ## S1: the census
 
@@ -135,12 +135,12 @@ The 30-seed checks of EQC32 on the 8 x 7 ranges grid and its five lairs, release
   empty until a migrating herd passes. That is the gate doing what §2.4.1 says; the scenario's lairs
   were placed before there was a gate.
 
-## S5: dragon home bodies (design, 2026-10-29, not built)
+## S5: dragon home bodies (designed and built 2026-10-29)
 
 EQUILIBRIUM.md §4's S5 row on Ben's EQ-2 (a), which reopens P3: **a dragon's body is vanilla while it roosts at its
-lair, and a puppet while it is away.** Records EQC100 to EQC149 (S5's range). This section is the design for Ben's
-review; nothing is built, no Rust or Java changes, and `boundary.md`, `replay-gate.md` and EQUILIBRIUM.md change only
-when the build lands (EQC125 lists how). Branch `feat/eq-s5-dragon-bodies`, based on `feat/mowzie-m12a-s3` at 43062c0b
+lair, and a puppet while it is away.** Records EQC100 to EQC149 (S5's range). The design (EQC100 to EQC144) was written
+first and reviewed; the build followed it and its findings are EQC145 to EQC149 at the end. `boundary.md`,
+`replay-gate.md` and EQUILIBRIUM.md changed as EQC125 lists. Branch `feat/eq-s5-dragon-bodies`, based on `feat/mowzie-m12a-s3` at 43062c0b
 (main d6ac9341 plus M12a: S3's site ledger, kill credit and MZB-1000 to MZB-1047).
 
 **Words used.** A *home body* is a lair dragon's vanilla entity: saved by vanilla, carrying the plugin's `home`
@@ -376,4 +376,67 @@ Each step lands its tests; `cargo test` and clippy `-D warnings` after each Rust
 
 ### EQC145 to EQC149
 
-Reserved for the build's findings (S4 left its findings after its records; S5 does the same).
+The build's findings (S4 left its findings after its records; S5 does the same). Built 2026-10-29 on `feat/eq-s5-dragon-bodies`, one commit per step of EQC144 (`8404239d` records, `aaeea166` rows and pages, `b6022c90` engine, `1060050b` and `508f0d4f` fake plugin and host tests, `0233ff9e` jni protocol tests, `0cf42a7f` core `ChunkWatch`, `ebdae2da` the plugin, `7852cc58` GameTests, then the fixes named below).
+
+#### EQC145: failing first, and where it was not
+
+Rust steps were written test first and run red before the code; the texts, for the record:
+
+| Step | The failing text before the code |
+|---|---|
+| 1, records | the gate test `outbox::tests::every_command_kind_has_its_replay_verdicts`: `the drops are counted`, left `dropped: 6`, right `dropped: 5` (HAND_BACK in the sample, no verdict yet); the other new fields failed to compile (`missing field home in initializer of Materialized`, `missing fields entity and lair in initializer of Died`, `missing fields age_ticks, health and hunger in Adopt`) |
+| 2, pages | `pages_round_trip_rtd10` was written beside the page code and seen green only: **no red was recorded for it** |
+| 3, engine | `tests/home_bodies.rs`: 26 of 29 failed against the old engine, e.g. `one adoption: []  left: 0 right: 1` (a lair's own dragon found by the census), `a_stray_above_two_is_discarded  left: 0 right: 2`, `left: [] right: [(33, 7)]`; the three that passed red assert a no-op. After the code two failed once and were fixed in the step: `an_away_dragons_standing_body_is_discarded_unwatched` (home_bodies.rs:336) and `a_home_body_found_is_adopted_and_synced_from_the_engine` (`hunger from the engine's closed form  left: 87 right: 50`) |
+| 4, fake plugin | `tests/home_bodies_long.rs` and the invariants property were written with the fake plugin and seen green only: no red recorded |
+| 4b, host and jni tests that fed a lair key to UNTAGGED | red because the engine's lair branch was gone, which is the contract moving: `the lair is lived in  left: Some(Tick(1000)) right: None`; `home, no pressure  left (0, 11, 3.2630346) right (1, 0, 0.0)`; `left (0,0,0) right (3000,100,3000)`; the host: `timed out waiting for a materialization after the switch`. Moved to `LAIR_CENSUS` helpers. `gametest_worlds_open_in_the_host_with_their_saved_state` (host.rs:465) stayed red until the fixtures were refreshed |
+| 6, `ChunkWatch` | first run: 19 compile errors (no Minecraft classes on `:core:test`'s classpath), then `NoClassDefFoundError: it/unimi/dsi/fastutil/longs/Long2ObjectOpenHashMap` (7 of 8 failed); fixed by making the tracker Minecraft-free (`VanillaChunks` holds the game source): 8 pass |
+| 8, GameTests | **not red against 43062c0b.** The twelve GameTests and the jni tests `a_census_is_answered_with_adopt_discard_and_spawn_lines` and `a_reset_hands_a_lairs_bodies_to_the_new_engine` call classes that exist only on the branch (`HomeBodies`, the census records), so on 43062c0b they do not compile; they were written after the code and their first runs were red for the reasons below |
+
+The first full iceandfire round failed 7 tests: `awatchedroost...`, `adragonluredfromitslairisawaynotmissing`, `asettledpuppetataninlairbecomesahomebody`, `awaydragonisapuppetandthecensusreconciles` (all four: `DRAGON_LEFT_HOME reached the engine`, because the leash and the watched rule subtracted the wrong point of `nearestImage`, a distance of 0: nothing was ever leashed and every player watched every lair; fixed in `6cc4b2bb`), `alairsdragonisadoptedanditshoardrobbed` (the test asserted a sleeping flag; the dragon is awake at the census, flags 0), and two save-wait tests that ran out at 2400 logic ticks (`resetfindstheroostingdragonbycensus`, `uninstallkeepsroostingdragons`: budget 9000, and a gap of 1200 ticks where `gapRestart(2 * DAY)` had jumped the game time past `ChunkWait`'s budget). The third round failed 3 (below, EQC147).
+
+#### EQC146: the UNVERIFIED facts, settled by GameTests
+
+1. **A hidden body's `EntityLeaveLevelEvent` carries removal reason `null`** (the plugin log reads `removal reason null`); a real chunk unload carries `UNLOADED_TO_CHUNK` (`aHeldLairComesInAndGoesOutByItself`). The plugin treats both as the body leaving: the lair's out is the authority, the event the second signal, as the plan said.
+2. **The setters alone do not refresh the attributes.** `aLiveBodysAgeSyncRefreshesItsAttributes`: max health at 30 days 135.0; after `setAgeInTicks(110 days)` and `setHunger` alone 135.0; after `refreshDirtyAttributes()` 442.0. `IafDragons.sync` calls the refresh (`growDragon(0)` is not needed).
+3. **`setData` and `removeData` on a live dragon take effect at the next vanilla write.** `roostingDragonIsSavedByVanilla`: the entity chunk read back from storage carries the dragon and `HomeTag[lair, agent]`; a puppet (agent tag, no home attachment) is not written (`awayDragonIsAPuppetAndTheCensusReconciles`: `the puppet was not saved`); a hand-back writes it again (`aSettledPuppetAtAnInLairBecomesAHomeBody`).
+4. **A home survives Ice and Fire's own NBT write and read unless a coordinate is exactly 0.** `aHomeSurvivesVanillasSaveUnlessACoordinateIsZero`: `-8231361, -58, 7551959` read back equal; `0, 70, 5` read back as no home (`hasHomePosition` flag still true). The leash is the plugin's (`leashScan`), not Ice and Fire's, so a lair at a zero coordinate only loses the dragon's own roaming limit after a save.
+5. **The footprint against a real roost.** A placed fire roost's box is 25 x 25 x 25 (12 blocks either side of its pivot), well inside the 96-block disc of the footprint (7 by 7 chunks at most); a held 48-block footprint of `ENTITY_TICKING` chunks came in 2 ticks after the declare (a poll every 20) and went out 2 ticks after the tickets were let go. **Not measured:** cave boxes, and any Deep Time world.
+
+#### EQC147: where the build differs from the plan
+
+- **The magics are `RTDA` and `RTNA`**, not the plan's `RTD10` and `RTN10`: a page magic is four bytes and those are five characters (the tenth format, `A` for ten, to keep the magic four bytes). No migration, as agreed.
+- **The engine has no `watch_blocks`.** The plugin decides watched (the larger of `watchBlocks` and the distance a client tracks an entity at) and says so in the census's `CENSUS_WATCHED` flag; the engine only reads the flag. One rule in one place, one tunable fewer on the engine.
+- **The test hooks are `HomeBodies.testIn(lair, watched, now)` and `testOut(lair, now)`**, not `forceCensus` and `forceOut`: a test names the lair and the plugin does the rest.
+- **Core's `ChunkWatch` is split from the game source** (`VanillaChunks`), so its unit test runs in `:core:test` without Minecraft.
+- **A scripted `DEPART` captures a home body**, as it does a puppet: existing tests that depart the occupant still do.
+- **`DRAGON_UNTAGGED` carries lair 0 always**: a lair's dragons come by the census.
+- **The recall of an away dragon at a watched roost is the Rust tests' alone** (`a_watched_lair_recalls_its_away_dragon`, `a_recall_cancels_the_trip_and_books_no_hunt`): a GameTest cannot stage a hunt with no prey. The vanished-body test has no gap variant for the same reason of time.
+- **A home body's corpse is ordinary at once.** Vanilla saves a home body, so the journal's `DRAGON_DIED` (which names the body and the lair) is enough and the attachment is removed; a puppet's corpse stays tagged until the engine's pages hold the death (Z6).
+- **Who keeps a body when a lair holds more than two dragons (H2):** the dragons that hold a body or are being given one first, then the oldest, then the lowest handle, at most `home_bodies_max` (2); a third dragon's standing body is discarded (DISCARD reason 2). Of one dragon's bodies (H1) the one in control stays, else the closest to the lair, and the rest go with reason 4.
+- **`SiteTestHooks.requestSave` now also saves the world** (`saveEverything(true, false, true)`). The journal is trimmed only to what its file on disk holds (JB9) and a GameTest world does not save itself, so a test waiting on `savedThrough` passed only when a world save happened to fall in its window: S3's `resetDoesNotMintADragon` (4000 ticks) passed in the first iceandfire round and failed in the third (`an engine save covers the journal through 298`), right after my reset test; the budget of 9000 that my own save-wait tests took spans the 6000-tick autosave. The diagnosis is from the code (`BoundarySession.applyCommands` clamps the trim to `writtenThrough`) and the fix confirms it: in the fourth round the test passed with the handover 39 ticks after the save, where an earlier pass had waited 640. Not shown by a red run of the old hook in isolation. The hook is the tests', and every test that uses it (iceandfire S3 and S5, mowziesmobs S3) gets the save it asked for.
+- **`homeBodies` in the GameTests counts one lair's bodies**, not any dragon with the attachment within 80 blocks: a failed neighbouring test's leftover body made `awayDragonIsAPuppetAndTheCensusReconciles` fail with `no second body: no home body stands`. `aSettledPuppetAtAnInLairBecomesAHomeBody` read only the chunk of the lair's centre, and the dragon had landed 3 blocks over a chunk border (`vanilla's save returns it`): it reads the dragon's own chunk too.
+
+#### EQC148: results
+
+Final code is `f25df8f0` plus the fixture and documents commits (no code changes after it).
+
+| Check | Result |
+|---|---|
+| `cargo test --workspace --no-fail-fast -j 8` | 2309 passed, 0 failed, 28 ignored (143 test binaries); includes the viewer fixtures' host test and S5's `tests/home_bodies.rs` (29), `tests/home_bodies_long.rs`, the two jni protocol tests |
+| `cargo clippy -j 8 --workspace --all-targets -- -D warnings` | clean |
+| `:core:test` | `ChunkWatchTest`, 8 tests, all pass (the only unit tests in `:core:test`); last run on the tracker's final source. The code since changes `SiteTestHooks` only, which the iceandfire and mowziesmobs rounds compiled |
+| GameTest round `core` (cleared world) | All 168 required tests passed. The first run failed `aColumnFormsAgainAfterTheModuleIsSwitchedOffAndOn` once (`the band appeared again`) and passed on the rerun of the same code: **a flake**, a test with a flake history (MZB-1040) |
+| `create -Psec1fx` | All 266 required tests passed |
+| `create -PwithMowzie` | All 271 required tests passed |
+| `mowziesmobs` | All 112 required tests passed, before and after `f25df8f0` (the hook change) |
+| `iceandfire` | round 1: 7 failed (EQC145); round 2: the server crashed in a GameTest (`aWatchedRoostSpawnsNothing...` called `bridge().body(agent).discard()` after `testOut` had forgotten the body: a NullPointerException in a `thenExecute`, which a GameTest server does not survive; the test now takes the entity first); round 3: 3 failed (EQC147); round 4, on the final code: **All 54 required tests passed** |
+
+The core and create rounds ran before `f25df8f0`, which changes `SiteTestHooks.requestSave` (used by no core or create test) and iceandfire's GameTests only; they were not run again. `origin/main` had not moved from `43062c0b` at the last fetch, so there was nothing to merge.
+
+#### EQC149: what is left
+
+- **Footprints on caves and Deep Time worlds** (UNVERIFIED 5): measure the real cave boxes and a Deep Time lair before the 48-block disc is final.
+- **The upgrade EQC143 names** (records riding on entities, markers and the write barrier) for the crash window between an answer and its entity chunk.
+- **The 30-seed, 20-year soak** (`bodies_do_not_move_the_s4_bands_30_seeds`, `#[ignore]`, release) was not run; the three-year run at seed 1 is in the suite.
+- **No play-drive** of a MIC pack world with a real roost and a player (the pack's loader, a Deep Time world); the GameTests and the fake plugin are the evidence.
+- **The hand-back and the recall have no GameTest of a real hunt**: the hand-back is staged by moving the puppet home, the recall by the Rust tests alone.
