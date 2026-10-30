@@ -2141,7 +2141,7 @@ public final class Camps {
      * real player the damage names, a pet's player owner, vanilla's kill credit when that is a real player or a pet (a
      * hit of theirs within 100 ticks, even when the death came by a fall), any other source entity by its kind, else
      * none. A NeoForge {@code FakePlayer} is a machine and never a player's kill (MZB-111); a test's server player is a
-     * real one. Camps only: BAND_CASUALTIES keep {@link ConflictBridge#byKind} (M11 adopts this).
+     * real one. A band member's BAND_CASUALTIES take it too (M11 adopted it).
      */
     static ConflictBridge.Credit killer(LivingEntity dead, DamageSource source) {
         return ConflictBridge.credit(dead, source);

@@ -90,6 +90,11 @@ import java.util.UUID;
  *   <li>34 NEST_DAY: u64 ticks. The oil nests' day (their watch period and the unit of their waits,
  *       OILGATE.md §4.6) is this many ticks from now on; 0 restores the default (an engine opened with
  *       {@code FLAG_TEST} only; the nest GameTests).</li>
+ *   <li>41 CONFLICT_SLAY: u64 faction, u32 n, f32 pressure. A player's kills at a pool camp (slice S7, EQC206): the
+ *       camp of that faction key loses {@code n} warriors (its pool's whole warriors first, then its war parties'
+ *       members; {@code -1}, u32 max, is all of them) as a player's loss, then takes {@code pressure} more as if that
+ *       many had also been killed. Refused (logged) when the key is no camp (an engine opened with
+ *       {@code FLAG_TEST} only).</li>
  *   <li>40 TALK_REPORT: u64 village, u16 kind, u8 severity, u8 flags, who (u8 class, u64 a, u64 b), whom
  *       (the same), i32 x, i32 z, u32 ago. One report put on a village's noticeboard (TK40; a TALK ref's
  *       class and ids, docs/boundary.md §13.2; an engine opened with {@code FLAG_TEST} only).</li>
@@ -135,6 +140,7 @@ final class NativeCodec {
     static final int NEST_DAY = 34;
     // 35 to 39: left free (a gap between peers' order codes).
     static final int TALK_REPORT = 40;
+    static final int CONFLICT_SLAY = 41;
 
     /** Bytes before an order's body: u16 opcode, u16 reserved, u32 size. */
     static final int ORDER_HEADER = 8;
@@ -393,6 +399,14 @@ final class NativeCodec {
         Orders nestDay(long ticks) {
             begin(NEST_DAY);
             u64(ticks);
+            return end();
+        }
+
+        Orders conflictSlay(long faction, int n, float pressure) {
+            begin(CONFLICT_SLAY);
+            u64(faction);
+            u32(n);
+            f32(pressure);
             return end();
         }
 
