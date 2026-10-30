@@ -1494,3 +1494,52 @@ fn a_restart_changes_no_decision() {
         assert_eq!(farmed_life(71, restarts), straight, "restarts {restarts:?}");
     }
 }
+
+// ---------------------------------------------------------------- the outposts (EQC237 to EQC254, FB-5, FB-8)
+
+/// The raider culture claims the vanilla pillager outpost and the Illager Invasion fort: a camp the
+/// reporter declares under either id is a raider camp (a cap of 50, a full pool, a pool camp with
+/// a strain), with a dictionary that knows the structure.
+#[test]
+fn the_raider_claims_the_outposts() {
+    let c = Cultures::builtin();
+    let raider = c.index_of("raider").unwrap();
+    assert_eq!(c.of_structure("minecraft:pillager_outpost"), Some(raider));
+    assert_eq!(c.of_structure("illagerinvasion:illager_fort"), Some(raider));
+    // An outpost reported through FACTION_FOUND joins the world as a raider camp.
+    let mut r = CampRun::new(80, "raider", 0);
+    let f = r.f;
+    assert_eq!(
+        r.c.cultures.get(r.c.factions[f as usize].culture).name(),
+        "raider"
+    );
+    assert_eq!(r.c.factions[f as usize].cap, 50);
+    assert_eq!(r.c.pool_at(f, r.c.now()), 50.0);
+    assert!(r.c.factions[f as usize].strain.is_some());
+    assert_eq!(r.c.pressure_now(f, r.c.now()), 0.0);
+    // No bodies at home: nothing for a census to count, so no camp ledger.
+    assert!(r.c.camp(f).is_none());
+    let _ = &mut r;
+}
+
+/// FB-8 (b): the raider plunders about once in 48 days, not 8 (the data's one number): over a
+/// thousand days a camp's plunder drive fires some 20 times, not 125.
+#[test]
+fn the_raider_plunders_at_the_slower_mean() {
+    let c = Cultures::builtin();
+    let raider = c.get(c.index_of("raider").unwrap());
+    assert_eq!(raider.def.plunder_mean_days, Some(48.0));
+    let mut plunders = 0u32;
+    for seed in 0..6u64 {
+        let (mut w, mut c, f) = camp(200 + seed, "raider");
+        c.run_until(&mut w, &mut NoInfrastructure, Tick(1000 * DAY));
+        plunders += c.factions[f as usize].plunders;
+    }
+    // Each camp: a draw each time the drive fires (or fails to send); 6 camps x 1000 days / 48.
+    let want = 6.0 * 1000.0 / 48.0;
+    let got = f64::from(plunders);
+    assert!(
+        (0.6 * want..=1.5 * want).contains(&got),
+        "{got} draws against {want}"
+    );
+}
