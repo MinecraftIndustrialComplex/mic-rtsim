@@ -12021,8 +12021,8 @@ rounds of phase 2 are the check, and what they found is recorded after them.
 ## M12 S9
 
 EQUILIBRIUM.md's slice S9 (§2.4.7, §2.6 items 1 to 14, §4's S9 row, §3.3's grove row): the Frostmaw den and the
-Umvuthana grove on the shared renewal rule. **This section is a design. Nothing is built; the build waits for the
-lead's review.** Branch `feat/eq-s9-mowzie` at a4717c1f (main 9389b4e5 plus slice S7, which is in review and lands next).
+Umvuthana grove on the shared renewal rule. **This section was a design and is now built (steps 1 to 9 and the fixtures,
+"Build notes" below); the records keep their design text where the build did not change it.** Branch `feat/eq-s9-mowzie` at a4717c1f (main 9389b4e5 plus slice S7, which is in review and lands next).
 Ids MZB-1200 to MZB-1299. The model behind the numbers is `research/equilibrium-s9-mowzie/mowzie.py` (stdlib Python,
 `python3 -I mowzie.py`, under a second), the S7 `camps.py` kind: the engine's own rules, day-stepped, scripted players.
 Measured besides the model: the Rust suites of `rtsim-conflict`, `rtsim-cli` (`sim mowzie`) and `rtsim-jni` were run once with
@@ -12235,8 +12235,10 @@ neither break nor refound applies; no news, no archive kind (FB-4). Each can be 
   start (whole days); the arrival adds one owed slot and, still short, the next wait reads the decayed P. Members away keep
   the grove not short; a member lost on the march makes it short at the casualty record's tick; survivors coming home
   re-fill only the room (`pool_return`). A thin grove fields what it has (a war party goes with at least half its make-up).
-  Worked, K 7, three warriors killed at home on day 0 (P 0.43): arrivals on days 8.1, 16.0, 23.8; a farmed grove settles at
-  P 1.4 and a warrior every 14 days.
+  Worked, K 7, three warriors killed at home on day 0 by a player: as built the first wait is read when it starts, at the
+  first death (P 1/7, 6.6 days), the second 8.0 days after the first, the rest read the pressure that stands at the end of the
+  one before (the design's 8.1, 16.0, 23.8 read all three kills at once, which the kernel's rule does not: a running wait is
+  never pushed out); a farmed grove settles at P 1.4 and a warrior every 14 days.
 - **MZB-1215** (what is minted, and when): the **den** as built: a Frostmaw asleep with its crystal, `min(192, 6 x 2^P)` days
   after the loss (6 after a death no player caused, 12 after a first player's kill, near 52 farmed); the books gain the owed
   slot when the wait ends; a den that is in counts (RECOUNT) and its census's SPAWN waits while a player is within 160 blocks
@@ -12502,6 +12504,48 @@ of what is built) is taken.
   saved RTCE page is not read (no compatibility before a release); (6) `Pressure::at_cap` for a grove found empty uses the
   warriors' rule, 96 days to the first warrior, a long first wait for a world whose groves were cleared before the mod: the
   conservative reading of "found empty".
+
+### Build notes
+
+Built on the landed S7 (a4717c1f), FB-1 to FB-4 on the recommendations (FB-1 base 6, FB-2 no grove plunder mood, FB-3 the
+built hold of 160 blocks and 6,000 ticks, FB-4 the Umvuthi's pressure in the ledger row). If Ben answers differently the work is
+small and named: FB-1 is `base_days` in `umvuthana.json` (one number; `found_cap` and the cap stay); FB-2 is the absent
+`plunder_mood` block of the same file (add the block, and `rate_grove_cultures` in `synth.rs` stays the rate-based control);
+FB-3 is `HOLD_RANGE` (160.0) in `GroveKind` and `DenKind` and the 6,000-tick limit beside them (and MOWZIE.md's text, which now says 160); FB-4's other answer drops
+`p2` from SITE_STATE and the found tail (`rtsim-kernel/src/sites.rs`, `SiteLedger`) and the reset test, and the heir's wait after
+a restart falls back to the warriors' pressure (the 12-day heir of the failing test).
+
+Commits, in order: 4eb3735e (step 1, the warriors on the shared rule, data and culture), f5b82621 (the second pressure in
+SITE_STATE and the found tail, order 42), acfa1674 (the Umvuthi's pressure, march casualties, `found_cap`, RTCF), c503fe01 (a
+reset hands the two pressures over), 9e63fa2c (`sim mowzie` runs 5, 6, 10), 3fd49b2a (census), fda71aec (harness tests), 05f8a281
+(the documents), 823a9f53 (the Java GameTests, `SiteRowPacking`), the clippy fix, and the fixtures.
+
+Where the build differs from the design text above, and why:
+- **`chief_killed_by`'s guard** is `def.chief_body.is_none()` (a culture whose chief has a body), not `renewal.boss`: the first
+  version broke the pool camp goblin chief's "one over cap" rule, whose culture has no boss renewal either.
+- **`found_cap` applies only to a camp found with no members (n == 0)**; a camp found short keeps its own K (K 3 stays 3).
+- **The first wait is read at the first death** (MZB-1214's worked example, corrected above).
+- **The unattended hold needs a livestock surplus.** The harness' village stock is `VillageStock::{Plain, Rich}`: a plain
+  synthetic village has no surplus and raids "find nothing worth taking", so the design's 0.85 to 0.92 does not show on it;
+  the unattended runs use rich villages (`mowzie_world_on`), where an unattended grove holds 0.91 to 0.95 of K (EQUILIBRIUM.md
+  §3.3), not the design's 0.89. A `CampRun` world has no village in plunder reach.
+- **Engine numbers differ a little from the model's**: a cleared grove is back to full in 51, 70 and 88 days for K 5, 7 and 9
+  (the model 54, 73, 91); a grove farmed by a visitor every 2 days yields 5.6, 6.6 and 7.3 a game year at the engine (the harness
+  test replays the chain from the kernel's own `Pressure` and `RenewalRule` rather than comparing with §3.3's 5.8).
+- **A den's farmer** needs its first visit seeded at the `lag` (the presser never starts otherwise); the den's wanderer rate is
+  `2.0/400` per even day.
+- **Save growth**: a raiding grove's save is larger by the pressure it now carries (one f32 and its day in the camp ledger, eight
+  bytes in SITE_STATE); nothing else grows.
+- **Order 42 `CONFLICT_SEND`** takes a u16 frame (41 is S7's SLAY); `a_reset_hands_a_groves_two_pressures_to_the_new_engine`
+  pins p2 through a reset (failing-first: without p2 the heir waits 12 days).
+- **Not built as GameTests**: the Frostmaw killed away and the march of a grove stay with the Rust tests
+  (`tests/grove_renewal.rs`, `tests/mowzie_aloft.rs`); the real-engine GameTests are `GroveRenewalGameTests` (a killed warrior is
+  replaced after the wait, a killed Umvuthi leaves the warriors' pressure alone, a reset keeps both pressures, an Umvuthi heir
+  takes a warrior) and `SiteLedgerGameTests` (a pet's kill at a den is a player loss; `uninstallLeavesHomeBodies` extended).
+- **Core's `SiteLedgerTest`** has no Minecraft classes on its classpath, so the pure part of a row's packing is
+  `SiteRowPacking` and the NBT round trip is the GameTests'.
+- The nine rtsim-conflict tests and the four `sim mowzie` checks MZB-1268 and MZB-1264 name were updated one by one, each with
+  its reason in a comment above it.
 
 ### The work split
 
