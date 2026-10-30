@@ -38,7 +38,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ThreadLocalRandom;
 
-import static com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests.check;
 import static com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests.record;
 
 /**
@@ -65,6 +64,22 @@ public final class VillageRenewalGameTests {
     private static final int HALF = 8;
 
     // ---- the village the tests stand up ---------------------------------------------------------------------
+
+    /**
+     * {@link RtsimTests#check}, and a failing check sleeps 5 ms: the GameTest server ticks as fast as it can, and the chunks a
+     * wait is for load on other threads in wall time, so a timeout in ticks must not pass in too short a time (see
+     * {@link RtsimTests#io}). A check that fails in a {@code thenExecute} fails the test either way.
+     */
+    private static void check(String what, boolean ok) {
+        if (!ok) {
+            try {
+                Thread.sleep(5);
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+            }
+        }
+        RtsimTests.check(what, ok);
+    }
 
     /** A village on the ground at a far place, its reach loaded, with beds. */
     private static final class Site {
