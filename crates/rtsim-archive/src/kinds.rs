@@ -152,6 +152,9 @@ kinds! {
     INDUSTRY_RECONCILE = "industry.reconcile", "Reconcile report", Routine;
     INDUSTRY_ATTACK = "industry.attack", "Attack on a district", Major;
     INDUSTRY_LINE = "industry.line", "Train line first seen", Minor;
+    // Pool camps under a player's pressure (rtsim-conflict, S7). Appended: a kind's place is saved.
+    CONFLICT_BROKEN = "conflict.broken", "Camp breaks", Notable;
+    CONFLICT_REFOUNDED = "conflict.refounded", "Camp refounded", Notable;
 }
 
 /// A kind by name.

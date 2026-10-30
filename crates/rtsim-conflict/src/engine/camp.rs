@@ -1482,6 +1482,8 @@ impl Conflict {
             }
         }
         self.unblock(f, at);
+        // Its members away were the camp's warriors: a pool camp may be thin now (EQC207).
+        self.strain_check(f, at);
     }
 
     /// A war party reaches home (`home`): a survivor whose body is still in the camp is home, body

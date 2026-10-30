@@ -93,6 +93,7 @@ pub const SETTLERS_KEY: u64 = fnv1a64(b"mic_rtsim.conflict.settlers");
 
 pub mod camp;
 pub mod rail;
+mod strain;
 
 pub use camp::{
     Answered, CHIEF_SLOT, Camp, Chest, Ended, Heir, Line, Placing, Retired, STACK_ITEMS, Slot,
@@ -588,6 +589,12 @@ pub(crate) enum Ev {
         faction: u32,
         stamp: u32,
     },
+    /// A pool camp's strain is looked at: a thin, pressured camp that was busy is checked for a
+    /// break (EQC208), and a broken camp whose wait is over is refounded (EQC210). Wheel tag 12.
+    Strain {
+        faction: u32,
+        stamp: u32,
+    },
 }
 
 /// A band `home` ended whose HAND_BACK lines Java has not answered (MZB-466).
@@ -713,6 +720,11 @@ pub struct ConflictStats {
     /// The RECOUNTs sent: a camp that is in asked to count again, at an arrival and a day after a
     /// census that missed a member body (MZB-1015).
     pub camp_recounts: u64,
+    /// Pool camps that broke (EQC207), that were refounded (EQC210), and the looks at a thin,
+    /// pressured camp that found it busy and waited (EQC208).
+    pub breaks: u64,
+    pub refounds: u64,
+    pub break_deferrals: u64,
 }
 
 /// Where goods went, per world good (thousandths).
@@ -1436,6 +1448,7 @@ impl Conflict {
                 Ev::CampHeir { .. } => "camp_heir",
                 Ev::Rail { .. } => "rail",
                 Ev::CampRecount { .. } => "camp_recount",
+                Ev::Strain { .. } => "strain",
             };
             *m.entry(k).or_default() += 1;
         }
@@ -1961,6 +1974,7 @@ impl Conflict {
         s.pressure.bump(day, amount, pr.def.half_life_days);
         self.stats.renewal_losses += u64::from(n);
         self.site_touch(f);
+        self.strain_check(f, at);
     }
 
     /// Whose loss a pool camp's member is when `by` credits its death (EQC204): the credit's own
@@ -2632,7 +2646,9 @@ impl Conflict {
         feud.stamp = feud.stamp.wrapping_add(1);
         let stamp = feud.stamp;
         // A wait only the camp's room or lines can end books nothing: `unblock` plans it again.
-        if let Some(t) = next.filter(|t| *t < BLOCKED) {
+        // Nor does a broken camp (EQC209): the stamp is new, so nothing older is live, and the
+        // refounding plans every feud again.
+        if let Some(t) = next.filter(|t| *t < BLOCKED && self.camp_active(f)) {
             let t = if from_wake { t.max(at + 1) } else { t.max(at) };
             self.schedule(
                 t,
@@ -3514,7 +3530,7 @@ impl Conflict {
         at: Tick,
     ) -> Option<Handle<Party>> {
         let make: Vec<(u8, u32)> = self.culture(f).parties[kind.index()].clone();
-        if make.is_empty() {
+        if make.is_empty() || !self.camp_active(f) {
             return None;
         }
         // A grove's heir that is due goes before any new war party (MZB-616).
@@ -5481,6 +5497,8 @@ impl Conflict {
         if kind == PartyKind::Plunder {
             self.schedule_plunder(f, at);
         }
+        // The band was the camp's last business, maybe (EQC208).
+        self.strain_check(f, at);
     }
 
     // ---- plunder (C24: havens) -------------------------------------------------------------
@@ -5489,6 +5507,9 @@ impl Conflict {
         let Some(mean) = self.culture(f).def.plunder_mean_days else {
             return;
         };
+        if !self.camp_active(f) {
+            return;
+        }
         let bend = self.temper(f).bend(Trait::Aggressive, 1000, 50).max(1);
         let mean = mean * 1000.0 / f64::from(bend);
         let x = &mut self.factions[f as usize];
@@ -5503,6 +5524,10 @@ impl Conflict {
     }
 
     fn plunder(&mut self, w: &mut World, f: u32, at: Tick) {
+        // A broken camp has no drive to plunder (EQC209): the refounding books the next.
+        if !self.camp_active(f) {
+            return;
+        }
         if self.peaceful {
             // No war party leaves on Peaceful: the drive tries again later.
             self.stats.peace_held += 1;
@@ -5529,7 +5554,10 @@ impl Conflict {
                 match n.kind {
                     NodeKind::Village(cu) => c.hates(cu.name()),
                     NodeKind::Haven(_) => by_key.get(&n.key).is_some_and(|&o| {
-                        c.hates(cultures.get(factions[o as usize].culture).name())
+                        let rival = &factions[o as usize];
+                        // A broken camp is nothing to plunder (EQC209).
+                        c.hates(cultures.get(rival.culture).name())
+                            && rival.strain.as_ref().is_none_or(|s| s.broken.is_none())
                     }),
                     // A lair has nothing to plunder (MOWZIE.md ledger 13).
                     NodeKind::PlayerBase { .. } | NodeKind::Lair => false,
@@ -6492,6 +6520,7 @@ impl Conflict {
             Ev::Arrival { faction, stamp } => self.camp_arrival(faction, stamp, at),
             Ev::CampHeir { faction, stamp } => self.camp_heir_event(faction, stamp, at),
             Ev::CampRecount { faction, stamp } => self.camp_recount_event(faction, stamp, at),
+            Ev::Strain { faction, stamp } => self.strain_event(w, faction, stamp, at),
             Ev::Rail {
                 faction,
                 actor,
@@ -8033,7 +8062,69 @@ impl Conflict {
                 ));
             }
         }
+        self.check_strains()?;
         w.check_conserved(w.now()).map_err(|e| e.to_string())
+    }
+
+    /// The pool camps' books (EQC209, EQC211): a faction has a strain exactly when its culture has
+    /// a `pool_renewal`; a broken camp has no party, no warriors home or away, no live wake of a
+    /// feud or of its plunder drive, and a wait that ends after it began; and the wheel holds no
+    /// strain wake that is live for a camp with nothing to wake it for.
+    fn check_strains(&self) -> Result<(), String> {
+        let mut broken = BTreeSet::new();
+        for f in 0..self.factions.len() as u32 {
+            let x = &self.factions[f as usize];
+            match (&x.strain, &self.culture(f).pool_renewal) {
+                (Some(_), None) => return Err(format!("faction {f} has a strain but no rule")),
+                (None, Some(_)) => return Err(format!("faction {f} has a rule but no strain")),
+                _ => {}
+            }
+            let Some(b) = x.strain.as_ref().and_then(|s| s.broken) else {
+                continue;
+            };
+            broken.insert(f);
+            if b.due <= b.since {
+                return Err(format!(
+                    "faction {f}: broken at {:?}, due {:?}",
+                    b.since, b.due
+                ));
+            }
+            if x.pool != 0.0 || x.away != 0 || x.chief_out {
+                return Err(format!(
+                    "faction {f} is broken with pool {}, {} away, chief out {}",
+                    x.pool, x.away, x.chief_out
+                ));
+            }
+            if self.parties.iter().any(|(_, p)| p.faction == f) {
+                return Err(format!("faction {f} is broken with a party"));
+            }
+        }
+        if broken.is_empty() {
+            return Ok(());
+        }
+        for (_, e) in self.wheel.iter() {
+            match *e {
+                Ev::Feud {
+                    faction,
+                    actor,
+                    stamp,
+                } if broken.contains(&faction)
+                    && self.feud(faction, actor).is_some_and(|x| x.stamp == stamp) =>
+                {
+                    return Err(format!("faction {faction} is broken with a live feud wake"));
+                }
+                Ev::Plunder { faction, stamp }
+                    if broken.contains(&faction)
+                        && self.factions[faction as usize].plunder_stamp == stamp =>
+                {
+                    return Err(format!(
+                        "faction {faction} is broken with a live plunder wake"
+                    ));
+                }
+                _ => {}
+            }
+        }
+        Ok(())
     }
 
     /// Bytes the engine holds: the row tables' resident pages and page indexes (bounded by the
