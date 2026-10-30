@@ -72,10 +72,42 @@ public final class MicRtsimRibbits {
             var prof = profession == null ? RibbitProfessionModule.NITWIT : RibbitProfessionModule.getProfession(ResourceLocation.tryParse(profession));
             return prof == null ? null : Ribbits.create(level, pos, prof, Ribbits.umbrella(-1));
         });
+        // A renewal arrival's profession (EQC180, Ben 2026-10-29): a merchant when the village has none, else one picked by the
+        // order's hash. Without it a killed-out village would lose its merchant for good (a grown house's resident is a nitwit).
+        RtsimApi.registerProfessionChooser(Ribbits.RIBBIT.toString(), MicRtsimRibbits::chooseProfession);
         // Ribbits talk (TALK.md section 4): always, like a villager, and a talk with a resident credits its village.
         RtsimApi.registerTalker(Ribbits.RIBBIT, new RibbitTalker(), true);
         modBus.addListener(MicRtsimRibbits::setup);
         NeoForge.EVENT_BUS.addListener(MicRtsimRibbits::onDrops);
+    }
+
+    /** What the professions an arrival picks among when the village already has a merchant (the op's hash decides). */
+    private static final List<String> PROFESSIONS = List.of("ribbits:gardener", "ribbits:sorcerer", "ribbits:fisherman",
+            "ribbits:merchant", "ribbits:nitwit");
+
+    /** A merchant when no living Ribbit of this village is one, else a profession by the op's hash (EQC180). */
+    static String chooseProfession(net.minecraft.server.level.ServerLevel level,
+                                   com.minecraftindustrialcomplex.mic_rtsim.village.VillageRegistry villages,
+                                   com.minecraftindustrialcomplex.mic_rtsim.village.Village village, long op) {
+        var box = net.minecraft.world.phys.AABB.of(village.box).inflate(48);
+        boolean merchant = false;
+        for (RibbitEntity r : level.getEntitiesOfClass(RibbitEntity.class, box, RibbitEntity::isAlive)) {
+            if (Residents.villageOf(villages, r) != village || com.minecraftindustrialcomplex.mic_rtsim.puppet.RtsimAttachments.isTagged(r))
+                continue;
+            if ("ribbits:merchant".equals(Ribbits.professionName(r))) {
+                merchant = true;
+                break;
+            }
+        }
+        if (!merchant)
+            return "ribbits:merchant";
+        return professionByOp(op);
+    }
+
+    /** The profession an op's hash picks when the village already has its merchant (EQC180). */
+    public static String professionByOp(long op) {
+        long h = op * 0x9E3779B97F4A7C15L;
+        return PROFESSIONS.get((int) Long.remainderUnsigned(h ^ (h >>> 32), PROFESSIONS.size()));
     }
 
     /** Ribbits registers its entity type during registration; it is there by common setup. */
