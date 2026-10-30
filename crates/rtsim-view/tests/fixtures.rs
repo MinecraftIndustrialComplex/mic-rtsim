@@ -4,7 +4,15 @@
 //! copied without its `rtsim/archive` (the event timeline): `events.rs` needs a real save with no
 //! archive and writes its own archive onto a copy of this one. The create save keeps its archive.
 //!
-//! - `tests/data/core`: neoforge/core's GameTest world, a fresh one, run from commit 129de219
+//! - `tests/data/core`: neoforge/core's GameTest world, a fresh one, run from the S5 build of
+//!   `feat/eq-s5-dragon-bodies` (Dragon home bodies, EQUILIBRIUM.md S5, EQ-2 (a), on the base
+//!   43062c0b, which is main with M12a; docs/overnight-choices-equilibrium.md EQC100 to EQC149;
+//!   S5's formats: the dragons' pages are RTD10 (magic `RTDA`, four bytes) and their meta page
+//!   RTN10 (magic `RTNA`), a dragon ending with the body it believes stands and its misses, a lair
+//!   ending with a flags byte (the found tail's gap), the bodies it left behind, those missing and those expected
+//!   after a reset, and the misses of the last, the meta page's stats gaining the eleven home-body counters, EQC135;
+//!   the site ledger's lair rows are K 2, outside the pages and not copied here); before that,
+//!   129de219
 //!   (Mowzie's Mobs M12a, the site ledger and kill credit, EQUILIBRIUM.md S3, merged with M11 at
 //!   13ac4d88 and main d53dbafd; S3's formats on top of M11's and U-e's: the conflict's pages are
 //!   RTCD (magic `RTCD`) with meta version 12, a camp's slots ending with their UUIDs and its ledger
@@ -100,7 +108,10 @@
 //!   when the server stops: 6638edc's save had one, while both runs of 98d6d34 and main's 7e4042a
 //!   had every herd staying put. So the route layer is not required here; it still has to draw or
 //!   say why.
-//! - `tests/data/create`: neoforge/create's GameTest world, run from 129de219 with `-Psec1fx`
+//! - `tests/data/create`: neoforge/create's GameTest world, run from the S5 build of
+//!   `feat/eq-s5-dragon-bodies` with `-Psec1fx` (the core save's formats, S5's: RTD10 and RTN10,
+//!   as the core entry says; a fresh world copied to `target/` after its JVM exited); before that,
+//!   129de219 with `-Psec1fx`
 //!   (M12a merged with M11 and main; the core save's formats, S3's, M11's and U-e's); before that,
 //!   a9318ed7
 //!   (M11 merged with main 60c759a9; the core save's formats, M11's and U-e's); before that, aec7918b
