@@ -295,7 +295,8 @@ MZB-720 to 749 are M10b's and M10c's.
   1,000,000; goblin's smog, logging, mining, killing and building weights, no radiation. Units
   `warrior`, `raptor` (a pack, 2.6) and `envoy`, all ground melee with carry and breaks 0, bodies
   `mic_rtsim:conflict/umvuthana/<unit>`. Parties as MOWZIE.md §4.5, siege empty. `pool_cap` 9, the
-  top of a grove's 5 to 9 until ledger 7 counts each grove; recruits 2 a day. Hates `human`;
+  top of a grove's 5 to 9 until ledger 7 counts each grove; recruits 2 a day (S9, MZB-1210: now
+  `renewal` 6, 96, 96 and none a day). Hates `human`;
   plunders every 12 days within 1,500 blocks with one raptor pack, whose take is eaten
   (`loot_destroyed`, MZ-8) and is nothing until raptors carry. Tribute in `gold_nugget` at a
   fallback of 9 an emerald; no repeat; source `boss`, as ledger 9 says and as the Frostmaw. Boss
@@ -2089,7 +2090,8 @@ The tests:
 - **MZB-252** (the Frostmaw's numbers): `frostmaw.json` gets
   `"renewal": {"base_days": 6.0, "cap_days": 192.0, "half_life_days": 96.0, "boss": true}` and
   `recruits_per_day` 0.0 (EQ-4 (b), MOWZIE.md "The body"). `umvuthana.json` is unchanged: the grove's
-  renewal is M9's.
+  renewal is M9's. *Amended (S9, MZB-1210): the grove's warriors have a `renewal` of their own now, 6, 96, 96,
+  no boss kind; the Umvuthi's `chief_renewal` below is the heir's.*
 - **MZB-253** (the boss flag, not the camp source): an unclaimed death bumps a culture's pressure only when
   its renewal says `boss`. `CampSource::Boss` cannot carry this, because both Mowzie cultures have it and
   the grove's warriors are not bosses (EQUILIBRIUM.md §2.2: "an unclaimed death of a boss kind").
@@ -5690,7 +5692,8 @@ M9b takes MZB-600 to 624 (M9c takes 625 to 649); the M9b build choices are under
   `{ base_days: 6, cap_days: 192, half_life_days: 96, boss: true }` (MZ-14 (a)). The wait is
   `min(cap, base × 2^P)` days, with P decaying at the half-life, as in M6's den renewal.
   - It reuses M6's `RenewalDef` type and resolution, but as a field of its own: M6 validates its `renewal`
-    to need `recruits_per_day == 0` (a culture of one), and the grove recruits 2 a day.
+    to need `recruits_per_day == 0` (a culture of one), and the grove recruits 2 a day. *Amended (S9,
+    MZB-1210): it recruits no more; the warriors come back one at a time by the shared rule.*
   - Nothing is ordered while no warrior is home (Body with no line). The heir then waits, and the camp is
     looked at again at each census.
 - **MZB-408** (the heir takes a warrior): when the heir is due, one CAMP_RECONCILE carries two lines.
@@ -6727,7 +6730,8 @@ Two fixes for M6:
 - **Trade-memory keys.** The jar keys trade memory on the game profile id. A fake player's profile id is
   what counts, not its entity UUID.
 - **M6's renewal.** M6's `renewal` validation needs `recruits_per_day == 0`, so the grove needs its own
-  `chief_renewal` field.
+  `chief_renewal` field. (S9 gave the grove's warriors a `renewal` as well, MZB-1210; the two stand side by
+  side, with a pressure each, MZB-1211.)
 - **Wheel tags.** M6's Arrival takes wheel tag 8; CampHeir is 9.
 - **Peaceful.** M6's wording is false for raptors: they discard themselves.
 - **Ids in M6's range.** M5 took MZB-290 to 292 from M6's range.
@@ -17799,7 +17803,8 @@ DRAGON_DIED):
   - **Where they differ from the design:** "to the tick" is within 40 ticks (`TOL`): each row is stamped when its
     SITE_STATE is applied, a step after the kill or the found. The uninstall test has no party out (only the
     engine's own decision sends one; the Rust tests book away members Other at the cap) and does not assert a cap
-    wait for the grove (its warriors regrow by recruits, not by a renewal wait); it asserts P unchanged. The lured
+    wait for the grove (its warriors regrow by recruits, not by a renewal wait; S9 extends it, MZB-1265: now
+    the row waits the cap's 96 days); it asserts P unchanged. The lured
     body's three censuses are the hide's recount and two daily recounts (MZB-1015), not `forceRecount`. A reset's
     lair shows no minted dragon by its handed-over row (the wait less the time since, past a fresh lair's 20
     days) and by its row half that wait on; an arriving dragon flies in only near a player, so no body is looked

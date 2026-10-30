@@ -100,8 +100,9 @@ grove and across the savanna toward you, and with Distant Horizons you see the c
 off. At your base it sinks to the ground and summons more. Wear an Umvuthana mask and the tribe leaves
 you alone, as it does today. Kill the Umvuthi, on its throne or out on the invasion (its healers make it
 untouchable until you kill them), and every masked warrior near it falls with it, its raiders flee, and
-the tribe stays quiet until a warrior takes up its mask. A grove you have thinned fills back up over a
-few days, with warriors walking in from its edge. Rarely, a grove and a goblin camp that both hate you
+the tribe stays quiet until a warrior takes up its mask. A grove you have thinned fills back up one warrior at a time
+over most of a game year (a wiped grove of seven is whole again after about seventy game days, a game day being
+twenty real minutes), with each warrior walking in from its edge. Rarely, a grove and a goblin camp that both hate you
 swear against you: the envoy names both, and the masked war band and the goblins march on you from their
 two camps and arrive together, never fighting each other (CONFLICT-LIFE.md §2.16).
 
@@ -1782,7 +1783,7 @@ every rate it has not set is TUNABLE.
 |---|---|---|---|
 | A chief (the notable) | `succeed`, at once, holding the grudges (§3.3) | immediate | nothing until a body exists |
 | A Frostmaw (the body) | one booked arrival after a death, or for a den found empty: a migrant moves into the empty den (ledger 6) | `min(192, 6 × 2^P)` days (EQ-4 (b), Ben, 2026-10-21): 6 with no player cause, 12 after a first kill, about 52 when farmed | asleep in the den, holding its crystal (MZ-4 (a)), at its next census while it is home, once no player is within 160 blocks (§4.9) |
-| Grove warriors | the pool refills toward the grove's own cap | `recruits_per_day` 2 (goblin's): an emptied grove of 7 is whole in 3.5 days | walking in from the grove's edge: if the grove is in, as each whole body is ready, else at its next census (§4.9) |
+| Grove warriors | one booked arrival at a time while the pool is under the grove's own cap (S9, EQUILIBRIUM.md §2.4.7; the grove's pressure is its warriors', `1/K` a warrior lost to a player, on the march too, apart from the Umvuthi's) | `min(96, 6 × 2^P)` days a warrior, H 96: 6 with no player cause, then longer as a player thins it; an emptied grove of 7 is whole in 70 days, one farmed gives about 6.7 warriors a game year (the engine; the model's one-at-a-time 5.8 is the lower form) | at the grove's edge away from the nearest player, never held; if the grove is in, as each arrival is booked (RECOUNT, then the census's SPAWN), else at its next census (§4.9) |
 | The Umvuthi (the body) | the heir takes up the mask: after the later of the cowed time and the wait, a warrior's body is removed and the chief spawned at the throne spot (§4.6); none while no warrior is home | `min(192, 6 × 2^P_chief)` days (MZ-14 (a), §8), P_chief gaining 1 for each Umvuthi lost to players; the cowed time is 6 days scaled by boldness | on its throne at the next census, under Rule U (§4.5) |
 | Raptor packs in war parties | from the pool, as warriors are | as warriors | only in parties; a scouting pack is a fresh puppet, drawn from no pool and gone when it ends |
 
@@ -1803,9 +1804,9 @@ near 52.
 **What this plan needs from the pan-species design:**
 1. **Caps.** A per-camp cap (this plan sets 1 per den and the census count per grove) and whatever
    world-level ceiling it sets per species.
-2. **Rates against pressure.** `recruits_per_day` for each culture tuned against how fast players kill
-   them, so dens and groves neither vanish nor swamp a region; the Frostmaw's is now EQ-4's, and the
-   tribe's 2 a day is still a guess (EQUILIBRIUM.md §2.6 item 2).
+2. **Rates against pressure.** The wait for each culture tuned against how fast players kill them,
+   so dens and groves neither vanish nor swamp a region; the Frostmaw's is EQ-4's and the tribe's is
+   EQUILIBRIUM.md §2.4.7's `min(96, 6 × 2^P)`, built in S9 (it replaced the guess of 2 a day).
 3. **The empty camp rule.** One rule for a camp found empty or emptied for good (a migrant after a
    delay, as dragons do), shared with the dragons' vacant lairs.
 4. **Predator and prey.** Raptor hunts and village plunder take animals and livestock goods; the herds
@@ -1886,7 +1887,7 @@ Measured in GameTests (§7) against reference bases through `IND_FIGHT`, with th
 | Lurk offset, reach | 5 blocks off the rail, 8 blocks | PLACEHOLDER | where it stands; which passes count | test 9 |
 | Repeat | 4 days after a return | PLACEHOLDER | how often an angry Frostmaw comes back | `sim mowzie` line run; Ben's call |
 | Frostmaw carry | 64 | industry's siege carry; MZ-5 (a), Ben, 2026-10-21 | cargo lost per ambush | decided |
-| Renewal | Frostmaw `min(192, 6 × 2^P)` days, H 96; Umvuthi heir `min(192, 6 × 2^P_chief)`; tribe 2 a day | Frostmaw: EQ-4 (b), Ben; Umvuthi: MZ-14 (a), Ben; tribe TUNABLE | heir and migrant arrival; regrowth | EQUILIBRIUM.md's model; `sim mowzie` renewal runs |
+| Renewal | Frostmaw `min(192, 6 × 2^P)` days, H 96; Umvuthi heir `min(192, 6 × 2^P_chief)`; tribe's warriors `min(96, 6 × 2^P)`, H 96, a pressure apart from the heir's; a grove found with no warrior and no row, K 5 | Frostmaw: EQ-4 (b), Ben; Umvuthi: MZ-14 (a), Ben; warriors: EQUILIBRIUM.md §2.4.7 (S9; the base is Ben's FB-S9-1) | heir and migrant arrival; regrowth | EQUILIBRIUM.md's model; `sim mowzie` renewal runs |
 | Thresholds, dwell, half-life, patience, muster, cowed | goblin's | PLACEHOLDER | pace of the ladder | `sim mowzie` |
 | Tribute | 0.5 emerald's worth a point; fallback 9 nuggets an emerald | goblin's; gold nuggets by MZ-6 (a), Ben; PLACEHOLDER rate | the price of peace | the grove market's gold price, once it exists (ledger 12) |
 | Party sizes | §4.5 | PLACEHOLDER: a grove of 5 can field each | raid strength | GameTest fights |
@@ -2628,9 +2629,10 @@ mechanism, and the moving form runs if the fixture's train moves.
 4. Two dens on one line: both feel it; a den found after the line exists feels the next pass.
 5. The tribe: envoy paid at the priced demand; envoy refused, then a raid and an invasion; plunder;
    raids that leave and come home with the grove in and out (CAMP_BODIES answered as the plugin would),
-   after which no census books a living survivor dead; a grove that refills while a band is out comes
-   back to its cap with every survivor's slot kept.
-6. Renewal: an emptied grove refills to its own cap; a den's body comes back after `min(192, 6 × 2^P)`
+   after which no census books a living survivor dead; the warriors a band loses at a district's walls
+   come back one at a time, and the grove is whole again once the bands stop, every survivor's slot kept.
+6. Renewal: an emptied grove of 9 comes back one warrior at a time, whole in 87 days (S9; the arrivals
+   9 to 12 days apart, the Umvuthi's slot untouched); a den's body comes back after `min(192, 6 × 2^P)`
    days: 6 with no player cause, 12 after a first kill, and about 1.8 a game year when farmed
    (EQUILIBRIUM.md §3.3); a den found empty gets a migrant.
 7. Kills: by the feud's player on a raid, by a third player on a raid, at the camp by a player with no
@@ -2641,7 +2643,7 @@ mechanism, and the moving form runs if the fixture's train moves.
 9. A trunk: 14 lines at 1.7 legs a day through one range reach §4.3's trunk row, as one line of 23.8
    does; the focus follows the busiest line; two owners' trains on one line make two meters.
 10. The camp reconciler: camps coming in and out at random (a player at the edge), musters, homecomings
-    with hand-backs, refills, the Umvuthi's marches, held lines and heirs, deaths in every phase,
+    with hand-backs, arrivals, the Umvuthi's marches, held lines and heirs, deaths in every phase,
     answers lost, late, replayed and stale, and session restarts at random points, with Java emulated as
     a world of tagged bodies; after every event I1 to I6 hold, and at the end no member has two bodies
     and no living member is booked dead unless its body was lost; no draw takes more than the smaller of
