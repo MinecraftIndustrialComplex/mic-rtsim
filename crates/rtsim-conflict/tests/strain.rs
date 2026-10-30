@@ -11,6 +11,7 @@ use rtsim_conflict::culture::{
     BANDIT_JSON, Culture, CultureDef, FROSTMAW_JSON, GOBLIN_JSON, RAIDER_JSON, UMVUTHANA_JSON,
 };
 use rtsim_conflict::engine::{BLOCKED, Demand, Party, Signal, Target, body_id};
+use rtsim_conflict::synth::CampRun;
 use rtsim_conflict::{Conflict, ConflictTunables, Cultures, synth};
 use rtsim_ecology::infra::{DistrictSite, Infrastructure, NoInfrastructure, RaidOutcome};
 use rtsim_industry::ids::{Good, GoodVec};
@@ -18,6 +19,7 @@ use rtsim_industry::threat::Threat;
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 use rtsim_kernel::handle::Handle;
 use rtsim_kernel::renewal::Pressure;
+use rtsim_kernel::sites::{FoundRow, state_flags};
 use rtsim_trade::{GoodId, MILLI};
 use rtsim_world::World;
 
@@ -1281,4 +1283,214 @@ fn a_camp_broken_twice_waits_by_the_pressure_it_has_then() {
     assert!((got - want).abs() < 1e-3, "{got} vs {want} at P {p}");
     assert!(p >= 2.0);
     assert_eq!(c.stats.breaks, 2);
+}
+
+// ---------------------------------------------------------------- the site ledger (EQC212, EQC213)
+
+/// The site ledger's row for the camp as the engine has it now, handed back `elapsed` ticks later
+/// (`FoundRow::from_state`, as core's ledger and rtsim-host's fake one hand it back).
+fn row_of(c: &Conflict, f: u32, elapsed: u64) -> FoundRow {
+    let s = c.camp_site_state(f, c.now()).expect("a row");
+    FoundRow::from_state(&s, elapsed, false)
+}
+
+/// EQC212: a pool camp's row carries the pressure it is under; a broken camp's is EMPTY, BROKEN
+/// and WAITING with no members, and the wait left to its refounding.
+#[test]
+fn a_pool_camps_row_carries_pressure_and_the_refound_wait() {
+    let (mut w, mut c, f) = camp(60, "goblin");
+    let at = Tick(30 * DAY);
+    c.slay(&mut w, f, 30, at);
+    let s = c.camp_site_state(f, at).unwrap();
+    assert!((f64::from(s.p) - 0.5).abs() < 1e-5, "{}", s.p);
+    assert_eq!((s.k, s.count, s.away), (60, 30, 0));
+    assert_eq!(s.flags & state_flags::SHORT, state_flags::SHORT);
+    assert_eq!(s.flags & (state_flags::BROKEN | state_flags::WAITING), 0);
+    // Broken.
+    break_now(&mut c, &mut w, f, Tick(40 * DAY));
+    let b = broken(&c, f).unwrap();
+    let later = Tick(b.since.0 + 5 * DAY);
+    let s = c.camp_site_state(f, later).unwrap();
+    assert_eq!(
+        s.flags,
+        state_flags::SHORT | state_flags::EMPTY | state_flags::BROKEN | state_flags::WAITING
+    );
+    assert_eq!((s.count, s.away), (0, 0));
+    assert_eq!(s.wait_left, b.due.0 - later.0);
+    assert!(s.waiting());
+    // The row is taken after a change: the break marks it.
+    let rows = c.take_site_states();
+    assert!(rows.iter().any(|r| r.key == c.factions[f as usize].key));
+}
+
+/// A faction found again with its row: the pressure aged by the ticks elapsed, the pool the row's
+/// count, regrowing from the find.
+#[test]
+fn a_reset_resumes_a_pool_camps_pressure() {
+    let mut r = CampRun::new(61, "goblin", 0);
+    let f = r.f;
+    let at = Tick(20 * DAY);
+    r.c.run_until(&mut r.w, &mut NoInfrastructure, at);
+    assert_eq!(r.c.slay(&mut r.w, f, 40, at), 40);
+    let want_p = r.c.pressure_now(f, Tick(at.0 + 30 * DAY));
+    let row = row_of(&r.c, f, 30 * DAY);
+    assert_eq!(row.count, 20);
+    r.reborn(row, Tick(at.0 + 30 * DAY));
+    let f = r.f;
+    let now = Tick(at.0 + 30 * DAY);
+    let got = r.c.pressure_now(f, now);
+    assert!((got - want_p).abs() < 1e-4, "{got} vs {want_p}");
+    assert_eq!(r.c.pool_at(f, now).floor(), 20.0);
+    assert!(r.c.camp_active(f));
+}
+
+/// EQC212: a broken camp found again is broken for the wait that was left, and refounded at the
+/// end of it with the pressure aged; a reset that took longer than the wait refounds it at once.
+#[test]
+fn a_reset_resumes_a_pool_camps_break() {
+    for (elapsed_days, refounded) in [(60.0, false), (400.0, true)] {
+        let mut r = CampRun::new(62, "goblin", 0);
+        let f = r.f;
+        let at = Tick(20 * DAY);
+        r.c.run_until(&mut r.w, &mut NoInfrastructure, at);
+        strained(&mut r.c, f, 3.0, 1.99, at);
+        r.c.slay(&mut r.w, f, 1, at);
+        let b = broken(&r.c, f).expect("broke");
+        let wait = b.due.0 - b.since.0;
+        let elapsed = (elapsed_days * DAY as f64) as u64;
+        let row = row_of(&r.c, f, elapsed);
+        assert!(row.waiting() && row.count == 0, "a broken camp's row");
+        let now = Tick(at.0 + elapsed);
+        r.reborn(row, now);
+        let f = r.f;
+        let again = broken(&r.c, f);
+        if refounded {
+            assert!(wait < elapsed, "the test's own premise");
+            // Due one tick on.
+            assert_eq!(again.unwrap().due, Tick(now.0 + 1));
+            r.c.run_until(&mut r.w, &mut NoInfrastructure, Tick(now.0 + 2));
+            assert!(broken(&r.c, f).is_none(), "refounded at once");
+            assert_eq!(r.c.stats.refounds, 1);
+            let want = 0.25 * 60.0;
+            assert_eq!(r.c.pool_at(f, Tick(now.0 + 2)).floor(), want);
+        } else {
+            let again = again.expect("still broken");
+            assert_eq!(again.due.0, now.0 + (wait - elapsed));
+            assert_eq!(r.c.pool_at(f, Tick(now.0 + DAY)), 0.0);
+            assert!(!r.c.camp_active(f));
+            assert_eq!(
+                r.c.stats.breaks, 0,
+                "found broken is not a break of this life"
+            );
+            // Its plunder drive is off: no wake of the drive is live.
+            r.c.check(&r.w).expect("books");
+        }
+        // Aged: the pressure read at the find is the row's, decayed by the elapsed days.
+        let p = r.c.pressure_now(f, now);
+        let was = pressure(&r.c, f, now);
+        assert!((f64::from(p) - was).abs() < 1e-9);
+        assert!(p > 0.0);
+    }
+}
+
+/// EQC212: no row is a full pool and no pressure, as before S7; a row with warriors and a wait
+/// (never written for a pool camp, but a plugin's) is not a broken camp.
+#[test]
+fn a_camp_found_with_no_row_is_full_and_unpressured() {
+    let r = CampRun::new(63, "goblin", 0);
+    let f = r.f;
+    assert_eq!(r.c.pressure_now(f, r.c.now()), 0.0);
+    assert_eq!(r.c.pool_at(f, r.c.now()), 60.0);
+    assert!(r.c.camp_active(f));
+}
+
+#[test]
+fn a_row_with_count_and_waiting_is_not_broken() {
+    let mut r = CampRun::new(64, "goblin", 0);
+    let f = r.f;
+    let at = Tick(20 * DAY);
+    r.c.run_until(&mut r.w, &mut NoInfrastructure, at);
+    let mut row = row_of(&r.c, f, 100);
+    row.count = 30;
+    row.flags |= rtsim_kernel::sites::tail_flags::ROW | rtsim_kernel::sites::tail_flags::WAITING;
+    row.wait_left = 50 * DAY;
+    r.reborn(row, Tick(at.0 + 100));
+    assert!(r.c.camp_active(r.f), "warriors home: not broken");
+    assert_eq!(r.c.pool_at(r.f, Tick(at.0 + 100)).floor(), 30.0);
+}
+
+// ---------------------------------------------------------------- the census (EQC213)
+
+/// EQC213: the conflict census reads pressure, broken camps and renewals (arrivals and refounds).
+#[test]
+fn census_reports_pressure_broken_and_renewals() {
+    let (mut w, mut c, f) = camp(65, "goblin");
+    let at = Tick(30 * DAY);
+    c.slay(&mut w, f, 30, at);
+    let k = &c.census()[0];
+    assert_eq!(
+        (k.kind, k.sites, k.members, k.broken),
+        ("conflict.camp", 1, 30, 0)
+    );
+    assert!((k.mean_p() - 0.5).abs() < 0.01, "{}", k.mean_p());
+    assert_eq!(k.renewals, 0);
+    break_now(&mut c, &mut w, f, Tick(40 * DAY));
+    let k = &c.census()[0];
+    assert_eq!((k.members, k.broken), (0, 1));
+    let b = broken(&c, f).unwrap();
+    c.run_until(&mut w, &mut NoInfrastructure, b.due);
+    let k = &c.census()[0];
+    assert_eq!(k.broken, 0);
+    assert_eq!(k.renewals, 1, "a refound is a renewal");
+    assert_eq!(k.members, 15);
+}
+
+// ---------------------------------------------------------------- a restart (EQC211, EQC226)
+
+fn world_from(seed: u64, pages: &[u8]) -> World {
+    let (goods, ids) = rtsim_world::synth::goods();
+    let book = rtsim_world::synth::recipes(&ids);
+    World::load(synth::world_config(seed), goods, book, pages).unwrap()
+}
+
+/// One life of a goblin camp under a player who keeps killing: day by day a slay of what is home
+/// (so the pressure climbs and the camp breaks and is refounded), with the engine saved and
+/// loaded at each of `restarts` (days). The state hash at the end, and the breaks and refounds.
+fn farmed_life(seed: u64, restarts: &[u64]) -> (u64, u64, u64) {
+    let (mut w, mut c, f) = camp(seed, "goblin");
+    let mut t = Tick::ZERO;
+    for day in 1..=700u64 {
+        t = Tick(day * DAY);
+        c.run_until(&mut w, &mut NoInfrastructure, t);
+        if day % 7 == 0 {
+            let home = c.pool_at(f, t).floor() as u32;
+            c.slay(&mut w, f, home, t);
+        }
+        if restarts.contains(&day) {
+            let (wb, cb) = (w.save(), c.save());
+            w = world_from(seed, &wb);
+            c = Conflict::load(c.tun.clone(), c.cultures.clone(), &cb).expect("loads");
+            synth::define_names(&mut c, &w);
+        }
+    }
+    c.run_until(&mut w, &mut NoInfrastructure, t);
+    (c.state_hash(), c.stats.breaks, c.stats.refounds)
+}
+
+/// A restart changes no decision: the saved pressure, break, wait and wake give the life a camp
+/// that never restarted had, through breaks and refoundings.
+#[test]
+fn a_restart_changes_no_decision() {
+    let straight = farmed_life(71, &[]);
+    assert!(
+        straight.1 >= 1 && straight.2 >= 1,
+        "the life breaks and refounds: {straight:?}"
+    );
+    for restarts in [
+        &[100u64][..],
+        &[50, 150, 250, 350, 450, 550, 650],
+        &[299, 300, 301],
+    ] {
+        assert_eq!(farmed_life(71, restarts), straight, "restarts {restarts:?}");
+    }
 }

@@ -692,6 +692,7 @@ impl Conflict {
                 let x = &mut self.factions[f as usize];
                 x.pool = f64::from(row.count).min(f64::from(x.cap));
                 x.pool_at = at;
+                self.strain_found(f, row, at);
             }
             return;
         }

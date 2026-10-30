@@ -15,6 +15,8 @@
 //! end of a broken camp's wait; its stamp voids any older one.
 
 use super::*;
+use rtsim_kernel::renewal::Pressure;
+use rtsim_kernel::sites::FoundRow;
 
 /// What `break_share x cap` is read with: a pool exactly at the share is not thin (strict), whatever
 /// the share's float rounding.
@@ -156,6 +158,34 @@ impl Conflict {
                 wait as f64 / TICKS_PER_DAY as f64
             ),
         );
+    }
+
+    /// A pool camp new to this engine life, found with the site ledger's row (EQC212): the
+    /// pressure the row had, aged by the ticks elapsed since its stamp; and a row that says WAITING
+    /// with no warriors is a camp that was broken, broken still for the wait that was left (a
+    /// reset longer than the wait refounds it a tick on). A row with warriors is no broken
+    /// camp's. The members away at the stamp were lost with the old engine, so the camp, idle
+    /// now, may break at once if it is thin and pressured. The plunder drive `add_faction` booked
+    /// is void for a camp found broken.
+    pub(super) fn strain_found(&mut self, f: u32, row: &FoundRow, at: Tick) {
+        let Some(pr) = self.culture(f).pool_renewal else {
+            return;
+        };
+        let day = (at.0 / TICKS_PER_DAY) as u32;
+        let x = &mut self.factions[f as usize];
+        let Some(s) = x.strain.as_mut() else {
+            return;
+        };
+        s.pressure = Pressure::handed_over(row.p, row.elapsed, day, pr.def.half_life_days);
+        if row.waiting() && row.count == 0 {
+            let due = at + row.wait_now_ticks().max(1);
+            (x.pool, x.pool_at, x.away) = (0.0, at, 0);
+            x.plunder_stamp = x.plunder_stamp.wrapping_add(1);
+            s.broken = Some(Broken { since: at, due });
+            self.book_strain(f, due);
+        } else {
+            self.strain_check(f, at);
+        }
     }
 
     /// The strain's wake (`Ev::Strain`): a recheck of a busy camp, or the end of a broken camp's

@@ -1355,15 +1355,22 @@ impl Conflict {
         self.now
     }
 
-    /// The census (EQUILIBRIUM.md S1) now: `conflict.camp`, K its culture's pool cap, its members
-    /// the whole warriors in its pool. No pressure, no break and no booked recruit yet (slice S7):
-    /// P reads 0 and renewals 0.
+    /// The census (EQUILIBRIUM.md S1, S7) now: `conflict.camp`, K the camp's cap, its members the
+    /// whole warriors in its pool, P the pressure it is under (a pool camp's strain, a body
+    /// camp's ledger), broken the pool camps that have broken, and the renewals the arrivals of
+    /// the body camps' members and the pool camps' refoundings.
     pub fn census(&self) -> Vec<rtsim_kernel::census::KindCensus> {
         let mut c = rtsim_kernel::census::KindCensus::new("conflict.camp");
         for f in 0..self.factions.len() as u32 {
             let pool = self.pool_at(f, self.now).max(0.0).floor() as u64;
-            c.site(pool, u64::from(self.factions[f as usize].cap), false, 0.0);
+            c.site(
+                pool,
+                u64::from(self.factions[f as usize].cap),
+                !self.camp_active(f),
+                self.pressure_now(f, self.now),
+            );
         }
+        c.renewals = self.stats.arrivals + self.stats.refounds;
         vec![c]
     }
 
@@ -1421,6 +1428,16 @@ impl Conflict {
         let mut p = 0.0;
         let mut wait_left = 0;
         let mut bodies = Bodies::default();
+        // A pool camp: the pressure it is under, and while it is broken the wait to its
+        // refounding (EQC212). The break rides the flags the row has: EMPTY (it has no members),
+        // BROKEN, and WAITING with a count of 0 (the found tail has no flag of its own for it).
+        if let Some(s) = x.strain.as_deref() {
+            p = self.pressure_now(f, at);
+            if let Some(b) = s.broken {
+                flags |= state_flags::BROKEN | state_flags::WAITING;
+                wait_left = b.due.0.saturating_sub(at.0);
+            }
+        }
         if let Some(camp) = x.camp.as_deref() {
             p = camp.pressure.now(day, half_life);
             if c.renewal.is_some()
