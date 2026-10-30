@@ -92,10 +92,15 @@ public final class HomeBodyGameTests {
         }
     }
 
-    /** The lair's home bodies standing in the level near the arena (any dragon carrying the attachment). */
-    private static List<DragonBaseEntity> homeBodies(ServerLevel level, Vec3 c) {
-        return level.getEntitiesOfClass(DragonBaseEntity.class, new AABB(c.x - 80, c.y - 40, c.z - 80, c.x + 80, c.y + 40, c.z + 80),
-                e -> !e.isRemoved() && e.hasData(MicRtsimIceAndFire.HOME));
+    /**
+     * The lair's home bodies standing in the level near the arena: the dragons carrying the attachment with this lair's key (a
+     * neighbouring arena's test, or a failed one's leftover, is not this lair's).
+     */
+    private static List<DragonBaseEntity> homeBodies(ServerLevel level, Vec3 c, long lair) {
+        return level.getEntitiesOfClass(DragonBaseEntity.class, new AABB(c.x - 80, c.y - 40, c.z - 80, c.x + 80, c.y + 40, c.z + 80), e -> {
+            HomeBodies.HomeTag tag = e.getExistingDataOrNull(MicRtsimIceAndFire.HOME);
+            return !e.isRemoved() && tag != null && tag.lair() == lair;
+        });
     }
 
     /**
@@ -265,7 +270,7 @@ public final class HomeBodyGameTests {
                 .thenWaitUntil(waits.engine(() -> check("the old body was removed (DISCARD, the dragon is away)", stale[0].isRemoved()
                         && bridge().discarded > discarded0[0])))
                 .thenExecute(() -> {
-                    check("no second body: no home body stands", homeBodies(level, c).isEmpty());
+                    check("no second body: no home body stands", homeBodies(level, c, lair).isEmpty());
                     check("the puppet is the one body, still tagged", RtsimAttachments.isTagged(d[0]) && !d[0].isRemoved());
                     record(test, "reconciled", "the old body " + stale[0].getUUID() + " removed by the census; the row: " + describe(row(level, lair)));
                     // The dragon goes out of range: captured, it rests at its lair (26 blocks off) and is owed a body.
@@ -281,7 +286,7 @@ public final class HomeBodyGameTests {
                     HomeBodies.HomeTag tag = b.getExistingDataOrNull(MicRtsimIceAndFire.HOME);
                     check("the new body is a home body of the lair: " + tag, tag != null && tag.lair() == lair && tag.agent() == agent[0] && !RtsimAttachments.isTagged(b));
                     check("a new body, not the old one", !b.getUUID().equals(d[0].getUUID()));
-                    check("one body stands", homeBodies(level, c).size() == 1);
+                    check("one body stands", homeBodies(level, c, lair).size() == 1);
                     record(test, "owed", "the body " + b.getUUID() + " spawned at the lair; the row: " + describe(row(level, lair)));
                     bridge().homes.testOut(lair, level.getGameTime());
                     b.discard();
@@ -371,7 +376,7 @@ public final class HomeBodyGameTests {
                 .thenExecute(() -> {
                     HomeBodies.HomeTag tag = d[0].getExistingDataOrNull(MicRtsimIceAndFire.HOME);
                     check("retagged as a home body of the lair: " + tag, tag != null && tag.lair() == lair && !RtsimAttachments.isTagged(d[0]));
-                    check("the one body, no newcomer", homeBodies(level, c).size() == 1 && homeBodies(level, c).get(0) == d[0]);
+                    check("the one body, no newcomer", homeBodies(level, c, lair).size() == 1 && homeBodies(level, c, lair).get(0) == d[0]);
                     record(test, "reinstalled", "the dragon " + id[0] + " adopted by its UUID after the gap; the row: " + describe(row(level, lair)));
                     bridge().homes.testOut(lair, level.getGameTime());
                     d[0].discard();
@@ -420,7 +425,7 @@ public final class HomeBodyGameTests {
                     SiteLedger.Row r = row(level, lair);
                     check("after the capture: still the occupant, away, no pressure, no stray left: " + describe(r), r != null && r.count() == 1
                             && r.away() == 1 && !r.waiting() && r.p() < 1e-3 && r.missing().isEmpty() && r.leftBehind().isEmpty());
-                    check("no home body stands in the world", homeBodies(level, c).isEmpty());
+                    check("no home body stands in the world", homeBodies(level, c, lair).isEmpty());
                     record(test, "gone home", "captured, not saved; the row: " + describe(r));
                     unforce.run();
                 })
@@ -630,7 +635,7 @@ public final class HomeBodyGameTests {
                             && r.p() < 1e-3 && r.home().contains(id[0]));
                 }))
                 .thenExecute(() -> {
-                    check("the one body, no newcomer", homeBodies(level, c).size() == 1 && homeBodies(level, c).get(0) == d[0]);
+                    check("the one body, no newcomer", homeBodies(level, c, lair).size() == 1 && homeBodies(level, c, lair).get(0) == d[0]);
                     record(test, "reset", "the body " + id[0] + " adopted by the new engine; the row: " + describe(row(level, lair)));
                     bridge().homes.testOut(lair, level.getGameTime());
                     d[0].discard();
@@ -681,7 +686,7 @@ public final class HomeBodyGameTests {
                 }))
                 .thenIdle(120)
                 .thenExecute(() -> {
-                    check("the watched census spawned nothing", homeAnswers(agent[0]).size() == 1 && homeBodies(level, c).isEmpty());
+                    check("the watched census spawned nothing", homeAnswers(agent[0]).size() == 1 && homeBodies(level, c, lair).isEmpty());
                     FakePlayers.remove(watcher[0]);
                     bridge().homes.testIn(lair, null, level.getGameTime());
                 })
@@ -812,11 +817,12 @@ public final class HomeBodyGameTests {
                     check("and no agent tag", !RtsimAttachments.isTagged(d[0]));
                     check("the same body", bridge().body(agent[0]) == d[0] && !d[0].isRemoved());
                     check("vanilla would save it", d[0].shouldBeSaved());
-                    read[0] = DragonKit.saveAndReadBack(level, new ChunkPos(BlockPos.containing(c)));
+                    read[0] = DragonKit.saveAndReadBack(level, new ChunkPos(BlockPos.containing(c)), new ChunkPos(d[0].blockPosition()));
                 })
                 .thenWaitUntil(waits.chunks(() -> check("the entity chunk was read back", read[0] != null && read[0].isDone())))
                 .thenExecute(() -> {
-                    check("vanilla's save returns it", read[0].join().stream().anyMatch(e -> e.getUUID().equals(d[0].getUUID())));
+                    check("vanilla's save returns it (the dragon at " + d[0].blockPosition() + ", removed " + d[0].isRemoved() + ", read "
+                            + read[0].join().size() + " entities)", read[0].join().stream().anyMatch(e -> e.getUUID().equals(d[0].getUUID())));
                     record(test, "handed back", "the puppet is the home body of lair " + Long.toHexString(lair) + " again; the row: " + describe(row(level, lair)));
                     bridge().homes.testOut(lair, level.getGameTime());
                     d[0].discard();
