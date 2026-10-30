@@ -1472,6 +1472,7 @@ impl Conflict {
             kind: SiteKind::Camp,
             flags,
             p,
+            p2: 0.0,
             k: u16_of(x.cap),
             count: u16_of(count),
             away: u16_of(x.away),
