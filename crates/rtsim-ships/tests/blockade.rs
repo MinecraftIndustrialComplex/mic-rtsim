@@ -1149,20 +1149,23 @@ const PARENT: [(&str, u64, u64); 3] = [
     (
         "coastal 7 script 30 days",
         0xf921_e4e7_d97f_73b0,
-        0x76af_4450_4540_45a9,
+        0x9c12_2676_a369_67e5,
     ),
     (
         "sea_havens 1 unattended 96 days",
         0xc111_a5ab_f099_e354,
-        0x4a37_c3da_c591_88c3,
+        0x9ecc_8582_88e7_3af1,
     ),
     (
         "sea_havens 2 unattended 96 days",
         0x49ce_1716_2f28_027b,
-        0xebc1_caab_4449_231e,
+        0x17d3_87d9_9afb_d36b,
     ),
 ];
 
+/// (The world hashes below are slice S6's: the world save now carries every village's renewal row, RTW5; the ships' hashes
+/// are the blockade parent's, unchanged.)
+///
 /// `blockade_days = 0` turns closures off and changes nothing: the ships' and the world's hashes
 /// (of the save bytes after the magic) equal the parent's for the same runs, no port has a state, no lane has heat and no
 /// check was ever booked.
