@@ -42,9 +42,9 @@ use rtsim_travel::legs::{Meeting, Stamp};
 use crate::boundary::{self, Cmd};
 use crate::culture::{Cultures, PartyKind, SignalKind, Step};
 use crate::engine::{
-    Answered, Camp, Conflict, ConflictLedger, ConflictStats, Demand, Ended, Ev, Faction, Feud,
-    Focus, Heir, HeldPass, Line, LineCount, Party, Phase, Pin, Placing, RailMeter, Retired, Slot,
-    SlotState, Source, TRADED_CAP, Target, Throne,
+    Answered, Broken, Camp, Conflict, ConflictLedger, ConflictStats, Demand, Ended, Ev, Faction,
+    Feud, Focus, Heir, HeldPass, Line, LineCount, Party, Phase, Pin, Placing, RailMeter, Retired,
+    Slot, SlotState, Source, Strain, TRADED_CAP, Target, Throne,
 };
 use crate::grievance::{Grievance, KB, RailTail};
 use crate::presence::{ChunkKey, ChunkTime, Presence, Stay};
@@ -85,7 +85,11 @@ use crate::tunables::ConflictTunables;
 /// missing, the bodies a former engine life left behind, a flags byte (bit 0 the site ledger's
 /// gap, bit 1 the cap's wait next) and its recount's stamp and tick (M12a, MZB-1014, MZB-1015);
 /// the wheel's tag 11 is `Ev::CampRecount`, and the stats end with `camp_recounts`.
-const MAGIC: u32 = u32::from_le_bytes(*b"RTCD");
+/// RTC14, `RTCE`: a faction row ends with its strain, an option of its pressure, whether it has
+/// broken and until when, the stamp of its booked check and when it is next looked at (S7,
+/// EQC201); the wheel's tag 12 is `Ev::Strain`, and the stats end with the breaks, refounds,
+/// deferrals and the warriors slain by the test hook.
+const MAGIC: u32 = u32::from_le_bytes(*b"RTCE");
 /// The meta page of a paged save ([`Conflict::save_paged`]). 2: the indexes, parties and wheel
 /// are in pages of their own, their headers after the row counts (PF10). 3: the resident state
 /// ends with the Peaceful flag, its start and the last notice's serial. 4: the party pages' rows
@@ -96,9 +100,10 @@ const MAGIC: u32 = u32::from_le_bytes(*b"RTCD");
 /// march revision, its due flag, its unseen tick and its unwatched epoch ranges (M10, MZB-453,
 /// MZB-706). 11: a camp ends with its chief's band's end, and the resident state with their index
 /// (M11, MZB-853). 12: a camp's slots carry their bodies' UUIDs, and the camp its missing, its
-/// bodies left behind, its gap and cap flags and its recount (M12a, MZB-1014, MZB-1015).
+/// bodies left behind, its gap and cap flags and its recount (M12a, MZB-1014, MZB-1015). 13: a
+/// faction row ends with its strain, the wheel's tag 12 and the stats end as RTC14's (S7).
 const META_MAGIC: u32 = u32::from_le_bytes(*b"RTCM");
-const META_VERSION: u16 = 12;
+const META_VERSION: u16 = 13;
 
 /// Every page table the conflict owns when it pages: a meta key in none of them.
 pub const TABLES: [u16; 9] = [
@@ -377,6 +382,39 @@ fn put_faction(w: &mut Writer, x: &Faction) {
         });
     }
     put_opt(w, &x.camp, |w, c| put_camp(w, c));
+    put_opt(w, &x.strain, |w, s| put_strain(w, s));
+}
+
+/// A pool camp's strain (EQC201, RTC14): its pressure as the kernel keeps it, whether it has
+/// broken and until when, the stamp of its booked check and when it is next looked at.
+fn put_strain(w: &mut Writer, s: &Strain) {
+    let (p, day) = s.pressure.parts();
+    w.f32(p);
+    w.u32(day);
+    put_opt(w, &s.broken, |w, b| {
+        w.u64(b.since.0);
+        w.u64(b.due.0);
+    });
+    w.var_u64(u64::from(s.stamp));
+    put_opt(w, &s.check_at, |w, t| w.u64(t.0));
+}
+
+fn get_strain(r: &mut Reader<'_>) -> codec::Result<Strain> {
+    let (p, day) = (r.f32()?, r.u32()?);
+    if !p.is_finite() || p < 0.0 {
+        return bad(format!("strain pressure {p}"));
+    }
+    Ok(Strain {
+        pressure: Pressure::from_parts(p, day),
+        broken: get_opt(r, |r| {
+            Ok(Broken {
+                since: Tick(r.u64()?),
+                due: Tick(r.u64()?),
+            })
+        })?,
+        stamp: get_u32(r)?,
+        check_at: get_opt(r, |r| Ok(Tick(r.u64()?)))?,
+    })
 }
 
 fn put_camp(w: &mut Writer, c: &Camp) {
@@ -696,6 +734,7 @@ fn get_faction(r: &mut Reader<'_>) -> codec::Result<Faction> {
             (!v.is_empty()).then(|| Box::new(v))
         },
         camp: get_opt(r, get_camp)?.map(Box::new),
+        strain: get_opt(r, get_strain)?.map(Box::new),
     })
 }
 

@@ -33,7 +33,7 @@ use rtsim_industry::threat::{Loads, Threat, ThreatTarget};
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 use rtsim_kernel::handle::Handle;
 use rtsim_kernel::meta_pages::{PagedMap, PagedWheel, ResidentArena};
-use rtsim_kernel::renewal::LossCause;
+use rtsim_kernel::renewal::{LossCause, Pressure};
 use rtsim_kernel::rng::{StreamKey, SystemId, fnv1a64};
 use rtsim_kernel::sites::{Bodies, SiteKind, SiteState, state_flags};
 use rtsim_knowledge::report::{fell, raid};
@@ -151,6 +151,30 @@ pub struct Faction {
     /// (MZB-672). Read it through [`Faction::hunts`].
     #[allow(clippy::box_collection)]
     pub(crate) hunts: Option<Box<Vec<Hunt>>>,
+    /// A pool camp's pressure from a player's kills, and whether it has broken (EQC201). `Some`
+    /// only for a culture with `pool_renewal`; boxed, so every other faction pays one null word.
+    pub strain: Option<Box<Strain>>,
+}
+
+/// A pool camp's strain (EQUILIBRIUM.md §2.4.5, EQC201): the pressure from the losses a player
+/// inflicted, whether the camp has broken, and the booked checks that keep both honest.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Strain {
+    /// Recent players' losses as the kernel keeps them: each warrior lost adds `1 / cap` (EQC200).
+    pub pressure: Pressure,
+    /// The camp has broken (EQC207): no warriors, no recruits, no parties, no plunder, until `due`.
+    pub broken: Option<Broken>,
+    /// Voids a booked [`Ev::Strain`] that a later change replaced.
+    pub stamp: u32,
+    /// When the camp's break is next looked at while it is thin and pressured but busy (EQC208).
+    pub check_at: Option<Tick>,
+}
+
+/// A broken camp (EQC207): since when, and when the wait for a new band ends.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Broken {
+    pub since: Tick,
+    pub due: Tick,
 }
 
 impl Faction {
@@ -1698,6 +1722,7 @@ impl Conflict {
             away: 0,
             camp: None,
             hunts: None,
+            strain: cu.pool_renewal.map(|_| Box::new(Strain::default())),
         };
         let lifespan = cu.def.chief_lifespan_days * TICKS_PER_DAY;
         let seed_of = |n: u32| StreamKey::new(self.seed, SYS_CHIEF, key).block(u64::from(n), 0)[0];
@@ -1873,12 +1898,82 @@ impl Conflict {
     /// room is clamped to it.
     pub fn pool_at(&self, f: u32, t: Tick) -> f64 {
         let x = &self.factions[f as usize];
-        let c = self.culture(f);
-        let rate = c.def.recruits_per_day / TICKS_PER_DAY as f64;
+        let rate = self.recruit_rate(f);
         let room = f64::from(x.cap.saturating_sub(x.away));
         (x.pool + rate * t.0.saturating_sub(x.pool_at.0) as f64)
             .min(room)
             .max(x.pool.min(room))
+    }
+
+    /// Warriors the faction recruits per tick, from the pool's anchor on (EQC203): the culture's
+    /// `recruits_per_day`, and for a pool camp under pressure `r x 2^-P` with P read at the
+    /// anchor's day, no slower than one every `recruit_cap_days`; 0 while the camp is broken. The
+    /// pool is a line from its anchor, so this is the one place the three readers (`pool_at`,
+    /// `pool_ready`, `whole_at`) take the rate from, and anything that changes the pressure
+    /// anchors the pool first (`pool_bump`).
+    pub fn recruit_rate(&self, f: u32) -> f64 {
+        let x = &self.factions[f as usize];
+        let c = self.culture(f);
+        let per_day = c.def.recruits_per_day;
+        let (Some(pr), Some(s)) = (&c.pool_renewal, &x.strain) else {
+            return per_day / TICKS_PER_DAY as f64;
+        };
+        if s.broken.is_some() {
+            return 0.0;
+        }
+        let day = (x.pool_at.0 / TICKS_PER_DAY) as u32;
+        let p = f64::from(s.pressure.now(day, pr.def.half_life_days));
+        // `RenewalRule { base: 1 / r, cap }` read as a rate: `min(cap, base x 2^P)` days a warrior.
+        // The product is done on the rate, so that no pressure is exactly `recruits_per_day`.
+        (per_day * (-p).exp2()).max(1.0 / f64::from(pr.def.recruit_cap_days)) / TICKS_PER_DAY as f64
+    }
+
+    /// The faction's pressure from a player's kills at `at` (EQC200): a pool camp's strain, a body
+    /// camp's ledger, 0 for a faction that keeps none.
+    pub fn pressure_now(&self, f: u32, at: Tick) -> f32 {
+        let day = (at.0 / TICKS_PER_DAY) as u32;
+        let c = self.culture(f);
+        if let (Some(pr), Some(s)) = (&c.pool_renewal, &self.factions[f as usize].strain) {
+            return s.pressure.now(day, pr.def.half_life_days);
+        }
+        let hl = c.renewal.or(c.chief_renewal).map(|r| r.rule.half_life_days);
+        match (self.camp(f), hl) {
+            (Some(camp), Some(hl)) => camp.pressure.now(day, hl),
+            _ => 0.0,
+        }
+    }
+
+    /// A player's loss of `n` members of a pool camp at `at` (EQC200): the pool is anchored at
+    /// `at` first, so the gap before the loss was recruited at the pressure it was read at, and
+    /// then the pressure takes `n / cap`. A faction with no strain books nothing.
+    pub(super) fn pool_bump(&mut self, f: u32, n: u32, at: Tick) {
+        let Some(pr) = self.culture(f).pool_renewal else {
+            return;
+        };
+        if n == 0 || self.factions[f as usize].strain.is_none() {
+            return;
+        }
+        self.pool_add(f, 0.0, at);
+        let x = &mut self.factions[f as usize];
+        let amount = n as f32 / x.cap.max(1) as f32;
+        let day = (at.0 / TICKS_PER_DAY) as u32;
+        let s = x.strain.as_mut().expect("checked");
+        s.pressure.bump(day, amount, pr.def.half_life_days);
+        self.stats.renewal_losses += u64::from(n);
+        self.site_touch(f);
+    }
+
+    /// Test hook (EQC206): a player kills `n` of the faction's warriors at `at`, the pool's whole
+    /// warriors first. Each takes `1 / cap` of pressure. Returns how many fell.
+    pub fn slay(&mut self, _w: &mut World, f: u32, n: u32, at: Tick) -> u32 {
+        self.run_to(at);
+        let have = self.pool_at(f, at).floor() as u32;
+        let k = n.min(have);
+        if k > 0 {
+            self.pool_add(f, -f64::from(k), at);
+            self.pool_bump(f, k, at);
+        }
+        k
     }
 
     /// The pool changes by `n` at `at`. A camp with a ledger first adds the slots the pool gained
@@ -1896,7 +1991,7 @@ impl Conflict {
     /// When the pool will hold `n` warriors: [`BLOCKED`] when the camp's cap less its members
     /// away holds fewer, or it recruits none, so that only a change of the room can end the wait
     /// (`unblock`).
-    fn pool_ready(&self, f: u32, n: f64, at: Tick) -> Tick {
+    pub fn pool_ready(&self, f: u32, n: f64, at: Tick) -> Tick {
         let x = &self.factions[f as usize];
         if n > f64::from(x.cap.saturating_sub(x.away)) {
             return BLOCKED;
@@ -1905,7 +2000,7 @@ impl Conflict {
         if have >= n {
             return at;
         }
-        let rate = self.culture(f).def.recruits_per_day / TICKS_PER_DAY as f64;
+        let rate = self.recruit_rate(f);
         if rate <= 0.0 {
             return BLOCKED;
         }
