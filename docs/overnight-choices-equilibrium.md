@@ -1444,9 +1444,9 @@ These replace the provisional table of EQC233. Every row is a test that fails ou
 | `kill_all_camps_30_seeds` | half: median 28 days [5th 28, 95th 32]; 90%: **median 51 [48, 69]**, worst 83 (seed 5, end 0.987 of the control); 0 breaks in 30 | median at most 96, each within 120 | 48 |
 | `farmed_camp_breaks_and_refounds` (a farmer kills every whole warrior every second day, 60 years) | first break goblin day 218, bandit 162, raider 144; **0.233, 0.283 and 0.300 breaks a year**; P at the break 2.00 to 2.01; the wait 192.0 to 193.0 days (`min(384, 48 x 2^P)`); refound pools 15, 10 and 12 (a quarter of 60, 40, 50); broken **0.547** of the time | first break day 100 to 300, 0.15 to 0.40 a year, broken 0.35 to 0.70 | 150 to 260, 0.23 to 0.30, 0.47 to 0.60 |
 | The same farmer at the plan's half-life of 96 (`farmed_camps_do_not_break_at_a_half_life_of_96`) | **no break in 60 years**; max P 1.58, 1.67, 1.72 | the finding that decided FB-1 | 1.58, 1.67, 1.72 |
-| A wanderer, a wipe of what is home in one camp in three every 800 days (`a_wanderer_leaves_the_camps_near_their_caps`) | 0.970 of the control's warriors over years 30 to 60; max P 1.45 to 1.61; **no break** | at least 0.90, broken at most 5% | 0.97 |
+| A wanderer, a wipe of what is home in one camp in three every 800 days (`a_wanderer_leaves_the_camps_near_their_caps`) | 0.971 of the control's warriors over years 30 to 60; max P 1.45 to 1.61; **no break** | at least 0.90, broken at most 5% | 0.97 |
 | The wanderer every 400 days | **0.806**; 5 breaks in 60 years (raider 4, bandit 1); broken 0.062 of camp-days | at least 0.75, broken at most 10% | not run |
-| The wanderer every 180 days (`a_wipe_every_half_year_breaks_the_camps_in_the_end`) | 0.527; 21 breaks; broken 0.255 | breaks (share above 5%), below 0.9 | not run |
+| The wanderer every 180 days (`a_wipe_every_half_year_breaks_the_camps_in_the_end`) | 0.526; 21 breaks; broken 0.255 | breaks (share above 5%), below 0.9 | not run |
 
 What this says to Ben: a hunter who comes back to a camp once in about two game years never breaks it; one who comes every 400 days
 breaks one now and then; one who comes every half year (a farmer) breaks them and finds each camp empty about a quarter of the time.

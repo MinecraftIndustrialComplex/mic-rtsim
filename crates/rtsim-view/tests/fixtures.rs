@@ -4,7 +4,15 @@
 //! copied without its `rtsim/archive` (the event timeline): `events.rs` needs a real save with no
 //! archive and writes its own archive onto a copy of this one. The create save keeps its archive.
 //!
-//! - `tests/data/core`: neoforge/core's GameTest world, a fresh one, run from the S6 build of
+//! - `tests/data/core`: neoforge/core's GameTest world, a fresh one, run from the S7 build of
+//!   `feat/eq-s7-conflict` at 7f7110eb (Conflict pressure and the outposts, EQUILIBRIUM.md S7, FB-1 (a), FB-5 (b),
+//!   FB-8; docs/overnight-choices-equilibrium.md EQC200 to EQC290; S7's formats on top of S6's: the conflict's
+//!   pages are RTCE (magic `RTCE`) with meta version 13, a faction row ending with its strain (a pool camp's
+//!   pressure, whether it has broken and until when, the stamp and tick of its booked check) and its plunder mood
+//!   (the raiders' grief and spoils), the wheel's events may be a strain check or a refound (tag 12), and the stats end with the
+//!   breaks, refounds and deferrals; the site ledger's file is unchanged; this save has no news packet on a road at the
+//!   stop, so `travel.messengers` is not required here, as the herd routes are not: it draws when a packet is in flight
+//!   at the save, which depends on when the server stops); before that, the S6 build of
 //!   `feat/eq-s6-villages` at db46b196 (Villages and Ribbits, EQUILIBRIUM.md S6, EQ-1 (a),
 //!   merged with main c9111cc0, which carries S5; docs/overnight-choices-equilibrium.md EQC150 to
 //!   EQC193; S6's formats on top of S5's: the world model's page is RTW5, a village's row after its
@@ -117,7 +125,9 @@
 //!   when the server stops: 6638edc's save had one, while both runs of 98d6d34 and main's 7e4042a
 //!   had every herd staying put. So the route layer is not required here; it still has to draw or
 //!   say why.
-//! - `tests/data/create`: neoforge/create's GameTest world, run from the S6 build of
+//! - `tests/data/create`: neoforge/create's GameTest world, run from the S7 build of
+//!   `feat/eq-s7-conflict` at 7f7110eb with `-Psec1fx` (the core save's formats, S7's: RTCE and meta 13, as the core
+//!   entry says; a fresh world copied to `target/` after its JVM exited); before that, the S6 build of
 //!   `feat/eq-s6-villages` at db46b196 (merged with main c9111cc0) with `-Psec1fx` (the core
 //!   save's formats, S6's: RTW5 and RTP1 version 6, as the core entry says, and S5's under them; a
 //!   fresh world copied to `target/` after its JVM exited); before that, the S5 build of
@@ -223,7 +233,6 @@ fn the_core_gametest_save_draws_every_layer_and_writes_nothing() {
             "settle.villages",
             "trade.prices",
             "travel.roads",
-            "travel.messengers",
             "ecology.herds",
             "industry.districts",
         ],
