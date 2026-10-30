@@ -243,6 +243,24 @@ except in `aheldlaircomesinandgoesoutbyitself`.
 | `asettledpuppetataninlairbecomesahomebody` | DRAGON_HAND_BACK: a puppet landed at an in lair swaps its tags in place and vanilla's save returns it |
 | `aLiveBodysAgeSyncRefreshesItsAttributes`, `aHomeSurvivesVanillasSaveUnlessACoordinateIsZero` | the plan's UNVERIFIED facts 2 and 4 (EQC146) |
 
+The pool camps' pressure and the outposts (EQUILIBRIUM.md S7, FB-5 (b); `PoolCampGameTests` and `OutpostGameTests`, native engine
+only, each in its own batch; docs/overnight-choices-equilibrium.md EQC200 to EQC290). A goblin camp (the pool camp tests) or a
+real vanilla `minecraft:pillager_outpost` start the test generates with `Structure.generate` (the outpost tests) is found, farmed
+with test order 41 (`RtsimTests.slayCamp`) and reset or restarted after a gap.
+
+| Test | What it shows |
+|---|---|
+| `aPoolCampKeepsItsPressureAndItsBreakAcrossAReset` | a farmed and broken goblin camp: after a plain reset the new engine's row has the same P and the wait less the ticks between the two rows' stamps |
+| `aBrokenPoolCampSendsNoParty` | a broken camp (grievance 32 kills deep) sends no party in thirty game days; a day short of its refound 32 more kills change nothing; the refounded camp has a quarter of its cap and a party comes again |
+| `anOutpostIsFoundOnceWhenItsChunkLoads` | `ChunkEvent.Load` on a chunk with the outpost start: one FACTION_FOUND for the start chunk's key under the structure's id, not late, territory 300; loading again finds nothing more |
+| `anOutpostFollowsTheConflictSwitch` | found while the conflict module is off: known, nothing journaled; switched on, FACTION_FOUND within a tick |
+| `existingWorldsOutpostsJoinLate` | a chunk that was not new: nothing with `outpostsJoinExisting` off, FACTION_FOUND flagged LATE with it on |
+| `clearingAnOutpostIsGrievanceAndAVillageRaidIsNot` | a player's kills of three pillagers and a vindicator in the box count as the camp's killing signal; a witch there and a pillager 200 blocks off do not |
+| `aProvokedOutpostSendsItsEnvoy` | 32 kills in the box and the ladder sends a herald and two pillagers (after 36 asks of 1,200 ticks) with a demand of emeralds |
+| `aFarmedOutpostBreaksAndTheNewBandRefounds` | P 2.0 and a wipe: the row reads empty, broken, waiting 192 days; a reinstall after 250 days resets the engine, the finder reports the outpost to the new session itself and the camp is refounded at once with its pressure aged |
+| `aVanillaPatrolAndTheOutpostsOwnPillagersAreLeftAlone` | two pillagers standing in a found outpost's box stay untagged and unremoved, no party of the camp's exists |
+| `uninstallLeavesTheOutpostAsVanilla` | stopped after a farm and a save: the chunk keeps the one structure start, no mob in the box carries a mark; a reinstall after a gap starts a session |
+
 The industry GameTests (`mic_rtsim_create` namespace; Create 6.0.10's own jar; always the stub engine,
 which scripts the engine's industry commands; each in its own batch):
 
