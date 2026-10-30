@@ -59,7 +59,7 @@
   "plunder_mean_days": 48.0,
   "plunder_mood": {
     "half_life_days": 96.0,
-    "loss_gain": 3.5,
+    "loss_gain": 2.8,
     "spoils_gain": 0.15,
     "chief_loss_share": 0.1,
     "min_factor": 0.5,

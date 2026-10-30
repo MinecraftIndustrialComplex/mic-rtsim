@@ -92,8 +92,8 @@ pub const UNWATCHED_KEPT: usize = 8;
 pub const SETTLERS_KEY: u64 = fnv1a64(b"mic_rtsim.conflict.settlers");
 
 pub mod camp;
-pub mod rail;
 mod mood;
+pub mod rail;
 mod strain;
 
 pub use mood::Mood;
