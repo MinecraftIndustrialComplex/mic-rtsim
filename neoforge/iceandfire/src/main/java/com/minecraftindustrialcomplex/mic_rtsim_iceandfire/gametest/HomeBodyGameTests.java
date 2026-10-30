@@ -693,9 +693,10 @@ public final class HomeBodyGameTests {
                     check("and the owed body was spawned (a second home answer)", homeAnswers(agent[0]).size() >= 2 && bridge().body(agent[0]) != null);
                 }))
                 .thenExecute(() -> {
-                    record(test, "spawned", "unwatched, the owed body " + bridge().body(agent[0]).getUUID() + " stands; the row: " + describe(row(level, lair)));
+                    Entity body = bridge().body(agent[0]);
+                    record(test, "spawned", "unwatched, the owed body " + body.getUUID() + " stands; the row: " + describe(row(level, lair)));
                     bridge().homes.testOut(lair, level.getGameTime());
-                    bridge().body(agent[0]).discard();
+                    body.discard();
                     unforce.run();
                 })
                 .thenSucceed();
