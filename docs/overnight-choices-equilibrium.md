@@ -1159,7 +1159,7 @@ player who keeps building walls) in real worlds, with S7's pressure and break on
 Taken: (b). The design is EQC237 to EQC254 (EQC255 to EQC269 kept); the choices it leaves to Ben are FB-6 to FB-9. S7 changes nothing at a den or a grove.
 
 
-**FB-6 (EQC243, F19). What counts as killing an outpost's members?** The camp's grievance rises 12 for each member a player kills in
+**FB-6 (EQC243, F19), DECIDED by Ben 2026-10-30: (a). What counts as killing an outpost's members?** The camp's grievance rises 12 for each member a player kills in
 its territory, and the reporter's `kin` predicate says which mobs are members (the signal itself counts a direct kill by a player; a
 pet's or a trap's kill does not, as for every camp). Two kills bring a herald and two pillagers to demand emeralds, four a raid of
 twelve, ten or so a siege. Clearing or farming an outpost is among the first things a survival player does with one, and a
@@ -1173,7 +1173,7 @@ vanilla pillager farm at an outpost is a common build.
 Why it is Ben's: how fights feel, and the first thing a player does at an outpost. Switching is the predicate in `Outposts` and one
 config number (the margin).
 
-**FB-7 (EQC239, EQC238, F20). Do an outpost's own pillagers become the camp's bodies?** They are the structure's natural spawns
+**FB-7 (EQC239, EQC238, F20), DECIDED by Ben 2026-10-30: (a), no, the camp is a number. Do an outpost's own pillagers become the camp's bodies?** They are the structure's natural spawns
 (none is placed with it), so there is no saved population at an outpost; the camp is a pool of 50 that the sim keeps as a number and
 sends out as puppets, as the goblin culture does.
 - (a) **No (Recommended):** the pillagers there are vanilla's and the camp's warriors are a number. Nothing is adopted, counted,
@@ -1184,7 +1184,7 @@ sends out as puppets, as the goblin culture does.
   prerequisite.
 Why it is Ben's: body ownership (MOWZIE.md §4.9, EQ-2) and what an uninstall leaves. (b) is a plan of its own.
 
-**FB-8 (EQC249, F21). How often do raiders raid villages in survival?** Each found camp sends a plunder band at the nearest village
+**FB-8 (EQC249, F21), ANSWERED by Ben 2026-10-30, and not as a number: "should probably depend on the raiders, w/ some RNG and dependence upon historical data for the raiders comprising the camp, their experiences, temperaments, etc. Though ~48 days is a good avg." Built as the plunder mood (EQC285 to EQC289 below): the mean stays 48 days, bent by the chief's temperament and the camp's recent raids. How often do raiders raid villages in survival?** Each found camp sends a plunder band at the nearest village
 or Ribbit village within 2,500 blocks on a clock; the culture's data says a mean of 8 game days. Targets are the culture's
 `hates` (humans and Ribbits; goblins and bandits do not exist), nearest first, so one village bears them; a plunder a player
 watches is physical (pillagers at the village).
@@ -1194,7 +1194,7 @@ watches is physical (pillagers at the village).
 - (c) Off: the camp acts only on grievance, against players.
 Why it is Ben's: whether and how often villages in his survival worlds are raided. The ladder against players is FB-6's.
 
-**FB-9 (EQC250, F22). Do existing worlds' outposts join?** The finder reports an outpost whenever its chunk loads, so a world made
+**FB-9 (EQC250, F22), DECIDED by Ben 2026-10-30: (a), yes, any outpost whose chunk loads joins, flagged LATE, with the `outpostsJoinExisting` switch. Do existing worlds' outposts join?** The finder reports an outpost whenever its chunk loads, so a world made
 before the mod gets raider camps from every outpost its players load, with a full pool and no grievance (they matter once provoked
 or on the plunder clock).
 - (a) **Yes, with a switch (Recommended):** every outpost whose chunk loads joins (flag LATE); `outpostsJoinExisting` false limits
@@ -1202,6 +1202,17 @@ or on the plunder clock).
 - (b) Only outposts in chunks generated after the mod: existing worlds see no raiders from old outposts.
 - (c) Ship inert (`outpostsJoin` false) and turn it on per world.
 Why it is Ben's: it decides what a deployed server (LiveSrv) looks like after the update.
+
+**FB-10 (EQC288, F26). Which cultures plunder on their history?** The mood is a block of six numbers in a culture's JSON. It is on the
+raider only: the goblin and bandit camps (plunder means of 12 and 6 days, and no reporter in the pack) and the grove (12 days, a body
+camp that is S9's) keep their clocks as they were, bent by their chiefs' aggression alone.
+- (a) **The raider only (Recommended; built):** the raiders are the camps Ben's worlds will have (the outposts); the others change
+  nothing today.
+- (b) Also the goblin and the bandit: one block each. Their mean waits would be exactly the data's 12 and 6 days (the mood centres the
+  temperament), 9% shorter than today's, which average 1.10 times the data's; and a camp that loses members raids less, one that wins more.
+- (c) Every plundering culture, the grove included: S9's to decide (its warriors are bodies and its losses go through CAMP_DEATH).
+Why it is Ben's: it changes how often villages and players meet the camps of cultures a pack author may add. A change is one JSON
+block, no code.
 
 **Told, not asked** (all inside EQ-5, EQ-6 and the rules above): the conflict pages RTCD to RTCE (the engine's own save, no
 migration); the reporter is core's and has no mod of its own (D4: villages and herds are core's too); a refounded camp has a new chief and heir; a broken camp's market is untouched; a camp with a party out breaks
@@ -1481,3 +1492,20 @@ it has not wiped lately, and a wanderer who wipes what is home takes P to 1.0 pe
 | EQC282 | **The raiders' territory radius is 300 blocks** (pollution 500, reach +200), not 400: my first test had it wrong, the culture file and EQC243 had it right. |
 | EQC283 | **FB-6 to FB-9, as built (pending Ben):** FB-6 (a) `kin` is a `minecraft:raiders` mob but the witch inside the box widened by `outpostKinMargin` 24 (a config key; 0 means the box itself); FB-7 (a) the outposts' pillagers are vanilla's; FB-8 (b) `raider.json`'s `plunder_mean_days` 48 (one number); FB-9 (a) `outpostsJoinExisting` true. |
 | EQC284 | **Test overrides.** `RtsimConfig.Test.setOutpostsJoin` and `setOutpostsJoinExisting` (GameTest runs only, the property `mic_rtsim.gametest`), read before the config. |
+
+### The plunder mood (Ben's FB-8 answer, 2026-10-30)
+
+Ben, on how often raiders raid villages: *"Should probably depend on the raiders, w/ some RNG and dependence upon historical data for
+the raiders comprising the camp, their experiences, temperaments, etc. Though ~48 days is a good avg."* So the wait to a camp's next
+plunder is not one number. The records below say what exists, what was added, why, and what CONFLICT-LIFE.md's council takes over.
+Built in the engine (`crates/rtsim-conflict/src/engine/mood.rs`, the `plunder_mood` block of `raider.json`), tested in
+`crates/rtsim-conflict/tests/mood.rs` (twelve tests); nothing on the wire or in Java changes.
+
+| # | Choice | Why |
+|---|---|---|
+| EQC285 | **What already models a band's mind (read before adding anything).** (1) *Temperament*: `Temperament::from_seed(chief_seed)` (bold, sociable, aggressive; `rtsim-knowledge`), recomputed from the seed, costing no bytes; the plunder clock already read it: the mean was `plunder_mean_days x 1000 / bend(Aggressive, 1000, 50)`, 0.67 to 2.0 times the mean, and a new band (`reband`, the refound) draws a new chief and so a new temperament, as does the heir who succeeds a fallen or aged chief. (2) *Fights seen*: `Faction.observed` (strength and surviving share of the camp's last 16 watched fights), read by `village_outcome` as a floor under what a raid costs the attackers; it holds watched fights only, is cleared at a refound, and nothing reads it for timing. (3) *Grievance and memory*: per feud (`Grievance`, the news the knowledge layer keeps, a chief's and heir's reports); they point at players and villages, not at the camp's own raids, and they decay by their own half-lives. (4) *Pressure*: `Strain.pressure`, a player's losses over the recruiting rate and the break (EQC200). (5) *CONFLICT-LIFE.md* plans a council (chief, heir and elder, each with a temperament drawn from the culture's mean, pride, grievance, memory slots with `lost at`, `raided us` and `paid` kinds, §2.1 to §2.4) that decides when a camp goes: not built. The camp's past raids and their outcomes were remembered by nothing. | Ben asked for reuse; (1) is reused as it is, (5) is what the new part is shaped for, and the one thing missing is (2)'s unwatched counterpart as a memory: how the camp's own raids went. |
+| EQC286 | **The mean, and the data.** `mean(f, at) = plunder_mean_days x (1000 / bend(Aggressive, 1000, 50)) / temper_mean x factor(f, at)`, in game days, where `temper_mean` (about 1.10, computed once from the 256 aggressions when the culture resolves) centres the temperament so that the camps' mean is the culture's own 48 days, and `factor = clamp(exp(loss_gain x grief - spoils_gain x spoils), min_factor, max_factor)`. The block `plunder_mood` in `raider.json`: `half_life_days` 96 (a game year, the plan's pressure half-life), `loss_gain` 2.8, `spoils_gain` 0.15, `chief_loss_share` 0.1, `min_factor` 0.5, `max_factor` 3.0. The draw is the exponential one it always was, from `SYS_PLUNDER`, the faction key and the draw's number: the mood moves the mean, never the stream, so A/B runs and replays hold. A culture with no block keeps `mean x 1000 / bend` exactly (the goblin, bandit and grove clocks are bit for bit as before). | Ben: ~48 days average, some RNG, temperament, history. The gains are set so that a typical camp's losses and loot balance (EQC288). |
+| EQC287 | **The history: two memories of the kernel's `Pressure` shape, saved in the faction row.** `Faction.mood: Option<Box<Mood>>`, `Some` only for a culture with the block; `Mood { grief, spoils }`, each an f32 and the day it was last bumped, halving in `half_life_days` (the kernel's closed form, no per-tick work). **Grief** takes `lost / cap` for every unit of a war party lost to anyone (village defences, a rival camp, a player, a trap: `party_lost`, the one function every loss goes through, once per counted casualty op) and `chief_loss_share` for a war chief's fall (`chief_falls`). **Spoils** takes 1 for each plunder that brought loot home (`home`, items landed at the haven). A refound clears both (`reband`): a new band has not raided. The mood is not in the site ledger's row, so a reset (no pages) gives a camp a neutral history, as it gives a feud none; the pages and the journal keep it across a crash and a restart. Saved at the end of the faction row after the strain (`put_opt`: a tag byte, and 16 bytes when present): the pages stay `RTCE`, meta 13 (this branch's format, not yet released, EQC217). `Conflict::check` pins that a faction has a mood exactly when its culture has the block. | The coordinator's sketch, reduced to the two numbers that answer it: bold or successful goes sooner (spoils, the chief's aggression), a band that lost members or its chief waits longer (grief), the player's kills of a party included because they are losses like any other. `observed` is not reused: it holds watched fights only, 16 of them, and a pair is not a decayed sum. |
+| EQC288 | **Measured (the engine's own; all in `tests/mood.rs`).** (1) With no history, 3,200 camps on 16 seeds: the mean of `plunder_mean_days` is 48.0 (the test's band 47.5 to 48.5), the lowest about 29 days and the highest about 87 (0.6 to 1.8 of 48). (2) A quiet world (24 camps, no village with anything to take, 960 game days, 6 seeds): the camps draw a plunder every **48.1** days (band 45 to 51), 56 raids, grief 0.001. (3) A rich world (every village refilled to 20 items over its targets every ten days, the same days and seeds): a plunder every **47.1** days (band 42 to 54), 2,934 raids and 7,572 members lost, mean grief 0.146 (a seventh of the cap lost lately) and spoils 2.95, the camps' means ending between 17.6 and 129.2 days: the history spreads the camps well past the temperament's 29 to 87. At the first gains tried (`loss_gain` 3.5) the rich world's mean was 53.9 days: a typical camp's grief outweighed its spoils; 2.8 balances them. (4) One raid with loot lowers the next mean by 14%; losing 4 of 50 raises it by 25%; a chief's fall by 32%; both halve in 96 days (a quarter in two game years, nothing in the test's 2,000 days); the bounds hold at 100 times the loss and 100 times the loot (`the_factor_is_clamped`). | The coordinator asked for a test over many camps and seeds with the band. |
+| EQC289 | **How CONFLICT-LIFE.md takes it over.** The plunder clock reads one function, `Conflict::plunder_mean_days(f, at)`; the council replaces its body with a sitting (its voices' temperaments in place of the chief's aggression, their memories in place of `Mood`: `lost at` is grief, `raided them` and `paid` are spoils) and keeps the exponential draw and `schedule_plunder`. `Mood` and its three writers (`grieve_members`, `grieve_chief`, `gloat`) are the only places that know a camp's raiding history; deleting them removes the mood and nothing else reads them. The block's name in the JSON would go with them. | Ben: "shape it so the council can take it over". |
+| EQC290 | **Not done on purpose.** (1) The mood is not on a wire record, the ledger or the viewer: no player sees a temperament or a score (the raids come sooner or later, that is all). (2) `observed` and the pool's pressure are not folded in (a player's kills reach grief through the parties they kill). (3) The goblin, bandit and grove clocks are unchanged (FB-10). (4) A reset forgets the history (EQC287). (5) A pillager farm at an outpost: its kills of vanilla spawns are grievance (FB-6), not grief (they are not the camp's warriors). | Each can be added; none is needed for the answer Ben gave. |

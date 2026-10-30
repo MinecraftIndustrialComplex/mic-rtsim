@@ -2493,6 +2493,8 @@ footprint (MZB-1015). CHIEF_BODY is written into a chief's body (health, crystal
   optional strain (`put_opt`: pressure, `broken` as since and due ticks, the stamp, the check tick), the wheel's events may
   be tag 12 `Ev::Strain` (a break check or a refound), and the stats end with `breaks`, `refounds` and `break_deferrals`. An
   older page is refused by name ("conflict save format RTCD, this build reads RTCE").
+  The faction row also ends with the plunder mood (FB-8, EQC287), an option after the strain: the camp's grief and spoils, each an
+  f32 and the day it was last bumped; `Some` only for a culture with a `plunder_mood` block (the raider).
 - **Archive kinds** `conflict.broken` and `conflict.refounded`, appended after the fifteen existing `conflict.*` kinds (kind
   indices are saved). A break and a refound carry no news (FB-4).
 - **Test order 41, `CONFLICT_SLAY`** (TEST mode only; `NativeCodec.CONFLICT_SLAY`, `RtsimTests.slayCamp`): `u64 faction, u32 n,
