@@ -317,5 +317,12 @@ public final class Cmd {
         public static final int FLAG_AT_HOUSE = 1;
         /** Spawn at the village's meeting point (a bought work's body: SINK.md's golems). */
         public static final int FLAG_AT_VILLAGE = 2;
+        /**
+         * A renewal arrival (slice S6, EQC169): held while a player is within 128 blocks of the village's footprint,
+         * placed at the meeting point when none is, a human body clamped to the free beds.
+         */
+        public static final int FLAG_ARRIVAL = 4;
+        /** With ARRIVAL: a watched village's arrival walks in from the point X, Z names (EQC177). */
+        public static final int FLAG_WALK_IN = 8;
     }
 }

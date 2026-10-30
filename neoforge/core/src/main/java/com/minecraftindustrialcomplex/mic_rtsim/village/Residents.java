@@ -36,10 +36,19 @@ public final class Residents {
         Entity create(ServerLevel level, Vec3 pos, String profession);
     }
 
+    /**
+     * Picks the profession of a renewal arrival of one body kind (slice S6, EQC180): asked only for an arrival order that names
+     * none, with the village and the order's op, which makes the choice a function of the order.
+     */
+    public interface ProfessionChooser {
+        String choose(ServerLevel level, VillageRegistry villages, Village village, long op);
+    }
+
     // Copy on write: registration is rare (mod construction, setup), lookups are on every damage event,
     // interaction and census entity, so they read a published immutable map with no lock.
     private static volatile Map<EntityType<?>, Kind> KINDS = Map.of();
     private static volatile Map<String, Factory> FACTORIES = Map.of();
+    private static volatile Map<String, ProfessionChooser> CHOOSERS = Map.of();
 
     static {
         register(EntityType.VILLAGER, new Kind(
@@ -47,6 +56,18 @@ public final class Residents {
                 e -> ((Villager) e).getBrain().getMemory(net.minecraft.world.entity.ai.memory.MemoryModuleType.MEETING_POINT)
                         .map(net.minecraft.core.GlobalPos::pos).orElse(null),
                 true));
+        // A villager a village's settlers or growth bring (EQC176): an ordinary adult, its type from the biome it stands in
+        // (finalizeSpawn does not set it for an event spawn), no profession (the workstations give one), never a baby.
+        registerFactory("minecraft:villager", (level, pos, profession) -> {
+            Villager v = EntityType.VILLAGER.create(level);
+            if (v == null)
+                return null;
+            v.moveTo(pos.x, pos.y, pos.z, level.random.nextFloat() * 360f, 0f);
+            v.finalizeSpawn(level, level.getCurrentDifficultyAt(v.blockPosition()), net.minecraft.world.entity.MobSpawnType.EVENT,
+                    new net.minecraft.world.entity.AgeableMob.AgeableMobGroupData(false));
+            v.setVillagerData(v.getVillagerData().setType(net.minecraft.world.entity.npc.VillagerType.byBiome(level.getBiome(v.blockPosition()))));
+            return v;
+        });
         // A bought work's body (SINK.md: one iron golem at the meeting point). Not player made, so it
         // defends the village as vanilla's own village golems do; the spawner makes it persistent.
         registerFactory("minecraft:iron_golem", (level, pos, profession) -> {
@@ -69,6 +90,18 @@ public final class Residents {
         Map<String, Factory> m = new HashMap<>(FACTORIES);
         m.put(bodyKind, factory);
         FACTORIES = Map.copyOf(m);
+    }
+
+    public static synchronized void registerProfessionChooser(String bodyKind, ProfessionChooser chooser) {
+        Map<String, ProfessionChooser> m = new HashMap<>(CHOOSERS);
+        m.put(bodyKind, chooser);
+        CHOOSERS = Map.copyOf(m);
+    }
+
+    /** The profession a renewal arrival of this body kind takes, or null when the plugin registered no chooser. */
+    public static String chooseProfession(String bodyKind, ServerLevel level, VillageRegistry villages, Village village, long op) {
+        ProfessionChooser c = CHOOSERS.get(bodyKind);
+        return c == null ? null : c.choose(level, villages, village, op);
     }
 
     public static Kind kind(Entity e) {

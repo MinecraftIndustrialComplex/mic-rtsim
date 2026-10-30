@@ -23,6 +23,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.village.Residents;
 import com.minecraftindustrialcomplex.mic_rtsim.village.Village;
 import com.minecraftindustrialcomplex.mic_rtsim.village.VillageAdoption;
 import com.minecraftindustrialcomplex.mic_rtsim.village.VillageRegistry;
+import com.minecraftindustrialcomplex.mic_rtsim.village.Walkers;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
@@ -58,6 +59,7 @@ public final class Phase1 {
     public final BaseTracker bases;
     public final HouseBuilder houses;
     public final ResidentSpawner residents;
+    public final Walkers walkers;
 
     /** Set when something may have touched a puppet's cargo (a container closed): check every group next pass. */
     boolean cargoCheckSoon;
@@ -87,6 +89,7 @@ public final class Phase1 {
         this.bases = BaseTracker.get(session.server);
         this.houses = new HouseBuilder(session, villages);
         this.residents = new ResidentSpawner(session, villages, houses);
+        this.walkers = new Walkers(session, villages);
         VillageAdoption.refresh(session.server);
     }
 
@@ -132,6 +135,7 @@ public final class Phase1 {
         guard("census", () -> census.tick(ticks, now));
         guard("houses", () -> houses.tick(now));
         guard("residents", () -> residents.tick(now, () -> session.spawnBudget, n -> session.spawnBudget -= n));
+        guard("walkers", () -> walkers.tick(ticks, now));
         if (ticks % 600 == 0)
             guard("bases", () -> bases.sweep(session, now));
     }
