@@ -2043,6 +2043,18 @@ pub fn mowzie_world(
     warriors: u16,
     seed: u64,
 ) -> (World, Conflict, Vec<u64>) {
+    mowzie_world_on(villages, dens, groves, warriors, seed, Cultures::builtin())
+}
+
+/// [`mowzie_world`] on the given cultures.
+pub fn mowzie_world_on(
+    villages: usize,
+    dens: usize,
+    groves: usize,
+    warriors: u16,
+    seed: u64,
+    cultures: Cultures,
+) -> (World, Conflict, Vec<u64>) {
     let (goods, ids) = rtsim_world::synth::goods();
     let book = rtsim_world::synth::recipes(&ids);
     let mut data = rtsim_world::synth::grid(villages, seed);
@@ -2072,7 +2084,7 @@ pub fn mowzie_world(
         });
     }
     let mut w = World::build(world_config(seed), goods, book, data);
-    let mut c = conflict(seed, &w);
+    let mut c = conflict_with(seed, &w, cultures);
     for (id, name) in [(DEN_STRUCTURE, "frostmaw"), (GROVE_STRUCTURE, "umvuthana")] {
         let ci = c.cultures.index_of(name).expect("a built-in culture");
         let structure = c.cultures.get(ci).def.structures[0].clone();
