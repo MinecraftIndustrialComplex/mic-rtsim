@@ -606,9 +606,6 @@ fn decode_snapshot(b: &[u8]) -> Result<BTreeMap<u64, usize>, CodecError> {
         let k = r.u64()?;
         nodes.insert(k, r.var_u64()? as usize);
     }
-    for _ in 0..r.len_prefix(8)? {
-        r.u64()?;
-    }
     r.finish()?;
     Ok(nodes)
 }
