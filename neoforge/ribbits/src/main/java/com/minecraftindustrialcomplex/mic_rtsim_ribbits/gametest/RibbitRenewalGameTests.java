@@ -27,7 +27,6 @@ import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 import java.util.ArrayList;
 import java.util.List;
 
-import static com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests.check;
 import static com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests.record;
 
 /**
@@ -43,6 +42,22 @@ import static com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests.recor
 @PrefixGameTestTemplate(false)
 public final class RibbitRenewalGameTests {
     private RibbitRenewalGameTests() {}
+
+    /**
+     * {@link RtsimTests#check}, and a failing check sleeps 5 ms: the GameTest server ticks as fast as it can, and the chunks a
+     * wait is for load on other threads in wall time, so a timeout in ticks must not pass in too short a time (see
+     * {@link RtsimTests#io}). A check that fails in a {@code thenExecute} fails the test either way.
+     */
+    private static void check(String what, boolean ok) {
+        if (!ok) {
+            try {
+                Thread.sleep(5);
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+            }
+        }
+        RtsimTests.check(what, ok);
+    }
 
     private static final int AT_VILLAGE_ARRIVAL = Cmd.SpawnResident.FLAG_AT_VILLAGE | Cmd.SpawnResident.FLAG_ARRIVAL;
     private static final int WALK_IN = AT_VILLAGE_ARRIVAL | Cmd.SpawnResident.FLAG_WALK_IN;
