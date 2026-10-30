@@ -692,3 +692,40 @@ fn the_audit_names_a_pressure_a_culture_does_not_keep() {
     let bad = r.c.camp_audit(r.f, r.c.now());
     assert!(bad.iter().any(|b| b.starts_with("MZB-1210")), "{bad:?}");
 }
+
+// ---- the grove's plunder mood (FB-S9-2, Ben, 2026-10-30) -------------------------------------------
+
+/// The grove carries the raider's `plunder_mood` block: a raptor pack lost to a village's defence is
+/// `1/K` of the cap in grief, and the next plunder waits `exp(2.8 x grief)` times as long, up to the
+/// block's 3 (the raider's `max_factor`), so a grove that loses its pack every time plunders every
+/// 35 days or so instead of every 12.
+#[test]
+fn a_groves_lost_pack_lengthens_its_plunder_wait() {
+    let (_w, mut c, keys) = synth::mowzie_world_on(6, 0, 1, 7, 51, Cultures::builtin());
+    let f = c.faction_of_key(keys[0]).expect("the grove");
+    let at = Tick(10);
+    assert_eq!(c.mood_now(f, at), Some((0.0, 0.0)), "a grove has a mood");
+    let before = c.plunder_mean_days(f, at).expect("a grove plunders");
+    // The mean over temperaments is the culture's 12 days (the camps' spread is the raider's).
+    assert!((6.0..24.0).contains(&before), "{before}");
+    c.grieve(f, 1.0 / 7.0, at);
+    let one = c.plunder_mean_days(f, at).unwrap();
+    assert!(
+        (one / before - (2.8f64 / 7.0).exp()).abs() < 1e-6,
+        "one pack lost: {one} against {before}"
+    );
+    c.gloat(f, at);
+    let shorter = c.plunder_mean_days(f, at).unwrap();
+    assert!(
+        (shorter / before - (2.8f64 / 7.0 - 0.15).exp()).abs() < 1e-6,
+        "loot home shortens it: {shorter} against {before}"
+    );
+    assert!(shorter < one);
+    // A whole cap lost on top: the factor is held at the block's three.
+    c.grieve(f, 1.0, at);
+    let clamped = c.plunder_mean_days(f, at).unwrap();
+    assert!(
+        (clamped / before - 3.0).abs() < 1e-6,
+        "clamped at three times: {clamped} against {before}"
+    );
+}
