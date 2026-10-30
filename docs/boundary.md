@@ -609,7 +609,7 @@ dictionary id).
 
 | Kind | Name | aux | Fields (offset type name) | Size |
 |---|---|---|---|---|
-| 0x0020 | VILLAGE_CENSUS (latest-wins) | 0 | 8 u64 village, 16 u32 dimension, 20 u32 flags (1 the meeting point is a meeting POI), 24 i32 meetX, 28 meetY, 32 meetZ, 36 u32 residents, 40 u32 beds, 44 u32 workstations, 48 u32 golems, 52 u32 n, 56 n × (u32 profession, u32 count) | 56 + 8n |
+| 0x0020 | VILLAGE_CENSUS (latest-wins) | 0 | 8 u64 village, 16 u32 dimension, 20 u32 flags (1 the meeting point is a meeting POI, 2 COMPLETE: every chunk of the reach was FULL with its entities loaded and every walking settler was found), 24 i32 meetX, 28 meetY, 32 meetZ, 36 u32 residents, 40 u32 beds, 44 u32 workstations, 48 u32 golems, 52 u32 n, 56 n × (u32 profession, u32 count) | 56 + 8n |
 | 0x0021 | VILLAGE_GOSSIP (latest-wins) | 0 | 8 u64 village, 16 u32 n, 20 u32 residents, 24 n × (u64 playerMost, u64 playerLeast, i32 major_negative, i32 minor_negative, i32 minor_positive, i32 major_positive, i32 trading, u32 reserved): vanilla's own gossip about each player, summed over the census's villagers | 24 + 40n |
 | 0x0022 | WORK_CATALOG (latest-wins) | 0 | 8 u32 kinds n, 12 reserved, 16 n × kind: 0 u32 id (dictionary 9), 4 u32 group (0 lamp, 1 decor, 2 golem), 8 u32 culture, 12 u32 style (structure; 0 every village of the culture), 16 u32 cap (1 one per capN residents, 2 capN a village), 20 u32 capN, 24 u32 variants v, 28 reserved, then v × variant: 0 u32 place (1 template, 2 body), 4 u32 what (template or body), 8 u32 processors (0 none), 12 u32 blocks, 16 u32 items m, 20 reserved, then m × (u32 item, u32 count) | 16 + Σ(32 + Σ(24 + 8m)) |
 | 0x0120 | VILLAGE_ADOPTED | flags (1 LATE) | 24 u64 village, 32 u32 dimension, 36 u32 structure, 40 u32 culture, 44 u32 pieces, 48 i32 minX, 52 minY, 56 minZ, 60 maxX, 64 maxY, 68 maxZ, 72 i32 meetX, 76 meetY, 80 meetZ, 84 reserved | 88 |
@@ -657,7 +657,11 @@ All of 0x0120 to 0x0126 are journaled (the 24-byte prefix of §2.3).
   template's resident-pool jigsaw, else the floor's middle). Its COMMAND_RESULT(APPLIED) follows.
 - **VILLAGE_CENSUS / VILLAGE_GOSSIP**: one loaded village every 100 ticks (PLACEHOLDER), round robin, from
   loaded chunks only; puppets are never residents. The census's golems are what the engine counts as
-  the village's defenders (SINK.md MS-8), latest wins.
+  the village's defenders (SINK.md MS-8), latest wins. Slice S6 (docs/overnight-choices-equilibrium.md
+  EQC150 to EQC152): the residents are those within the village's box and 48 blocks round it
+  (`Census.CENSUS_REACH`); the beds are the bed points of interest inside the box (K for a human
+  village, capped at 32 by the engine); COMPLETE (flag 2) says the whole reach was read, which is what lets
+  the engine believe a count below its own. The census is also the signal that the village is loaded.
 - **WORK_CATALOG** (SINK.md §4.2, the money sink): what a village's works purse buys, from the data at
   `data/<ns>/mic_rtsim/work/<id>.json` (`village/WorkCatalog.java`). A template's blocks and items are
   read from its palette (air and structure voids not counted, a jigsaw as its final state, a door or a
@@ -677,7 +681,7 @@ All of 0x0120 to 0x0126 are journaled (the 24-byte prefix of §2.3).
 | 0x8012 | WRITE_GOSSIP | 0 | 16 u64 opId, 24 u64 village, 32 u64 playerMost, 40 u64 playerLeast, 48 u32 gossip type, 52 i32 amount, 56 u32 report kind, 60 u32 flags (1 FIRST_HAND) | 64 | COMMAND_RESULT |
 | 0x8013 | SENTIMENT | entries n | 16 u64 holder (village), 24 i32 dislikeAtOrBelow, 28 i32 friendAtOrAbove, 32 u32 flags (1 REPLACE), 36 reserved, 40 n × (u64 playerMost, u64 playerLeast, i32 sentiment, u32 reserved) | 40 + 24n | |
 | 0x8014 | PLACE_HOUSE | 0 | 16 u64 opId, 24 u64 village, 32 u32 dimension, 36 u32 template, 40 u32 processors (0 none), 44 i32 x, 48 i32 y, 52 i32 z, 56 u8 rotation, 57 u8 mirror, 58 u16 flags (1 SEARCH, 2 Y_FROM_VILLAGE), 60 u32 radius, 64 u64 seed, 72 i32 yOffset, 76 reserved | 80 | HOUSE_PLACED, then COMMAND_RESULT |
-| 0x8015 | SPAWN_RESIDENT | 0 | 16 u64 opId, 24 u64 village, 32 u32 dimension, 36 u32 body (entity type), 40 u32 profession (0 the body's default), 44 u32 flags (1 AT_HOUSE, 2 AT_VILLAGE), 48 f64 x, 56 f64 y, 64 f64 z, 72 u64 house (the PLACE_HOUSE op id) | 80 | COMMAND_RESULT |
+| 0x8015 | SPAWN_RESIDENT | 0 | 16 u64 opId, 24 u64 village, 32 u32 dimension, 36 u32 body (entity type), 40 u32 profession (0 the body's default), 44 u32 flags (1 AT_HOUSE, 2 AT_VILLAGE, 4 ARRIVAL, 8 WALK_IN), 48 f64 x, 56 f64 y, 64 f64 z, 72 u64 house (the PLACE_HOUSE op id) | 80 | COMMAND_RESULT |
 
 **MARKET good** (16 + 16LD bytes): 0 u32 item, 4 u32 reserved, 8 i64 stock (where its ladders start),
 16 two ladders, the market's sales (the player buys) then its purchases, each L levels × D steps of
@@ -762,6 +766,18 @@ killing).
   entity-ticking, under the spawn quota. Residents are
   ordinary entities (C2): the spawn chunk and the resident carry the COMMAND_RESULT (§3.1) so a crash
   cannot spawn it twice.
+  **Renewal arrivals** (slice S6, EQC169 to EQC182): ARRIVAL (with AT_VILLAGE) marks a settler, a
+  growth step or a Ribbit refill. It is never placed while a player is within 128 blocks of the village's
+  box (`api/Arrivals.WATCH_BLOCKS`): it waits (retrying every 40 ticks, dropped as FAILED after 192 days),
+  or, with WALK_IN, spawns at the first standable, entity-ticking point on the ray from the meeting
+  point toward (x, z) 176, 160, 144, 128, 112 or 96 blocks out that is at least 128 blocks from every
+  player, and walks in (`village/Walkers`: a hop of 24 blocks toward the meeting point every 40 ticks;
+  done within 12 blocks; put at the meeting point at once when nobody can see it, and at its deadline of
+  6,000 ticks). Nobody watching: placed beside the meeting point as an AT_VILLAGE body is. A human
+  body (`minecraft:villager`, the type of the biome, an adult, no profession) never takes more than the
+  free beds (a fresh complete census, `NOT_FREE` when there is none; a village whose reach is still
+  loading is waited for 600 ticks, then placed without the clamp); a Ribbit's profession is the Ribbits
+  plugin's chooser's (a merchant when the village has none, else by the op's hash).
 
 **Known gaps:** a crash after a house's chunk was saved and before the next world save leaves the
 village's house list without the house; a resent PLACE_HOUSE is answered DUPLICATE when its search
@@ -821,8 +837,13 @@ its natives with `System.load`. Choices are in `docs/overnight-choices-jni.md` (
      (a resident's first-hand hurt is still a report: rtsim-knowledge never writes back what vanilla
      saw itself); TAKEN and DIED of a phase 1 puppet take or kill its member; BASE marks and unmarks
      player-base nodes; HOUSE_PLACED lets a grown house's residents move in; the first
-     VILLAGE_CENSUS sets a village's population and later ones only raise it; VILLAGE_GOSSIP is read
-     as latest state. A member TAKEN or DIED books exactly the items of the MEMBER_STATE right before
+     VILLAGE_CENSUS is read through a filter (slice S6, EQC152): the first complete census of a
+     village is believed at once, a complete one that differs only after a second equal reading, an
+     incomplete one only when it raises the count, and an unchanged village's heartbeat is logged at
+     most once per 6,000 ticks (a logged census is also what says the village is loaded, so the sim's
+     growth steps do not run there); VILLAGE_GOSSIP is read as latest state. A COMMAND_RESULT for a
+     SPAWN_RESIDENT or PLACE_HOUSE the world booked settles the booking (APPLIED or DUPLICATE: placed;
+     FAILED or NOT_FREE: lapsed). A member TAKEN or DIED books exactly the items of the MEMBER_STATE right before
      it (what its chest or pack really held, the items the sim trades), out of the member's own
      cargo, then the caravan's purse, then the other members'; what it was planned to carry and did
      not hold stays with the caravan (Review P3, Ben: "Book what was really there"; choice PR3).
@@ -832,7 +853,8 @@ its natives with `System.load`. Choices are in `docs/overnight-choices-jni.md` (
      market's reach (P21);
      SENTIMENT for ribbit villages whose feelings may have changed; WRITE_GOSSIP from
      rtsim-knowledge's vanilla gossip (amounts below 2 raised to 2); PLACE_HOUSE then SPAWN_RESIDENT
-     for growth. The last three carry op ids derived from what they are (§2.2) and are kept and
+     for growth, and SPAWN_RESIDENT with ARRIVAL for a village's settlers, an unloaded human village's
+     growth and a Ribbit village's refill (slice S6). The last three carry op ids derived from what they are (§2.2) and are kept and
      resent like transfers. Caravans and touring bands a player can see are materialized as C25
      groups (SPAWN_GROUP with `FLAG_SURFACE`, cargo in the chests), steered toward where the sim
      walks them, and captured back when no player is near or the sim's caravan moved on.
