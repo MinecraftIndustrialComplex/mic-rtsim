@@ -424,7 +424,7 @@ Final code is `f25df8f0` plus the fixture and documents commits (no code changes
 |---|---|
 | `cargo test --workspace --no-fail-fast -j 8` | 2309 passed, 0 failed, 28 ignored (143 test binaries); includes the viewer fixtures' host test and S5's `tests/home_bodies.rs` (29), `tests/home_bodies_long.rs`, the two jni protocol tests |
 | `cargo clippy -j 8 --workspace --all-targets -- -D warnings` | clean |
-| `:core:test` | `ChunkWatchTest`, 8 tests, all pass (the only unit tests in `:core:test`); last run on the tracker's final source. The code since changes `SiteTestHooks` only, which the iceandfire and mowziesmobs rounds compiled |
+| `:core:test` | `ChunkWatchTest`, 8 tests, all pass (the only unit tests in `:core:test`); run on the final code |
 | GameTest round `core` (cleared world) | All 168 required tests passed. The first run failed `aColumnFormsAgainAfterTheModuleIsSwitchedOffAndOn` once (`the band appeared again`) and passed on the rerun of the same code: **a flake**, a test with a flake history (MZB-1040) |
 | `create -Psec1fx` | All 266 required tests passed |
 | `create -PwithMowzie` | All 271 required tests passed |
