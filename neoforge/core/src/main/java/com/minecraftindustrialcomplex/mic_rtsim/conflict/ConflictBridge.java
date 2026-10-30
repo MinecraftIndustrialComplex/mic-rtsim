@@ -1840,6 +1840,7 @@ public final class ConflictBridge implements SessionPlugin {
     public void endOfTick(RtsimSession s, long now) {
         if (s != session || s.failed())
             return;
+        Outposts.tick(this, s); // the vanilla outposts found and to be reported (S7), whatever the module's state
         if (!dying.isEmpty())
             tickDying(); // first, and with the module off: a body in its animation does not wait for a party (MZB-817)
         if (!RtsimConfig.on(Module.CONFLICT)) {
