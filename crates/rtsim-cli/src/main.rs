@@ -95,7 +95,7 @@ usage:
       on kills (Notice straight to Raid, repeats, calm) and run 5's grove ladder (a demand in
       gold nuggets, no Siege); the other runs print the slice that builds them. Writes JSON to
       FILE (default scenario/results/sim-mowzie.json). Exits 1 if a check fails.
-  rtsim-cli sim census [--scenario all|ecology,ships,conflict] [--days N] [--every N] [--seed S]
+  rtsim-cli sim census [--scenario all|ecology,ranges,ships,conflict,camps,villages] [--days N] [--every N] [--seed S]
       The who-is-alive census (EQUILIBRIUM.md S1): each scenario's synthetic world with nobody
       watching, one fixed-width line per kind of site every N days (default 24, for 960 days):
       sites, members, capacity, short, empty, broken, mean pressure, renewals since the last
