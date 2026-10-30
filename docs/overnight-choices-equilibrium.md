@@ -7,7 +7,7 @@ pressure, fed share, starve-leave, arrival gate, newcomer direction, oil visitor
 lairs). DECISIONS.md is unchanged; EQUILIBRIUM.md marks the slices built. Branches `feat/eq-s1-s2`
 and `feat/eq-s4`. The last two sections are S5 and S6. S5 is the design of the dragon home bodies (EQ-2 (a); records EQC100 to
 EQC144) and, after the design, what the build found (EQC145 to EQC149; branch `feat/eq-s5-dragon-bodies`). S6 (villages and
-Ribbits; EQC150 to EQC193) is designed and built on `feat/eq-s6-villages`. S7 (conflict pressure; EQC200 to EQC249) is designed on
+Ribbits; EQC150 to EQC193) is designed and built on `feat/eq-s6-villages`. S7 (conflict pressure and the outpost reporter; EQC200 to EQC299) is designed on
 `feat/eq-s7-conflict` and not built.
 
 ## S1: the census
@@ -870,8 +870,8 @@ player on day 100, the same seed's control with no wipe), median [5th, 95th] ove
 **Designed 2026-10-30, not built.** EQUILIBRIUM.md §4's S7 row: pressure on the recruits of a camp whose members have no
 bodies at home, and its break and refound. When a war party goes out is `CONFLICT-LIFE.md`'s build plan (EQ-5 rejected the
 gate), and S7 stays out of it (EQC226). Branch `feat/eq-s7-conflict`, cut from main 9389b4e5 (S5's dragon home bodies and
-S6's villages have both landed). Ids EQC200 to EQC249 are S7's: the records use EQC200 to EQC236, and EQC237 to EQC249 are
-kept for the build's own findings. Choices that are Ben's are marked **FOR BEN**, each with its options and a recommendation,
+S6's villages have both landed). Ids EQC200 to EQC299 are S7's (extended from EQC249 on 2026-10-30, nothing else uses EQC250 to EQC299): EQC200 to EQC236 are the
+engine side, EQC237 to EQC269 the outpost reporter Ben added (FB-5 (b)), and EQC270 to EQC299 are kept for the build's own findings. Choices that are Ben's are marked **FOR BEN**, each with its options and a recommendation,
 and are gathered after the records. Nothing is built and no engine code changes here; the only other file is the model the
 numbers come from, `research/equilibrium-s7-camps/camps.py`.
 
@@ -905,9 +905,10 @@ feud with an open demand, *broken* between its break and its refound. A *new ban
 8. The ledger row, the found tail, the census and the archive carry it with no new record kind: a broken pool camp's row is
    `EMPTY | BROKEN | WAITING` with the refound wait left (EQC214, EQC216, EQC218). Formats: the conflict pages RTCD to
    RTCE, meta 12 to 13 (EQC217).
-9. No production Java changes. **Nothing in the shipped pack reports a pool camp** (`RtsimApi.reportCamp` has no caller outside
-   the tests; the one `declareCamp` caller is the Mowzie plugin, for dens and groves), so S7 is engine groundwork whose first
-   player-visible effect waits on a plugin that reports pool camps (FB-5, EQC221).
+9. **Nothing in the shipped pack reported a pool camp before S7** (`RtsimApi.reportCamp` had no caller outside the tests; the one
+   `declareCamp` caller is the Mowzie plugin, for dens and groves). Ben decided FB-5 (b) on 2026-10-30: **S7 includes a reporter**,
+   one core class that declares vanilla pillager outposts as raider camps when their chunks load (EQC237 to EQC269). Raiders and
+   their raid ladder therefore run in real worlds, with S7's pressure and break on top; new choices that are Ben's are FB-6 to FB-9.
 10. Tests: `kill_all_camps` (90% of the control within 96 days; the model's rule reads 45 to 54), `farmed_camp_breaks_and_refounds`, and failing-first tests for every behaviour that changes (EQC230 to EQC232).
 
 ### S7 base and reads
@@ -944,7 +945,7 @@ other than this one touches `crates/rtsim-conflict`.
 | R8 | Every faction already sends a SITE_STATE row (kind Camp, K the cap, the floor of the pool as count, SHORT and EMPTY), but `p` comes from the `Camp` ledger only, so a pool camp's row says P 0 and never WAITING. `camp_found` for a camp with no bodies restores only the row's count ("the gap is not backdated", fork F14). The found tail's flags are ROW 1, GAP 2, WAITING 4, EXISTED 8; `state_flags::BROKEN` (4) exists but does not reach the tail. | `engine.rs:1327-1380`, `camp.rs:681-700`, `sites.rs:56-96` |
 | R9 | `Conflict::census` reports `conflict.camp` with members the floor of the pool, K the cap, **P 0, broken false and no renewals**, with a comment that names this slice. | `engine.rs:1286-1296` |
 | R10 | The conflict pages are RTCD (`RTC13`), meta 12; the wheel's `Ev` has tags 0 to 11 (`CampRecount` is 11); the faction row ends with its optional camp. The archive's conflict kinds end at `conflict.party_home`; no kind or name has "broken" or "refound" in it. | `persist.rs:89-95, 342-380, 1040-1140`, `kinds.rs:71-85` |
-| R11 | No shipped plugin reports a pool camp: `RtsimApi.reportCamp` (whose Javadoc names `minecraft:pillager_outpost` and `goblinstyranny:goblin_camp`) is called by tests and by nothing in production, and the one production caller of `declareCamp` is the Mowzie plugin, for dens and groves. The `mic_rtsim:conflict/*` structure ids are test stand-ins. | `RtsimApi.java:185-226`, `MowzieCamps.java:177, 211`, `ConflictGameTests` |
+| R11 | **Before S7** no shipped plugin reported a pool camp (Ben's FB-5 (b) adds the reporter, EQC237): `RtsimApi.reportCamp` (whose Javadoc names `minecraft:pillager_outpost` and `goblinstyranny:goblin_camp`) is called by tests and by nothing in production, and the one production caller of `declareCamp` is the Mowzie plugin, for dens and groves. The `mic_rtsim:conflict/*` structure ids are test stand-ins. | `RtsimApi.java:185-226`, `MowzieCamps.java:177, 211`, `ConflictGameTests` |
 | R12 | A faction's chief and heir are made at `add_faction` (seeds from `StreamKey(seed, SYS_CHIEF, key)` and the `chiefs` counter) and replaced by `succeed`; `observed` (real fights seen, newest last) is the floor `village_outcome` uses against the faction. | `engine.rs:1647-1750, 2010-2060` |
 | R13 | An envoy is not drawn from the pool (`kind.is_war()` is false), so `envoy_insult_kills` (2) is a grievance count, not a loss. | `engine.rs:3396-3455` |
 
@@ -1015,7 +1016,7 @@ changes no break (rows C and D of the script).
 | EQC218 | **Archive and tape.** Two kinds are appended to `kinds!` (ids are positions, no compatibility): `CONFLICT_BROKEN = "conflict.broken", "Camp breaks", Notable` and `CONFLICT_REFOUNDED = "conflict.refounded", "Camp refounded", Notable`; the tape events carry the faction and, for a break, P and the wait. Archive names and the viewer's dictionary are checked by `kinds_are_unique` and a grep of `viewer/`. | Both are events a timeline should show; neither is news (FB-4). |
 | EQC219 | **Tunables** (each in the culture's `pool_renewal` unless named, every one TUNABLE, PLACEHOLDER until the S7 checks): `half_life_days` 192, `recruit_cap_days` 96, `break_share` 0.1, `break_pressure` 2.0, `refound_base_days` 48, `refound_cap_days` 384, `refound_share` 0.25; engine (`ConflictTunables`): `strain_recheck_ticks` 24,000, `district_unclaimed_is_players` true (the FB-2 switch). | One list for the build and the tests. |
 | EQC220 | **Cost (D1).** Per pool camp about 56 bytes; `pool_at` gains one `exp2` (called per query, none per tick); a loss is O(1); the break check scans the faction's parties and feuds (tens) at most once per loss, party end and event, and only for a camp that is thin and pressured; the wheel holds at most one `Ev::Strain` per pool camp, and only while it is thin, pressured and busy, or broken. Nothing grows with time: a camp's strain is one row, a broken camp one event, and the model's break and refound events per day are flat. | EQUILIBRIUM.md §2.8's "conflict: one more float per faction, break and refound are one event each". |
-| EQC221 | **Java: nothing in production, and the first visible effect is not S7's (FB-5).** The shipped pack reports no pool camp (R11), so no player meets a pool camp's pressure or break until a plugin reports one. What changes in Java is test-only: (1) the JNI test order **41 `CONFLICT_SLAY`** (`u64 faction key, u32 n, f32 pressure`: `slay` of `n`, `u32::MAX` all, then the pressure added as if that many kills had happened, so a GameTest need not run a hundred game days to reach a break; TEST mode only; 33 and 35 to 39 stay free for the peers' codes as `NativeCodec` leaves them) with its encoder in `NativeCodec` and a `RtsimTests.slayCamp`; (2) three core GameTests (EQC231); (3) the stale comments at `ConflictBridge.java:2519` and `Camps.java:2144` are corrected, because the engine now reads BAND_CASUALTIES' credit and Java already fills it fully (R4; checked by `aPetsKillOfAPartyMemberIsThePlayersLoss`, EQC231). No `Camps` or `ConflictBridge` logic changes. | The row's tests are Rust; the ledger path through a real reset is the one thing a Rust test cannot show. |
+| EQC221 | **Java: the production change is the outpost reporter (EQC237 to EQC269; Ben's FB-5 (b), 2026-10-30), and nothing else.** No `Camps` or `ConflictBridge` logic changes for the engine side. The test-only changes are: (1) the JNI test order **41 `CONFLICT_SLAY`** (`u64 faction key, u32 n, f32 pressure`: `slay` of `n`, `u32::MAX` all, then the pressure added as if that many kills had happened, so a GameTest need not run a hundred game days to reach a break; TEST mode only; 33 and 35 to 39 stay free for the peers' codes as `NativeCodec` leaves them) with its encoder in `NativeCodec` and a `RtsimTests.slayCamp`; (2) three core GameTests (EQC231); (3) the stale comments at `ConflictBridge.java:2519` and `Camps.java:2144` are corrected, because the engine now reads BAND_CASUALTIES' credit and Java already fills it fully (R4; checked by `aPetsKillOfAPartyMemberIsThePlayersLoss`, EQC231). | The row's tests are Rust; the ledger path through a real reset is the one thing a Rust test cannot show. |
 
 ### S7 records: Mowzie, Peaceful, replay and CONFLICT-LIFE.md
 
@@ -1027,7 +1028,46 @@ changes no break (rows C and D of the script).
 | EQC225 | **Rows that exist only when a culture opts in.** `pool_renewal` is checked at `Culture::resolve`, so a malformed block stops the engine at start (as `renewal` does) and a world with the three cultures edited out of `pool_renewal` is today's world (the "renewal off" test: every existing conflict test passes with the blocks removed). | Every earlier slice kept the "as before" switch testable (S6's `renewal_off_is_todays_world`). |
 | EQC226 | **How S7 stays out of CONFLICT-LIFE.md's build plan.** CL's order (2.11): (1) the council on the harness, (2) persistence of its fields, (3) the envoy's reason and the news kinds, (4) the lurk, (5) the stolen crystal, (6) BAND_MARCH and the walk-in, (7) caravan ambushes, (8) alliances. S7 touches none: no council, no sitting, no occasion, no party kind, no march, no record. S7 and CL meet at **four code points**, and each is an addition or a read, never a decision about when: (a) the gates of EQC210 are where CL's `Ev::Council` and `Ev::Clash` handlers begin; (b) `pool_at`, `pool_ready` and `bodies_ready` keep their signatures and meanings, so a muster reads them as today (a pressured camp's party is later or smaller, which is the point); (c) `reband` is the one function CL adds its per-camp state to (EQC227); (d) the faction row and the pages: CL adds its fields and S7 adds its strain, and **whichever lands second takes the next page letter** and regenerates the viewer fixtures, with a merge of the row's tail by hand. CL-D23 ("renewal, pressure, break and refound unchanged") is what S7 builds, and CL-D26's guard share reads `pool_at`, so a thinned camp defends less once both are in. Defender losses CL adds (a camp that holds pays for it) are a rival camp's or a village's work: cause `Faction`, no pressure. | The coordinator's instruction and EQC200: "when parties go out is CL's". The four points are listed so the second author finds them. |
 | EQC227 | **What S7 asks of CONFLICT-LIFE.md (FB-3).** (1) Every act of a camp is gated by `camp_active(f)`; a council does not sit for a broken camp and a neighbour does not weigh one (preemption, plunder reach, a pact's partner: a pact with a camp that breaks ends as a lapse). (2) `reband(w, f, at)` is the one place a new band is made: CL initialises its per-camp state there as `add_faction` does (stores at a season's start, fear 0, standings 1.0, 0.7 and 0.6, sittings 0, temperaments from the new seeds) and clears the camp's own feud memories, beliefs, trust, pride and truces; other camps' memories of it stay and fade. (3) A pool camp's `pool_at` is the members at home, and S7 makes it follow pressure; CL may not keep a second count. (4) A broken or refounded camp is told to nobody by S7 (FB-4). | An interface another plan follows (FB-3). |
-| EQC228 | **Documents the build changes.** EQUILIBRIUM.md §2.4.5 (the half-life, the finding, the break and refound as built, the stale "No Java exists yet for conflict" line, "what the player sees"), §3.3 (a pool camp's row, with the rate form), §2.8's conflict row, §4's S7 row (built), §5.2's camp row; `docs/boundary.md` (§9: a pool camp's SITE_STATE and tail convention, EQC214); this file's findings (EQC237 onward). `docs/replay-gate.md`, `docs/choices-mowzie-build.md` and MOWZIE.md are not edited. | |
+| EQC228 | **Documents the build changes.** EQUILIBRIUM.md §2.4.5 (the half-life, the finding, the break and refound as built, the stale "No Java exists yet for conflict" line, "what the player sees"), §3.3 (a pool camp's row, with the rate form), §2.8's conflict row, §4's S7 row (built), §5.2's camp row; `docs/boundary.md` (§9: a pool camp's SITE_STATE and tail convention, EQC214); this file's findings (EQC270 onward). `docs/replay-gate.md`, `docs/choices-mowzie-build.md` and MOWZIE.md are not edited. | |
+
+### S7 records: the outpost reporter (Ben's FB-5 (b), 2026-10-30)
+
+Ben decided that S7 includes a reporter that declares vanilla pillager outposts as raider camps, so the raid ladder runs in real
+worlds. These records are the design of that reporter. What is read from the 1.21.1 data is marked; the choices that are Ben's are
+FB-6 to FB-9 (after FB-5 below). The engine side of S7 (EQC200 to EQC236) is unchanged by them: an outpost's camp is the pool camp
+those records describe.
+
+| # | Choice | Why |
+|---|---|---|
+| EQC237 | (2026-10-30, the reporter's design) **Where it lives: one new core class, `mic_rtsim.conflict.Outposts`** (the finder, the queue and the reporter), registered beside the other core hooks in `MicRtsim` and drained from `ConflictBridge.endOfTick`. It reports through `RtsimApi.reportCamp` (R11: the API that exists for a camp with no `CampKind`, no reconciler and no bodies), so no `Camps` or `ConflictBridge` logic changes. **D4 (one plugin per mod):** a vanilla structure is core's, as villages (`VillageAdoption`) and herds are; there is no new mod, plugin or jar, and Mowzie's plugin is not touched. The structure ids are the raider culture's `structures`: `minecraft:pillager_outpost` and `illagerinvasion:illager_fort` (Illager Invasion is not in the pack, so only the first is ever reported; an id the registry lacks is skipped at start). The list is a Java constant mirrored from `raider.json`, pinned by `the_raider_claims_the_outposts` (Rust) and by the GameTest that has the engine found a camp for each id (EQC252). Fork F23: a plugin in its own module (rejected: it would add a jar for one class with no mod to depend on). | PLAN's rule that vanilla is core's; `RtsimApi.reportCamp`'s own Javadoc names `minecraft:pillager_outpost`. |
+| EQC238 | **What a vanilla outpost is** (read from the server data jar and the neoform sources, not assumed). `minecraft:pillager_outpost` is a jigsaw structure (start pool `base_plates`, size 7, within 80 blocks of its centre, `WORLD_SURFACE_WG`), placed by `random_spread` (spacing 32 chunks, separation 8, frequency 0.2, `exclusion_zone` 10 chunks from any village). **Its pillagers are not placed with it:** none of its eleven templates carries a pillager (the only entities in them are one caged iron golem and two caged allays; counted from the NBT, jigsaw names excluded). They are the structure's **spawn override** (`monster`, `minecraft:pillager`, weight 1, count 1, `bounding_box: full`), so vanilla's natural spawner makes and re-makes them while a player is near, and `PatrolSpawner` and village `Raid`s are separate vanilla systems. **An outpost has no standing population to own, and nothing saved at home to count.** | The question the coordinator asked (who owns a pillager at the outpost) has this answer first, and it removes the census, the slot ledger and the home-body machinery of S3 and S5 from the reporter. |
+| EQC239 | **Who owns what** (table below the records). The sim owns no body at an outpost. The vanilla pillagers there stay vanilla's: not counted in the pool, not tagged, not adopted, not removed, not recalled. The camp's 50 warriors are a number in the engine. A war party is puppets of vanilla raider entities while a player is near it, and nothing otherwise. FB-7 asks whether Ben wants the outposts' own pillagers to become the camp's bodies instead; the recommendation is no. | MOWZIE.md §4.9 and S5 give a den, a grove and a lair a vanilla home body because those sites hold a saved population; an outpost holds none (EQC238). |
+| EQC240 | **How an outpost is found: `ChunkEvent.Load`, the finder pattern of `MowzieCamps` and `Lairs` (MOWZIE.md §4.9).** For a loaded `LevelChunk`, `getAllStarts()`; each valid start whose structure id is a raider structure becomes a small record (dimension, start chunk position, `late = !isNewChunk`, a copy of the start's box), bounded at 4,096 (`QUEUE_CAP`; a dropped record is found at its chunk's next load); the queue is drained at the end of the server tick once a session is live, and holds nothing from a chunk. No mixin. Fork F17: the worldgen hook that adopts villages at generation (rejected: a village is an economy node that must exist when its structure does, C22; a camp matters when a player is near, and the load path finds a generated outpost and an old one with one code path, as Mowzie's dens and groves are). **Consequence, and a bound (D1):** only outposts a player's chunks have loaded become camps, so the number of raider camps is the number of outposts explored. A player who has never come within view distance of an outpost has no raiders from it. | The load event is where every other camp is found; its cost for a chunk with no start is one empty map read. |
+| EQC241 | **Key, position, once.** The faction key is `Obs.villageId(dim, start chunk)`, the start chunk of the structure, as every camp's (MZB-206); the block given to `reportCamp` is (the start chunk's middle x, the start's `minY`, the middle z), a block in the start chunk, because the key is taken from `pos`'s chunk and the engine's camp position is that block (its parties muster and come home there; the territory is centred on it). The exclusion zone of EQC238 keeps a village start 10 chunks from an outpost, so the key space it shares with villages does not collide. The reporter keeps a `known` map for the server run (key to site) and reports each key once per session (EQC246); the engine is idempotent by key and the core's `camps.put` replaces. | The key must be the start's, or one structure would be two camps after a reload. |
+| EQC242 | **The camp it founds: the raider culture's, full.** Cap 50 (`pool_cap`), pool 50, P 0, `homeBodies` 0, census 0; a reset with the ledger row resumes pressure and a broken camp (EQC214, EQC215). LATE changes nothing for a pool camp. Fork F18: a smaller cap for an outpost, or a second raider culture for outposts (rejected: the 50 are the country's people the camp can call, not the one to five mobs the structure spawns; the cap sets party sizes through the muster rule; a second culture is a data fork nobody asked for). | The data is Ben-approved and the engine's tests use it. |
+| EQC243 | **Territory, signals and the killing signal. FOR BEN (FB-6).** The territory is the culture's (radius 300, pollution reach +200) and every signal works as it does for any camp: smog 0.5, radiation 1.0, logging 0.05, mining 0.05, building 0.5, killing 12 (grievance per unit; half-life 15 days; rungs at 6, 18, 30, 45, 100, 200). The reporter supplies `kin`, the predicate that says which deaths are "members killed": **a mob in the vanilla `minecraft:raiders` entity tag (minus the witch), not a sim puppet, that dies inside the outpost's structure box widened by `outpostKinMargin` 24 blocks.** The existing death hook then raises Killing for a *direct* kill by a player (`ConflictBridge.onDeath`: the killer entity is a player; an arrow's owner counts; a pet's or a trap's kill does not, which is the signal's rule today and is not touched, while pressure uses the full credit, FB-2). So one kill is 12 (the notice, nothing visible), two are 24 (a herald and two pillagers come to demand emeralds), four are 48 (a raid of 6 vindicators and 6 pillagers); a player who clears or farms the outpost's own pillagers is hated by its camp, and one who kills a village raid's pillagers or a patrol elsewhere in its territory is not. | The `kin` predicate is the one place the reporter decides who the camp's "members" are, and it is how a survival player first meets the ladder. |
+| EQC244 | **What a raid party is in the world.** Puppets of **vanilla entities**: raider units stand in as `Vindicator` (vindicator), `Pillager` (pillager and herald) and `Ravager` (ravager) (`BodyKinds` stand-ins; D3: no new entity, block or item). They carry the core's agent tag, are never saved by vanilla (`EntitySaveMixin`), are materialized only near a player by the machinery that exists (the far view draws the column from about a kilometre, the bodies appear stack by stack at the entity-ticking edge, MZ-15; an envoy walks up and speaks), are steered by the engine, and are captured and counted back when the player leaves. They are not members of a vanilla `Raid`, are not patrol leaders and carry no ominous banner. Makeups are the culture's: envoy a herald and 2 pillagers; scouts 2 pillagers; raid 6 vindicators and 6 pillagers; invasion 12, 10 and 1 ravager; siege 16, 12 and 3; plunder 4 and 4. | Nothing here is new: it is the goblin precedent (MZB-102) and the M10 march, with the raider culture's data. |
+| EQC245 | **Vanilla patrols, raids and the outpost's own mobs are left alone** (Y20: vanilla's own mobs stay outside the sim). `PatrolSpawner`, village `Raid`s, bad omen, the outpost's natural pillagers and its caged golem and allays run as vanilla. The sim does not count, tag, adopt, steer or remove any of them, a vanilla raider is never a sim member, and a sim puppet is never a vanilla raid wave. A sim party and a vanilla patrol can stand in one place; both are raider-team mobs that target players, villagers and golems, not each other. | The inventory's rule for vanilla spawns; the cost of adopting them is FB-7. |
+| EQC246 | **The module switch (U-e), the session and the config.** `RtsimConfig.on(Module.CONFLICT)` is read each drain. Off: the queue and `known` are kept (bounded) and nothing is reported (`reportCamp` journals nothing when the module is off, EQC241's idempotence covers the rest). **On, at the switch-on edge or a session start: every known outpost is reported again once, before any new one.** The engine keeps its camps across the switch (frozen, not forgotten) and its parties are captured by the existing `switchedOff`. Two config keys, flat as the file's other names: `outpostsJoin` (default true; false makes the finder inert) and `outpostsJoinExisting` (default true; false reports only outposts in chunks generated after install, `late` false; FB-9). A world on Peaceful holds every war party and envoy and vanilla spawns no pillagers either. | The U-e precedent for every conflict thing; the session list because `camps` is cleared with the session (ConflictBridge `camps.clear()`). |
+| EQC247 | **Uninstall and reset safety (UR-1).** The reporter creates no entity, block, item or chunk data, and the finder only reads starts. A puppet is never saved; the camp is pages under `world/rtsim/` and a row in `mic_rtsim_sites.dat`. Remove the mod: every outpost stands as vanilla made it, its structure start untouched, spawning as vanilla (`uninstallLeavesTheOutpostAsVanilla`, EQC252). Reinstall: the chunks load again and the outposts are re-found; the ledger hands the pressure back. A reset (no `world/rtsim/`) re-finds them full and unpressured (EQC215). | The requirement the coordinator named. |
+| EQC248 | **What players see change.** (1) *At an outpost:* nothing. No block, chest, mob or sound is added or taken away. (2) *Provoking it:* killing its pillagers (inside its box) or polluting, logging, mining or building within about 300 blocks (500 for pollution) raises its camp's grievance; first a notice, then a herald with two pillagers walks to the player to demand emeralds (paying ends it, refusing climbs), then raids of vindicators and pillagers, then invasions with a ravager and sieges. The march is visible from about a kilometre in the far view; the bodies appear at the ticking edge and walk in. (3) *Plunder:* the camp's war bands go for the nearest village or Ribbit village within 2,500 blocks (FB-8 sets how often); a watched one is physical. (4) *Wearing one down:* a camp whose parties a player keeps destroying recruits slower, fields smaller and later parties, and in the extreme goes quiet for about two game years and comes back as a new band under a new chief (EQC209 to EQC212). (5) *Peaceful:* nothing leaves, and vanilla spawns no pillagers either. (6) *Unchanged:* vanilla patrols, bad-omen raids, the outpost's loot and natural pillagers. | The coordinator asked for it as a list. |
+| EQC249 | **Raid frequency in survival: the plunder clock. FOR BEN (FB-8).** `raider.json` has `plunder_mean_days` 8: each found camp sends a plunder band (4 vindicators and 4 pillagers) at the nearest village or Ribbit village within 2,500 blocks on a Poisson clock of mean 8 game days. A village near three explored outposts would be plundered about every 3 days. Taken (and recommended): the mean becomes **48 days** (about twice a game year for a found camp) until CONFLICT-LIFE.md decides when parties go out (its council replaces this clock), a one-number data change; the tests that depend on 8 days pass an explicit culture (`conflict_with`). The ladder against *players* is grievance-driven and unchanged. | The plan keeps the clock as "today's"; with the reporter it meets real villages (FB-8). |
+| EQC250 | **Existing worlds (FB-9).** An outpost in a chunk generated before the mod is reported when the chunk loads, flagged LATE, with a full pool and P 0, and its plunder clock starts then. `outpostsJoinExisting` false restricts the reporter to outposts in new chunks. The count of camps grows only as the player explores; a deployed server turns on the raiders of every outpost its players load. | Ben's question named it. |
+| EQC251 | **Cost (D1).** A chunk load with no start is one empty map read; the queue holds records, not chunks; an outpost found costs a faction row (about 400 bytes with its strain), a node, a ledger row (48 bytes) and one `known` entry; a party exists only while it marches. Bounded by the outposts a player has loaded (about one in 1,024 chunks of explored land). | EQUILIBRIUM.md §2.8. |
+
+| EQC252 | **The reporter's tests.** **GameTests** (core, native engine only, batch `mic_rtsim_outposts`, each on its own far base as S3's; a **real** vanilla outpost: the test generates a `minecraft:pillager_outpost` start with `Structure.generate` at a chunk 8 chunks from the arena (the way `aVillageJoinsWhenItsStructureStartGenerates` makes a village), sets it on the chunk and feeds the finder the chunk through its public load hook, as Mowzie's tests do): `anOutpostIsFoundOnceWhenItsChunkLoads` (three loads of one chunk and a second session after `plainReset` give one FACTION_FOUND per session for the key, the engine's TERRITORY comes back with radius 300, the ledger row says K 50, count 50, P 0; the raider culture claims `minecraft:pillager_outpost`); `anOutpostFollowsTheConflictSwitch` (module off: nothing journaled, the queue kept; on: reported once; off and on again: once more); `existingWorldsOutpostsJoinLate` (a chunk with `isNewChunk` false: FACTION_FOUND flag LATE; `outpostsJoinExisting` false: none; `outpostsJoin` false: none); `clearingAnOutpostIsGrievanceAndAVillageRaidIsNot` (a real server player kills two vanilla pillagers standing in the box: the engine's Killing signal arrives, 24; the same kills 100 blocks outside the box: none; a pet's kill: none); `aProvokedOutpostSendsItsEnvoy` (**the ladder sends a party**: two kills, then the engine's envoy rung after its dwell, a BAND_MARCH of a raider envoy from the outpost to the player, its bodies placed near him: one Pillager standing in for the herald and two more, each carrying the agent tag, none saved by a vanilla write of the chunk, and a `Raid` object created for none); `aFarmedOutpostBreaksAndTheNewBandRefounds` (order 41 wipes the camp with pressure 2.5: its row reads `EMPTY | BROKEN | WAITING` with the wait left, and no party leaves it for a game day of ticks; `gapRestart` by 250 days: the new engine finds the row, the wait has run out, the camp is refounded at once with count 12, not broken, P decayed and non-zero, and a kill of two pillagers sends an envoy again); `aVanillaPatrolAndTheOutpostsOwnPillagersAreLeftAlone` (a command-spawned patrol and a pillager the spawn override made are untagged and uncounted after 2,000 ticks with a party out, and are neither adopted nor removed); `uninstallLeavesTheOutpostAsVanilla` (a party materialized, then `SiteTestHooks.stop` and a read-back of the chunk's entities and starts: the start is intact and equal to what was generated, no entity carries the agent tag, nothing of the sim is in the chunk; the ledger file holds only its rows). **Failing first:** none of the reporter exists on 9389b4e5, so the first run of each is red by `no FACTION_FOUND reached the engine` (the first three), `the engine got no Killing signal` (the fourth), `no band was sent` and the following (the rest); they are written after the finder compiles, as S5's were, and the record says so. **Rust:** `the_raider_claims_the_outposts` (`Cultures::builtin()` claims `minecraft:pillager_outpost` and `illagerinvasion:illager_fort` for the raider culture and no other), `the_raider_plunders_at_the_slower_mean` (EQC249); both fail first on the old data. | The coordinator's list: declared once, the ladder sends a party, a farmed outpost breaks and refounds with the new band, uninstall; plus the switch, the late flag, the kin rule and the vanilla-left-alone rule. |
+| EQC253 | **Clocks in these tests.** The ladder test waits for real game ticks (the envoy rung's dwell is 12,000 ticks and the march from 128 blocks at 0.03 blocks a tick is 4,300; the server ticks unthrottled, EQC193, and the test has its own batch and a timeout of 40,000 ticks). The refound does not wait: the camp's wait is at least `48 x 2^2` = 192 game days, so the test jumps the clock with `SiteTestHooks.gapRestart`, whose found tail ages the pressure and the wait by the gap (EQC214; UNVERIFIED 5 is exactly this). No conflict-advance order is added (fork F24: a test order that runs the conflict engine ahead of game time, as `P1_ADVANCE` does phase 1, rejected: the ledger's clock is game time and an engine ahead of it would write rows from the future). | Fewer ids and no skewed clock. |
+| EQC254 | **Documents the reporter changes.** EQUILIBRIUM.md §2.4.5's "Body" paragraph (there is a reporter; an outpost's pillagers are vanilla's, EQC238 and EQC239) and §1.1's camp line; `docs/boundary.md` (§9: nothing new on the wire; the reporter and its keys); the conflict section of `docs/choices-mowzie-build.md` is not edited; this section. | |
+
+**Who owns which body (EQC239):**
+
+| Body | At the outpost | Away | After an uninstall |
+|---|---|---|---|
+| The outpost's natural pillagers (structure spawn override) | vanilla's: spawned, saved and despawned by vanilla; untouched by the sim | not applicable (vanilla's patrol AI) | stay as vanilla left them |
+| The caged iron golem and allays | vanilla's | | stay |
+| The camp's 50 warriors | a number in the engine; no body, no census, no CAMP_RECONCILE | | nothing exists |
+| A war party's members | none (they are not at the outpost) | puppets (core agent tag, never saved) of `Vindicator`, `Pillager`, `Ravager`, only near a player; counted back as survivors | never saved, so none; booked `Other` at a reinstall |
+| An envoy (herald and 2 pillagers) | none | puppets, as above | as above |
 
 ### S7 forks
 
@@ -1052,6 +1092,14 @@ a player sees that Ben has not approved, nothing minted).
 | F14 news of a break or a refound | none; gossip kinds | none (FB-4) | EQC209 |
 | F15 how a test kills a pool camp | `slay`; drive parties through a fake Java only | both: `slay` for the long runs, the fake Java for the credit paths | EQC206 |
 | F16 what a census calls a renewal | every recruit; arrivals and refounds | arrivals and refounds | EQC216 |
+| F17 how an outpost is found | `ChunkEvent.Load`; the worldgen hook villages use; both | chunk load only | EQC240 |
+| F18 an outpost's camp size | the culture's 50; a smaller cap; a second culture | the culture's | EQC242 |
+| F19 which deaths are the camp's members killed (FB-6) | raider mobs inside the box and 24 blocks; anywhere in the territory; none | inside the box | EQC243 |
+| F20 the outpost's own pillagers (FB-7) | vanilla's; the camp's home bodies | vanilla's | EQC239 |
+| F21 the plunder clock (FB-8) | mean 8 days; 48; off | 48 days | EQC249 |
+| F22 existing worlds (FB-9) | join with a switch; new chunks only; inert by default | join, with the switch | EQC250 |
+| F23 where the reporter lives | core; a plugin of its own | core (D4: vanilla is core's) | EQC237 |
+| F24 how a test reaches a refound | `gapRestart`; a conflict-advance order | `gapRestart` | EQC253 |
 
 ### FOR BEN
 
@@ -1059,7 +1107,7 @@ Everything else in S7 can be undone and is decided here. These are what a player
 approved, or an interface another plan follows. Each is built as recommended; a different answer is a data change or a few
 lines, as noted.
 
-**FB-1 (EQC203, F12). The break does not fire at the engine's recruit rates. Which number moves?** EQUILIBRIUM.md §2.4.5 breaks a
+**FB-1 (EQC203, F12), DECIDED by Ben 2026-10-30: (a), half-life 192 for pool camps, break at P 2. The break does not fire at the engine's recruit rates. Which number moves?** EQUILIBRIUM.md §2.4.5 breaks a
 camp at P 2 with the pool under 10%, on the shared half-life of 96 days. The model that chose those numbers recruits 8% of a
 camp a day; the engine's goblin, bandit and raider camps recruit 3.3%, 3.75% and 4%. A player who kills every whole warrior
 every two days holds P at 1.58, 1.67 and 1.72 and never reaches 2 (`camps.py`, section A and B), so a pool camp can never be
@@ -1075,7 +1123,7 @@ broken by any player, and the row's test would have to inject its pressure.
 - (d) Keep the plan's numbers. A pool camp never breaks; the refound exists and is tested by an injected pressure.
 Why it is Ben's: a number of a plan he approved that changes how a camp he is hunting behaves. Switching is two JSON numbers.
 
-**FB-2 (EQC204, F4). Do a trap's, a turret's and an unclaimed kill at a player's district count as his loss?** A pool camp's
+**FB-2 (EQC204, F4), DECIDED by Ben 2026-10-30: (a), trap, turret and unclaimed kills of raiders at a player's district count as that player's loss. Do a trap's, a turret's and an unclaimed kill at a player's district count as his loss?** A pool camp's
 members die in a player's fights in two ways: an unwatched raid is resolved by the engine against the district's defences, and
 every unit that falls is the player's loss; a watched raid is fought in the world, and Java credits each death.
 - (a) **At a player's district every death no wild mob dealt is his (Recommended).** Lava, a Create contraption, a turret, a fake
@@ -1085,7 +1133,7 @@ every unit that falls is the player's loss; a watched raid is fought in the worl
   pressure unwatched and none watched.
 Why it is Ben's: how fights feel at a base he builds. (b) is the literal §2.2 for a body that carries no boss loot.
 
-**FB-3 (EQC226, EQC227, F9). The interface CONFLICT-LIFE.md must follow.** `camp_active(f)` gates every act (a council does not
+**FB-3 (EQC226, EQC227, F9), DECIDED by Ben 2026-10-30: (a), S7 defines `camp_active`, `reband` and the stable pool API, and whichever of S7 or CONFLICT-LIFE.md lands second takes the next page letter. The interface CONFLICT-LIFE.md must follow.** `camp_active(f)` gates every act (a council does not
 sit for a broken camp, a broken camp is nobody's neighbour); `reband` is the one place a new band is made and where CL's
 per-camp state starts afresh; a pool camp's `pool_at` is the one count of members at home; the page letter goes to whoever
 lands second.
@@ -1094,27 +1142,69 @@ lands second.
   alone, and `farmed_camp_breaks_and_refounds` waits for CL.
 Why it is Ben's: an interface another plan follows, and it touches CL's scope. The gates are one-line reads either way.
 
-**FB-4 (EQC209, F14). Is a break or a refound news?** CL-D56 makes all faction news in-world gossip, carried by traders and
+**FB-4 (EQC209, F14), DECIDED by the coordinator 2026-10-30: (a), my recommendation (reversible): no news of a break or a refound in S7. Is a break or a refound news?** CL-D56 makes all faction news in-world gossip, carried by traders and
 villagers (CONFLICT-LIFE.md 2.17, TALK). A camp that breaks, or a new band that takes a ruined camp, is the kind of thing a
 villager would say.
 - (a) **No news in S7 (Recommended).** The archive's timeline and the census show it; no `ReportKind`, no talk line.
 - (b) Two report kinds (`CampBroken`, `CampRefounded`) witnessed by the nearest villages and told as gossip, with their lines.
 Why it is Ben's: it touches CL's news design and what players hear. (b) is a TALK slice's work and does not block S7.
 
-**FB-5 (EQC221, R11). Nothing in the shipped pack reports a pool camp. Does S7 get a reporter?** `RtsimApi.reportCamp` is for a
-plugin to call, and none calls it for goblin, bandit or raider camps; the Mowzie plugin declares groves and dens. Raider
-camps could be the vanilla pillager outposts and the Illager Invasion forts (the culture's `structures` already name them),
-reported by a small plugin whose camps have no bodies at home. Reporting them turns on today's ladder (EQUILIBRIUM.md §2.5: 13
-to 14 raids a year lost at a fortress, an arms race with a player who keeps building walls) in real worlds, with S7's pressure
-and break on top.
-- (a) **No reporter now; S7 is engine groundwork (Recommended).** The first visible pool camps wait for CL's decision on when
-  parties go out.
-- (b) A raider reporter for vanilla outposts in S7's scope, so the pressure and break are met in the pack.
-Why it is Ben's: it decides whether raiders raid in his worlds, and what he sees at a pillager outpost. S7 changes nothing at a
-den or a grove either way.
+**FB-5 (EQC221, EQC237, R11), DECIDED by Ben 2026-10-30: (b), NOT my recommendation. Nothing in the shipped pack reports a pool camp. Does S7 get a reporter?**
+`RtsimApi.reportCamp` is for a plugin to call, and none called it for goblin, bandit or raider camps; the Mowzie plugin declares groves
+and dens. Raider camps could be the vanilla pillager outposts and the Illager Invasion forts (the culture's `structures` already name
+them). Reporting them turns on today's ladder (EQUILIBRIUM.md §2.5: 13 to 14 raids a year lost at a fortress, an arms race with a
+player who keeps building walls) in real worlds, with S7's pressure and break on top.
+- (a) No reporter now; S7 is engine groundwork (my recommendation, not taken).
+- (b) **A raider reporter for vanilla outposts in S7's scope (Ben's choice), so the pressure and break are met in the pack.**
+Taken: (b). The design is EQC237 to EQC254 (EQC255 to EQC269 kept); the choices it leaves to Ben are FB-6 to FB-9. S7 changes nothing at a den or a grove.
+
+
+**FB-6 (EQC243, F19). What counts as killing an outpost's members?** The camp's grievance rises 12 for each member a player kills in
+its territory, and the reporter's `kin` predicate says which mobs are members (the signal itself counts a direct kill by a player; a
+pet's or a trap's kill does not, as for every camp). Two kills bring a herald and two pillagers to demand emeralds, four a raid of
+twelve, ten or so a siege. Clearing or farming an outpost is among the first things a survival player does with one, and a
+vanilla pillager farm at an outpost is a common build.
+- (a) **Raider-tag mobs (not the witch) dying inside the outpost's box and 24 blocks round it (Recommended):** clearing or farming
+  the outpost angers its camp; killing a village raid's pillagers or a patrol elsewhere in its territory does not.
+- (b) Raider-tag mobs anywhere in the camp's 300-block territory: a village raid defended by the player angers every outpost within
+  300 blocks.
+- (c) None: the camp is angered only by pollution, logging, mining and building (and by killing its own sim warriors). Outposts
+  can be cleared for free.
+Why it is Ben's: how fights feel, and the first thing a player does at an outpost. Switching is the predicate in `Outposts` and one
+config number (the margin).
+
+**FB-7 (EQC239, EQC238, F20). Do an outpost's own pillagers become the camp's bodies?** They are the structure's natural spawns
+(none is placed with it), so there is no saved population at an outpost; the camp is a pool of 50 that the sim keeps as a number and
+sends out as puppets, as the goblin culture does.
+- (a) **No (Recommended):** the pillagers there are vanilla's and the camp's warriors are a number. Nothing is adopted, counted,
+  removed or recalled; uninstall leaves nothing.
+- (b) Yes, as home bodies of a body camp (a census, a slot ledger, adopt and hand back, as the dens and S5's lairs): the raider
+  culture gains `camp_bodies`; the cap would be the one to five pillagers standing, vanilla's spawner would keep making more that
+  the census must adopt or remove, a player's kill of one would book pressure, and S9's machinery for the grove's warriors is the
+  prerequisite.
+Why it is Ben's: body ownership (MOWZIE.md §4.9, EQ-2) and what an uninstall leaves. (b) is a plan of its own.
+
+**FB-8 (EQC249, F21). How often do raiders raid villages in survival?** Each found camp sends a plunder band at the nearest village
+or Ribbit village within 2,500 blocks on a clock; the culture's data says a mean of 8 game days. Targets are the culture's
+`hates` (humans and Ribbits; goblins and bandits do not exist), nearest first, so one village bears them; a plunder a player
+watches is physical (pillagers at the village).
+- (a) The data as it is: mean 8 days. A village near three explored outposts is plundered about every 3 days.
+- (b) **Rarer (Recommended): mean 48 days,** about twice a game year for a found camp, until CONFLICT-LIFE.md decides when parties
+  go out.
+- (c) Off: the camp acts only on grievance, against players.
+Why it is Ben's: whether and how often villages in his survival worlds are raided. The ladder against players is FB-6's.
+
+**FB-9 (EQC250, F22). Do existing worlds' outposts join?** The finder reports an outpost whenever its chunk loads, so a world made
+before the mod gets raider camps from every outpost its players load, with a full pool and no grievance (they matter once provoked
+or on the plunder clock).
+- (a) **Yes, with a switch (Recommended):** every outpost whose chunk loads joins (flag LATE); `outpostsJoinExisting` false limits
+  it to new chunks.
+- (b) Only outposts in chunks generated after the mod: existing worlds see no raiders from old outposts.
+- (c) Ship inert (`outpostsJoin` false) and turn it on per world.
+Why it is Ben's: it decides what a deployed server (OmegaSrv) looks like after the update.
 
 **Told, not asked** (all inside EQ-5, EQ-6 and the rules above): the conflict pages RTCD to RTCE (the engine's own save, no
-migration); a refounded camp has a new chief and heir; a broken camp's market is untouched; a camp with a party out breaks
+migration); the reporter is core's and has no mod of its own (D4: villages and herds are core's too); a refounded camp has a new chief and heir; a broken camp's market is untouched; a camp with a party out breaks
 only when it is idle; the three cultures carry `pool_renewal` and the body cultures do not; the stale comments about
 BAND_CASUALTIES are corrected.
 
@@ -1134,10 +1224,12 @@ Checked against `docs/boundary.md` (§2.3, §9.1 and the ranges of §6.1 to §13
 | Conflict page magic and meta | `RTCE`, meta 13 | `RTCD`, meta 12 | `RTCF` (whoever lands second) |
 | Test orders (`orders.rs`, `NativeCodec`) | 41 `CONFLICT_SLAY` | 1 to 9, 16 to 32, 34, 40 | 33 and 35 to 39 (the codec leaves them for peers), 42 and up |
 | Archive kind names | `conflict.broken`, `conflict.refounded` | the fifteen `conflict.*` kinds; no other name with `broken` or `refound` | |
-| Culture JSON | `pool_renewal` | `renewal`, `chief_renewal`, `camp_bodies`, `chief_body`, `chief_leads`, and the rest | |
+| Config keys (`RtsimConfig`, flat names) | `outpostsJoin`, `outpostsJoinExisting`, `outpostKinMargin` | `spawnQuotaPerTick`, `puppetPassInterval`, `puppetStateInterval`, `playerInterval`, `implementation`, the module keys, S5's `homeLeash` and the rest | |
+| Core Java classes | `conflict/Outposts` (the reporter) | | |
+| Culture JSON | `pool_renewal`; `raider.json` `plunder_mean_days` 8 to 48 (FB-8) | `renewal`, `chief_renewal`, `camp_bodies`, `chief_body`, `chief_leads`, and the rest | |
 | RNG systems | none (`reband` uses `SYS_CHIEF`'s next blocks) | | |
 | Formats | conflict pages RTCD to RTCE, meta 12 to 13 | the site ledger file is untouched (version 1) | |
-| EQC ids | EQC200 to EQC236 | S6 used EQC150 to EQC193 | EQC237 to EQC249 kept for the build |
+| EQC ids | EQC200 to EQC269 | S6 used EQC150 to EQC193 | EQC270 to EQC299 kept for the build |
 
 ### S7 tests
 
@@ -1180,7 +1272,7 @@ None change meaning. `tests/cultures.rs` lines 325 to 393 (the pool's closed for
 
 ### S7 bands (EQC233)
 
-The pass bands in the test names are the model's, and the build replaces them with the engine's own, recorded in EQC237 onward as S2, S4 and S6 did. Provisional, from `camps.py` and §3.6:
+The pass bands in the test names are the model's, and the build replaces them with the engine's own, recorded in EQC270 onward as S2, S4 and S6 did. Provisional, from `camps.py` and §3.6:
 
 | Check | Band | Basis |
 |---|---|---|
@@ -1194,8 +1286,8 @@ The pass bands in the test names are the model's, and the build replaces them wi
 ### S7 walkthrough: Ben wipes a raider outpost every forty days
 
 A raider camp (K 50, 2 recruits a day, the pool block of EQC202), found full. Ben is hunting it: each time he stands where its
-parties arrive he kills whatever the camp has sent, which in the engine's terms is all of its whole warriors. (Nothing in the
-shipped pack reports a raider camp today, FB-5; this is what the engine does with one.) The numbers are `camps.py` section E.
+parties arrive he kills whatever the camp has sent, which in the engine's terms is all of its whole warriors. (With the reporter
+of EQC237 the camp is a vanilla pillager outpost that a player's chunk load has found; the numbers are `camps.py` section E.)
 
 | When | What happens | P after | Pool |
 |---|---|---|---|
@@ -1211,7 +1303,7 @@ A mob's kills, a raid lost at a village and a Peaceful world add nothing at any 
 
 ### S7 what it leaves (EQC234)
 
-- **No pool camp is reported by the shipped pack** (FB-5), so none of this is met in play yet.
+- **Only vanilla pillager outposts are reported** (the Illager Invasion fort id is in the culture and is reported if its mod is ever present); no goblin or bandit camp has a reporter.
 - **No news** of a break or a refound (FB-4); the timeline and the census show them.
 - **The grove and the den** are S9's; the grove's warriors still regrow by `recruits_per_day` 2 and a grove warrior killed on a
   march still books no pressure (R4, EQC222).
@@ -1244,8 +1336,22 @@ A mob's kills, a raid lost at a village and a Peaceful world add nothing at any 
    read as a mob's) would under-count the pressure silently. `aPetsKillOfAPartyMemberIsThePlayersLoss` pins it.
 7. **The second landing of CL or S7 takes the page letter** (EQC226 (d)): a merge of two optional tails on the faction row, by
    hand, and a fixture regeneration.
-8. **The model is a model.** Its camps recruit 8% a day, have no parties, no districts and no demands; the engine's bands come
-   from the S7 checks and go in EQC237 onward.
+8. **The raid ladder now runs in real worlds** (Ben's FB-5 (b)). The first thing a survival player does at an outpost, killing its
+   pillagers, is grievance at 12 each (FB-6): two kills bring an envoy, four a raid, and a pillager farm at an outpost keeps the
+   ladder climbing to invasions and sieges. The camp's pressure and break (EQC203 to EQC212) are what answer a player who wins
+   those fights. If the first worlds find the ladder too eager, the knobs are the `kin` margin and the raider thresholds
+   (`raider.json`), not code.
+9. **One village can bear every plunder** (the nearest hated node, EQC249): FB-8 (b)'s 48 days is the guard until CL replaces the
+   clock; a village next to several explored outposts is still the target of each.
+10. **A found camp is only as found as its chunk.** After a server restart an outpost's Java `Camp` (its `kin` and sound) is back when
+    its chunk next loads; its engine faction and territory are back at once. A notice for a camp whose chunk is unloaded plays with the
+    default horn, and a kill inside its box needs its chunk, so the order is safe (EQC246).
+11. **Key collisions.** The camp key is `Obs.villageId` of the start chunk; the vanilla exclusion zone keeps a village start away,
+    and the dens and groves already share the space; a modded village structure inside 10 chunks of an outpost is the case the
+    GameTest cannot cover and `add_faction` would join as the village's node.
+12. **The witch.** The `raiders` tag includes the witch; the predicate removes it (a swamp hut is not an outpost's member).
+13. **The model is a model.** Its camps recruit 8% a day, have no parties, no districts and no demands; the engine's bands come
+   from the S7 checks and go in EQC270 onward.
 
 ### UNVERIFIED, for the build to check first
 
@@ -1262,8 +1368,16 @@ A mob's kills, a raid lost at a village and a Peaceful world add nothing at any 
    code, `camp_restore`), including a reset with `elapsed` longer than the wait: the camp is refounded at once.
 6. That `synth::many` camps stay quiet enough to measure (their ladder raids villages and loses parties to them, cause
    `Faction`, no pressure): the control is the same seed with no kill, and the Roamer's and Farmer's kills are the only difference.
-7. The Illager Invasion fort id in `raider.json` and the `mic_rtsim:conflict/*` ids (EQUILIBRIUM.md §2.4.5: "unverified") are not
-   S7's to check, and FB-5 (b) would need them.
+7. The Illager Invasion fort id in `raider.json` is not checked (the mod is not in the pack; the reporter skips an id the registry does
+   not have), and the `mic_rtsim:conflict/*` ids (EQUILIBRIUM.md §2.4.5: "unverified") are test stand-ins and no reporter uses them.
+8. That no outpost template carries a pillager: counted from the NBT of the eleven templates by string (jigsaw block names excluded).
+   The first reporter step parses the template entity lists, or a GameTest generates an outpost and counts pillagers in its box right
+   after generation at difficulty Normal, before any spawn cycle.
+9. That `ChunkEvent.Load` gives `LevelChunk.getAllStarts()` the start for a jigsaw outpost as it does for Mowzie's pieces, and that
+   `isNewChunk` is true for a chunk generated this session and false for one read from disk (Mowzie's `late` relies on it).
+10. That the raider culture's makeups materialize with the stand-in bodies in the real arena (the goblin precedent used the same
+    stand-ins) and that `Vindicator` and `Pillager` puppets do not join a vanilla `Raid` or become patrol leaders on their own.
+11. That a game day of unthrottled GameTest ticks with one outpost in the arena fits the ladder test's timeout (EQC253).
 
 ### S7 work split
 
@@ -1284,10 +1398,19 @@ Gradle or GameTest step, check the laptop is on AC (`cat /sys/class/power_supply
 6. **Ledger, census and formats** (`engine.rs`, `camp.rs`, `persist.rs`). The pool camp's row, the found restore, the census, RTCE
    and meta 13, stats. Tests: the ledger, format and census rows; regenerate rtsim-view's conflict fixtures.
 7. **The checks** (`rtsim-cli`, `rtsim-jni`). The `camps` scenario, `sim::equilibrium`'s harness, `kill_all_camps`,
-   `farmed_camp_breaks_and_refounds`, the long run (run the 30-seed versions, record the bands in EQC237 onward, set the knobs if
+   `farmed_camp_breaks_and_refounds`, the long run (run the 30-seed versions, record the bands in EQC270 onward, set the knobs if
    a band fails); the jni order 41 and the three protocol tests.
 8. **Java core** (test only). `NativeCodec.CONFLICT_SLAY`, `RtsimTests.slayCamp`, the three GameTests, the two stale comments.
 9. **Documents** (EQC228).
-10. **Land.** Merge `origin/main`, check `git diff --name-only --diff-filter=U`, run the tests the branch changes (the whole
+10. **The reporter** (core Java, EQC237 to EQC254). `conflict/Outposts` (the finder, the queue, `known`, the re-report at a session
+    start and the switch-on edge, the `kin` predicate), its hooks in `MicRtsim` and `ConflictBridge.endOfTick`, the config keys,
+    `raider.json`'s plunder mean. `javac` first. Rust: `the_raider_claims_the_outposts`, `the_raider_plunders_at_the_slower_mean`,
+    failing first.
+11. **The reporter's GameTests** (EQC252). Write each, run it red for the reason in its record, then green, one project at a time.
+12. **Fixtures and rounds.** Refresh rtsim-view's fixtures from fresh `core` and `create -Psec1fx` saves as S6 did (keeping the
+    `fixtures.rs` header history), merge `origin/main`, then the final checks: `cargo test --workspace`, clippy `-D warnings`,
+    `:core:test`, and the rounds `core`, `create -Psec1fx`, `create -PwithMowzie`, `mowziesmobs`, `iceandfire` and `ribbits` from
+    cleared worlds.
+13. **Land.** Merge `origin/main`, check `git diff --name-only --diff-filter=U`, run the tests the branch changes (the whole
     conflict suite, `rtsim-jni`, `rtsim-cli`, then `:core` GameTests and `create -PwithMowzie` and `mowziesmobs`, which share the
     clock and the ledger), then the pull request and review as CLAUDE.md says.
