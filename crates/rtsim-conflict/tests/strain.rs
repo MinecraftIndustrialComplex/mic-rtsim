@@ -1113,3 +1113,172 @@ fn pages_round_trip_rtce() {
     let e = e.to_string();
     assert!(e.contains("RTCD") && e.contains("RTCE"), "{e}");
 }
+
+// ---------------------------------------------------------------- the refounding (EQC210)
+
+/// The camp breaks at `at` and the world runs to the tick its wait is over (and no further).
+fn broken_until_due(
+    seed: u64,
+    culture: &str,
+) -> (World, Conflict, u32, rtsim_conflict::engine::Broken) {
+    let (mut w, mut c, f) = camp(seed, culture);
+    break_now(&mut c, &mut w, f, Tick(10 * DAY));
+    let b = broken(&c, f).unwrap();
+    (w, c, f, b)
+}
+
+/// EQC210: after `min(384, 48 x 2^P)` days the camp is refounded with a quarter of its cap (15 of
+/// 60), nothing away, and it recruits again.
+#[test]
+fn a_camp_refounds_after_the_rule_with_a_quarter_pool() {
+    for (culture, want) in [("goblin", 15.0), ("bandit", 10.0), ("raider", 12.0)] {
+        let (mut w, mut c, f, b) = broken_until_due(51, culture);
+        c.run_until(&mut w, &mut NoInfrastructure, Tick(b.due.0 - 1));
+        assert!(
+            broken(&c, f).is_some(),
+            "{culture}: not before the wait is over"
+        );
+        c.run_until(&mut w, &mut NoInfrastructure, b.due);
+        assert!(
+            broken(&c, f).is_none(),
+            "{culture}: refounded at {:?}",
+            b.due
+        );
+        assert_eq!(c.stats.refounds, 1);
+        assert_eq!(
+            c.pool_at(f, b.due),
+            want,
+            "{culture}: a quarter of the cap, rounded down"
+        );
+        assert_eq!(c.factions[f as usize].away, 0);
+        assert!(c.camp_active(f));
+        assert!(c.recruit_rate(f) > 0.0);
+        assert!(
+            c.pool_at(f, Tick(b.due.0 + 10 * DAY)) > want,
+            "recruiting again"
+        );
+        assert!(
+            c.factions[f as usize]
+                .strain
+                .as_ref()
+                .unwrap()
+                .check_at
+                .is_none()
+        );
+        c.check(&w).expect("books");
+    }
+}
+
+/// EQC210: a new band has a new chief and heir, and none of the old camp's fights or its cowing.
+#[test]
+fn a_refounded_camp_has_a_new_chief_and_heir_and_no_old_fights() {
+    let (mut w, mut c, f) = camp(52, "goblin");
+    let old = {
+        let x = &mut c.factions[f as usize];
+        x.observed.push((10.0, 0.5));
+        x.crystal = false;
+        (x.chief, x.heir, x.chiefs)
+    };
+    break_now(&mut c, &mut w, f, Tick(10 * DAY));
+    let b = broken(&c, f).unwrap();
+    c.run_until(&mut w, &mut NoInfrastructure, b.due);
+    let x = &c.factions[f as usize];
+    assert_ne!(x.chief, old.0);
+    assert_ne!(x.heir, old.1);
+    assert_eq!(x.chiefs, old.2 + 2);
+    assert!(w.knowledge.notable(x.chief).is_some() && w.knowledge.notable(x.heir).is_some());
+    assert!(
+        x.observed.is_empty(),
+        "the old band's fights are not the new one's"
+    );
+    assert!(x.crystal);
+    assert_eq!(x.cowed_until, Tick::ZERO);
+    assert!(!x.chief_out);
+}
+
+/// EQC210: the pressure stays, decayed by the wait; and a camp refounded with a quarter of its cap
+/// is over a tenth of it, so it does not break at once.
+#[test]
+fn a_refounded_camp_keeps_its_decayed_pressure_and_does_not_break_at_once() {
+    let (mut w, mut c, f, b) = broken_until_due(53, "goblin");
+    let at_break = pressure(&c, f, b.since);
+    c.run_until(&mut w, &mut NoInfrastructure, b.due);
+    let waited = (b.due.0 - b.since.0) as f64 / DAY as f64;
+    let want = at_break * (-waited / 192.0).exp2();
+    let got = pressure(&c, f, b.due);
+    assert!((got - want).abs() < 0.01, "{got} vs {want}");
+    assert!(got > 0.4, "it is pressured still: {got}");
+    c.run_until(&mut w, &mut NoInfrastructure, Tick(b.due.0 + 20 * DAY));
+    assert!(broken(&c, f).is_none());
+    assert_eq!(c.stats.breaks, 1);
+}
+
+/// EQC210: the refounded camp acts again: its plunder drive is booked and its feuds are planned, so
+/// the grievance it was holding sends the war bands it would have sent.
+#[test]
+fn a_refounded_camp_plans_its_plunder_and_its_feuds() {
+    let (mut w, mut c, f) = camp(54, "goblin");
+    let player = c.player(&mut w, synth::PLAYER);
+    break_now(&mut c, &mut w, f, Tick(10 * DAY));
+    let b = broken(&c, f).unwrap();
+    kill_signal(&mut c, &mut w, player, 100.0, Tick(11 * DAY));
+    c.run_until(&mut w, &mut NoInfrastructure, Tick(b.due.0 - 1));
+    assert_eq!(
+        c.stats.parties.iter().sum::<u64>(),
+        0,
+        "nothing while broken"
+    );
+    // The grievance decays at its own half-life while the camp is down: bring a fresh one the day
+    // before it is refounded, so the camp wakes to it.
+    kill_signal(&mut c, &mut w, player, 100.0, Tick(b.due.0 - 1));
+    c.run_until(&mut w, &mut NoInfrastructure, Tick(b.due.0 + 40 * DAY));
+    assert_eq!(c.stats.refounds, 1);
+    assert!(
+        c.stats.parties.iter().sum::<u64>() > 0,
+        "the refounded camp acts: {:?}",
+        c.stats
+    );
+    let live = c
+        .pending_by_kind()
+        .get("plunder")
+        .copied()
+        .unwrap_or_default()
+        + c.stats.parties[PartyKind::Plunder.index()] as usize;
+    assert!(live > 0, "its plunder drive is on");
+    c.check(&w).expect("books");
+}
+
+/// EQC210: a camp can break again after a refounding, and its second wait is the rule's at the
+/// pressure then: the pressure it kept (about 1 after a wait of 194 days) and the band's kills.
+#[test]
+fn a_camp_broken_twice_waits_by_the_pressure_it_has_then() {
+    let (mut w, mut c, f, b) = broken_until_due(55, "bandit");
+    c.run_until(&mut w, &mut NoInfrastructure, b.due);
+    assert!(broken(&c, f).is_none());
+    // The refounded band: 10 of 40, the pressure it kept about 1.0. Kill all 10: 1.25, no break.
+    let at = Tick(b.due.0 + DAY);
+    let have = c.pool_at(f, at).floor() as u32;
+    assert_eq!(c.slay(&mut w, f, have, at), have);
+    assert!(
+        broken(&c, f).is_none(),
+        "P is {} under 2",
+        pressure(&c, f, at)
+    );
+    // Farmed by a player who keeps at it: another 40 recruits killed as they come over 140 days
+    // takes the pressure over 2, and the thin camp breaks again, waiting by the rule.
+    let mut t = at;
+    while broken(&c, f).is_none() {
+        t = Tick(t.0 + 5 * DAY);
+        assert!(t.0 < at.0 + 800 * DAY, "it never broke again");
+        c.run_until(&mut w, &mut NoInfrastructure, t);
+        let home = c.pool_at(f, t).floor() as u32;
+        c.slay(&mut w, f, home, t);
+    }
+    let again = broken(&c, f).unwrap();
+    let p = pressure(&c, f, again.since);
+    let want = (48.0 * p.exp2()).min(384.0);
+    let got = (again.due.0 - again.since.0) as f64 / DAY as f64;
+    assert!((got - want).abs() < 1e-3, "{got} vs {want} at P {p}");
+    assert!(p >= 2.0);
+    assert_eq!(c.stats.breaks, 2);
+}
