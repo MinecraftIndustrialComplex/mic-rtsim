@@ -89,12 +89,19 @@ fn the_raider_has_a_plunder_mood_and_no_other_culture_does() {
         assert!(!json.contains("plunder_mood"));
     }
 
-    let e = refused(GOBLIN_JSON, |d| d.plunder_mood = def(RAIDER_JSON).plunder_mood)
-        .map(|e| e.contains("plunder_mood"));
+    let e = refused(GOBLIN_JSON, |d| {
+        d.plunder_mood = def(RAIDER_JSON).plunder_mood
+    })
+    .map(|e| e.contains("plunder_mood"));
     assert_eq!(e, None, "a culture that plunders may carry one");
-    let e = refused(FROSTMAW_JSON, |d| d.plunder_mood = def(RAIDER_JSON).plunder_mood)
-        .expect("no plunder, no mood");
-    assert!(e.contains("plunder_mood") && e.contains("plunder_mean_days"), "{e}");
+    let e = refused(FROSTMAW_JSON, |d| {
+        d.plunder_mood = def(RAIDER_JSON).plunder_mood
+    })
+    .expect("no plunder, no mood");
+    assert!(
+        e.contains("plunder_mood") && e.contains("plunder_mean_days"),
+        "{e}"
+    );
     for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
         let e = refused(RAIDER_JSON, |d| {
             d.plunder_mood.as_mut().unwrap().loss_gain = bad
@@ -107,14 +114,21 @@ fn the_raider_has_a_plunder_mood_and_no_other_culture_does() {
     })
     .expect("a half-life above 0");
     assert!(e.contains("half_life_days"), "{e}");
-    for (what, edit) in [
-        ("loss_gain", (|m: &mut _| set(m, |m| m.loss_gain = -1.0)) as fn(&mut _)),
-        ("spoils_gain", |m| set(m, |m| m.spoils_gain = -0.1)),
-        ("chief_loss_share", |m| set(m, |m| m.chief_loss_share = -0.1)),
-    ] {
-        let e = refused(RAIDER_JSON, |d| edit(d)).expect("a gain is not negative");
-        assert!(e.contains(what), "{e}");
-    }
+    let e = refused(RAIDER_JSON, |d| {
+        d.plunder_mood.as_mut().unwrap().loss_gain = -1.0
+    })
+    .expect("a gain is not negative");
+    assert!(e.contains("loss_gain"), "{e}");
+    let e = refused(RAIDER_JSON, |d| {
+        d.plunder_mood.as_mut().unwrap().spoils_gain = -0.1
+    })
+    .expect("a gain is not negative");
+    assert!(e.contains("spoils_gain"), "{e}");
+    let e = refused(RAIDER_JSON, |d| {
+        d.plunder_mood.as_mut().unwrap().chief_loss_share = -0.1
+    })
+    .expect("a share is not negative");
+    assert!(e.contains("chief_loss_share"), "{e}");
     let e = refused(RAIDER_JSON, |d| {
         d.plunder_mood.as_mut().unwrap().min_factor = 1.5
     })
@@ -132,19 +146,14 @@ fn the_raider_has_a_plunder_mood_and_no_other_culture_does() {
     assert!(e.contains("min_factor"), "{e}");
 }
 
-fn set(d: &mut CultureDef, f: impl FnOnce(&mut rtsim_conflict::culture::PlunderMoodDef)) {
-    f(d.plunder_mood.as_mut().unwrap());
-}
-
 /// Only the raider's camps have a mood.
 #[test]
 fn only_a_raider_camp_has_a_mood() {
     for (culture, has) in [("raider", true), ("goblin", false), ("bandit", false)] {
         let (_, c, f) = camp(3, culture);
         assert_eq!(c.mood_now(f, Tick::ZERO).is_some(), has, "{culture}");
-        assert_eq!(
+        assert!(
             c.plunder_mean_days(f, Tick::ZERO).is_some(),
-            true,
             "{culture} plunders"
         );
     }
@@ -167,7 +176,11 @@ fn a_neutral_band_waits_the_cultures_mean_and_the_temperament_spreads_it() {
     let (lo, hi) = means
         .iter()
         .fold((f64::MAX, 0.0f64), |(l, h), &x| (l.min(x), h.max(x)));
-    assert!((47.5..=48.5).contains(&m), "the mean of {} camps is {m}", means.len());
+    assert!(
+        (47.5..=48.5).contains(&m),
+        "the mean of {} camps is {m}",
+        means.len()
+    );
     assert!(lo < 0.7 * 48.0 && hi > 1.6 * 48.0, "spread {lo} to {hi}");
     // And bounded by the temperament's bend alone: within (0.55, 1.85) of the mean.
     assert!(lo > 0.55 * 48.0 && hi < 1.85 * 48.0, "spread {lo} to {hi}");
@@ -182,8 +195,15 @@ fn members_lost_in_a_raid_lengthen_the_wait() {
     let ashby = w.node_of_key(4).expect("Ashby");
     let before = c.plunder_mean_days(f, Tick(10)).unwrap();
     assert_eq!(c.mood_now(f, Tick(10)), Some((0.0, 0.0)));
-    c.order_party(&mut w, synth::CAMP, PartyKind::Plunder, Target::Node(ashby), None, Tick(10))
-        .expect("plunderers");
+    c.order_party(
+        &mut w,
+        synth::CAMP,
+        PartyKind::Plunder,
+        Target::Node(ashby),
+        None,
+        Tick(10),
+    )
+    .expect("plunderers");
     // Take the pool away so the kills fall on the band: 4 of its 8 are lost, by anyone.
     c.factions[f as usize].pool = 0.0;
     c.factions[f as usize].pool_at = Tick(10);
@@ -193,7 +213,13 @@ fn members_lost_in_a_raid_lengthen_the_wait() {
     let cap = c.factions[f as usize].cap as f32;
     assert!((g - 4.0 / cap).abs() < 1e-6, "grief {g}");
     assert_eq!(s, 0.0);
-    let gain = c.cultures.get(c.factions[f as usize].culture).plunder_mood.unwrap().def.loss_gain;
+    let gain = c
+        .cultures
+        .get(c.factions[f as usize].culture)
+        .plunder_mood
+        .unwrap()
+        .def
+        .loss_gain;
     let after = c.plunder_mean_days(f, Tick(10)).unwrap();
     let want = before * f64::from(gain * 4.0 / cap).exp();
     assert!((after - want).abs() < 1e-6 * want, "{after} against {want}");
@@ -213,8 +239,15 @@ fn a_raid_that_brings_loot_home_shortens_the_wait() {
         .filter(|e| e.1 > 0)
         .collect();
     w.stock_from_players(ashby, &rich, Tick(10));
-    c.order_party(&mut w, synth::CAMP, PartyKind::Plunder, Target::Node(ashby), None, Tick(10))
-        .expect("plunderers");
+    c.order_party(
+        &mut w,
+        synth::CAMP,
+        PartyKind::Plunder,
+        Target::Node(ashby),
+        None,
+        Tick(10),
+    )
+    .expect("plunderers");
     let mut t = Tick(10);
     while c.ledger.from_villages.is_empty() || !c.parties.is_empty() {
         t = c.next_due().unwrap_or(t + DAY);
@@ -222,10 +255,17 @@ fn a_raid_that_brings_loot_home_shortens_the_wait() {
         c.run_until(&mut w, &mut NoInfrastructure, t);
     }
     let (g, s) = c.mood_now(f, t).unwrap();
-    assert!((0.9..=1.0).contains(&s), "one raid with loot is one spoil: {s}");
+    assert!(
+        (0.9..=1.0).contains(&s),
+        "one raid with loot is one spoil: {s}"
+    );
     assert!(g >= 0.0);
     // The gain is the data's, and the same temperament reads shorter than it would with none.
-    let cu = c.cultures.get(c.factions[f as usize].culture).plunder_mood.unwrap();
+    let cu = c
+        .cultures
+        .get(c.factions[f as usize].culture)
+        .plunder_mood
+        .unwrap();
     let neutral = {
         let (_, c2, f2) = camp(6, "raider");
         c2.plunder_mean_days(f2, t).unwrap()
@@ -233,7 +273,10 @@ fn a_raid_that_brings_loot_home_shortens_the_wait() {
     let now = c.plunder_mean_days(f, t).unwrap();
     let want = neutral * f64::from(cu.def.loss_gain * g - cu.def.spoils_gain * s).exp();
     assert!((now - want).abs() < 1e-3 * want, "{now} against {want}");
-    assert!(now < neutral || g > 0.05, "{now} against the neutral {neutral}");
+    assert!(
+        now < neutral || g > 0.05,
+        "{now} against the neutral {neutral}"
+    );
 }
 
 /// A war chief's fall counts as a share of the cap lost.
@@ -253,7 +296,13 @@ fn a_war_chief_lost_counts_as_a_share_of_the_cap() {
     assert!(c.parties[p].chief, "the chief leads the raid");
     c.chief_killed_by(&mut w, p, None, 0, None, Tick(10));
     let (g, _) = c.mood_now(f, Tick(10)).unwrap();
-    let share = c.cultures.get(c.factions[f as usize].culture).plunder_mood.unwrap().def.chief_loss_share;
+    let share = c
+        .cultures
+        .get(c.factions[f as usize].culture)
+        .plunder_mood
+        .unwrap()
+        .def
+        .chief_loss_share;
     assert!(g >= share - 1e-6, "grief {g} for a chief share {share}");
 }
 
@@ -263,8 +312,15 @@ fn a_war_chief_lost_counts_as_a_share_of_the_cap() {
 fn the_memory_fades() {
     let (mut w, mut c, f) = camp(8, "raider");
     let ashby = w.node_of_key(4).expect("Ashby");
-    c.order_party(&mut w, synth::CAMP, PartyKind::Plunder, Target::Node(ashby), None, Tick(10))
-        .expect("plunderers");
+    c.order_party(
+        &mut w,
+        synth::CAMP,
+        PartyKind::Plunder,
+        Target::Node(ashby),
+        None,
+        Tick(10),
+    )
+    .expect("plunderers");
     c.factions[f as usize].pool = 0.0;
     c.factions[f as usize].pool_at = Tick(10);
     c.slay(&mut w, f, 6, Tick(10));
@@ -276,7 +332,10 @@ fn the_memory_fades() {
         c2.plunder_mean_days(f2, Tick(10 + 2000 * DAY)).unwrap()
     };
     let later = c.plunder_mean_days(f, Tick(10 + 2000 * DAY)).unwrap();
-    assert!((later - neutral).abs() < 1e-3 * neutral, "{later} against {neutral}");
+    assert!(
+        (later - neutral).abs() < 1e-3 * neutral,
+        "{later} against {neutral}"
+    );
 }
 
 /// No history, however long, takes the mean past the data's bounds.
@@ -287,14 +346,20 @@ fn the_factor_is_clamped() {
     // A great grief: the camp lost a hundred times its cap.
     c.grieve(f, 100.0, Tick(10));
     let high = c.plunder_mean_days(f, Tick(10)).unwrap();
-    assert!((high - 3.0 * neutral).abs() < 1e-9 * high, "{high} against 3 x {neutral}");
+    assert!(
+        (high - 3.0 * neutral).abs() < 1e-9 * high,
+        "{high} against 3 x {neutral}"
+    );
     // And a great run of luck: a hundred raids with loot.
     let (mut w2, mut c2, f2) = camp(9, "raider");
     for _ in 0..100 {
         c2.gloat(f2, Tick(10));
     }
     let low = c2.plunder_mean_days(f2, Tick(10)).unwrap();
-    assert!((low - 0.5 * neutral).abs() < 1e-9 * low, "{low} against half of {neutral}");
+    assert!(
+        (low - 0.5 * neutral).abs() < 1e-9 * low,
+        "{low} against half of {neutral}"
+    );
     let _ = (&mut w, &mut w2);
 }
 
@@ -313,7 +378,13 @@ fn a_new_band_has_no_history_and_its_own_temperament() {
     c.slay(&mut w, f, u32::MAX, Tick(20));
     c.pool_press(f, 3.0, Tick(20));
     assert!(!c.camp_active(f), "the camp broke");
-    let due = c.factions[f as usize].strain.as_ref().unwrap().broken.unwrap().due;
+    let due = c.factions[f as usize]
+        .strain
+        .as_ref()
+        .unwrap()
+        .broken
+        .unwrap()
+        .due;
     c.run_until(&mut w, &mut NoInfrastructure, due + 1);
     assert!(c.camp_active(f), "the camp was refounded");
     assert_ne!(c.factions[f as usize].chief_seed, seed, "a new chief");
@@ -333,6 +404,116 @@ fn a_camps_mood_survives_a_save() {
     assert_eq!(back.state_hash(), c.state_hash());
     let f2 = back.faction_of_key(synth::CAMP).unwrap();
     assert_eq!(back.mood_now(f2, Tick(40 * DAY)).unwrap(), want);
-    assert_eq!(back.plunder_mean_days(f2, Tick(40 * DAY)).unwrap(), mean_before);
+    assert_eq!(
+        back.plunder_mean_days(f2, Tick(40 * DAY)).unwrap(),
+        mean_before
+    );
     let _ = &mut w;
+}
+
+// ---------------------------------------------------------------- the whole engine, many camps
+
+/// What `camps` raiders did over `days` game days in a world of 24 camps, `rich` villages
+/// refilled every ten days or not: the mean of the gaps their plunder clock drew (the draws the
+/// camps had made, less the last of each, which had not run out), the mean grief and spoils at
+/// the end, the lowest and highest mean wait any camp ended with, and the raids and casualties.
+struct Years {
+    gap: f64,
+    grief: f64,
+    spoils: f64,
+    lo: f64,
+    hi: f64,
+    raids: u64,
+    casualties: u64,
+}
+
+fn years(seeds: u64, days: u64, rich: bool) -> Years {
+    let (mut draws, mut n, mut raids, mut casualties) = (0u64, 0u64, 0u64, 0u64);
+    let (mut grief, mut spoils) = (0.0f64, 0.0f64);
+    let (mut lo, mut hi) = (f64::MAX, 0.0f64);
+    for seed in 0..seeds {
+        let (mut w, mut c, fs) = raiders(24, 700 + seed);
+        let mut d = 0;
+        while d < days {
+            if rich {
+                // Every village has something over its targets to take (a raid takes the surplus).
+                for i in 0..w.nodes.len() {
+                    let m = w.market(i);
+                    let top: BTreeMap<GoodId, i64> = w
+                        .goods
+                        .ids()
+                        .map(|g| (g, m.line(g).target + 20 * MILLI - m.stock(g)))
+                        .filter(|e| e.1 > 0)
+                        .collect();
+                    w.stock_from_players(i, &top, c.now());
+                }
+            }
+            d += 10;
+            c.run_until(&mut w, &mut NoInfrastructure, Tick(d * DAY));
+        }
+        for &f in &fs {
+            draws += u64::from(c.factions[f as usize].plunders);
+            let (g, s) = c.mood_now(f, c.now()).unwrap();
+            grief += f64::from(g);
+            spoils += f64::from(s);
+            let m = c.plunder_mean_days(f, c.now()).unwrap();
+            (lo, hi) = (lo.min(m), hi.max(m));
+            n += 1;
+        }
+        raids += c.stats.raids_village;
+        casualties += c.stats.casualties;
+    }
+    Years {
+        gap: (n * days) as f64 / (draws - n) as f64,
+        grief: grief / n as f64,
+        spoils: spoils / n as f64,
+        lo,
+        hi,
+        raids,
+        casualties,
+    }
+}
+
+/// FB-8: "~48 days is a good average". In a world where no village has anything to take the
+/// camps' clocks run on their temperaments alone, and the gaps they draw average 48 days.
+#[test]
+fn a_quiet_world_of_raiders_plunders_about_every_48_days() {
+    let y = years(6, 960, false);
+    println!(
+        "quiet: a plunder every {:.1} days, {} raids, grief {:.3}, spoils {:.3}",
+        y.gap, y.raids, y.grief, y.spoils
+    );
+    assert!((45.0..=51.0).contains(&y.gap), "{}", y.gap);
+    // Almost no history: the means are the temperament's, 0.6 to 1.8 of 48, give or take a raid.
+    assert!(y.grief < 0.02 && y.spoils < 0.2, "{} {}", y.grief, y.spoils);
+}
+
+/// ... and where every village is rich, so that the camps raid, lose members and bring loot home
+/// all the time, the history is live (they mourn and they gloat) and the mean is still about 48:
+/// the data's gains are set so that the loot and the losses of a typical camp balance.
+#[test]
+fn a_world_of_rich_villages_keeps_the_mean_near_48_with_the_history_live() {
+    let y = years(6, 960, true);
+    println!(
+        "rich: a plunder every {:.1} days, {} raids, {} casualties, grief {:.3}, spoils {:.3}, means {:.1} to {:.1}",
+        y.gap, y.raids, y.casualties, y.grief, y.spoils, y.lo, y.hi
+    );
+    assert!(y.raids > 1000 && y.casualties > 1000, "{} raids", y.raids);
+    assert!(y.grief > 0.05, "they mourn: {}", y.grief);
+    assert!(y.spoils > 1.0, "they gloat: {}", y.spoils);
+    assert!((42.0..=54.0).contains(&y.gap), "{}", y.gap);
+    // The history spreads the camps beyond what the temperament does (0.6 to 1.8 of 48), within
+    // the data's bounds (0.5 to 3 times the temperament's own mean, which is under 2 times 48).
+    assert!(
+        y.hi > 1.85 * 48.0 && y.lo < 0.6 * 48.0,
+        "{} to {}",
+        y.lo,
+        y.hi
+    );
+    assert!(
+        y.lo >= 0.5 * 0.6 * 48.0 - 1e-9 && y.hi <= 3.0 * 1.82 * 48.0,
+        "bounded: {} to {}",
+        y.lo,
+        y.hi
+    );
 }

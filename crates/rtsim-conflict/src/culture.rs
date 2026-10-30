@@ -757,7 +757,9 @@ impl Culture {
             .map(|m| -> Result<PlunderMood, String> {
                 let what = "plunder_mood";
                 if def.plunder_mean_days.is_none() {
-                    return Err(format!("{n}: {what} bends plunder_mean_days, which is absent"));
+                    return Err(format!(
+                        "{n}: {what} bends plunder_mean_days, which is absent"
+                    ));
                 }
                 let nums = [
                     m.half_life_days,

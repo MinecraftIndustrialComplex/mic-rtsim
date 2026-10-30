@@ -44,8 +44,7 @@ use crate::culture::{Cultures, PartyKind, SignalKind, Step};
 use crate::engine::{
     Answered, Broken, Camp, Conflict, ConflictLedger, ConflictStats, Demand, Ended, Ev, Faction,
     Feud, Focus, Heir, HeldPass, Line, LineCount, Mood, Party, Phase, Pin, Placing, RailMeter,
-    Retired,
-    Slot, SlotState, Source, Strain, TRADED_CAP, Target, Throne,
+    Retired, Slot, SlotState, Source, Strain, TRADED_CAP, Target, Throne,
 };
 use crate::grievance::{Grievance, KB, RailTail};
 use crate::presence::{ChunkKey, ChunkTime, Presence, Stay};
