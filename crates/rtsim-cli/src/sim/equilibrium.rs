@@ -2199,7 +2199,7 @@ mod tests {
                     ("den", "none") => assert!(m >= 0.995, "{m}"),
                     ("den", _) => assert!(m >= 0.90, "{m}"),
                     ("grove", "none") => assert!((0.80..=0.97).contains(&m), "{m}"),
-                    _ => assert!(m >= 0.0 && m <= 1.0, "{m}"),
+                    _ => assert!((0.0..=1.0).contains(&m), "{m}"),
                 }
                 if judged || script == "none" {
                     assert!((a - b).abs() < 0.08, "{name} {script}: drift {a} {b}");
