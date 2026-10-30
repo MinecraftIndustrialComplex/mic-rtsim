@@ -699,7 +699,8 @@ public final class SiteLedgerGameTests {
      * A force-loaded site refills when unwatched (S3 test 9). Two dens forced the whole test, their Frostmaws adopted and
      * killed by a player who goes. A watcher stands 40 blocks from den B. The engine's world runs past both waits with no
      * unload: den A's arrival asks for a RECOUNT, its census follows with no CAMP_OUT, and a SPAWN places a tagged Frostmaw.
-     * Den B's SPAWN is held while the watcher stands within 160 blocks (DenKind) and placed once the watcher goes.
+     * Den B's SPAWN is placed at once with the watcher standing 40 blocks off, not held for him (S9, FB-S9-3, Ben, 2026-10-30:
+     * a due boss is placed in view; DenKind held it while a player stood within 160 blocks) and nothing is held.
      */
     @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "site_force_loaded", skyAccess = true)
     public static void aForceLoadedSiteRefillsWhenUnwatched(GameTestHelper helper) {
@@ -743,19 +744,15 @@ public final class SiteLedgerGameTests {
                     List<Entity> h = MowzieKit.held(a.faction);
                     check("a tagged Frostmaw at den A (" + h.size() + ")", h.size() == 1 && h.get(0) instanceof EntityFrostmaw);
                 })
-                .thenWaitUntil(waits.engine(() -> check("den B's SPAWN is held while the watcher stands near ("
-                        + (MowzieKit.camps().heldSpawns - before[3]) + " held)", MowzieKit.camps().heldSpawns > before[3])))
-                .thenIdle(40)
-                .thenExecute(() -> {
-                    check("no SPAWN placed at den B yet", lines(b.faction, SPAWN, -1) == 0 && MowzieKit.held(b.faction).isEmpty());
-                    FakePlayers.remove(watcher[0]);
-                })
-                .thenWaitUntil(waits.engine(() -> check("den B's SPAWN is DONE once the watcher went", lines(b.faction, SPAWN, DONE) >= 1)))
+                .thenWaitUntil(waits.engine(() -> check("den B's SPAWN is DONE with the watcher standing near", lines(b.faction, SPAWN, DONE) >= 1)))
                 .thenExecute(() -> {
                     List<Entity> h = MowzieKit.held(b.faction);
                     check("a tagged Frostmaw at den B (" + h.size() + ")", h.size() == 1 && h.get(0) instanceof EntityFrostmaw);
+                    check("none of the SPAWNs was held (" + (MowzieKit.camps().heldSpawns - before[3]) + ")", MowzieKit.camps().heldSpawns == before[3]);
+                    check("the watcher is still within 160 blocks of den B", watcher[0].distanceToSqr(b.spot) < 160 * 160);
+                    FakePlayers.remove(watcher[0]);
                     record(test, "refilled", "den A at the wait's end with no unload (" + (MowzieKit.camps().engineRecounts - before[0])
-                            + " RECOUNTs); den B held " + (MowzieKit.camps().heldSpawns - before[3]) + " times, then placed");
+                            + " RECOUNTs); den B placed at once with the watcher near (" + (MowzieKit.camps().heldSpawns - before[3]) + " held)");
                 })
                 .thenSucceed();
     }

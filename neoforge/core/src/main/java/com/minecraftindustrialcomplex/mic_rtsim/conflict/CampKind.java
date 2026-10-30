@@ -77,8 +77,20 @@ public interface CampKind {
     /** Where a SPAWN line's body appears (on the ground, in the footprint); null when it finds no free place (the line is stale). */
     Vec3 spawnAt(ServerLevel level, Camps.Site site, String body, int lineFlags);
 
-    /** Whether a SPAWN line waits now (a Frostmaw's while a player is near its den, MOWZIE.md §7 test 5). */
+    /**
+     * Whether a SPAWN line waits now, until this kind stops waiting or {@link Camps#HOLD_MAX} ticks have passed. The Mowzie kinds
+     * answer false: a returning boss appears when it is due, in front of a player who stays (S9, FB-S9-3, Ben: "just spawn
+     * anyway"), and says so with {@link #arrived}; the hold stays a kind's option for a body that must not be seen to appear.
+     */
     boolean holdSpawn(ServerLevel level, Camps.Site site, String body, int lineFlags);
+
+    /**
+     * A body this kind made for a SPAWN or a SEAT_HEIR stands in the level now (S9, FB-S9-3): the place for the effect a boss's
+     * return gets, sent from the server so every client in range sees and hears it. Called once per body, after the level took
+     * it and before the line is answered; it must not journal anything, move or change the body, or hold up the tick (an
+     * exception is logged and dropped). The default is no effect: a warrior's trickle back is quiet.
+     */
+    default void arrived(ServerLevel level, Camps.Site site, Mob body) {}
 
     /** A tagged body of the camp joined the level, or became the camp's: what keeps it home (a restriction). */
     void joined(Camps.Site site, Mob body);

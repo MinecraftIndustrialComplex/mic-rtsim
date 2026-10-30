@@ -72,8 +72,11 @@ Calendar used throughout: a game day is 24,000 ticks (20 real minutes); a game y
 - **A server left alone for ten real years keeps every kind alive at a steady share,** and the number
   of renewal events per day stays flat from the second game century on (§3.6). Today a third of the herd ranges die out over that
   time with no player at all, and every pirate fleet is gone within the first game century.
-- **Nothing pops in front of the player.** An arrival is placed when its site loads, or walks in from
-  its source while a player watches; it is never conjured inside a site a player is looking at.
+- **Nothing pops in front of the player, but a boss.** An arrival is placed when its site loads, or walks in from
+  its source while a player watches; it is never conjured inside a site a player is looking at. The two
+  bosses are the exception, by Ben's choice (S9, FB-S9-3, 2026-10-30: "just spawn anyway, bonus points if you
+  have some cool effects"): a Frostmaw or an Umvuthi that is due is placed with a player beside it, and says so
+  with an effect (§2.2).
 - **Nothing new in the world.** Every body, structure and item is the pack's (D3).
 
 ### 1.2 Walkthroughs
@@ -214,21 +217,23 @@ belonging to it, and a **pressure** P:
 - **Arrival.** How it appears:
   - **OnLoad:** placed when the site's chunk next loads, only if no player is within 128 blocks of the
     site (TUNABLE). The chunk loads at view distance, so the body is simply there when it renders.
-    **As built for the bosses (S9, MZB-280, MZB-1220):** a Frostmaw or an Umvuthi (the two bodies a
-    player can see appear whole, asleep or on a throne) is held while a player is within **160**
-    blocks of the spot, their tracking range, for at most **6,000 ticks** (5 real minutes), then
-    placed; core evaluates the hold each tick over the few held lines. A grove's warriors are never
-    held: they appear at the grove's edge, 20 blocks from the fire pit on the side away from the
-    nearest player within 256 blocks.
+    **As built for the bosses (S9, FB-S9-3, Ben, 2026-10-30, MZB-1272):** a Frostmaw or an Umvuthi (the
+    two bodies a player can see appear whole, asleep or on a throne) is placed when it is due, **with a
+    player beside the spot or watching**, and is not held for him (M12a held it while a player was within
+    160 blocks, for at most 6,000 ticks: MZB-280). It arrives with a short effect the server sends to every
+    client in range, built of the game's and the Mowzie's Mobs jar's own particles, sounds and camera shake
+    (D3): the Frostmaw's roar ring, ice and snow, the Umvuthi's orbs, flames, smoke, drum and roar
+    (MOWZIE.md §4.9). A grove's warriors are never held and have no effect: they appear quietly at the
+    grove's edge, 20 blocks from the fire pit on the side away from the nearest player within 256 blocks.
   - **WalkIn:** a puppet walks or flies in from the source's direction while a player is near.
   - **Abstract:** the count changes while the site is unloaded; the next load's census reconciles.
   - **Never** into a watched site: an OnLoad arrival due while a player is within 128 blocks waits for
-    the next unwatched load, or comes as a WalkIn if the kind can walk. (The bosses' hold, above,
-    is finite: no den is empty for ever because a player lives beside it, §2.1 (a) 2.)
+    the next unwatched load, or comes as a WalkIn if the kind can walk. (The two bosses are the exception,
+    above: they are placed in view, so no den is empty for ever because a player lives beside it, §2.1 (a) 2.)
   - **A site that never unloads** (spawn chunks, a forced chunk, a chunk loader such as the MIC grid
     loader) would never see a next load. So when a wait ends with the site already loaded, the plugin
-    runs the census there and then (RECOUNT, then the census's SPAWN) and places the arrival, held as
-    the bullet above says for a boss (160 blocks, at most 6,000 ticks); there is no daily retry.
+    runs the census there and then (RECOUNT, then the census's SPAWN) and places the arrival (a boss
+    in view, with its effect, as the bullet above says); there is no daily retry.
   - **A war party on the march is not an arrival** (MZ-15, MOWZIE.md §4.16). An arrival adds a member
     the site did not have; a party's members are its camp's own, out on a route that BAND_MARCH holds
     and the far view draws from about a kilometre away. So the 128-block rule does not apply to it: its
@@ -1025,8 +1030,8 @@ follow it.
    left behind and missing), so a reset neither shortens a wait nor brings back a member that died
    away (§2.3). The ledger's times are world game time (§2.3).
 8. **§4.9 and §4.10, arrivals:** HOME_SPAWN never places into a camp with a player within 128 blocks
-   (**as built, a den's Frostmaw and an Umvuthi are held while a player is within 160 blocks, at most
-   6,000 ticks; a grove's warriors are never held, MZB-280, MZB-1220**);
+   (**as built, a den's Frostmaw and an Umvuthi are placed when due with a player beside them, and
+   arrive with an effect, S9 FB-S9-3, MZB-1272; a grove's warriors are never held, MZB-1220**);
    a den's Frostmaw is OnLoad only (asleep), a grove's warriors may WalkIn from the far edge. A camp
    that never unloads gets its census and arrival when the wait ends (§2.2). A war party on the march
    is not an arrival (§2.2, MZ-15): its bodies come where BAND_MARCH puts them as they enter the
@@ -1484,7 +1489,7 @@ boss loot, how fights feel, an interface another plan must follow).
 | A human village's K is every bed inside its box, capped at 32 | Ben, 2026-10-29 (FB-2 a): the same beds vanilla breeds into; a cap keeps a modded mega-village from owing thirty settlers. |
 | A Ribbit refill is a merchant when the village has none, else a profession by the order's hash | Ben, 2026-10-29 (FB-4 b): a killed-out village keeps a trader, and the choice is a function of the order so a replay makes the same Ribbit. |
 | The Ribbit refill takes no prosperity test (a house still does) | The S6 checks: with the test on, a wiped Ribbit world never reached 90% of the control in 700 days; off, it did in 122 (EQC184). |
-| A site is watched when a player is within 128 blocks | A chunk normally loads at the server's view distance, past 128 blocks, so a body placed as it loads is there before it can be seen; a player within 128 blocks at a load (a login or a teleport) could see it appear, so the arrival waits. The bosses (a Frostmaw, an Umvuthi) wait while a player is within 160 blocks, their tracking range, for at most 6,000 ticks, then come (S9, MZB-280, MZB-1220; kept as built pending Ben's FB-S9-3); a grove's warriors are never held. A war party on the march is not an arrival (MZ-15): its bodies come where its march puts them, stack by stack at the entity-ticking edge (128 to 144 blocks off along an axis at a simulation distance of 8, 160 to 176 at 10), having walked toward the player from about a kilometre in the far view, and only the Umvuthi, at the rear, can be seen to appear (128 to 132 blocks off at 8); one that reaches a watched target bodiless walks in along its route from the ticking edge. |
+| A site is watched when a player is within 128 blocks | A chunk normally loads at the server's view distance, past 128 blocks, so a body placed as it loads is there before it can be seen; a player within 128 blocks at a load (a login or a teleport) could see it appear, so the arrival waits. The bosses (a Frostmaw, an Umvuthi) do not wait: Ben's FB-S9-3 (2026-10-30) has them placed when due with a player beside them, with an effect (S9, MZB-1272; they were held within 160 blocks for at most 6,000 ticks, MZB-280); a grove's warriors are never held. A war party on the march is not an arrival (MZ-15): its bodies come where its march puts them, stack by stack at the entity-ticking edge (128 to 144 blocks off along an axis at a simulation distance of 8, 160 to 176 at 10), having walked toward the player from about a kilometre in the far view, and only the Umvuthi, at the rear, can be seen to appear (128 to 132 blocks off at 8); one that reaches a watched target bodiless walks in along its route from the ticking edge. |
 | Camps break at pressure 2 with the pool under 10%, and refound after `min(384, 48 x 2^P)` days with a quarter of the cap | A camp the player keeps emptying goes quiet for months instead of feeding him warriors for ever; only players break camps. |
 | A pool camp's pressure halves in 192 days, not 96 | Ben, 2026-10-30 (FB-1 (a)): at 96 the farmer's P settles under 2 and no camp ever breaks (EQC202, EQC270). The recruit rate has a floor of one a day per 96 (`recruit_cap_days`), so no pressure empties a camp for ever. |
 | An unclaimed death of a camp's party member at a player's district is the player's loss; one on the road is not | Ben, 2026-10-30 (FB-2 (a)): the district's turrets, traps and walls are the player's; the tunable `district_unclaimed_is_players` switches it. |
