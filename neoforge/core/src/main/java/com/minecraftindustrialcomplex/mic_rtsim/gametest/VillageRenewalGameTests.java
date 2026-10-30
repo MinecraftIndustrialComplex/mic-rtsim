@@ -160,6 +160,43 @@ public final class VillageRenewalGameTests {
         }
     }
 
+    /**
+     * What holds a walk-in back, for a failure message: each of the village's orders (when it tries again, where it comes
+     * from) and, along the ray toward the first one's source, which chunks are loaded, entity-ticking and standable.
+     */
+    private static String why(Site s, VillageRegistry villages) {
+        StringBuilder b = new StringBuilder();
+        long now = RtsimTests.session().gameTime();
+        double[] src = null;
+        for (VillageRegistry.ResidentOrder o : villages.residentOrders.values())
+            if (o.village == s.village.id) {
+                b.append(" [order retries in ").append(o.nextTry - now).append(", source ").append((long) o.x).append(',')
+                        .append((long) o.z).append("]");
+                if (src == null)
+                    src = new double[] {o.x, o.z};
+            }
+        String held = b.length() == 0 ? "gone" : "held";
+        b.append(" [orders ").append(held).append(", walkers ").append(villages.walkers.size())
+                .append(" placed ").append(RtsimTests.session().phase1.walkers.placed()).append(" arrived ")
+                .append(RtsimTests.session().phase1.walkers.arrived()).append("]");
+        b.append(" [bell ticking ").append(s.level.isPositionEntityTicking(s.village.meeting)).append(", watched ")
+                .append(com.minecraftindustrialcomplex.mic_rtsim.api.Arrivals.watched(s.level, s.village.box,
+                        com.minecraftindustrialcomplex.mic_rtsim.api.Arrivals.WATCH_BLOCKS)).append("]");
+        if (src != null) {
+            double dx = src[0] - s.meet.getX(), dz = src[1] - s.meet.getZ(), len = Math.max(1e-6, Math.hypot(dx, dz));
+            for (int d : ResidentSpawner.WALK_DISTANCES) {
+                int x = (int) Math.floor(s.meet.getX() + dx / len * d), z = (int) Math.floor(s.meet.getZ() + dz / len * d);
+                b.append(" [").append(d).append(": chunk ").append(s.level.getChunkSource().getChunkNow(x >> 4, z >> 4) != null)
+                        .append(" ticking ").append(s.level.isPositionEntityTicking(new BlockPos(x, s.meet.getY(), z)))
+                        .append(" entities ").append(s.level.areEntitiesLoaded(ChunkPos.asLong(x >> 4, z >> 4)))
+                        .append(" standable ")
+                        .append(com.minecraftindustrialcomplex.mic_rtsim.api.Arrivals.standableSurface(s.level, x, z) != null)
+                        .append("]");
+            }
+        }
+        return b.toString();
+    }
+
     private static NativeEngine nativeEngine(String test) {
         if (RtsimTests.engine() instanceof NativeEngine e)
             return e;
@@ -463,6 +500,7 @@ public final class VillageRenewalGameTests {
                     ready(e, s, 12, 12);
                 })
                 .thenExecute(() -> {
+                    record("renewalWalk", "test tick when the census was ready", helper.getTick());
                     for (Villager v : s.villagers)
                         v.discard();
                 })
@@ -471,6 +509,7 @@ public final class VillageRenewalGameTests {
                     check("a wait runs", v[NativeEngine.VILLAGE_MEMBERS] == 0 && v[NativeEngine.VILLAGE_WAIT_DUE] >= 0);
                 })
                 .thenExecute(() -> {
+                    record("renewalWalk", "test tick when the wait was running", helper.getTick());
                     arrived0[0] = RtsimTests.session().phase1.walkers.arrived();
                     e.phase1Advance(s.view(e)[NativeEngine.VILLAGE_WAIT_DUE] - now(e) + DAY / 2);
                 })
@@ -482,10 +521,13 @@ public final class VillageRenewalGameTests {
                     check("the pair's orders wait in the registry, the village being watched: " + mine, mine == 2);
                 })
                 .thenExecute(() -> {
+                    record("renewalWalk", "test tick when the orders were in", helper.getTick());
                     check("nobody is placed in a watched village: " + s.inBox().size(), s.inBox().isEmpty());
                     // The source the engine named: let the chunks along that ray load.
                     for (VillageRegistry.ResidentOrder o : villages.residentOrders.values())
                         if (o.village == s.village.id) {
+                            record("renewalWalk", "the order's source", (long) o.x + ", " + (long) o.z + " from the bell " + s.meet
+                                    + " flags " + o.flags + " body " + o.body);
                             s.forceRay(o.x, o.z, ResidentSpawner.WALK_DISTANCES);
                             break;
                         }
@@ -495,7 +537,7 @@ public final class VillageRenewalGameTests {
                     for (VillageRegistry.Walker w : villages.walkers.values())
                         if (w.village == s.village.id)
                             walking++;
-                    check("both settlers stand on the road, walking: " + walking, walking == 2);
+                    check("both settlers stand on the road, walking: " + walking + why(s, villages), walking == 2);
                 })
                 .thenExecute(() -> {
                     for (VillageRegistry.Walker w : villages.walkers.values()) {
