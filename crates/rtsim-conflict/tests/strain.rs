@@ -524,7 +524,10 @@ fn a_war_chief_killed_by_a_player_adds_one_over_cap() {
     assert!((got - 1.0 / 60.0).abs() < 1e-6, "{got}");
 }
 
-/// The den and the grove book what they booked: S9's, not S7's.
+/// The den and the grove book what they booked: S9's, not S7's. (A fresh camp with no bodies cannot
+/// field a raid, so this holds nothing for either today; the den's Frostmaw dies as CHIEF_KILLED and
+/// never as a casualty, MZB-295, and the grove's march casualties are tested with a grove that has
+/// its warriors home, `tests/grove_renewal.rs`.)
 #[test]
 fn the_body_cultures_book_what_they_booked() {
     for culture in ["frostmaw", "umvuthana"] {
@@ -1106,14 +1109,15 @@ fn pages_round_trip_rtce() {
     assert_eq!(back.pending_by_kind().get("strain"), Some(&1));
     assert_eq!(back.next_due(), c.next_due());
     assert!(!back.camp_active(f));
-    // The older format is named, not read: the magic is RTCE.
+    // The older format is named, not read: the magic is RTCF (S9: a camp's chief pressure, so RTCE
+    // is the older one now).
     let mut old = c.save();
-    old[..4].copy_from_slice(b"RTCD");
+    old[..4].copy_from_slice(b"RTCE");
     let e = Conflict::load(c.tun.clone(), c.cultures.clone(), &old)
         .err()
         .expect("refused");
     let e = e.to_string();
-    assert!(e.contains("RTCD") && e.contains("RTCE"), "{e}");
+    assert!(e.contains("RTCE") && e.contains("RTCF"), "{e}");
 }
 
 // ---------------------------------------------------------------- the refounding (EQC210)
