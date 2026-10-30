@@ -49,6 +49,14 @@
   "reach_blocks": 0,
   "hates": ["human"],
   "plunder_mean_days": 12.0,
+  "plunder_mood": {
+    "half_life_days": 96.0,
+    "loss_gain": 2.8,
+    "spoils_gain": 0.15,
+    "chief_loss_share": 0.1,
+    "min_factor": 0.5,
+    "max_factor": 3.0
+  },
   "plunder_reach_blocks": 1500,
   "loot_share_milli": 150,
   "rout_share": 0.5,

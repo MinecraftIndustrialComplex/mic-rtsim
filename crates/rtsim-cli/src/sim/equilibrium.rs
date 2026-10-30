@@ -929,9 +929,20 @@ pub struct MowzieRun {
     /// The size of the engine's save a quarter of the way through and at the end, bytes.
     pub save_bytes: (usize, usize),
     pub days: u64,
+    /// The plunders the camp drew a wait for by the end (the faction's own draw count: one a plunder
+    /// scheduled, so the last may still be on its way), S9 FB-S9-2.
+    pub plunders: u32,
+    /// The most grief (a share of the cap lost in war parties lately) the camp's plunder mood held
+    /// at the end of any day; 0 for a camp with no mood.
+    pub grief_peak: f32,
 }
 
 impl MowzieRun {
+    /// Days between two plunders, the run's days over the plunders drawn.
+    pub fn plunder_days(&self) -> f64 {
+        self.days as f64 / f64::from(self.plunders.max(1))
+    }
+
     /// The mean members over K across days `from..=to`.
     pub fn held(&self, from: u64, to: u64) -> f64 {
         let xs = &self.members[from as usize..=to as usize];
@@ -996,6 +1007,8 @@ pub fn mowzie_run(
         kills: Vec::new(),
         save_bytes: (0, 0),
         days: to,
+        plunders: 0,
+        grief_peak: 0.0,
     };
     // The den's farmer comes first `lag` days in, to the Frostmaw that stands there.
     let (mut seen, mut due_visit): (u64, Option<u64>) = (
@@ -1040,6 +1053,7 @@ pub fn mowzie_run(
         }
     }
     out.arrivals = r.c.stats.arrivals;
+    out.plunders = r.c.factions[r.f as usize].plunders;
     out.save_bytes.1 = r.c.save().len();
     out
 }
@@ -1083,6 +1097,8 @@ pub fn unattended_grove(
         kills: Vec::new(),
         save_bytes: (0, 0),
         days: to,
+        plunders: 0,
+        grief_peak: 0.0,
     };
     let villages_at: Vec<usize> = (0..w.nodes.len())
         .filter(|&i| matches!(w.nodes[i].kind, NodeKind::Village(_)))
@@ -1104,6 +1120,9 @@ pub fn unattended_grove(
         c.run_until(&mut w, &mut NoInfrastructure, t);
         w.run_until(t);
         out.members.push(members(&c, t));
+        if let Some((grief, _)) = c.mood_now(f, t) {
+            out.grief_peak = out.grief_peak.max(grief);
+        }
         if day == to / 4 {
             out.save_bytes.0 = c.save().len();
         }
@@ -1112,6 +1131,7 @@ pub fn unattended_grove(
         }
     }
     out.arrivals = c.stats.arrivals;
+    out.plunders = c.factions[f as usize].plunders;
     out.save_bytes.1 = c.save().len();
     out
 }
@@ -1891,6 +1911,7 @@ mod tests {
         camp_cultures(|d| {
             if d.name == "umvuthana" {
                 d.plunder_mean_days = None;
+                d.plunder_mood = None; // the mood bends the wait that is gone (FB-S9-2)
             }
         })
     }
@@ -2122,10 +2143,21 @@ mod tests {
                     band(&late)
                 );
                 let (m, _, _) = band(&held);
+                let gap: Vec<f64> = rs.iter().map(|r| r[i].plunder_days()).collect();
+                let grief: Vec<f64> = rs.iter().map(|r| f64::from(r[i].grief_peak)).collect();
+                println!(
+                    "  plunder every {:?} days, peak grief {:?}",
+                    band(&gap),
+                    band(&grief)
+                );
                 match stock {
                     // Nothing worth taking, no fight, no loss.
                     VillageStock::Plain => assert!(m >= 0.97, "K {k}: {m}"),
-                    VillageStock::Rich => assert!((0.80..=0.97).contains(&m), "K {k}: {m}"),
+                    // Its mood (FB-S9-2): a lost pack puts the next plunder off, to 30 to 45 days.
+                    VillageStock::Rich => {
+                        assert!((0.94..=0.995).contains(&m), "K {k}: {m}");
+                        assert!((28.0..=46.0).contains(&band(&gap).0), "K {k}: {gap:?}");
+                    }
                 }
                 assert!((band(&early).0 - band(&late).0).abs() < 0.06, "flat: {early:?} {late:?}");
             }
