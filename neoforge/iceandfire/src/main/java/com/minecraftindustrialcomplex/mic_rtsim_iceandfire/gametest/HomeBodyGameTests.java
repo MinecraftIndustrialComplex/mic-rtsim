@@ -13,6 +13,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.sites.SiteLedger;
 import com.minecraftindustrialcomplex.mic_rtsim_iceandfire.DragonConfig;
 import com.minecraftindustrialcomplex.mic_rtsim_iceandfire.DragonRecords;
 import com.minecraftindustrialcomplex.mic_rtsim_iceandfire.HomeBodies;
+import com.minecraftindustrialcomplex.mic_rtsim_iceandfire.IafDragons;
 import com.minecraftindustrialcomplex.mic_rtsim_iceandfire.MicRtsimIceAndFire;
 import net.minecraft.core.BlockPos;
 import net.minecraft.gametest.framework.GameTest;
@@ -821,5 +822,63 @@ public final class HomeBodyGameTests {
                     unforce.run();
                 })
                 .thenSucceed();
+    }
+
+    // ---- the Ice and Fire facts the plan left UNVERIFIED (EQC146) -------------------------------------
+
+    /**
+     * UNVERIFIED 2: a live body is synced to the engine's age and hunger through Ice and Fire's setters
+     * ({@link IafDragons#sync}). The setters only set entity data, so the attributes (max health follows the age) are
+     * refreshed after: the test records what the setters alone did and what the refresh did.
+     */
+    @GameTest(template = DragonKit.ARENA, timeoutTicks = 100, batch = "home_sync")
+    public static void aLiveBodysAgeSyncRefreshesItsAttributes(GameTestHelper helper) {
+        String test = "aLiveBodysAgeSyncRefreshesItsAttributes";
+        ServerLevel level = helper.getLevel();
+        Vec3 c = DragonKit.centre(helper);
+        DragonBaseEntity d = DragonKit.roostDragon(level, c);
+        d.refreshDirtyAttributes();
+        float m0 = d.getMaxHealth();
+        int old = IafDragons.ageTicks(d);
+        d.setAgeInTicks(110 * (int) DAY);
+        d.setHunger(80);
+        float m1 = d.getMaxHealth();
+        IafDragons.sync(d, 110 * (int) DAY, 80, 0f);
+        float m2 = d.getMaxHealth();
+        record(test, "max health", "age " + old / DAY + " days: " + m0 + "; the setters alone to 110 days: " + m1 + "; after refreshDirtyAttributes: " + m2);
+        check("the sync follows the age (" + m0 + " to " + m2 + ")", m2 > m0);
+        check("age and hunger are the engine's", IafDragons.ageTicks(d) == 110 * (int) DAY && IafDragons.hunger(d) == 80 && IafDragons.agingDisabled(d));
+        IafDragons.sync(d, 110 * (int) DAY, 80, 100f);
+        check("a health to sync is clamped to the max (" + d.getHealth() + ")", d.getHealth() <= d.getMaxHealth() && d.getHealth() > 0f);
+        d.discard();
+        helper.succeed();
+    }
+
+    /**
+     * UNVERIFIED 4: a dragon given a home position keeps it through Ice and Fire's own NBT write and read (what vanilla's save
+     * uses), while a home with a coordinate of exactly 0 is dropped on read (EQC102). Recorded for both; asserted for the first.
+     */
+    @GameTest(template = DragonKit.ARENA, timeoutTicks = 100, batch = "home_nbt")
+    public static void aHomeSurvivesVanillasSaveUnlessACoordinateIsZero(GameTestHelper helper) {
+        String test = "aHomeSurvivesVanillasSaveUnlessACoordinateIsZero";
+        ServerLevel level = helper.getLevel();
+        Vec3 c = DragonKit.centre(helper);
+        BlockPos home = BlockPos.containing(c);
+        BlockPos zero = new BlockPos(0, 70, 5);
+        BlockPos[] got = new BlockPos[2];
+        BlockPos[] want = {home, zero};
+        for (int i = 0; i < 2; i++) {
+            DragonBaseEntity a = DragonKit.newRoostDragon(level, c);
+            IafDragons.setHome(a, level, want[i]);
+            CompoundTag t = new CompoundTag();
+            check("the save carries the flag", a.save(t) && t.getBoolean("HasHomePosition"));
+            DragonBaseEntity b = DragonKit.newRoostDragon(level, c);
+            b.readAdditionalSaveData(t);
+            got[i] = IafDragons.home(b);
+            record(test, i == 0 ? "a home of nonzero coordinates" : "a home with a zero coordinate",
+                    want[i].toShortString() + " read back as " + (got[i] == null ? "no home (flag " + b.hasHomePosition + ")" : got[i].toShortString()));
+        }
+        check("a home of nonzero coordinates survives the save and read", home.equals(got[0]));
+        helper.succeed();
     }
 }
