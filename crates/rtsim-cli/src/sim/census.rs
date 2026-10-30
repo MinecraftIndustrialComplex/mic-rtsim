@@ -16,6 +16,10 @@
 //! - `ships`: the synthetic coast's pirate haven (`rtsim_ships::synth::coastal`) through the fake
 //!   ships plugin. Kind `ship.haven`.
 //! - `conflict`: the goblin camp of the conflict's synthetic world. Kind `conflict.camp`.
+//! - `camps`: the conflict's three pool cultures, one camp each (goblin, bandit, raider), between
+//!   the six villages of a grid world ([`rtsim_conflict::synth::camps`], slice S7): quiet, nobody
+//!   emitting or killing, so they only plunder. Kind `conflict.camp`, with pressure, breaks and
+//!   refoundings once a player presses them.
 //! - `villages`: phase 1's synthetic world (six human villages, three Ribbit villages) with the
 //!   bridge faked at the world level ([`Villages`], slice S6): every village seen alive by one
 //!   census, every house and resident answered the day it is ordered, nobody watching. Kinds are
@@ -52,15 +56,17 @@ pub enum Kind {
     Ranges,
     Ships,
     Conflict,
+    Camps,
     Villages,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 5] = [
+    pub const ALL: [Kind; 6] = [
         Kind::Ecology,
         Kind::Ranges,
         Kind::Ships,
         Kind::Conflict,
+        Kind::Camps,
         Kind::Villages,
     ];
 
@@ -70,6 +76,7 @@ impl Kind {
             Kind::Ranges => "ranges",
             Kind::Ships => "ships",
             Kind::Conflict => "conflict",
+            Kind::Camps => "camps",
             Kind::Villages => "villages",
         }
     }
@@ -155,6 +162,15 @@ impl Scenario {
                 let mut c = synth::conflict(seed, &w);
                 c.add_faction(&mut w, synth::CAMP, "goblin", synth::CAMP_POS, Tick::ZERO)
                     .expect("the goblin culture");
+                Scenario::Conflict(Box::new(Camp { w, c }))
+            }
+            Kind::Camps => {
+                let (w, c) = rtsim_conflict::synth::camps(
+                    6,
+                    &["goblin", "bandit", "raider"],
+                    seed,
+                    rtsim_conflict::Cultures::builtin(),
+                );
                 Scenario::Conflict(Box::new(Camp { w, c }))
             }
             Kind::Villages => Scenario::Villages(Box::new(Villages::new(seed))),
@@ -258,7 +274,11 @@ impl Villages {
                 continue;
             };
             let pop = w.nodes[i].local.pop;
-            let b = if culture == rtsim_settle::Culture::Ribbit { 0 } else { pop };
+            let b = if culture == rtsim_settle::Culture::Ribbit {
+                0
+            } else {
+                pop
+            };
             real.insert(i, pop);
             beds.insert(i, b);
             w.census_village(i, pop, b, true, w.now());
@@ -285,12 +305,17 @@ impl Villages {
         let key = self.w.nodes[i].key;
         let now = self.w.now().0;
         for _ in 0..self.real[&i] {
-            let report = Input::VillageReport { key, player: VILLAGE_KILLER, kind: 8 };
+            let report = Input::VillageReport {
+                key,
+                player: VILLAGE_KILLER,
+                kind: 8,
+            };
             apply(&mut self.w, &mut self.nodes, &report, now);
         }
         self.real.insert(i, 0);
         for _ in 0..2 {
-            self.w.census_village(i, 0, self.beds[&i], true, self.w.now());
+            self.w
+                .census_village(i, 0, self.beds[&i], true, self.w.now());
         }
         self.wiped_at.insert(i, now / TICKS_PER_DAY);
     }
@@ -319,7 +344,10 @@ impl Villages {
                         self.w.house_placed(h.op);
                     }
                     Command::SpawnResident(r) => {
-                        let Some(i) = self.w.node_of_key(r.village).filter(|i| self.real.contains_key(i))
+                        let Some(i) = self
+                            .w
+                            .node_of_key(r.village)
+                            .filter(|i| self.real.contains_key(i))
                         else {
                             continue;
                         };
@@ -534,7 +562,7 @@ pub fn cli(rest: &[&str]) -> ExitCode {
 
 fn bad(why: &str) -> ExitCode {
     eprintln!(
-        "{why}\nusage: rtsim-cli sim census [--scenario all|ecology,ranges,ships,conflict,villages] [--days N] \
+        "{why}\nusage: rtsim-cli sim census [--scenario all|ecology,ranges,ships,conflict,camps,villages] [--days N] \
          [--every N] [--seed S]"
     );
     ExitCode::from(64)
@@ -685,10 +713,36 @@ mod tests {
         v.wipe(2);
         let h = kind(&s.census(), "village.human").clone();
         assert_eq!((h.members, h.capacity, h.empty), (77, 89, 1), "{h:?}");
-        assert!((h.mean_p() - 1.0 / 6.0).abs() < 1e-3, "twelve kills at K 12 over six villages: {h:?}");
+        assert!(
+            (h.mean_p() - 1.0 / 6.0).abs() < 1e-3,
+            "twelve kills at K 12 over six villages: {h:?}"
+        );
         s.run_to(Tick::from_days(6 + 33));
         let h = kind(&s.census(), "village.human").clone();
-        assert_eq!((h.members, h.capacity, h.empty, h.short), (79, 89, 0, 1), "{h:?}");
+        assert_eq!(
+            (h.members, h.capacity, h.empty, h.short),
+            (79, 89, 0, 1),
+            "{h:?}"
+        );
+    }
+
+    /// The `camps` scenario holds the three pool cultures' camps, and a player's kills show in the
+    /// census as pressure (slice S7).
+    #[test]
+    fn the_camps_scenario_shows_a_players_pressure() {
+        let mut s = Scenario::new(Kind::Camps, 4);
+        s.run_to(Tick::from_days(10));
+        let k = kind(&s.census(), "conflict.camp").clone();
+        assert_eq!((k.sites, k.broken, k.renewals), (3, 0, 0), "{k:?}");
+        assert_eq!(k.mean_p(), 0.0);
+        let Scenario::Conflict(c) = &mut s else {
+            panic!("the camps scenario is the conflict's");
+        };
+        let slain = c.c.slay(&mut c.w, 0, u32::MAX, Tick::from_days(10));
+        assert!(slain >= 40, "{slain}");
+        let k = kind(&s.census(), "conflict.camp").clone();
+        assert!(k.mean_p() > 0.2, "one camp at P 1 of three: {}", k.mean_p());
+        assert_eq!(k.sites, 3);
     }
 
     /// With nobody watching nothing presses: every kind keeps its sites, every pressure is 0, no

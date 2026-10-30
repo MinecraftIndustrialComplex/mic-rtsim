@@ -1927,6 +1927,48 @@ pub fn many(villages: usize, factions: usize, seed: u64) -> (World, Conflict) {
     (w, c)
 }
 
+/// The key of the first camp of [`camps`]; camp `k` is `CAMP_KEY + k`.
+pub const CAMP_KEY: u64 = 0xFAC1_0000;
+
+/// A grid world of `villages` villages with one camp of each of `cultures` between them, spaced as
+/// [`many`]'s are, on the built-in cultures or `cultures_data`: no source, no player and no feud,
+/// so the camps are quiet and only plunder. For S7's long checks (EQUILIBRIUM.md §4, the census's
+/// `camps` scenario): nobody watches, and a player is whoever the test makes one.
+pub fn camps(
+    villages: usize,
+    cultures: &[&str],
+    seed: u64,
+    cultures_data: Cultures,
+) -> (World, Conflict) {
+    let (goods, ids) = rtsim_world::synth::goods();
+    let book = rtsim_world::synth::recipes(&ids);
+    let mut data = rtsim_world::synth::grid(villages, seed);
+    let side = (villages as f64).sqrt().ceil() as i32;
+    let span = side * 544;
+    let fside = (cultures.len() as f64).sqrt().ceil() as i32;
+    let camp = |k: usize| {
+        let (gx, gz) = ((k as i32) % fside, (k as i32) / fside);
+        let step = span / fside.max(1);
+        Pos::new(0, step / 2 + gx * step, step / 2 + gz * step)
+    };
+    for k in 0..cultures.len() {
+        data.push(rtsim_world::NodeData {
+            key: CAMP_KEY + k as u64,
+            kind: rtsim_settle::NodeKind::Haven(rtsim_settle::Culture::Human),
+            pos: camp(k),
+            pop: 10,
+            resources: BTreeMap::new(),
+        });
+    }
+    let mut w = World::build(world_config(seed), goods, book, data);
+    let mut c = conflict_with(seed, &w, cultures_data);
+    for (k, name) in cultures.iter().enumerate() {
+        c.add_faction(&mut w, CAMP_KEY + k as u64, name, camp(k), Tick::ZERO)
+            .expect("a known culture");
+    }
+    (w, c)
+}
+
 /// The key of the first den of [`many_dens`]; den `k` is `DEN_KEY + k`.
 pub const DEN_KEY: u64 = 0xDE50_0000;
 

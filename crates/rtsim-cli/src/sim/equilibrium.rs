@@ -623,7 +623,8 @@ pub fn village_run(
     out.settlers = v.w.stats.settlers.iter().sum();
     out.grown = v.w.stats.grown;
     out.refills = v.w.stats.refills;
-    v.w.check_conserved(v.w.now()).expect("the world is conserved");
+    v.w.check_conserved(v.w.now())
+        .expect("the world is conserved");
     out
 }
 
@@ -677,6 +678,211 @@ pub fn village_wipe(
         settlers: run.settlers - ctrl.settlers,
         grown: run.grown - ctrl.grown,
         refills: run.refills - ctrl.refills,
+        end_over_ctrl: at(&run, to) / at(&ctrl, to).max(1.0),
+    }
+}
+
+// ---- pool camps (slice S7, EQC230 to EQC233) ------------------------------------------------------
+
+/// The built-in cultures with every one edited (the S7 checks' tweaks: the pool rule removed, a
+/// shorter half-life).
+pub fn camp_cultures(edit: impl Fn(&mut rtsim_conflict::CultureDef)) -> rtsim_conflict::Cultures {
+    use rtsim_conflict::culture::{
+        BANDIT_JSON, FROSTMAW_JSON, GOBLIN_JSON, RAIDER_JSON, UMVUTHANA_JSON,
+    };
+    let docs: Vec<String> = [
+        GOBLIN_JSON,
+        BANDIT_JSON,
+        RAIDER_JSON,
+        FROSTMAW_JSON,
+        UMVUTHANA_JSON,
+    ]
+    .into_iter()
+    .map(|j| {
+        let mut d: rtsim_conflict::CultureDef = serde_json::from_str(j).expect("a culture");
+        edit(&mut d);
+        serde_json::to_string(&d).expect("a culture")
+    })
+    .collect();
+    let refs: Vec<&str> = docs.iter().map(String::as_str).collect();
+    rtsim_conflict::Cultures::from_json(&refs).expect("the edited cultures")
+}
+
+/// Who presses the camps of a [`camp_run`].
+#[derive(Clone, Copy, Debug)]
+pub enum Presser {
+    /// Nobody.
+    None,
+    /// Every warrior of every camp, home and away, killed on this day.
+    KillAll(u64),
+    /// Every whole warrior at home of every camp killed every `every` days (the model's farmer).
+    Farmer { every: u64 },
+    /// A wanderer: every second day, with chance `chance`, it kills every warrior at home of one
+    /// camp at random.
+    Visitor { chance: f64 },
+}
+
+/// One camp's break, as the run saw it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CampBreak {
+    pub day: f64,
+    /// Pressure at the break.
+    pub p: f64,
+    /// Days of the wait the camp was given.
+    pub wait: f64,
+    /// Warriors home at the refounding, if it was refounded in the run.
+    pub refound_pool: Option<f64>,
+}
+
+/// A world of the three pool camps under a [`Presser`], day by day.
+pub struct CampRun {
+    pub culture: Vec<String>,
+    /// Warriors the camps hold, home and away, at the end of each day from day 0.
+    pub total: Vec<u64>,
+    /// Camp-days spent broken, over all camps.
+    pub broken_days: u64,
+    pub breaks: Vec<Vec<CampBreak>>,
+    pub max_p: Vec<f64>,
+    pub killed: u64,
+    pub stats_breaks: u64,
+    pub stats_refounds: u64,
+    pub days: u64,
+}
+
+/// The camps' warriors, home and away.
+fn warriors(c: &rtsim_conflict::Conflict, t: Tick) -> u64 {
+    (0..c.factions.len() as u32)
+        .map(|f| c.pool_at(f, t).floor() as u64 + u64::from(c.factions[f as usize].away))
+        .sum()
+}
+
+/// A run of the three camps ([`rtsim_conflict::synth::camps`]) of `seed` to day `to`.
+pub fn camp_run(
+    seed: u64,
+    cultures: rtsim_conflict::Cultures,
+    names: &[&str],
+    presser: Presser,
+    to: u64,
+) -> CampRun {
+    use rtsim_ecology::infra::NoInfrastructure;
+    let (mut w, mut c) = rtsim_conflict::synth::camps(6, names, seed, cultures);
+    let n = c.factions.len() as u32;
+    let mut rng = StreamKey::new(seed, SystemId::named("eq.camp_visitor"), 0).slot(0);
+    let mut out = CampRun {
+        culture: names.iter().map(|s| s.to_string()).collect(),
+        total: vec![warriors(&c, Tick::ZERO)],
+        broken_days: 0,
+        breaks: vec![Vec::new(); n as usize],
+        max_p: vec![0.0; n as usize],
+        killed: 0,
+        stats_breaks: 0,
+        stats_refounds: 0,
+        days: to,
+    };
+    let mut was = vec![false; n as usize];
+    // The breaks and refoundings since the last look: a refounded camp's pool is read before the
+    // day's presser acts, a break after it.
+    let look = |c: &rtsim_conflict::Conflict, out: &mut CampRun, was: &mut [bool], t: Tick| {
+        for f in 0..n {
+            let i = f as usize;
+            let b = c.factions[i].strain.as_ref().and_then(|s| s.broken);
+            if let Some(b) = b
+                && !was[i]
+            {
+                out.breaks[i].push(CampBreak {
+                    day: b.since.0 as f64 / TICKS_PER_DAY_F,
+                    p: f64::from(c.pressure_now(f, b.since)),
+                    wait: (b.due.0 - b.since.0) as f64 / TICKS_PER_DAY_F,
+                    refound_pool: None,
+                });
+            }
+            if b.is_none()
+                && was[i]
+                && let Some(last) = out.breaks[i].last_mut()
+            {
+                last.refound_pool = Some(c.pool_at(f, t).floor());
+            }
+            was[i] = b.is_some();
+        }
+    };
+    for day in 1..=to {
+        let t = Tick::from_days(day);
+        c.run_until(&mut w, &mut NoInfrastructure, t);
+        look(&c, &mut out, &mut was, t);
+        match presser {
+            Presser::None => {}
+            Presser::KillAll(d) if d == day => {
+                for f in 0..n {
+                    out.killed += u64::from(c.slay(&mut w, f, u32::MAX, t));
+                }
+            }
+            Presser::KillAll(_) => {}
+            Presser::Farmer { every } if day % every == 0 => {
+                for f in 0..n {
+                    let home = c.pool_at(f, t).floor() as u32;
+                    out.killed += u64::from(c.slay(&mut w, f, home, t));
+                }
+            }
+            Presser::Farmer { .. } => {}
+            Presser::Visitor { chance } if day % 2 == 0 => {
+                if rng.bernoulli(chance) {
+                    let f = (rng.next_u64() % u64::from(n)) as u32;
+                    let home = c.pool_at(f, t).floor() as u32;
+                    out.killed += u64::from(c.slay(&mut w, f, home, t));
+                }
+            }
+            Presser::Visitor { .. } => {}
+        }
+        look(&c, &mut out, &mut was, t);
+        for f in 0..n {
+            out.broken_days += u64::from(!c.camp_active(f));
+            let m = &mut out.max_p[f as usize];
+            *m = m.max(f64::from(c.pressure_now(f, t)));
+        }
+        out.total.push(warriors(&c, t));
+    }
+    out.stats_breaks = c.stats.breaks;
+    out.stats_refounds = c.stats.refounds;
+    c.check(&w).expect("the books close");
+    out
+}
+
+const TICKS_PER_DAY_F: f64 = rtsim_kernel::clock::TICKS_PER_DAY as f64;
+
+/// A kill-all against its control (the same seed, nobody pressing), read on the camps' warriors.
+#[derive(Clone, Debug)]
+pub struct CampRefill {
+    pub seed: u64,
+    /// Warriors killed on the day.
+    pub killed: u64,
+    /// Days from the kill to the first day the killed world holds 90% of the control's warriors.
+    pub ninety_ctrl: Option<u64>,
+    /// Days to half the control's.
+    pub half_ctrl: Option<u64>,
+    pub breaks: u64,
+    pub end_over_ctrl: f64,
+}
+
+/// The same seed twice to `kill_day + after_days`: a control, and a world where every warrior of
+/// every camp is killed by a player on `kill_day`.
+pub fn camp_wipe(seed: u64, kill_day: u64, after_days: u64) -> CampRefill {
+    let names = ["goblin", "bandit", "raider"];
+    let to = kill_day + after_days;
+    let cultures = || rtsim_conflict::Cultures::builtin();
+    let ctrl = camp_run(seed, cultures(), &names, Presser::None, to);
+    let run = camp_run(seed, cultures(), &names, Presser::KillAll(kill_day), to);
+    let at = |r: &CampRun, d: u64| r.total[d as usize] as f64;
+    let first = |frac: f64| {
+        (kill_day + 1..=to)
+            .find(|&d| at(&run, d) >= frac * at(&ctrl, d))
+            .map(|d| d - kill_day)
+    };
+    CampRefill {
+        seed,
+        killed: run.killed,
+        ninety_ctrl: first(0.9),
+        half_ctrl: first(0.5),
+        breaks: run.stats_breaks,
         end_over_ctrl: at(&run, to) / at(&ctrl, to).max(1.0),
     }
 }
@@ -1042,14 +1248,8 @@ mod tests {
     fn print_village_refills(what: &str, rs: &[VillageRefill]) {
         let b = |f: &dyn Fn(&VillageRefill) -> f64| band(&rs.iter().map(f).collect::<Vec<_>>());
         println!("{what} over {} seeds, median [5th, 95th]:", rs.len());
-        println!(
-            "  days to the first settlers:    {:?}",
-            b(&|r| r.pair.0)
-        );
-        println!(
-            "  days to the last settlers:     {:?}",
-            b(&|r| r.pair.1)
-        );
+        println!("  days to the first settlers:    {:?}", b(&|r| r.pair.0));
+        println!("  days to the last settlers:     {:?}", b(&|r| r.pair.1));
         println!(
             "  days to 90% of the control:    {:?}",
             b(&|r| days(r.ninety_ctrl))
@@ -1091,7 +1291,10 @@ mod tests {
         print_village_refills("kill all villagers", std::slice::from_ref(&r));
         assert_eq!(r.wiped_villages, 6, "{r:?}");
         assert_eq!(r.paired, 6, "every wiped village was settled: {r:?}");
-        assert!(r.pair.0 >= 32.0 && r.pair.1 <= 33.0, "32 days after the wipe: {r:?}");
+        assert!(
+            r.pair.0 >= 32.0 && r.pair.1 <= 33.0,
+            "32 days after the wipe: {r:?}"
+        );
         assert!(r.ninety_ctrl.is_some_and(|d| d <= 600), "{r:?}");
     }
 
@@ -1121,7 +1324,10 @@ mod tests {
         print_village_refills("kill all ribbits", std::slice::from_ref(&r));
         assert_eq!(r.wiped_villages, 3, "{r:?}");
         assert_eq!(r.paired, 3, "every wiped village was settled: {r:?}");
-        assert!(r.pair.0 >= 32.0 && r.pair.1 <= 33.0, "32 days after the wipe: {r:?}");
+        assert!(
+            r.pair.0 >= 32.0 && r.pair.1 <= 33.0,
+            "32 days after the wipe: {r:?}"
+        );
         assert!(r.ninety_ctrl.is_some_and(|d| d <= 300), "{r:?}");
     }
 
@@ -1156,5 +1362,248 @@ mod tests {
         }
         let b = band(&rs.iter().map(|r| days(r.ninety_ctrl)).collect::<Vec<_>>());
         assert!(b.0 <= 300.0, "median days to 90% of the control {b:?}");
+    }
+
+    // ---- pool camps (slice S7) -----------------------------------------------------------------
+
+    fn print_camp_refills(what: &str, rs: &[CampRefill]) {
+        let b = |f: &dyn Fn(&CampRefill) -> f64| band(&rs.iter().map(f).collect::<Vec<_>>());
+        println!("{what} over {} seeds, median [5th, 95th]:", rs.len());
+        println!(
+            "  days to half of the control:   {:?}",
+            b(&|r| days(r.half_ctrl))
+        );
+        println!(
+            "  days to 90% of the control:    {:?}",
+            b(&|r| days(r.ninety_ctrl))
+        );
+        println!(
+            "  last day over the control:     {:?}",
+            b(&|r| r.end_over_ctrl)
+        );
+        println!(
+            "  never 90%: {}, breaks: {}",
+            rs.iter().filter(|r| r.ninety_ctrl.is_none()).count(),
+            rs.iter().map(|r| r.breaks).sum::<u64>()
+        );
+        for r in rs {
+            println!(
+                "  seed {:>2}: killed {:>3} half {:?} 90% {:?} breaks {} end/ctrl {:.3}",
+                r.seed, r.killed, r.half_ctrl, r.ninety_ctrl, r.breaks, r.end_over_ctrl
+            );
+        }
+    }
+
+    /// Every warrior of every camp killed by a player on day 100 (a full camp's kill is P 1.0): 90%
+    /// of the control's warriors are back within 120 days and nothing breaks (EQUILIBRIUM.md S7,
+    /// EQC233; the model reads 45 to 54 days).
+    #[test]
+    fn kill_all_camps() {
+        let r = camp_wipe(1, 100, 240);
+        print_camp_refills("kill all camps", std::slice::from_ref(&r));
+        assert!(r.killed >= 100, "{r:?}");
+        assert_eq!(r.breaks, 0, "{r:?}");
+        assert!(r.ninety_ctrl.is_some_and(|d| d <= 120), "{r:?}");
+    }
+
+    /// `kill_all_camps` on seeds 1 to 30: the median seed within 96 days, every one within 120.
+    #[test]
+    #[ignore]
+    fn kill_all_camps_30_seeds() {
+        let rs = par_map(&seeds(), threads(), |&seed| camp_wipe(seed, 100, 240));
+        print_camp_refills("kill all camps", &rs);
+        for r in &rs {
+            assert_eq!(r.breaks, 0, "{r:?}");
+            assert!(r.ninety_ctrl.is_some_and(|d| d <= 120), "{r:?}");
+        }
+        let b = band(&rs.iter().map(|r| days(r.ninety_ctrl)).collect::<Vec<_>>());
+        assert!(b.0 <= 96.0, "median days to 90% of the control {b:?}");
+    }
+
+    fn print_camp_breaks(what: &str, r: &CampRun) {
+        let years = r.days as f64 / YEAR as f64;
+        println!("{what}: {} days, {} killed", r.days, r.killed);
+        for (i, name) in r.culture.iter().enumerate() {
+            let bs = &r.breaks[i];
+            println!(
+                "  {name:7}: {} breaks ({:.3} a year), first {:?}, max P {:.2}",
+                bs.len(),
+                bs.len() as f64 / years,
+                bs.first().map(|b| b.day.round()),
+                r.max_p[i]
+            );
+            for b in bs.iter().take(4) {
+                println!(
+                    "      day {:>6.0} P {:.2} wait {:>6.1} refound pool {:?}",
+                    b.day, b.p, b.wait, b.refound_pool
+                );
+            }
+        }
+        println!(
+            "  broken share {:.3}",
+            r.broken_days as f64 / (r.days as f64 * r.culture.len() as f64)
+        );
+    }
+
+    /// A player who kills every whole warrior a camp has every second day, for 60 years (the
+    /// model's farmer, `camps.py` A and B): each camp breaks at P 2 and is refounded with a quarter
+    /// of its cap after `min(384, 48 x 2^P)` days (EQUILIBRIUM.md S7, EQC233).
+    #[test]
+    fn farmed_camp_breaks_and_refounds() {
+        let r = camp_run(
+            1,
+            rtsim_conflict::Cultures::builtin(),
+            &["goblin", "bandit", "raider"],
+            Presser::Farmer { every: 2 },
+            60 * YEAR,
+        );
+        print_camp_breaks("farmed 60 years", &r);
+        let years = r.days as f64 / YEAR as f64;
+        for (i, (name, cap)) in [("goblin", 60.0), ("bandit", 40.0), ("raider", 50.0)]
+            .into_iter()
+            .enumerate()
+        {
+            let bs = &r.breaks[i];
+            assert!(!bs.is_empty(), "{name} never broke");
+            let first = bs[0].day;
+            assert!(
+                (100.0..=300.0).contains(&first),
+                "{name}: first break day {first}"
+            );
+            let rate = bs.len() as f64 / years;
+            assert!(
+                (0.15..=0.40).contains(&rate),
+                "{name}: {rate} breaks a year"
+            );
+            for b in bs {
+                assert!(b.p >= 2.0, "{name}: {b:?}");
+                let want = (48.0 * b.p.exp2()).min(384.0);
+                assert!(
+                    (b.wait - want).abs() < 0.01,
+                    "{name}: waits {} wants {want}",
+                    b.wait
+                );
+                if let Some(pool) = b.refound_pool {
+                    assert_eq!(pool, (0.25 * cap as f64).floor(), "{name}: {b:?}");
+                }
+            }
+        }
+        let share = r.broken_days as f64 / (r.days as f64 * 3.0);
+        assert!((0.35..=0.70).contains(&share), "broken share {share}");
+        assert_eq!(
+            r.stats_breaks as usize,
+            r.breaks.iter().map(Vec::len).sum::<usize>()
+        );
+    }
+
+    /// With the half-life at 96 days (the plan's), the same farmer never breaks a camp in 60 years:
+    /// the finding that decided FB-1 (EQC202).
+    #[test]
+    fn farmed_camps_do_not_break_at_a_half_life_of_96() {
+        let cultures = camp_cultures(|d| {
+            if let Some(r) = d.pool_renewal.as_mut() {
+                r.half_life_days = 96.0;
+            }
+        });
+        let r = camp_run(
+            1,
+            cultures,
+            &["goblin", "bandit", "raider"],
+            Presser::Farmer { every: 2 },
+            60 * YEAR,
+        );
+        print_camp_breaks("farmed 60 years at half-life 96", &r);
+        assert_eq!(r.stats_breaks, 0, "{:?}", r.breaks);
+        assert!(r.max_p.iter().all(|&p| p < 2.0), "{:?}", r.max_p);
+    }
+
+    /// With nobody pressing the camps, 60 years: no break, no refound, no pressure; the warriors
+    /// are the same as the engine's with `pool_renewal` removed (the pre-S7 world).
+    #[test]
+    fn no_player_no_pressure_for_60_years() {
+        let names = ["goblin", "bandit", "raider"];
+        let on = camp_run(
+            2,
+            rtsim_conflict::Cultures::builtin(),
+            &names,
+            Presser::None,
+            60 * YEAR,
+        );
+        let off = camp_run(
+            2,
+            camp_cultures(|d| d.pool_renewal = None),
+            &names,
+            Presser::None,
+            60 * YEAR,
+        );
+        assert_eq!(
+            (on.stats_breaks, on.stats_refounds, on.broken_days),
+            (0, 0, 0)
+        );
+        assert!(on.max_p.iter().all(|&p| p == 0.0));
+        assert_eq!(on.total, off.total, "the same world as before S7");
+    }
+
+    /// A wanderer who visits each camp once in `mean_days` on average and kills the warriors at
+    /// home: the camps' warriors over years 30 to 60 against the control's, and the share of
+    /// camp-days spent broken.
+    fn wanderer(mean_days: f64) -> (f64, f64) {
+        let names = ["goblin", "bandit", "raider"];
+        let ctrl = camp_run(
+            3,
+            rtsim_conflict::Cultures::builtin(),
+            &names,
+            Presser::None,
+            60 * YEAR,
+        );
+        let run = camp_run(
+            3,
+            rtsim_conflict::Cultures::builtin(),
+            &names,
+            // One camp in three on every second day it goes out.
+            Presser::Visitor {
+                chance: 6.0 / mean_days,
+            },
+            60 * YEAR,
+        );
+        print_camp_breaks(&format!("a wanderer, a visit in {mean_days} days"), &run);
+        let late = (30 * YEAR) as usize..=(60 * YEAR) as usize;
+        let mean = |r: &CampRun| {
+            late.clone().map(|d| r.total[d] as f64).sum::<f64>() / late.clone().count() as f64
+        };
+        let ratio = mean(&run) / mean(&ctrl);
+        let share = run.broken_days as f64 / (run.days as f64 * 3.0);
+        println!("  warriors over the control: {ratio:.3}, broken share {share:.3}");
+        (ratio, share)
+    }
+
+    /// A wanderer who visits each camp once in 800 days (a visit is a full wipe of what is home:
+    /// P 1.0, halved in 192 days): the camps hold at least 0.9 of the control's warriors over
+    /// years 30 to 60 and are broken at most 5% of the time (EQUILIBRIUM.md §3.6's roamer).
+    #[test]
+    fn a_wanderer_leaves_the_camps_near_their_caps() {
+        let (ratio, share) = wanderer(800.0);
+        assert!(ratio >= 0.9, "{ratio}");
+        assert!(share <= 0.05, "{share}");
+    }
+
+    /// The same at a visit in 400 days: the camps still hold most of their warriors (a visit
+    /// that follows another within a season takes P over 2 now and then), and are broken at most
+    /// a tenth of the time.
+    #[test]
+    fn a_wanderer_every_400_days_leaves_most_of_the_warriors() {
+        let (ratio, share) = wanderer(400.0);
+        assert!(ratio >= 0.75, "{ratio}");
+        assert!(share <= 0.10, "{share}");
+    }
+
+    /// A player who wipes each camp every half year is farming it: P settles over 2 (each wipe
+    /// of a full camp is 1.0, halved by 192 days to 0.52 before the next), so the camps break.
+    /// The finding that the break is a farmer's, not a hunter's, threshold (EQC233).
+    #[test]
+    fn a_wipe_every_half_year_breaks_the_camps_in_the_end() {
+        let (ratio, share) = wanderer(180.0);
+        assert!(share > 0.05, "{share}");
+        assert!(ratio < 0.9, "{ratio}");
     }
 }
