@@ -1095,6 +1095,14 @@ impl Java {
         use rtsim_ecology::boundary as db;
         use rtsim_ecology::herds::boundary as hb;
         use rtsim_ships::boundary as sb;
+        if kind == cmd::SPAWN_RESIDENT {
+            // A resident order with nobody online is held, as the real Java holds one for a chunk
+            // that is not loaded: it is not refused. Since slice S6 the engine acts on the answer
+            // (a refusal lapses the booking and lowers the village's count), and an answer
+            // reaches it at the next hand-over, so a refusal here would carry the hand-over
+            // stride into the engine's state and the stride comparisons would differ.
+            return;
+        }
         *self.refused.entry(kind).or_default() += 1;
         let answer = |j: &mut Java, op: u64, status: u32| {
             j.journal(
