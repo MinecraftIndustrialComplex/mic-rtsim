@@ -1084,8 +1084,9 @@ fn camp_reconciler(seed: u64, slice: &'static str) -> RunOut {
         ),
     );
 
-    // Refills: members killed with the grove in come back at the culture's rate, as owed slots
-    // while it is out, spawned at the next census.
+    // Arrivals (S9, MZB-1210): members killed with the grove in come back one at a time by the
+    // shared rule, not at a rate: the first after 6 x 2^(1/9) = 6.5 days, as an owed slot while the
+    // grove is out, spawned at the next census.
     let mut r = grove_run(14, 9);
     come_in(&mut r);
     for _ in 0..4 {
@@ -1098,26 +1099,33 @@ fn camp_reconciler(seed: u64, slice: &'static str) -> RunOut {
     r.run(to);
     let dead = slot_counts(&r);
     let sent = reconciles(&r);
+    // A day on, nothing is back and nothing is ordered (a rate of 2 a day would have refilled it).
     r.run(at_day(1.0) + 100);
+    let day_one = slot_counts(&r);
     let quiet = reconciles(&r) == sent;
+    // A week on, one has arrived: its slot is owed, the books having added it at the arrival.
+    let week = r.c.now() + at_day(7.0).0;
+    r.run(week);
+    let arrived = r.c.stats.arrivals;
+    let quiet = quiet && reconciles(&r) == sent;
     let r_ok = holds(&mut r);
-    // Two a day: the pool is back at 7, its two new members slots the books add when next read.
-    let whole = r.c.pool_at(r.f, r.c.now()).floor() as u32;
-    let owed = whole.saturating_sub(r.c.camp(r.f).map_or(0, |c| c.home_count()));
+    let owed = slot_counts(&r);
     come_in(&mut r);
     check(
         &mut out,
-        "a grove's refill is spawned at its next census, none ordered while it is out",
+        "a grove's arrival is spawned at its next census, none ordered while it is out",
         dead == [5, 0, 0, 0, 0]
+            && day_one == [5, 0, 0, 0, 0]
             && quiet
-            && owed == 2
+            && arrived == 1
+            && owed == [5, 1, 0, 0, 0]
             && r_ok
-            && applied(&r, ACTION_SPAWN) == 2
-            && slot_counts(&r) == [7, 0, 0, 0, 0]
+            && applied(&r, ACTION_SPAWN) == 1
+            && slot_counts(&r) == [6, 0, 0, 0, 0]
             && holds(&mut r),
         format!(
-            "four died, {dead:?}; none ordered over the day: {quiet}; {owed} slots the books have not added; \
-             then {:?} with {} spawns",
+            "four died, {dead:?}; {day_one:?} a day on; none ordered meanwhile: {quiet}; {arrived} arrival a \
+             week on, {owed:?}; then {:?} with {} spawns",
             slot_counts(&r),
             applied(&r, ACTION_SPAWN)
         ),
@@ -2730,8 +2738,10 @@ fn invasion_with_chief(out: &mut Vec<Check>) {
 
 /// The grove in and out with bands abroad (the plugin's census answering, MOWZIE.md §4.9), the
 /// Umvuthi leading the Invasions: the camp goes out while a band is away and comes in again. No
-/// census books a living survivor dead, the pool refills to its cap while a band is out, and
-/// every survivor's slot is kept (I1 to I6 after every round).
+/// census books a living survivor dead, the grove never holds more than its cap, and every
+/// survivor's slot is kept (I1 to I6 after every round). The warriors the district's walls kill
+/// come back one at a time by the shared rule (S9, MZB-1210), so the grove is whole again only
+/// well after the last band: the check runs it quiet for 700 game days and then wants it whole.
 fn grove_in_and_out(out: &mut Vec<Check>) {
     let mut r = quiet_grove(9);
     let (walls, _) = Walls::new(0.5);
@@ -2762,8 +2772,8 @@ fn grove_in_and_out(out: &mut Vec<Check>) {
         let at = r.c.now() + 20;
         r.run(at);
         if band.is_some_and(|p| r.c.parties.get(p).is_some()) {
-            // The band is still out: the pool refilled to its cap meanwhile, the survivors' slots
-            // kept (the audit says the books match the world).
+            // The band is still out: the survivors' slots are kept (the audit says the books match
+            // the world).
             let away = r.c.camp(r.f).map_or(0, |c| c.away_count());
             away_refills += u32::from(away > 0);
         }
@@ -2772,18 +2782,31 @@ fn grove_in_and_out(out: &mut Vec<Check>) {
         r.run(at);
         let books = holds(&mut r);
         let counts = slot_counts(&r);
-        let full = counts[SlotState::Body as usize] == 10 && warrior_bodies(&r).len() == 9;
-        if !books || !full || chief_of(&r).map(|c| c.0) != Some(SlotState::Body) {
+        // A warrior killed at the walls is not back within a round (6 days) as the 2 a day rate
+        // had it: the slots at home and away never pass the cap and the Umvuthi's, though.
+        let held = counts[SlotState::Body as usize]
+            + counts[SlotState::Owed as usize]
+            + counts[SlotState::Left as usize]
+            + counts[SlotState::Gone as usize];
+        if !books || held > 10 || chief_of(&r).map(|c| c.0) != Some(SlotState::Body) {
             ok = false;
             why = format!("round {round}: books {books}, slots {counts:?}");
             break;
         }
     }
+    // The bands stop; the warriors come back one at a time, each after the wait its pressure sets.
+    let quiet = r.c.now() + at_day(700.0).0;
+    r.run(quiet);
+    let counts = slot_counts(&r);
+    if counts[SlotState::Body as usize] != 10 || warrior_bodies(&r).len() != 9 || !holds(&mut r) {
+        ok = false;
+        why = format!("after 700 quiet days: slots {counts:?}, {} warriors", warrior_bodies(&r).len());
+    }
     let lost = r.c.stats.camp_written_off;
     check(
         out,
-        "the grove in and out: bands leave and come home, the pool refills to its cap, no census \
-         books a living survivor dead",
+        "the grove in and out: bands leave and come home, the grove is whole again once they stop, no \
+         census books a living survivor dead",
         ok && lost == 0 && r.ghosts.is_empty() && chief_of(&r).map(|c| c.1) == Some(seat),
         format!(
             "6 rounds of Invasion and Raid with the camp out and in; {} deaths booked, {lost} \
@@ -2904,13 +2927,20 @@ fn gifts_in_nuggets(out: &mut Vec<Check>) {
     );
 }
 
-/// Run 6, the grove (slice M9a): the warriors refill by their rate with the chief's slot
-/// untouched; a grove found without its Umvuthi seats its heir at the cap's 192 days, or at once
-/// when a stray turns up.
+/// Run 6, the grove (slice M9a, S9): the warriors come back one at a time by the shared renewal
+/// rule with the chief's slot untouched; a grove found without its Umvuthi seats its heir at the
+/// cap's 192 days, or at once when a stray turns up.
 fn grove_renewal(out: &mut Vec<Check>) {
-    // An emptied grove refills to its cap of 9 at 2 a day.
-    let mut r = grove_run(650, 9);
+    // An emptied grove of 9 comes back one warrior at a time (S9, MZB-1210): the first after
+    // 6 x 2^(1/9) = 6.5 days (the wait starts at the first death and reads its pressure), the
+    // next after the 11 days that the 9/9 standing at its end sets, easing as it decays; whole
+    // in 87 days (K 9; the engine's first wait is read at the first death, the model's at all
+    // nine). Before S9 it was full in 4.5 days at 2 a day.
+    let mut r = quiet_grove(650);
     let seat = seat_first(&mut r);
+    // The heir took a warrior: the grove is whole again before the kill.
+    let settle = r.c.now() + at_day(20.0).0;
+    r.run(settle);
     let throne = chief_bodies(&r).first().map(|b| b.uuid);
     let died = r.c.now() + 1;
     for b in warrior_bodies(&r) {
@@ -2919,34 +2949,56 @@ fn grove_renewal(out: &mut Vec<Check>) {
     r.run(died + 5);
     let emptied = warrior_bodies(&r).len();
     let (mut full, mut day_one, mut over) = (None, 0, false);
+    let (mut last, mut arrivals, mut gaps): (usize, Vec<f64>, Vec<f64>) = (0, Vec::new(), Vec::new());
+    let mut ten = 0;
     let mut t = died;
-    while t < died + at_day(10.0).0 {
+    while t < died + at_day(150.0).0 {
         t += HOUR;
         r.run(t);
         let n = warrior_bodies(&r).len();
+        let d = (t.0 - died.0) as f64 / TICKS_PER_DAY as f64;
         if (t.0 - died.0) / HOUR == 24 {
             day_one = n;
         }
+        if (t.0 - died.0) / HOUR == 240 {
+            ten = n;
+        }
         over |= n > 9;
+        // Arrivals in the order they come: one at a time.
+        if n > last {
+            for _ in last..n {
+                arrivals.push(d);
+            }
+        }
+        last = n;
         if full.is_none() && n == 9 {
-            full = Some((t.0 - died.0) as f64 / TICKS_PER_DAY as f64);
+            full = Some(d);
         }
     }
+    for w in arrivals.windows(2) {
+        gaps.push(w[1] - w[0]);
+    }
+    let one_at_a_time = arrivals.len() == 9 && gaps.iter().all(|g| *g > 5.0);
     let same = chief_of(&r) == seat.map(|g| (SlotState::Body, g))
         && chief_bodies(&r).first().map(|b| b.uuid) == throne;
     check(
         out,
-        "an emptied grove refills to its cap of 9 at 2 a day, its chief untouched",
+        "an emptied grove comes back one warrior at a time, whole in 75 to 100 days, its chief untouched",
         seat.is_some()
             && emptied == 0
             && !over
             && same
-            && full.is_some_and(|d| (4.0..5.0).contains(&d))
-            && (1..=3).contains(&day_one)
+            && one_at_a_time
+            && full.is_some_and(|d| (75.0..100.0).contains(&d))
+            && day_one == 0
+            && ten == 1
             && holds(&mut r),
         format!(
-            "{emptied} left, {day_one} after one day, full after {full:?} days; the Umvuthi stands in \
-             its own slot and body: {same}"
+            "{emptied} left, {day_one} after one day, {ten} after ten; whole after {full:?} days, \
+             arrivals {:?} days apart (at least {:.1}); the Umvuthi stands in its own slot and \
+             body: {same}",
+            gaps.iter().map(|g| (g * 10.0).round() / 10.0).collect::<Vec<_>>(),
+            gaps.iter().copied().fold(f64::INFINITY, f64::min)
         ),
     );
 
