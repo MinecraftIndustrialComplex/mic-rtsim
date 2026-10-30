@@ -2007,19 +2007,28 @@ impl Conflict {
     /// `at` first, so the gap before the loss was recruited at the pressure it was read at, and
     /// then the pressure takes `n / cap`. A faction with no strain books nothing.
     pub(super) fn pool_bump(&mut self, f: u32, n: u32, at: Tick) {
-        let Some(pr) = self.culture(f).pool_renewal else {
-            return;
-        };
         if n == 0 || self.factions[f as usize].strain.is_none() {
             return;
         }
-        self.pool_add(f, 0.0, at);
-        let x = &mut self.factions[f as usize];
-        let amount = n as f32 / x.cap.max(1) as f32;
-        let day = (at.0 / TICKS_PER_DAY) as u32;
-        let s = x.strain.as_mut().expect("checked");
-        s.pressure.bump(day, amount, pr.def.half_life_days);
+        let amount = n as f32 / self.factions[f as usize].cap.max(1) as f32;
         self.stats.renewal_losses += u64::from(n);
+        self.pool_press(f, amount, at);
+    }
+
+    /// A pool camp's pressure takes `amount` at `at` (EQC200): the pool is anchored at the old
+    /// pressure first, as for a loss, and the camp is looked at for a break. The JNI test order
+    /// that says "as if that many had been killed" calls it with a pressure and no loss.
+    pub fn pool_press(&mut self, f: u32, amount: f32, at: Tick) {
+        let Some(pr) = self.culture(f).pool_renewal else {
+            return;
+        };
+        if self.factions[f as usize].strain.is_none() || !(amount > 0.0 && amount.is_finite()) {
+            return;
+        }
+        self.pool_add(f, 0.0, at);
+        let day = (at.0 / TICKS_PER_DAY) as u32;
+        let s = self.factions[f as usize].strain.as_mut().expect("checked");
+        s.pressure.bump(day, amount, pr.def.half_life_days);
         self.site_touch(f);
         self.strain_check(f, at);
     }
