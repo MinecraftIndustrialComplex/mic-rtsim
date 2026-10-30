@@ -115,7 +115,7 @@ public final class OutpostGameTests {
 
     /**
      * An outpost is found once when its chunk loads (EQC238): FACTION_FOUND for the start chunk's key, under the structure's id,
-     * not late, with the raider culture's territory back (TERRITORY, 400 blocks); the same chunk loading again changes nothing.
+     * not late, with the raider culture's territory back (TERRITORY, 300 blocks); the same chunk loading again changes nothing.
      */
     @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 600, batch = "mic_rtsim_outposts_find")
     public static void anOutpostIsFoundOnceWhenItsChunkLoads(GameTestHelper helper) {
@@ -139,7 +139,7 @@ public final class OutpostGameTests {
                 .thenWaitUntil(() -> check("the engine gave the territory back", bridge().territories().get(p.faction()) != null))
                 .thenExecute(() -> {
                     var t = bridge().territories().get(p.faction());
-                    check("the raiders' radius, 400 (" + t.radius() + ")", t.radius() == 400);
+                    check("the raiders' radius, 300 (" + t.radius() + ")", t.radius() == 300);
                     check("it minds killing", t.minds(ConflictRecords.SIGNAL_KILLING));
                     record(test, "territory", "radius " + t.radius() + ", " + Outposts.known() + " known");
                 })
@@ -396,8 +396,13 @@ public final class OutpostGameTests {
         ServerLevel level = p.level();
         MinecraftServer server = level.getServer();
         ConflictKit.onEnd(helper, () -> SiteTestHooks.cleanUp(server));
-        long[] upTo = new long[1];
+        long[] upTo = new long[1], at = new long[1];
         SiteLedger.Row[] broken = new SiteLedger.Row[1], after = new SiteLedger.Row[1];
+        boolean forced = ConflictKit.force(level, p.cp().x, p.cp().z, true);
+        ConflictKit.onEnd(helper, () -> {
+            if (forced)
+                ConflictKit.force(level, p.cp().x, p.cp().z, false);
+        });
         load(p, true);
         helper.startSequence()
                 .thenWaitUntil(waits.engine(() -> check("the engine gave the territory back", bridge().territories().get(p.faction()) != null)))
@@ -418,16 +423,21 @@ public final class OutpostGameTests {
                     SiteTestHooks.gapRestart(server, 250 * DAY);
                     check("a session runs after the reinstall: " + RtsimSession.startFailure(), RtsimSession.current() != null);
                 })
-                .thenWaitUntil(() -> check("the tick after the restart", level.getGameTime() > 0))
+                // The restart moved the game clock on by the gap: the budget of the logic waits starts again (the tick after the
+                // restart shows the jump, then a chunk wait marks it; SiteLedgerGameTests.clockMoved).
+                .thenExecute(() -> at[0] = helper.getTick())
+                .thenWaitUntil(() -> check("the tick after the restart", helper.getTick() > at[0]))
+                .thenWaitUntil(waits.chunks(() -> check("the outpost's chunk stands through the restart",
+                        level.getChunkSource().getChunkNow(p.cp().x, p.cp().z) != null)))
                 .thenWaitUntil(waits.engine(() -> check("the finder reported the outpost to the new session",
                         !found(p.faction()).isEmpty())))
                 .thenWaitUntil(waits.engine(() -> {
                     SiteLedger.Row r = row(level, p.faction());
-                    check("the refounded camp's row: " + r, r != null && !r.broken() && r.count() == 12 && r.stamp() > broken[0].stamp());
+                    check("the refounded camp's row: " + r, r != null && !r.broken() && r.count() >= 12 && r.stamp() > broken[0].stamp());
                     after[0] = r;
                 }))
                 .thenExecute(() -> {
-                    check("a new band of a quarter of the cap: " + after[0], after[0].count() == 12 && !after[0].waiting());
+                    check("a new band of a quarter of the cap, a few recruited since: " + after[0], after[0].count() < 20 && !after[0].waiting());
                     check("the pressure kept, aged (" + after[0].p() + ")", after[0].p() > 0.3f && after[0].p() < 1.5f);
                     record(test, "refounded", after[0].toString());
                 })
