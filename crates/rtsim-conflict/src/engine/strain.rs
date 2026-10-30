@@ -160,7 +160,7 @@ impl Conflict {
 
     /// The strain's wake (`Ev::Strain`): a recheck of a busy camp, or the end of a broken camp's
     /// wait.
-    pub(super) fn strain_event(&mut self, _w: &mut World, f: u32, stamp: u32, at: Tick) {
+    pub(super) fn strain_event(&mut self, w: &mut World, f: u32, stamp: u32, at: Tick) {
         let Some(s) = self.factions[f as usize].strain.as_mut() else {
             self.stats.stale += 1;
             return;
@@ -171,7 +171,7 @@ impl Conflict {
         }
         if let Some(b) = s.broken {
             if at >= b.due {
-                self.refound(f, at);
+                self.refound(w, f, at);
             }
             return;
         }
@@ -180,6 +180,64 @@ impl Conflict {
         self.strain_check(f, at);
     }
 
-    /// The broken camp's wait is over (EQC210). The refounding is the next step's.
-    fn refound(&mut self, _f: u32, _at: Tick) {}
+    /// The broken camp's wait is over (EQC210): a new band, a quarter of the cap (`refound_share`),
+    /// at the camp that was. The chief and the heir are named anew (`reband`), the old band's
+    /// fights are not remembered, nothing is cowed, and the camp acts: its plunder drive is booked
+    /// and each of its feuds planned, so the grievance that waited is acted on. The pressure is
+    /// kept, and decays on: the refounded camp is as short of breath as it was.
+    fn refound(&mut self, w: &mut World, f: u32, at: Tick) {
+        let Some(pr) = self.culture(f).pool_renewal else {
+            return;
+        };
+        {
+            let x = &mut self.factions[f as usize];
+            let s = x.strain.as_mut().expect("a pool camp");
+            s.broken = None;
+            s.check_at = None;
+            s.stamp = s.stamp.wrapping_add(1);
+            (x.pool, x.pool_at, x.away) = (
+                (f64::from(pr.def.refound_share) * f64::from(x.cap)).floor(),
+                at,
+                0,
+            );
+        }
+        self.reband(w, f, at);
+        self.site_touch(f);
+        self.stats.refounds += 1;
+        self.schedule_plunder(f, at);
+        for a in self.feud_actors(f) {
+            self.plan_feud(f, a, at, false);
+        }
+        let (fid, camp) = (self.fid(f), self.factions[f as usize].pos);
+        let pool = self.factions[f as usize].pool as i64;
+        self.tape
+            .event(kinds::CONFLICT_REFOUNDED, spot(at, camp), fid, 0, pool)
+            .text(|| format!("a new band holds the camp: {pool} warriors"));
+        self.note(
+            at,
+            Some(f),
+            "refounded",
+            format!("a new band holds the camp: {pool} warriors"),
+        );
+    }
+
+    /// A new band holds the camp (EQC210): a chief and an heir named from the faction's stream
+    /// past the ones it had, no memory of the old band's fights, no cowing, the chief's crystal.
+    fn reband(&mut self, w: &mut World, f: u32, at: Tick) {
+        let (key, n, node) = {
+            let x = &self.factions[f as usize];
+            (x.key, x.chiefs, x.node)
+        };
+        let lifespan = self.culture(f).def.chief_lifespan_days * TICKS_PER_DAY;
+        let home = w.nodes[node].actor;
+        let band = name_band(self.seed, key, n, w, home, at, lifespan);
+        let x = &mut self.factions[f as usize];
+        (x.chief, x.chief_seed, x.heir, x.heir_seed) =
+            (band.chief, band.chief_seed, band.heir, band.heir_seed);
+        x.chiefs = n + 2;
+        x.chief_out = false;
+        x.observed.clear();
+        x.cowed_until = Tick::ZERO;
+        x.crystal = true;
+    }
 }

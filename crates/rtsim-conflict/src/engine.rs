@@ -931,6 +931,42 @@ impl NodeIndex {
     }
 }
 
+/// A camp's chief and heir, named from its stream: the first of a camp's life (`n` 0) and a refounded
+/// band's (`n` the chiefs so far, EQC210). The heir is made first, then the chief with it as its
+/// heir, so the notables' handles go in the order they always did.
+struct Band {
+    chief: ActorId,
+    chief_seed: u64,
+    heir: ActorId,
+    heir_seed: u64,
+}
+
+fn name_band(
+    seed: u64,
+    key: u64,
+    n: u32,
+    w: &mut World,
+    home: ActorId,
+    at: Tick,
+    lifespan: u64,
+) -> Band {
+    let seed_of = |n: u32| StreamKey::new(seed, SYS_CHIEF, key).block(u64::from(n), 0)[0];
+    let heir_seed = seed_of(n + 1);
+    let heir = w
+        .knowledge
+        .create_notable(heir_seed, home, home, at, lifespan * 2);
+    let chief_seed = seed_of(n);
+    let chief = w
+        .knowledge
+        .create_notable(chief_seed, home, heir, at, lifespan);
+    Band {
+        chief,
+        chief_seed,
+        heir,
+        heir_seed,
+    }
+}
+
 /// Where `pos` is at `at`, for the archive.
 /// `t` plus `dt` ticks, held at the end of time rather than wrapping.
 fn later(t: Tick, dt: u64) -> Tick {
@@ -1738,15 +1774,9 @@ impl Conflict {
             strain: cu.pool_renewal.map(|_| Box::new(Strain::default())),
         };
         let lifespan = cu.def.chief_lifespan_days * TICKS_PER_DAY;
-        let seed_of = |n: u32| StreamKey::new(self.seed, SYS_CHIEF, key).block(u64::from(n), 0)[0];
-        x.heir_seed = seed_of(1);
-        x.heir = w
-            .knowledge
-            .create_notable(x.heir_seed, home, home, at, lifespan * 2);
-        x.chief_seed = seed_of(0);
-        x.chief = w
-            .knowledge
-            .create_notable(x.chief_seed, home, x.heir, at, lifespan);
+        let band = name_band(self.seed, key, 0, w, home, at, lifespan);
+        (x.chief, x.chief_seed, x.heir, x.heir_seed) =
+            (band.chief, band.chief_seed, band.heir, band.heir_seed);
         x.chiefs = 2;
         let f = self.factions.push(x);
         self.by_key.insert(key, f);
