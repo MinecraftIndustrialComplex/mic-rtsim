@@ -79,6 +79,13 @@ pub struct ConflictTunables {
     /// The most one gap between two position reports counts. PLACEHOLDER 1,200 ticks, as P26's
     /// `Homes::max_gap`.
     pub presence_max_gap: u64,
+    /// A pool camp that is thin and under heavy pressure but busy (a party out, a demand open) is
+    /// looked at again after this many ticks (EQC208). PLACEHOLDER 24,000, one game day.
+    pub strain_recheck_ticks: u64,
+    /// Whether a death at a player's district that credits no one (a trap, a turret, a
+    /// FakePlayer's kill) is that player's loss for a pool camp's pressure (EQC204, FB-2 (a)).
+    /// True; false is the stricter reading, a credited kill only.
+    pub district_unclaimed_is_players: bool,
 }
 
 impl Default for ConflictTunables {
@@ -117,6 +124,8 @@ impl Default for ConflictTunables {
             presence_top: 3,
             presence_chunks: 65_536,
             presence_max_gap: 1_200,
+            strain_recheck_ticks: 24_000,
+            district_unclaimed_is_players: true,
         }
     }
 }
