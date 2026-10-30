@@ -368,6 +368,38 @@ pub struct PoolRenewal {
     pub refound: RenewalRule,
 }
 
+/// How a camp's own history bends the wait to its next plunder (EQUILIBRIUM.md §2.4.5, FB-8,
+/// EQC285 to EQC289). The mean wait is `plunder_mean_days`, bent by the chief's aggression (the
+/// temperament the engine already reads, centred so that the camps' mean is the culture's own) and
+/// by `exp(loss_gain x grief - spoils_gain x spoils)`, clamped to `min_factor` to `max_factor`:
+/// grief is the share of the cap the camp lost in war parties lately, spoils the raids it brought
+/// loot home from lately, each halving in `half_life_days`. A culture that plunders may carry one;
+/// the raider does, the others keep their clocks.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PlunderMoodDef {
+    /// Days for grief and spoils to halve.
+    pub half_life_days: f32,
+    /// The wait's log-factor for a camp that lost its whole cap lately (a loss of 0.2 of the cap
+    /// lengthens the wait by `exp(0.2 x loss_gain)`).
+    pub loss_gain: f32,
+    /// The wait's log-factor taken off for each raid that brought loot home, as it stands now.
+    pub spoils_gain: f32,
+    /// A war chief's fall counts as this share of the cap lost.
+    pub chief_loss_share: f32,
+    /// The bounds of the whole history factor (the temperament's bend is outside them).
+    pub min_factor: f32,
+    pub max_factor: f32,
+}
+
+/// A culture's plunder mood resolved (EQC287).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PlunderMood {
+    pub def: PlunderMoodDef,
+    /// The mean over the 256 aggressions of the temperament's wait factor (`1000 / bend`), which
+    /// the mean wait is divided by: the camps' mean wait is then `plunder_mean_days` itself.
+    pub temper_mean: f64,
+}
+
 /// A culture as its JSON says.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CultureDef {
@@ -468,6 +500,10 @@ pub struct CultureDef {
     /// `renewal`. Absent: the pool refills by its rate whatever is killed, as before.
     #[serde(default)]
     pub pool_renewal: Option<PoolRenewalDef>,
+    /// How the camp's own history bends the wait to its next plunder (EQC285). Needs
+    /// `plunder_mean_days`. Absent: the wait is the mean bent by the chief's aggression alone.
+    #[serde(default)]
+    pub plunder_mood: Option<PlunderMoodDef>,
     /// The body kind (dictionary kind 3) of a camp's chief when the chief is a body of its own,
     /// kept in one slot outside the pool (`CHIEF_SLOT`, MZB-401): the grove's Umvuthi. Absent: the
     /// chief has no slot (a den's chief is its one unit, a goblin camp's has no body).
@@ -521,6 +557,8 @@ pub struct Culture {
     pub chief_renewal: Option<Renewal>,
     /// `def.pool_renewal` resolved (EQC202).
     pub pool_renewal: Option<PoolRenewal>,
+    /// `def.plunder_mood` resolved (EQC287).
+    pub plunder_mood: Option<PlunderMood>,
     /// The party kinds the chief leads (MZB-413): `def.chief_leads` resolved, raid, invasion and
     /// siege when the data leaves it out.
     pub chief_leads: Vec<PartyKind>,
@@ -713,6 +751,66 @@ impl Culture {
                 })
             })
             .transpose()?;
+        // A camp's plunder mood (EQC287): it bends the plunder clock, so there must be one.
+        let plunder_mood = def
+            .plunder_mood
+            .map(|m| -> Result<PlunderMood, String> {
+                let what = "plunder_mood";
+                if def.plunder_mean_days.is_none() {
+                    return Err(format!("{n}: {what} bends plunder_mean_days, which is absent"));
+                }
+                let nums = [
+                    m.half_life_days,
+                    m.loss_gain,
+                    m.spoils_gain,
+                    m.chief_loss_share,
+                    m.min_factor,
+                    m.max_factor,
+                ];
+                if !nums.iter().all(|v| v.is_finite()) {
+                    return Err(format!("{n}: {what} numbers must be finite"));
+                }
+                if m.half_life_days <= 0.0 {
+                    return Err(format!("{n}: {what} half_life_days must be above 0"));
+                }
+                for (name, v) in [
+                    ("loss_gain", m.loss_gain),
+                    ("spoils_gain", m.spoils_gain),
+                    ("chief_loss_share", m.chief_loss_share),
+                ] {
+                    if v < 0.0 {
+                        return Err(format!("{n}: {what} {name} must not be negative"));
+                    }
+                }
+                if !(m.min_factor > 0.0 && m.min_factor <= 1.0) {
+                    return Err(format!("{n}: {what} min_factor must be in (0, 1]"));
+                }
+                if m.max_factor < 1.0 {
+                    return Err(format!("{n}: {what} max_factor must be at least 1"));
+                }
+                // The wait's temperament factor, `1000 / bend(Aggressive, 1000, 50)`, over every
+                // aggression a chief can have.
+                let temper_mean = (0..=255u8)
+                    .map(|a| {
+                        let t = rtsim_knowledge::temperament::Temperament {
+                            bold: 128,
+                            sociable: 128,
+                            aggressive: a,
+                        };
+                        1000.0
+                            / f64::from(
+                                t.bend(rtsim_knowledge::temperament::Trait::Aggressive, 1000, 50)
+                                    .max(1),
+                            )
+                    })
+                    .sum::<f64>()
+                    / 256.0;
+                Ok(PlunderMood {
+                    def: m,
+                    temper_mean,
+                })
+            })
+            .transpose()?;
         // The chief's slot and its fields (MZB-401, MZB-407, MZB-413). A chief's body is a body
         // kind of its own: a unit's body in its place would let a census read one as the other.
         if let Some(b) = &def.chief_body {
@@ -795,6 +893,7 @@ impl Culture {
             renewal,
             chief_renewal,
             pool_renewal,
+            plunder_mood,
             chief_leads,
             def,
         })

@@ -43,7 +43,8 @@ use crate::boundary::{self, Cmd};
 use crate::culture::{Cultures, PartyKind, SignalKind, Step};
 use crate::engine::{
     Answered, Broken, Camp, Conflict, ConflictLedger, ConflictStats, Demand, Ended, Ev, Faction,
-    Feud, Focus, Heir, HeldPass, Line, LineCount, Party, Phase, Pin, Placing, RailMeter, Retired,
+    Feud, Focus, Heir, HeldPass, Line, LineCount, Mood, Party, Phase, Pin, Placing, RailMeter,
+    Retired,
     Slot, SlotState, Source, Strain, TRADED_CAP, Target, Throne,
 };
 use crate::grievance::{Grievance, KB, RailTail};
@@ -87,7 +88,7 @@ use crate::tunables::ConflictTunables;
 /// the wheel's tag 11 is `Ev::CampRecount`, and the stats end with `camp_recounts`.
 /// RTC14, `RTCE`: a faction row ends with its strain, an option of its pressure, whether it has
 /// broken and until when, the stamp of its booked check and when it is next looked at (S7,
-/// EQC201); the wheel's tag 12 is `Ev::Strain`, and the stats end with the breaks, refounds and
+/// EQC201), then its mood, an option of two pressures, its grief and its spoils (FB-8, EQC287); the wheel's tag 12 is `Ev::Strain`, and the stats end with the breaks, refounds and
 /// deferrals.
 const MAGIC: u32 = u32::from_le_bytes(*b"RTCE");
 /// The meta page of a paged save ([`Conflict::save_paged`]). 2: the indexes, parties and wheel
@@ -398,6 +399,30 @@ fn put_faction(w: &mut Writer, x: &Faction) {
     }
     put_opt(w, &x.camp, |w, c| put_camp(w, c));
     put_opt(w, &x.strain, |w, s| put_strain(w, s));
+    put_opt(w, &x.mood, |w, m| put_mood(w, m));
+}
+
+/// A plunderer's recent history (FB-8, EQC287, RTC14): both memories as the kernel keeps them.
+fn put_mood(w: &mut Writer, m: &Mood) {
+    for p in [m.grief, m.spoils] {
+        let (v, day) = p.parts();
+        w.f32(v);
+        w.u32(day);
+    }
+}
+
+fn get_mood(r: &mut Reader<'_>) -> codec::Result<Mood> {
+    let mut one = |what: &str| -> codec::Result<Pressure> {
+        let (v, day) = (r.f32()?, r.u32()?);
+        if !v.is_finite() || v < 0.0 {
+            return bad(format!("mood {what} {v}"));
+        }
+        Ok(Pressure::from_parts(v, day))
+    };
+    Ok(Mood {
+        grief: one("grief")?,
+        spoils: one("spoils")?,
+    })
 }
 
 /// A pool camp's strain (EQC201, RTC14): its pressure as the kernel keeps it, whether it has
@@ -750,6 +775,7 @@ fn get_faction(r: &mut Reader<'_>) -> codec::Result<Faction> {
         },
         camp: get_opt(r, get_camp)?.map(Box::new),
         strain: get_opt(r, get_strain)?.map(Box::new),
+        mood: get_opt(r, get_mood)?.map(Box::new),
     })
 }
 

@@ -269,5 +269,7 @@ impl Conflict {
         x.observed.clear();
         x.cowed_until = Tick::ZERO;
         x.crystal = true;
+        // A new band has not raided yet (FB-8, EQC287).
+        self.forget_raids(f);
     }
 }
