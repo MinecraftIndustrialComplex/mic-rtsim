@@ -1707,13 +1707,14 @@ mod synthetic {
 /// and 200. Since the M9 merge the base faction row is 208: M9's `Faction.hunts`, boxed and
 /// `None` while a faction owes none, is a pointer of the base with no rail as with it, not the
 /// rail's (MZB-672). S7's `Faction.strain`, boxed and `None` for a culture with no
-/// `pool_renewal`, is another pointer of the base (EQC201).
+/// `pool_renewal`, is another pointer of the base (EQC201), and so is `Faction.mood` (FB-8,
+/// EQC287), boxed and `None` for a culture with no `plunder_mood`.
 #[test]
 fn a_world_with_no_rail_keeps_base_layout_but_for_pointers() {
     use std::mem::size_of;
     assert_eq!(size_of::<rtsim_conflict::engine::Focus>(), 40 + 8);
     assert_eq!(size_of::<rtsim_conflict::engine::Feud>(), 296 + 16);
-    assert_eq!(size_of::<rtsim_conflict::tables::FactionRow>(), 200 + 8 + 8 + 8);
+    assert_eq!(size_of::<rtsim_conflict::tables::FactionRow>(), 200 + 8 + 8 + 8 + 8);
 }
 
 // ---- the session's replay (docs/replay-gate.md §4.4, §6.1; RP-102) ------------------------------

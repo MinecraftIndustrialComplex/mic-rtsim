@@ -93,7 +93,10 @@ pub const SETTLERS_KEY: u64 = fnv1a64(b"mic_rtsim.conflict.settlers");
 
 pub mod camp;
 pub mod rail;
+mod mood;
 mod strain;
+
+pub use mood::Mood;
 
 pub use camp::{
     Answered, CHIEF_SLOT, Camp, Chest, Ended, Heir, Line, Placing, Retired, STACK_ITEMS, Slot,
@@ -155,6 +158,9 @@ pub struct Faction {
     /// A pool camp's pressure from a player's kills, and whether it has broken (EQC201). `Some`
     /// only for a culture with `pool_renewal`; boxed, so every other faction pays one null word.
     pub strain: Option<Box<Strain>>,
+    /// A plunderer's recent history, which bends the wait to its next plunder (FB-8, EQC287).
+    /// `Some` only for a culture with a `plunder_mood`; boxed for the same reason as the strain.
+    pub mood: Option<Box<Mood>>,
 }
 
 /// A pool camp's strain (EQUILIBRIUM.md §2.4.5, EQC201): the pressure from the losses a player
@@ -1789,6 +1795,7 @@ impl Conflict {
             camp: None,
             hunts: None,
             strain: cu.pool_renewal.map(|_| Box::new(Strain::default())),
+            mood: cu.plunder_mood.map(|_| Box::new(Mood::default())),
         };
         let lifespan = cu.def.chief_lifespan_days * TICKS_PER_DAY;
         let band = name_band(self.seed, key, 0, w, home, at, lifespan);
@@ -5551,6 +5558,9 @@ impl Conflict {
             ),
         );
         if kind == PartyKind::Plunder {
+            if items > 0 {
+                self.gloat(f, at);
+            }
             self.schedule_plunder(f, at);
         }
         // The band was the camp's last business, maybe (EQC208).
@@ -5560,14 +5570,14 @@ impl Conflict {
     // ---- plunder (C24: havens) -------------------------------------------------------------
 
     fn schedule_plunder(&mut self, f: u32, at: Tick) {
-        let Some(mean) = self.culture(f).def.plunder_mean_days else {
+        // The mean wait: the culture's, bent by the chief's temperament and the camp's history
+        // (FB-8, EQC287).
+        let Some(mean) = self.plunder_mean_days(f, at) else {
             return;
         };
         if !self.camp_active(f) {
             return;
         }
-        let bend = self.temper(f).bend(Trait::Aggressive, 1000, 50).max(1);
-        let mean = mean * 1000.0 / f64::from(bend);
         let x = &mut self.factions[f as usize];
         x.plunders += 1;
         x.plunder_stamp = x.plunder_stamp.wrapping_add(1);
@@ -7962,6 +7972,8 @@ impl Conflict {
         at: Tick,
     ) -> u64 {
         self.stats.chiefs_killed += 1;
+        // The camp mourns its war chief (FB-8, EQC287).
+        self.grieve_chief(f, at);
         let chief = self.factions[f as usize].chief;
         let heir = self.factions[f as usize].heir;
         if let Some(k) = killer {
@@ -8133,6 +8145,11 @@ impl Conflict {
             match (&x.strain, &self.culture(f).pool_renewal) {
                 (Some(_), None) => return Err(format!("faction {f} has a strain but no rule")),
                 (None, Some(_)) => return Err(format!("faction {f} has a rule but no strain")),
+                _ => {}
+            }
+            match (&x.mood, &self.culture(f).plunder_mood) {
+                (Some(_), None) => return Err(format!("faction {f} has a mood but no rule")),
+                (None, Some(_)) => return Err(format!("faction {f} has a rule but no mood")),
                 _ => {}
             }
             let Some(b) = x.strain.as_ref().and_then(|s| s.broken) else {

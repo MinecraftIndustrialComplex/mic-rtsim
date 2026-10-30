@@ -1461,6 +1461,8 @@ impl Conflict {
         let f = self.parties[p].faction;
         // The pool grew to the room it had, up to now.
         self.pool_add(f, 0.0, at);
+        // The camp mourns them, whoever killed them (FB-8, EQC287).
+        self.grieve_members(f, lost, at);
         let x = &mut self.factions[f as usize];
         x.away = x.away.saturating_sub(lost);
         if let Some(camp) = self.camp_mut(f) {
