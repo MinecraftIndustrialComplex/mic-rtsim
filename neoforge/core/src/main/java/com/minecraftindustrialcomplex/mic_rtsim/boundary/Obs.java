@@ -560,6 +560,11 @@ public final class Obs {
 
         /** The meeting point is a meeting POI (a bell) the census found, not the start piece's centre. */
         public static final int FLAG_MEETING_POI = 1;
+        /**
+         * Every chunk of the village's reach was FULL with its entities loaded and every walker the registry tracks
+         * for it was found, so a count below the engine's is believed (slice S6, EQC151).
+         */
+        public static final int FLAG_COMPLETE = 2;
     }
 
     /**

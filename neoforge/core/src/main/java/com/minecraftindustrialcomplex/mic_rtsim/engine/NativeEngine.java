@@ -102,8 +102,20 @@ public final class NativeEngine implements ScriptedEngine {
     public static final int P1_WORKS_REFUSED = 18;
     /** Tributes paid to raiding dragons. */
     public static final int P1_TRIBUTES = 19;
+    /** Settlers the world booked for emptied villages (slice S6, EQC173). */
+    public static final int P1_SETTLERS = 20;
+    /** Growth steps the world booked for unloaded human villages. */
+    public static final int P1_GROWN = 21;
+    /** Ribbit residents the world booked into houses that stood empty. */
+    public static final int P1_REFILLS = 22;
+    /** Villages found short for settlers (a wait started). */
+    public static final int P1_EMPTIED = 23;
+    /** Resident bookings that lapsed: refused by the bridge, or released as too old. */
+    public static final int P1_LAPSED = 24;
+    /** Village censuses the link's filter let into the input log. */
+    public static final int P1_CENSUSES = 25;
     /** The length of the array {@link #phase1Stats} returns. */
-    public static final int PHASE1_STATS = 20;
+    public static final int PHASE1_STATS = 26;
 
     /** {@link #phase1Works} indexes: works bought, kinds full, purse, census golems, tribute paid, spent. */
     public static final int WORKS_BOUGHT = 0;
@@ -113,6 +125,19 @@ public final class NativeEngine implements ScriptedEngine {
     public static final int WORKS_TRIBUTE = 4;
     public static final int WORKS_SPENT = 5;
     public static final int WORKS_VIEW = 6;
+
+    /** {@link #phase1Village} indexes (slice S6): the world's count, K, seen, bookings owed, wait and growth step due (world ticks, -1 none), houses pending, peak, pressure (thousandths), the last complete census (-1 none). */
+    public static final int VILLAGE_MEMBERS = 0;
+    public static final int VILLAGE_K = 1;
+    public static final int VILLAGE_SEEN = 2;
+    public static final int VILLAGE_OWED = 3;
+    public static final int VILLAGE_WAIT_DUE = 4;
+    public static final int VILLAGE_BREED_DUE = 5;
+    public static final int VILLAGE_PENDING_HOUSES = 6;
+    public static final int VILLAGE_PEAK = 7;
+    public static final int VILLAGE_PRESSURE_MILLI = 8;
+    public static final int VILLAGE_SEEN_READING = 9;
+    public static final int VILLAGE_VIEW = 10;
 
     private static final int RECEIVED_CAP = 10_000;
     private static final int CLOSE_TIMEOUT_MS = 5000;
@@ -166,6 +191,9 @@ public final class NativeEngine implements ScriptedEngine {
 
     /** A phase 1 village's works (WORKS_* indexes) as of the last step; false when unknown (TEST mode). */
     private static native boolean nPhase1Works(long handle, long village, long[] out);
+
+    /** A phase 1 village's renewal row (VILLAGE_* indexes) as of the last step; false when unknown (TEST mode). */
+    private static native boolean nPhase1Village(long handle, long village, long[] out);
 
     private static native long nLedger(long handle, long store);
 
@@ -947,6 +975,16 @@ public final class NativeEngine implements ScriptedEngine {
     public synchronized long[] phase1Works(long village) {
         long[] out = new long[WORKS_VIEW];
         return nPhase1Works(live(), village, out) ? out : null;
+    }
+
+    /**
+     * A phase 1 village's renewal row as of the last step ({@code VILLAGE_*} indexes, slice S6):
+     * null when the engine knows no such village or keeps no row for it. An engine opened with
+     * {@link #FLAG_TEST} only.
+     */
+    public synchronized long[] phase1Village(long village) {
+        long[] out = new long[VILLAGE_VIEW];
+        return nPhase1Village(live(), village, out) ? out : null;
     }
 
     @Override

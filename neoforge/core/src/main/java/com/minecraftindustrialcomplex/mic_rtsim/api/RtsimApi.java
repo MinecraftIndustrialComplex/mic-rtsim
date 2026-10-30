@@ -139,6 +139,14 @@ public final class RtsimApi {
         com.minecraftindustrialcomplex.mic_rtsim.village.Residents.registerFactory(body, factory);
     }
 
+    /**
+     * Which profession a renewal arrival of body kind {@code body} takes when its order names none (slice S6, EQC180): asked
+     * with the village and the order's op.
+     */
+    public static void registerProfessionChooser(String body, com.minecraftindustrialcomplex.mic_rtsim.village.Residents.ProfessionChooser chooser) {
+        com.minecraftindustrialcomplex.mic_rtsim.village.Residents.registerProfessionChooser(body, chooser);
+    }
+
     /** The adopted village an entity belongs to (by its home, else where it stands), or null. */
     public static com.minecraftindustrialcomplex.mic_rtsim.village.Village villageOf(Entity entity) {
         RtsimSession s = RtsimSession.current();

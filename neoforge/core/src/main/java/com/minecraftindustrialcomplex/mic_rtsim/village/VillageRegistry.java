@@ -20,6 +20,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 
 /**
  * The adopted villages of this world ({@code data/mic_rtsim_villages.dat}), with the growth work still
@@ -88,6 +89,44 @@ public final class VillageRegistry extends SavedData implements JournalDependent
         }
     }
 
+    /**
+     * A settler that came in from beyond the edge and is still walking to its village (slice S6, EQC178). The census counts
+     * it whether or not it stands in the village's reach, and a walker that cannot be found makes the census incomplete.
+     * Saved with the villages ({@code walkers}, additive: an older file has none).
+     */
+    public static final class Walker {
+        public UUID id;
+        public long village;
+        public ResourceKey<Level> dimension;
+        /** Where it spawned, and when; it is placed at the village after {@code deadline}. */
+        public double sx, sz;
+        public long spawnedAt, deadline;
+
+        CompoundTag save() {
+            CompoundTag t = new CompoundTag();
+            t.putUUID("id", id);
+            t.putLong("village", village);
+            t.putString("dim", dimension.location().toString());
+            t.putDouble("sx", sx);
+            t.putDouble("sz", sz);
+            t.putLong("spawnedAt", spawnedAt);
+            t.putLong("deadline", deadline);
+            return t;
+        }
+
+        static Walker load(CompoundTag t) {
+            Walker w = new Walker();
+            w.id = t.getUUID("id");
+            w.village = t.getLong("village");
+            w.dimension = ResourceKey.create(Registries.DIMENSION, ResourceLocation.parse(t.getString("dim")));
+            w.sx = t.getDouble("sx");
+            w.sz = t.getDouble("sz");
+            w.spawnedAt = t.getLong("spawnedAt");
+            w.deadline = t.getLong("deadline");
+            return w;
+        }
+    }
+
     /** A SPAWN_RESIDENT waiting for its house or its chunk. */
     public static final class ResidentOrder {
         public long op;
@@ -100,6 +139,8 @@ public final class VillageRegistry extends SavedData implements JournalDependent
         public double x, y, z;
         public long house;
         public long nextTry;
+        /** The game tick the order was accepted (0 for an order saved before S6); an arrival order older than 192 days is dropped. */
+        public long since;
 
         CompoundTag save() {
             CompoundTag t = new CompoundTag();
@@ -115,6 +156,7 @@ public final class VillageRegistry extends SavedData implements JournalDependent
             t.putDouble("y", y);
             t.putDouble("z", z);
             t.putLong("house", house);
+            t.putLong("since", since);
             return t;
         }
 
@@ -131,6 +173,7 @@ public final class VillageRegistry extends SavedData implements JournalDependent
             o.y = t.getDouble("y");
             o.z = t.getDouble("z");
             o.house = t.getLong("house");
+            o.since = t.getLong("since");
             return o;
         }
     }
@@ -139,6 +182,8 @@ public final class VillageRegistry extends SavedData implements JournalDependent
     private final Map<ResourceKey<Level>, Map<Long, List<Village>>> index = new HashMap<>();
     public final Map<Long, Build> builds = new LinkedHashMap<>();
     public final Map<Long, ResidentOrder> residentOrders = new LinkedHashMap<>();
+    /** Settlers still walking in, by UUID (EQC178). */
+    public final Map<UUID, Walker> walkers = new LinkedHashMap<>();
 
     public static final Factory<VillageRegistry> FACTORY = new Factory<>(VillageRegistry::new, VillageRegistry::load);
 
@@ -256,6 +301,10 @@ public final class VillageRegistry extends SavedData implements JournalDependent
         for (ResidentOrder o : residentOrders.values())
             r.add(o.save());
         tag.put("residentOrders", r);
+        ListTag w = new ListTag();
+        for (Walker walker : walkers.values())
+            w.add(walker.save());
+        tag.put("walkers", w);
         return tag;
     }
 
@@ -270,6 +319,10 @@ public final class VillageRegistry extends SavedData implements JournalDependent
         for (Tag t : tag.getList("residentOrders", Tag.TAG_COMPOUND)) {
             ResidentOrder o = ResidentOrder.load((CompoundTag) t);
             reg.residentOrders.put(o.op, o);
+        }
+        for (Tag t : tag.getList("walkers", Tag.TAG_COMPOUND)) {
+            Walker w = Walker.load((CompoundTag) t);
+            reg.walkers.put(w.id, w);
         }
         reg.setDirty(false);
         return reg;

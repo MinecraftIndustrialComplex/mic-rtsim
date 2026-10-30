@@ -3,8 +3,11 @@ package com.minecraftindustrialcomplex.mic_rtsim.growth;
 import com.minecraftindustrialcomplex.mic_rtsim.MicRtsim;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Cmd;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs;
+import com.minecraftindustrialcomplex.mic_rtsim.api.Arrivals;
 import com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession;
+import com.minecraftindustrialcomplex.mic_rtsim.village.Census;
 import com.minecraftindustrialcomplex.mic_rtsim.village.Residents;
+import com.minecraftindustrialcomplex.mic_rtsim.village.Walkers;
 import com.minecraftindustrialcomplex.mic_rtsim.village.Village;
 import com.minecraftindustrialcomplex.mic_rtsim.village.VillageRegistry;
 import net.minecraft.core.BlockPos;
@@ -57,6 +60,8 @@ public final class ResidentSpawner {
     }
 
     public void accept(VillageRegistry.ResidentOrder o) {
+        if (o.since == 0)
+            o.since = session.gameTime();
         villages.residentOrders.put(o.op, o);
         villages.setDirty();
     }
@@ -88,11 +93,44 @@ public final class ResidentSpawner {
         }
     }
 
+    /** An arrival order the watched rule has held this long is dropped, as the engine releases its booking (EQC174). */
+    public static final long ARRIVAL_MAX_WAIT = 192L * 24_000L;
+    /** How long a placement waits for the village's whole reach to load before it places without the bed count (EQC179). */
+    static final long COMPLETE_WAIT = 600;
+    /** Distances from the meeting point a walk-in's spawn is tried at, farthest first (EQC177). */
+    public static final int[] WALK_DISTANCES = {176, 160, 144, 128, 112, 96};
+
+    /** When each held arrival first found its village's reach not loaded (this life only). */
+    private final java.util.Map<Long, Long> incompleteSince = new java.util.HashMap<>();
+
     private void step(VillageRegistry.ResidentOrder o, long now, IntUnaryOperator spend) {
         ServerLevel level = session.server().getLevel(o.dimension);
         if (level == null) {
             finish(o, Obs.CommandResult.FAILED, null, null, now);
             return;
+        }
+        boolean arrival = (o.flags & Cmd.SpawnResident.FLAG_ARRIVAL) != 0;
+        Village arriving = null;
+        if (arrival) {
+            arriving = villages.get(o.village);
+            if (arriving == null) {
+                MicRtsim.LOGGER.warn("[mic_rtsim] resident {}: no village {}", o.op, o.village);
+                finish(o, Obs.CommandResult.FAILED, null, null, now);
+                return;
+            }
+            if (o.since != 0 && now - o.since > ARRIVAL_MAX_WAIT) {
+                finish(o, Obs.CommandResult.FAILED, null, null, now);
+                return;
+            }
+            // Never into a watched village (EQC174): it waits, or walks in from the edge (EQC177).
+            if (Arrivals.watched(level, arriving.box, Arrivals.WATCH_BLOCKS)) {
+                if ((o.flags & Cmd.SpawnResident.FLAG_WALK_IN) == 0) {
+                    o.nextTry = now + RETRY_TICKS;
+                    return;
+                }
+                walkIn(level, arriving, o, now, spend);
+                return;
+            }
         }
         Vec3 at = new Vec3(o.x, o.y, o.z);
         if ((o.flags & Cmd.SpawnResident.FLAG_AT_HOUSE) != 0) {
@@ -117,6 +155,30 @@ public final class ResidentSpawner {
             }
             at = Vec3.atBottomCenterOf(v.meeting);
         }
+        spawnAt(level, arriving, o, at, (o.flags & Cmd.SpawnResident.FLAG_AT_VILLAGE) != 0, false, now, spend);
+    }
+
+    /**
+     * A watched village's arrival comes from the edge (EQC177): the first point on the ray from the meeting point toward the
+     * order's source, 176 down to 96 blocks out, that is entity-ticking, standable and at least 128 blocks from every player.
+     * It walks in ({@link Walkers}); with no such point the order waits.
+     */
+    private void walkIn(ServerLevel level, Village v, VillageRegistry.ResidentOrder o, long now, IntUnaryOperator spend) {
+        BlockPos spot = level.isPositionEntityTicking(v.meeting)
+                ? Arrivals.spotOnRay(level, v.meeting, o.x, o.z, WALK_DISTANCES, Arrivals.WATCH_BLOCKS) : null;
+        if (spot == null) {
+            o.nextTry = now + RETRY_TICKS;
+            return;
+        }
+        spawnAt(level, v, o, Vec3.atBottomCenterOf(spot), false, true, now, spend);
+    }
+
+    /**
+     * The tail every placement shares: the chunk, the exactly-once guards, the bed clamp of a human arrival, the factory and
+     * the answer. {@code village} is non-null for an arrival; {@code walker} registers the body for {@link Walkers}.
+     */
+    private void spawnAt(ServerLevel level, Village village, VillageRegistry.ResidentOrder o, Vec3 at, boolean standNear,
+                         boolean walker, long now, IntUnaryOperator spend) {
         BlockPos pos = BlockPos.containing(at);
         LevelChunk chunk = level.getChunkSource().getChunkNow(pos.getX() >> 4, pos.getZ() >> 4);
         if (chunk == null || !level.isPositionEntityTicking(pos)) {
@@ -138,14 +200,34 @@ public final class ResidentSpawner {
             finish(o, Obs.CommandResult.DUPLICATE_OP, chunk, null, now);
             return;
         }
+        // A human arrival never takes more than the free beds (EQC179): vanilla breeds only into free beds. The count is
+        // fresh, and only a complete one clamps; a village whose reach is still loading is waited for, a little.
+        if (village != null && "minecraft:villager".equals(o.body)) {
+            Census.Scan scan = Census.scan(villages, level, village);
+            if (!scan.complete()) {
+                long first = incompleteSince.computeIfAbsent(o.op, k -> now);
+                if (now - first < COMPLETE_WAIT) {
+                    o.nextTry = now + RETRY_TICKS;
+                    return;
+                }
+            } else if (scan.beds() - scan.residents() <= 0) {
+                incompleteSince.remove(o.op);
+                finish(o, Obs.CommandResult.NOT_FREE, null, null, now);
+                return;
+            }
+        }
+        incompleteSince.remove(o.op);
+        String profession = o.profession;
+        if (profession == null && village != null)
+            profession = Residents.chooseProfession(o.body, level, villages, village, o.op);
         Residents.Factory factory = Residents.factory(o.body);
-        Entity e = factory == null ? null : factory.create(level, at, o.profession);
+        Entity e = factory == null ? null : factory.create(level, at, profession);
         if (e == null) {
             MicRtsim.LOGGER.warn("[mic_rtsim] resident {}: no factory made a {}", o.op, o.body);
             finish(o, Obs.CommandResult.FAILED, null, null, now);
             return;
         }
-        if ((o.flags & Cmd.SpawnResident.FLAG_AT_VILLAGE) != 0)
+        if (standNear)
             standNear(level, e, pos);
         if (e instanceof Mob mob)
             mob.setPersistenceRequired();
@@ -156,6 +238,18 @@ public final class ResidentSpawner {
         }
         spend.applyAsInt(1);
         spawned++;
+        if (walker && village != null) {
+            VillageRegistry.Walker w = new VillageRegistry.Walker();
+            w.id = id;
+            w.village = village.id;
+            w.dimension = level.dimension();
+            w.sx = o.x;
+            w.sz = o.z;
+            w.spawnedAt = now;
+            w.deadline = now + Walkers.WALK_TIMEOUT_TICKS;
+            villages.walkers.put(id, w);
+            villages.setDirty();
+        }
         finish(o, Obs.CommandResult.APPLIED, chunk, e, now);
     }
 
@@ -193,7 +287,7 @@ public final class ResidentSpawner {
      * within 6 blocks, where the block below holds it up, the body fits and stands in no liquid;
      * else at the meeting point itself.
      */
-    static void standNear(ServerLevel level, Entity e, BlockPos meet) {
+    public static void standNear(ServerLevel level, Entity e, BlockPos meet) {
         for (int[] d : AROUND) {
             BlockPos c = meet.offset(d[0], 0, d[1]);
             if (!level.isLoaded(c))
