@@ -2121,8 +2121,10 @@ mod tests {
     }
 
     /// No player, villages of pop 6 and over in reach: a grove loses a raptor pack to a village's
-    /// defence at nearly every plunder (the faction's own loss, no pressure) and holds 0.80 to 0.97
-    /// of its warriors for years, flat by century; never pressed.
+    /// defence at nearly every plunder (the faction's own loss, no pressure), which with its plunder
+    /// mood (FB-S9-2) puts its next plunder off to about every 34 days; it holds 0.96 to 0.98 of its
+    /// warriors for years (without the mood 0.91 to 0.95, plundering every 12), flat by century;
+    /// never pressed.
     fn unattended_groves_over(seeds: &[u64], years: u64) {
         for stock in [VillageStock::Plain, VillageStock::Rich] {
             let rs = par_map(seeds, threads(), |&seed| {
@@ -2153,10 +2155,17 @@ mod tests {
                 match stock {
                     // Nothing worth taking, no fight, no loss.
                     VillageStock::Plain => assert!(m >= 0.97, "K {k}: {m}"),
-                    // Its mood (FB-S9-2): a lost pack puts the next plunder off, to 30 to 45 days.
+                    // Its mood (FB-S9-2, Ben, 2026-10-30): a lost pack puts the next plunder off, to about every
+                    // 34 days against 12 (30 seeds, 60 years: 33.7 [23.7, 62.6]), and the grove holds 0.963, 0.974
+                    // and 0.979 of K 5, 7 and 9 (5th to 95th 0.947 to 0.988). The bands leave room for 2 seeds.
                     VillageStock::Rich => {
-                        assert!((0.94..=0.995).contains(&m), "K {k}: {m}");
-                        assert!((28.0..=46.0).contains(&band(&gap).0), "K {k}: {gap:?}");
+                        let (lo, hi) = match k {
+                            5 => (0.94, 0.985),
+                            7 => (0.955, 0.99),
+                            _ => (0.96, 0.995),
+                        };
+                        assert!((lo..=hi).contains(&m), "K {k}: {m}");
+                        assert!((26.0..=42.0).contains(&band(&gap).0), "K {k}: {gap:?}");
                     }
                 }
                 assert!((band(&early).0 - band(&late).0).abs() < 0.06, "flat: {early:?} {late:?}");
@@ -2185,8 +2194,8 @@ mod tests {
     }
 
     /// Sixty game years under each script, dens and groves on separate worlds: a den with no one
-    /// pressing holds 1.00 and one under a roamer 0.93 or more; a grove with no one holds 0.80 to
-    /// 0.97 (1.00 with no village in reach); the renewal events a year do not drift by century;
+    /// pressing holds 1.00 and one under a roamer 0.93 or more; a grove with no one holds 0.95 to
+    /// 0.995 with its plunder mood (K 7: 0.974 [0.962, 0.986], FB-S9-2; 1.00 with no village in reach); the renewal events a year do not drift by century;
     /// the engine's save does not grow. The roamer's bands are the first run's own (EQUILIBRIUM.md §4).
     fn long_horizon_over(seeds: &[u64], years: u64) {
         let to = years * YEAR;
@@ -2230,7 +2239,7 @@ mod tests {
                 match (name, script) {
                     ("den", "none") => assert!(m >= 0.995, "{m}"),
                     ("den", _) => assert!(m >= 0.90, "{m}"),
-                    ("grove", "none") => assert!((0.80..=0.97).contains(&m), "{m}"),
+                    ("grove", "none") => assert!((0.95..=0.995).contains(&m), "{m}"),
                     _ => assert!((0.0..=1.0).contains(&m), "{m}"),
                 }
                 if judged || script == "none" {
