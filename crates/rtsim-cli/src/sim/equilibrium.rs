@@ -800,7 +800,9 @@ pub fn camp_run(
                 && was[i]
                 && let Some(last) = out.breaks[i].last_mut()
             {
-                last.refound_pool = Some(c.pool_at(f, t).floor());
+                // The band's members, home and away: a plunder (a raider's draw can fall within
+                // the day of the refounding) may have taken some out of the pool already.
+                last.refound_pool = Some(c.pool_at(f, t).floor() + f64::from(c.factions[i].away));
             }
             was[i] = b.is_some();
         }
@@ -1484,7 +1486,10 @@ mod tests {
                     b.wait
                 );
                 if let Some(pool) = b.refound_pool {
-                    assert_eq!(pool, (0.25 * cap as f64).floor(), "{name}: {b:?}");
+                    // A quarter of the cap, and what a day's recruiting at the pressure then added
+                    // before the harness looked (at most 2).
+                    let want = (0.25f64 * cap).floor();
+                    assert!((want..=want + 2.0).contains(&pool), "{name}: {b:?}");
                 }
             }
         }
