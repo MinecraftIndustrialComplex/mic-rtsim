@@ -38,6 +38,15 @@
   },
   "pool_cap": 60,
   "recruits_per_day": 2.0,
+  "pool_renewal": {
+    "half_life_days": 192.0,
+    "recruit_cap_days": 96.0,
+    "break_share": 0.1,
+    "break_pressure": 2.0,
+    "refound_base_days": 48.0,
+    "refound_cap_days": 384.0,
+    "refound_share": 0.25
+  },
   "march_blocks_per_tick": 0.02,
   "muster_days": 1.0,
   "patience_days": 2.0,

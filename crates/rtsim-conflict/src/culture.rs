@@ -335,6 +335,39 @@ pub struct Renewal {
     pub boss: bool,
 }
 
+/// How a pool camp feels a player's kills (EQUILIBRIUM.md §2.4.5, EQC202): the recruiting rate
+/// slows by `2^-P` while the player's losses stand, a camp that is thin and under heavy pressure
+/// breaks, and a broken camp is refounded after a wait. All tunables, in days and shares of the
+/// cap. Only a culture whose warriors are a number (no `camp_bodies`) carries one.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PoolRenewalDef {
+    /// Days for the pressure to halve (FB-1: 192 for the pool camps).
+    pub half_life_days: f32,
+    /// The slowest the camp recruits, as days a warrior: the rate is at least `1 / recruit_cap_days`
+    /// whatever the pressure (the shared rule's cap).
+    pub recruit_cap_days: f32,
+    /// A camp breaks only while its warriors, home and away, are under this share of its cap.
+    pub break_share: f32,
+    /// ... and the pressure is at least this.
+    pub break_pressure: f32,
+    /// A broken camp waits `min(refound_cap_days, refound_base_days x 2^P)` days to be refounded.
+    pub refound_base_days: f32,
+    pub refound_cap_days: f32,
+    /// The refounded band's pool, as a share of the cap.
+    pub refound_share: f32,
+}
+
+/// A culture's pool renewal resolved (EQC202).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PoolRenewal {
+    pub def: PoolRenewalDef,
+    /// The recruiting rule: base `1 / recruits_per_day` days a warrior, capped at
+    /// `recruit_cap_days`, so the rate is `recruits_per_day x 2^-P` down to `1 / recruit_cap_days`.
+    pub recruit: RenewalRule,
+    /// The refounding wait, by the same rule.
+    pub refound: RenewalRule,
+}
+
 /// A culture as its JSON says.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CultureDef {
@@ -430,6 +463,11 @@ pub struct CultureDef {
     /// and `camp_bodies` (`Culture::resolve`). Absent: the pool refills by its rate, as M4 built.
     #[serde(default)]
     pub renewal: Option<RenewalDef>,
+    /// How a pool camp feels a player's kills: its recruiting slows, it can break, and it is
+    /// refounded (EQC202). Needs `recruits_per_day` above 0 and no `camp_bodies` and no
+    /// `renewal`. Absent: the pool refills by its rate whatever is killed, as before.
+    #[serde(default)]
+    pub pool_renewal: Option<PoolRenewalDef>,
     /// The body kind (dictionary kind 3) of a camp's chief when the chief is a body of its own,
     /// kept in one slot outside the pool (`CHIEF_SLOT`, MZB-401): the grove's Umvuthi. Absent: the
     /// chief has no slot (a den's chief is its one unit, a goblin camp's has no body).
@@ -481,6 +519,8 @@ pub struct Culture {
     pub renewal: Option<Renewal>,
     /// `def.chief_renewal` resolved (MZB-407).
     pub chief_renewal: Option<Renewal>,
+    /// `def.pool_renewal` resolved (EQC202).
+    pub pool_renewal: Option<PoolRenewal>,
     /// The party kinds the chief leads (MZB-413): `def.chief_leads` resolved, raid, invasion and
     /// siege when the data leaves it out.
     pub chief_leads: Vec<PartyKind>,
@@ -608,6 +648,71 @@ impl Culture {
                 Ok(Renewal { rule, boss: r.boss })
             })
             .transpose()?;
+        // A pool camp's pressure (EQC202): the rate it slows is the culture's own, so there must
+        // be one, and a body camp's pool is a slot table (S9's) and a renewal's members come back
+        // by one rule.
+        let pool_renewal = def
+            .pool_renewal
+            .map(|r| -> Result<PoolRenewal, String> {
+                let what = "pool_renewal";
+                if def.renewal.is_some() {
+                    return Err(format!(
+                        "{n}: {what} and renewal are two rules for the same members"
+                    ));
+                }
+                if def.camp_bodies {
+                    return Err(format!("{n}: {what} is for a camp with no bodies"));
+                }
+                if !(def.recruits_per_day.is_finite() && def.recruits_per_day > 0.0) {
+                    return Err(format!(
+                        "{n}: {what} slows recruits_per_day, which must be above 0"
+                    ));
+                }
+                let nums = [
+                    r.half_life_days,
+                    r.recruit_cap_days,
+                    r.break_share,
+                    r.break_pressure,
+                    r.refound_base_days,
+                    r.refound_cap_days,
+                    r.refound_share,
+                ];
+                if !nums.iter().all(|v| v.is_finite()) {
+                    return Err(format!("{n}: {what} numbers must be finite"));
+                }
+                if !(r.break_share > 0.0 && r.break_share < 1.0) {
+                    return Err(format!("{n}: {what} break_share must be in (0, 1)"));
+                }
+                if !(r.refound_share > 0.0 && r.refound_share <= 1.0) {
+                    return Err(format!("{n}: {what} refound_share must be in (0, 1]"));
+                }
+                if r.break_pressure <= 0.0 {
+                    return Err(format!("{n}: {what} break_pressure must be above 0"));
+                }
+                // The recruiting rule: its base is the culture's own wait for a warrior, so
+                // `RenewalDef::rule` checks the rest (base above 0, cap at least base, half-life).
+                let base = (1.0 / def.recruits_per_day) as f32;
+                let recruit = RenewalDef {
+                    base_days: base,
+                    cap_days: r.recruit_cap_days,
+                    half_life_days: r.half_life_days,
+                    boss: false,
+                }
+                .rule(n, "pool_renewal recruit_cap_days")?;
+                let refound = RenewalDef {
+                    base_days: r.refound_base_days,
+                    cap_days: r.refound_cap_days,
+                    half_life_days: r.half_life_days,
+                    boss: false,
+                }
+                .rule(n, "pool_renewal refound")?;
+                Ok(PoolRenewal {
+                    def: r,
+                    recruit,
+                    refound,
+                })
+            })
+            .transpose()?;
         // The chief's slot and its fields (MZB-401, MZB-407, MZB-413). A chief's body is a body
         // kind of its own: a unit's body in its place would let a census read one as the other.
         if let Some(b) = &def.chief_body {
@@ -689,6 +794,7 @@ impl Culture {
             bare,
             renewal,
             chief_renewal,
+            pool_renewal,
             chief_leads,
             def,
         })
