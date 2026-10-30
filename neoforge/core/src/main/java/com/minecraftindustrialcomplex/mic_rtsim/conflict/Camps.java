@@ -334,7 +334,7 @@ public final class Camps {
     /** CHIEF_STATE records written, and reports queued (a later one for the same faction replaces the first; MZB-287). */
     public long chiefStates, chiefStatesQueued;
     /** The Umvuthana's (M9): removals held, pairs held, heirs seated, warriors masked, second bodies met, CHIEF_BODY records taken and written. */
-    public long heldRemovals, heldPairs, heirs, masks, secondBodies, chiefBodies, chiefBodiesWritten, chiefPaid, traded;
+    public long heldRemovals, heldPairs, heirs, masks, secondBodies, chiefBodies, chiefBodiesWritten, chiefPaid, traded, arrivedBodies;
     /**
      * M11's (MZB-819 to MZB-825): chief HAND_BACKs held while the puppet floats home, the ones played at the timeout where the
      * puppet stood, merges into a standing throne body (case B), held chief TAKEs answered stale by a puppet near the throne,
@@ -397,7 +397,7 @@ public final class Camps {
         off = false;
         censuses = outs = reconciles = lines = staleLines = spawned = adopted = taken = removed = handedOff = handedBack = 0;
         deaths = carried = markers = heldSpawns = recounts = strayWatches = strays = 0;
-        heldRemovals = heldPairs = heirs = masks = secondBodies = chiefBodies = chiefBodiesWritten = chiefPaid = traded = 0;
+        heldRemovals = heldPairs = heirs = masks = secondBodies = chiefBodies = chiefBodiesWritten = chiefPaid = traded = arrivedBodies = 0;
         heldHandBacks = chiefHandBacksLate = chiefMerges = staleTakes = homeDeaths = puppetPaid = puppetsSecond = chiefBodiesAway = 0;
         strayDeaths = engineRecounts = leaveRecounts = 0;
         unseen.clear();
@@ -1327,6 +1327,12 @@ public final class Camps {
         }
         if (!level.addFreshEntity(m))
             return null; // the join event indexed it and kept it home
+        try {
+            c.kind.arrived(level, c, m);
+            arrivedBodies++;
+        } catch (RuntimeException ex) {
+            MicRtsim.LOGGER.error("[mic_rtsim] the arrival effect of camp body {} failed", ln.body(), ex);
+        }
         if (writes) {
             chiefBodiesWritten++;
             c.memory = null;

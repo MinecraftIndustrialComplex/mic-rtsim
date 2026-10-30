@@ -12068,7 +12068,7 @@ often it is wiped). Measured at the engine's rules for a grove of 7 (K 5 to 9 in
 | (b) base 3 | 39 (28 to 49) | 9.3 (7.7 to 10.6) | 0.96 (0.94 to 0.97) |
 | (c) base 12 | 134 (101 to 165) | 4.5 (4.0 to 5.0) | 0.50 |
 
-Recommended **(a)**. A cleared grove is quiet for 73 game days (a game day is 20 real minutes, so about a real day)
+**Decided by Ben, 2026-10-30: (a), base 6, as built.** Recommended **(a)**. A cleared grove is quiet for 73 game days (a game day is 20 real minutes, so about a real day)
 instead of 3.5 days; a farmed one yields about 2 masks a game year (a mask drops from one warrior in three); the crystal and
 the Sol Visage are untouched. It is §2.4.7 as Ben approved it, §1.1's "back in about a game year" is 0.76 of one, and (b)
 only buys the held share back, which FB-S9-2 does better. What the player sees change: MOWZIE.md §0's "a grove you have
@@ -12083,6 +12083,8 @@ meet a grove ahead of it.
 (b) Yes: umvuthana.json gets the raider's block: a plunder every 35 days instead of 12 when every pack is lost, and the grove
 holds 0.96 to 0.98. Villages near a grove meet raptors a third as often.
 Why it is Ben's: how often villages and players meet a camp (FB-10's reason).
+**Decided by Ben, 2026-10-30: YES, (b), against the recommendation.** Built as MZB-1280 to MZB-1284 (the raider's block in umvuthana.json,
+no new code; the measured plunder interval and hold are there).
 
 **FOR BEN (FB-S9-3). Does a boss appear in front of a player who stays?** EQUILIBRIUM.md §2.2 says an arrival is never
 placed into a site with a player within 128 blocks and is retried a game day later; MOWZIE.md ("The body") and MZB-280 built
@@ -12095,6 +12097,9 @@ standing at the den never sees the Frostmaw come.
 (c) As (a) with a longer limit, 2 game days.
 Why it is Ben's: whether a boss can be seen to appear, and a loot supply floor for a player who lives at a camp. §2.2, §2.6
 item 8 and the kernel's `Arrival::OnLoad` doc are corrected at the build whichever is taken.
+**Decided by Ben, 2026-10-30, in his words: "Just spawn anyway, bonus points if you have some cool effects."** None of (a) to (c): a
+returning boss is placed when due even with a player near or watching, with no hold (no 160 blocks, no 6,000 ticks) and an effect
+built of the game's and the jar's own things. Built as MZB-1272 to MZB-1279.
 
 **FOR BEN (FB-S9-4). The second pressure in the world-save ledger.** The Umvuthi's pressure is lost at a reset unless the
 site ledger row carries it: a reset would then give a farmed Umvuthi a 12-day heir wait instead of up to 52, a small mint of
@@ -12105,6 +12110,7 @@ spare bits of an existing long (no change to the file's version or row length).
 (c) A second site kind for the chief, with its own row and found tail: also carries the heir's wait (MZB-1032 left it out),
 but changes FACTION_FOUND's size and the ledger's kinds.
 Why it is Ben's: a format in the world save and what a reset can mint (EQ-3's reason).
+**Decided by Ben, 2026-10-30: yes, (a), carry it, as built.**
 
 **Told, not asked.** The conflict pages RTCE to RTCF (the engine's own save, no migration); one new test order, 42; the census
 splits `conflict.camp` into `conflict.camp`, `conflict.den` and `conflict.grove`; a grove found empty with no row is K 5;
@@ -12375,11 +12381,13 @@ of what is built) is taken.
   12; (d) keep the rate and add pressure to it, as S7's pool camps (refused by `Culture::resolve` for a body camp, and a rate
   cannot owe a body one at a time); (e) a second, shorter base for losses no player caused (the kernel has one base). **Taken
   (a)**, the numbers of FB-S9-1.
-- **MZB-1251** (F2, **FOR BEN (FB-S9-2)**, the grove's plunder clock): (a) unchanged; (b) the raider's `plunder_mood`. **Taken (a).**
+- **MZB-1251** (F2, **FOR BEN (FB-S9-2)**, the grove's plunder clock): (a) unchanged; (b) the raider's `plunder_mood`. The build took (a);
+  **Ben decided (b), 2026-10-30** (MZB-1280).
 - **MZB-1252** (F3, **FOR BEN (FB-S9-3)**, a boss in front of a player): (a) keep the hold, 160 blocks and 6,000 ticks; (b)
-  §2.2 as written; (c) a longer limit. **Taken (a).**
+  §2.2 as written; (c) a longer limit. The build took (a); **Ben decided otherwise, 2026-10-30: spawn anyway, with an effect**
+  (MZB-1272).
 - **MZB-1253** (F4, **FOR BEN (FB-S9-4)**, the Umvuthi's pressure in the ledger): (a) carry `p2`; (b) do not; (c) a second site
-  kind. **Taken (a).**
+  kind. **Taken (a)**, and **Ben decided (a), 2026-10-30.**
 - **MZB-1254** (F5, one pressure or two): (a) two, the Umvuthi's own; (b) one shared. **Taken (a)**: with one the grove sits at
   0.10 of K while its Umvuthi is farmed and a warrior farmer slows the heir 2.4 times (MZB-1203, item 5).
 - **MZB-1255** (F6, K of a grove found short or empty): (a) K the count found, 5 when none and no row; (b) K 1 as built; (c) K
@@ -12505,15 +12513,78 @@ of what is built) is taken.
   warriors' rule, 96 days to the first warrior, a long first wait for a world whose groves were cleared before the mod: the
   conservative reading of "found empty".
 
+### Ben's answers (2026-10-30)
+
+Ben answered the four FOR BEN items on 2026-10-30. **FB-S9-1: (a), base 6, as built. FB-S9-4: yes, the Umvuthi's pressure in the
+ledger row, as built. FB-S9-2: YES, the grove plunders on its losses (the raider's block), against the recommendation, built as
+MZB-1280 to MZB-1284. FB-S9-3, in Ben's words: "Just spawn anyway, bonus points if you have some cool effects."** (none of (a) to
+(c)), built as MZB-1272 to MZB-1279. The records above that say "Taken (a)" for MZB-1251 and MZB-1252 are the build's first reading and
+are superseded by these.
+
+- **MZB-1272** (FB-S9-3, decided by Ben, 2026-10-30: the hold is dropped for a boss's return): a Frostmaw at its den and an Umvuthi on
+  its throne (a SPAWN, or an heir seated by the pair) are placed when due, with a player beside the spot or watching: `DenKind` and
+  `GroveKind` answer `holdSpawn` false (no 160-block wait, no 6,000-tick limit; `DenKind.HOLD_RANGE` is gone, `GroveKind.HOLD_RANGE`
+  stays for Rule U's removal hold, which is unchanged: a boss in a fight or with a player beside it is still never taken away). The core's
+  `CampKind.holdSpawn`, `Camps.HOLD_MAX` and the held counters stay: a kind may still hold, a census in progress still holds every
+  SPAWN (`c.recount`, MZB-660), and the machinery stays under test on `MowzieKit.HoldingKind`, which keeps the pre-S9 grove rule.
+  §2.2's "nothing pops in front of the player" now says "but a boss", in EQUILIBRIUM.md §1.1, §2.2, §2.6 item 8 and the
+  assumptions table, and MOWZIE.md §4.5, §4.6, §4.9, §7 test 5 and the plain-view row say the same.
+- **MZB-1273** (the hook): `CampKind.arrived(level, site, body)`, a default that does nothing, is called by `Camps.makeBody` once
+  `level.addFreshEntity` took the body of a SPAWN or a SEAT_HEIR (so also an heir seated in place of the old chief's body, MZB-410),
+  inside a `try` (an exception is logged and the line goes on), and counted in `Camps.arrivedBodies`. It is not called for an ADOPT, a
+  HAND_BACK or a puppet: nothing is made there. It must journal nothing and change nothing of the body.
+- **MZB-1274** (the Frostmaw's arrival, `BossArrival.frostmaw`; everything is the game's or the jar's, D3): at the den's spot, one burst in
+  the tick of the arrival: (1) 60 `BLOCK` particles of packed ice, the ground breaking; (2) the jar's roar ring, `ParticleCloud.Data`
+  (0.75, 0.75, 1.0; scale 40 and 35; 22 ticks; GROW), two rings of 15 flying out at 0.9 and 0.65 blocks a tick a block up, as
+  `EntityFrostmaw.doRoarEffects` spawns them; (3) the jar's `ParticleSnowFlake.Data(40, false)` (30) and vanilla's `SNOWFLAKE` (90) and
+  `CLOUD` (20) drifting up round it; (4) three sounds, `MMSounds.ENTITY_FROSTMAW_FROZEN_CRASH` (volume 3), `ENTITY_FROSTMAW_LAND`
+  (2, pitch 0.8) and `ENTITY_FROSTMAW_ROAR` (4, the volume of the jar's own wake-up roar); (5) `EntityCameraShake.cameraShake` of 45 blocks,
+  magnitude 0.03, 20 ticks and 20 of fade (the jar's roar shake is 60 and 20). The Frostmaw stays asleep, as the den keeps it.
+- **MZB-1275** (the Umvuthi's arrival, `BossArrival.umvuthi`): at the throne, one burst: (1) 24 of the jar's `ParticleOrb.Data.create`
+  orbs (mode 1, flying to the Umvuthi at speed 6) from a sphere of 3.5 blocks, as its attack gathers them (`EntityUmvuthi`: 7 from 2); (2)
+  a ring of 20 `FLAME` along the ground at 0.22 blocks a tick, five `CAMPFIRE_SIGNAL_SMOKE` columns rising from the fire pit's place and 60
+  `ASH` falling round it (vanilla's); (3) `MMSounds.ENTITY_UMVUTHI_BELLY`, the belly drum (volume 3), and `ENTITY_UMVUTHI_ROAR` (3); (4) a
+  light camera shake, 28 blocks, magnitude 0.015, 10 ticks and 20 of fade.
+- **MZB-1276** (what is not used, and why): the jar's animations and abilities. The Frostmaw's `ACTIVATE_ANIMATION` (118 ticks, wake-up
+  sound, a roar and a 45-block shake at tick 52, boss music) is what the jar plays when a target is within 8 blocks: it sets `active`, after
+  which the jar's goals (swipes, ice breath, ice balls) and its boss music run against whoever is near, so an arrival that played it would
+  start a fight with the player who stays, which "just spawn anyway" does not ask for (unverified on a client: the jar's target goals
+  were not read, only that `active` is what its tick needs for a fight); the arrival replays the animation's own effects (the roar ring, the
+  roar, the shake) from the server and leaves the Frostmaw asleep. The Umvuthi's abilities (`SpawnFollowersAbility`, the sun flare, the
+  supernova) summon cranes and fire the sun: a gameplay effect and uncounted bodies. The jar's own particles that are `AdvancedParticleType`
+  (SUN, RING, LEAF and the rest) are sent with no components, so they would show as hard static discs; they are left out.
+- **MZB-1277** (the warriors, decided by the build, recommended): a grove's warriors keep spawning out of sight, as built (MZB-1220),
+  and get no effect. Reason: they come one at a time every six days or more (a grove farmed to the cap, one every 96); a burst for
+  each would be noise a player learns to ignore and it would put the boss's return, the rare event, beside a routine one; and the
+  place they come to, the grove's edge on the side away from the nearest player, is already chosen to be unseen. The hook sees
+  them (the kind answers nothing for a warrior) and `aDueUmvuthiIsSeatedAtOnceBesideAPlayerWithItsArrival` pins it.
+- **MZB-1278** (reach and cost): the burst is sent only when a non-spectator player is within 64 blocks (nothing is built otherwise, and no
+  camera shake entity); particles by `ServerLevel.sendParticles`, so to players within 32 blocks, the roar and drum as sound packets to
+  every player of the level in earshot (vanilla's rule, 16 blocks a volume above 1: 64 at volume 4), over `level.players()` since vanilla's
+  `playSound` broadcasts over the server's whole list; a camera shake entity lives 40 ticks. A player gets 34 (Frostmaw) or 50 (Umvuthi)
+  particle packets and 3 or 2 sound packets, once, per arrival; a boss's return is a rare event (a den once a few game days at the
+  fastest, EQUILIBRIUM.md §2.4.7).
+- **MZB-1279** (tests, and what is unverified): `BossArrivalGameTests`: a Frostmaw SPAWN, an Umvuthi SPAWN and an Umvuthi heir's pair, each
+  with a hearer 6 blocks off that keeps every packet (`FakePlayers.overhearing`) and one 150 blocks off that is sent nothing: DONE within
+  200 ticks with nothing held, the body where it belongs, the arrival counted once, the particle types and counts, the sounds, one
+  camera shake, 30 to 100 particle packets (one burst), every packet through vanilla's wire codecs (so a jar type whose codec does not
+  work fails here and not on a client), and a warrior's SPAWN quiet. The hold's own tests moved to `HoldingKind`
+  (`aHoldingKindsChiefSpawnWaitsForThePlayerToLeaveOrSixThousandTicks`, `anEpochsEndAnswersEveryHeldLineStale`, the heir test's G1);
+  `aRefilledPoolIsSpawnedAtTheNextCensus` and `aForceLoadedSiteRefillsWhenUnwatched` now place the den's Frostmaw at once;
+  `aHeldFrostmawIsPlacedAfterHoldMaxWithAPlayerStillNear` and `aHeldSpawnIsAnsweredStaleWhenTheDenGoesOut` are removed (their
+  machinery is the grove's). Unverified: how the burst looks and sounds on a client (the GameTests are headless: no client in this
+  session draws or hears a packet); the numbers (counts, speeds, volumes) are the jar's own, copied, and are PLACEHOLDERS for Ben's eye.
+
 ### Build notes
 
-Built on the landed S7 (a4717c1f), FB-1 to FB-4 on the recommendations (FB-1 base 6, FB-2 no grove plunder mood, FB-3 the
-built hold of 160 blocks and 6,000 ticks, FB-4 the Umvuthi's pressure in the ledger row). If Ben answers differently the work is
-small and named: FB-1 is `base_days` in `umvuthana.json` (one number; `found_cap` and the cap stay); FB-2 is the absent
-`plunder_mood` block of the same file (add the block, and `rate_grove_cultures` in `synth.rs` stays the rate-based control);
-FB-3 is `HOLD_RANGE` (160.0) in `GroveKind` and `DenKind` and the 6,000-tick limit beside them (and MOWZIE.md's text, which now says 160); FB-4's other answer drops
-`p2` from SITE_STATE and the found tail (`rtsim-kernel/src/sites.rs`, `SiteLedger`) and the reset test, and the heir's wait after
-a restart falls back to the warriors' pressure (the 12-day heir of the failing test).
+Built on the landed S7 (a4717c1f), first on the recommendations (FB-1 base 6, FB-2 no grove plunder mood, FB-3 the built hold of
+160 blocks and 6,000 ticks, FB-4 the Umvuthi's pressure in the ledger row), then reworked for Ben's answers of 2026-10-30 (the
+section "Ben's answers" above): FB-1 and FB-4 as built; FB-2 yes, the raider's `plunder_mood` block added to `umvuthana.json`
+(MZB-1280 to MZB-1284); FB-3 the hold dropped and a boss's return given an effect (MZB-1272 to MZB-1279). The text below that
+says "the built hold of 160 blocks" or "no plunder mood" describes the first build. FB-1 is `base_days` in `umvuthana.json` (one
+number; `found_cap` and the cap stay); FB-2 is the `plunder_mood` block of the same file (take it out and `rate_grove_cultures`
+in `synth.rs` stays the rate-based control); FB-4's other answer would have dropped `p2` from SITE_STATE and the found tail
+(`rtsim-kernel/src/sites.rs`, `SiteLedger`) and the reset test.
 
 Commits, in order: 4eb3735e (step 1, the warriors on the shared rule, data and culture), f5b82621 (the second pressure in
 SITE_STATE and the found tail, order 42), acfa1674 (the Umvuthi's pressure, march casualties, `found_cap`, RTCF), c503fe01 (a
