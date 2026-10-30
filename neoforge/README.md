@@ -261,6 +261,22 @@ with test order 41 (`RtsimTests.slayCamp`) and reset or restarted after a gap.
 | `aVanillaPatrolAndTheOutpostsOwnPillagersAreLeftAlone` | two pillagers standing in a found outpost's box stay untagged and unremoved, no party of the camp's exists |
 | `uninstallLeavesTheOutpostAsVanilla` | stopped after a farm and a save: the chunk keeps the one structure start, no mob in the box carries a mark; a reinstall after a gap starts a session |
 
+The Frostmaw dens and the Umvuthana groves on the shared rule (EQUILIBRIUM.md S9, MZB-1265; `SiteLedgerGameTests` (S3's, extended) and
+`GroveRenewalGameTests` in the `mic_rtsim_mowziesmobs` namespace, native engine only, each in its own batch on a far base; the dens
+and groves are declared under the jar's structure names). The names EQUILIBRIUM.md §4 gives S9, and where each is:
+
+| Test | What it shows |
+|---|---|
+| `resetDoesNotMintAFrostmaw` | S3's `resetKeepsAFarmedSiteFarmed` (a plain reset keeps the den farmed: no Frostmaw before the row's wait) and `reinstallKeepsPressure` (a reinstall after a gap does not shorten the wait). The Frostmaw killed away (order 42) is left to the Rust tests: a puppet on the road needs the far view's bodies |
+| `aLuredFrostmawIsAPlayerLoss`, `aStrayFrostmawsDeathRaisesItsDensPressure` | both are S3's `aLuredBodyIsAPlayerLossAndAStraysDeathCounts` (first half: written off as a player's loss; second half: the stray's death adds 1 on the aged pressure) |
+| `aPetOrTrapKillAtADenIsAPlayerLoss` | the trap is S3's `trapKillAtABossSiteIsAPlayerLoss` (lava, a FakePlayer); the pet is `aPetsKillAtADenIsAPlayerLoss`: a wolf tamed by an online player kills the Frostmaw, CAMP_DEATH aux PLAYER, P 1, 12 days |
+| `anUmvuthiHeirTakesAWarrior` | `anUmvuthiHeirTakesAWarrior`: a grove found with no Umvuthi waits the cap's 192 days; the pair is answered, an Umvuthi stands, the row is short by one with P 0 and 6 days left, and a warrior is SPAWNed when they end (the scripted half is `anUmvuthiHeirTakesTheFarthestFreeWarrior`) |
+| `aKilledWarriorIsReplacedAfterTheWait` | a player kills one of three warriors: P 1/K, a wait of 6 x 2^(1/K) days, no SPAWN half way, one past it (RECOUNT first), three warriors again |
+| `aKilledUmvuthiLeavesTheWarriorsPressureAlone` | the Umvuthi killed: the row's p2 is 1 and its p is 0, whatever the jar's `die` did to the warriors near it |
+| `aResetKeepsAGrovesTwoPressures` | a warrior and then the Umvuthi killed: the row has p 1/K and p2 1; after a plain reset the found tail carries both, the warriors' P is aged by the ticks between the stamps, the Umvuthi's is not lower, and the warriors' wait runs on |
+| `uninstallLeavesHomeBodies` (extended) | its dead warrior's row is now WAITING with the cap's wait (96 days), not only P unchanged |
+| `aGroveWarriorKilledOnAMarchRaisesItsPressure` | not a GameTest: a puppet on the road needs the far view's bodies; the Rust tests (`tests/grove_renewal.rs`, `a_credited_march_casualty_presses_the_grove` and its neighbours) and test order 42 (`RtsimTests.sendParty`) carry it |
+
 The industry GameTests (`mic_rtsim_create` namespace; Create 6.0.10's own jar; always the stub engine,
 which scripts the engine's industry commands; each in its own batch):
 
