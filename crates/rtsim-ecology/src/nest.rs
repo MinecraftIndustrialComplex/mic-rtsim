@@ -1062,6 +1062,7 @@ impl Dragons {
             kind: SiteKind::Nest,
             flags,
             p: n.pressure.now(self.nests.day, tun.half_life_days),
+            p2: 0.0,
             k,
             count,
             away: 0,

@@ -604,6 +604,16 @@ public final class NativeEngine implements ScriptedEngine {
         order(new NativeCodec.Orders().conflictSlay(faction, n, pressure), "CONFLICT_SLAY");
     }
 
+    /**
+     * Test only (an engine opened with {@link #FLAG_TEST}): the camp of faction key {@code faction} sends a party of
+     * {@code kind} (0 envoy, 1 scouts, 2 raid, 3 invasion, 4 siege, 5 plunder) toward the block ({@code x}, {@code z})
+     * of {@code frame}, as if its feud had decided (slice S9, MZB-1233). The engine refuses it (logged) when the key is
+     * no camp or the camp cannot field the party. At the next step.
+     */
+    public void conflictSend(long faction, int kind, int frame, int x, int z) {
+        order(new NativeCodec.Orders().conflictSend(faction, kind, frame, x, z), "CONFLICT_SEND");
+    }
+
     /** An actor a test report names: a TALK ref's class ({@code TalkRecords.C_*}) and its two ids (docs/boundary.md §13.2). */
     public record TalkActor(int cls, long a, long b) {
         public static final TalkActor NONE = new TalkActor(0, 0, 0);
