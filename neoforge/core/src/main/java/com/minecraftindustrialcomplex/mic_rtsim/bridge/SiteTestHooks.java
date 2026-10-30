@@ -59,12 +59,18 @@ public final class SiteTestHooks {
         return RtsimSession.current().boundary().journal().nextObsSeq() - 1;
     }
 
-    /** Asks the engine to save its pages at its next step (an engine that takes scripted orders). */
+    /**
+     * Asks the engine to save its pages at its next step (an engine that takes scripted orders), and the world to save the
+     * journal's file: the journal is trimmed only to what the file on disk holds (JB9), and a GameTest world does not save
+     * itself, so a test waiting for {@link #savedThrough} would otherwise wait for whatever world save came by (a test's
+     * result then followed the phase of the server's autosave clock, not the code).
+     */
     public static void requestSave() {
         testsOnly();
-        if (RtsimSession.current().engine() instanceof ScriptedEngine e)
+        if (RtsimSession.current().engine() instanceof ScriptedEngine e) {
             e.requestSaveAtNextStep();
-        else
+            RtsimSession.current().server().saveEverything(true, false, true);
+        } else
             throw new IllegalStateException("the session's engine takes no scripted orders: " + RtsimSession.current().engine().describe());
     }
 
