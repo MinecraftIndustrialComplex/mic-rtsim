@@ -6,7 +6,6 @@ import com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs;
 import com.minecraftindustrialcomplex.mic_rtsim.engine.ScriptedEngine;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.FakePlayers;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests;
-import com.minecraftindustrialcomplex.mic_rtsim.growth.ResidentSpawner;
 import com.minecraftindustrialcomplex.mic_rtsim.puppet.RtsimAttachments;
 import com.minecraftindustrialcomplex.mic_rtsim.village.Village;
 import com.minecraftindustrialcomplex.mic_rtsim.village.VillageRegistry;
@@ -161,7 +160,9 @@ public final class RibbitRenewalGameTests {
         ServerPlayer player = FakePlayers.add(level, c.add(0, 0, 4), "ribbit_watcher");
         List<ChunkPos> forced = new ArrayList<>();
         double sx = v.meeting.getX() + 192, sz = v.meeting.getZ();
-        for (int d : ResidentSpawner.WALK_DISTANCES) {
+        // The whole corridor from the edge to the meeting point, not only the spawn points: a walker stops in a chunk that
+        // does not tick, and this test is about the walk, not about which chunks a player's view keeps loaded.
+        for (int d = 0; d <= 192; d += 16) {
             int px = (int) Math.floor(v.meeting.getX() + d), pz = v.meeting.getZ();
             for (int cx = (px >> 4) - 1; cx <= (px >> 4) + 1; cx++)
                 for (int cz = (pz >> 4) - 1; cz <= (pz >> 4) + 1; cz++) {
@@ -174,7 +175,11 @@ public final class RibbitRenewalGameTests {
         }
         long op = engineOp();
         long[] arrived0 = {RtsimTests.session().phase1.walkers.arrived()};
+        long[] placed0 = {RtsimTests.session().phase1.walkers.placed()};
         double[] out = {0};
+        java.util.UUID[] settlerId = {null};
+        long[] lastSample = {0};
+        StringBuilder trace = new StringBuilder();
         arrive(stub, v, helper, op, WALK_IN, sx, sz);
         helper.startSequence()
                 .thenWaitUntil(() -> {
@@ -188,6 +193,7 @@ public final class RibbitRenewalGameTests {
                             continue;
                         var settler = level.getEntity(w.id);
                         check("the settler is in the level", settler != null);
+                        settlerId[0] = w.id;
                         out[0] = Math.hypot(settler.getX() - (v.meeting.getX() + 0.5), settler.getZ() - (v.meeting.getZ() + 0.5));
                         check("96 to 176 blocks out: " + out[0], out[0] >= 94 && out[0] <= 178);
                         check("at least 128 blocks from the player: " + settler.distanceTo(player), settler.distanceTo(player) >= 127);
@@ -195,8 +201,29 @@ public final class RibbitRenewalGameTests {
                     }
                     record("ribbitWalk", "spawned this far out", out[0]);
                 })
-                .thenWaitUntil(() -> check("it walked to within 12 blocks of the meeting point, not put there",
-                        RtsimTests.session().phase1.walkers.arrived() >= arrived0[0] + 1))
+                .thenWaitUntil(() -> {
+                    // A trace of the walk for the failure message: where the settler is every 500 ticks and what holds it.
+                    var settler = settlerId[0] == null ? null : level.getEntity(settlerId[0]);
+                    long tick = helper.getTick();
+                    if (tick - lastSample[0] >= 500) {
+                        lastSample[0] = tick;
+                        trace.append(" t").append(tick).append(' ');
+                        if (settler == null) {
+                            trace.append("gone");
+                        } else {
+                            trace.append((int) Math.hypot(settler.getX() - (v.meeting.getX() + 0.5), settler.getZ() - (v.meeting.getZ() + 0.5)))
+                                    .append(settler.isAlive() ? "" : " dead")
+                                    .append(level.isPositionEntityTicking(settler.blockPosition()) ? " ticking" : " NOT ticking");
+                            if (settler instanceof net.minecraft.world.entity.Mob m)
+                                trace.append(m.getNavigation().isDone() ? " idle" : " pathing").append(m.isNoAi() ? " noai" : "");
+                        }
+                        trace.append(';');
+                    }
+                    check("it walked to within 12 blocks of the meeting point, not put there: walkers "
+                            + villages.walkers.size() + ", placed " + (RtsimTests.session().phase1.walkers.placed() - placed0[0])
+                            + ", arrived " + (RtsimTests.session().phase1.walkers.arrived() - arrived0[0]) + ", trace" + trace,
+                            RtsimTests.session().phase1.walkers.arrived() >= arrived0[0] + 1);
+                })
                 .thenExecute(() -> {
                     for (RibbitEntity r : ribbitsIn(helper, v))
                         r.discard();
