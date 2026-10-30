@@ -87,7 +87,7 @@ public final class BossArrivalGameTests {
 
     /** Every packet of {@code sent} survives the wire: encoded and decoded by vanilla's own codecs, the same type, count and sound. */
     private static void survivesTheWire(ServerLevel level, Sent sent) {
-        RegistryFriendlyByteBuf buf = new RegistryFriendlyByteBuf(Unpooled.buffer(), level.registryAccess());
+        RegistryFriendlyByteBuf buf = RegistryFriendlyByteBuf.decorator(level.registryAccess()).apply(Unpooled.buffer());
         for (ClientboundLevelParticlesPacket p : sent.particles) {
             buf.clear();
             ClientboundLevelParticlesPacket.STREAM_CODEC.encode(buf, p);
