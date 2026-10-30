@@ -34,9 +34,11 @@ pub mod phase1 {
     /// Snapshot bytes per page.
     pub const PIECE: usize = 1 << 20;
     pub const META_MAGIC: u32 = u32::from_le_bytes(*b"RTP1");
-    /// Mirrors the link's: 5 since the inputs kept while phase 1 was off follow the queue, a
-    /// section after everything the viewer reads of the page (`load::decode_meta`).
-    pub const META_VERSION: u16 = 5;
+    /// Mirrors the link's: 6 since slice S6 (the census input and the resident answer join the log,
+    /// and the snapshot part drops the censused villages: `load::decode_snapshot`); 5 before it, since
+    /// the inputs kept while phase 1 was off follow the queue, a section after everything the viewer
+    /// reads of the page (`load::decode_meta`).
+    pub const META_VERSION: u16 = 6;
     pub const SNAP_MAGIC: u32 = u32::from_le_bytes(*b"RTPS");
     /// The world's seed (a PLACEHOLDER in the link too: the bridge does not send Minecraft's).
     pub const WORLD_SEED: u64 = 0x6d69_635f_7031;
