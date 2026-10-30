@@ -278,7 +278,7 @@ public final class SiteLedger extends SavedData {
             a[2] = (Float.floatToRawIntBits(r.p) & 0xFFFF_FFFFL) | (long) r.gapSeen << 32;
             a[3] = r.stamp;
             a[4] = r.waitLeft;
-            a[5] = (r.n & 0xFFFFL) | (long) (r.l & 0xFFFF) << 16 | (long) (r.m & 0xFFFF) << 32 | (long) milli(r.p2) << 48;
+            a[5] = SiteRowPacking.counts(r.n, r.l, r.m, r.p2);
             System.arraycopy(r.uuids, 0, a, 6, r.uuids.length);
             list.add(new LongArrayTag(a));
         }
@@ -316,27 +316,26 @@ public final class SiteLedger extends SavedData {
         int kind = (int) (a[1] & 0xFF);
         int flags = (int) (a[1] >>> 8 & 0xFF);
         int k = (int) (a[1] >>> 16 & 0xFFFF);
-        int n = (int) (a[5] & 0xFFFF), l = (int) (a[5] >>> 16 & 0xFFFF), m = (int) (a[5] >>> 32 & 0xFFFF);
+        int n = SiteRowPacking.n(a[5]), l = SiteRowPacking.l(a[5]), m = SiteRowPacking.m(a[5]);
         int cap = Math.min(k, MAX_BODIES / 3);
         if (!knownKind(kind) || n > cap || l > cap || m > cap || a.length != 6 + 2 * (n + l + m))
             return null;
         long[] uuids = new long[a.length - 6];
         System.arraycopy(a, 6, uuids, 0, uuids.length);
         return new Row(kind, a[0], flags, k, (int) (a[1] >>> 32 & 0xFFFF), (int) (a[1] >>> 48 & 0xFFFF),
-                sane(Float.intBitsToFloat((int) a[2])), (a[5] >>> 48 & 0xFFFF) / 1000f, (int) (a[2] >>> 32), a[3], a[4], n, l, m, uuids);
+                sane(Float.intBitsToFloat((int) a[2])), SiteRowPacking.p2(a[5]), (int) (a[2] >>> 32), a[3], a[4], n, l, m, uuids);
     }
 
     private static int u16(ByteBuffer b, int at) {
         return b.getShort(at) & 0xFFFF;
     }
 
-    /** A pressure in thousandths, a saturating u16 (the row's 16 spare bits, MZB-1231). */
-    static int milli(float p) {
-        return (int) Math.min(0xFFFF, Math.round(sane(p) * 1000f));
-    }
-
     /** A pressure that is not a finite positive number reads as 0 ({@code rtsim_kernel::sites}). */
     private static float sane(float p) {
-        return Float.isFinite(p) && p > 0 ? p : 0;
+        return SiteRowPacking.sane(p);
+    }
+
+    private static int milli(float p) {
+        return SiteRowPacking.milli(p);
     }
 }
