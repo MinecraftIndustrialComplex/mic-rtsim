@@ -6,10 +6,11 @@
 
 use rtsim_conflict::boundary::{self, Obs};
 use rtsim_conflict::culture::PartyKind;
+use rtsim_conflict::culture::SignalKind;
 use rtsim_conflict::culture::{
     BANDIT_JSON, Culture, CultureDef, FROSTMAW_JSON, GOBLIN_JSON, RAIDER_JSON, UMVUTHANA_JSON,
 };
-use rtsim_conflict::engine::{BLOCKED, Party, Target, body_id};
+use rtsim_conflict::engine::{BLOCKED, Demand, Party, Signal, Target, body_id};
 use rtsim_conflict::{Conflict, ConflictTunables, Cultures, synth};
 use rtsim_ecology::infra::{DistrictSite, Infrastructure, NoInfrastructure, RaidOutcome};
 use rtsim_industry::ids::{Good, GoodVec};
@@ -675,4 +676,440 @@ fn a_raid_lost_to_a_village_adds_nothing() {
         c.stats
     );
     assert_eq!(pressure(&c, f, Tick(30 * DAY)), 0.0);
+}
+
+// ---------------------------------------------------------------- a camp breaks (EQC207, EQC208)
+
+/// A goblin camp with `pool` warriors at `at` under pressure `p` as of that day: the state a break
+/// is looked at from.
+fn strained(c: &mut Conflict, f: u32, pool: f64, p: f32, at: Tick) {
+    let x = &mut c.factions[f as usize];
+    (x.pool, x.pool_at) = (pool, at);
+    x.strain.as_mut().unwrap().pressure = Pressure::from_parts(p, (at.0 / DAY) as u32);
+}
+
+fn broken(c: &Conflict, f: u32) -> Option<rtsim_conflict::engine::Broken> {
+    c.factions[f as usize].strain.as_ref().unwrap().broken
+}
+
+/// EQC207: thin (under a tenth of the cap, home and away), pressure at 2 or more, nothing out: the
+/// camp breaks, for `min(384, 48 x 2^P)` days. No warriors, no recruits.
+#[test]
+fn a_camp_breaks_when_thin_at_p_two() {
+    let (mut w, mut c, f) = camp(41, "goblin");
+    let at = Tick(30 * DAY);
+    // 3 home, P just under 2: the next kill tips it.
+    strained(&mut c, f, 3.0, 1.99, at);
+    assert_eq!(c.slay(&mut w, f, 1, at), 1);
+    let b = broken(&c, f).expect("the camp broke");
+    assert_eq!(b.since, at);
+    let p = pressure(&c, f, at);
+    assert!(p >= 2.0, "{p}");
+    let wait = (48.0 * p.exp2()).min(384.0);
+    let got = (b.due.0 - b.since.0) as f64 / DAY as f64;
+    assert!((got - wait).abs() < 1e-3, "waits {got} days, want {wait}");
+    assert_eq!(c.pool_at(f, at), 0.0);
+    assert_eq!(c.recruit_rate(f), 0.0);
+    assert_eq!(
+        c.pool_at(f, Tick(at.0 + 90 * DAY)),
+        0.0,
+        "no recruits while broken"
+    );
+    assert!(!c.camp_active(f));
+    assert_eq!(c.stats.breaks, 1);
+    // The booked wake is at the due tick.
+    assert_eq!(c.pending_by_kind().get("strain"), Some(&1));
+}
+
+/// EQC207: not at 2, or not thin (a tenth is not thin: strict), no break.
+#[test]
+fn a_camp_does_not_break_under_p_two_or_when_not_thin() {
+    let at = Tick(30 * DAY);
+    // Pressure under 2 after the kill (a kill adds a sixtieth): 1.9 to 1.9167.
+    let (mut w, mut c, f) = camp(42, "goblin");
+    strained(&mut c, f, 3.0, 1.9, at);
+    assert_eq!(c.slay(&mut w, f, 1, at), 1);
+    assert!(broken(&c, f).is_none(), "P under 2");
+    // Not thin: 8 home of 60 is over a tenth.
+    let (mut w, mut c, f) = camp(42, "goblin");
+    strained(&mut c, f, 9.0, 2.5, at);
+    assert_eq!(c.slay(&mut w, f, 1, at), 1);
+    assert!(broken(&c, f).is_none(), "8 home of 60");
+    // Exactly a tenth is not thin; one under it is.
+    let (mut w, mut c, f) = camp(42, "goblin");
+    strained(&mut c, f, 7.0, 2.5, at);
+    assert_eq!(c.slay(&mut w, f, 1, at), 1, "7 to 6 home");
+    assert!(
+        broken(&c, f).is_none(),
+        "6 of 60 is exactly a tenth: not thin"
+    );
+    assert_eq!(c.slay(&mut w, f, 1, at), 1, "6 to 5 home");
+    assert!(broken(&c, f).is_some(), "5 of 60 is thin");
+    assert_eq!(c.stats.breaks, 1);
+}
+
+/// EQC208: a camp with a party out is not idle: the break waits a game day and looks again, and
+/// goes when the party is home.
+#[test]
+fn a_camp_with_a_party_out_waits_and_breaks_when_it_ends() {
+    let (mut w, mut c, f) = raiders(43);
+    let at = Tick(30 * DAY);
+    let key = c.factions[f as usize].key;
+    // A raid of 12 out, then the pool and all but two of its members killed.
+    let p = c
+        .order_party(&mut w, key, PartyKind::Raid, district(), None, at)
+        .expect("a raid");
+    let pool = c.pool_at(f, at);
+    strained(&mut c, f, pool, 1.5, at);
+    let home = c.pool_at(f, at).floor() as u32;
+    assert_eq!(c.slay(&mut w, f, home + 10, at), home + 10);
+    assert_eq!(c.parties[p].alive(), 2);
+    assert!(broken(&c, f).is_none(), "a party is out: not idle");
+    assert!(c.stats.break_deferrals >= 1);
+    let check = c.factions[f as usize].strain.as_ref().unwrap().check_at;
+    assert_eq!(check, Some(Tick(at.0 + 24_000)), "a day on");
+    // Run until the party is home: the camp breaks then or at a recheck, never with a party out.
+    let mut t = at;
+    while broken(&c, f).is_none() {
+        t = Tick(t.0 + 1_200);
+        assert!(t.0 < at.0 + 60 * DAY, "it never broke");
+        c.run_until(&mut w, &mut NoInfrastructure, t);
+        if broken(&c, f).is_some() {
+            assert!(
+                c.parties.iter().all(|(_, x)| x.faction != f),
+                "the camp broke with a party out"
+            );
+        }
+    }
+    assert_eq!(c.stats.breaks, 1);
+    assert!(
+        c.factions[f as usize]
+            .strain
+            .as_ref()
+            .unwrap()
+            .check_at
+            .is_none()
+    );
+}
+
+/// EQC208: an envoy's open demand is a feud in the middle of something: the break waits.
+#[test]
+fn a_demand_open_defers_the_break() {
+    let (mut w, mut c, f) = camp(44, "goblin");
+    let at = Tick(30 * DAY);
+    let player = c.player(&mut w, synth::PLAYER);
+    c.signal(
+        &mut w,
+        Signal {
+            faction: Some(synth::CAMP),
+            kind: SignalKind::Killing,
+            amount: 0.01,
+            actor: player,
+            pos: synth::FOREST_POS,
+            district: None,
+        },
+        at,
+    );
+    let feud = c.feud_mut(f, player).expect("a feud");
+    feud.demand = Some(Demand {
+        kind: SignalKind::Killing,
+        good: rtsim_trade::GoodId(0),
+        tribute: 1,
+        paid: 0,
+        made: at,
+        deadline: Tick(at.0 + 3 * DAY),
+        after: 0.0,
+        envoy: None,
+    });
+    strained(&mut c, f, 3.0, 1.99, at);
+    c.slay(&mut w, f, 1, at);
+    assert!(broken(&c, f).is_none(), "a demand stands");
+    assert!(c.stats.break_deferrals >= 1);
+}
+
+/// EQC208: a camp that recovers before the recheck is not broken, and no check stays booked.
+#[test]
+fn a_pool_that_recovers_clears_the_check() {
+    let (mut w, mut c, f) = raiders(45);
+    let at = Tick(30 * DAY);
+    let key = c.factions[f as usize].key;
+    c.order_party(&mut w, key, PartyKind::Raid, district(), None, at)
+        .expect("a raid");
+    let pool = c.pool_at(f, at);
+    strained(&mut c, f, pool, 1.5, at);
+    let home = c.pool_at(f, at).floor() as u32;
+    c.slay(&mut w, f, home + 10, at);
+    assert!(
+        c.factions[f as usize]
+            .strain
+            .as_ref()
+            .unwrap()
+            .check_at
+            .is_some()
+    );
+    // The pool is back: 20 warriors home.
+    let x = &mut c.factions[f as usize];
+    (x.pool, x.pool_at) = (20.0, Tick(at.0 + 100));
+    c.run_until(&mut w, &mut NoInfrastructure, Tick(at.0 + 2 * DAY));
+    assert!(broken(&c, f).is_none());
+    assert!(
+        c.factions[f as usize]
+            .strain
+            .as_ref()
+            .unwrap()
+            .check_at
+            .is_none()
+    );
+}
+
+// ---------------------------------------------------------------- the inert camp (EQC209)
+
+/// The camp breaks now: the state a break is looked at from, and the kill that tips it.
+fn break_now(c: &mut Conflict, w: &mut World, f: u32, at: Tick) {
+    let pool = if c.factions[f as usize].cap > 40 {
+        3.0
+    } else {
+        2.0
+    };
+    strained(c, f, pool, 1.99, at);
+    c.slay(w, f, 1, at);
+    assert!(broken(c, f).is_some(), "the camp broke");
+}
+
+fn kill_signal(
+    c: &mut Conflict,
+    w: &mut World,
+    p: rtsim_knowledge::ActorId,
+    amount: f64,
+    at: Tick,
+) {
+    c.signal(
+        w,
+        Signal {
+            faction: Some(synth::CAMP),
+            kind: SignalKind::Killing,
+            amount,
+            actor: p,
+            pos: synth::FOREST_POS,
+            district: None,
+        },
+        at,
+    );
+}
+
+/// EQC209: a broken camp books no feud wake, sends no party (a feud's, an order's or the plunder
+/// drive's), whatever the grievance; a camp that is not broken does, on the same grievance.
+#[test]
+fn a_broken_camp_sends_nothing() {
+    for broke in [false, true] {
+        let (mut w, mut c, f) = camp(46, "goblin");
+        let player = c.player(&mut w, synth::PLAYER);
+        if broke {
+            break_now(&mut c, &mut w, f, Tick(10 * DAY));
+        }
+        // A grievance that climbs the ladder to a siege.
+        kill_signal(&mut c, &mut w, player, 100.0, Tick(11 * DAY));
+        c.run_until(&mut w, &mut NoInfrastructure, Tick(120 * DAY));
+        let sent: u64 = c.stats.parties.iter().sum();
+        if broke {
+            assert_eq!(sent, 0, "a broken camp sent {:?}", c.stats.parties);
+            assert_eq!(c.stats.escalations.iter().sum::<u64>(), 0);
+            let key = c.factions[f as usize].key;
+            assert!(
+                c.order_party(
+                    &mut w,
+                    key,
+                    PartyKind::Raid,
+                    district(),
+                    None,
+                    Tick(121 * DAY)
+                )
+                .is_none(),
+                "not even by order"
+            );
+            assert_eq!(c.pool_at(f, Tick(120 * DAY)), 0.0);
+            let kinds = c.pending_by_kind();
+            assert_eq!(kinds.get("plunder"), None);
+            assert_eq!(kinds.get("feud"), None);
+        } else {
+            assert!(sent > 0, "the control sends parties on this grievance");
+        }
+        c.check(&w).expect("books");
+    }
+}
+
+/// Two camps in reach: goblins that plunder bandits only. The bandits' own drive is off.
+fn rivals(seed: u64) -> (World, Conflict, u32, u32) {
+    let mut g: CultureDef = def(GOBLIN_JSON);
+    g.hates = vec!["bandit".into()];
+    g.plunder_mean_days = Some(3.0);
+    g.parties.retain(|k, _| k == "plunder");
+    let mut b: CultureDef = def(BANDIT_JSON);
+    b.plunder_mean_days = None;
+    b.parties.retain(|k, _| k == "raid");
+    let cultures = Cultures::from_json(&[
+        &serde_json::to_string(&g).unwrap(),
+        &serde_json::to_string(&b).unwrap(),
+    ])
+    .unwrap();
+    let (mut w, _) = synth::world(seed);
+    let mut c = Conflict::new(seed, ConflictTunables::default(), cultures, Tick::ZERO);
+    synth::define_names(&mut c, &w);
+    let goblin = c
+        .add_faction(&mut w, synth::CAMP, "goblin", synth::CAMP_POS, Tick::ZERO)
+        .unwrap();
+    let bandit = c
+        .add_faction(&mut w, 0xC0B1_0002, "bandit", synth::FOREST_POS, Tick::ZERO)
+        .unwrap();
+    (w, c, goblin, bandit)
+}
+
+/// EQC209: a rival that is broken is nothing to plunder: no party picks its camp as a target.
+#[test]
+fn a_broken_camp_is_not_a_plunder_target() {
+    for broke in [false, true] {
+        let (mut w, mut c, goblin, bandit) = rivals(47);
+        if broke {
+            break_now(&mut c, &mut w, bandit, Tick(10));
+        }
+        let node = c.factions[bandit as usize].node;
+        let mut at_it = 0;
+        let mut t = Tick(10);
+        while t.0 < 60 * DAY {
+            t = Tick(t.0 + 3_000);
+            c.run_until(&mut w, &mut NoInfrastructure, t);
+            at_it += c
+                .parties
+                .iter()
+                .filter(|(_, x)| x.faction == goblin && x.target == Target::Node(node))
+                .count();
+        }
+        if broke {
+            assert_eq!(at_it, 0, "nobody plunders a broken camp");
+        } else {
+            assert!(at_it > 0, "the control plunders the bandits");
+        }
+    }
+}
+
+/// EQC209: a broken camp still hears what is done in its territory: its grievances take their
+/// impulses and decay as they do for any camp, so the camp that is refounded remembers.
+#[test]
+fn a_broken_camps_grievance_keeps_its_closed_form() {
+    let mut totals = Vec::new();
+    for broke in [false, true] {
+        let (mut w, mut c, f) = camp(48, "goblin");
+        let player = c.player(&mut w, synth::PLAYER);
+        if broke {
+            break_now(&mut c, &mut w, f, Tick(10 * DAY));
+        }
+        kill_signal(&mut c, &mut w, player, 3.0, Tick(11 * DAY));
+        kill_signal(&mut c, &mut w, player, 2.0, Tick(13 * DAY));
+        let lambda = c.cultures.get(c.factions[f as usize].culture).lambda;
+        let g = c
+            .feud(f, player)
+            .expect("a feud")
+            .g
+            .total_at(Tick(20 * DAY), lambda);
+        totals.push(g);
+    }
+    assert!(totals[0] > 0.0);
+    assert!((totals[0] - totals[1]).abs() < 1e-9, "{totals:?}");
+}
+
+/// EQC209: Peaceful on and off plans every feud again and must not wake a broken camp.
+#[test]
+fn a_broken_camp_in_a_peaceful_world_wakes_correctly() {
+    let (mut w, mut c, f) = camp(49, "goblin");
+    let player = c.player(&mut w, synth::PLAYER);
+    break_now(&mut c, &mut w, f, Tick(10 * DAY));
+    kill_signal(&mut c, &mut w, player, 100.0, Tick(11 * DAY));
+    c.set_difficulty(&mut w, boundary::DIFFICULTY_PEACEFUL);
+    c.run_until(&mut w, &mut NoInfrastructure, Tick(20 * DAY));
+    c.set_difficulty(&mut w, 2);
+    c.run_until(&mut w, &mut NoInfrastructure, Tick(120 * DAY));
+    assert_eq!(c.stats.parties.iter().sum::<u64>(), 0);
+    assert_eq!(c.pending_by_kind().get("feud"), None);
+    assert_eq!(c.pending_by_kind().get("plunder"), None);
+    c.check(&w).expect("books");
+}
+
+/// EQC209 (property): whatever is killed and whenever, a broken camp has no party, no warriors
+/// home or away (the booked wakes of before the break fall stale).
+#[test]
+fn no_broken_camp_ever_acts() {
+    let mut breaks = 0;
+    for seed in 0..12u64 {
+        let (mut w, mut c, f) = camp(100 + seed, "goblin");
+        let player = c.player(&mut w, synth::PLAYER);
+        let mut rng = 0x9E37_79B9_7F4A_7C15u64 ^ seed.wrapping_mul(0xD1B5_4A32_D192_ED03);
+        let mut next = move || {
+            rng ^= rng << 13;
+            rng ^= rng >> 7;
+            rng ^= rng << 17;
+            rng
+        };
+        strained(&mut c, f, 12.0, 1.9, Tick(5 * DAY));
+        let mut t = Tick(5 * DAY);
+        while t.0 < 300 * DAY {
+            t = Tick(t.0 + 6_000);
+            c.run_until(&mut w, &mut NoInfrastructure, t);
+            match next() % 8 {
+                0 => {
+                    c.slay(&mut w, f, (next() % 5) as u32, t);
+                }
+                1 => kill_signal(&mut c, &mut w, player, 10.0, t),
+                _ => {}
+            }
+            if broken(&c, f).is_some() {
+                assert!(
+                    c.parties.iter().all(|(_, x)| x.faction != f),
+                    "seed {seed} {t:?}: a party"
+                );
+                assert_eq!(c.pool_at(f, t), 0.0, "seed {seed} {t:?}: a pool");
+                assert_eq!(c.factions[f as usize].away, 0);
+            }
+            c.check(&w).expect("books");
+        }
+        breaks += c.stats.breaks;
+    }
+    assert!(
+        breaks >= 3,
+        "the property is vacuous: {breaks} breaks in 12 camps"
+    );
+}
+
+// ---------------------------------------------------------------- the pages (EQC211)
+
+/// EQC211: a pool camp's pressure, its break and its booked wake survive a save: the same state
+/// hash, the strain and the wheel's strain wake as they were; a pressure that is not finite is
+/// refused.
+#[test]
+fn pages_round_trip_rtce() {
+    let (mut w, mut c, f) = camp(50, "goblin");
+    let player = c.player(&mut w, synth::PLAYER);
+    kill_signal(&mut c, &mut w, player, 4.0, Tick(2 * DAY));
+    c.slay(&mut w, f, 20, Tick(3 * DAY));
+    let before = c.factions[f as usize].strain.clone();
+    assert!(before.as_ref().unwrap().pressure.parts().0 > 0.3);
+    let back = Conflict::load(c.tun.clone(), c.cultures.clone(), &c.save()).expect("loads");
+    assert_eq!(back.state_hash(), c.state_hash());
+    assert_eq!(back.factions[f as usize].strain, before);
+    // And broken, with the wake booked at its due tick.
+    break_now(&mut c, &mut w, f, Tick(10 * DAY));
+    let b = broken(&c, f).unwrap();
+    let back = Conflict::load(c.tun.clone(), c.cultures.clone(), &c.save()).expect("loads");
+    assert_eq!(back.state_hash(), c.state_hash());
+    assert_eq!(broken(&back, f), Some(b));
+    assert_eq!(back.pending_by_kind().get("strain"), Some(&1));
+    assert_eq!(back.next_due(), c.next_due());
+    assert!(!back.camp_active(f));
+    // The older format is named, not read: the magic is RTCE.
+    let mut old = c.save();
+    old[..4].copy_from_slice(b"RTCD");
+    let e = Conflict::load(c.tun.clone(), c.cultures.clone(), &old)
+        .err()
+        .expect("refused");
+    let e = e.to_string();
+    assert!(e.contains("RTCD") && e.contains("RTCE"), "{e}");
 }

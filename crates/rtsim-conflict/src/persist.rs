@@ -87,8 +87,8 @@ use crate::tunables::ConflictTunables;
 /// the wheel's tag 11 is `Ev::CampRecount`, and the stats end with `camp_recounts`.
 /// RTC14, `RTCE`: a faction row ends with its strain, an option of its pressure, whether it has
 /// broken and until when, the stamp of its booked check and when it is next looked at (S7,
-/// EQC201); the wheel's tag 12 is `Ev::Strain`, and the stats end with the breaks, refounds,
-/// deferrals and the warriors slain by the test hook.
+/// EQC201); the wheel's tag 12 is `Ev::Strain`, and the stats end with the breaks, refounds and
+/// deferrals.
 const MAGIC: u32 = u32::from_le_bytes(*b"RTCE");
 /// The meta page of a paged save ([`Conflict::save_paged`]). 2: the indexes, parties and wheel
 /// are in pages of their own, their headers after the row counts (PF10). 3: the resident state
@@ -246,6 +246,21 @@ fn put_pos(w: &mut Writer, p: Pos) {
 
 fn get_pos(r: &mut Reader<'_>) -> codec::Result<Pos> {
     Ok(Pos::new(r.u16()?, get_i32(r)?, get_i32(r)?))
+}
+
+/// Why a save does not start with this build's magic: another format of the same family is named
+/// (`RTCD`, this build reads `RTCE`), anything else is not a conflict save.
+fn magic_error(found: u32) -> String {
+    let (f, m) = (found.to_le_bytes(), MAGIC.to_le_bytes());
+    if f[..3] == *b"RTC" {
+        format!(
+            "conflict save format {}, this build reads {}",
+            String::from_utf8_lossy(&f),
+            String::from_utf8_lossy(&m)
+        )
+    } else {
+        "not a conflict save".into()
+    }
 }
 
 fn put_opt<T>(w: &mut Writer, v: &Option<T>, f: impl FnOnce(&mut Writer, &T)) {
@@ -1148,6 +1163,11 @@ fn put_ev(w: &mut Writer, e: &Ev) {
             w.var_u64(u64::from(faction));
             w.var_u64(u64::from(stamp));
         }
+        Ev::Strain { faction, stamp } => {
+            w.u8(12);
+            w.var_u64(u64::from(faction));
+            w.var_u64(u64::from(stamp));
+        }
     }
 }
 
@@ -1202,6 +1222,10 @@ fn get_ev(r: &mut Reader<'_>) -> codec::Result<Ev> {
             stamp: get_u32(r)?,
         },
         11 => Ev::CampRecount {
+            faction: get_u32(r)?,
+            stamp: get_u32(r)?,
+        },
+        12 => Ev::Strain {
             faction: get_u32(r)?,
             stamp: get_u32(r)?,
         },
@@ -1303,6 +1327,9 @@ fn stats_fields(s: &ConflictStats) -> Vec<u64> {
         s.passes_watched,
         s.lurk_robberies,
         s.camp_recounts,
+        s.breaks,
+        s.refounds,
+        s.break_deferrals,
     ]);
     v
 }
@@ -1377,6 +1404,9 @@ fn stats_from(v: &[u64]) -> ConflictStats {
     s.passes_watched = n();
     s.lurk_robberies = n();
     s.camp_recounts = n();
+    s.breaks = n();
+    s.refounds = n();
+    s.break_deferrals = n();
     s
 }
 
@@ -1888,8 +1918,9 @@ impl Conflict {
         bytes: &[u8],
     ) -> codec::Result<Conflict> {
         let r = &mut Reader::new(bytes);
-        if r.u32()? != MAGIC {
-            return bad("not a conflict save".into());
+        let magic = r.u32()?;
+        if magic != MAGIC {
+            return bad(magic_error(magic));
         }
         let mut c = Self::get_resident(r, tun, cultures)?;
         c.get_structures(r)?;
