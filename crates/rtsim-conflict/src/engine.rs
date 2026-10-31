@@ -2044,16 +2044,39 @@ impl Conflict {
     /// cause (a player's kill or take is a player's, a mob's is a predator's), and a death that
     /// credits no one is a player's loss when the band was at a player's district (FB-2 (a), the
     /// `district_unclaimed_is_players` switch: a trap, a turret or a FakePlayer killed it there),
-    /// no one's elsewhere.
-    pub(super) fn pool_cause(&self, p: Handle<Party>, by: u32) -> LossCause {
+    /// no one's elsewhere, on the road included ([`Conflict::at_district`], EQC291).
+    pub(super) fn pool_cause(&self, p: Handle<Party>, by: u32, at: Tick) -> LossCause {
         let cause = LossCause::from_credit(by, false);
         if cause == LossCause::Other
             && self.tun.district_unclaimed_is_players
-            && matches!(self.parties[p].target, Target::District(..))
+            && self.at_district(p, at)
         {
             return LossCause::Player;
         }
         cause
+    }
+
+    /// Whether the band is at the district it is bound for at `at` (EQC291, FB-2 (a): "at a
+    /// player's district"): it is fighting or waiting there (the engine places both at the
+    /// target), or, on the road out or home, within the circle a watched fight is fought in
+    /// (`spawn_edge_blocks` of the target). A band mustering at its camp, or walking the road
+    /// farther out, is not: only a credited kill counts there.
+    pub(super) fn at_district(&self, p: Handle<Party>, at: Tick) -> bool {
+        let x = &self.parties[p];
+        let Target::District(_, pos) = x.target else {
+            return false;
+        };
+        match x.phase {
+            Phase::Fighting | Phase::Waiting => true,
+            // At its camp, whatever the camp's distance from the target.
+            Phase::Mustering => false,
+            Phase::Out | Phase::Home => {
+                pos.frame == x.frame
+                    && self
+                        .inside_now(p, (pos.x, pos.z), self.tun.spawn_edge_blocks, at)
+                        .is_some()
+            }
+        }
     }
 
     /// Test hook (EQC206): a player kills `n` of the faction's warriors at `at`, the pool's whole
@@ -7679,7 +7702,7 @@ impl Conflict {
         // nothing booked their loss before. The pressure goes before `party_lost`, whose `unblock`
         // plans the wait from it, as `lose_units` has it. A body camp books what it booked (S9's).
         if t > 0 && c.pool_renewal.is_some() && self.parties[p].kind.is_war() {
-            let cause = self.pool_cause(p, cs.by);
+            let cause = self.pool_cause(p, cs.by, at);
             self.renewal_bump(f, t, cause, at);
         }
         self.party_lost(p, t, at);
@@ -7808,7 +7831,13 @@ impl Conflict {
         let (x, z) = self.party_pos(p, at);
         let fall = At::new(at.0, u32::from(self.parties[p].frame), x, z);
         let cowed = self.chief_falls(w, f, killer, fall, "the band routs", at);
-        let cause = self.renewal_cause(f, by);
+        // A pool camp's war chief is one of its members: killed by a machine at a player's
+        // district, it is his loss as any member's is (EQC291).
+        let cause = if self.culture(f).pool_renewal.is_some() {
+            self.pool_cause(p, by, at)
+        } else {
+            self.renewal_cause(f, by)
+        };
         self.renewal_bump(f, 1, cause, at);
         // The Umvuthi that leads a band is the camp's chief slot, away with it: its fall is that
         // slot's death away (MZB-412), which steps the chief's pressure and sets the heir after
