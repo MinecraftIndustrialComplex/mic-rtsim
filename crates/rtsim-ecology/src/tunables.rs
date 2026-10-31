@@ -141,7 +141,9 @@ pub struct DragonTunables {
     pub gate_wild: f64,
     pub gate_half: f64,
     /// A young dragon that has found no lair it may claim this many days after its dispersal
-    /// age leaves the sim, off the map (EQC534). TUNABLE, 50 (it is then 100 days old, stage 5).
+    /// age leaves the sim, off the map (EQC534): by then its lair's next clutch is due, so a
+    /// lair holds its breeder (or pair) and at most one young. TUNABLE, 10 (it is then 60 days
+    /// old, stage 3, Ice and Fire's teen).
     pub emigrate_after_days: u64,
     /// Age in days of a dragon the respawn rule brings in. PLACEHOLDER 30 (stage 2: it grows into
     /// the roost).
@@ -229,7 +231,7 @@ impl Default for DragonTunables {
             gate_village: 150.0,
             gate_wild: 30.0,
             gate_half: 200.0,
-            emigrate_after_days: 50,
+            emigrate_after_days: 10,
             respawn_age_days: 30,
             respawn_from_blocks: 3_000,
             view_radius: 160,
