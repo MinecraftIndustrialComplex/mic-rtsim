@@ -134,7 +134,8 @@
 //!   say why.
 //! - `tests/data/create`: neoforge/create's GameTest world, run from the S9 build of
 //!   `feat/eq-s9-mowzie` with `-Psec1fx` (the core save's formats, S9's: RTCF and meta 14, as the core entry says; a fresh
-//!   world copied to `target/` after its JVM exited); before that, the S7 build of
+//!   world copied to `target/` after its JVM exited; refreshed again after FB-S9-2 gave the grove the raider's plunder mood, which
+//!   changed the culture data's hash); before that, the S7 build of
 //!   `feat/eq-s7-conflict` at 7f7110eb with `-Psec1fx` (the core save's formats, S7's: RTCE and meta 13, as the core
 //!   entry says; a fresh world copied to `target/` after its JVM exited); before that, the S6 build of
 //!   `feat/eq-s6-villages` at db46b196 (merged with main c9111cc0) with `-Psec1fx` (the core
