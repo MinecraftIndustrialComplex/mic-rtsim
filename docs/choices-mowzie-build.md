@@ -17649,8 +17649,9 @@ the review gave are at 43062c0b.
     clippy `-D warnings` is clean. `:core:test` (in the core rounds): 440 JUnit tests passed. GameTests from cleared worlds:
     core "All 191 required tests passed" at 4d43c6ff (the first round, at 6729227d, failed the one above); mowziesmobs "All
     113 required tests passed" at 8da19617's code; iceandfire "All 54 required tests passed" and `create -Psec1fx` "All 266
-    required tests passed" at 8da19617; `create -PwithMowzie` "All 271 required tests passed" at 61bc50ce (8da19617's code); iceandfire again on the merged
-    head (S5's review fixes are the dragons') ICEMERGED.
+    required tests passed" at 8da19617; `create -PwithMowzie` "All 271 required tests passed" at 61bc50ce (8da19617's code). The GameTest rounds ran before the merge with
+    main 1d7974c0, which merged clean (S5's review fixes are the dragons'; this branch's only ecology change is MZB-1401's
+    clamp in `found_lair`, which the merged head's cargo tests cover); no round ran on the merged head.
   - **A flake:** mowziesmobs's first round at 8da19617's code failed `anAloftUmvuthiSettlesAndRises` alone ("its restriction
     centre is the puppet's block (12.165525060596439 off)", the first summons' centre at its fifth step, M11's), and the rerun
     on the same code passed it with the rest. Nothing on this branch touches a summons' restriction (the chief's slot is
