@@ -251,8 +251,11 @@ public final class BridgeEvents {
         if (event.getLevel().isClientSide())
             return;
         RtsimSession s = RtsimSession.current();
-        if (s != null)
+        if (s != null) {
             s.onLeave(event.getEntity());
+            if (!s.failed())
+                s.phase1.walkers.onLeave(event.getEntity());
+        }
     }
 
     private static void onDeath(LivingDeathEvent event) {
