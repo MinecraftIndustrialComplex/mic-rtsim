@@ -1912,6 +1912,12 @@ impl Conflict {
         {
             return bad("a held pass names a faction past the table".into());
         }
+        // Read back, the first use of either would index `factions` (MZB-1306).
+        if self.placing.iter().any(|(f, _)| *f as usize >= n)
+            || self.chief_ended.values().any(|f| *f as usize >= n)
+        {
+            return bad("a placing or a band's end names a faction past the table".into());
+        }
         if self.sources.rows.len() != self.sources.ids.len() as u64 {
             return bad("source rows and their index disagree".into());
         }
