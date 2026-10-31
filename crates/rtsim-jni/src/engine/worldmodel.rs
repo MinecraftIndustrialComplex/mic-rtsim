@@ -171,6 +171,10 @@ impl Link {
                     w.cell_count(),
                     w.region_count()
                 ));
+                // Every region is judged again after a start (EQC512): the regions waiting to be
+                // judged, and the founded ranges whose K a lost recompute owed, are in no page.
+                // Barren regions are skipped at once; the rest cost one region read each.
+                l.pending = w.regions().map(|(k, _)| *k).collect();
                 l.world = WorldHandle::new(Box::new(w));
                 l
             }
