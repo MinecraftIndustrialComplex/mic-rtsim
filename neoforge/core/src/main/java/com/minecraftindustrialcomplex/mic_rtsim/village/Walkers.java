@@ -24,7 +24,11 @@ import java.util.ArrayList;
  *
  * <p>The sim said they arrived, and the walk is only how it looks: a walker nobody can see (no player within the watch radius
  * of it or of the village) is put at the meeting point at once, and so is one still walking at its deadline. A walker whose
- * chunk is not loaded stays until it is, and is forgotten a day after its deadline.
+ * chunk is not loaded stays on the list until it loads, however long that takes, and is put at the meeting point at the first
+ * pass that finds it (EQC331: its village's census is incomplete meanwhile, so the engine never reads the village empty for
+ * want of it). It leaves the list when it dies or is discarded ({@link #onLeave}, from the level's leave event, which also
+ * fires when a chunk unloads: an unload is not a leaving), and, as a net for an entity nothing ever reported gone (a chunk
+ * file deleted), {@link #STRAY_TICKS} after its deadline: the engine releases a booking at that age too.
  */
 public final class Walkers {
     /** Ticks between two steerings (PLACEHOLDER). */
@@ -35,8 +39,12 @@ public final class Walkers {
     public static final int DONE_BLOCKS = 12;
     /** A walk lasts at most this long (PLACEHOLDER: 6,000 ticks, five minutes). */
     public static final long WALK_TIMEOUT_TICKS = 6_000;
-    /** A walker never found is forgotten this long after its deadline. */
-    static final long STRAY_TICKS = 24_000;
+    /**
+     * A walker never found is forgotten this long after its deadline: 192 game days, the age at which the engine releases a
+     * booking it never heard the answer to ({@code owed_max_days}). Nothing shorter: a walker's chunk unloads whenever its
+     * watcher goes, and the walker is still the village's (EQC331).
+     */
+    static final long STRAY_TICKS = ResidentSpawner.ARRIVAL_MAX_WAIT;
 
     private final RtsimSession session;
     private final VillageRegistry villages;
@@ -97,6 +105,20 @@ public final class Walkers {
             }
             steer(level, e, v.meeting);
         }
+    }
+
+    /**
+     * An entity left its level (EntityLeaveLevelEvent, EQC331): a walker that was killed or discarded, or took a portal, is off
+     * the list; one that only unloaded with its chunk ({@code UNLOADED_TO_CHUNK}, or with a player) stays until it loads.
+     */
+    public void onLeave(Entity e) {
+        if (villages.walkers.isEmpty())
+            return;
+        VillageRegistry.Walker w = villages.walkers.get(e.getUUID());
+        Entity.RemovalReason why = e.getRemovalReason();
+        if (w != null && (why == Entity.RemovalReason.KILLED || why == Entity.RemovalReason.DISCARDED
+                || why == Entity.RemovalReason.CHANGED_DIMENSION))
+            forget(w);
     }
 
     private void forget(VillageRegistry.Walker w) {
