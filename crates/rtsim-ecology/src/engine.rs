@@ -3413,6 +3413,11 @@ impl Dragons {
     /// the departure forward). The plugin captures it when it is out of view.
     fn depart(&mut self, d: DragonId, reason: u32, at: Tick) {
         let x = &self.dragons[d];
+        // A home body is never flown off: Ice and Fire's AI is the dragon while it is loaded, and
+        // vanilla saves it (EQC117, EQC315).
+        if x.body.is_some() {
+            return;
+        }
         let State::Embodied {
             epoch,
             purpose,

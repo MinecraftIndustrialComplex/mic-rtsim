@@ -1188,6 +1188,105 @@ fn a_lairs_generated_dragon_found_after_a_newcomer_is_removed_not_adopted() {
     );
 }
 
+/// EQC315 (finding 6): a passing puppet (its departure booked) settles at its lair and is handed
+/// back as a home body. Its booked departure and the wound rule are a puppet's: the home body is
+/// never sent away.
+#[test]
+fn a_handed_back_body_keeps_no_departure() {
+    let mut s = scene(44);
+    let x = s.dragon("Passer", Gender::Female);
+    s.run(90_100);
+    assert!(
+        matches!(s.d.dragon(x).unwrap().state, State::Flying(_)),
+        "it left to hunt: {:?}",
+        s.d.dragon(x).unwrap().state
+    );
+    s.cmds();
+    s.d.player_stays(
+        &mut s.w,
+        PLAYER,
+        Pos::new(0, 700, 1500),
+        Tick(90_100),
+        Tick(400_000),
+    );
+    s.run(90_200);
+    let m = materializes(&s.cmds())
+        .into_iter()
+        .find(|m| m.agent == agent_of(x))
+        .expect("the player sees it pass");
+    assert_eq!(m.flags & boundary::MAT_HOME_BODY, 0, "a puppet");
+    let (agent, epoch) = (m.agent, m.epoch);
+    let State::Embodied { depart_at, .. } = s.d.dragon(x).unwrap().state else {
+        panic!("embodied")
+    };
+    assert_ne!(depart_at.0, u64::MAX, "a passing puppet books its departure");
+    s.ingest(
+        Obs::Materialized(boundary::Materialized {
+            agent,
+            epoch,
+            dimension: 0,
+            entity: uuid(0x6A),
+            home: false,
+        }),
+        90_201,
+    );
+    s.census(1, true, &[], 90_210);
+    s.cmds();
+    s.ingest(
+        Obs::State(boundary::State {
+            agent,
+            epoch,
+            flags: boundary::STATE_SLEEPING,
+            dimension: 0,
+            health: 400.0,
+            max_health: 500.0,
+            hunger: 80,
+            age_ticks: 1,
+            pos: (701.5, 100.0, 1500.5),
+        }),
+        90_220,
+    );
+    assert!(
+        s.cmds().iter().any(|c| matches!(c, Cmd::HandBack(h) if h.agent == agent)),
+        "settled at its lair, the lair in: handed back"
+    );
+    s.answer(agent, epoch, uuid(0x6A), 90_230);
+    assert_eq!(s.d.dragon(x).unwrap().body, Some(uuid(0x6A)));
+    s.run(depart_at.0 + 100);
+    let cmds = s.cmds();
+    assert!(
+        cmds.iter()
+            .all(|c| !matches!(c, Cmd::Depart(dp) if dp.agent == agent)),
+        "the home body is not sent away: {cmds:?}"
+    );
+    let dx = s.d.dragon(x).unwrap();
+    assert!(
+        matches!(dx.state, State::Embodied { depart_at, harass: false, .. } if depart_at.0 == u64::MAX),
+        "{:?}",
+        dx.state
+    );
+    // A heavy wound does not send it off either (the wound rule is a puppet's).
+    let t = s.d.now().0 + 10;
+    s.ingest(
+        Obs::Hurt(boundary::Hurt {
+            agent,
+            epoch,
+            attacker_kind: AttackerKind::Player,
+            attacker: PLAYER,
+            hits: 9,
+            amount: 10_000.0,
+            health_after: 1.0,
+        }),
+        t,
+    );
+    assert!(
+        s.cmds()
+            .iter()
+            .all(|c| !matches!(c, Cmd::Depart(dp) if dp.agent == agent)),
+        "wounded, a home body still stays"
+    );
+}
+
 /// The engine's commands through the fake plugin and its answers due by `at`, until quiet.
 fn pump(s: &mut Scene, iaf: &mut synth::FakeIaf, at: Tick) {
     loop {
