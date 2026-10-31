@@ -174,16 +174,17 @@ impl Dragons {
                     }
                 }
                 Some(i) => {
-                    // Embodied: the body listed is the one in control, or a second one of a
-                    // puppet that is away. A removal in view is not sent (EQC129).
+                    // Embodied: only the body it believes is matched to it (the one in control).
+                    // Any other would be a second body of a dragon embodied elsewhere, a puppet
+                    // away or a home body in control: removed, watched or not (H1, EQC311).
                     let e = c.bodies[i].entity;
                     if believed == Some(e) {
                         let x = self.dragons.get_mut(d).expect("live");
                         if x.miss.0 != 0 {
                             x.miss = (0, Tick(0));
                         }
-                    } else if !watched {
-                        removals.push((e, boundary::DISCARD_AWAY));
+                    } else {
+                        removals.push((e, boundary::DISCARD_SECOND_BODY));
                     }
                 }
                 None => match state {

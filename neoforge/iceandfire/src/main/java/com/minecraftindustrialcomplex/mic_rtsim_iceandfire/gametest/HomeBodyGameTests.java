@@ -888,4 +888,56 @@ public final class HomeBodyGameTests {
         check("a home of nonzero coordinates survives the save and read", home.equals(got[0]));
         helper.succeed();
     }
+
+    // ---- the S5 review's findings (EQC310 onward) -------------------------------------------------
+
+    /**
+     * EQC311 (finding 2): a home body of the dragon stands loaded but unregistered (its lair went out, vanilla holds it), and a
+     * spawn of a home body for the same agent comes: the plugin refuses it (SPAWN_REJECTED ALREADY_EMBODIED), so no second body
+     * of one dragon stands. The registry alone does not know such a body.
+     */
+    @GameTest(template = DragonKit.ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "home_spawn_refused")
+    public static void aHomeSpawnBesideAStandingHomeBodyOfTheDragonIsRefused(GameTestHelper helper) {
+        String test = "aHomeSpawnBesideAStandingHomeBodyOfTheDragonIsRefused";
+        if (!nativeOnly(helper, test))
+            return;
+        ChunkWait waits = ChunkWait.of(helper, 2400);
+        ServerLevel level = helper.getLevel();
+        Vec3 c = DragonKit.centre(helper);
+        Runnable unforce = DragonKit.forceAround(helper, 3);
+        long lair = DragonKit.newLair();
+        DragonBaseEntity[] d = new DragonBaseEntity[1];
+        long[] agent = new long[1];
+        int[] epoch = new int[1];
+        long[] rejected0 = new long[1];
+        SequenceHolder h = new SequenceHolder();
+        h.s = helper.startSequence()
+                .thenWaitUntil(waits.chunks(() -> check("the ring of chunks is loaded", DragonKit.ready(level, arenaChunk(helper), 3))));
+        occupiedAfter(h, helper, waits, lair, d, agent);
+        h.s.thenExecute(() -> {
+                    epoch[0] = homeEpoch(agent[0]);
+                    bridge().homes.testOut(lair, level.getGameTime());
+                    check("released, it stands with its attachment", !d[0].isRemoved() && d[0].hasData(MicRtsimIceAndFire.HOME)
+                            && bridge().body(agent[0]) == null);
+                    rejected0[0] = bridge().rejected;
+                    DragonKit.Spawn y = DragonKit.young(agent[0], helper, c, DragonRecords.Materialize.FLAG_HOME_BODY | DragonRecords.Materialize.FLAG_SLEEPING);
+                    DragonKit.materialize(new DragonKit.Spawn(y.agent(), epoch[0] + 1, y.species(), y.dimension(), y.at(), y.ageTicks(), y.hunger(), y.male(),
+                            y.variant(), y.health(), BlockPos.containing(c), y.target(), null, y.flags()));
+                })
+                .thenWaitUntil(waits.engine(() -> check("the spawn was answered", bridge().rejected > rejected0[0] || bridge().body(agent[0]) != null)))
+                .thenExecute(() -> {
+                    Entity second = bridge().body(agent[0]);
+                    List<ScriptedEngine.Received> r = about(DragonRecords.DRAGON_SPAWN_REJECTED, agent[0]);
+                    record(test, "answer", "rejected " + (bridge().rejected - rejected0[0]) + (r.isEmpty() ? "" : " (reason " + r.get(r.size() - 1).aux() + ")")
+                            + ", a body registered " + (second != null) + ", home bodies standing " + homeBodies(level, c, lair).size());
+                    if (second != null && second != d[0])
+                        second.discard();
+                    check("refused: a body carrying the agent stands (SPAWN_REJECTED ALREADY_EMBODIED)", second == null && !r.isEmpty()
+                            && r.get(r.size() - 1).aux() == DragonRecords.SpawnRejected.ALREADY_EMBODIED);
+                    check("one body of the dragon", homeBodies(level, c, lair).size() == 1);
+                    d[0].discard();
+                    unforce.run();
+                })
+                .thenSucceed();
+    }
 }

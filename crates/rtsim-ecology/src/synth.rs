@@ -792,6 +792,27 @@ impl FakeIaf {
             assert_eq!(back, c, "the codec changed a command");
             self.commands.push((at.0, format!("{c:?}")));
             match back {
+                Cmd::Materialize(m)
+                    if self.home.on
+                        && m.flags & boundary::MAT_HOME_BODY != 0
+                        && (self.bodies.contains_key(&m.agent)
+                            || self.home.bodies.values().any(|b| {
+                                b.agent == m.agent
+                                    && (b.loaded || self.home.in_epoch.contains_key(&b.lair))
+                            })) =>
+                {
+                    // A loaded body carries the agent already, a puppet or a home body (EQC116,
+                    // EQC311): ALREADY_EMBODIED.
+                    self.push(
+                        at + 1,
+                        Obs::SpawnRejected(boundary::SpawnRejected {
+                            agent: m.agent,
+                            epoch: m.epoch,
+                            reason: 4,
+                            cmd_seq: self.cmd_seq,
+                        }),
+                    );
+                }
                 Cmd::Materialize(m) if self.home.on && m.flags & boundary::MAT_HOME_BODY != 0 => {
                     self.home.next += 1;
                     let entity = (0x4800_0000_0000_0000 | self.home.next, 1);

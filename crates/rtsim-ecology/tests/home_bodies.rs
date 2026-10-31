@@ -1134,6 +1134,35 @@ fn an_agent_of_another_lairs_dragon_at_an_empty_lair_is_a_stray_not_removed() {
     assert_eq!(s.d.stats.strays_adopted, 1);
 }
 
+/// EQC311 (finding 2): a dragon that is a puppet (led past the leash) and an old home body of it
+/// listed by a watched census: the old body is removed, watched or not, so it does not tick beside
+/// the puppet (H1).
+#[test]
+fn a_watched_census_removes_an_old_body_of_a_dragon_that_is_a_puppet() {
+    let mut s = scene(42);
+    let x = s.dragon("Lured", Gender::Female);
+    let (agent, epoch) = s.homed(x, 0x5A, 100);
+    s.ingest(
+        Obs::DragonLeftHome(boundary::DragonLeftHome {
+            agent,
+            epoch,
+            dimension: 0,
+            entity: uuid(0x5A),
+            pos: (760.0, 100.0, 1500.0),
+        }),
+        200,
+    );
+    s.cmds();
+    // A crash between the swap and the chunk's rewrite left the old home body on disk.
+    s.census(2, true, &[body(0x5B, agent, 701.5)], 300);
+    let cmds = s.cmds();
+    let gone = discards(&cmds);
+    assert_eq!(gone.len(), 1, "the old body goes: {cmds:?}");
+    assert_eq!(gone[0].entity, uuid(0x5B));
+    assert!(adopts(&cmds).is_empty(), "{cmds:?}");
+    assert_eq!(s.d.lairs[s.l as usize].occupants, vec![x], "no second dragon");
+}
+
 /// EQC313 (finding 4): a lair that got a newcomer while it was seen only from afar, and Ice and
 /// Fire's own generated dragon found by its first census: the generated dragon is removed (the
 /// untagged path's rule), not adopted as a second occupant.
