@@ -17586,3 +17586,29 @@ the review gave are at 43062c0b.
   P unchanged and the cap's 192-day wait (within 40 ticks), where a write-off without the gap is a player's loss at P 1 with
   a 12-day wait (the Rust test `a_write_off_under_the_ledgers_gap_is_no_ones_loss_and_waits_the_cap` has both). The grove's
   test is unchanged. No behaviour changed, so no test fails on main for it; EQUILIBRIUM.md's S3 row names it.
+- **MZB-1403** (P2, the reinstall gap counted at the reset, and the ledger journal dependent; P3 5; supersedes MZB-1011's "not
+  journal dependent" and MZB-1036's last two points): the gap was counted only at the first `SiteLedger.get` of a server run
+  (the found records' tails, a SITE_STATE), and the marker was deleted at the first overworld save, which waited only for the
+  industry file. (A) An admin reinstalls, boots with no player and stops: no found record and no SITE_STATE, so `gaps` was
+  never bumped and the marker was gone. (B) The ledger's write that carried `gaps + 1` fails and the server crashes before
+  the next good write (the ledger was not tracked by `SavedDataWrites`): the marker was gone too. Either way the rows from
+  before the reinstall read without GAP at the next start, and a home body lost during the uninstall was a player's loss (a
+  12-day wait at P 1) instead of no one's at the cap.
+  - **The fix:** `ReinstallGuard.beforeEngineOpens`, once it has reset, calls `SiteLedger.get` (`countSiteGap`), which takes
+    the gap (`takeSiteGap`, once per reset as before) and marks the ledger dirty; a failure there is logged and leaves the count
+    to the ledger's first use, and never fails the reset. `SiteLedger` implements `JournalDependent` (its `mic_rtsim$remark` is
+    `setDirty()`, docs/choices-journal-barrier.md U-g3 and U-g4), so a failed write of it is recorded, holds the journal's file
+    and is written again at the next world save; and `onOverworldSave` keeps the marker while the industry file's write or the
+    ledger's has failed, the log line naming the file. The second also closes P3 5: a SITE_STATE the journal records as applied
+    (its command sequence) is never sent again, so with the journal's file ahead of a failed ledger write the row was lost for
+    good; now the journal's file waits for it, as for any file that holds an op's effect.
+  - **Costs (D1):** one more file in the marker's wait and in the journal's hold (one map lookup on the IO chain per save while
+    a reset's marker stands); the ledger's write failing holds the journal's file as the industry file's does (U-g1, with its
+    give-up, U-g12).
+  - **Tests** (core GameTests): `ReinstallGameTests.aReinstallResetCountsTheSiteGapBeforeAnySiteIsSeen` (A: the guard's
+    reinstall emulation, then at once, before any site could be found, the ledger has counted the gap and is dirty; a save
+    deletes the marker, and the file on disk has the gap), `SavedDataWriteHoldGameTests.theReinstallMarkerWaitsForAFailedWriteOfTheSiteLedger`
+    (B: a failed write of `mic_rtsim_sites.dat` keeps the marker, and the next save, the file written, deletes it) and
+    `SavedDataWriteHoldGameTests.aFailedWriteOfTheSiteLedgerHoldsTheJournalsFileToo` (P3 5: a real `SiteLedger` through
+    vanilla's `save(File, ...)`, a directory where its file goes: the journal's file stays W0's until the ledger writes again).
+    Their failures before the fix are in MZB-1407.
