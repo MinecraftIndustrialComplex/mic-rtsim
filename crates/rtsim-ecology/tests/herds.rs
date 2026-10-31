@@ -1811,3 +1811,41 @@ fn an_epoch_that_ended_in_the_replayed_window_is_not_taken_again() {
     r.fake = FakeHerds::default();
     assert_eq!(next_epoch(r, f, now + 30), 2);
 }
+
+/// EQC513: a range whose K is lowered under its herd (its ground re-capped, EQC504) thins toward
+/// the new K by births and natural deaths, with nothing killed or starved for it, and its refuge
+/// is the new K's.
+#[test]
+fn a_herd_over_a_lowered_k_thins_toward_it() {
+    use rtsim_ecology::herds::HerdSpecies;
+    use rtsim_ecology::herds::climate::Uniform;
+    let mut h = Herds::new(3, HerdTunables::default(), Box::new(Uniform), Tick::ZERO);
+    let id = h.add_herd(
+        NewHerd {
+            name: "lowered".into(),
+            species: HerdSpecies::Sheep,
+            frame: 0,
+            pos: (256, 256),
+            count: 400,
+            seed: Some(1),
+        },
+        Tick::ZERO,
+    );
+    let mut legs = legs();
+    let year = h.subs().year_ticks();
+    let t0 = Tick(2 * year);
+    h.run_until(&mut legs, t0);
+    let before = h.count(id, t0);
+    assert_eq!(h.set_k(id, 100, t0), Some(400));
+    assert_eq!(h.set_k(id, 100, t0), None, "already 100");
+    assert_eq!(h.refuge(h.herd(id).unwrap().k), 10);
+    let t1 = Tick(14 * year);
+    h.run_until(&mut legs, t1);
+    h.check(t1).expect("invariants");
+    let after = h.count(id, t1);
+    let l = &h.herd(id).unwrap().ledger;
+    eprintln!("lowered K: {before} at K 400, {after} twelve years after K 100");
+    assert!(before > 250, "{before} near K 400 before");
+    assert!((60..=130).contains(&after), "{after} near K 100 after");
+    assert_eq!((l.starved, l.killed, l.eaten), (0, 0, 0), "{l:?}");
+}

@@ -469,19 +469,31 @@ pub fn plan_region(
     if total < tun.min_habitat_cells {
         return not_now;
     }
+    // Only species the open cells can feed a herd of are drawn (EQC510): a draw of one they
+    // cannot would leave the region barren for good once it is fully known.
+    let mut weights = g.weights;
+    for s in HerdSpecies::ALL {
+        if capacity(&g, s, tun).is_none() {
+            weights[s.index()] = 0.0;
+        }
+    }
+    let fed: f64 = weights.iter().sum();
+    if fed <= 0.0 {
+        return not_now;
+    }
     let id = rtsim_space::region_page_id(k);
     let mut rng = StreamKey::new(seed, SystemId::named("herds.founding"), id).slot(0);
-    let mut pick = rng.next_f64() * total;
+    let mut pick = rng.next_f64() * fed;
     let mut species = HerdSpecies::ALL[0];
     for s in HerdSpecies::ALL {
-        if g.weights[s.index()] <= 0.0 {
+        if weights[s.index()] <= 0.0 {
             continue;
         }
         species = s;
-        if pick < g.weights[s.index()] {
+        if pick < weights[s.index()] {
             break;
         }
-        pick -= g.weights[s.index()];
+        pick -= weights[s.index()];
     }
     // The open forage cell with the most of the species' habitat (the first of equals).
     let mut best: Option<(f64, (i32, i32))> = None;
@@ -767,16 +779,14 @@ mod tests {
             let h = world(&|p, w| p.paint(w, 0, (0, 0, 512, 512), &|_, _| land(biome)));
             let c = HabitatClimate::new(h.clone());
             let yields = range_yield(&c, 0, 0, 0);
+            let tun = FoundingTunables::default();
             for seed in 0..16 {
-                let RegionPlan::Found(n) =
-                    plan_region(&**h.read(), &c, k, seed, &FoundingTunables::default())
-                else {
+                let RegionPlan::Found(n) = plan_region(&**h.read(), &c, k, seed, &tun) else {
                     panic!("{biome} founds a herd (seed {seed})");
                 };
-                let need = n.count as f64
-                    * super::super::species::HerdSpeciesData::of(n.species).intake_per_day;
+                let need = n.count as f64 * HerdSpeciesData::of(n.species).intake_per_day;
                 assert!(
-                    need <= yields,
+                    need <= tun.forage_share * yields,
                     "{biome}, seed {seed}: {} {:?} eat {need:.0} a day; the range yields {yields:.0}",
                     n.count,
                     n.species
@@ -821,6 +831,42 @@ mod tests {
                 .all(|(s, _)| matches!(s, HerdSpecies::Sheep | HerdSpecies::Pig)),
             "{drawn:?}"
         );
+    }
+
+    /// EQC513: a founded range keeps at least founding's minimum when its ground can no longer
+    /// feed it (one open plains cell feeds 6 cows) or holds none of its species (goats on plains).
+    #[test]
+    fn a_ranges_capacity_never_falls_below_founding_minimum() {
+        let mut w = SampledWorld::new();
+        let mut p = Painter::default();
+        p.paint(&mut w, 0, (0, 0, 512, 512), &|x, z| {
+            if x < 128 && z < 128 {
+                land("minecraft:plains")
+            } else {
+                sea()
+            }
+        });
+        let h = WorldHandle::new(Box::new(w));
+        let c = HabitatClimate::new(h.clone());
+        let k = RegionKey {
+            frame: 0,
+            rx: 0,
+            rz: 0,
+        };
+        let tun = FoundingTunables::default();
+        let cap = |s| range_capacity(&**h.read(), &c, k, s, &tun);
+        assert_eq!(cap(HerdSpecies::Cow), tun.min_count, "6 cows fed, 8 kept");
+        assert_eq!(
+            cap(HerdSpecies::Horse),
+            tun.min_count,
+            "5 horses fed, 8 kept"
+        );
+        assert_eq!(
+            cap(HerdSpecies::Goat),
+            tun.min_count,
+            "no goat habitat, 8 kept"
+        );
+        assert_eq!(cap(HerdSpecies::Sheep), 25, "25 sheep fed, 25 by habitat");
     }
 
     /// A region judged while partly explored (EQC501): its K counts only the forage cells a herd
