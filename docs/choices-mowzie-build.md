@@ -17498,3 +17498,19 @@ the review gave are at 43062c0b.
   `rtsim-ecology/tests/lair_renewal.rs::a_rows_wait_past_the_cap_is_held_to_the_cap` ("attempt to add with overflow" at
   `rtsim-kernel/src/clock.rs:66:14`), `rtsim-ecology/tests/nests.rs::a_nest_rows_wait_past_the_cap_is_held_to_the_cap`
   ("assertion `left == right` failed: the cap, left: Some(4294967295), right: Some(96000)").
+- **MZB-1402** (P3 4, a grove found without its Umvuthi keeps the pressure its row handed over): `found_empty_heir`, which runs
+  after `camp_restore`, set the camp's pressure to the cap's (`Pressure::at_cap`) whatever the row had handed over, and the
+  census that adopts an untagged Umvuthi before the heir comes set it to none. **The fix:** while the heir waits the camp has
+  the larger of the cap's pressure and its own (the row's, aged; none without a row), so a grove farmed past the cap keeps its
+  history; its own is kept with the heir (`Heir.kept`), and the adoption gives that back, aged by its own half-life, rather
+  than none ("the cap's pressure was only a stand-in", as before). The wait is the cap's either way (`delay_ticks` of a
+  pressure at or past the cap's). An heir that comes after its wait leaves the pressure as it stood, as before. On main the
+  grove's `pressure` is the Umvuthi's (the warriors have no renewal); S9 gives the chief a pressure of its own
+  (`chief_pressure`), and the merge applies this to whichever is the Umvuthi's. **Save:** RTC15, `RTCF`, meta 14: a camp's
+  heir ends with the kept pressure (an f32, refused when not finite and at least 0, and its day); `tests/strain.rs`'s format
+  check names RTCE as the older format. The viewer fixtures are written again with the next format change of this branch
+  (MZB-1404). Tests (`tests/grove.rs`), both failing on main:
+  `a_grove_found_empty_keeps_a_handed_over_pressure_above_the_caps` (a row's P 7 against the cap's 5; on main "the row's
+  pressure kept: 5") and `a_grove_found_empty_and_adopting_its_umvuthi_restores_the_handed_over_pressure` (a row's P 2, the
+  cap's 5 while waiting, then an untagged Umvuthi adopted four days on; on main "the row's pressure, aged: 0 against
+  1.9430562").

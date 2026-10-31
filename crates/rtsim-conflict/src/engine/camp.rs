@@ -167,10 +167,14 @@ pub struct Throne {
 /// A chief to come (MZB-405, MZB-406): the camp has no chief slot, or its slot is dead away, and
 /// its next chief is due at `due`. `found_empty` marks a camp found without its Umvuthi, whose wait
 /// an untagged one seen in the footprint cancels (a chief killed at its camp is not cut short).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Heir {
     pub due: Tick,
     pub found_empty: bool,
+    /// For a camp found without its chief, the chief's pressure the camp had before the cap's
+    /// stood in for it (the site ledger's, or none): an untagged Umvuthi adopted before the heir
+    /// comes gives it back (MZB-1402). None for any other heir.
+    pub kept: Pressure,
 }
 
 /// A tribute good the engine took out of its books and sent to a haven chest, not yet answered
@@ -794,24 +798,42 @@ impl Conflict {
     }
 
     /// A camp found without its chief waits for an heir as a camp farmed to the cap does
-    /// (MZB-405; EQUILIBRIUM.md §2.3): the wait is the cap's, from now.
+    /// (MZB-405; EQUILIBRIUM.md §2.3): the wait is the cap's, from now. The pressure is the larger
+    /// of the cap's and the one the camp has (the site ledger's, handed over by `camp_restore`), so
+    /// a grove farmed past the cap keeps its history; the camp's own is kept with the heir, and an
+    /// untagged Umvuthi adopted before the heir comes gives it back (MZB-1402).
     fn found_empty_heir(&mut self, f: u32, at: Tick) {
         let Some(r) = self.culture(f).chief_renewal else {
             return;
         };
         let day = (at.0 / TICKS_PER_DAY) as u32;
-        let pressure = Pressure::at_cap(&r.rule, day);
+        let h = r.rule.half_life_days;
+        let cap = Pressure::at_cap(&r.rule, day);
+        let camp = self.camp_mut(f).expect("a ledger");
+        let kept = camp.pressure;
+        let pressure = if kept.now(day, h) > cap.now(day, h) {
+            kept
+        } else {
+            cap
+        };
         let due = at + r.rule.delay_ticks(pressure, day).max(1);
-        self.camp_mut(f).expect("a ledger").pressure = pressure;
+        camp.pressure = pressure;
         self.site_touch(f);
         self.set_heir(f, due, true, at);
+        if let Some(heir) = self.camp_mut(f).and_then(|c| c.heir.as_mut()) {
+            heir.kept = kept;
+        }
     }
 
     /// Books the chief to come, due at `due`, and the event that looks at it (MZB-406). A heir
     /// booked before is replaced.
     fn set_heir(&mut self, f: u32, due: Tick, found_empty: bool, at: Tick) {
         let camp = self.camp_mut(f).expect("a ledger");
-        camp.heir = Some(Heir { due, found_empty });
+        camp.heir = Some(Heir {
+            due,
+            found_empty,
+            kept: Pressure::default(),
+        });
         camp.heir_stamp = camp.heir_stamp.wrapping_add(1);
         let stamp = camp.heir_stamp;
         self.schedule(due.max(at), Ev::CampHeir { faction: f, stamp });
@@ -2051,10 +2073,10 @@ impl Conflict {
                 && !dropped_wait
             {
                 dropped_wait = true;
-                camp.heir = None;
+                // As if the camp had never been found empty: the cap's pressure was only a stand-in,
+                // and the pressure it had before (the site ledger's, or none) is its own (MZB-1402).
+                camp.pressure = camp.heir.take().map(|h| h.kept).unwrap_or_default();
                 camp.heir_stamp = camp.heir_stamp.wrapping_add(1);
-                // As if the camp had never been found empty: the cap's pressure was only a stand-in.
-                camp.pressure = Pressure::default();
                 let g = derive_gen(fkey, CHIEF_SLOT, at, camp.retired_gen(CHIEF_SLOT));
                 camp.alloc_chief(
                     g,

@@ -89,7 +89,9 @@ use crate::tunables::ConflictTunables;
 /// broken and until when, the stamp of its booked check and when it is next looked at (S7,
 /// EQC201), then its mood, an option of two pressures, its grief and its spoils (FB-8, EQC287); the wheel's tag 12 is `Ev::Strain`, and the stats end with the breaks, refounds and
 /// deferrals.
-const MAGIC: u32 = u32::from_le_bytes(*b"RTCE");
+/// RTC15, `RTCF`: a camp's heir ends with the chief's pressure kept while a camp found without
+/// its chief waits the cap (an f32 and its day, MZB-1402).
+const MAGIC: u32 = u32::from_le_bytes(*b"RTCF");
 /// The meta page of a paged save ([`Conflict::save_paged`]). 2: the indexes, parties and wheel
 /// are in pages of their own, their headers after the row counts (PF10). 3: the resident state
 /// ends with the Peaceful flag, its start and the last notice's serial. 4: the party pages' rows
@@ -101,9 +103,10 @@ const MAGIC: u32 = u32::from_le_bytes(*b"RTCE");
 /// MZB-706). 11: a camp ends with its chief's band's end, and the resident state with their index
 /// (M11, MZB-853). 12: a camp's slots carry their bodies' UUIDs, and the camp its missing, its
 /// bodies left behind, its gap and cap flags and its recount (M12a, MZB-1014, MZB-1015). 13: a
-/// faction row ends with its strain, the wheel's tag 12 and the stats end as RTC14's (S7).
+/// faction row ends with its strain, the wheel's tag 12 and the stats end as RTC14's (S7). 14: a
+/// camp's heir carries its kept pressure, as RTC15's (M12a review, MZB-1402).
 const META_MAGIC: u32 = u32::from_le_bytes(*b"RTCM");
-const META_VERSION: u16 = 13;
+const META_VERSION: u16 = 14;
 
 /// Every page table the conflict owns when it pages: a meta key in none of them.
 pub const TABLES: [u16; 9] = [
@@ -249,7 +252,7 @@ fn get_pos(r: &mut Reader<'_>) -> codec::Result<Pos> {
 }
 
 /// Why a save does not start with this build's magic: another format of the same family is named
-/// (`RTCD`, this build reads `RTCE`), anything else is not a conflict save.
+/// (`RTCE`, this build reads `RTCF`), anything else is not a conflict save.
 fn magic_error(found: u32) -> String {
     let (f, m) = (found.to_le_bytes(), MAGIC.to_le_bytes());
     if f[..3] == *b"RTC" {
@@ -505,6 +508,9 @@ fn put_camp(w: &mut Writer, c: &Camp) {
     put_opt(w, &c.heir, |w, h| {
         w.u64(h.due.0);
         w.bool(h.found_empty);
+        let (p, at_day) = h.kept.parts();
+        w.f32(p);
+        w.u32(at_day);
     });
     w.var_u64(u64::from(c.heir_stamp));
     put_usize(w, c.traded.len());
@@ -645,9 +651,16 @@ fn get_camp(r: &mut Reader<'_>) -> codec::Result<Camp> {
     let arrival = get_u32(r)?;
     let arrival_at = get_opt(r, |r| Ok(Tick(r.u64()?)))?;
     let heir = get_opt(r, |r| {
+        let due = Tick(r.u64()?);
+        let found_empty = r.bool()?;
+        let p = r.f32()?;
+        if !p.is_finite() || p < 0.0 {
+            return bad(format!("camp heir's kept pressure {p}"));
+        }
         Ok(Heir {
-            due: Tick(r.u64()?),
-            found_empty: r.bool()?,
+            due,
+            found_empty,
+            kept: Pressure::from_parts(p, r.u32()?),
         })
     })?;
     let heir_stamp = get_u32(r)?;
