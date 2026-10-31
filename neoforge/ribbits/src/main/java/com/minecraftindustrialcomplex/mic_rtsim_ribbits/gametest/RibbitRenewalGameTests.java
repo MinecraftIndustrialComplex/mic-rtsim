@@ -420,7 +420,8 @@ public final class RibbitRenewalGameTests {
                         result(stub, first) != null && result(stub, second) != null && villages.walkers.size() >= 2))
                 .thenExecute(() -> {
                     int merchants = 0, settlers = 0;
-                    for (VillageRegistry.Walker w : villages.walkers.values()) {
+                    // A copy: a discarded walker leaves the list (the leave hook), inside this loop.
+                    for (VillageRegistry.Walker w : new ArrayList<>(villages.walkers.values())) {
                         if (w.village != v.id || !(level.getEntity(w.id) instanceof RibbitEntity r))
                             continue;
                         settlers++;
