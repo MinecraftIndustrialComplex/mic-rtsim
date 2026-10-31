@@ -113,6 +113,9 @@ pub const BODY_SLEEPING: u32 = 1;
 pub const BODY_FLYING: u32 = 2;
 pub const BODY_HAS_HOME: u32 = 4;
 
+/// DRAGON_SPAWN_REJECTED reason 1 (docs/boundary.md §2.3): the position was not entity-ticking.
+pub const REJECT_NOT_TICKING: u32 = 1;
+
 /// DRAGON_DISCARD reasons (1 and 2 are the untagged path's: the sim owns the population, the lair
 /// already has its dragon): the dragon whose body stands is away (EQC115), and a second body of
 /// one dragon (EQC112).

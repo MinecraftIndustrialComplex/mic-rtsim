@@ -92,6 +92,9 @@ pub const BODY_RADIUS: u32 = 16;
 /// How long the plugin may take to fly a departing dragon out of view before it despawns it
 /// anyway, ticks. PLACEHOLDER 2,400.
 pub const DEPART_TIMEOUT: u32 = 2_400;
+/// A home spawn refused because the roost's chunk was not entity-ticking is not asked again for
+/// this long (EQC318): the next sighting after it asks again. PLACEHOLDER 600 (half a minute).
+pub const NOT_TICKING_HOLD: u64 = 600;
 
 /// A hunt over a road or a village starts this far into its range: thousandths of a road kept
 /// clear of the villages at its ends. PLACEHOLDER.
@@ -3751,9 +3754,18 @@ impl Dragons {
             }
             Obs::SpawnRejected(r) => {
                 if let Some(d) = self.embodied(r.agent, r.epoch) {
-                    // A refused home spawn is not asked again for a day (EQC116).
+                    // A refused home spawn is not asked again for a day (EQC116), unless the
+                    // roost's chunk was not entity-ticking: a simulation distance under the view
+                    // distance, which the player's next approach may change (EQC318). That one
+                    // holds a moment, so the roost the dragon settles at again does not ask at
+                    // once (a record a step) and the next sighting asks again.
                     if self.pending_home.remove(&d) {
-                        self.home_hold.insert(d, at + TICKS_PER_DAY);
+                        let hold = if r.reason == boundary::REJECT_NOT_TICKING {
+                            NOT_TICKING_HOLD
+                        } else {
+                            TICKS_PER_DAY
+                        };
+                        self.home_hold.insert(d, at + hold);
                     }
                     self.resume(w, d, at, false);
                 }
