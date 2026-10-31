@@ -132,20 +132,26 @@ public final class OutpostGameTests {
     // ---- 1: found once ---------------------------------------------------------------------------
 
     /**
-     * An outpost is found once when its chunk loads (EQC238): FACTION_FOUND for the start chunk's key, under the structure's id,
-     * not late, with the raider culture's territory back (TERRITORY, 300 blocks); the same chunk loading again changes nothing.
+     * An outpost is found once when its chunk loads (EQC238) with a player near: FACTION_FOUND for the start chunk's key, under the
+     * structure's id, not late, with the raider culture's territory back (TERRITORY, 300 blocks) and the ledger's row for it (K 50,
+     * count 50, P 0); the same chunk loading again changes nothing. A second session (a plain reset: a new engine, the pages gone)
+     * is told of it once more, once (EQC252).
      */
-    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 600, batch = "mic_rtsim_outposts_find")
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "mic_rtsim_outposts_find", skyAccess = true)
     public static void anOutpostIsFoundOnceWhenItsChunkLoads(GameTestHelper helper) {
         String test = "anOutpostIsFoundOnceWhenItsChunkLoads";
         if (!nativeOnly(helper, test))
             return;
+        ChunkWait waits = ChunkWait.of(helper, 8000);
         Placed p = generate(helper);
+        MinecraftServer server = p.level().getServer();
+        ConflictKit.onEnd(helper, () -> SiteTestHooks.cleanUp(server));
         viewer(helper, p, "outpost_finder");
         long[] before = {Outposts.found};
+        long[] upTo = new long[1];
         load(p, true);
         helper.startSequence()
-                .thenWaitUntil(() -> check("FACTION_FOUND reached the engine", !found(p.faction()).isEmpty()))
+                .thenWaitUntil(waits.engine(() -> check("FACTION_FOUND reached the engine", !found(p.faction()).isEmpty())))
                 .thenExecute(() -> {
                     ScriptedEngine.Received r = found(p.faction()).get(0);
                     check("not late (aux " + r.aux() + ")", (r.aux() & ConflictRecords.FactionFound.FLAG_LATE) == 0);
@@ -155,7 +161,7 @@ public final class OutpostGameTests {
                     load(p, true);
                     load(p, false);
                 })
-                .thenWaitUntil(() -> check("the engine gave the territory back", bridge().territories().get(p.faction()) != null))
+                .thenWaitUntil(waits.engine(() -> check("the engine gave the territory back", bridge().territories().get(p.faction()) != null)))
                 .thenExecute(() -> {
                     var t = bridge().territories().get(p.faction());
                     check("the raiders' radius, 300 (" + t.radius() + ")", t.radius() == 300);
@@ -166,6 +172,26 @@ public final class OutpostGameTests {
                 .thenExecute(() -> {
                     check("loading again found nothing more (" + (Outposts.found - before[0]) + ")", Outposts.found == before[0] + 1);
                     check("one FACTION_FOUND (" + found(p.faction()).size() + ")", found(p.faction()).size() == 1);
+                })
+                .thenWaitUntil(waits.engine(() -> {
+                    SiteLedger.Row r = row(p.level(), p.faction());
+                    check("the ledger's row: K 50, count 50, P 0 (" + r + ")", r != null && r.k() == 50 && r.count() == 50 && r.p() == 0f);
+                }))
+                .thenExecute(() -> {
+                    upTo[0] = SiteTestHooks.journalEnd();
+                    SiteTestHooks.requestSave();
+                })
+                .thenWaitUntil(waits.engine(() -> check("an engine save covers the journal through " + upTo[0], SiteTestHooks.savedThrough(upTo[0]))))
+                .thenExecute(() -> {
+                    SiteTestHooks.plainReset(server);
+                    check("a session runs after the reset: " + RtsimSession.startFailure(), RtsimSession.current() != null);
+                })
+                .thenWaitUntil(waits.engine(() -> check("the second session was told of the outpost", !found(p.faction()).isEmpty())))
+                .thenIdle(40)
+                .thenExecute(() -> {
+                    check("once in the second session (" + found(p.faction()).size() + ")", found(p.faction()).size() == 1);
+                    check("by the one finder run (" + (Outposts.found - before[0]) + " found)", Outposts.found == before[0] + 1);
+                    record(test, "two sessions", "one FACTION_FOUND in each, the row K 50, count 50, P 0");
                 })
                 .thenSucceed();
     }
@@ -222,20 +248,21 @@ public final class OutpostGameTests {
 
     /**
      * An outpost follows the conflict module's switch (EQC243, U-e): found while the module is off, it is known and journals
-     * nothing; the module switched on, FACTION_FOUND goes within a tick.
+     * nothing; the module switched on, FACTION_FOUND goes within a tick; switched off and on again it goes once more (EQC252).
      */
-    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 600, batch = "mic_rtsim_outposts_switch")
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "mic_rtsim_outposts_switch")
     public static void anOutpostFollowsTheConflictSwitch(GameTestHelper helper) {
         String test = "anOutpostFollowsTheConflictSwitch";
         if (!nativeOnly(helper, test))
             return;
+        ChunkWait waits = ChunkWait.of(helper, 6000);
         MinecraftServer server = helper.getLevel().getServer();
         Placed p = generate(helper);
-        viewer(helper, p, "outpost_switch");
         ConflictKit.onEnd(helper, () -> {
             RtsimConfig.Test.setModule(Module.CONFLICT, null);
             BridgeEvents.moduleSwitchesChanged(server);
         });
+        viewer(helper, p, "outpost_switch");
         RtsimConfig.Test.setModule(Module.CONFLICT, false);
         BridgeEvents.moduleSwitchesChanged(server);
         load(p, true);
@@ -247,8 +274,27 @@ public final class OutpostGameTests {
                     RtsimConfig.Test.setModule(Module.CONFLICT, null);
                     BridgeEvents.moduleSwitchesChanged(server);
                 })
-                .thenWaitUntil(() -> check("FACTION_FOUND once the module is on", !found(p.faction()).isEmpty()))
-                .thenExecute(() -> record(test, "switched on", found(p.faction()).size() + " FACTION_FOUND"))
+                .thenWaitUntil(waits.engine(() -> check("FACTION_FOUND once the module is on", !found(p.faction()).isEmpty())))
+                .thenIdle(40)
+                .thenExecute(() -> {
+                    check("reported once on the first edge (" + found(p.faction()).size() + ")", found(p.faction()).size() == 1);
+                    // The second edge: off, then on again.
+                    RtsimConfig.Test.setModule(Module.CONFLICT, false);
+                    BridgeEvents.moduleSwitchesChanged(server);
+                })
+                .thenIdle(40)
+                .thenExecute(() -> {
+                    check("nothing more while off again (" + found(p.faction()).size() + ")", found(p.faction()).size() == 1);
+                    RtsimConfig.Test.setModule(Module.CONFLICT, null);
+                    BridgeEvents.moduleSwitchesChanged(server);
+                })
+                .thenWaitUntil(waits.engine(() -> check("reported once more on the second edge (" + found(p.faction()).size() + ")",
+                        found(p.faction()).size() == 2)))
+                .thenIdle(40)
+                .thenExecute(() -> {
+                    check("once more, not more (" + found(p.faction()).size() + ")", found(p.faction()).size() == 2);
+                    record(test, "switched", found(p.faction()).size() + " FACTION_FOUND over two edges");
+                })
                 .thenSucceed();
     }
 
@@ -586,58 +632,83 @@ public final class OutpostGameTests {
                 .thenSucceed();
     }
 
+    /** Whether {@code m} is a body of one of the sim's parties. */
+    private static boolean isPartyBody(Mob m) {
+        for (ConflictBridge.Party q : bridge().parties())
+            for (ConflictBridge.Stack s : q.stacks())
+                if (s.bodies().contains(m))
+                    return true;
+        return false;
+    }
+
     // ---- 7: vanilla's own raiders are left alone --------------------------------------------------
 
     /**
-     * Vanilla's own raiders stay vanilla's (EQC248, FB-7 (a)): the outpost's pillager (its structure spawn override) and a patrol are
-     * nobody's body, whether or not the outpost is a camp: no rtsim tag, no camp-member mark, not removed.
+     * Vanilla's own raiders stay vanilla's (EQC248, FB-7 (a)): a command-spawned patrol (a leader and a member, flagged as
+     * {@code PatrolSpawner} flags them) and a pillager made by the structure's spawn override ({@code MobSpawnType.STRUCTURE}) stand
+     * in the box of an outpost that is a camp with a party out (its envoy, placed beside them), and after 2,000 ticks they are
+     * nobody's body: no rtsim tag, no camp-member mark, not adopted, not removed, still a patrol; and the party's bodies are not
+     * theirs. They are held without AI so that they stay in the forced chunks.
      */
     @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "mic_rtsim_outposts_vanilla")
     public static void aVanillaPatrolAndTheOutpostsOwnPillagersAreLeftAlone(GameTestHelper helper) {
         String test = "aVanillaPatrolAndTheOutpostsOwnPillagersAreLeftAlone";
-        if (!nativeOnly(helper, test))
+        if (!(RtsimTests.engine() instanceof NativeEngine e)) {
+            record(test, "skipped", "the camps are the engine's only on the native engine");
+            helper.succeed();
             return;
+        }
         ChunkWait waits = ChunkWait.of(helper, 6000);
         Placed p = generate(helper);
-        viewer(helper, p, "outpost_vanilla");
         ServerLevel level = p.level();
-        List<Long> forced = new ArrayList<>();
-        for (int dx = -1; dx <= 1; dx++)
-            for (int dz = -1; dz <= 1; dz++)
-                if (ConflictKit.force(level, p.cp().x + dx, p.cp().z + dz, true))
-                    forced.add(ChunkPos.asLong(p.cp().x + dx, p.cp().z + dz));
-        Pillager[] pillagers = new Pillager[2];
+        forceAround(helper, p, new ArrayList<>());
+        ServerPlayer player = viewer(helper, p, "outpost_vanilla");
+        Pillager[] vanilla = new Pillager[3]; // the patrol's leader and member, and the spawn override's pillager
+        ConflictBridge.Party[] envoy = new ConflictBridge.Party[1];
+        int[] asks = {0, 0};
         ConflictKit.onEnd(helper, () -> {
-            for (Pillager x : pillagers)
+            for (Pillager x : vanilla)
                 if (x != null)
                     x.discard();
-            for (long c : forced)
-                ConflictKit.force(level, ChunkPos.getX(c), ChunkPos.getZ(c), false);
         });
         load(p, true);
-        helper.startSequence()
-                .thenWaitUntil(waits.chunks(() -> check("the outpost's chunk ticks entities", RtsimSession.entitiesTickAt(level,
-                        new BlockPos(p.cp().x * 16 + 8, 64, p.cp().z * 16 + 8)))))
+        provoke(helper.startSequence()
+                .thenWaitUntil(waits.chunks(() -> forcedChunksTick(p)))
                 .thenWaitUntil(waits.engine(() -> check("the outpost joined", !found(p.faction()).isEmpty())))
                 .thenExecute(() -> {
                     BlockPos in = p.inside();
-                    for (int i = 0; i < 2; i++) {
-                        pillagers[i] = EntityType.PILLAGER.create(level);
-                        pillagers[i].moveTo(in.getX() + 0.5 + i, in.getY(), in.getZ() + 0.5);
-                        pillagers[i].setPersistenceRequired();
-                        pillagers[i].setNoAi(true);
-                        level.addFreshEntity(pillagers[i]);
+                    for (int i = 0; i < vanilla.length; i++) {
+                        Pillager x = EntityType.PILLAGER.create(level);
+                        BlockPos at = in.offset(i, 0, 3);
+                        x.moveTo(at.getX() + 0.5, at.getY(), at.getZ() + 0.5);
+                        if (i < 2) {
+                            // A patrol, as /summon with PatrolLeader makes one: the leader has a target, the member follows.
+                            x.setPatrolLeader(i == 0);
+                            x.findPatrolTarget();
+                        }
+                        x.setNoAi(true);
+                        x.finalizeSpawn(level, level.getCurrentDifficultyAt(at), i < 2 ? MobSpawnType.PATROL : MobSpawnType.STRUCTURE, null);
+                        level.addFreshEntity(x);
+                        vanilla[i] = x;
                     }
-                })
-                .thenIdle(200)
+                }), waits, e, p, player, envoy, asks)
                 .thenExecute(() -> {
-                    for (Pillager x : pillagers) {
+                    check("a party of the outpost's is out", bridge().parties().stream().anyMatch(q -> q.faction == p.faction()));
+                    for (Pillager x : vanilla)
+                        check("not a party's body", !isPartyBody(x));
+                })
+                .thenIdle(2_000)
+                .thenExecute(() -> {
+                    for (Pillager x : vanilla) {
                         check("still here, vanilla's", x.isAlive() && !x.isRemoved());
                         check("no rtsim tag", RtsimAttachments.tag(x) == null);
                         check("no camp-member mark", RtsimAttachments.campMember(x) == null);
+                        check("not a party's body", !isPartyBody(x));
                     }
-                    check("no party of the outpost's", bridge().parties().stream().noneMatch(q -> q.faction == p.faction()));
-                    record(test, "left alone", "two pillagers in the box, untagged after 200 ticks");
+                    check("the patrol is still a patrol", vanilla[0].isPatrolLeader() && vanilla[0].hasPatrolTarget());
+                    check("the party is still out (" + bridge().parties().size() + " parties)",
+                            bridge().parties().stream().anyMatch(q -> q.faction == p.faction()));
+                    record(test, "left alone", "a patrol of two and a spawn override's pillager untagged after 2,000 ticks with the envoy out");
                 })
                 .thenSucceed();
     }
