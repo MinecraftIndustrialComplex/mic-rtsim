@@ -1476,6 +1476,8 @@ fn a_reset_resumes_a_pool_camps_break() {
         let row = row_of(&r.c, f, elapsed);
         assert!(row.waiting() && row.count == 0, "a broken camp's row");
         let now = Tick(at.0 + elapsed);
+        // What the old engine reads at the find's date, and what it read at the break.
+        let (was_then, want_p) = (r.c.pressure_now(f, at), r.c.pressure_now(f, now));
         r.reborn(row, now);
         let f = r.f;
         let again = broken(&r.c, f);
@@ -1500,11 +1502,14 @@ fn a_reset_resumes_a_pool_camps_break() {
             // Its plunder drive is off: no wake of the drive is live.
             r.c.check(&r.w).expect("books");
         }
-        // Aged: the pressure read at the find is the row's, decayed by the elapsed days.
+        // Aged: the pressure read at the find is the row's, decayed by the elapsed days: the old
+        // engine's reading at that date, less than the break's (the half-life is 192 days).
         let p = r.c.pressure_now(f, now);
-        let was = pressure(&r.c, f, now);
-        assert!((f64::from(p) - was).abs() < 1e-9);
-        assert!(p > 0.0);
+        assert!(
+            (p - want_p).abs() < 1e-4,
+            "{elapsed_days} days: {p} vs the old engine's {want_p}"
+        );
+        assert!(p > 0.0 && p < was_then, "aged: {p} under {was_then}");
     }
 }
 
