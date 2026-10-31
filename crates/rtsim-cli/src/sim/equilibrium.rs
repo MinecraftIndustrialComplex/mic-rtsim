@@ -30,8 +30,9 @@ use std::ops::RangeInclusive;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use rtsim_ecology::DragonId;
-use rtsim_ecology::herds::{HerdId, HerdTunables};
+use rtsim_ecology::herds::{HerdId, HerdSpecies, HerdTunables};
+use rtsim_ecology::synth::LairSpec;
+use rtsim_ecology::{DragonId, DragonTunables, Gender, LairKind, Species};
 use rtsim_kernel::clock::Tick;
 use rtsim_kernel::rng::{SlotRng, StreamKey, SystemId};
 use rtsim_knowledge::ActorId;
@@ -71,6 +72,17 @@ impl Grid {
 
     pub fn build(&self, seed: u64, tun: HerdTunables) -> Ecology {
         Ecology::ranges_in(seed, tun, self.x.clone(), self.z.clone())
+    }
+
+    /// [`Grid::build`] under `lairs`, with the dragons' tunables `dtun`.
+    pub fn build_on(
+        &self,
+        seed: u64,
+        tun: HerdTunables,
+        lairs: &[LairSpec],
+        dtun: DragonTunables,
+    ) -> Ecology {
+        Ecology::ranges_with(seed, tun, self.x.clone(), self.z.clone(), lairs, dtun)
     }
 }
 
@@ -395,6 +407,12 @@ pub struct DragonCensus {
     pub k: u64,
     pub alive: usize,
     pub ranges: usize,
+    /// The herds' animals and K by species ([`HerdSpecies::ALL`]'s order).
+    pub by_species: [(u64, u64); HerdSpecies::COUNT],
+    /// Herds alive at or below 1.25 times their refuge (`max(8, 0.1 K)`, EQUILIBRIUM.md §3.4).
+    pub at_floor: usize,
+    /// Dragons at home in a lair.
+    pub dragons: usize,
 }
 
 impl DragonCensus {
@@ -423,12 +441,39 @@ pub struct DragonRun {
     pub roamer_kills: u64,
     pub shock_kills: u64,
     pub stats: rtsim_ecology::DragonStats,
+    /// The herds' ledgers summed at the end: born, eaten by dragons, natural deaths, starved.
+    pub born: u64,
+    pub eaten: u64,
+    pub died: u64,
+    pub starved: u64,
 }
 
 /// A ranges world of `seed` run to `to` days, with the roamer if `roamer` (else nobody), a census
 /// every [`EVERY`] days and `shock`.
 pub fn dragon_run(grid: &Grid, seed: u64, roamer: bool, shock: Shock, to: u64) -> DragonRun {
-    let mut e = grid.build(seed, Ecology::herd_tunables());
+    let tun = (Ecology::herd_tunables(), Ecology::dragon_tunables());
+    dragon_run_on(
+        grid,
+        seed,
+        &rtsim_ecology::synth::lairs(),
+        tun,
+        roamer,
+        shock,
+        to,
+    )
+}
+
+/// [`dragon_run`] under `lairs`, with the herds' and the dragons' tunables `tun`.
+pub fn dragon_run_on(
+    grid: &Grid,
+    seed: u64,
+    lairs: &[LairSpec],
+    tun: (HerdTunables, DragonTunables),
+    roamer: bool,
+    shock: Shock,
+    to: u64,
+) -> DragonRun {
+    let mut e = grid.build_on(seed, tun.0, lairs, tun.1);
     let k: u64 = e.h.herds.iter().map(|(_, x)| x.k).sum();
     let rows = rows(&e);
     let mut ro = roamer.then(|| Roamer::new(&mut e, seed));
@@ -438,6 +483,10 @@ pub fn dragon_run(grid: &Grid, seed: u64, roamer: bool, shock: Shock, to: u64) -
         roamer_kills: 0,
         shock_kills: 0,
         stats: Default::default(),
+        born: 0,
+        eaten: 0,
+        died: 0,
+        starved: 0,
     };
     for day in 0..=to {
         e.run_to(Tick::from_days(day));
@@ -469,6 +518,17 @@ pub fn dragon_run(grid: &Grid, seed: u64, roamer: bool, shock: Shock, to: u64) -
         }
         if day.is_multiple_of(EVERY) {
             let counts: Vec<u64> = rows.iter().map(|&h| e.h.count(h, at)).collect();
+            let mut by_species = [(0u64, 0u64); HerdSpecies::COUNT];
+            let mut at_floor = 0;
+            for (&h, &n) in rows.iter().zip(&counts) {
+                let Some(x) = e.h.herd(h) else { continue };
+                let s = &mut by_species[x.species.index()];
+                s.0 += n;
+                s.1 += x.k;
+                if n > 0 && 4 * n <= 5 * e.h.refuge(x.k) {
+                    at_floor += 1;
+                }
+            }
             out.censuses.push(DragonCensus {
                 day,
                 held: e.d.lairs.iter().filter(|l| !l.occupants.is_empty()).count(),
@@ -477,12 +537,110 @@ pub fn dragon_run(grid: &Grid, seed: u64, roamer: bool, shock: Shock, to: u64) -
                 k,
                 alive: counts.iter().filter(|&&n| n > 0).count(),
                 ranges: counts.len(),
+                by_species,
+                at_floor,
+                dragons: e.d.lairs.iter().map(|l| l.occupants.len()).sum(),
             });
         }
     }
     check(&e);
     out.roamer_kills = ro.map_or(0, |r| r.killed);
     out.stats = e.d.stats;
+    for (_, x) in e.h.herds.iter() {
+        out.born += x.ledger.born;
+        out.eaten += x.ledger.eaten;
+        out.died += x.ledger.died;
+        out.starved += x.ledger.starved;
+    }
+    out
+}
+
+// ---- lair density (diag/lair-density) -------------------------------------------------------------
+
+/// Where the jar's lairs may stand on a ranges world, which has no biomes: a region holds a
+/// biome some dragon's structure tag names with chance `region_share`, and in such a region each
+/// candidate chunk's surface biome is in the tag with chance `cell_share`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LairLayout {
+    pub region_share: f64,
+    pub cell_share: f64,
+}
+
+/// Ice and Fire's lairs as the pack's jar places them (`iceandfire-2.1-beta.1`, read with CFR,
+/// on vanilla 1.21.1's `ChunkGenerator.createStructures`) over `grid`, under `layout`'s biomes:
+///
+/// - two `random_spread` sets, roosts (spacing 15 chunks, separation 6) and caves (18, 12), one
+///   candidate chunk per grid cell, its offset uniform over `spacing - separation` per axis;
+/// - a candidate within 10 chunks (Chebyshev) of a `minecraft:villages` candidate (spacing 34,
+///   separation 8) is excluded, whatever stands there;
+/// - one draw per candidate, `nextDouble() < 0.5` (the pack's `generate*Chance`): every structure
+///   of the set reads the same stream (`Structure.GenerationContext.makeRandom`), so a biome two
+///   tags hold does not raise it;
+/// - none within 1,000 blocks of spawn (`dangerousDistanceLimit`), spawn at the origin.
+///
+/// Each lair holds one dragon, as the structure spawns it: a roost's 52 to 59 days old, a cave's
+/// 75 to 124, hunger 50; species and sex at random.
+pub fn jar_lairs(grid: &Grid, seed: u64, layout: LairLayout) -> Vec<LairSpec> {
+    let key = StreamKey::new(seed, SystemId::named("eq.jar_lairs"), 0);
+    let cell = |set: u64, i: i32, j: i32| {
+        (set << 60) | (u64::from(i as u32 & 0x3FFF_FFFF) << 30) | u64::from(j as u32 & 0x3FFF_FFFF)
+    };
+    let village = |i: i32, j: i32| {
+        let mut r = key.slot(cell(0, i, j));
+        (i * 34 + r.below(26) as i32, j * 34 + r.below(26) as i32)
+    };
+    let excluded = |cx: i32, cz: i32| {
+        ((cx - 10).div_euclid(34)..=(cx + 10).div_euclid(34)).any(|i| {
+            ((cz - 10).div_euclid(34)..=(cz + 10).div_euclid(34)).any(|j| {
+                let (vx, vz) = village(i, j);
+                (vx - cx).abs() <= 10 && (vz - cz).abs() <= 10
+            })
+        })
+    };
+    let region_ok = |rx: i32, rz: i32| key.slot(cell(3, rx, rz)).bernoulli(layout.region_share);
+    let (c0x, c1x) = (grid.x.start() * 32, (grid.x.end() + 1) * 32);
+    let (c0z, c1z) = (grid.z.start() * 32, (grid.z.end() + 1) * 32);
+    let mut out = Vec::new();
+    for (set, kind, spacing, sep) in [(1, LairKind::Roost, 15, 6), (2, LairKind::Cave, 18, 12)] {
+        for i in c0x.div_euclid(spacing)..=(c1x - 1).div_euclid(spacing) {
+            for j in c0z.div_euclid(spacing)..=(c1z - 1).div_euclid(spacing) {
+                let mut r = key.slot(cell(set, i, j));
+                let cx = i * spacing + r.below((spacing - sep) as u64) as i32;
+                let cz = j * spacing + r.below((spacing - sep) as u64) as i32;
+                if !(c0x..c1x).contains(&cx) || !(c0z..c1z).contains(&cz) {
+                    continue;
+                }
+                let (x, z) = (cx * 16 + 8, cz * 16 + 8);
+                let roll = r.bernoulli(0.5);
+                let biome = region_ok(x.div_euclid(512), z.div_euclid(512))
+                    && r.bernoulli(layout.cell_share);
+                let far = f64::from(x).hypot(f64::from(z)) >= 1000.0;
+                if !roll || !biome || !far || excluded(cx, cz) {
+                    continue;
+                }
+                let species = Species::ALL[r.below(3) as usize];
+                let gender = if r.bernoulli(0.5) {
+                    Gender::Male
+                } else {
+                    Gender::Female
+                };
+                let (age, y) = match kind {
+                    LairKind::Roost => (52 + r.below(8), 100),
+                    LairKind::Cave => (75 + r.below(50), 40),
+                };
+                out.push(LairSpec {
+                    key: 1_000 + out.len() as u64,
+                    name: "jar lair",
+                    species,
+                    kind,
+                    x,
+                    z,
+                    y,
+                    dragons: vec![("jar dragon", gender, age, 50)],
+                });
+            }
+        }
+    }
     out
 }
 
@@ -1563,6 +1721,227 @@ mod tests {
             "roamer {fill_r:?} nobody {fill_n:?}"
         );
         assert!(fill_r.1 >= 0.5 && fill_r.2 < 1.0, "roamer {fill_r:?}");
+    }
+
+    /// One layout of the lair-density diagnosis: the phase 1 world's five lairs, or the jar's.
+    #[derive(Clone, Copy, Debug)]
+    enum Layout {
+        Synth,
+        Jar(LairLayout),
+        /// Lairs read from a file (`file:<path>`, a line `roost|cave x z` each): a real world's.
+        File(&'static str),
+    }
+
+    impl Layout {
+        fn parse(s: &str) -> Layout {
+            if s == "synth" {
+                return Layout::Synth;
+            }
+            if let Some(path) = s.strip_prefix("file:") {
+                return Layout::File(Box::leak(path.to_string().into_boxed_str()));
+            }
+            let (r, c) = s.split_once(':').expect("synth or region:cell");
+            Layout::Jar(LairLayout {
+                region_share: r.parse().expect("a share"),
+                cell_share: c.parse().expect("a share"),
+            })
+        }
+
+        fn lairs(self, grid: &Grid, seed: u64) -> Vec<LairSpec> {
+            match self {
+                Layout::Synth => rtsim_ecology::synth::lairs(),
+                Layout::Jar(l) => jar_lairs(grid, seed, l),
+                Layout::File(path) => {
+                    let text = std::fs::read_to_string(path).expect("a lair file");
+                    let mut r = StreamKey::new(seed, SystemId::named("eq.file_lairs"), 0).slot(0);
+                    text.lines()
+                        .filter(|l| !l.trim().is_empty())
+                        .enumerate()
+                        .map(|(i, l)| {
+                            let f: Vec<&str> = l.split_whitespace().collect();
+                            let kind = if f[0] == "cave" {
+                                LairKind::Cave
+                            } else {
+                                LairKind::Roost
+                            };
+                            let (age, y) = match kind {
+                                LairKind::Roost => (52 + r.below(8), 100),
+                                LairKind::Cave => (75 + r.below(50), 40),
+                            };
+                            let gender = if r.bernoulli(0.5) {
+                                Gender::Male
+                            } else {
+                                Gender::Female
+                            };
+                            LairSpec {
+                                key: 1_000 + i as u64,
+                                name: "real lair",
+                                species: Species::ALL[r.below(3) as usize],
+                                kind,
+                                x: f[1].parse().expect("x"),
+                                z: f[2].parse().expect("z"),
+                                y,
+                                dragons: vec![("real dragon", gender, age, 50)],
+                            }
+                        })
+                        .collect()
+                }
+            }
+        }
+    }
+
+    fn env_or(name: &str, default: &str) -> String {
+        std::env::var(name).unwrap_or_else(|_| default.to_string())
+    }
+
+    /// A tunables knob of the diagnosis's options (`RTSIM_LD_TWEAK`, `name=value`, comma separated).
+    fn tweak(spec: &str) -> (HerdTunables, DragonTunables) {
+        let (mut h, mut d) = (Ecology::herd_tunables(), Ecology::dragon_tunables());
+        for kv in spec.split(',').filter(|x| !x.is_empty()) {
+            let (k, v) = kv.split_once('=').expect("name=value");
+            let x: f64 = v.parse().expect("a number");
+            match k {
+                // Every species' hunting radius by stage, times x.
+                "territory" => {
+                    for sp in &mut d.species {
+                        for r in sp.territory.iter_mut() {
+                            *r = (f64::from(*r) * x).round() as u32;
+                        }
+                    }
+                }
+                "arrive_food" => d.arrive_food = x as f32,
+                "starve_leave" => d.starve_leave = x as f32,
+                "gate_village" => d.gate_village = x,
+                "refuge" => h.refuge_share = x,
+                _ => panic!("unknown knob {k}"),
+            }
+        }
+        (h, d)
+    }
+
+    fn print_density_runs(what: &str, rs: &[DragonRun], from: u64) {
+        let late = |r: &DragonRun| -> Vec<DragonCensus> {
+            r.censuses
+                .iter()
+                .filter(|c| c.day >= from)
+                .copied()
+                .collect()
+        };
+        let mean = |cs: &[DragonCensus], f: &dyn Fn(&DragonCensus) -> f64| {
+            cs.iter().map(f).sum::<f64>() / cs.len().max(1) as f64
+        };
+        println!("{what}, {} seeds, means from day {from}:", rs.len());
+        for r in rs {
+            let cs = late(r);
+            let lairs = cs.first().map_or(0, |c| c.lairs);
+            let held = mean(&cs, &|c| c.held_share());
+            let fill = mean(&cs, &|c| c.animals as f64 / c.k.max(1) as f64);
+            let floor = mean(&cs, &|c| c.at_floor as f64 / c.ranges.max(1) as f64);
+            let dragons = mean(&cs, &|c| c.dragons as f64);
+            let empty_all = cs.iter().filter(|c| c.held == 0).count();
+            let alive_min = cs
+                .iter()
+                .map(|c| c.alive as f64 / c.ranges.max(1) as f64)
+                .fold(1.0, f64::min);
+            let sp: Vec<String> = HerdSpecies::ALL
+                .iter()
+                .map(|s| {
+                    let i = s.index();
+                    let f = mean(&cs, &|c| {
+                        let (n, k) = c.by_species[i];
+                        if k == 0 {
+                            f64::NAN
+                        } else {
+                            n as f64 / k as f64
+                        }
+                    });
+                    format!("{} {:.2}", s.name(), f)
+                })
+                .collect();
+            let st = &r.stats;
+            let losses = (r.eaten + r.died + r.starved).max(1) as f64;
+            println!(
+                "  seed {:>2}: lairs {lairs} ({:.3}/region) held {held:.3} (all empty at {empty_all} of {} censuses) N/K {fill:.3} [{}] at floor {floor:.3} alive min {alive_min:.2} dragons {dragons:.1}",
+                r.seed,
+                lairs as f64 / 56.0,
+                cs.len(),
+                sp.join(", "),
+            );
+            println!(
+                "           eaten {} of {} born ({:.3}), of losses {:.3}; starved away {} migrations {} gated {} newcomers {} heirs {} age {} roamer kills {} hunts {} herd hunts {} village raids {} fruitless {}",
+                r.eaten,
+                r.born,
+                r.eaten as f64 / r.born.max(1) as f64,
+                r.eaten as f64 / losses,
+                st.starved_away,
+                st.migrations,
+                st.arrivals_gated,
+                st.respawns,
+                st.heirs_sent,
+                st.deaths_age,
+                r.roamer_kills,
+                st.hunts,
+                st.herd_hunts,
+                st.village_raids,
+                st.fruitless,
+            );
+            let mut line = String::new();
+            for w in r.censuses.chunks((4 * YEAR / EVERY) as usize) {
+                let fill = mean(w, &|c| c.animals as f64 / c.k.max(1) as f64);
+                let held = mean(w, &|c| c.held_share());
+                line.push_str(&format!(" y{}:{held:.2}/{fill:.2}", w[0].day / YEAR));
+            }
+            println!("           every 4 years, held/N/K:{line}");
+        }
+    }
+
+    /// The lair-density diagnosis (branch diag/lair-density): S4's dragons-and-herds run with the
+    /// lairs as the pack's jar places them. `RTSIM_LD_LAYOUTS` (`synth` or `region:cell`, `;`
+    /// separated), `RTSIM_LD_SEEDS`, `RTSIM_LD_YEARS`, `RTSIM_LD_ROAMER` (0, 1), `RTSIM_LD_TWEAK`.
+    #[test]
+    #[ignore]
+    fn lair_density_diag() {
+        let layouts: Vec<Layout> = env_or("RTSIM_LD_LAYOUTS", "synth;0.42:0.51;0.667:1")
+            .split(';')
+            .map(Layout::parse)
+            .collect();
+        let seeds: Vec<u64> = env_or("RTSIM_LD_SEEDS", "1,2,3")
+            .split(',')
+            .map(|x| x.parse().expect("a seed"))
+            .collect();
+        let years: u64 = env_or("RTSIM_LD_YEARS", "40").parse().expect("years");
+        let roamer = env_or("RTSIM_LD_ROAMER", "0") == "1";
+        let knobs = env_or("RTSIM_LD_TWEAK", "");
+        let grid = Grid::world();
+        let jobs: Vec<(usize, u64)> = (0..layouts.len())
+            .flat_map(|l| seeds.iter().map(move |&s| (l, s)))
+            .collect();
+        let got = par_map(&jobs, threads(), |&(l, seed)| {
+            let lairs = layouts[l].lairs(&grid, seed);
+            dragon_run_on(
+                &grid,
+                seed,
+                &lairs,
+                tweak(&knobs),
+                roamer,
+                Shock::None,
+                years * YEAR,
+            )
+        });
+        let from = years * YEAR / 2;
+        for (l, layout) in layouts.iter().enumerate() {
+            let rs: Vec<DragonRun> = jobs
+                .iter()
+                .zip(&got)
+                .filter(|((j, _), _)| *j == l)
+                .map(|(_, r)| r.clone())
+                .collect();
+            print_density_runs(
+                &format!("{layout:?}, roamer {roamer}, {years} years, tweak '{knobs}'"),
+                &rs,
+                from,
+            );
+        }
     }
 
     fn print_village_refills(what: &str, rs: &[VillageRefill]) {
