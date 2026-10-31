@@ -704,7 +704,20 @@ fn report(plan: &Plan, run: &Run, checks: &[Check]) -> (String, Vec<String>) {
 
 fn run_plan(plan: Plan) {
     let (run, _) = soak(&plan);
-    let checks = judge(&plan, &run);
+    let mut checks = judge(&plan, &run);
+    if plan.short {
+        // The short cut's windows are 100 days, shorter than a herd's or a lair's swings, and its
+        // first thousand days are the world's settling: the kinds' series are printed, not judged
+        // (EQC480). Its bytes, heap, queues and exact levels are judged as the soak's.
+        for c in checks
+            .iter_mut()
+            .filter(|c| c.name.starts_with("flat.fill.") || c.name.starts_with("flat.renewals."))
+        {
+            c.detail["judged"] = json!(false);
+            c.detail["would_fail"] = json!(!c.ok);
+            c.ok = true;
+        }
+    }
     for c in &checks {
         println!("{} {} {}", if c.ok { "ok  " } else { "FAIL" }, c.name, c.detail);
     }
