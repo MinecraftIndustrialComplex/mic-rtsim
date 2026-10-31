@@ -2505,10 +2505,13 @@ footprint (MZB-1015). CHIEF_BODY is written into a chief's body (health, crystal
   `illagerinvasion:illager_fort`, if its mod is ever present) in a loaded chunk is reported through `RtsimApi.reportCamp` as a
   camp of the raider culture, with no bodies: key `Obs.villageId(dim, start chunk)`, block (the start chunk's middle x, the
   start's minimum y, the middle z), FACTION_FOUND flagged LATE when the chunk was not new and `outpostsJoinExisting` is true
-  (otherwise a late outpost is not reported). The camp's `kin` predicate: a mob of the `minecraft:raiders` tag but the witch,
-  not a sim puppet, inside the start's box widened by `outpostKinMargin` (24) blocks. Reported once per session and again at
-  the conflict module's switch-on edge; nothing is reported while the module or `outpostsJoin` is off. Config keys
-  `outpostsJoin`, `outpostsJoinExisting`, `outpostKinMargin` in the `[conflict]` group.
+  (otherwise a late outpost is not reported, unless the site ledger already holds its camp, EQC297). It is reported only when a
+  player of its level stands within the server's view distance of it when its load is drained (EQC296): a chunk a pre-generator
+  loaded is known and looked at again at its next load. The camp's `kin` predicate: a mob of the `minecraft:raiders` tag but the
+  witch, not a sim puppet, inside the start's box widened by `outpostKinMargin` (24) blocks; a player's kill counts, a machine's
+  (a NeoForge `FakePlayer`) does not (EQC300). Reported once per session and again at the conflict module's switch-on edge;
+  nothing is reported while the module or `outpostsJoin` is off. Config keys `outpostsJoin`, `outpostsJoinExisting`,
+  `outpostKinMargin` in the `[conflict]` group.
 
 ## 10. The world model: HABITAT (PLAN.md §5.1, SCALE.md §2, §4; the core's habitat sampler)
 
