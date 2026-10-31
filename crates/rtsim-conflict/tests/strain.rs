@@ -1858,3 +1858,21 @@ fn a_plunder_band_arriving_at_a_broken_camp_takes_nothing() {
     }
 }
 
+/// EQC295: a pool camp's row counts its strain and, for a culture with a plunder mood, its mood
+/// box, in the bytes the tables report.
+#[test]
+fn a_pool_camps_row_counts_its_strain_and_mood_boxes() {
+    use rtsim_conflict::engine::{Mood, Strain};
+    use rtsim_kernel::rows::Row;
+    let strain = std::mem::size_of::<Strain>();
+    let mood = std::mem::size_of::<Mood>();
+    // A raider camp has both, a goblin camp a strain only, a body camp neither.
+    for (culture, want) in [("raider", strain + mood), ("goblin", strain)] {
+        let (_, c, f) = camp(80, culture);
+        assert_eq!(c.factions.row(f).heap_bytes(), want, "{culture}");
+    }
+    let (_, c, f) = camp(80, "frostmaw");
+    assert!(c.factions[f as usize].strain.is_none() && c.factions[f as usize].mood.is_none());
+    let (_, c, f) = camp(80, "raider");
+    assert!(c.factions[f as usize].strain.is_some() && c.factions[f as usize].mood.is_some());
+}
