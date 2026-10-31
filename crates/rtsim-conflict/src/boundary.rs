@@ -480,6 +480,11 @@ pub struct LineAnswer {
     pub action: u8,
     /// `LINE_DONE`, `LINE_NOTHING`, `LINE_STALE`.
     pub outcome: u8,
+    /// The body the line left in its slot (MZB-1400): for a spawn, a hand-back or an adoption done
+    /// or with nothing to do, the UUID of the body standing with the line's slot and generation
+    /// (one made for it, a puppet's handed back, the stray adopted, or one already there); (0, 0)
+    /// for any other line, or when no such body stands.
+    pub uuid: Uuid,
 }
 
 /// The answer to a CAMP_RECONCILE.
@@ -1358,15 +1363,16 @@ pub fn encode_obs(seq: u64, game_time: i64, o: &Obs, buf: &mut Vec<u8>) {
             w.u64(40, b.op);
             let lines = capped(&b.lines);
             for (k, l) in lines.iter().enumerate() {
-                let o = 48 + 16 * k;
+                let o = 48 + 32 * k;
                 w.u32(o, l.line);
                 w.u32(o + 4, l.slot);
                 w.u32(o + 8, l.generation);
                 w.u8(o + 12, l.action);
                 w.u8(o + 13, l.outcome);
                 w.u16(o + 14, 0);
+                w.uuid(o + 16, l.uuid);
             }
-            w.finish(CAMP_BODIES, lines.len() as u32, 48 + 16 * lines.len());
+            w.finish(CAMP_BODIES, lines.len() as u32, 48 + 32 * lines.len());
         }
         Obs::CampOut(c) => {
             w.u64(24, c.faction);
@@ -1602,13 +1608,14 @@ pub fn decode_obs(b: &[u8]) -> Result<Decoded<Obs>, CodecError> {
         CAMP_BODIES => {
             let lines = (0..count(aux)?)
                 .map(|k| {
-                    let o = 48 + 16 * k;
+                    let o = 48 + 32 * k;
                     Ok(LineAnswer {
                         line: r.u32(o)?,
                         slot: r.u32(o + 4)?,
                         generation: r.u32(o + 8)?,
                         action: r.u8(o + 12)?,
                         outcome: r.u8(o + 13)?,
+                        uuid: r.uuid(o + 16)?,
                     })
                 })
                 .collect::<Result<Vec<_>, CodecError>>()?;
@@ -2233,6 +2240,7 @@ pub(crate) mod tests {
                         generation: 1,
                         action: ACTION_SPAWN,
                         outcome: LINE_DONE,
+                        uuid: (0x0123_4567_89AB_CDEF, 0xFEDC_BA98_7654_3210),
                     },
                     LineAnswer {
                         line: 1,
@@ -2240,6 +2248,7 @@ pub(crate) mod tests {
                         generation: 0,
                         action: ACTION_REMOVE,
                         outcome: LINE_STALE,
+                        uuid: (0, 0),
                     },
                 ],
             }),
@@ -2488,7 +2497,7 @@ pub(crate) mod tests {
             CAMP_CENSUS => 88 + 32 * n + 16 * u32_at(76),
             TRADED => 64,
             NOTICE_SHOWN => 48,
-            CAMP_BODIES => 48 + 16 * n,
+            CAMP_BODIES => 48 + 32 * n,
             CAMP_OUT => 40,
             CHIEF_PAID => 72 + 16 * n,
             HUNT_APPLIED => 56,
@@ -2714,6 +2723,7 @@ pub(crate) mod tests {
                         generation: 1,
                         action: ACTION_TAKE,
                         outcome: LINE_DONE,
+                        uuid: (0, 0),
                     })
                     .collect();
             }

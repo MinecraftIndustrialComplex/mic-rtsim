@@ -1645,12 +1645,30 @@ impl FakeConflict {
             });
             // A MASK names the warrior the plugin took, not the line's own (zero) slot.
             let (slot, generation) = taken.unwrap_or((l.slot, l.generation));
+            // A spawn, a hand-back or an adoption done or with nothing to do names the body standing
+            // with the line's tags, as Java's answer does (MZB-1400).
+            let uuid = match (l.action, outcome) {
+                (
+                    boundary::ACTION_SPAWN | boundary::ACTION_HAND_BACK | boundary::ACTION_ADOPT,
+                    boundary::LINE_DONE | boundary::LINE_NOTHING,
+                ) => self
+                    .camps
+                    .get(&faction)
+                    .and_then(|c| {
+                        c.bodies
+                            .iter()
+                            .find(|b| b.slot == slot && b.generation == generation)
+                    })
+                    .map_or((0, 0), |b| b.uuid),
+                _ => (0, 0),
+            };
             let answer = boundary::LineAnswer {
                 line: *index,
                 slot,
                 generation,
                 action: l.action,
                 outcome,
+                uuid,
             };
             if outcome == boundary::LINE_DONE {
                 // A change leaves its record where it was made; one that changed nothing does not.

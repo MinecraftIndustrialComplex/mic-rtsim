@@ -17446,3 +17446,41 @@ sweep mixin, the flake fixes MZB-1100 to MZB-1104) into this branch, commit 24fb
   `:core:test` 431 passed), `create -Psec1fx` All 266, `create -PwithMowzie` All 271 (default heap, no out-of-memory), mowziesmobs All
   112, iceandfire All 42. None failed, so no flake this time.
 
+
+### M12a review fixes (MZB-1400 onward)
+
+The Opus review of slice M12a (S3, landed on main as 43062c0b) and its fixes, on `fix/m12a-review` from main a4717c1f (S5, S6
+and S7 landed), one commit each; every behaviour fix has a test that failed on main first, its failure text below. Line numbers
+the review gave are at 43062c0b.
+
+- **MZB-1400** (P1, a home body's UUID after its slot is given a new body; amends MZB-1014's "a slot knows its body's UUID"): a
+  slot learned its body's UUID only from a census that found the body by its tags, or when an ADOPT line was made. A SPAWN or a
+  HAND_BACK answered made the slot a body with no UUID (CAMP_BODIES named none), and a raid member coming home went gone to owed
+  keeping the UUID of the body that set out, though the HAND_BACK's body is a new entity (`Camps.handBack`). So the row named no
+  UUID, or a removed one, until the den's next census (never, for a force-loaded den). After a reset the first left the slot
+  owed, and the found census spawned a second Frostmaw beside the first when that one stood outside the footprint (the mint);
+  the second left the slot expecting a UUID that no longer existed, the real Frostmaw at home was removed as a stray at a full
+  den, and three misses later the slot was written off as a loss nobody caused (the stale UUID).
+  - **The fix, a protocol change:** each CAMP_BODIES line grows by the UUID of the body it left in its slot, 16 to 32 bytes (the
+    record 48 + 32n, a multiple of 8): for a SPAWN, a HAND_BACK or an ADOPT done, the body made, handed back or adopted (the
+    line's holder, `Camps.leftInSlot`); with nothing to do, the body standing with the line's slot and generation
+    (`Camps.tagged`); any other line, or none standing, 0. The engine (`camp_bodies`): when a SPAWN, HAND_BACK or ADOPT answer
+    gives a member slot that was owed or gone its body, the slot takes the answer's UUID, and 0 when nothing stands (an
+    adoption that found no stray). The chief's slot is not in the row and is left alone. `boundary::LineAnswer.uuid`,
+    `ConflictRecords.CampBodies.L_UUID_MOST` and `L_UUID_LEAST`; docs/boundary.md's CAMP_BODIES row. `synth::FakeConflict`
+    names the body with the line's tags, as Java does. No old-size reader (no compatibility before a release): a journal's
+    16-byte lines from before do not decode.
+  - **Not taken: a RECOUNT after a SPAWN or HAND_BACK done at a camp that is in** (the review's other option, engine only). It
+    was built first and is the smaller change, but not a correct one: a recount ends the epoch, so Java answers stale every line
+    it holds (a SPAWN held while a player is near the den, a TAKE held at the throne, MZB-823), and two M11 tests in
+    `tests/mowzie_aloft.rs` failed with it (`the_chief_is_handed_back_at_home`, "held": the held TAKE was answered stale by the
+    recount's census; `a_puppet_killed_while_its_hand_back_is_in_flight_dies_once`, "a chief line"). It also costs a census per
+    spawn, leaves the row without the UUID until that census answers, and a replayed engine would not learn it again (a
+    replayed census books nothing). The answer's UUID is exact, is the same live and replayed, and orders nothing.
+  - **Tests** (`tests/camp.rs`), both failing on main: `a_renewed_member_s_row_names_its_body_so_a_reset_with_it_away_spawns_none`
+    (a player's kill, the arrival's spawn, the row taken, the Frostmaw lured off, `reborn`; on main "assertion `left == right`
+    failed: no second Frostmaw while the first is away, left: 2, right: 1") and
+    `a_member_home_from_a_raid_hands_its_new_body_over_and_a_reset_removes_none` (a raid out and home, the row taken, `reborn`,
+    the den comes in; on main "assertion `left == right` failed: the Frostmaw at home is not removed, left: 1, right: 0").
+    `an_arrival_at_a_camp_that_is_in_counts_first_and_its_census_spawns` also asserts the slot's UUID after the SPAWN's answer;
+    the codec's sample answer carries a UUID.

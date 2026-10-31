@@ -400,10 +400,14 @@ public final class ConflictRecords {
         }
     }
 
-    /** CAMP_BODIES (aux = lines n): the answer to a CAMP_RECONCILE, each line with the action it answers. */
+    /**
+     * CAMP_BODIES (aux = lines n): the answer to a CAMP_RECONCILE, each line with the action it answers and, for a SPAWN, a
+     * HAND_BACK or an ADOPT done or with nothing to do, the UUID of the body standing with the line's slot and generation (0, 0
+     * otherwise): the engine keeps it for the site ledger's row (MZB-1400).
+     */
     public static final class CampBodies {
-        public static final int FACTION = 24, EPOCH = 32, OP_ID = 40, LINES = 48, LINE = 16;
-        public static final int L_LINE = 0, L_SLOT = 4, L_GENERATION = 8, L_ACTION = 12, L_OUTCOME = 13;
+        public static final int FACTION = 24, EPOCH = 32, OP_ID = 40, LINES = 48, LINE = 32;
+        public static final int L_LINE = 0, L_SLOT = 4, L_GENERATION = 8, L_ACTION = 12, L_OUTCOME = 13, L_UUID_MOST = 16, L_UUID_LEAST = 24;
         public static final int DONE = 1, NOTHING = 2, STALE = 3;
 
         public static int size(int n) {

@@ -130,8 +130,10 @@ pub struct Slot {
     /// for the chief first) is no one's death to answer for, whatever the order of the records.
     pub chief: ActorId,
     /// The UUID of the slot's body, (0, 0) while unknown (MZB-1014): learned when a census finds
-    /// the body by its tags or the slot is ordered to adopt one, and handed over in the site
-    /// ledger's row, so a body whose tags are another engine life's is still this member's.
+    /// the body by its tags, the slot is ordered to adopt one, or the answer to a spawn, a
+    /// hand-back or an adoption names the body it left in the slot (MZB-1400), and handed over in
+    /// the site ledger's row, so a body whose tags are another engine life's is still this
+    /// member's.
     pub uuid: boundary::Uuid,
 }
 
@@ -2704,6 +2706,18 @@ impl Conflict {
                 ACTION_ADOPT => a.outcome == LINE_DONE,
                 _ => false,
             };
+            // A slot given its body by this answer (owed becomes home, gone becomes left) knows it
+            // by the UUID the answer names (MZB-1400): a spawned body or a puppet handed back is a
+            // new entity, and a member home from a raid kept the UUID of the body that set out.
+            // An adoption that found no stray leaves the slot owed, with no body to name. So the
+            // site ledger's row names the body that stands, never one that is gone. The chief's
+            // slot is not in the row.
+            if s.id != CHIEF_SLOT
+                && matches!(s.state, SlotState::Owed | SlotState::Gone)
+                && matches!(action, ACTION_SPAWN | ACTION_HAND_BACK | ACTION_ADOPT)
+            {
+                s.uuid = if there { a.uuid } else { (0, 0) };
+            }
             self.stats.camp_answers += 1;
             match (s.state, gone, there) {
                 (SlotState::Body, true, _) => {
@@ -2895,6 +2909,7 @@ impl Conflict {
                 generation,
                 action: ACTION_SEAT_HEIR,
                 outcome: LINE_DONE,
+                uuid: (0, 0),
             };
             self.seated(&mut camp, f, &a);
         }

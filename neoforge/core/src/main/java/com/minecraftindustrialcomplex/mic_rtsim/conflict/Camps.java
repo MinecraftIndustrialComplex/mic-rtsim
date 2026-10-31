@@ -2060,7 +2060,7 @@ public final class Camps {
         // What the holder carried from disk is journaled before the new record, so it reaches the engine first (MZB-239).
         if (holder != null)
             bridge.session().ensureReasserted(holder);
-        ByteBuffer r = bodiesRecord(c.faction, epoch, op, List.of(ln), List.of(outcome), now);
+        ByteBuffer r = bodiesRecord(c.faction, epoch, op, List.of(ln), List.of(outcome), holder, now);
         if (outcome == ConflictRecords.CampBodies.STALE)
             staleLines++;
         if (holder != null) {
@@ -2073,15 +2073,37 @@ public final class Camps {
     }
 
     private void answerAll(long faction, long epoch, long op, List<Line> ls, List<Integer> outcomes, long now) {
-        bodiesRecord(faction, epoch, op, ls, outcomes, now);
+        bodiesRecord(faction, epoch, op, ls, outcomes, null, now);
         for (int o : outcomes)
             if (o == ConflictRecords.CampBodies.STALE)
                 staleLines++;
     }
 
-    private ByteBuffer bodiesRecord(long faction, long epoch, long op, List<Line> ls, List<Integer> outcomes, long now) {
+    /**
+     * The body a line left in its slot, for its answer (MZB-1400): a SPAWN, HAND_BACK or ADOPT done names the body it made or
+     * adopted (its holder, else the one tagged with the line's slot and generation), and one with nothing to do the body that
+     * stands with those tags; any other line, or none standing, names none. The engine knows a member body by its UUID in the
+     * site ledger's row, and a body made here is a new entity.
+     */
+    private UUID leftInSlot(long faction, Line ln, int outcome, Entity holder) {
+        int a = ln.action();
+        if (a != ConflictRecords.CampReconcile.SPAWN && a != ConflictRecords.CampReconcile.HAND_BACK && a != ConflictRecords.CampReconcile.ADOPT)
+            return null;
+        if (outcome != ConflictRecords.CampBodies.DONE && outcome != ConflictRecords.CampBodies.NOTHING)
+            return null;
+        if (outcome == ConflictRecords.CampBodies.DONE && holder != null && !holder.isRemoved())
+            return holder.getUUID();
+        Entity e = tagged(faction, ln.slot(), ln.generation());
+        return e == null ? null : e.getUUID();
+    }
+
+    private ByteBuffer bodiesRecord(long faction, long epoch, long op, List<Line> ls, List<Integer> outcomes, Entity holder, long now) {
         RtsimSession s = bridge.session();
         int n = ls.size();
+        // Before beginJournaled: the lookups journal nothing, but the record's bytes are written in one go.
+        UUID[] bodies = new UUID[n];
+        for (int i = 0; i < n; i++)
+            bodies[i] = leftInSlot(faction, ls.get(i), outcomes.get(i), holder);
         ByteBuffer r = s.boundary().beginJournaled(ConflictRecords.CAMP_BODIES, ConflictRecords.CampBodies.size(n), n, now);
         r.putLong(ConflictRecords.CampBodies.FACTION, faction);
         r.putLong(ConflictRecords.CampBodies.EPOCH, epoch);
@@ -2094,6 +2116,9 @@ public final class Camps {
             r.putInt(o + ConflictRecords.CampBodies.L_GENERATION, ln.generation());
             r.put(o + ConflictRecords.CampBodies.L_ACTION, (byte) ln.action());
             r.put(o + ConflictRecords.CampBodies.L_OUTCOME, (byte) outcomes.get(i).intValue());
+            UUID u = bodies[i];
+            r.putLong(o + ConflictRecords.CampBodies.L_UUID_MOST, u == null ? 0 : u.getMostSignificantBits());
+            r.putLong(o + ConflictRecords.CampBodies.L_UUID_LEAST, u == null ? 0 : u.getLeastSignificantBits());
         }
         s.boundary().commit(r);
         return r;
