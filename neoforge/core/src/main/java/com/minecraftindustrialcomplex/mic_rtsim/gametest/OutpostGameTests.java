@@ -355,6 +355,12 @@ public final class OutpostGameTests {
         RtsimConfig.Test.setOutpostsJoinExisting(false);
         ServerPlayer[] viewer = {viewer(helper, p, "outpost_rerun")};
         long[] upTo = new long[1], at = new long[1];
+        // The chunk stands through the restart with nobody near (the farmed test's way).
+        boolean forced = ConflictKit.force(p.level(), p.cp().x, p.cp().z, true);
+        ConflictKit.onEnd(helper, () -> {
+            if (forced)
+                ConflictKit.force(p.level(), p.cp().x, p.cp().z, false);
+        });
         load(p, true);
         helper.startSequence()
                 .thenWaitUntil(waits.engine(() -> check("the new outpost joined, existing ones not wanted", !found(p.faction()).isEmpty())))
@@ -666,6 +672,7 @@ public final class OutpostGameTests {
         Pillager[] vanilla = new Pillager[3]; // the patrol's leader and member, and the spawn override's pillager
         ConflictBridge.Party[] envoy = new ConflictBridge.Party[1];
         int[] asks = {0, 0};
+        long[] at = new long[1];
         ConflictKit.onEnd(helper, () -> {
             for (Pillager x : vanilla)
                 if (x != null)
@@ -697,7 +704,13 @@ public final class OutpostGameTests {
                     for (Pillager x : vanilla)
                         check("not a party's body", !isPartyBody(x));
                 })
-                .thenIdle(2_000)
+                // 2,000 ticks with the player reporting where it stands, as a connected one does: a player who goes quiet is gone
+                // after 2,400 ticks, and the party with it.
+                .thenExecute(() -> at[0] = level.getGameTime())
+                .thenWaitUntil(waits.logic(() -> {
+                    ConflictKit.reportPlayer(player);
+                    check("2,000 ticks pass (" + (level.getGameTime() - at[0]) + ")", level.getGameTime() - at[0] >= 2_000);
+                }))
                 .thenExecute(() -> {
                     for (Pillager x : vanilla) {
                         check("still here, vanilla's", x.isAlive() && !x.isRemoved());
