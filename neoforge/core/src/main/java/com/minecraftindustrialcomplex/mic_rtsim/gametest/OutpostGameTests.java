@@ -387,6 +387,11 @@ public final class OutpostGameTests {
                     // A pillager far off, as a village raid's: outside the box and its margin.
                     kill(level, player[0], EntityType.PILLAGER.create(level), in.offset(200, 0, 0));
                     check("a pillager 200 blocks off is no kin (" + (bridge().signalsCounted - mark[0]) + ")", bridge().signalsCounted == mark[0]);
+                    // A machine's kill (a Create deployer farm, a NeoForge FakePlayer) is a trap's: no killing (EQC243, EQC300).
+                    FakePlayer machine = FakePlayerFactory.get(level, new GameProfile(UUID.randomUUID(), "outpost_machine"));
+                    kill(level, machine, EntityType.PILLAGER.create(level), in);
+                    check("a machine's kill of a pillager in the box is no killing (" + (bridge().signalsCounted - mark[0]) + ")",
+                            bridge().signalsCounted == mark[0]);
                     // Three pillagers and a vindicator inside: kin.
                     for (int i = 0; i < 3; i++)
                         kill(level, player[0], EntityType.PILLAGER.create(level), in);
