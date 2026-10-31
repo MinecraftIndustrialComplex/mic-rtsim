@@ -75,6 +75,23 @@ fn every_kind_world_speed_probe() {
             last = (std::time::Instant::now(), next);
         }
     }
+    // The herds' books by species (where the level comes from): founded, born, died, starved,
+    // eaten, killed, lost; their K and the herds.
+    w.engine().with_herds(|h, _| {
+        let mut k = [(0u64, 0u64, 0u64); 5];
+        for (id, x) in h.herds.iter() {
+            let e = &mut k[x.species.index()];
+            e.0 += 1;
+            e.1 += x.k;
+            e.2 += h.count(id, h.now());
+        }
+        for (i, l) in h.ledger().iter().enumerate() {
+            println!(
+                "herds {i}: {} herds, K {}, now {}; founded {} born {} died {} starved {} eaten {} killed {} lost {}",
+                k[i].0, k[i].1, k[i].2, l.founded, l.born, l.died, l.starved, l.eaten, l.killed, l.lost
+            );
+        }
+    });
     let secs = t0.elapsed().as_secs_f64();
     println!(
         "{days} game days in {secs:.1} s: {:.1} game days a second; 262,980 days would take {:.1} \

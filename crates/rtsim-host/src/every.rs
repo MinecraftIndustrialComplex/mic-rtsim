@@ -673,7 +673,19 @@ impl Every {
                 .unwrap_or_else(|e| panic!("seed {}: day {next}: {e}", self.seed));
             self.villages();
             self.check_owed();
+            self.trim_logs();
         }
+    }
+
+    /// The fake Java's and its conflict plugin's logs of what they were sent, which tests read and
+    /// nothing plays from, emptied each day: a run of centuries would keep every command in the
+    /// heap, which the soak reads as the whole process's (EQC408, EQC478).
+    fn trim_logs(&mut self) {
+        self.host.j.commands.clear();
+        let p = &mut self.host.j.conflict_plugin;
+        p.commands.clear();
+        p.applied.clear();
+        p.hunts_sent.clear();
     }
 
     /// Runs the host to game time `t` (from the fork's start), within a day: a camp visit's ticks.
