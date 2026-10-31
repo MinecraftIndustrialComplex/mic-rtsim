@@ -861,12 +861,13 @@ public final class NativeEngine implements ScriptedEngine {
     public static final int HABITAT_KNOWN_CELL = 0, HABITAT_KNOWN_MASK = 1, HABITAT_WATER = 2, HABITAT_ICE = 3, HABITAT_LAND = 4,
             HABITAT_SURFACE = 5, HABITAT_FINGERPRINT = 6, HABITAT_CELLS = 7, HABITAT_REGIONS = 8, HABITAT_REGION_HERD = 9,
             HABITAT_REGION_MARKS = 10, HABITAT_RECORDS = 11, HABITAT_HERDS_FOUNDED = 12, HABITAT_KNOWN_WRITTEN = 13,
-            HABITAT_HERD_X = 14, HABITAT_HERD_Z = 15, HABITAT_INFO = 16;
+            HABITAT_HERD_X = 14, HABITAT_HERD_Z = 15, HABITAT_CELSIUS = 16, HABITAT_INFO = 17;
 
     /**
      * The engine's world model at block (x, z) of Java's dimension {@code dim}, between steps (tests): whether
      * the cell is known, its masks, mean surface and fingerprint, the cells and regions known, the herd founded
-     * for the region (its agent, 0 none, and where it is now), and counters.
+     * for the region (its agent, 0 none, and where it is now), counters, and the cell's year-round °C as the
+     * world model reads it ({@link #HABITAT_CELSIUS}: float bits, NaN when unknown).
      */
     public synchronized long[] habitatInfo(int dim, int x, int z) {
         long[] out = new long[HABITAT_INFO];

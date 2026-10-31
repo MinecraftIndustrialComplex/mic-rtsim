@@ -105,10 +105,11 @@ public final class HabitatGameTests {
     /**
      * Docs/boundary.md §10 on either engine: the chunks of four cells far out are loaded; one cell is painted
      * water at its sixteen sample points, one ice, two are left as the flat world's plains. Each cell crosses
-     * once as HABITAT, with its masks, the plains biome by Java's dictionary, the flat surface, and the herd
-     * species' share of vanilla plains' creature spawns (sheep 12 of 46: 260 per mille). Nothing is sent again
-     * while nothing changes; a cell whose ground changed is sent again when it is sampled again, one that did
-     * not is not. On the native engine the world model holds each cell with the fingerprint Java sent.
+     * once as HABITAT, with its masks, the plains biome by Java's dictionary, the flat surface, plains'
+     * year-round climate on mic-climate's scale (19.52 °C, no climate plugin), and the herd species' share of
+     * vanilla plains' creature spawns (sheep 12 of 46: 260 per mille). Nothing is sent again while nothing
+     * changes; a cell whose ground changed is sent again when it is sampled again, one that did not is not. On
+     * the native engine the world model holds each cell with the fingerprint and the climate Java sent.
      */
     @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 1200, batch = "habitat_sampled")
     public static void habitatIsSentForAGeneratedArea(GameTestHelper helper) {
@@ -168,8 +169,10 @@ public final class HabitatGameTests {
                                 check(where + " has no goats", !c.containsKey("minecraft:goat"));
                                 check("vanilla plains: 0.8 and 0.4", Math.abs(b.getFloat(HabitatRecords.Habitat.TEMPERATURE) - 0.8f) < 1e-6
                                         && Math.abs(b.getFloat(HabitatRecords.Habitat.DOWNFALL) - 0.4f) < 1e-6);
-                                check("no climate plugin: no degrees, no season", Float.isNaN(b.getFloat(HabitatRecords.Habitat.CELSIUS))
-                                        && b.get(HabitatRecords.Habitat.SEASON_COUNT) == 0);
+                                // No climate plugin: the year-round climate is plains' 0.8 on mic-climate's scale (EQC520).
+                                check("no climate plugin: plains' 19.52 C (" + b.getFloat(HabitatRecords.Habitat.CELSIUS) + "), no season",
+                                        Math.abs(b.getFloat(HabitatRecords.Habitat.CELSIUS) - 19.52f) < 1e-3f
+                                                && b.get(HabitatRecords.Habitat.SEASON_COUNT) == 0);
                             }
                             check(where + " was sent once", count(dim, cx0 + dx, cz0 + dz) == 1);
                             if (RtsimTests.engine() instanceof NativeEngine e) {
@@ -178,6 +181,9 @@ public final class HabitatGameTests {
                                         info[NativeEngine.HABITAT_KNOWN_CELL] == 1
                                                 && (int) info[NativeEngine.HABITAT_FINGERPRINT] == b.getInt(HabitatRecords.Habitat.FINGERPRINT)
                                                 && info[NativeEngine.HABITAT_WATER] == water);
+                                float yearRound = Float.intBitsToFloat((int) info[NativeEngine.HABITAT_CELSIUS]);
+                                check(where + "'s year-round climate in the engine is the one sent (" + yearRound + " C)",
+                                        Float.floatToIntBits(yearRound) == Float.floatToIntBits(b.getFloat(HabitatRecords.Habitat.CELSIUS)));
                             }
                         }
                     long cells = sampler.cellsSampled - before[0];

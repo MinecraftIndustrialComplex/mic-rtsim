@@ -10,8 +10,9 @@ import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
- * The registered {@link ClimateSource}s and the vanilla fallback: no seasons, no degrees (the habitat carries
- * vanilla's unitless biome temperature, and the engine reads it on mic-climate's scale, choice X2-8).
+ * The registered {@link ClimateSource}s and the vanilla fallback: no seasons, and no year-round degrees (the
+ * habitat sampler then takes the cell's vanilla biome temperature on mic-climate's scale, choice X2-8,
+ * {@link HabitatSampler#vanillaCelsius}).
  */
 public final class Climates {
     private Climates() {}
@@ -41,15 +42,15 @@ public final class Climates {
         return null;
     }
 
-    /** Degrees Celsius at a position from the first source that knows them, else NaN. */
-    public static float temperature(ServerLevel level, BlockPos pos) {
+    /** The year-round degrees Celsius at a position from the first source that knows them, else NaN. */
+    public static float yearRoundCelsius(ServerLevel level, BlockPos pos) {
         for (ClimateSource s : SOURCES) {
             try {
-                float t = s.temperature(level, pos);
+                float t = s.yearRoundCelsius(level, pos);
                 if (Float.isFinite(t))
                     return t;
             } catch (RuntimeException | LinkageError e) {
-                MicRtsim.LOGGER.error("[mic_rtsim] climate source {} failed on temperature", s.name(), e);
+                MicRtsim.LOGGER.error("[mic_rtsim] climate source {} failed on its year-round temperature", s.name(), e);
             }
         }
         return Float.NaN;
