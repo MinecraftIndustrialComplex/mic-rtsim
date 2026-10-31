@@ -1,9 +1,11 @@
 package com.minecraftindustrialcomplex.mic_rtsim.conflict;
 
 import com.minecraftindustrialcomplex.mic_rtsim.MicRtsim;
+import com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs;
 import com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession;
 import com.minecraftindustrialcomplex.mic_rtsim.config.Module;
 import com.minecraftindustrialcomplex.mic_rtsim.config.RtsimConfig;
+import com.minecraftindustrialcomplex.mic_rtsim.sites.SiteLedger;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Registry;
 import net.minecraft.core.registries.Registries;
@@ -53,8 +55,9 @@ import java.util.function.Predicate;
  * with no player near (a pre-generation, Chunky's, loads every chunk it makes) is known and not reported; it is looked at
  * again at each later load of its chunk. A reported outpost is reported again at each session start (the engine of a new
  * session knows nothing of it) and at the module's switch-on edge (a report made while the module is off journals nothing),
- * the same rule applying. An outpost of a chunk that was not new when the finder saw it is
- * flagged late, and is reported only with {@code outpostsJoinExisting} (FB-9 (a)). A player's kill of a raider (the {@code minecraft:raiders}
+ * the same rule applying, with one more way in: a camp the site ledger already holds a row for is the engine's, and its
+ * kin predicate comes back whatever is near (EQC297). An outpost of a chunk that was not new when the finder saw it is
+ * flagged late, and is reported only with {@code outpostsJoinExisting} (FB-9 (a)) or when the ledger holds its camp. A player's kill of a raider (the {@code minecraft:raiders}
  * tag but the witch) inside the outpost's box widened by {@code outpostKinMargin} blocks is the camp's killing signal; a
  * raid that comes of a village, a patrol or a vanilla raid event is not the camp's and nothing here reads it.
  *
@@ -168,6 +171,7 @@ public final class Outposts {
             }
         }
         boolean existing = RtsimConfig.outpostsJoinExisting();
+        SiteLedger ledger = SiteLedger.get(s.server());
         for (Spot sp : todo) {
             Known k;
             synchronized (KNOWN) {
@@ -180,10 +184,13 @@ public final class Outposts {
             ServerLevel level = s.server().getLevel(sp.dimension());
             if (level == null)
                 continue;
-            if (k.late() && !existing)
+            // A camp the ledger holds is the engine's already: reported whatever is near and whether or not the chunk read as
+            // late (an outpost that joined as new in an earlier run reads late in this one), so that its kin predicate is back.
+            boolean camp = ledger.row(SiteLedger.CAMP, Obs.villageId(s.dimId(sp.dimension()), k.pos().getX() >> 4, k.pos().getZ() >> 4)) != null;
+            if (k.late() && !existing && !camp)
                 continue;
-            // A player has to have explored it (EQC296): known and looked at again at its chunk's next load.
-            if (!explored(level, k.pos()))
+            // Otherwise a player has to have explored it (EQC296): known and looked at again at its chunk's next load.
+            if (!camp && !explored(level, k.pos()))
                 continue;
             Predicate<Entity> kin = kin(k.kinBox());
             if (bridge.reportCamp(level, k.structure(), k.pos(), kin, null, k.late(), 0, 0) != 0L) {
