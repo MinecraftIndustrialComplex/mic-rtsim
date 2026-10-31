@@ -7,6 +7,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.engine.ScriptedEngine;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.FakePlayers;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests;
 import com.minecraftindustrialcomplex.mic_rtsim.puppet.RtsimAttachments;
+import com.minecraftindustrialcomplex.mic_rtsim.village.Census;
 import com.minecraftindustrialcomplex.mic_rtsim.village.Village;
 import com.minecraftindustrialcomplex.mic_rtsim.village.VillageRegistry;
 import com.minecraftindustrialcomplex.mic_rtsim_ribbits.MicRtsimRibbits;
@@ -83,6 +84,27 @@ public final class RibbitRenewalGameTests {
 
     private static void arrive(ScriptedEngine stub, Village v, GameTestHelper helper, long op, int flags, double x, double z) {
         stub.spawnResident(op, v.id, RtsimTests.dimension(helper), RIBBIT, null, flags, x, 0, z, 0);
+    }
+
+    /**
+     * Forces the whole corridor from the edge to the meeting point, east of the village: a walker stops in a chunk that does
+     * not tick, and these tests are about the walk, not about which chunks a player's view keeps loaded. Returns the chunks
+     * forced, to let go of.
+     */
+    private static List<ChunkPos> corridor(ServerLevel level, Village v) {
+        List<ChunkPos> forced = new ArrayList<>();
+        for (int d = 0; d <= 192; d += 16) {
+            int px = (int) Math.floor(v.meeting.getX() + d), pz = v.meeting.getZ();
+            for (int cx = (px >> 4) - 1; cx <= (px >> 4) + 1; cx++)
+                for (int cz = (pz >> 4) - 1; cz <= (pz >> 4) + 1; cz++) {
+                    ChunkPos p = new ChunkPos(cx, cz);
+                    if (!forced.contains(p)) {
+                        level.setChunkForced(cx, cz, true);
+                        forced.add(p);
+                    }
+                }
+        }
+        return forced;
     }
 
     private static List<RibbitEntity> ribbitsIn(GameTestHelper helper, Village v) {
@@ -173,21 +195,8 @@ public final class RibbitRenewalGameTests {
         VillageRegistry villages = RtsimTests.session().phase1.villages;
         Vec3 c = RtsimTests.centre(helper);
         ServerPlayer player = FakePlayers.add(level, c.add(0, 0, 4), "ribbit_watcher");
-        List<ChunkPos> forced = new ArrayList<>();
         double sx = v.meeting.getX() + 192, sz = v.meeting.getZ();
-        // The whole corridor from the edge to the meeting point, not only the spawn points: a walker stops in a chunk that
-        // does not tick, and this test is about the walk, not about which chunks a player's view keeps loaded.
-        for (int d = 0; d <= 192; d += 16) {
-            int px = (int) Math.floor(v.meeting.getX() + d), pz = v.meeting.getZ();
-            for (int cx = (px >> 4) - 1; cx <= (px >> 4) + 1; cx++)
-                for (int cz = (pz >> 4) - 1; cz <= (pz >> 4) + 1; cz++) {
-                    ChunkPos p = new ChunkPos(cx, cz);
-                    if (!forced.contains(p)) {
-                        level.setChunkForced(cx, cz, true);
-                        forced.add(p);
-                    }
-                }
-        }
+        List<ChunkPos> forced = corridor(level, v);
         long op = engineOp();
         long[] arrived0 = {RtsimTests.session().phase1.walkers.arrived()};
         long[] placed0 = {RtsimTests.session().phase1.walkers.placed()};
@@ -242,6 +251,115 @@ public final class RibbitRenewalGameTests {
                 .thenExecute(() -> {
                     for (RibbitEntity r : ribbitsIn(helper, v))
                         r.discard();
+                    for (ChunkPos p : forced)
+                        level.setChunkForced(p.x, p.z, false);
+                    FakePlayers.remove(player);
+                    RtsimTests.forget(v);
+                })
+                .thenSucceed();
+    }
+
+    /**
+     * A settler that walked in stays (EQC177, EQC178): Ribbits' go-home goal pulls a Ribbit to its home at night, and a Ribbit
+     * made at the walk-in spot, 96 to 176 blocks out, had that spot for its home and walked back out every night. It is homed at
+     * the meeting point, so the night keeps it in the village and the census counts it. The day is held while it walks and the
+     * night while it is watched, 1,500 ticks of it.
+     */
+    @GameTest(template = "arena", timeoutTicks = 20000, batch = "mic_rtsim_ribbits_night")
+    public static void aWalkedInRibbitStaysInTheVillageThroughTheNight(GameTestHelper helper) {
+        ServerLevel level = helper.getLevel();
+        Village v = RtsimTests.adoptArena(helper, MicRtsimRibbits.CULTURE);
+        ScriptedEngine stub = RtsimTests.engine();
+        VillageRegistry villages = RtsimTests.session().phase1.villages;
+        Vec3 c = RtsimTests.centre(helper);
+        ServerPlayer player = FakePlayers.add(level, c.add(0, 0, 4), "ribbit_night");
+        List<ChunkPos> forced = corridor(level, v);
+        long op = engineOp();
+        long[] arrived0 = {RtsimTests.session().phase1.walkers.arrived()};
+        java.util.UUID[] settlerId = {null};
+        int[] night = {0};
+        arrive(stub, v, helper, op, WALK_IN, v.meeting.getX() + 192, v.meeting.getZ());
+        helper.startSequence()
+                .thenWaitUntil(() -> {
+                    level.setDayTime(1000);
+                    check("the order was answered and a walker is registered: " + villages.walkers.size(),
+                            result(stub, op) != null && villages.walkers.size() >= 1);
+                })
+                .thenExecute(() -> {
+                    for (VillageRegistry.Walker w : villages.walkers.values())
+                        if (w.village == v.id)
+                            settlerId[0] = w.id;
+                    check("the settler is registered", settlerId[0] != null);
+                })
+                .thenWaitUntil(() -> {
+                    level.setDayTime(1000);
+                    check("it walked to within 12 blocks of the meeting point: arrived "
+                            + (RtsimTests.session().phase1.walkers.arrived() - arrived0[0]),
+                            RtsimTests.session().phase1.walkers.arrived() >= arrived0[0] + 1);
+                })
+                .thenWaitUntil(() -> {
+                    level.setDayTime(18000);
+                    night[0]++;
+                    check("a night of " + night[0] + " ticks", night[0] >= 1500);
+                })
+                .thenExecute(() -> {
+                    var settler = level.getEntity(settlerId[0]);
+                    check("the settler is still in the level", settler instanceof RibbitEntity && settler.isAlive());
+                    RibbitEntity r = (RibbitEntity) settler;
+                    check("it is night: " + level.isNight(), level.isNight());
+                    double away = Math.hypot(r.getX() - (v.meeting.getX() + 0.5), r.getZ() - (v.meeting.getZ() + 0.5));
+                    record("ribbitNight", "distance from the meeting point after the night", away);
+                    check("it stayed in the village through the night, not walked back out to where it spawned: " + away
+                            + " blocks from the meeting point", away <= 32);
+                    BlockPos home = r.getHomePosition();
+                    check("its home is the village: " + home + " for the meeting point " + v.meeting,
+                            Math.hypot(home.getX() - v.meeting.getX(), home.getZ() - v.meeting.getZ()) <= 24);
+                    check("the census counts it: " + Census.scan(villages, level, v).residents(),
+                            Census.scan(villages, level, v).residents() >= 1);
+                    for (RibbitEntity each : ribbitsIn(helper, v))
+                        each.discard();
+                    for (ChunkPos p : forced)
+                        level.setChunkForced(p.x, p.z, false);
+                    FakePlayers.remove(player);
+                    RtsimTests.forget(v);
+                })
+                .thenSucceed();
+    }
+
+    /**
+     * A pair of settlers into a village with no merchant brings one merchant, not two (EQC180): the village's Ribbits were
+     * counted inside its box, and the first settler of the pair was still on the road, outside it, when the second's profession
+     * was chosen. Both ops hash to a profession that is not a merchant's, so a second merchant could only come from the village
+     * being found without one.
+     */
+    @GameTest(template = "arena", timeoutTicks = 3000, batch = "mic_rtsim_ribbits_pair")
+    public static void aPairOfRibbitSettlersBringsOneMerchant(GameTestHelper helper) {
+        ServerLevel level = helper.getLevel();
+        Village v = RtsimTests.adoptArena(helper, MicRtsimRibbits.CULTURE);
+        ScriptedEngine stub = RtsimTests.engine();
+        VillageRegistry villages = RtsimTests.session().phase1.villages;
+        Vec3 c = RtsimTests.centre(helper);
+        ServerPlayer player = FakePlayers.add(level, c.add(0, 0, 4), "ribbit_pair");
+        List<ChunkPos> forced = corridor(level, v);
+        long first = opNotMerchant(), second = opNotMerchant();
+        arrive(stub, v, helper, first, WALK_IN, v.meeting.getX() + 192, v.meeting.getZ());
+        arrive(stub, v, helper, second, WALK_IN, v.meeting.getX() + 192, v.meeting.getZ());
+        helper.startSequence()
+                .thenWaitUntil(() -> check("both orders answered and both settlers on the road: " + villages.walkers.size(),
+                        result(stub, first) != null && result(stub, second) != null && villages.walkers.size() >= 2))
+                .thenExecute(() -> {
+                    int merchants = 0, settlers = 0;
+                    for (VillageRegistry.Walker w : villages.walkers.values()) {
+                        if (w.village != v.id || !(level.getEntity(w.id) instanceof RibbitEntity r))
+                            continue;
+                        settlers++;
+                        if ("ribbits:merchant".equals(Ribbits.professionName(r)))
+                            merchants++;
+                        r.discard();
+                    }
+                    check("two settlers: " + settlers, settlers == 2);
+                    record("ribbitPair", "merchants among the pair", merchants);
+                    check("one merchant, for the village had none: " + merchants, merchants == 1);
                     for (ChunkPos p : forced)
                         level.setChunkForced(p.x, p.z, false);
                     FakePlayers.remove(player);
