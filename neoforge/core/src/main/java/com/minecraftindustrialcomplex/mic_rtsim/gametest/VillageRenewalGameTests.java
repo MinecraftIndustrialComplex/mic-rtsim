@@ -878,13 +878,22 @@ public final class VillageRenewalGameTests {
                     }
                     placed0[0] = RtsimTests.session().phase1.walkers.placed();
                 })
-                .thenIdle(400)
+                .thenIdle(200)
                 .thenExecute(() -> {
                     int kept = 0;
                     for (java.util.UUID id : settlers)
                         if (villages.walkers.containsKey(id))
                             kept++;
                     check("both walkers are still on the list, their chunk never having loaded: " + kept + " of 2", kept == 2);
+                    // Two readings of the village, as its census takes them: with the walkers forgotten they are complete
+                    // and read nobody, which the engine believes (the settlers' wait runs); with the walkers kept the census is
+                    // incomplete and lowers nothing.
+                    long t = RtsimTests.session().gameTime();
+                    RtsimTests.session().phase1.census.take(level, s.village, t);
+                    RtsimTests.session().phase1.census.take(level, s.village, t);
+                })
+                .thenIdle(200)
+                .thenExecute(() -> {
                     target[0] = now(e) + 20L * DAY;
                     e.phase1Advance(20L * DAY);
                 })
