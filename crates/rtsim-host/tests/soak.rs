@@ -141,6 +141,8 @@ struct Run {
     windows: Vec<Window>,
     /// Sample checks that failed: (day, what).
     sample_failures: Vec<(u64, String)>,
+    /// Samples on which a kind had no member, or a herd range was empty (EQC436 (3)).
+    dead: Vec<(u64, String)>,
     peak_journal: usize,
     peak_in_flight: u64,
     /// The industry outbox and the core's pages (table 1) at each sample: (day, industry, core).
@@ -183,6 +185,7 @@ fn check_sample(
     plan: &Plan,
     cs: &[KindCensus],
     out: &mut Vec<(u64, String)>,
+    dead: &mut Vec<(u64, String)>,
 ) {
     for k in KINDS {
         let Some(want) = f.expected(k, cs) else {
@@ -199,10 +202,10 @@ fn check_sample(
             out.push((day, format!("{k}: capacity 0")));
         }
         if day > plan.window && c.members == 0 {
-            out.push((day, format!("{k}: no member")));
+            dead.push((day, format!("{k}: no member")));
         }
         if k == "herd.range" && c.empty > 0 {
-            out.push((day, format!("herd.range: {} ranges empty", c.empty)));
+            dead.push((day, format!("herd.range: {} ranges empty", c.empty)));
         }
     }
     let kinds = KINDS.iter().filter(|k| f.expected(k, cs).is_some()).count();
@@ -240,7 +243,14 @@ fn soak(plan: &Plan) -> (Run, Founded) {
         let next = (w.day() + SAMPLE).min(plan.days);
         w.run_to(next);
         let cs = w.census();
-        check_sample(&founded, next, plan, &cs, &mut run.sample_failures);
+        check_sample(
+            &founded,
+            next,
+            plan,
+            &cs,
+            &mut run.sample_failures,
+            &mut run.dead,
+        );
         for c in &cs {
             if let Some(&k) = KINDS.iter().find(|k| **k == c.kind) {
                 win.kinds.entry(k).or_default().add(c);
@@ -416,17 +426,22 @@ fn judge(plan: &Plan, run: &Run) -> Vec<Check> {
         ok: run.incomplete.is_none() && run.reached >= plan.days,
         detail: json!({"reached": run.reached, "days": plan.days}),
     });
-    // (2), (3) Every kind on every sample, alive.
+    // (2) Every kind on every sample with the world's sites; (3) alive.
+    let days = |xs: &[(u64, String)]| {
+        xs.iter()
+            .take(40)
+            .map(|(d, s)| format!("day {d}: {s}"))
+            .collect::<Vec<_>>()
+    };
     out.push(Check {
-        name: "present_and_alive".into(),
+        name: "present".into(),
         ok: run.sample_failures.is_empty(),
-        detail: json!(
-            run.sample_failures
-                .iter()
-                .take(40)
-                .map(|(d, s)| format!("day {d}: {s}"))
-                .collect::<Vec<_>>()
-        ),
+        detail: json!(days(&run.sample_failures)),
+    });
+    out.push(Check {
+        name: "alive".into(),
+        ok: run.dead.is_empty(),
+        detail: json!({"samples": run.dead.len(), "first": days(&run.dead)}),
     });
     let judged: Vec<&Window> = run
         .windows
@@ -736,12 +751,14 @@ fn run_plan(plan: Plan) {
     let mut checks = judge(&plan, &run);
     if plan.short {
         // The short cut's windows are 100 days, shorter than a herd's or a lair's swings, and its
-        // first thousand days are the world's settling: the kinds' series are printed, not judged
-        // (EQC480). Its bytes, heap, queues and exact levels are judged as the soak's.
-        for c in checks
-            .iter_mut()
-            .filter(|c| c.name.starts_with("flat.fill.") || c.name.starts_with("flat.renewals."))
-        {
+        // first thousand days are the world's settling: the kinds' series and whether a swinging
+        // kind ever emptied are printed, not judged (EQC480, EQC484). Its presence, bytes, heap,
+        // queues and exact levels are judged as the soak's.
+        for c in checks.iter_mut().filter(|c| {
+            c.name.starts_with("flat.fill.")
+                || c.name.starts_with("flat.renewals.")
+                || c.name == "alive"
+        }) {
             c.detail["judged"] = json!(false);
             c.detail["would_fail"] = json!(!c.ok);
             c.ok = true;

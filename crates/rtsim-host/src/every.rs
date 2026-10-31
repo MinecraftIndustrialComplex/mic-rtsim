@@ -188,16 +188,32 @@ fn is_channel(x: i32, z: i32) -> bool {
     across || down
 }
 
-/// Paints region (`rx`, `rz`) as habitat: 64 cells of one biome, plains and forest in a
-/// checkerboard (land but for the channels of [`is_channel`]), sent as the core's sampler sends
-/// them (latest wins, as the buffers have room).
+/// Whether any 32-block cell of region (`rx`, `rz`) is sea ([`is_channel`]).
+fn region_has_sea(rx: i32, rz: i32) -> bool {
+    let r = rtsim_travel::legs::REGION_BLOCKS as i32;
+    (0..r / 32).any(|i| (0..r / 32).any(|j| is_channel(rx * r + i * 32, rz * r + j * 32)))
+}
+
+/// Region (`rx`, `rz`)'s biome: plains, savanna and forest by `(rx + 3 + 2 (rz + 3)) mod 3`, but
+/// never savanna beside the sea, where a hot biome's herds crowd onto the cooler cells by the
+/// water and graze them out (EQC506): a region with a channel that would be savanna is plains
+/// (EQC483).
+fn biome_of(rx: i32, rz: i32) -> &'static str {
+    let biomes = ["minecraft:plains", "minecraft:savanna", "minecraft:forest"];
+    let b = biomes[(rx + 3 + 2 * (rz + 3)).rem_euclid(biomes.len() as i32) as usize];
+    if b == "minecraft:savanna" && region_has_sea(rx, rz) {
+        "minecraft:plains"
+    } else {
+        b
+    }
+}
+
+/// Paints region (`rx`, `rz`) as habitat: 64 cells of its biome ([`biome_of`]; land but for
+/// the channels of [`is_channel`]), sent as the core's sampler sends them (latest wins, as the
+/// buffers have room).
 fn paint_region(j: &mut Java, p: &mut rtsim_space::synth::Painter, rx: i32, rz: i32) {
     use rtsim_space::synth::{land, sea};
-    // Plains and forest only: a savanna range gets a full K from its spawn weights and no forage
-    // (its 56 degrees are past the growth ramp's 45), so its herds starve their neighbours'
-    // pasture too (EQC482).
-    let biomes = ["minecraft:plains", "minecraft:forest"];
-    let biome = biomes[(rx + rz).rem_euclid(biomes.len() as i32) as usize];
+    let biome = biome_of(rx, rz);
     let per = (rtsim_travel::legs::REGION_BLOCKS / 64) as i32;
     for cz in rz * per..(rz + 1) * per {
         for cx in rx * per..(rx + 1) * per {
@@ -1810,4 +1826,31 @@ impl Roamer {
 /// One kind's row of a census.
 pub fn kind<'a>(cs: &'a [KindCensus], k: &str) -> Option<&'a KindCensus> {
     cs.iter().find(|c| c.kind == k)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// EQC483: the painted world holds all three biomes, and no savanna region has sea (EQC506).
+    #[test]
+    fn no_savanna_beside_the_sea() {
+        let mut seen = BTreeMap::new();
+        for rz in RANGES_Z {
+            for rx in RANGES_X {
+                let b = biome_of(rx, rz);
+                *seen.entry(b).or_insert(0) += 1;
+                assert!(
+                    !(b == "minecraft:savanna" && region_has_sea(rx, rz)),
+                    "({rx}, {rz})"
+                );
+            }
+        }
+        assert_eq!(seen.len(), 3, "{seen:?}");
+        assert!(
+            RANGES_X
+                .flat_map(|x| RANGES_Z.map(move |z| (x, z)))
+                .any(|(x, z)| region_has_sea(x, z))
+        );
+    }
 }

@@ -58,10 +58,15 @@ fn every_kind_world_speed_probe() {
     let mut w = Every::open("speed-probe", 1, true, Durability::Fsync);
     let t0 = std::time::Instant::now();
     let mut last = (t0, 0u64);
+    // Samples on which a kind had no member at all, by kind.
+    let mut none: std::collections::BTreeMap<&'static str, u64> = Default::default();
     while w.day() < days {
         let next = (w.day() + 10).min(days);
         w.run_to(next);
         let cs = w.census();
+        for c in cs.iter().filter(|c| c.members == 0) {
+            *none.entry(c.kind).or_default() += 1;
+        }
         if next.is_multiple_of(500) || next == days {
             let rate = (next - last.1) as f64 / last.0.elapsed().as_secs_f64();
             println!(
@@ -92,6 +97,9 @@ fn every_kind_world_speed_probe() {
             );
         }
     });
+    println!("samples (every 10 days) with no member, by kind: {none:?}");
+    w.engine()
+        .with_dragons(|d, _| println!("dragons: {:?}", d.stats));
     let secs = t0.elapsed().as_secs_f64();
     println!(
         "{days} game days in {secs:.1} s: {:.1} game days a second; 262,980 days would take {:.1} \
