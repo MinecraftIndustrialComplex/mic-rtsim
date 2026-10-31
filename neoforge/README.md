@@ -273,7 +273,8 @@ and groves are declared under the jar's structure names). The names EQUILIBRIUM.
 | `anUmvuthiHeirTakesAWarrior` | `anUmvuthiHeirTakesAWarrior`: a grove found with no Umvuthi waits the cap's 192 days; the pair is answered, an Umvuthi stands, the row is short by one with P 0 and 6 days left, and a warrior is SPAWNed when they end (the scripted half is `anUmvuthiHeirTakesTheFarthestFreeWarrior`) |
 | `aKilledWarriorIsReplacedAfterTheWait` | a player kills one of three warriors: P 1/K, a wait of 6 x 2^(1/K) days, no SPAWN half way, one past it (RECOUNT first), three warriors again |
 | `aKilledUmvuthiLeavesTheWarriorsPressureAlone` | the Umvuthi killed: the row's p2 is 1 and its p is 0, whatever the jar's `die` did to the warriors near it |
-| `aResetKeepsAGrovesTwoPressures` | a warrior and then the Umvuthi killed: the row has p 1/K and p2 1; after a plain reset the found tail carries both, the warriors' P is aged by the ticks between the stamps, the Umvuthi's is not lower, and the warriors' wait runs on |
+| `aResetKeepsAGrovesTwoPressures` | a warrior and then the Umvuthi killed: the row has p 1/K and p2 1; after a plain reset the found tail carries both, the warriors' P is aged by the ticks between the stamps, the grove found without its Umvuthi is at the cap (p2 5), and the warriors' wait runs on |
+| `aResetHandsAnAliveUmvuthisPressureOver` | an heir seated after the cap's wait (p2 1.25 in the row); after a plain reset the Umvuthi stands, the found tail carries p2 and the new engine's is the row's aged, not the cap's 5 again |
 | `uninstallLeavesHomeBodies` (extended) | its dead warrior's row is now WAITING with the cap's wait (96 days), not only P unchanged |
 | `aGroveWarriorKilledOnAMarchRaisesItsPressure` | not a GameTest: a puppet on the road needs the far view's bodies; the Rust tests (`tests/grove_renewal.rs`, `a_credited_march_casualty_presses_the_grove` and its neighbours) and test order 42 (`RtsimTests.sendParty`) carry it |
 
