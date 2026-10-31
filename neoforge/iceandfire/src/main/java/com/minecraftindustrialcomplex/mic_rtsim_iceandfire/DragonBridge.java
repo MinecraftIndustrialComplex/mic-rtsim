@@ -802,6 +802,9 @@ public final class DragonBridge implements SessionPlugin {
         Puppet p = new Puppet(agent, epoch, d, now);
         p.home = homeBody;
         p.lair = homeBody ? homeLair.id() : 0L;
+        if ((b.getInt(at + Adopt.FLAGS) & Adopt.FLAG_OIL) != 0)
+            p.oil = Math.max(0, b.getInt(at + Adopt.OIL)); // a census-adopted fire dragon's fire is gated too (EQC317)
+        p.lastBreathFlush = now;
         register(p);
         journalMaterialized(p, level, now);
         adopted++;
@@ -977,16 +980,16 @@ public final class DragonBridge implements SessionPlugin {
                 capture(p, DragonRecords.Dematerialized.COMMAND, now);
                 continue;
             }
+            if (p.oil == 0)
+                IafDragons.withoutFire(d); // bite and claws (OG-13), a home body's too (EQC317)
+            if (p.pendingBreaths > 0 && now - p.lastBreathFlush >= BREATH_INTERVAL)
+                flushBreaths(p, now);
             if (p.home) {
                 if (now - p.lastState >= STATE_INTERVAL)
                     state(p, d, level, now);
                 continue;
             }
-            if (p.oil == 0)
-                IafDragons.withoutFire(d); // bite and claws (OG-13)
             steerTick(p, d);
-            if (p.pendingBreaths > 0 && now - p.lastBreathFlush >= BREATH_INTERVAL)
-                flushBreaths(p, now);
             if (now - p.lastState >= STATE_INTERVAL)
                 state(p, d, level, now);
         }

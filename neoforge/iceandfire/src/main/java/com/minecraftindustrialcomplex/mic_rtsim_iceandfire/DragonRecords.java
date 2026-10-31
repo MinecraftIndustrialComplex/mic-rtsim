@@ -271,11 +271,14 @@ public final class DragonRecords {
         public static final int AGENT = 16, EPOCH = 24, TIMEOUT_TICKS = 28, X = 32, Y = 40, Z = 48, SIZE = 56;
     }
 
-    /** DRAGON_ADOPT (aux 0). With {@link #FLAG_HOME_BODY} the body is synced to AGE_TICKS, HUNGER and HEALTH (EQC108). */
+    /**
+     * DRAGON_ADOPT (aux 0). With {@link #FLAG_HOME_BODY} the body is synced to AGE_TICKS, HUNGER and HEALTH (EQC108); with
+     * {@link #FLAG_OIL} it carries the oil reserve OIL, as MATERIALIZE's FLAG_OIL (OG-4, OG-13, EQC317).
+     */
     public static final class Adopt {
         public static final int ENTITY_MOST = 16, ENTITY_LEAST = 24, AGENT = 32, EPOCH = 40, FLAGS = 44,
-                HOME_X = 48, HOME_Y = 52, HOME_Z = 56, AGE_TICKS = 64, HUNGER = 68, HEALTH = 72, SIZE = 80;
-        public static final int FLAG_HAS_HOME = 1, FLAG_HOME_BODY = 2;
+                HOME_X = 48, HOME_Y = 52, HOME_Z = 56, AGE_TICKS = 64, HUNGER = 68, HEALTH = 72, OIL = 76, SIZE = 80;
+        public static final int FLAG_HAS_HOME = 1, FLAG_HOME_BODY = 2, FLAG_OIL = 4;
     }
 
     /**

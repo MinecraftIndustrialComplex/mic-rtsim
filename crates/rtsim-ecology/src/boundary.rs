@@ -96,6 +96,9 @@ pub const MAT_HOME_BODY: u32 = 32;
 /// synced from the engine's age, hunger and health (EQC108, EQC129).
 pub const ADOPT_HAS_HOME: u32 = 1;
 pub const ADOPT_HOME_BODY: u32 = 2;
+/// The body carries an oil reserve (`Adopt::oil`), as `MAT_OIL` gives a spawned one (OG-4, OG-13,
+/// EQC317): a census-adopted fire dragon's fire is gated as a spawned one's is.
+pub const ADOPT_OIL: u32 = 4;
 
 /// DRAGON_MATERIALIZED aux: the body the answer names is a home body (a spawn, an adoption or a
 /// hand-back; EQC122).
@@ -638,6 +641,8 @@ pub struct Adopt {
     pub age_ticks: i32,
     pub hunger: i32,
     pub health: f32,
+    /// With [`ADOPT_OIL`], its oil reserve, 0 to the capacity; 0 otherwise.
+    pub oil: i32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1492,6 +1497,7 @@ pub fn encode_cmd(seq: u64, c: &Cmd, dict: &SpeciesDict, buf: &mut Vec<u8>) {
             w.i32(64, a.age_ticks);
             w.i32(68, a.hunger);
             w.f32(72, a.health);
+            w.i32(76, a.oil);
             w.finish(DRAGON_ADOPT, 0, 80);
         }
         Cmd::Discard(d) => {
@@ -1598,6 +1604,7 @@ pub fn decode_cmd(b: &[u8], dict: &SpeciesDict) -> Result<(usize, u64, Cmd), Cod
             age_ticks: r.i32(64)?,
             hunger: r.i32(68)?,
             health: r.f32(72)?,
+            oil: r.i32(76)?,
         }),
         DRAGON_DISCARD => Cmd::Discard(Discard {
             entity: r.uuid(16)?,
@@ -1923,11 +1930,12 @@ mod tests {
                 entity: (8, 9),
                 agent: 10,
                 epoch: 1,
-                flags: ADOPT_HAS_HOME | ADOPT_HOME_BODY,
+                flags: ADOPT_HAS_HOME | ADOPT_HOME_BODY | ADOPT_OIL,
                 home: (1, 64, -1),
                 age_ticks: 1_850_000,
                 hunger: 37,
                 health: 288.5,
+                oil: 61,
             }),
             Cmd::HandBack(HandBack { agent: 10, epoch: 6 }),
             Cmd::Discard(Discard {
