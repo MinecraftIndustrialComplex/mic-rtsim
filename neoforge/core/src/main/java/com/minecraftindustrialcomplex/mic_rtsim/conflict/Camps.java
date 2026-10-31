@@ -317,6 +317,15 @@ public final class Camps {
     private final Set<Retired> retired = new HashSet<>();
 
     private record Retired(long faction, int generation) {}
+    /**
+     * The traveller chiefs the bridge journaled CHIEF_KILLED for this session, by their band's agent and epoch (the M11 review's P1,
+     * MZB-1300): the engine books that death (the band's end, MZB-853 release 3, or the chief's death away) and frees or kills the
+     * chief's slot, so a HAND_BACK of that band in flight is answered stale. Memory only, as {@link #retired}; one entry for each
+     * chief puppet killed in a session, emptied at a session's start.
+     */
+    private final Set<KilledAway> killedAway = new HashSet<>();
+
+    private record KilledAway(long agent, int epoch) {}
     private final List<Held> held = new ArrayList<>();
     /** The held lines {@link #playHeld} has still to look at this tick (a seat in place answers the old body's lines stale). */
     private final ArrayDeque<Held> draining = new ArrayDeque<>();
@@ -393,6 +402,7 @@ public final class Camps {
         setOuts.clear();
         dying.clear();
         retired.clear();
+        killedAway.clear();
         chiefStatesPending.clear();
         off = false;
         censuses = outs = reconciles = lines = staleLines = spawned = adopted = taken = removed = handedOff = handedBack = 0;
@@ -432,6 +442,7 @@ public final class Camps {
         attention.clear();
         second.clear();
         retired.clear();
+        killedAway.clear();
         held.clear();
         draining.clear();
         setOuts.clear();
@@ -1336,6 +1347,8 @@ public final class Camps {
 
     /** ADOPT: the stray named by UUID becomes the slot's body where it stands. */
     private int adopt(ServerLevel level, Site c, long epoch, long op, Line ln, long now) {
+        if (retiredChief(c, ln))
+            return ConflictRecords.CampBodies.STALE; // a chief generation the engine has dead: the stray stays the jar's (MZB-1300)
         Entity e = byUuid(level, c, ln.a(), ln.b());
         if (!(e instanceof Mob mob) || !e.isAlive() || !c.kind.isBody(e) || RtsimAttachments.isTagged(e))
             return ConflictRecords.CampBodies.NOTHING;
@@ -1498,10 +1511,10 @@ public final class Camps {
      */
     private int handBack(ServerLevel level, Site c, long epoch, long op, Line ln, Map<Long, ConflictBridge.Party> homecoming, long now) {
         ConflictBridge.Party p = bridge.party(ln.a());
-        if (retiredChief(c, ln) || p != null && p.epoch == (int) ln.b() && bridge.secondPuppet(p, ln.body())) {
-            // The engine has this chief dead (a CAMP_DEATH of its generation went out), though its line was in flight: nothing is
-            // handed back, whatever the puppet is doing (floating, in its death animation or gone), or a throne body of a retired
-            // generation would stand until the next census took it (MZB-891).
+        if (retiredChief(c, ln) || killedAway(c, ln) || p != null && p.epoch == (int) ln.b() && bridge.secondPuppet(p, ln.body())) {
+            // The engine has this chief dead (a CAMP_DEATH of its generation went out, or its puppet's CHIEF_KILLED), though its line
+            // was in flight: nothing is handed back, whatever the puppet is doing (floating, in its death animation or gone), or a
+            // throne body of a retired generation would stand, a second Umvuthi with a second Sol Visage (MZB-891, MZB-1300).
             return ConflictRecords.CampBodies.STALE;
         }
         if (p != null && p.epoch == (int) ln.b()) {
@@ -1777,10 +1790,10 @@ public final class Camps {
     private void playHeldHandBack(ServerLevel level, Site c, Held h, long now) {
         ConflictBridge.Party p = bridge.party(h.line().a());
         boolean current = p != null && p.epoch == (int) h.line().b();
-        if (retiredChief(c, h.line()) || current && bridge.secondPuppet(p, h.line().body())) {
+        if (retiredChief(c, h.line()) || killedAway(c, h.line()) || current && bridge.secondPuppet(p, h.line().body())) {
             // The throne body was killed while the puppet floated home (MZB-825): the engine has the chief dead, so nothing is handed
-            // back. The puppet is nobody's, and its band's recall takes it. The same when the puppet is dying or gone (MZB-891): its
-            // line is not a spawn of a retired generation.
+            // back. The puppet is nobody's, and its band's recall takes it. The same when the puppet is dying or gone (MZB-891), and
+            // when its CHIEF_KILLED went out (MZB-1300): its line is not a spawn of a retired generation.
             answerStale(h, now);
             return;
         }
@@ -2033,6 +2046,31 @@ public final class Camps {
     /** Whether Java journaled a CAMP_DEATH of this chief line's faction and generation this session (MZB-891). */
     private boolean retiredChief(Site c, Line ln) {
         return !retired.isEmpty() && ln.slot() == ConflictRecords.CampReconcile.CHIEF_SLOT && retired.contains(new Retired(c.faction, ln.generation()));
+    }
+
+    /**
+     * Whether a chief HAND_BACK names a band whose chief puppet the bridge journaled CHIEF_KILLED for (MZB-1300). One that does
+     * also retires the line's generation here, so a later line of that chief slot and generation is stale as well.
+     */
+    private boolean killedAway(Site c, Line ln) {
+        if (killedAway.isEmpty() || (ln.flags() & ConflictRecords.CampReconcile.LINE_CHIEF) == 0
+                || !killedAway.contains(new KilledAway(ln.a(), (int) ln.b())))
+            return false;
+        retired.add(new Retired(c.faction, ln.generation()));
+        return true;
+    }
+
+    /**
+     * The bridge journaled CHIEF_KILLED for a traveller chief of {@code faction}'s band {@code agent} at {@code epoch}
+     * (MZB-1300): its HAND_BACK in flight is stale from now on, and so is any line of the chief's slot at the generation this
+     * session knows for the camp's chief (an ADOPT its census sent while the band's end held the chief). The engine keeps no other
+     * chief generation while that chief lives in its books, so the one known is the chief's or an older, retired one.
+     */
+    void chiefKilledAway(long faction, long agent, int epoch) {
+        killedAway.add(new KilledAway(agent, epoch));
+        Site c = sites.get(faction);
+        if (c != null && c.chiefGeneration != 0)
+            retired.add(new Retired(faction, c.chiefGeneration));
     }
 
     /** A held hand-back's puppet no longer homes (its line went stale): the band's recall takes it as any member's. */

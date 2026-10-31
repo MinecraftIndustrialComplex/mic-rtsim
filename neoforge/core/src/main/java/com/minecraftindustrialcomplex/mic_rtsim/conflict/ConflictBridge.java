@@ -656,8 +656,9 @@ public final class ConflictBridge implements SessionPlugin {
     public long deathLootLost;
     /**
      * M11's (this session): chief puppets a recall despawned while their camp's throne body stood, so the puppet's health was lost
-     * (MZB-823); chief deaths journaled as CHIEF_KILLED for a party whose march had ended, which the engine counts for nothing
-     * (MZB-824); chief puppets called home (MZB-822).
+     * (MZB-823); chief deaths journaled as CHIEF_KILLED for a party whose march had ended with no HAND_BACK held, which the engine
+     * books by the band's end (MZB-824, MZB-853 release 3; its HAND_BACK in flight is stale, MZB-1300); chief puppets called home
+     * (MZB-822).
      */
     public long chiefMergesMissed, chiefDeathsAfterEnd, chiefsCalledHome;
     /** M11's (this session): a chief puppet's summons adopted as the slot's extras, and ones whose join failed (MZB-816). */
@@ -2757,8 +2758,13 @@ public final class ConflictBridge implements SessionPlugin {
                 if (home != null)
                     return home;
                 reconciler.chiefDiedAway(p.faction); // a throne body that stands is the engine's dead chief now: nobody's (MZB-825)
+                // The engine books this death (the band's end, MZB-853 release 3, or the chief's death away), so the band's HAND_BACK in
+                // flight, and an ADOPT of the chief's slot at its generation, are answered stale (MZB-1300).
+                reconciler.chiefKilledAway(p.faction, p.agent, p.epoch);
                 if (ended) {
-                    chiefDeathsAfterEnd++; // no line held: a boss killed in this window comes back at the next census (MZB-824, counted)
+                    // No line held: the engine's end of the band books the death at its camp (MZB-853 release 3) and the HAND_BACK
+                    // that may still come is stale, so no boss comes back (MZB-824, MZB-1300; counted).
+                    chiefDeathsAfterEnd++;
                     MicRtsim.LOGGER.debug("[mic_rtsim] a chief of party {} (epoch {}) died after its march ended, with no HAND_BACK held",
                             p.agent, p.epoch);
                 }
