@@ -2072,16 +2072,31 @@ impl Conflict {
     /// cause (a player's kill or take is a player's, a mob's is a predator's), and a death that
     /// credits no one is a player's loss when the band was at a player's district (FB-2 (a), the
     /// `district_unclaimed_is_players` switch: a trap, a turret or a FakePlayer killed it there),
-    /// no one's elsewhere.
+    /// no one's elsewhere. Not once the band's chief has fallen (S9 review, MZB-1287): a chief-body
+    /// culture's warriors die with their chief (the jar's `EntityUmvuthi.die` countdown, a death by
+    /// no one), so when the chief of a column on the march to a player's district is killed, the
+    /// warriors that go down with it are no one's but the war chief's own loss. A death directly
+    /// credited to a player is still the player's.
     pub(super) fn pool_cause(&self, p: Handle<Party>, by: u32) -> LossCause {
         let cause = LossCause::from_credit(by, false);
         if cause == LossCause::Other
             && self.tun.district_unclaimed_is_players
             && matches!(self.parties[p].target, Target::District(..))
+            && !self.lost_its_chief(p)
         {
             return LossCause::Player;
         }
         cause
+    }
+
+    /// Whether the band is one a chief leads in its culture and its chief has fallen: the war
+    /// chief's body is dead on the march ([`Party::chief`] clears on `chief_killed_by` and on
+    /// succession). A band the chief never leads (a raid of a culture whose chief stays home) never
+    /// had one to lose.
+    fn lost_its_chief(&self, p: Handle<Party>) -> bool {
+        let x = &self.parties[p];
+        let c = self.culture(x.faction);
+        chief_own_stack(c) && c.leads(x.kind) && !x.chief
     }
 
     /// Test hook (EQC206): a player kills `n` of the faction's warriors at `at`, the pool's whole
