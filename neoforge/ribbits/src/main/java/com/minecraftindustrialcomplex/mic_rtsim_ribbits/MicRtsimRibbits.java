@@ -85,7 +85,10 @@ public final class MicRtsimRibbits {
     private static final List<String> PROFESSIONS = List.of("ribbits:gardener", "ribbits:sorcerer", "ribbits:fisherman",
             "ribbits:merchant", "ribbits:nitwit");
 
-    /** A merchant when no living Ribbit of this village is one, else a profession by the op's hash (EQC180). */
+    /**
+     * A merchant when no living Ribbit of this village is one (its walkers included, EQC334), else a profession by the op's
+     * hash (EQC180).
+     */
     static String chooseProfession(net.minecraft.server.level.ServerLevel level,
                                    com.minecraftindustrialcomplex.mic_rtsim.village.VillageRegistry villages,
                                    com.minecraftindustrialcomplex.mic_rtsim.village.Village village, long op) {
@@ -98,6 +101,15 @@ public final class MicRtsimRibbits {
                 merchant = true;
                 break;
             }
+        }
+        // A settler still on the road is the village's too, and outside the box: the first of a pair is a walker when the
+        // second is chosen (EQC334). One the level cannot find (its chunk is unloaded) is not seen.
+        for (var w : villages.walkers.values()) {
+            if (merchant)
+                break;
+            if (w.village == village.id && level.getEntity(w.id) instanceof RibbitEntity r && r.isAlive()
+                    && "ribbits:merchant".equals(Ribbits.professionName(r)))
+                merchant = true;
         }
         if (!merchant)
             return "ribbits:merchant";
