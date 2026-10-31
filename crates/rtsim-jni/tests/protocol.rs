@@ -17409,6 +17409,218 @@ mod worldmodel {
         e.habitat_info(dim, x, z)
     }
 
+    /// Region (rx, rz), all plains.
+    fn plains(p: &mut Painter, rx: i32, rz: i32) -> Vec<HabitatRecord> {
+        let mut out = Vec::new();
+        for cz in rz * 8..(rz + 1) * 8 {
+            for cx in rx * 8..(rx + 1) * 8 {
+                out.push(p.record(0, cx, cz, &|_, _| land("minecraft:plains"), &[]));
+            }
+        }
+        out
+    }
+
+    /// The K the founding rule gives `species` on region (rx, rz) of these cells (a world of
+    /// their own, as the engine's).
+    fn capacity_on(
+        p: &Painter,
+        recs: &[HabitatRecord],
+        rx: i32,
+        rz: i32,
+        species: rtsim_ecology::herds::HerdSpecies,
+    ) -> u64 {
+        use rtsim_ecology::herds::habitat::{FoundingTunables, HabitatClimate, range_capacity};
+        use rtsim_space::{RegionKey, SampledWorld, WorldHandle};
+        let mut w = SampledWorld::new();
+        for r in recs {
+            p.feed(&mut w, r);
+        }
+        let w = WorldHandle::new(Box::new(w));
+        let c = HabitatClimate::new(w.clone());
+        let k = RegionKey { frame: 0, rx, rz };
+        range_capacity(&**w.read(), &c, k, species, &FoundingTunables::default())
+    }
+
+    /// EQC511: a range its own herd left empty and another species' dispersers recolonised takes
+    /// the K its ground gives that species, not the one it had.
+    #[test]
+    fn a_range_recolonised_by_another_species_takes_that_species_k() {
+        let dir = tmpdir("worldmodel-recolonised");
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        j.module_mask = MODULES;
+        j.run_until("the engine's list", known_end);
+        let mut p = Painter::default();
+        let mut recs = Vec::new();
+        for rx in 0..4 {
+            recs.extend(plains(&mut p, rx, 0));
+        }
+        send(&mut j, &p, &recs);
+        j.run_until("four herds founded", |j| {
+            (0..4).all(|rx| info(&e, j, rx * 512 + 256, 256)[9] != 0)
+        });
+        let agents: Vec<u64> = (0..4)
+            .map(|rx| info(&e, &mut j, rx * 512 + 256, 256)[9] as u64)
+            .collect();
+        let species_of = |e: &Engine, agent: u64| {
+            let id = rtsim_ecology::herds::herd::herd_of(agent).unwrap();
+            e.with_herds(|h, _| h.herd(id).map(|x| (x.species, x.k)).unwrap())
+        };
+        let species: Vec<_> = agents.iter().map(|&a| species_of(&e, a).0).collect();
+        // A middle range with a neighbour of another species.
+        let rx = (1..3)
+            .find(|&i| species[i - 1] != species[i] || species[i + 1] != species[i])
+            .expect("the draws give two neighbours of different species");
+        let (old, k_old) = species_of(&e, agents[rx]);
+        assert!(e.cull_herd(agents[rx]) > 0, "the range is wiped");
+        // Years pass until its neighbours' dispersers or the frontier fill it again.
+        let day = 24_000i64;
+        let mut now = None;
+        for _ in 0..12 * 8 {
+            j.game_time += 8 * day;
+            j.idle();
+            j.idle();
+            let (s, _) = species_of(&e, agents[rx]);
+            let alive = e.herd_info(agents[rx]).map_or(0, |i| i[1]);
+            if alive > 0 && s != old {
+                now = Some(s);
+                break;
+            }
+        }
+        let now =
+            now.unwrap_or_else(|| panic!("range {rx} of {old:?} is recolonised by {species:?}"));
+        j.idle();
+        j.idle();
+        let (_, k_now) = species_of(&e, agents[rx]);
+        let expect = capacity_on(&p, &recs, rx as i32, 0, now);
+        eprintln!(
+            "world model: range {rx} of {old:?} at K {k_old}, recolonised by {now:?}: K {k_now}"
+        );
+        assert_eq!(
+            k_now, expect,
+            "{now:?} on the range of {old:?} (K {k_old}) takes their own K"
+        );
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+    }
+
+    /// EQC512: regions sampled while the herds were switched off are judged after a restart, as
+    /// they would have been in the same session: what waits to be judged is in no page.
+    #[test]
+    fn regions_sampled_while_the_herds_were_off_are_judged_after_a_restart() {
+        let dir = tmpdir("worldmodel-pending");
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        j.module_mask = MODULES & !MODULE_HERDS;
+        j.run_until("the engine's list", known_end);
+        let mut p = Painter::default();
+        let recs = region(&mut p, 0);
+        send(&mut j, &p, &recs);
+        j.idle();
+        assert_eq!(
+            info(&e, &mut j, 300, 300)[9],
+            0,
+            "no herd while the herds are off"
+        );
+        save(&e, &mut j);
+        let saved = j.world_save();
+        let _ = j.crash();
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), saved);
+        j.module_mask = MODULES;
+        j.run_until("a herd founded after the restart", |j| {
+            info(&e, j, 300, 300)[9] != 0
+        });
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+    }
+
+    /// EQC516: a herd a test order founded in a region is no world-model range: sampling the
+    /// region decides it (no second herd) and leaves the herd's K as ordered.
+    #[test]
+    fn a_test_orders_herd_keeps_its_k_when_its_region_is_sampled() {
+        let dir = tmpdir("worldmodel-ordered");
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        j.module_mask = MODULES;
+        j.run_until("the engine's list", known_end);
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        e.order(vec![Order::HerdFound {
+            name: "Ordered flock".into(),
+            species: "minecraft:sheep".into(),
+            dimension: dim,
+            x: 300,
+            z: 300,
+            count: 1_000,
+            seed: 5,
+        }])
+        .unwrap();
+        j.idle();
+        j.idle();
+        let agents = e.herd_agents();
+        assert_eq!(agents.len(), 1, "the ordered herd");
+        let id = rtsim_ecology::herds::herd::herd_of(agents[0]).unwrap();
+        let k_of = |e: &Engine| e.with_herds(|h, _| h.herd(id).unwrap().k);
+        assert_eq!(k_of(&e), 1_000);
+        let mut p = Painter::default();
+        let recs = region(&mut p, 0);
+        send(&mut j, &p, &recs);
+        j.run_until("the region decided", |j| info(&e, j, 300, 300)[10] == 1);
+        j.idle();
+        assert_eq!(e.herd_agents(), agents, "no second herd");
+        assert_eq!(k_of(&e), 1_000, "the ordered herd keeps its K");
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+    }
+
+    /// EQC504: a range founded while a quarter of its region was known gets K from those cells;
+    /// when the rest of the region is sampled, the world model re-caps K to the whole region's.
+    #[test]
+    fn a_ranges_k_follows_its_ground_as_more_of_it_is_known() {
+        use rtsim_ecology::herds::habitat::{FoundingTunables, HabitatClimate, range_capacity};
+        use rtsim_space::{RegionKey, SampledWorld, WorldHandle};
+        let dir = tmpdir("worldmodel-recap");
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        j.module_mask = MODULES;
+        j.run_until("the engine's list", known_end);
+        let mut p = Painter::default();
+        let all = region(&mut p, 0);
+        // First the north-west quarter: habitat cells 0..4 x 0..4, four whole forage cells.
+        let (first, rest): (Vec<_>, Vec<_>) = all
+            .iter()
+            .cloned()
+            .partition(|r| r.cell.0 < 4 && r.cell.1 < 4);
+        send(&mut j, &p, &first);
+        j.run_until("a herd founded", |j| info(&e, j, 100, 100)[9] != 0);
+        let agent = info(&e, &mut j, 100, 100)[9] as u64;
+        let id = rtsim_ecology::herds::herd::herd_of(agent).unwrap();
+        let k_of = |e: &Engine| e.with_herds(|h, _| h.herd(id).unwrap().k);
+        let species = e.with_herds(|h, _| h.herd(id).unwrap().species);
+        let k0 = k_of(&e);
+        // What the engine's own rule gives on each ground (the same cells in a world of its own).
+        let capacity = |recs: &[HabitatRecord]| {
+            let mut w = SampledWorld::new();
+            for r in recs {
+                p.feed(&mut w, r);
+            }
+            let w = WorldHandle::new(Box::new(w));
+            let c = HabitatClimate::new(w.clone());
+            let k = RegionKey {
+                frame: 0,
+                rx: 0,
+                rz: 0,
+            };
+            range_capacity(&**w.read(), &c, k, species, &FoundingTunables::default())
+        };
+        assert_eq!(k0, capacity(&first), "founded on the quarter known");
+        send(&mut j, &p, &rest);
+        j.run_until("the range re-capped", |_| k_of(&e) != k0);
+        let k1 = k_of(&e);
+        assert_eq!(k1, capacity(&all), "re-capped to the whole region");
+        assert!(k1 > k0, "{species:?}: K {k0} to {k1}");
+        assert_eq!(e.herd_agents(), vec![agent], "the same herd, no second one");
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        eprintln!("world model: {species:?} range re-capped from K {k0} to {k1}");
+    }
+
     #[test]
     fn habitat_cells_found_a_herd_on_land_and_are_listed_again_after_a_restart() {
         let dir = tmpdir("worldmodel");
