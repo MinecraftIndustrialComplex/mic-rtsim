@@ -553,6 +553,12 @@ public final class HabitatSampler implements SessionPlugin {
         return h;
     }
 
+    /** The degrees a cell's record carries: the climate plugin's at the cell's centre, a block above its mean surface. */
+    static float cellCelsius(ServerLevel level, int cx, int cz, Cell c) {
+        BlockPos centre = new BlockPos(cx * HabitatRecords.CELL_BLOCKS + 32, c.mean + 1, cz * HabitatRecords.CELL_BLOCKS + 32);
+        return Climates.temperature(level, centre);
+    }
+
     /** Writes a cell's HABITAT. False when the buffer had no room (the record was dropped and counted). */
     private boolean write(RtsimSession s, ServerLevel level, int cx, int cz, Cell c, int[] gen, long now) {
         // Ids before direct(): an id is defined before its first use.
@@ -567,8 +573,7 @@ public final class HabitatSampler implements SessionPlugin {
         for (int k = 0; k < CREATURES.size(); k++)
             if (c.shares[k] > 0 || (gen != null && gen[k] > 0))
                 bodies[k] = s.dictId(Obs.DICT_BODY, CREATURES.get(k));
-        BlockPos centre = new BlockPos(cx * HabitatRecords.CELL_BLOCKS + 32, c.mean + 1, cz * HabitatRecords.CELL_BLOCKS + 32);
-        float celsius = Climates.temperature(level, centre);
+        float celsius = cellCelsius(level, cx, cz, c);
         if (seasonThisTick == null)
             seasonThisTick = seasonNow(s.server());
         int at = s.boundary().direct(HabitatRecords.HABITAT, HabitatRecords.Habitat.size(n), n, now);
