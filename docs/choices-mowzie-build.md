@@ -17643,4 +17643,13 @@ the review gave are at 43062c0b.
     with the same text. The new reset test's reset (batch `reinstall_3`, which runs before `reinstall_1`) planned "4 chunks
     of 1 districts" left by an earlier test, which never load again, so `reinstall_1`'s reset found 3 of its own and 4
     still planned. 8da19617 makes the new test forget the industry first (MZB-1403).
-  - **Results** (RESULTS).
+  - **Results.** Cargo: the workspace's tests (`--no-fail-fast`) at e7dca238 passed but for the five that read the fixtures,
+    which failed on the old saves (MZB-1406), and pass on the new ones (rtsim-view and rtsim-host at 61bc50ce, every suite);
+    clippy `-D warnings` clean. `:core:test` (in the core rounds): 440 JUnit tests passed. GameTests from cleared worlds:
+    core "All 191 required tests passed" at 4d43c6ff (the first round, at 6729227d, failed the one above); mowziesmobs "All
+    113 required tests passed" at 8da19617's code; iceandfire "All 54 required tests passed" and `create -Psec1fx` "All 266
+    required tests passed" at 8da19617; `create -PwithMowzie` CREATEMOWZIE.
+  - **A flake:** mowziesmobs's first round at 8da19617's code failed `anAloftUmvuthiSettlesAndRises` alone ("its restriction
+    centre is the puppet's block (12.165525060596439 off)", the first summons' centre at its fifth step, M11's), and the rerun
+    on the same code passed it with the rest. Nothing on this branch touches a summons' restriction (the chief's slot is
+    outside MZB-1400's UUIDs, and MZB-1404's pairing is for a boss's member slots).
