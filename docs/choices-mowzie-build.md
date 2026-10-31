@@ -12147,7 +12147,8 @@ test did is in MZB-1308. The review's line numbers were at 13ac4d88; each place 
     zombie type the core registers on a GameTest server only (`gametest/TestPairing`), whose `sendPairingData` adds a payload for the
     players `TestPairing.to` names (every player but the level's first, for the one call; nobody for the control). Its first form, an
     attachment synced to some players (72a89a5c), failed its control on main's code too, "the control's re-pair went (false, repairs
-    +0)", for the reason above; the type replaced it (6f428530). With MZB-1308 taken out it failed with (pending: the round is queued).
+    +0)", for the reason above; the type replaced it (6f428530). With MZB-1308 taken out (the red round) it failed with "a re-pair with
+    per-player data for every player but the level's first (mowzie-repair-pp-a) is skipped (sent true, repairs +2, skipped +0)".
 - **MZB-1309** (the checks): pending; the rounds are queued.
 
 ## M12 S9
