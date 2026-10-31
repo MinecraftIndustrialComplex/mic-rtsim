@@ -242,6 +242,43 @@ fn the_bearing_points_away_from_the_neighbours() {
 }
 
 #[test]
+fn the_source_across_a_seam_is_where_the_bearing_points() {
+    // Java walks a family in along the ray from the bell toward the order's source, in plain
+    // coordinates: a village 100 blocks short of a seam whose family comes from across it must name
+    // the point 192 blocks east of it, not that point's canonical image at the far end of the world
+    // (EQC190), which would send the walk-in out of the west, past the other villages.
+    use rtsim_settle::Pos;
+    use rtsim_space::topology::{Topologies, layout};
+    const B: i64 = layout::GUYOU_16K;
+    // The synthetic cluster (x from -1,000 to 1,300) moved so Highmoor, its eastern edge at 1,200,
+    // stands at B - 100; the rest lie west of it.
+    let shift = (B - 1_300) as i32;
+    let (goods, ids) = synth::goods();
+    let book = synth::recipes(&ids);
+    let mut all = synth::nodes();
+    for d in &mut all {
+        d.pos = Pos::new(d.pos.frame, d.pos.x + shift, d.pos.z);
+    }
+    let mut w = World::build(config(true), goods, book, vec![all[0].clone()]);
+    let mut t = Topologies::new();
+    t.set(0, layout::guyou(B, true));
+    w.set_topologies(std::sync::Arc::new(t));
+    for (i, d) in all.iter().enumerate().skip(1) {
+        w.join(d.clone(), Tick::from_days(i as u64));
+    }
+    let mut nodes = nodes_of(&w);
+    wiped(&mut w, &mut nodes, HIGHMOOR, 12, 0);
+    let got = orders(&mut w, day(40));
+    assert_eq!(got.len(), 2, "a pair: {got:?}");
+    let Arrive::Settler { x, z } = got[0].arrive else { panic!("{:?}", got[0]) };
+    let me = w.nodes[HIGHMOOR].pos;
+    assert_eq!(i64::from(me.x), B - 100, "Highmoor is 100 blocks short of the seam");
+    let (dx, dz) = (f64::from(x - me.x), f64::from(z - me.z));
+    assert!((dx.hypot(dz) - 192.0).abs() < 2.0, "192 blocks out in plain coordinates: {dx} {dz}");
+    assert!(dx > 150.0, "east, across the seam, away from the others: {dx} {dz}");
+}
+
+#[test]
 fn a_failed_arrival_lapses_the_booking() {
     let mut w = world();
     let mut nodes = nodes_of(&w);
@@ -284,7 +321,7 @@ fn a_census_never_undoes_a_booking_java_has_not_answered() {
 }
 
 #[test]
-fn owed_expires_after_two_years() {
+fn owed_expires_after_192_days() {
     let mut w = world();
     let mut nodes = nodes_of(&w);
     wiped(&mut w, &mut nodes, HIGHMOOR, 12, 0);
