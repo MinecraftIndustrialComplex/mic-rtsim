@@ -1187,3 +1187,59 @@ fn a_lairs_generated_dragon_found_after_a_newcomer_is_removed_not_adopted() {
         "the newcomer, owed, gets its body"
     );
 }
+
+/// The engine's commands through the fake plugin and its answers due by `at`, until quiet.
+fn pump(s: &mut Scene, iaf: &mut synth::FakeIaf, at: Tick) {
+    loop {
+        let cmds = s.d.take_commands();
+        let quiet = cmds.is_empty();
+        iaf.apply(cmds, at);
+        let due = iaf.due(at);
+        if quiet && due.is_empty() {
+            break;
+        }
+        for (t, o) in due {
+            let t = t.max(s.d.now());
+            s.d.ingest(&mut s.w, &mut NoInfrastructure, &o, t);
+        }
+    }
+}
+
+/// EQC314 (finding 5): a dragon dead of age while its home body is loaded: the plugin discards the
+/// body at once on DEPART reason 5 (Java waited for the capture, and a lair going out in that window
+/// saved a dead dragon's body, which the next census adopted). The lair going out and coming in
+/// again finds nothing: no body saved, no stray.
+#[test]
+fn a_dead_of_age_dragons_home_body_is_gone_at_once_and_never_comes_back() {
+    let mut s = scene(48);
+    let life = s.d.tun.species(Species::Fire).lifespan_ticks();
+    let x = s.d.add_dragon(
+        &mut s.w,
+        NewDragon {
+            age_ticks: life,
+            ..newdragon("Old", s.l, Gender::Female, 0)
+        },
+        Tick(0),
+    );
+    let mut iaf = synth::FakeIaf::new(PLAYER);
+    iaf.home.on = true;
+    iaf.home.lairs.insert(KEY, (700, 1500));
+    iaf.set_lair_in(KEY, false, Tick(100));
+    pump(&mut s, &mut iaf, Tick(100));
+    pump(&mut s, &mut iaf, Tick(110));
+    assert!(s.d.dragon(x).unwrap().body.is_some(), "its owed body spawned");
+    s.run(3 * DAY);
+    assert!(s.d.dragon(x).is_none(), "dead of age");
+    pump(&mut s, &mut iaf, Tick(3 * DAY));
+    assert!(
+        iaf.home.bodies.is_empty(),
+        "discarded at once: {:?}",
+        iaf.home.bodies
+    );
+    iaf.set_lair_out(KEY, Tick(3 * DAY + 10));
+    pump(&mut s, &mut iaf, Tick(3 * DAY + 10));
+    iaf.set_lair_in(KEY, false, Tick(3 * DAY + 400));
+    pump(&mut s, &mut iaf, Tick(3 * DAY + 400));
+    assert_eq!(s.d.stats.strays_adopted, 0, "the dead dragon does not come back");
+    assert!(s.d.lairs[s.l as usize].occupants.is_empty());
+}

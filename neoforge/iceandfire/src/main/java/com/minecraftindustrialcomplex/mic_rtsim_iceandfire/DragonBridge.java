@@ -78,6 +78,8 @@ public final class DragonBridge implements SessionPlugin {
     public static final int CLAMP_MARGIN = 8;
     /** A DEPART with timeout 0 is captured after this many ticks at most (PLACEHOLDER, choice Z11). */
     public static final int DEFAULT_DEPART_TIMEOUT = 6000;
+    /** DRAGON_DEPART reason 5: the engine needs the dragon back (dead of age, starved away, removed). */
+    public static final int DEPART_GONE = 5;
     /** A home body's lair is the nearest one this session reported within this many blocks of where it stands (EQC105). */
     public static final double HOME_LAIR_RADIUS = 64.0;
     /** A puppet's breaths are summed into one DRAGON_BREATHS at most this often (OILGATE.md §4.3). */
@@ -438,7 +440,7 @@ public final class DragonBridge implements SessionPlugin {
                 yield true;
             }
             case DragonRecords.DRAGON_DEPART -> {
-                depart(b.getLong(at + Depart.AGENT), b.getInt(at + Depart.EPOCH), b.getInt(at + Depart.TIMEOUT_TICKS),
+                depart(b.getLong(at + Depart.AGENT), b.getInt(at + Depart.EPOCH), aux, b.getInt(at + Depart.TIMEOUT_TICKS),
                         new Vec3(b.getDouble(at + Depart.X), b.getDouble(at + Depart.Y), b.getDouble(at + Depart.Z)), now);
                 yield true;
             }
@@ -701,9 +703,11 @@ public final class DragonBridge implements SessionPlugin {
     /**
      * DRAGON_DEPART: fly to the target, and once no player has the dragon in entity-ticking range (or
      * the timeout passed) capture it: DRAGON_DEMATERIALIZED, reason 1. A dragon that is not embodied is
-     * answered at once (reason 6), so the engine never waits.
+     * answered at once (reason 6), so the engine never waits. A home body told to go because its dragon
+     * is gone from the sim (reason 5: dead of age, starved away) is discarded at once (EQC314): kept for
+     * the capture, a lair going out or an unload in the window would save it with a dead dragon's agent.
      */
-    private void depart(long agent, int epoch, int timeout, Vec3 target, long now) {
+    private void depart(long agent, int epoch, int reason, int timeout, Vec3 target, long now) {
         Puppet p = byAgent.get(agent);
         if (p == null || p.epoch != epoch) {
             ByteBuffer r = session.boundary().beginJournaled(DragonRecords.DRAGON_DEMATERIALIZED, DragonRecords.Dematerialized.SIZE,
@@ -711,6 +715,10 @@ public final class DragonBridge implements SessionPlugin {
             r.putLong(DragonRecords.Dematerialized.AGENT, agent);
             r.putInt(DragonRecords.Dematerialized.EPOCH, epoch);
             session.boundary().commit(r);
+            return;
+        }
+        if (p.home && reason == DEPART_GONE) {
+            capture(p, DragonRecords.Dematerialized.COMMAND, now);
             return;
         }
         p.mode = Mode.DEPART;
