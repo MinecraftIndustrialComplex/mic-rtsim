@@ -2321,7 +2321,7 @@ public final class Camps {
      */
     void chiefDiedAway(long faction) {
         Site c = sites.get(faction);
-        Mob standing = c == null ? null : standingChief(c);
+        Mob standing = c == null ? null : chiefBody(c, false);
         if (standing != null && second.add(standing))
             secondBodies++;
     }
@@ -2452,12 +2452,22 @@ public final class Camps {
 
     /** The camp's live chief body of its slot that is no second body, or null. */
     private Mob standingChief(Site c) {
+        return chiefBody(c, true);
+    }
+
+    /**
+     * The camp's chief body of its slot that is no second body, or null: a live one with {@code alive}, else one not removed, alive
+     * or in its death animation with its CAMP_DEATH not journaled yet (a journaled body is untagged, so not here). The second mark of
+     * a puppet's death takes the latter (the M11 review's P2, MZB-1303): a throne body killed in the same tick is dying, and
+     * {@link #death} then journals nothing for it and its drops are cancelled.
+     */
+    private Mob chiefBody(Site c, boolean alive) {
         Set<Entity> s = live(c.faction);
         if (s == null)
             return null;
         for (Entity e : s) {
             CampMember m = RtsimAttachments.campMember(e);
-            if (e instanceof Mob mob && m != null && m.slot() == ConflictRecords.CampReconcile.CHIEF_SLOT && e.isAlive()
+            if (e instanceof Mob mob && m != null && m.slot() == ConflictRecords.CampReconcile.CHIEF_SLOT && (alive ? e.isAlive() : !e.isRemoved())
                     && !RtsimAttachments.isTagged(e) && e.level().dimension().equals(c.dimension) && !secondBody(e))
                 return mob;
         }
