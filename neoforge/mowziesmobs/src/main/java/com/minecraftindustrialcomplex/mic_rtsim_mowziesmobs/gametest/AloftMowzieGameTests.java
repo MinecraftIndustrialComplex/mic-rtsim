@@ -5425,16 +5425,17 @@ public final class AloftMowzieGameTests {
     }
 
     /**
-     * A dying chief whose chunks are let go in its animation still drops its loot (the M11 review's P2, MZB-1301). A puppet floats over
-     * a lane of forced chunks; a masked player 20 blocks off kills it. 20 ticks into its 115-tick animation the lane's chunks are let
-     * go between two ticks (a server task), as a player's logout, teleport or far respawn handled between ticks lets go of its chunks:
-     * with no ticket left the next level tick hides the chunk and unloads its entities, before the end of that tick could end the
-     * animation, and the body (a puppet, never saved) went with its loot. (Let go inside a GameTest step, after the levels ticked, the
-     * end of the same tick finds the chunk no longer ticking and ends the animation in time: the round at 72a89a5c passed that way.)
-     * Now its chunk is held until it has dropped: once the lane is out of memory and forced again, one Sol Visage lies where it fell,
-     * the body ended as KILLED, {@code deathLootLost} did not rise and nothing is dying. On a second lane the jar's own Umvuthi (a stray, made persistent)
-     * is killed and let go the same way: what it drops after its reload is recorded, not asserted (the jar does not save the kill data its
-     * drop reads, {@code MowzieEntity.killDataCause}). Fails on the code before MZB-1301: no Sol Visage, {@code deathLootLost} 1.
+     * A dying chief whose chunks are let go in its animation still drops its loot (the M11 review's P2, MZB-1301: a regression test, as
+     * the review's path does not happen). A puppet floats over a lane of forced chunks; a masked player 20 blocks off kills it. 20 ticks
+     * into its 115-tick animation the lane's chunks are let go between two ticks (a server task), as a player's logout, teleport or far
+     * respawn handled between ticks lets go of its chunks: the next level tick hides the chunk and unloads it. Vanilla unloads only the
+     * entities that are saved ({@code PersistentEntitySectionManager.storeChunkSections} filters on {@code shouldBeSaved}, which
+     * {@code EntitySaveMixin} answers false for a puppet), so the body stays in the level, and MZB-817's end of that tick ends its
+     * animation: once the lane is out of memory and forced again, one Sol Visage lies where it fell, the body ended as KILLED,
+     * {@code deathLootLost} did not rise and nothing is dying. On a second lane the jar's own Umvuthi (a stray, made persistent) is killed
+     * and let go the same way: what it drops after its reload is recorded, not asserted (the jar does not save the kill data its drop
+     * reads, {@code MowzieEntity.killDataCause}). It passes on main's code, with the chunks let go in a step (the round at 72a89a5c) and
+     * between ticks.
      */
     @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "aloft_dying_let_go", skyAccess = true)
     public static void aDyingChiefWhoseChunksAreLetGoDropsItsLoot(GameTestHelper helper) {
