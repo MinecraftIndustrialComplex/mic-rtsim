@@ -686,6 +686,30 @@ impl FakeIaf {
         );
     }
 
+    /// Ice and Fire's own dragon, generated with the lair's structure (agent 0, no attachment): it
+    /// stands saved in the lair until a census adopts or removes it (EQC313).
+    pub fn worldgen_dragon(&mut self, lair: u64, species: Species, pos: (f64, f64, f64)) -> Uuid {
+        self.home.next += 1;
+        let entity = (0x4700_0000_0000_0000 | self.home.next, 1);
+        self.home.bodies.insert(
+            entity,
+            HomeBody {
+                agent: 0,
+                epoch: 0,
+                lair,
+                species,
+                age_ticks: 100 * 24_000,
+                hunger: 80,
+                health: 300.0,
+                gender: Gender::Female,
+                variant: 0,
+                pos,
+                loaded: false,
+            },
+        );
+        entity
+    }
+
     /// The lair goes out: each loaded body is saved where it stands (DEMATERIALIZED reason 8), then
     /// the census epoch ends.
     pub fn set_lair_out(&mut self, lair: u64, at: Tick) {

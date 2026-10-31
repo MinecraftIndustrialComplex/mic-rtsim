@@ -195,10 +195,23 @@ impl Dragons {
             }
         }
 
-        // Strays: adopted below a pair, else removed, nearest first.
+        // Strays (EQC113, EQC313): the lair's own by UUID (expected after a reset, or missing)
+        // while it has room; any other only into a lair this census found empty, as the untagged
+        // path did before S5 (a lair that got a newcomer while it was seen from afar keeps it,
+        // and Ice and Fire's generated dragon found later is removed); the rest removed. The
+        // lair's own first, then nearest first. A written-off body that turns up at a lair that
+        // has refilled stays standing: a stray whose death still presses its old lair (S3's F3
+        // and F4).
+        let empty = occupants.is_empty();
+        let own = |s: &Self, i: usize| {
+            let lair = &s.lairs[l as usize];
+            let u = c.bodies[i].entity;
+            lair.expect.contains(&u) || lair.missing.contains(&u)
+        };
         strays.sort_by(|&a, &b| {
-            dist(self, &c.bodies[a])
-                .total_cmp(&dist(self, &c.bodies[b]))
+            own(self, b)
+                .cmp(&own(self, a))
+                .then(dist(self, &c.bodies[a]).total_cmp(&dist(self, &c.bodies[b])))
                 .then(a.cmp(&b))
         });
         let mut room = self.tun.home_bodies_max.saturating_sub(occupants.len());
@@ -206,14 +219,12 @@ impl Dragons {
         for i in strays {
             let u = c.bodies[i].entity;
             let back = self.lairs[l as usize].missing.contains(&u);
-            if room > 0 {
+            if room > 0 && (empty || own(self, i)) {
                 room -= 1;
                 adoptable.push(i);
             } else if !back {
                 removals.push((u, boundary::DISCARD_LAIR_FULL));
             }
-            // A written-off body that turns up at a lair that has refilled stays standing: a
-            // stray whose death still presses its old lair (S3's F3 and F4).
         }
 
         // The lines: removals, then adoptions, then spawns (EQC112).

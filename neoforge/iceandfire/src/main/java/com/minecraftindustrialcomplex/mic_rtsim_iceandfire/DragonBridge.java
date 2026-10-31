@@ -1464,7 +1464,14 @@ public final class DragonBridge implements SessionPlugin {
             int species = IafDragons.species(d);
             if (species < 0)
                 continue;
+            // The lair whose box it stands in, or whose box its home (a roost's pivot) is in, or whose footprint it stands in:
+            // Ice and Fire's own dragon wanders 40 blocks from home (EQC313).
+            BlockPos ownHome = IafDragons.home(d);
             Lairs.Lair lair = lairs.at(level, e.blockPosition(), now);
+            if (lair == null && ownHome != null)
+                lair = lairs.at(level, ownHome, now);
+            if (lair == null)
+                lair = lairs.nearestKnown(level, e.position(), DragonConfig.lairFootprint());
             MobSpawnType type = e.getExistingDataOrNull(MicRtsimIceAndFire.SPAWN_TYPE.get());
             int kind = spawnKind(type, lair != null);
             if (lair != null && kind == DragonRecords.Untagged.SPAWN_STRUCTURE)
@@ -1472,7 +1479,7 @@ public final class DragonBridge implements SessionPlugin {
             int flags = 0;
             if (d.isTame())
                 flags |= DragonRecords.Untagged.FLAG_TAMED;
-            BlockPos home = IafDragons.home(d);
+            BlockPos home = ownHome;
             if (home != null)
                 flags |= DragonRecords.Untagged.FLAG_HAS_HOME;
             if (IafDragons.sleeping(d))

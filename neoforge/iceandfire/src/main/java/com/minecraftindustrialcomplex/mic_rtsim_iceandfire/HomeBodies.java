@@ -19,7 +19,6 @@ import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.MobSpawnType;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.Level;
-import net.minecraft.world.level.levelgen.structure.BoundingBox;
 import net.minecraft.world.phys.AABB;
 
 import java.nio.ByteBuffer;
@@ -292,7 +291,7 @@ public final class HomeBodies {
 
     // ---- the census's bodies ---------------------------------------------------------------------
 
-    /** The dragons standing in a lair's footprint that the census lists: its home bodies and its box's untagged structure dragons. */
+    /** The dragons standing in a lair's footprint that the census lists: its home bodies and the untagged structure dragons there. */
     List<DragonBaseEntity> standing(Lairs.Lair lair) {
         ServerLevel level = lair.level();
         double r = DragonConfig.lairFootprint();
@@ -308,18 +307,31 @@ public final class HomeBodies {
                     out.add(d);
                 continue;
             }
-            if (inBox(lair, d) && structureSpawn(d))
+            // A structure dragon anywhere in the footprint (EQC313): Ice and Fire's own wanders up to 40 blocks from home. One
+            // within two lairs' footprints is the nearer lair's, so two censuses never list (and adopt) one body.
+            if (structureSpawn(d) && bridge.lairs.nearestKnown(level, d.position(), r) == lair)
                 out.add(d);
         }
         out.sort(Comparator.comparingDouble((DragonBaseEntity d) -> d.distanceToSqr(h.getX() + 0.5, h.getY(), h.getZ() + 0.5)));
         return out.size() > DragonRecords.LairCensus.MAX_BODIES ? new ArrayList<>(out.subList(0, DragonRecords.LairCensus.MAX_BODIES)) : out;
     }
 
-    /** Whether a dragon stands in the lair's box, with some room above and below (its box is 4 tall for a roost). */
-    static boolean inBox(Lairs.Lair lair, Entity e) {
-        BoundingBox b = lair.box();
-        return e.getX() >= b.minX() && e.getX() <= b.maxX() + 1 && e.getZ() >= b.minZ() && e.getZ() <= b.maxZ() + 1
-                && e.getY() >= b.minY() - 8 && e.getY() <= b.maxY() + 24;
+    /**
+     * Whether a loaded dragon within the footprint radius of (x, z) carries the home attachment of {@code agent}: a home body of
+     * the dragon stands already, registered or not (a stale one a census has not reconciled yet), so a spawn would be its
+     * second body (EQC116, EQC311).
+     */
+    boolean carrying(ServerLevel level, long agent, double x, double z) {
+        double r = DragonConfig.lairFootprint();
+        AABB box = new AABB(x - r, level.getMinBuildHeight(), z - r, x + r, level.getMaxBuildHeight(), z + r);
+        for (DragonBaseEntity d : level.getEntitiesOfClass(DragonBaseEntity.class, box)) {
+            if (d.isRemoved() || IafDragons.dead(d))
+                continue;
+            HomeTag tag = d.getExistingDataOrNull(MicRtsimIceAndFire.HOME);
+            if (tag != null && tag.agent() == agent)
+                return true;
+        }
+        return false;
     }
 
     /** A dragon a structure placed (or one with no spawn type recorded, as every one read from disk): the lair's own. */

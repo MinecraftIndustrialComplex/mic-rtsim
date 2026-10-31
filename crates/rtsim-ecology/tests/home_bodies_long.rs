@@ -36,6 +36,11 @@ impl Sim {
         iaf.home.on = bodies;
         for s in &specs {
             iaf.home.lairs.insert(s.key, (s.x, s.z));
+            // A populated lair stands for one seen from afar whose newcomer came first: Ice and
+            // Fire's generated dragon still stands in it, saved, until its first census (EQC313).
+            if bodies && !s.dragons.is_empty() {
+                iaf.worldgen_dragon(s.key, s.species, (f64::from(s.x) + 3.5, 100.0, f64::from(s.z) + 0.5));
+            }
         }
         Sim {
             w,
