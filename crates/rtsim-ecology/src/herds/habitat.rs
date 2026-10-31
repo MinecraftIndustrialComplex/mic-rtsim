@@ -785,6 +785,44 @@ mod tests {
         }
     }
 
+    /// EQC510: a species the open cells cannot feed a herd of is not drawn, so a small range
+    /// founds one of a species they can feed rather than none, for good. A region of sea but for
+    /// one plains forage cell (yield 50 a day) feeds 25 sheep or 16 pigs, but 6 cows or 5 horses.
+    #[test]
+    fn a_species_its_ground_cannot_feed_is_never_drawn() {
+        let mut w = SampledWorld::new();
+        let mut p = Painter::default();
+        p.paint(&mut w, 0, (0, 0, 512, 512), &|x, z| {
+            if x < 128 && z < 128 {
+                land("minecraft:plains")
+            } else {
+                sea()
+            }
+        });
+        let h = WorldHandle::new(Box::new(w));
+        let c = HabitatClimate::new(h.clone());
+        let k = RegionKey {
+            frame: 0,
+            rx: 0,
+            rz: 0,
+        };
+        assert!(h.read().area(0, 0, 0, 512, 512).fully_known());
+        assert!((range_yield(&c, 0, 0, 0) - 50.0).abs() < 1e-3);
+        let mut drawn = Vec::new();
+        for seed in 0..32 {
+            match plan_region(&**h.read(), &c, k, seed, &FoundingTunables::default()) {
+                RegionPlan::Found(n) => drawn.push((n.species, n.count)),
+                plan => panic!("seed {seed}: one open plains cell founds a herd, not {plan:?}"),
+            }
+        }
+        assert!(
+            drawn
+                .iter()
+                .all(|(s, _)| matches!(s, HerdSpecies::Sheep | HerdSpecies::Pig)),
+            "{drawn:?}"
+        );
+    }
+
     /// A region judged while partly explored (EQC501): its K counts only the forage cells a herd
     /// may enter (known in full), so the known cells around them add nothing.
     #[test]
