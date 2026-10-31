@@ -550,8 +550,19 @@ pub struct Every {
 
 impl Every {
     /// Makes the every-kind world on `seed` (`player_day` as [`make`]), forks it and opens it in
-    /// the host at max with `durability`.
+    /// the host at max with `durability`, on [`Policy::Every`].
     pub fn open(tag: &str, seed: u64, player_day: bool, durability: Durability) -> Every {
+        Every::open_with(tag, seed, player_day, durability, Policy::Every)
+    }
+
+    /// [`Every::open`] on another policy (the soak's is [`Policy::Refuse`], EQC404).
+    pub fn open_with(
+        tag: &str,
+        seed: u64,
+        player_day: bool,
+        durability: Durability,
+        policy: Policy,
+    ) -> Every {
         let world = scratch(&format!("{tag}-{seed}"));
         let founded = make(&world, seed, player_day);
         let parent = scratch(&format!("{tag}-{seed}-fork"));
@@ -564,7 +575,7 @@ impl Every {
             ..Options::default()
         };
         let mut host = Host::open(&dir, &opts).expect("the host opens the fork");
-        host.j.policy = Policy::Every;
+        host.j.policy = policy;
         host.j.conflict_plugin = rtsim_conflict::synth::FakeConflict::new(PLAYER);
         host.j.nest_worms = founded.nest_worms.clone();
         camp_bodies(&mut host.j, &founded);
@@ -579,6 +590,11 @@ impl Every {
             second: Vec::new(),
             scratch: vec![world, parent],
         }
+    }
+
+    /// The fork's pages folder.
+    pub fn pages(&self) -> PathBuf {
+        self.host.dir.join(save::PAGES)
     }
 
     pub fn engine(&self) -> &Arc<Engine> {

@@ -239,6 +239,12 @@ fn kept(c: &Cmd) -> bool {
 }
 
 impl Link {
+    /// Commands decided and not yet written into a command buffer (the long-horizon suite's
+    /// outbox report, slice S11 EQC477).
+    pub(super) fn queued(&self) -> usize {
+        self.queue.len()
+    }
+
     /// A link with an empty engine (the core's `State::new`; [`Link::load`] replaces it at start).
     /// Whether the industry module runs (MODULE_SWITCH): the dragons raid districts only then.
     pub(super) fn enabled(&self) -> bool {

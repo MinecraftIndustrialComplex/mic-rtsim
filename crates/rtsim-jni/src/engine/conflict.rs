@@ -272,6 +272,12 @@ fn when_pages_unreadable(
 }
 
 impl Link {
+    /// Commands decided and not yet written into a command buffer (the long-horizon suite's
+    /// outbox report, slice S11 EQC477).
+    pub(super) fn queued(&self) -> usize {
+        self.queue.len()
+    }
+
     pub(super) fn empty(seed: Option<u64>) -> Link {
         let mut engine = new_engine(seed);
         let (structures, pollution) = own_names(&engine.cultures, &engine.tun);

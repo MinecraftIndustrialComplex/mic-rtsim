@@ -1042,6 +1042,36 @@ impl Engine {
         ]
     }
 
+    /// Every module's commands decided and not yet written into a command buffer, and the core's
+    /// kept outbox of transfers, by name (between steps): what the bridge drains every tick, so a
+    /// queue that grows is a drain gap, not a leak in the state (the long-horizon suite's outbox
+    /// report, slice S11 EQC477).
+    pub fn queues(&self) -> Vec<(&'static str, usize)> {
+        let st = lock(&self.state);
+        vec![
+            ("core.outbox", st.outbox.len()),
+            ("industry.queue", st.industry.queued()),
+            ("phase1.queue", st.phase1.queued()),
+            ("dragons.queue", st.dragons.queued()),
+            ("ships.queue", st.ships.queued()),
+            ("herds.queue", st.herds.queued()),
+            ("conflict.queue", st.conflict.queued()),
+        ]
+    }
+
+    /// Every module's timing wheel, by name (between steps): the long-horizon suite's queues
+    /// (slice S11, EQC441).
+    pub fn wheels(&self) -> Vec<(&'static str, usize)> {
+        let st = lock(&self.state);
+        vec![
+            ("world.wheel", st.phase1.world.world_wheel_len()),
+            ("dragons.wheel", st.dragons.engine.pending_events()),
+            ("herds.wheel", st.herds.engine.pending_events()),
+            ("ships.wheel", st.ships.engine.pending_events()),
+            ("conflict.wheel", st.conflict.engine.pending_events()),
+        ]
+    }
+
     /// The census (EQUILIBRIUM.md S1) of every module this session runs, each at its own now, in a
     /// fixed order: villages, dragons and nests, herds, ships, conflict. Between steps only, as the
     /// `with_*` reads.
