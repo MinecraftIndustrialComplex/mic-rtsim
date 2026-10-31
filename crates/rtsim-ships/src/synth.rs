@@ -20,6 +20,9 @@
 //! **The scripted player** ([`Script`]) of `rtsim-cli sim ships` and the paged tests: it watches a
 //! sea lane, follows the hunted lane, sends an escort, logs off before a raid, loots a hold and
 //! sinks a pirate.
+//!
+//! **S8's pirate harness** ([`equilibrium`]): the kill-all and its helpers, for S8's tests and the
+//! kill-all table (slice S11, EQC427).
 
 use std::collections::BTreeMap;
 
@@ -38,6 +41,8 @@ use crate::boundary::{self, By, Cmd, Item, Obs, Role, Uuid};
 use crate::engine::Ships;
 use crate::tunables::ShipTunables;
 use crate::water::{AllWater, SynthCoast};
+
+pub mod equilibrium;
 
 /// One place of the synthetic coast.
 #[derive(Clone, Debug)]

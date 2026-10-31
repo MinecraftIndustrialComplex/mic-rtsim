@@ -10,6 +10,7 @@
 //!   that materialize, fly off when told, and come back captured; a scripted player who wounds or
 //!   kills what it meets.
 //! - [`grid`]: a bigger world for the bench.
+//! - [`nests`]: the oil nests' harness, with test wells (S10's kill-all; slice S11 EQC427).
 //!
 //! Every number here is a scenario choice, not a game fact.
 
@@ -31,6 +32,8 @@ use crate::dragon::{DragonId, LairId, LairKind, agent_of};
 use crate::engine::{Dragons, NewDragon};
 use crate::species::{Gender, Species};
 use crate::tunables::DragonTunables;
+
+pub mod nests;
 
 pub const FARMLAND: ResourceId = ResourceId(0);
 pub const PASTURE: ResourceId = ResourceId(1);

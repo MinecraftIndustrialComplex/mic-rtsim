@@ -19,206 +19,22 @@
 
 use std::sync::{Arc, RwLock};
 
-use rtsim_ecology::boundary::{self, Cmd, Obs, OilChunkRec, OilChunks};
+use rtsim_ecology::boundary::{self, Cmd, Obs};
 use rtsim_ecology::engine::Dragons;
-use rtsim_ecology::infra::{DistrictIndex, DistrictSite, IndustryLink, Infrastructure, RaidOutcome, Well};
+use rtsim_ecology::infra::{DistrictIndex, DistrictSite, IndustryLink, Infrastructure, Well};
 use rtsim_ecology::nest::{NestState, nest_id};
-use rtsim_ecology::synth::{self, FakeIaf};
+use rtsim_ecology::synth;
+use rtsim_ecology::synth::nests::{self, PLAYER, Run, oil, start, tunables as tun};
 use rtsim_ecology::tunables::DragonTunables;
-use rtsim_industry::ids::{DistrictId, Good, GoodVec};
-use rtsim_industry::threat::{Threat, ThreatClass, ThreatSource, ThreatTarget};
+use rtsim_industry::ids::{DistrictId, Good};
+use rtsim_industry::threat::{ThreatClass, ThreatSource, ThreatTarget};
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 use rtsim_kernel::page::{Durability, PageKey, PageStore, SaveBatch};
 use rtsim_kernel::renewal::{LossCause, Pressure};
 use rtsim_kernel::sites::{FoundRow, SiteKind, SiteState, state_flags, tail_flags};
 use rtsim_settle::Pos;
-use rtsim_world::World;
 
-const PLAYER: (u64, u64) = (5, 6);
 const DAY: u64 = TICKS_PER_DAY;
-
-/// Wells and districts as a test infrastructure: the wells drill while `drilling`; a raid is
-/// recorded and breaks one block.
-#[derive(Clone, Default)]
-struct Pumps {
-    wells: Vec<Well>,
-    drilling: bool,
-    sites: Vec<DistrictSite>,
-    raids: Vec<Threat>,
-}
-
-impl Pumps {
-    fn well(&mut self, district: u64, cx: i64, cz: i64, remaining: i64) {
-        self.wells.push(Well {
-            district: DistrictId(district),
-            frame: 0,
-            x: cx * 16 + 8,
-            z: cz * 16 + 8,
-            remaining,
-            infinite: false,
-        });
-        self.drilling = true;
-    }
-}
-
-impl Infrastructure for Pumps {
-    fn districts_near(&mut self, frame: u16, x: i64, z: i64, r: i64) -> Vec<DistrictSite> {
-        self.sites
-            .iter()
-            .copied()
-            .filter(|s| {
-                let (dx, dz) = (i64::from(s.pos.x) - x, i64::from(s.pos.z) - z);
-                s.pos.frame == frame && dx * dx + dz * dz <= r * r
-            })
-            .collect()
-    }
-
-    fn raid(&mut self, t: &Threat) -> Option<RaidOutcome> {
-        self.raids.push(*t);
-        Some(RaidOutcome {
-            survived: 1.0,
-            floor: None,
-            untested: true,
-            stolen: GoodVec::new(),
-            destroyed_blocks: 1,
-            machine_lost: false,
-            skipped: None,
-        })
-    }
-
-    fn raid_in_sight(&mut self, t: &Threat, _: &[String], _: i64) -> Option<RaidOutcome> {
-        self.raid(t)
-    }
-
-    fn good_name(&self, _: Good) -> Option<String> {
-        None
-    }
-
-    fn wells(&mut self) -> Vec<Well> {
-        if self.drilling {
-            self.wells.clone()
-        } else {
-            Vec::new()
-        }
-    }
-}
-
-struct Run {
-    w: World,
-    d: Dragons,
-    iaf: FakeIaf,
-    pumps: Pumps,
-    t: Tick,
-    cmds: Vec<Cmd>,
-}
-
-fn tun() -> DragonTunables {
-    let mut t = DragonTunables::default();
-    // No raids unless a test asks: the renewal tests count worms, not fights.
-    t.oil.nest.raid_chance_milli = 0;
-    t
-}
-
-/// A world with nests on and the oil chunks `chunks` reported at the start.
-fn start(seed: u64, tun: DragonTunables, chunks: &[(i32, i32)]) -> Run {
-    let (w, _) = synth::world(seed);
-    let d = Dragons::new(seed, tun, Tick::ZERO);
-    let mut r = Run {
-        w,
-        d,
-        iaf: FakeIaf::new(PLAYER),
-        pumps: Pumps::default(),
-        t: Tick::ZERO,
-        cmds: Vec::new(),
-    };
-    if !chunks.is_empty() {
-        r.ingest(oil(chunks));
-    }
-    r
-}
-
-fn oil(chunks: &[(i32, i32)]) -> Obs {
-    Obs::OilChunks(OilChunks {
-        dimension: 0,
-        source: boundary::OIL_SOURCE_CDG,
-        chunks: chunks
-            .iter()
-            .map(|&(cx, cz)| OilChunkRec {
-                cx,
-                cz,
-                amount: 1,
-                flags: 0,
-            })
-            .collect(),
-    })
-}
-
-impl Run {
-    fn ingest(&mut self, o: Obs) {
-        let at = self.t.max(self.d.now());
-        self.d.ingest(&mut self.w, &mut self.pumps, &o, at);
-        self.pump();
-    }
-
-    /// The engine's commands to the plugin and the plugin's answers due now, until both are quiet.
-    fn pump(&mut self) {
-        loop {
-            let cmds = self.d.take_commands();
-            let quiet = cmds.is_empty();
-            self.iaf.apply(cmds.clone(), self.t);
-            self.cmds.extend(cmds);
-            let due = self.iaf.due(self.t);
-            if quiet && due.is_empty() {
-                break;
-            }
-            for (at, o) in due {
-                let at = at.max(self.d.now());
-                self.d.ingest(&mut self.w, &mut self.pumps, &o, at);
-            }
-        }
-    }
-
-    /// Runs `days` days in steps of a quarter day.
-    fn days(&mut self, days: u64) {
-        let end = self.t + days * DAY;
-        while self.t < end {
-            self.t += DAY / 4;
-            self.d.run_until(&mut self.w, &mut self.pumps, self.t);
-            self.pump();
-        }
-    }
-
-    /// Runs until `pred` holds, a day at a time, for at most `days`; the days it took.
-    fn until(&mut self, days: u64, mut pred: impl FnMut(&Run) -> bool) -> Option<u64> {
-        for k in 0..=days {
-            if pred(self) {
-                return Some(k);
-            }
-            self.days(1);
-        }
-        None
-    }
-
-    fn worms(&self, id: u64) -> u32 {
-        self.d.nests.get(id).expect("a nest").worms
-    }
-
-    fn renews(&self) -> Vec<boundary::NestRenew> {
-        self.cmds
-            .iter()
-            .filter_map(|c| match c {
-                Cmd::NestRenew(n) => Some(*n),
-                _ => None,
-            })
-            .collect()
-    }
-
-    fn kill(&mut self, id: u64, count: u32) {
-        let at = self.t;
-        self.iaf.kill_worms(id, count, at);
-        self.pump();
-    }
-}
 
 fn placed(cmds: &[Cmd]) -> Vec<boundary::PlaceNest> {
     cmds.iter()
@@ -356,52 +172,33 @@ fn asleep_nest_holds() {
 
 /// S10 `kill_all_nests`: every worm of every nest killed. Drilled, each nest is full again within
 /// 72 days (§2.4.8: "back within a game year"); not drilled, nothing comes back in 400 days;
-/// drilled again, they regrow.
+/// drilled again, they regrow. The harness is `synth::nests::kill_all` (slice S11 EQC427), which
+/// the kill-all table runs on 30 seeds.
 #[test]
 fn kill_all_nests() {
     let cells = [(100, 100), (120, 100), (100, 120), (140, 140)];
-    let mut r = start(5, tun(), &cells);
-    r.days(1);
-    let ids: Vec<u64> = r.d.nests.ids();
-    assert_eq!(ids.len(), 4);
-    for (i, &(cx, cz)) in cells.iter().enumerate() {
-        r.pumps.well(10 + i as u64, i64::from(cx) + 1, i64::from(cz), 50_000);
-    }
-    r.days(2);
-    let k = u32::from(r.d.tun.oil.nest.k);
-    assert!(ids.iter().all(|&id| r.worms(id) == k), "all hatched");
-    let kill_all = |r: &mut Run| {
-        for &id in &ids {
-            let n = r.iaf.nests[&id];
-            r.kill(id, n);
-        }
-        assert!(ids.iter().all(|&id| r.worms(id) == 0));
-    };
+    let r = nests::kill_all(5, &cells);
+    assert_eq!(r.nests, 4);
+    let k = r.k;
+    assert!(r.hatched, "all hatched");
+    assert!(r.cleared, "every worm killed");
+    assert_eq!(r.killed, 4 * k);
     // Drilled: back within 72 days.
-    kill_all(&mut r);
-    let took = r
-        .until(100, |r| ids.iter().all(|&id| r.worms(id) == k))
-        .expect("they come back");
+    let took = r.whole.expect("they come back");
     assert!(took <= 72, "back after {took} days");
+    assert!(r.half.is_some_and(|h| h <= took));
     // Every renewal came from a wait, one worm at a time.
-    assert!(r.renews().iter().skip(ids.len()).all(|n| n.count == 1));
-    for &id in &ids {
-        let n = r.d.nests.get(id).unwrap();
-        assert_eq!(n.lost_player, k);
-        assert_eq!(n.renewed, k);
+    assert!(r.one_at_a_time);
+    for (lost, renewed) in r.lost_player.iter().zip(&r.renewed) {
+        assert_eq!(*lost, k);
+        assert_eq!(*renewed, k);
     }
     // Not drilled: nothing comes back.
-    kill_all(&mut r);
-    r.pumps.drilling = false;
-    let renewed = r.renews().len();
-    r.days(400);
-    assert_eq!(r.renews().len(), renewed);
-    assert!(ids.iter().all(|&id| r.worms(id) == 0));
+    assert_eq!(r.undrilled_renewals, 0);
+    assert_eq!(r.undrilled_worms, 0);
     // Drilled again: they regrow, and the plugin's counts agree.
-    r.pumps.drilling = true;
-    r.until(150, |r| ids.iter().all(|&id| r.worms(id) == k))
-        .expect("they regrow");
-    assert!(ids.iter().all(|&id| r.iaf.nests[&id] == k));
+    r.redrilled.expect("they regrow");
+    assert!(r.plugin_agrees);
 }
 
 /// Farmed: each worm killed two days after it appears. A nest that is short when a worm arrives
