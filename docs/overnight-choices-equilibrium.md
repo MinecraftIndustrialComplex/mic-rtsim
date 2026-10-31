@@ -1945,7 +1945,7 @@ must be measured by the build; the rest were measured tonight.
 | The existing short tests the table reads | every `cargo test` | unchanged: 0.1 to 28.5 s each | measured (the probes) |
 | `who_is_alive_soak` | nightly | about 2 to 4 hours of two niced cores; today's smaller world 39 to 87 minutes | derived (EQC453); measured for today's world |
 | `long_horizon_stability_with_kills_30_seeds` | weekly | 60 runs of 5,760 days: 2.7 to 5.3 hours of engine time, about 27 to 55 minutes on six threads | derived (18 to 35 game days a second) |
-| `kill_all_in_one_engine_8_seeds` | weekly | per seed two controls (984 and 3,360 days), a herd wipe of 3,360 days and ten wipes of 984: 17,544 days; 140,352 for eight seeds: 1.1 to 2.2 hours of engine time, about 12 to 22 minutes on six threads | derived |
+| `kill_all_in_one_engine_8_seeds` | weekly | per seed two controls (984 and 4,800 days), a herd wipe of 4,800 days and ten wipes of 984: 20,424 days; 163,392 for eight seeds: 1.3 to 2.6 hours of engine time, about 14 to 26 minutes on six threads | derived |
 | `kill_all_every_kind_30_seeds` | weekly | about 40 minutes on twelve threads, most of it the two herd wipes (576,000 game days of the 56 ranges at 35 ms a day, 5.6 hours of one core) and the dragons' (149,760 days at 49 ms, 2 hours) | derived from the probes' per-day costs |
 | The calibration (eight soaks) | once, and after a rule change | 16 to 32 hours of engine time; four at a time, one night of 4 to 8 hours | derived |
 | `soak.sh`'s build | nightly | incremental, minutes; a cold build of the host's test binary took 7 minutes 41 seconds at `-j 8` under a load of about 50 | measured |
