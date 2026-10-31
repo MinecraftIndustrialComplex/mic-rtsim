@@ -6776,11 +6776,16 @@ impl Conflict {
         self.outbox.retain(|c| !matches!(c, Cmd::Notice(_)));
         let per = crate::tables::FACTIONS_PER_PAGE as u32;
         for f in 0..self.factions.len() as u32 {
-            let mut kept: Vec<Cmd> = self
-                .feuds_of(f)
-                .iter()
-                .filter_map(|(_, x)| x.notice.as_deref().map(|n| Cmd::Notice(*n)))
-                .collect();
+            // A broken camp sends nothing (EQC209): its notices went with the break, and one kept
+            // some other way is still not played for a camp that is not there (EQC293).
+            let mut kept: Vec<Cmd> = if self.camp_active(f) {
+                self.feuds_of(f)
+                    .iter()
+                    .filter_map(|(_, x)| x.notice.as_deref().map(|n| Cmd::Notice(*n)))
+                    .collect()
+            } else {
+                Vec::new()
+            };
             // The hunts owed go again too, once the replay has cleared the ones answered (MZB-449).
             let hunts: Vec<Hunt> = self.factions[f as usize].hunts().to_vec();
             kept.extend(hunts.iter().map(|h| self.hunt_cmd(f, h)));

@@ -1772,3 +1772,40 @@ fn the_refound_clears_a_wait_only_the_pool_could_end() {
     );
 }
 
+/// EQC293: a camp that breaks keeps no notice (it sends nothing, and a notice kept would go again
+/// at the next session start), and `resend_notices` sends none for a broken camp whatever a feud
+/// holds; an active camp's notice goes again, as it did.
+#[test]
+fn a_broken_camp_resends_no_notice() {
+    let (mut w, mut c, f) = camp(73, "goblin");
+    let player = c.player(&mut w, synth::PLAYER);
+    kill_signal(&mut c, &mut w, player, 2.0, Tick(10 * DAY));
+    c.run_until(&mut w, &mut NoInfrastructure, Tick(10 * DAY + DAY / 4));
+    let notices = c.kept_notices();
+    assert_eq!(notices.len(), 1, "a notice kept unplayed");
+    let n = notices[0];
+    c.take_commands();
+    c.resend_notices();
+    assert_eq!(
+        c.take_commands()
+            .iter()
+            .filter(|x| matches!(x, Cmd::Notice(_)))
+            .count(),
+        1,
+        "an active camp's notice goes again"
+    );
+    break_now(&mut c, &mut w, f, Tick(11 * DAY));
+    assert!(
+        c.kept_notices().is_empty(),
+        "the break keeps no notice: {:?}",
+        c.kept_notices()
+    );
+    // A notice a feud holds anyway (put back by hand) is not sent for a broken camp.
+    c.feud_mut(f, player).expect("a feud").notice = Some(Box::new(n));
+    c.resend_notices();
+    assert!(
+        !c.take_commands().iter().any(|x| matches!(x, Cmd::Notice(_))),
+        "a broken camp sent a notice at the session start"
+    );
+}
+

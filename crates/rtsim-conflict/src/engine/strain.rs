@@ -122,6 +122,13 @@ impl Conflict {
             s.check_at = None;
         }
         self.void_feuds(f);
+        // The camp's notices not played yet are void with it: it sends nothing, and
+        // `resend_notices` would send them again at the next session start (EQC293).
+        for a in self.feud_actors(f) {
+            if let Some(feud) = self.feud_mut(f, a) {
+                feud.notice = None;
+            }
+        }
         self.book_strain(f, due);
         self.site_touch(f);
         self.stats.breaks += 1;
