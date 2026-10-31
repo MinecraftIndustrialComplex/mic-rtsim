@@ -10,7 +10,8 @@
 //!   MZB-1271; S9's formats on top of S7's: the conflict's pages are RTCF (magic `RTCF`) with meta version 14, a camp's ledger
 //!   carrying the Umvuthi's own pressure after its recount stamp and the stats ending with the groves' arrivals; SITE_STATE
 //!   (table 0x8006) is 64 bytes, the second pressure at 56, and the found tail 40 bytes, the second pressure at 36; the wheel's
-//!   tags are unchanged); before that, the S7 build of
+//!   tags are unchanged; refreshed again after Ben's FB-S9-2 (2026-10-30) gave the grove the raider's plunder mood: the culture
+//!   data's hash changed, so a save made before it is read as "made with other culture data"); before that, the S7 build of
 //!   `feat/eq-s7-conflict` at 7f7110eb (Conflict pressure and the outposts, EQUILIBRIUM.md S7, FB-1 (a), FB-5 (b),
 //!   FB-8; docs/overnight-choices-equilibrium.md EQC200 to EQC290; S7's formats on top of S6's: the conflict's
 //!   pages are RTCE (magic `RTCE`) with meta version 13, a faction row ending with its strain (a pool camp's
