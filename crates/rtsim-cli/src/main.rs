@@ -101,6 +101,11 @@ usage:
       sites, members, capacity, short, empty, broken, mean pressure, renewals since the last
       line. ecology: lairs, oil nests and herds; ships: the pirate haven; conflict: the camp;
       each with its world's villages.
+  rtsim-cli sim killall [--kind K[,K...]] [--seeds A..B] [--verbose]
+      The kill-alls in one place (EQUILIBRIUM.md S11): each kind's alone kill-all on seeds A to B
+      (default 1 to 30), one fixed-width line a row (median [5th, 95th] of the days to half, to
+      90% of the control and to whole, the end over the control) and PASS or FAIL against the
+      band its alone test asserts. Exits 1 if a row fails. Hours in all; --kind picks rows.
   rtsim-cli run <world> --fork <dir> [--speed 1x|10x|max] [--until N|Nd|@N|@Nd] [--season-days N]
                 [--view [addr]] [--socket PATH] [--allow-tailnet] [--stride N] [--test] [--no-fsync]
       The headless host (VIEWER.md §12): exports <world> into <dir> (or resumes the fork there),
@@ -289,6 +294,7 @@ fn main() -> ExitCode {
         ["sim", "ships", rest @ ..] => sim::ships::cli(rest),
         ["sim", "herds", rest @ ..] => sim::herds::cli(rest),
         ["sim", "census", rest @ ..] => sim::census::cli(rest),
+        ["sim", "killall", rest @ ..] => sim::killall::cli(rest),
         ["sim", "conflict", rest @ ..] => sim::conflict::cli(rest),
         ["sim", "mowzie", rest @ ..] => sim::mowzie::cli(rest),
         ["bench", "restore", rest @ ..] => bench::restore::cli(rest),

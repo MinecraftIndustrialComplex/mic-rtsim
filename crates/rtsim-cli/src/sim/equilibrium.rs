@@ -865,14 +865,22 @@ pub struct CampRefill {
     pub end_over_ctrl: f64,
 }
 
+/// The pool camps' cultures, one camp each (S7's camps world).
+pub const POOL_CAMPS: [&str; 3] = ["goblin", "bandit", "raider"];
+
 /// The same seed twice to `kill_day + after_days`: a control, and a world where every warrior of
 /// every camp is killed by a player on `kill_day`.
 pub fn camp_wipe(seed: u64, kill_day: u64, after_days: u64) -> CampRefill {
-    let names = ["goblin", "bandit", "raider"];
+    camp_wipe_of(seed, &POOL_CAMPS, kill_day, after_days)
+}
+
+/// [`camp_wipe`] on a world of the camps `names` (cultures) alone: `["raider"]` is the outposts'
+/// row of the kill-all table (slice S11 EQC428).
+pub fn camp_wipe_of(seed: u64, names: &[&str], kill_day: u64, after_days: u64) -> CampRefill {
     let to = kill_day + after_days;
     let cultures = || rtsim_conflict::Cultures::builtin();
-    let ctrl = camp_run(seed, cultures(), &names, Presser::None, to);
-    let run = camp_run(seed, cultures(), &names, Presser::KillAll(kill_day), to);
+    let ctrl = camp_run(seed, cultures(), names, Presser::None, to);
+    let run = camp_run(seed, cultures(), names, Presser::KillAll(kill_day), to);
     let at = |r: &CampRun, d: u64| r.total[d as usize] as f64;
     let first = |frac: f64| {
         (kill_day + 1..=to)
