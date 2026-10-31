@@ -1107,4 +1107,30 @@ public final class HomeBodyGameTests {
                 })
                 .thenSucceed();
     }
+
+    /**
+     * EQC319 (finding 10): a chunk load or unload is queued for the end of the tick only when the chunk holds a known lair's
+     * home; any other (every chunk of every dimension, with or without a session) costs nothing.
+     */
+    @GameTest(template = DragonKit.ARENA, timeoutTicks = 100, batch = "home_chunk_events")
+    public static void onlyAKnownLairsHomeChunkIsQueued(GameTestHelper helper) {
+        String test = "onlyAKnownLairsHomeChunkIsQueued";
+        ServerLevel level = helper.getLevel();
+        long lair = DragonKit.newLair();
+        BlockPos home = BlockPos.containing(DragonKit.centre(helper));
+        bridge().lairs.declareForTest(level, lair, ROOST, DragonKit.arenaBox(helper), home, level.getGameTime());
+        int before = bridge().homes.queuedChunkEvents();
+        for (int i = 0; i < 1000; i++) {
+            long chunk = ChunkPos.asLong(1_000_000 + i, -1_000_000);
+            bridge().homes.chunkLoaded(level, chunk);
+            bridge().homes.chunkUnloaded(level, chunk);
+        }
+        int strangers = bridge().homes.queuedChunkEvents() - before;
+        bridge().homes.chunkLoaded(level, new ChunkPos(home).toLong());
+        int own = bridge().homes.queuedChunkEvents() - before - strangers;
+        record(test, "queued", "2,000 events of chunks no lair's home lies in: " + strangers + " queued; the lair's own home chunk: " + own);
+        check("no stranger's chunk event is queued", strangers == 0);
+        check("the lair's home chunk is", own == 1);
+        helper.succeed();
+    }
 }
