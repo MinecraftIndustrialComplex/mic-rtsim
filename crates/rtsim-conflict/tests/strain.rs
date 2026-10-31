@@ -1106,14 +1106,14 @@ fn pages_round_trip_rtce() {
     assert_eq!(back.pending_by_kind().get("strain"), Some(&1));
     assert_eq!(back.next_due(), c.next_due());
     assert!(!back.camp_active(f));
-    // The older format is named, not read: the magic is RTCE.
+    // The older format is named, not read: the magic is RTCF (MZB-1402).
     let mut old = c.save();
-    old[..4].copy_from_slice(b"RTCD");
+    old[..4].copy_from_slice(b"RTCE");
     let e = Conflict::load(c.tun.clone(), c.cultures.clone(), &old)
         .err()
         .expect("refused");
     let e = e.to_string();
-    assert!(e.contains("RTCD") && e.contains("RTCE"), "{e}");
+    assert!(e.contains("RTCE") && e.contains("RTCF"), "{e}");
 }
 
 // ---------------------------------------------------------------- the refounding (EQC210)
