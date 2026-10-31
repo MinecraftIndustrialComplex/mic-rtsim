@@ -787,6 +787,7 @@ impl Dragons {
             kind: SiteKind::Lair,
             flags,
             p: lair.pressure.now(day_num(at), h),
+            p2: 0.0,
             k: 2,
             count: u16::try_from(lair.occupants.len()).unwrap_or(u16::MAX),
             away: u16::try_from(held.iter().filter(|b| b.is_none()).count()).unwrap_or(u16::MAX),

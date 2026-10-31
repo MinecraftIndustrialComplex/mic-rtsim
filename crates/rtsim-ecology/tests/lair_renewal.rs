@@ -268,6 +268,7 @@ fn row(p: f32, count: u16, wait_left: Option<u64>, elapsed: u64) -> FoundRow {
         k: 1,
         count,
         p,
+        p2: 0.0,
         away: 0,
         wait_left: wait_left.unwrap_or(0),
         elapsed,

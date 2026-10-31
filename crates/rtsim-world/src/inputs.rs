@@ -39,8 +39,9 @@ pub enum Input {
         pop: u32,
         resources: Vec<(u16, Amount)>,
     },
-    /// A test's census changed a village's population: the legacy census, which only sets the
-    /// market's pop (kept for scripted worlds).
+    /// A test's census changed a village's population: the legacy census (kept for scripted
+    /// worlds), which sets the market's pop and, where the village has a renewal row, its count
+    /// (through `set_members`, EQC155, as a census does). No bridge sends it.
     Population { key: u64, pop: u32 },
     /// A resident's trade, as the bridge reported it.
     Trade {
@@ -214,9 +215,13 @@ pub fn apply(w: &mut World, nodes: &mut BTreeMap<u64, usize>, input: &Input, at:
         }
         Input::Population { key, pop } => match nodes.get(key) {
             Some(&i) => {
-                w.set_population(i, (*pop).max(1), at);
-                if let Some(row) = w.villages.get_mut(&i) {
-                    row.members = (*pop).max(1);
+                if w.villages.contains_key(&i) {
+                    // The one place a village's count changes (EQC155): the growth step booked for the
+                    // old count is dropped and a village left short starts its wait.
+                    w.set_members(i, (*pop).max(1), at);
+                    w.reconsider(i, at);
+                } else {
+                    w.set_population(i, (*pop).max(1), at);
                 }
             }
             None => out.refused = true,

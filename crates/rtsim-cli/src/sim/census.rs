@@ -20,6 +20,12 @@
 //!   the six villages of a grid world ([`rtsim_conflict::synth::camps`], slice S7): quiet, nobody
 //!   emitting or killing, so they only plunder. Kind `conflict.camp`, with pressure, breaks and
 //!   refoundings once a player presses them.
+//! - `mowzie`: three Frostmaw dens and three Umvuthana groves of seven warriors between the six
+//!   villages of a grid world ([`rtsim_conflict::synth::mowzie_world`], slice S9): found with their
+//!   bodies counted, no plugin answering, nobody watching, so the groves only plunder and the
+//!   renewal rule has nothing to renew. Kinds `conflict.den` and `conflict.grove` (K the cap, the
+//!   members the whole warriors at home, `empty` a den with no Frostmaw or a grove with no warrior,
+//!   P the members' pressure), beside `conflict.camp` (the pool camps, none here).
 //! - `villages`: phase 1's synthetic world (six human villages, three Ribbit villages) with the
 //!   bridge faked at the world level ([`Villages`], slice S6): every village seen alive by one
 //!   census, every house and resident answered the day it is ordered, nobody watching. Kinds are
@@ -57,16 +63,18 @@ pub enum Kind {
     Ships,
     Conflict,
     Camps,
+    Mowzie,
     Villages,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 6] = [
+    pub const ALL: [Kind; 7] = [
         Kind::Ecology,
         Kind::Ranges,
         Kind::Ships,
         Kind::Conflict,
         Kind::Camps,
+        Kind::Mowzie,
         Kind::Villages,
     ];
 
@@ -77,6 +85,7 @@ impl Kind {
             Kind::Ships => "ships",
             Kind::Conflict => "conflict",
             Kind::Camps => "camps",
+            Kind::Mowzie => "mowzie",
             Kind::Villages => "villages",
         }
     }
@@ -171,6 +180,10 @@ impl Scenario {
                     seed,
                     rtsim_conflict::Cultures::builtin(),
                 );
+                Scenario::Conflict(Box::new(Camp { w, c }))
+            }
+            Kind::Mowzie => {
+                let (w, c, _) = rtsim_conflict::synth::mowzie_world(6, 3, 3, 7, seed);
                 Scenario::Conflict(Box::new(Camp { w, c }))
             }
             Kind::Villages => Scenario::Villages(Box::new(Villages::new(seed))),
@@ -562,7 +575,7 @@ pub fn cli(rest: &[&str]) -> ExitCode {
 
 fn bad(why: &str) -> ExitCode {
     eprintln!(
-        "{why}\nusage: rtsim-cli sim census [--scenario all|ecology,ranges,ships,conflict,camps,villages] [--days N] \
+        "{why}\nusage: rtsim-cli sim census [--scenario all|ecology,ranges,ships,conflict,camps,mowzie,villages] [--days N] \
          [--every N] [--seed S]"
     );
     ExitCode::from(64)
@@ -679,13 +692,33 @@ mod tests {
         let mut s = Scenario::new(Kind::Conflict, 3);
         s.run_to(Tick::from_days(2));
         let cs = s.census();
+        // The conflict names three kinds (S9, MZB-1219): the pool camps, the dens and the groves.
         assert_eq!(
             kinds(&cs),
-            ["village.human", "village.ribbit", "conflict.camp"]
+            [
+                "village.human",
+                "village.ribbit",
+                "conflict.camp",
+                "conflict.den",
+                "conflict.grove"
+            ]
         );
         let c = kind(&cs, "conflict.camp");
         assert_eq!(c.sites, 1);
         assert!(c.capacity > 0 && c.members <= c.capacity, "{c:?}");
+        assert_eq!(kind(&cs, "conflict.den").sites, 0);
+        assert_eq!(kind(&cs, "conflict.grove").sites, 0);
+
+        // Mowzie: three dens at their one Frostmaw, three groves at their seven warriors.
+        let mut s = Scenario::new(Kind::Mowzie, 3);
+        s.run_to(Tick::from_days(2));
+        let cs = s.census();
+        assert_eq!(kind(&cs, "conflict.camp").sites, 0);
+        let d = kind(&cs, "conflict.den");
+        assert_eq!((d.sites, d.members, d.capacity, d.empty), (3, 3, 3, 0), "{d:?}");
+        let g = kind(&cs, "conflict.grove");
+        assert_eq!((g.sites, g.capacity, g.empty), (3, 21, 0), "{g:?}");
+        assert!(g.members <= 21 && g.members >= 15, "{g:?}");
     }
 
     /// The villages scenario counts each village by its K (slice S6): a human village's beds, a
@@ -743,6 +776,63 @@ mod tests {
         let k = kind(&s.census(), "conflict.camp").clone();
         assert!(k.mean_p() > 0.2, "one camp at P 1 of three: {}", k.mean_p());
         assert_eq!(k.sites, 3);
+    }
+
+    /// The `mowzie` scenario's kinds show a player's kills as pressure (slice S9, MZB-1219): a
+    /// den whose Frostmaw is killed is empty at P 1.00 and, 12 days on, whole again with one
+    /// renewal; a grove that loses a warrior is short at `1/K` and has it back 6.5 days on.
+    #[test]
+    fn the_mowzie_scenario_shows_a_players_pressure() {
+        use rtsim_conflict::boundary;
+        use rtsim_conflict::synth::CampRun;
+        let census_of = |r: &CampRun, k: &str| kind(&r.c.census(), k).clone();
+        let come_in = |r: &mut CampRun| {
+            r.camp_in();
+            let to = r.c.now() + 10;
+            r.run(to);
+        };
+        let kill = |r: &mut CampRun| {
+            let u = r.plugin.camps[&r.key].bodies[0].uuid;
+            let at = r.c.now() + 1;
+            assert!(r.plugin.camp_kill(r.key, u, boundary::BY_PLAYER, at));
+            r.run(at + 5);
+        };
+        let mut den = CampRun::new(8, "frostmaw", 1);
+        come_in(&mut den);
+        let k = census_of(&den, "conflict.den");
+        assert_eq!((k.sites, k.members, k.empty, k.renewals), (1, 1, 0, 0), "{k:?}");
+        kill(&mut den);
+        let k = census_of(&den, "conflict.den");
+        assert_eq!((k.members, k.empty), (0, 1), "{k:?}");
+        assert!((k.mean_p() - 1.0).abs() < 1e-3, "one Frostmaw of one: {k:?}");
+        let to = den.c.now() + 12 * TICKS_PER_DAY + 100;
+        den.run(to);
+        let k = census_of(&den, "conflict.den");
+        assert_eq!((k.members, k.empty, k.renewals), (1, 0, 1), "{k:?}");
+        // A den's arrival is in no grove's renewals (S9 review: the engine counts one `arrivals` and the
+        // groves' share of it apart).
+        assert_eq!(census_of(&den, "conflict.grove").renewals, 0);
+        assert_eq!(den.c.stats.grove_arrivals, 0);
+
+        // A grove that does not plunder, so that no raptor pack is away at the census.
+        let mut quiet = rtsim_conflict::Cultures::builtin();
+        for c in &mut quiet.list {
+            c.def.plunder_mean_days = None;
+        }
+        let mut grove = CampRun::with_cultures(9, quiet, "umvuthana", 7);
+        come_in(&mut grove);
+        kill(&mut grove);
+        let k = census_of(&grove, "conflict.grove");
+        assert_eq!((k.members, k.capacity, k.short), (6, 7, 1), "{k:?}");
+        assert!((k.mean_p() - 1.0 / 7.0).abs() < 1e-3, "{k:?}");
+        let to = grove.c.now() + 7 * TICKS_PER_DAY;
+        grove.run(to);
+        let k = census_of(&grove, "conflict.grove");
+        assert_eq!((k.members, k.renewals), (7, 1), "{k:?}");
+        // The two kinds are apart: the den's kill is in no grove's line, and the grove's arrival is in no den's.
+        assert_eq!(census_of(&grove, "conflict.den").sites, 0);
+        assert_eq!(census_of(&grove, "conflict.den").renewals, 0);
+        assert_eq!(grove.c.stats.arrivals, grove.c.stats.grove_arrivals);
     }
 
     /// With nobody watching nothing presses: every kind keeps its sites, every pressure is 0, no

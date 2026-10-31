@@ -149,7 +149,9 @@ pub enum Source {
 /// How a member appears (§2.2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Arrival {
-    /// Placed when the site's chunk next loads, only with no player within 128 blocks.
+    /// Placed when the site's chunk next loads, only with no player within 128 blocks. The bosses'
+    /// bodies as built (S9, MZB-280, MZB-1220): a Frostmaw or an Umvuthi is held while a player is
+    /// within 160 blocks of the spot, at most 6,000 ticks, then placed; a grove's warriors are never held.
     OnLoad,
     /// A puppet walks or flies in from the source's direction while a player is near.
     WalkIn,

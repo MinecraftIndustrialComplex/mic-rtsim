@@ -2046,6 +2046,7 @@ pub(crate) mod tests {
                     k: 6,
                     count: 2,
                     p: 1.5,
+                    p2: 0.5,
                     away: 1,
                     wait_left: 4_000,
                     elapsed: 900,

@@ -19,7 +19,7 @@
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 use rtsim_kernel::renewal::Pressure;
 use rtsim_kernel::rng::{StreamKey, SystemId};
-use rtsim_settle::{Culture, NodeKind, Pos};
+use rtsim_settle::{Culture, NodeKind};
 use rtsim_travel::caravan::Body;
 
 use crate::ribbits::{SpawnResident, identity_op};
@@ -44,7 +44,8 @@ pub struct VillageRow {
     pub members: u32,
     /// Capacity: a human village's beds (clamped), a Ribbit village's houses (EQC154, EQC166).
     pub k: u16,
-    /// The adoption guess, kept: a Ribbit village's K until a census has seen it alive.
+    /// The adoption guess, and the residents of the houses the bridge has placed since: a Ribbit
+    /// village's K until a census has seen it alive.
     pub k0: u16,
     /// Bookings Java has not answered, and the tick of the oldest (`u64::MAX`: none).
     pub owed: u16,
@@ -177,27 +178,30 @@ impl World {
         matches!(self.nodes[i].kind, NodeKind::Village(Culture::Ribbit))
     }
 
-    /// A Ribbit village's K (EQC166): its adoption count plus the houses it has booked until a
-    /// complete census has seen it alive, then the largest complete reading plus the residents of
-    /// houses booked and not yet lived in. A human village's K is the census's beds.
+    /// A Ribbit village's K (EQC166): its adoption count plus the houses the bridge has placed
+    /// (`k0` holds both: [`World::house_placed`] adds a house's residents to it) until a complete
+    /// census has seen it alive, then the largest complete reading plus the residents of houses
+    /// booked and not yet lived in. A house the bridge could not place is room for nobody. A human
+    /// village's K is the census's beds.
     pub(crate) fn recompute_k(&mut self, i: usize) {
         if !self.is_ribbit(i) {
             return;
         }
-        let houses = self.growth.get(&i).map_or(0, |g| g.houses);
         let Some(row) = self.villages.get_mut(&i) else {
             return;
         };
         let k = if row.seen {
             u32::from(row.peak) + u32::from(row.pending_houses)
         } else {
-            u32::from(row.k0) + houses
+            u32::from(row.k0)
         };
         row.k = u16::try_from(k).unwrap_or(u16::MAX);
     }
 
     /// A booking older than `owed_max_days` is released at a confirmed census: a lost order must
-    /// not hold a count up for ever (EQC162).
+    /// not hold a count up for ever (EQC162). The village's booked houses are forgotten with its
+    /// resident bookings; a house the bridge places after that is nobody's booking, and K counts
+    /// it when a census finds its resident.
     fn release_stale_owed(&mut self, i: usize, at: Tick) {
         let limit = self.cfg.owed_max_days * TICKS_PER_DAY;
         let Some(row) = self.villages.get_mut(&i) else {
@@ -211,6 +215,9 @@ impl World {
         row.owed_at = u64::MAX;
         row.pending_houses = 0;
         self.resident_ops.retain(|_, (n, _)| *n != i);
+        // The booked houses go with them: an answer that came for one later (NOT_FREE, or HOUSE_PLACED with
+        // its resident's order) would take from the bookings made since, and let an extra refill pass K.
+        self.houses_pending.retain(|_, n| *n != i);
         self.recompute_k(i);
     }
 
@@ -473,7 +480,8 @@ impl World {
 
     /// Where a family comes from (EQC161): the point 192 blocks out on the side away from the
     /// other villages within 3,000 blocks, else along a bearing drawn from the village's stream.
-    /// The draw is always made, so the stream does not depend on which is used.
+    /// The draw is always made, so the stream does not depend on which is used. The point is the
+    /// village's plain offset, which near a toroidal frame's seam lies past it (EQC199).
     fn settlers_from(&self, node: usize, serial: u32) -> (i32, i32) {
         let me = self.nodes[node].pos;
         let key = self.nodes[node].key;
@@ -502,12 +510,14 @@ impl World {
             None
         };
         let a = away.unwrap_or(random);
-        let p = self.canonical_pos(Pos::new(
-            me.frame,
+        // In the village's own plain coordinates, not canonicalised: Java walks the family in along
+        // the ray from the bell toward this point, and a point past a seam is the right bearing
+        // there, where its canonical image at the far end of the world would send them in the
+        // other way (EQC199).
+        (
             me.x + (SOURCE_BLOCKS * a.cos()).round() as i32,
             me.z + (SOURCE_BLOCKS * a.sin()).round() as i32,
-        ));
-        (p.x, p.z)
+        )
     }
 
     /// A growth step is due (EQC163).

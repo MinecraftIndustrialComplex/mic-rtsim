@@ -3,7 +3,7 @@
 //!
 //! - **SITE_STATE** (core command 0x8006): an engine tells core's ledger (`mic_rtsim_sites.dat`, world
 //!   SavedData outside `world/rtsim/`) where one site stands now: its K, the members at home and away, its
-//!   pressure now and the wait left now, and the UUIDs of its home bodies, the bodies it left behind and
+//!   pressure now (and a chief camp's second pressure, the chief's, MZB-1231) and the wait left now, and the UUIDs of its home bodies, the bodies it left behind and
 //!   the bodies gone missing. Latest wins per (kind, key). No answer, no op id, never resent: a lost one is
 //!   healed by the next change and by the refresh each found record gives a known site.
 //! - **The found tail:** core appends the site's row to the found record it already sends (FACTION_FOUND,
@@ -77,6 +77,10 @@ pub mod tail {
     pub const ELAPSED: usize = 24;
     pub const L: usize = 32;
     pub const M: usize = 34;
+    /// The second pressure (MZB-1231): the word that was reserved. A camp with a chief of its own
+    /// (a grove's Umvuthi) keeps its members' pressure in `P` and the chief's here; 0 for every
+    /// other site, and in a tail written before it existed.
+    pub const P2: usize = 36;
     pub const UUIDS: usize = 40;
 }
 
@@ -108,7 +112,11 @@ pub mod state {
     pub const L: usize = 44;
     pub const M: usize = 46;
     pub const WAIT_LEFT: usize = 48;
-    pub const UUIDS: usize = 56;
+    /// The second pressure now (MZB-1231): a camp with a chief of its own keeps the chief's here,
+    /// its members' being `P`; 0 for every other site.
+    pub const P2: usize = 56;
+    /// Reserved (60 to 63), so that the UUIDs stay 8-aligned.
+    pub const UUIDS: usize = 64;
 }
 
 /// SITE_STATE's size with no bodies.
@@ -203,8 +211,10 @@ pub struct SiteState {
     pub kind: SiteKind,
     /// [`state_flags`].
     pub flags: u32,
-    /// The pressure now.
+    /// The pressure now (a camp's members').
     pub p: f32,
+    /// A camp with a chief of its own: the chief's pressure now (MZB-1231). 0 for every other site.
+    pub p2: f32,
     pub k: u16,
     /// Members at home (bodies, or a pool's count).
     pub count: u16,
@@ -241,6 +251,7 @@ impl SiteState {
         put_u32(rec, state::KIND, self.kind.code());
         put_u32(rec, state::FLAGS, self.flags);
         put_u32(rec, state::P, sane(self.p).to_bits());
+        put_u32(rec, state::P2, sane(self.p2).to_bits());
         put_u16(rec, state::K, self.k);
         put_u16(rec, state::COUNT, self.count);
         put_u16(rec, state::AWAY, self.away);
@@ -274,6 +285,7 @@ impl SiteState {
             kind,
             flags,
             p: sane(f32::from_bits(get_u32(rec, state::P))),
+            p2: sane(f32::from_bits(get_u32(rec, state::P2))),
             k,
             count: get_u16(rec, state::COUNT),
             away: get_u16(rec, state::AWAY),
@@ -295,8 +307,10 @@ pub struct FoundRow {
     pub flags: u32,
     pub k: u16,
     pub count: u16,
-    /// The pressure as of the stamp.
+    /// The pressure as of the stamp (a camp's members').
     pub p: f32,
+    /// A camp with a chief of its own: the chief's pressure as of the stamp (MZB-1231).
+    pub p2: f32,
     pub away: u16,
     /// The wait left as of the stamp, in the kind's units; 0 unless WAITING.
     pub wait_left: u64,
@@ -329,6 +343,7 @@ impl FoundRow {
             k: s.k,
             count: s.count,
             p: sane(s.p),
+            p2: sane(s.p2),
             away: s.away,
             wait_left: if s.waiting() { s.wait_left } else { 0 },
             elapsed,
@@ -378,6 +393,7 @@ impl FoundRow {
         put_u16(b, tail::K, self.k);
         put_u16(b, tail::COUNT, self.count);
         put_u32(b, tail::P, sane(self.p).to_bits());
+        put_u32(b, tail::P2, sane(self.p2).to_bits());
         put_u16(b, tail::AWAY, self.away);
         put_u16(b, tail::N, n as u16);
         put_u64(b, tail::WAIT_LEFT, self.wait_left);
@@ -411,6 +427,7 @@ impl FoundRow {
             k,
             count: get_u16(b, tail::COUNT),
             p: sane(f32::from_bits(get_u32(b, tail::P))),
+            p2: sane(f32::from_bits(get_u32(b, tail::P2))),
             away: get_u16(b, tail::AWAY),
             wait_left: get_u64(b, tail::WAIT_LEFT),
             elapsed: get_u64(b, tail::ELAPSED),
@@ -471,6 +488,7 @@ mod tests {
             kind: SiteKind::Camp,
             flags: state_flags::SHORT | state_flags::WAITING,
             p: 1.25,
+            p2: 0.5,
             k: 3,
             count: 1,
             away: 1,
@@ -487,7 +505,7 @@ mod tests {
     fn site_state_round_trips() {
         let s = state();
         let mut rec = vec![0u8; s.size()];
-        assert_eq!(rec.len(), 56 + 16 * 4);
+        assert_eq!(rec.len(), 64 + 16 * 4);
         s.encode(&mut rec);
         assert_eq!(SiteState::decode(&rec), Ok(s.clone()));
         // Not waiting: the wait left is not sent, whatever the field holds.
@@ -522,6 +540,40 @@ mod tests {
         let mut nan = rec;
         put_u32(&mut nan, state::P, f32::NAN.to_bits());
         assert_eq!(SiteState::decode(&nan).unwrap().p, 0.0);
+    }
+
+    /// MZB-1231: the second pressure (a grove's Umvuthi's) rides SITE_STATE at +56 and the found
+    /// tail's reserved word at +36; a record that names none reads 0, and a pressure that is not a
+    /// finite positive number reads as 0 there too.
+    #[test]
+    fn the_second_pressure_rides_both_layouts() {
+        let s = state();
+        let mut rec = vec![0u8; s.size()];
+        s.encode(&mut rec);
+        assert_eq!(get_u32(&rec, state::P2), 0.5f32.to_bits());
+        assert_eq!(SiteState::decode(&rec).unwrap().p2, 0.5);
+        assert_eq!(state::UUIDS, 64, "the UUIDs move eight bytes");
+        assert_eq!(get_u32(&rec, 60), 0, "the word after p2 stays reserved");
+        for bad in [f32::NAN, f32::INFINITY, -1.0] {
+            let mut r = rec.clone();
+            put_u32(&mut r, state::P2, bad.to_bits());
+            assert_eq!(SiteState::decode(&r).unwrap().p2, 0.0, "{bad}");
+        }
+        let row = FoundRow::from_state(&s, 0, false);
+        assert_eq!(row.p2, 0.5);
+        let b = row.to_bytes();
+        assert_eq!(b.len(), 40 + 16 * 4, "the tail keeps its size");
+        assert_eq!(get_u32(&b, tail::P2), 0.5f32.to_bits());
+        assert_eq!(FoundRow::decode(&b).unwrap().p2, 0.5);
+        // An old tail's reserved word is zero: it reads a second pressure of 0.
+        let mut old = b.clone();
+        put_u32(&mut old, tail::P2, 0);
+        assert_eq!(FoundRow::decode(&old).unwrap().p2, 0.0);
+        let mut nan = b;
+        put_u32(&mut nan, tail::P2, f32::NAN.to_bits());
+        assert_eq!(FoundRow::decode(&nan).unwrap().p2, 0.0);
+        // No row: 40 zero bytes still.
+        assert_eq!(FoundRow::none().to_bytes(), vec![0u8; 40]);
     }
 
     #[test]

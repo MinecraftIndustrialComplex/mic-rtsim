@@ -95,6 +95,11 @@ import java.util.UUID;
  *       members; {@code -1}, u32 max, is all of them) as a player's loss, then takes {@code pressure} more as if that
  *       many had also been killed. Refused (logged) when the key is no camp (an engine opened with
  *       {@code FLAG_TEST} only).</li>
+ *   <li>42 CONFLICT_SEND: u64 faction, u8 kind, u8 reserved, u16 frame, i32 x, i32 z. A camp sends a party by order
+ *       (slice S9, MZB-1233): the camp of that faction key musters a party of {@code kind} (an index into the
+ *       engine's party kinds: 0 envoy, 1 scouts, 2 raid, 3 invasion, 4 siege, 5 plunder) toward the block (x, z) of
+ *       {@code frame} (0 the overworld), as if its feud had decided. Refused (logged) when the key is no camp or the
+ *       camp cannot field the party (an engine opened with {@code FLAG_TEST} only).</li>
  *   <li>40 TALK_REPORT: u64 village, u16 kind, u8 severity, u8 flags, who (u8 class, u64 a, u64 b), whom
  *       (the same), i32 x, i32 z, u32 ago. One report put on a village's noticeboard (TK40; a TALK ref's
  *       class and ids, docs/boundary.md §13.2; an engine opened with {@code FLAG_TEST} only).</li>
@@ -141,6 +146,7 @@ final class NativeCodec {
     // 35 to 39: left free (a gap between peers' order codes).
     static final int TALK_REPORT = 40;
     static final int CONFLICT_SLAY = 41;
+    static final int CONFLICT_SEND = 42;
 
     /** Bytes before an order's body: u16 opcode, u16 reserved, u32 size. */
     static final int ORDER_HEADER = 8;
@@ -407,6 +413,17 @@ final class NativeCodec {
             u64(faction);
             u32(n);
             f32(pressure);
+            return end();
+        }
+
+        Orders conflictSend(long faction, int kind, int frame, int x, int z) {
+            begin(CONFLICT_SEND);
+            u64(faction);
+            u8(kind);
+            u8(0);
+            u16(frame);
+            u32(x);
+            u32(z);
             return end();
         }
 

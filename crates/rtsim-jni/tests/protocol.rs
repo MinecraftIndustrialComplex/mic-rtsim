@@ -10269,6 +10269,70 @@ mod conflict {
         e.close(true, Duration::from_secs(5)).unwrap();
     }
 
+    /// Order 42 (TEST, slice S9, MZB-1233): the camp musters a party of the named kind toward a block at the
+    /// conflict's own time, as if its feud had decided. A key that is no camp and a kind that does not exist are
+    /// refused (logged) and change nothing, and the protocol stays clean.
+    #[test]
+    fn a_test_order_sends_a_camps_party() {
+        let (_dir, e, mut j) = pool_camp("pool-send");
+        let parties = |e: &Engine| {
+            e.with_conflict(|c, _| {
+                c.parties
+                    .iter()
+                    .map(|(_, p)| (p.kind, p.target))
+                    .collect::<Vec<_>>()
+            })
+        };
+        assert!(parties(&e).is_empty());
+        let raid = PartyKind::ALL
+            .iter()
+            .position(|k| *k == PartyKind::Raid)
+            .expect("a raid") as u8;
+        // Refused: no such camp, and no such kind.
+        e.order(vec![Order::ConflictSend {
+            faction: 0xBAD,
+            kind: raid,
+            frame: 0,
+            x: 400,
+            z: 400,
+        }])
+        .unwrap();
+        e.order(vec![Order::ConflictSend {
+            faction: CAMP,
+            kind: 99,
+            frame: 0,
+            x: 400,
+            z: 400,
+        }])
+        .unwrap();
+        j.idle();
+        j.idle();
+        assert!(parties(&e).is_empty(), "{:?}", parties(&e));
+        // Sent: one raid party toward the block, taken from the camp's warriors.
+        let before = strain_of(&e).0;
+        e.order(vec![Order::ConflictSend {
+            faction: CAMP,
+            kind: raid,
+            frame: 0,
+            x: 400,
+            z: 400,
+        }])
+        .unwrap();
+        j.idle();
+        j.idle();
+        let sent = parties(&e);
+        assert_eq!(sent.len(), 1, "{sent:?}");
+        assert_eq!(sent[0].0, PartyKind::Raid);
+        assert!(
+            matches!(sent[0].1, Target::Pos(p) if p.x == 400 && p.z == 400),
+            "{:?}",
+            sent[0].1
+        );
+        assert!(strain_of(&e).0 < before, "the party's warriors left the pool");
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
     /// The found tail across a reset (slice S7, EQC212): a pool camp that broke, found again three
     /// days later by a new engine that knows only core's ledger, is broken for the wait that was
     /// left less the days gone, with the pressure aged, and sends its own row at once; a camp with
@@ -10479,6 +10543,137 @@ mod conflict {
                 .all(|l| l.action != cb::ACTION_SPAWN),
             "no spawn before the arrival"
         );
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// The site ledger's hand-over of a grove's two pressures across a reset (slice S9, MZB-1231):
+    /// a player's kills of two warriors and of the Umvuthi each send the grove's row (SITE_STATE:
+    /// `p` the warriors' 2/7, `p2` the Umvuthi's 1); core's ledger keeps it through the reinstall
+    /// guard's reset, and the new engine, meeting the grove again three days later with its Umvuthi
+    /// standing, has both pressures aged by the days gone, the warriors' wait running on, and
+    /// sends its own row with both.
+    #[test]
+    fn a_reset_hands_a_groves_two_pressures_to_the_new_engine() {
+        use rtsim_kernel::sites::{SiteKind, state_flags};
+        let (_dir, e, mut j) = grove("grove-sites", 7);
+        let umvuthi = j.dict_id(wire::DICT_BODY, "mic_rtsim:conflict/umvuthana/umvuthi");
+        {
+            let b = j.conflict_plugin.camp_world(CAMP).bodies.first_mut().unwrap();
+            b.body = umvuthi;
+            b.chief = true;
+        }
+        camp_in(&mut j);
+        camp_until(&mut j, "the adoption and the spawn answered", |_| {
+            let s = slots(&e);
+            s[1] == 0 && s[0] == 8
+        });
+        j.idle();
+        let row = j.sites.row(SiteKind::Camp, CAMP).expect("the census's row").clone();
+        assert_eq!((row.k, row.count, row.flags), (7, 7, 0), "{row:?}");
+        assert_eq!((row.p, row.p2), (0.0, 0.0), "{row:?}");
+        // Two warriors and the Umvuthi killed by a player.
+        let at = Tick(j.game_time.max(0) as u64);
+        let (warriors, chief): (Vec<_>, Vec<_>) = j
+            .conflict_plugin
+            .camp_world(CAMP)
+            .bodies
+            .iter()
+            .filter(|b| b.generation != 0)
+            .map(|b| (b.uuid, b.chief || b.slot == rtsim_conflict::engine::CHIEF_SLOT))
+            .partition(|(_, is_chief)| !is_chief);
+        for (u, _) in warriors.iter().take(2) {
+            assert!(j.conflict_plugin.camp_kill(CAMP, *u, cb::BY_PLAYER, at));
+        }
+        assert!(j.conflict_plugin.camp_kill(CAMP, chief[0].0, cb::BY_PLAYER, at));
+        j.conflict_flush();
+        j.idle();
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        let row = j.sites.row(SiteKind::Camp, CAMP).expect("the grove's row").clone();
+        assert_eq!(row.count, 5, "{row:?}");
+        assert!((row.p - 2.0 / 7.0).abs() < 1e-3, "the warriors': {row:?}");
+        assert!((row.p2 - 1.0).abs() < 1e-3, "the Umvuthi's: {row:?}");
+        assert_eq!(row.flags, state_flags::SHORT | state_flags::WAITING, "{row:?}");
+
+        // The reinstall guard's reset: a new engine that knows nothing, the world's ledger kept; the
+        // grove it finds has five warriors and an Umvuthi on its throne (the heir came meanwhile).
+        let left_at = j.game_time;
+        let saved = j.world_save();
+        e.close(true, Duration::from_secs(5)).unwrap();
+        let mut reset = WorldSave::fresh();
+        reset.dict = saved.dict;
+        reset.sites = saved.sites;
+        reset.sites.gap();
+        let dir = tmpdir("grove-sites-reset");
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), reset);
+        j.module_mask = MODULES;
+        let gone: u64 = 3 * TICKS_PER_DAY;
+        j.game_time = left_at + gone as i64;
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        let base = [f64::from(BASE.0) + 0.5, 64.0, f64::from(BASE.1) + 0.5];
+        j.players = vec![(PLAYER, dim, base)];
+        j.conflict_plugin = synth::FakeConflict::new(PLAYER);
+        j.idle();
+        let structure = j.dict_id(wire::DICT_STRUCTURE, "mowziesmobs:umvuthana_grove");
+        let warrior = j.dict_id(wire::DICT_BODY, WARRIOR);
+        let umvuthi = j.dict_id(wire::DICT_BODY, "mic_rtsim:conflict/umvuthana/umvuthi");
+        for _ in 0..5 {
+            j.conflict_plugin.camp_stray(CAMP, warrior);
+        }
+        j.conflict_plugin.camp_stray(CAMP, umvuthi);
+        {
+            let b = j.conflict_plugin.camp_world(CAMP).bodies.last_mut().unwrap();
+            b.chief = true;
+        }
+        j.conflict_obs(&O::FactionFound(cb::FactionFound {
+            faction: CAMP,
+            flags: 0,
+            dimension: dim,
+            structure,
+            pos: (CAMP_AT.0, 64, CAMP_AT.1),
+            home_bodies: 6,
+            census: cb::CENSUS_CHIEF as u8,
+            row: Default::default(),
+        }));
+        j.idle();
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        let (members, chief_p, left, waiting) = e.with_conflict(|c, _| {
+            let f = c.faction_of_key(CAMP).expect("found again");
+            let camp = c.camp(f).unwrap();
+            let day = (c.now().0 / TICKS_PER_DAY) as u32;
+            (
+                camp.pressure.now(day, 96.0),
+                camp.chief_pressure.now(day, 96.0),
+                camp.arrival_at.map(|t| t.0 - c.now().0),
+                camp.heir.is_some(),
+            )
+        });
+        let aged = (-3.0f32 / 96.0).exp2();
+        assert!(
+            (members - 2.0 / 7.0 * aged).abs() < 0.01,
+            "the warriors' aged three days: {members} against {}",
+            2.0 / 7.0 * aged
+        );
+        assert!(
+            (chief_p - aged).abs() < 0.01,
+            "the Umvuthi's aged three days: {chief_p} against {aged}"
+        );
+        assert!(!waiting, "the Umvuthi stands: no heir is waited for");
+        let want = row.wait_left - gone;
+        assert!(
+            left.expect("the warriors' wait runs on").abs_diff(want) <= 400,
+            "the wait left: {left:?} against {want}"
+        );
+        let again = j
+            .sites
+            .row(SiteKind::Camp, CAMP)
+            .expect("the new engine's row");
+        assert!((again.p - 2.0 / 7.0 * aged).abs() < 0.01, "{again:?}");
+        assert!((again.p2 - aged).abs() < 0.01, "{again:?}");
+        assert_eq!(again.flags, state_flags::SHORT | state_flags::WAITING);
         assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
         e.close(true, Duration::from_secs(5)).unwrap();
     }
