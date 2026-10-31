@@ -2061,3 +2061,14 @@ prints 0, and make the new worktree's `target/` a btrfs subvolume before the fir
     model's; this file's findings, EQC470 onward.
 13. **Land** as CLAUDE.md says: merge `origin/main`, check for unmerged paths, run `cargo test --workspace` and clippy with
     `-D warnings`, attach the first runs of the ignored suites to the pull request, and wait for the review.
+
+## What the S11 build found (2026-10-30)
+
+Built on `feat/eq-s11` in the steps of "S11 work split", one commit a step, the engine side failing first where a step changes
+behaviour. Cut from main b2f908d0 before S9 landed: steps 1, 2, 4 and step 3's `ship.port` first, the rest after S9's merge.
+EQC470 is kept for the speed probe of step 5, as the design names it; the other findings take EQC471 onward in the order they
+were found.
+
+| # | Finding | Why it matters |
+|---|---|---|
+| EQC471 | (step 1, UNVERIFIED 15) **Mann-Kendall's normal approximation is good enough at 26 values with heavy ties; no permutation p.** Exhaustively, for a two-level series of 26 (k low values among 26 - k high ones, k 1 to 13: every value of S, the exact law of S counted as the Mann-Whitney count of ordered pairs), the normal p with the ties and continuity corrections is never below 0.001 where the exact p is 0.001 or more; it errs the other way at 76 values of S (normal 0.0011 to 0.004 where the exact p is 0.0005 to 0.001). A sampled check agreed: 3,000 null series of two and three tied levels (5% to 15% low) read p < 0.001 in none, by the approximation or by 10,000 permutations; of 1,500 tied series with a trend, 5 disagreed, all on the conservative side. The test `the_normal_p_is_never_anticonservative_under_heavy_ties` keeps the exhaustive check. | Risk 10's worry, a tiny change in a series that is full nearly always reading significant, does not happen through the approximation: ties shrink S's variance and S together. The cost is a little power near 0.001 in such a series, which the materiality condition makes moot (a near-full series' drift is rarely above δ). |

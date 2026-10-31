@@ -15,6 +15,10 @@
 //!
 //! The text format is fixed-width with one line per kind per count, kinds in the engines' order, so
 //! two runs diff line by line.
+//!
+//! [`trend`] holds the flat-by-century rule the long-horizon suite judges series by (S11).
+
+pub mod trend;
 
 /// One kind's sites, counted at one time.
 #[derive(Clone, Debug, Default, PartialEq)]
