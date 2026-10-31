@@ -12608,6 +12608,33 @@ are superseded by these.
   heir's due tick, so the heir waited for the band, which is right and not what the test is about: it now uses `quiet_grove` (the
   plunder drive off), the way the neighbouring heir tests do.
 
+- **MZB-1285** (a grove's saved state does not grow; the coordinator's check for S11's 262,980-day soak): the first build's
+  `long_horizon_mowzie_with_kills` allowed the rich-village grove's save 12 bytes a game day and said, in a comment, that it grew by
+  about 7 "found in this run, not diagnosed". Diagnosed with a per-section size of the conflict save (a temporary
+  function, removed): **the growth was the outbox, the engine's queue of commands to the plugin.** `unattended_grove` only ran the
+  engine and never took its commands, and the engine queues a march record (BAND_MARCH) for each raid it sends and keeps every command
+  until the host takes it (`Conflict::take_commands`, which the bridge calls every tick). Over 12 game years of the rich-village grove the
+  outbox section went 583 to 3,253 bytes (about 35 bytes a raid, 350 a year at a plunder every 34 days) and every other section
+  was flat: factions 528 to 534, stats 76 to 77, java_dict 893, the rest 1 to 48. Taking the commands every day, the whole save is
+  1,613 bytes (K 7) at year 1 and at year 12, 1,577 to 1,613 between. So the growth was the harness's, not state of a grove, a
+  wheel entry or a ledger row: no list in a grove's row, no wheel event and no row per event grows. Fixed in the harness
+  (`unattended_grove` takes the commands every day, as a host does; `unattended_grove_with(.., drain: false)` is the old
+  behaviour) and the long-horizon test's raid allowance is gone (4,096 bytes of room for every run, doubling the quarter-run's size).
+  New test `a_groves_save_does_not_grow_with_the_years` (rtsim-cli): K 5, 7 and 9, seed 1, 60 game years in rich-village
+  surroundings (149 to 153 plunders), the save at the end of each year is at most 4,096 bytes (measured 1,479 to 1,591 at K 5, 1,577
+  to 1,723 at K 7, 1,669 to 1,813 at K 9), within 256 bytes of the smallest from year 2, and the last year's is within 256 of the first's; and
+  the same K 7 grove undrained for 30 years is more than 500 bytes larger at year 30 than at year 5 (it pins the cause). A host
+  that does not take commands grows without bound by design of the contract: S11's soak must take them like the bridge.
+  The only state that moves with the years is the stats counters (varints, a byte more per factor of 128 in a count) and the
+  faction row's few floats; the bound is reached at once and not approached.
+- **MZB-1286** (no tick stored as 32 bits in S9; 2^32 ticks is game day 178,957): everything S9 adds to a save is a float
+  pressure and a **game day** as `u32` (`Camp.chief_pressure` in the conflict pages: `put f32, u32 at_day`; the same for the
+  warriors' pressure before S9; 4.29 billion days is 11.7 million game years), a `u64` count in the stats (`grove_arrivals`, a
+  varint), the ledger's second pressure (`SITE_STATE` +56 an `f32`, the found tail +36 an `f32`; the Java row's p2 is 16 bits of
+  thousandths, a pressure and not a time). The handed-over ages come as `elapsed: u64` ticks (the found tail's, S3's) and the Java
+  stamps and waits are `long`. In the plugin `BossArrival` stores no time and the tests read `ServerLevel.getGameTime()` into
+  `long`. Checked by reading the diff since a4717c1f for every `u32`, `i32`, `int` and cast near a tick, stamp, due or wait.
+
 ### Build notes
 
 Built on the landed S7 (a4717c1f), first on the recommendations (FB-1 base 6, FB-2 no grove plunder mood, FB-3 the built hold of
