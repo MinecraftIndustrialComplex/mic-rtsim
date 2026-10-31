@@ -17629,7 +17629,7 @@ the review gave are at 43062c0b.
   MZB-1404's RTCF and meta 14, and MZB-1400's 32-byte CAMP_BODIES lines (a journal record, so the journals are new too).
   `crates/rtsim-view/tests/data/create` is a fresh `create -Psec1fx` round's world at 8da19617, copied to `target/` after its
   JVM exited (its `rtsim/` with the archive, and `data/mic_rtsim_journal.dat`); `tests/data/core` a fresh core round's at
-  CORECOMMIT (its `rtsim/` without the archive, and the journal); `tests/fixtures.rs`'s header names both. Before, the viewer's
+  4d43c6ff (8da19617's code; its `rtsim/` without the archive, and the journal); `tests/fixtures.rs`'s header names both. Before, the viewer's
   `fixtures` and `hashes` tests and rtsim-host's `gametest_worlds_open_in_the_host_with_their_saved_state` failed on the old
   saves, as a format change makes them ("the conflict's meta page: invalid: meta page version 13, this build reads 14";
   "conflict: pages dropped").
