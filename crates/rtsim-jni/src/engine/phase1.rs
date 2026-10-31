@@ -1312,8 +1312,10 @@ pub(super) fn observe_state(st: &mut State, rec: &Rec<'_>) {
 #[derive(Clone, Copy, Debug, Default)]
 struct CensusMemo {
     /// A complete reading that differs from the world's last confirmed one, waiting for a second
-    /// equal reading before the world is told.
+    /// equal reading before the world is told, and the world tick it was read at: one the village
+    /// is not read again for within a heartbeat is stale and is held anew (EQC196).
     pending: Option<(u32, u32)>,
+    pending_at: u64,
     /// The world tick the last census of this village was logged at.
     logged_at: u64,
 }
@@ -1334,7 +1336,8 @@ pub const CENSUS_HEARTBEAT_TICKS: u64 = 6_000;
 ///   most once per [`CENSUS_HEARTBEAT_TICKS`];
 /// - a complete census that differs is held until the next complete census reads the same (two
 ///   equal readings in a row, so a villager across the reach's edge never flaps the count), and a
-///   different one replaces the held one;
+///   different one replaces the held one; a held reading expires after
+///   [`CENSUS_HEARTBEAT_TICKS`], so two readings far apart are not "in a row";
 /// - an incomplete census is logged when it would raise the count and otherwise as a heartbeat.
 ///
 /// Its golems are the latest count (SINK.md MS-8: defenders against dragons), logged when they
@@ -1377,11 +1380,14 @@ fn census(st: &mut State, key: u64, residents: u32, beds: u32, golems: u32, comp
         if same {
             memo.pending = None;
             cooled
-        } else if memo.pending == Some((residents, beds.min(k_max))) {
+        } else if memo.pending == Some((residents, beds.min(k_max)))
+            && now.saturating_sub(memo.pending_at) < CENSUS_HEARTBEAT_TICKS
+        {
             memo.pending = None;
             true
         } else {
             memo.pending = Some((residents, beds.min(k_max)));
+            memo.pending_at = now;
             false
         }
     };
