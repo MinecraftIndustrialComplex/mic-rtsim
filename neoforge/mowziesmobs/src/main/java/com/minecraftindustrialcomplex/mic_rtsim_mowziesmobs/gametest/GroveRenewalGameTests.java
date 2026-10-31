@@ -106,8 +106,8 @@ public final class GroveRenewalGameTests {
         EntityUmvuthanaMinion[] w = new EntityUmvuthanaMinion[3];
         ServerPlayer[] p = new ServerPlayer[1];
         SiteLedger.Row[] killed = new SiteLedger.Row[1];
-        int[] deaths = new int[1], recounts = new int[1];
-        long[] rest = new long[1];
+        int[] deaths = new int[1];
+        long[] rest = new long[1], recounts = new long[1];
 
         GameTestSequence s = realGrove(helper, waits, far, g, u, w, true);
         s.thenExecute(() -> {
