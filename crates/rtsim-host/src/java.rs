@@ -1109,19 +1109,6 @@ impl Java {
         }
     }
 
-    /// One command answered as Java answers it when it cannot act (VIEWER.md §12.1,
-    /// docs/boundary.md §2.3): nothing is loaded and nobody is online, so
-    /// - every spawn is refused as not ticking ([`NOT_TICKING`]): SPAWN_GROUP, and the modules'
-    ///   materializations and adoptions, with their own SPAWN_REJECTED kinds;
-    /// - every despawn, departure or recall answers not embodied (reason 6) with nothing captured,
-    ///   as the bridge and its plugins answer one for a body they do not have;
-    /// - a transfer is answered COMMAND_RESULT not loaded (6), as CommandDispatcher answers one
-    ///   whose container's chunk is not loaded;
-    /// - every other command that carries an op id is answered COMMAND_RESULT failed (3):
-    ///   gossip, houses, residents, industry commands, ship cargo, and a dragon discard (op 0);
-    /// - latest-wins commands (markets, offers, sentiment, steering, timetables, territories,
-    ///   notices, habitat) need no answer, nor do the dragons' lair placements and oil surveys,
-    ///   which wait for chunks to load.
     /// Under [`Policy::Every`]: whether a command is played rather than refused. Phase 1's
     /// resident and house orders and every conflict command are played; of the dragons', the
     /// oil nests' chamber and worms (played by [`Java::every_nest_command`]); the rest refused.
@@ -1198,6 +1185,19 @@ impl Java {
         count
     }
 
+    /// One command answered as Java answers it when it cannot act (VIEWER.md §12.1,
+    /// docs/boundary.md §2.3): nothing is loaded and nobody is online, so
+    /// - every spawn is refused as not ticking ([`NOT_TICKING`]): SPAWN_GROUP, and the modules'
+    ///   materializations and adoptions, with their own SPAWN_REJECTED kinds;
+    /// - every despawn, departure or recall answers not embodied (reason 6) with nothing captured,
+    ///   as the bridge and its plugins answer one for a body they do not have;
+    /// - a transfer is answered COMMAND_RESULT not loaded (6), as CommandDispatcher answers one
+    ///   whose container's chunk is not loaded;
+    /// - every other command that carries an op id is answered COMMAND_RESULT failed (3):
+    ///   gossip, houses, residents, industry commands, ship cargo, and a dragon discard (op 0);
+    /// - latest-wins commands (markets, offers, sentiment, steering, timetables, territories,
+    ///   notices, habitat) need no answer, nor do the dragons' lair placements and oil surveys,
+    ///   which wait for chunks to load.
     pub fn refuse(&mut self, kind: u16, seq: u64, b: &[u8]) {
         use rtsim_conflict::boundary as cb;
         use rtsim_ecology::boundary as db;

@@ -239,11 +239,11 @@ fn soak(plan: &Plan) -> (Run, Founded) {
         run.peak_journal = run.peak_journal.max(w.host.j.journal.len());
         run.peak_in_flight = run.peak_in_flight.max(w.host.in_flight());
         let industry = w.engine().with_industry(|_, s| s.outbox + s.queued);
-        if next % (plan.window / 10).max(SAMPLE) == 0 || next == plan.days {
+        if next.is_multiple_of((plan.window / 10).max(SAMPLE)) || next == plan.days {
             let core = table_bytes(&pages).get(&1).copied().unwrap_or(0);
             run.outboxes.push((next, industry, core));
         }
-        let closes = next % plan.window == 0 || next == plan.days;
+        let closes = next.is_multiple_of(plan.window) || next == plan.days;
         if closes {
             win.to = next;
             win.tables = table_bytes(&pages);
@@ -398,7 +398,7 @@ fn cap_check(name: String, xs: &[f64], floor: f64, out: &mut Vec<Check>) {
 }
 
 /// Every check of EQC436 to EQC441 on a finished run.
-fn judge(plan: &Plan, run: &Run, f: &Founded) -> Vec<Check> {
+fn judge(plan: &Plan, run: &Run) -> Vec<Check> {
     let mut out = Vec::new();
     // (1) The last day reached.
     out.push(Check {
@@ -695,8 +695,8 @@ fn report(plan: &Plan, run: &Run, checks: &[Check]) -> (String, Vec<String>) {
 }
 
 fn run_plan(plan: Plan) {
-    let (run, founded) = soak(&plan);
-    let checks = judge(&plan, &run, &founded);
+    let (run, _) = soak(&plan);
+    let checks = judge(&plan, &run);
     for c in &checks {
         println!("{} {} {}", if c.ok { "ok  " } else { "FAIL" }, c.name, c.detail);
     }

@@ -78,8 +78,11 @@ pub struct Row {
     /// The band's per-seed checks a together run can read (EQC429): on the shape's own fields,
     /// so they hold for the alone run and the together one alike. `None`: the row has no wipe in
     /// the every-kind world.
-    pub together: Option<fn(&KindRefill) -> Result<(), String>>,
+    pub together: Option<SeedCheck>,
 }
+
+/// A row's checks on one seed's [`KindRefill`].
+pub type SeedCheck = fn(&KindRefill) -> Result<(), String>;
 
 /// Census kinds with no kill-all, and why (EQC428).
 pub const NO_ROW: [(&str, &str); 1] = [("ship.port", "not a population (§2.4.6)")];
@@ -543,6 +546,7 @@ pub fn print_seeds(rs: &[KindRefill]) {
 
 /// Runs row `name` on `seeds`, prints it, and panics unless it passes: the body of the slices'
 /// `_30_seeds` tests.
+#[cfg(test)]
 pub fn assert_row(name: &str, seeds: &[u64]) -> Vec<KindRefill> {
     let row = row(name).unwrap_or_else(|| panic!("no kill-all row {name}"));
     let rs = run_row(row, seeds);
@@ -724,10 +728,14 @@ pub fn cli(rest: &[&str]) -> ExitCode {
     for (k, why) in NO_ROW {
         println!("# {k}: no row, {why}");
     }
+    for r in &rows {
+        println!("# {}: {} ({}; {})", r.name, r.band, r.record, r.test);
+    }
     println!("{HEADER}");
     let mut failed = false;
     let results: Vec<(&'static Row, Vec<KindRefill>)> = if together {
-        let rows: Vec<&'static Row> = rows.into_iter().filter(|r| r.together.is_some()).collect();
+        let can = together_rows();
+        let rows: Vec<&'static Row> = rows.into_iter().filter(|r| can.iter().any(|c| c.name == r.name)).collect();
         rows.iter().copied().zip(run_together(&rows, &seeds)).collect()
     } else {
         rows.into_iter().map(|r| (r, run_row(r, &seeds))).collect()

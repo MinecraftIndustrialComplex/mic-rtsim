@@ -1384,13 +1384,17 @@ pub fn together(seed: u64, wipe: Option<&'static str>, shock_day: u64, to: u64) 
 /// The census grid of the long run, days (the model's).
 pub const EVERY_DAYS: u64 = 24;
 
+/// A site's state as [`Bounds`] keeps it: the day it went short, the day its members last changed,
+/// its members then, and whether this episode was reported.
+type Episode = (Option<u64>, u64, u64, bool);
+
 /// The rule bounds (EQC418), read site by site every day of a run: a site past its rule's own
 /// maximum is a broken rule whatever the seed. Each episode is reported once.
 #[derive(Clone, Debug, Default)]
 pub struct Bounds {
     /// By site: the day it went short (below K; a village below two; a camp broken), the day its
     /// members last changed, its members then, and whether this episode was reported.
-    sites: BTreeMap<(&'static str, u64), (Option<u64>, u64, u64, bool)>,
+    sites: BTreeMap<(&'static str, u64), Episode>,
     /// The dragons' gated arrivals when each lair emptied.
     gated_at_empty: BTreeMap<u64, u64>,
     pub broken: Vec<String>,
