@@ -95,6 +95,13 @@ pub enum Policy {
     /// where nobody is online and nothing is loaded): see [`Java::refuse`]. Nothing is recorded
     /// per command, so a ten-year soak holds no growing list.
     Refuse,
+    /// The long-horizon suite's world (slice S11, `crate::every`): a server where nobody is online,
+    /// as [`Policy::Refuse`], with three things a world needs to stay alive with no player played
+    /// as [`Policy::Play`] plays them: phase 1's resident and house orders (a village refills),
+    /// an oil nest's chamber placed and its worms counted ([`Java::nest_worms`]), and the
+    /// conflict's commands handed to the fake conflict plugin (a camp a test visits). The rest is
+    /// refused, and nothing is recorded per command.
+    Every,
 }
 
 /// SPAWN_REJECTED (and the modules' analogues) reason 1: the position is not ticking
@@ -250,6 +257,12 @@ pub struct Java {
     /// Core's site ledger (world data: [`Java::world_save`] keeps it, an engine reset does not
     /// touch it).
     pub sites: FakeLedger,
+    /// Under [`Policy::Every`]: the oil nests' worms as the plugin counts them (placed nests only;
+    /// NEST_RENEW adds, a test's kill takes), and the last renewal serial each one applied.
+    pub nest_worms: BTreeMap<u64, (u32, u32)>,
+    /// Under [`Policy::Every`]: the villages (keys) of SPAWN_RESIDENT orders answered applied since
+    /// the last take, one entry a resident: the suite's villages count them.
+    pub settled: Vec<u64>,
 }
 
 /// Writes `mask` and the game time into the MODULE_SWITCH journaled at `seq`: the session's own
@@ -448,6 +461,8 @@ impl Java {
             policy: Policy::Play,
             refused: BTreeMap::new(),
             undecoded: 0,
+            nest_worms: BTreeMap::new(),
+            settled: Vec::new(),
         };
         // The session's first record names its generation, as BoundarySession's constructor does.
         let g = j.nonce;
@@ -908,8 +923,17 @@ impl Java {
                     self.last_applied_cmd = seq;
                     continue;
                 }
-                if self.policy == Policy::Refuse {
+                if self.policy == Policy::Refuse
+                    || (self.policy == Policy::Every && !self.every_plays(rec.kind, rec.bytes))
+                {
                     self.refuse(rec.kind, seq, rec.bytes);
+                    self.last_applied_cmd = seq;
+                    continue;
+                }
+                if self.policy == Policy::Every
+                    && (0x8500..=0x85FF).contains(&rec.kind)
+                {
+                    self.every_nest_command(rec.bytes);
                     self.last_applied_cmd = seq;
                     continue;
                 }
@@ -922,17 +946,21 @@ impl Java {
                     cmd::SPAWN_RESIDENT => wire::u64_at(rec.bytes, cmd::spawn_resident::OP_ID),
                     _ => 0,
                 };
-                if (cmd::MARKET..=cmd::SPAWN_RESIDENT).contains(&rec.kind)
-                    || rec.kind == cmd::SPAWN_GROUP
-                    || rec.kind == cmd::DESPAWN_GROUP
-                    || rec.kind == cmd::STEER_GROUP
+                let record = self.policy == Policy::Play;
+                if record
+                    && ((cmd::MARKET..=cmd::SPAWN_RESIDENT).contains(&rec.kind)
+                        || rec.kind == cmd::SPAWN_GROUP
+                        || rec.kind == cmd::DESPAWN_GROUP
+                        || rec.kind == cmd::STEER_GROUP)
                 {
                     self.p1.push((rec.kind, rec.bytes.to_vec()));
                 }
-                if rec.kind == rtsim_jni::talk_wire::TALK_FACTS {
+                if record && rec.kind == rtsim_jni::talk_wire::TALK_FACTS {
                     self.talk_facts.push(rec.bytes.to_vec());
                 }
-                self.commands.push((k, rec.kind, op));
+                if record {
+                    self.commands.push((k, rec.kind, op));
+                }
                 match rec.kind {
                     cmd::TRANSFER_TO_CONTAINER => {
                         if let Some(mask) = self.switch_ahead_of_transfer_answers.take() {
@@ -1031,6 +1059,10 @@ impl Java {
                         {
                             obs::command_result::NOT_FREE
                         } else {
+                            if rec.kind == cmd::SPAWN_RESIDENT && self.policy == Policy::Every {
+                                self.settled
+                                    .push(wire::u64_at(rec.bytes, cmd::spawn_resident::VILLAGE));
+                            }
                             if rec.kind == cmd::PLACE_HOUSE {
                                 let village = wire::u64_at(rec.bytes, cmd::place_house::VILLAGE);
                                 self.journal(obs::HOUSE_PLACED, obs::house_placed::SIZE, 0, |r| {
@@ -1090,6 +1122,82 @@ impl Java {
     /// - latest-wins commands (markets, offers, sentiment, steering, timetables, territories,
     ///   notices, habitat) need no answer, nor do the dragons' lair placements and oil surveys,
     ///   which wait for chunks to load.
+    /// Under [`Policy::Every`]: whether a command is played rather than refused. Phase 1's
+    /// resident and house orders and every conflict command are played; of the dragons', the
+    /// oil nests' chamber and worms (played by [`Java::every_nest_command`]); the rest refused.
+    fn every_plays(&self, kind: u16, b: &[u8]) -> bool {
+        use rtsim_ecology::boundary as db;
+        match kind {
+            cmd::SPAWN_RESIDENT | cmd::PLACE_HOUSE => true,
+            k if (0x8800..=0x88FF).contains(&k) => true,
+            k if (0x8500..=0x85FF).contains(&k) => {
+                let dict = self.engine_species();
+                matches!(
+                    db::decode_cmd(b, &dict),
+                    Ok((_, _, db::Cmd::PlaceNest(_) | db::Cmd::NestRenew(_)))
+                )
+            }
+            _ => false,
+        }
+    }
+
+    /// An oil nest's command under [`Policy::Every`], as the Ice and Fire plugin answers it with its
+    /// chunks loaded: a chamber is placed (NEST_FOUND, placed, its heart under the chunk), and a
+    /// renewal's worms join the nest once per serial.
+    fn every_nest_command(&mut self, b: &[u8]) {
+        use rtsim_ecology::boundary as db;
+        let dict = self.engine_species();
+        let Ok((_, _, c)) = db::decode_cmd(b, &dict) else {
+            self.undecoded += 1;
+            return;
+        };
+        match c {
+            db::Cmd::PlaceNest(p) => {
+                let existed = self.nest_worms.contains_key(&p.nest);
+                self.nest_worms.entry(p.nest).or_insert((0, 0));
+                let mut row = FoundRow::none();
+                if existed {
+                    row.flags = rtsim_kernel::sites::tail_flags::EXISTED;
+                }
+                let dimension = self.java_dim(p.dimension);
+                self.dragon_obs(&db::Obs::NestFound(db::NestFound {
+                    nest: p.nest,
+                    placed: true,
+                    dimension,
+                    heart: (p.cx * 16 + 8, 64 - p.depth as i32, p.cz * 16 + 8),
+                    row,
+                }));
+            }
+            db::Cmd::NestRenew(n) => {
+                let w = self.nest_worms.entry(n.nest).or_insert((0, 0));
+                if n.serial > w.1 {
+                    w.1 = n.serial;
+                    w.0 += n.count;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// A player kills `count` of nest `nest`'s worms (NEST_LOSS, cause Player), as
+    /// `rtsim_ecology::synth::FakeIaf::kill_worms` does: at most the worms the nest holds. How
+    /// many died.
+    pub fn kill_worms(&mut self, nest: u64, count: u32, player: (u64, u64)) -> u32 {
+        use rtsim_ecology::boundary as db;
+        let have = &mut self.nest_worms.entry(nest).or_insert((0, 0)).0;
+        let count = count.min(*have);
+        *have -= count;
+        if count > 0 {
+            self.dragon_obs(&db::Obs::NestLoss(db::NestLoss {
+                nest,
+                count,
+                cause: rtsim_kernel::renewal::LossCause::Player.code(),
+                player,
+            }));
+        }
+        count
+    }
+
     pub fn refuse(&mut self, kind: u16, seq: u64, b: &[u8]) {
         use rtsim_conflict::boundary as cb;
         use rtsim_ecology::boundary as db;
@@ -2004,7 +2112,9 @@ impl Java {
         }
         let at = rtsim_kernel::clock::Tick(self.game_time.max(0) as u64);
         self.conflict_plugin.apply(vec![c.clone()], at);
-        self.conflict.push((seq, c));
+        if self.policy == Policy::Play {
+            self.conflict.push((seq, c));
+        }
     }
 }
 

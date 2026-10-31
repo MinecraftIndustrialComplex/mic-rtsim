@@ -17,6 +17,8 @@ rtsim-ecology.workspace = true
 rtsim-ships.workspace = true
 rtsim-conflict.workspace = true
 rtsim-space.workspace = true
+# The every-kind world (S11): region sizes and media.
+rtsim-travel.workspace = true
 # The host in this process: the engine's steps on its pools, its saves on its IO lane.
 mic-native-host.workspace = true
 mic-native-rt.workspace = true
@@ -31,7 +33,6 @@ mic-viewer.workspace = true
 rtsim-archive = { path = "../rtsim-archive" }
 
 [dev-dependencies]
-rtsim-travel.workspace = true
 # The live tap's tests: the view store's names, and pinning the process for the under-load run.
 rtsim-parts.workspace = true
 libc = "0.2"

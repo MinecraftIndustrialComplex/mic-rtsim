@@ -8,6 +8,8 @@
 //! - [`java`]: the fake Java side rtsim-jni's tests and the host share.
 //! - [`nbt`]: Minecraft's NBT, read and written whole.
 //! - [`view`]: the host source, the viewer served from the host's own saves.
+//! - [`every`]: the every-kind world of the long-horizon suite (EQUILIBRIUM.md §4's S11 row).
+pub mod every;
 pub mod fork;
 pub mod java;
 pub mod nbt;

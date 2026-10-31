@@ -1,0 +1,674 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+//! The every-kind world (EQUILIBRIUM.md §4's S11 row; docs/overnight-choices-equilibrium.md EQC401
+//! to EQC404, EQC470 onward): one overworld map with sites of every census kind, founded through
+//! the fake Java's own records and run in the shipped engine, where every module shares one clock
+//! (`shared::run_rounds`). The long run, the together kill-alls and the who-is-alive soak all run
+//! on it.
+//!
+//! - [`populate`] founds it: the 56 herd ranges of S4's grid (HABITAT painted per region, so the
+//!   world model founds a herd a range), the five lairs of `rtsim_ecology::synth::lairs` each with
+//!   one roosting body, nine villages on the host's grid (three of them Ribbit) counted alive by a
+//!   complete census, six sea ports and two havens, three pool camps and two outposts, three
+//!   Frostmaw dens and three Umvuthana groves of K 5, 7 and 9, and two oil nests with an endless
+//!   well beside each.
+//! - [`world`] makes it on disk as a server would leave it; [`Every::open`] forks it and runs it in
+//!   the headless host at max on [`Policy::Every`]: nobody online, villages refilled, nests
+//!   placed, the conflict's commands played to its fake plugin.
+//! - [`Every`] keeps each village's real residents, as the bridge's census counts them, and sends
+//!   the engine a complete census after every change (twice after a fall: the engine lowers a
+//!   village's count only on two complete readings in a row).
+//!
+//! Positions are fixed, so a seed's world is the same map in every build; the seed is the engine's
+//! (`Options::seed`, EQC475).
+
+use std::collections::BTreeMap;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::Duration;
+
+use rtsim_conflict::boundary as cb;
+use rtsim_ecology::boundary as db;
+use rtsim_ecology::species::Gender;
+use rtsim_industry::ids::{ChunkPos, DistrictId, Good};
+use rtsim_industry::obs::{DepositPluginId, DepositSample, DistrictDecl, Obs as IObs, SweepEnd, Timed};
+use rtsim_jni::engine::Engine;
+use rtsim_jni::wire;
+use rtsim_kernel::census::KindCensus;
+use rtsim_kernel::clock::Tick;
+use rtsim_kernel::page::Durability;
+use rtsim_ships::boundary as sb;
+
+use crate::fork;
+use crate::java::{self, DICT_GOOD, DICT_NAME, Java, OVERWORLD, Policy, WorldSave};
+use crate::nbt::{self, Tag};
+use crate::run::{Control, DAY, Host, Options, Speed, Until};
+use crate::save::{self, Journal};
+
+/// The player whose kills the suite books (`every::PLAYER`, EQC403).
+pub const PLAYER: (u64, u64) = (0x5E11_0000_0000_0001, 0x5E11_0000_0000_0011);
+
+/// The census kinds the every-kind world holds, in the engine's order (EQC436).
+pub const KINDS: [&str; 11] = [
+    "village.human",
+    "village.ribbit",
+    "dragon.lair",
+    "oil.nest",
+    "herd.range",
+    "ship.haven",
+    "ship.port",
+    "conflict.camp",
+    "conflict.den",
+    "conflict.grove",
+    "conflict.umvuthi",
+];
+
+/// The herd ranges: S4's grid, regions x -3 to 4 and z -3 to 3 (EQC18).
+pub const RANGES_X: std::ops::RangeInclusive<i32> = -3..=4;
+pub const RANGES_Z: std::ops::RangeInclusive<i32> = -3..=3;
+
+/// The first village's key; village `i` is `VILLAGE + i`.
+pub const VILLAGE: u64 = 0x0001_0000_0000_0100;
+/// The villages of Ribbit culture (numbers 2, 5 and 8).
+pub const RIBBITS: [u64; 3] = [2, 5, 8];
+/// The human villages' beds and the Ribbit villages' residents (their K).
+pub const HUMAN_BEDS: u32 = 15;
+pub const RIBBIT_RESIDENTS: u32 = 12;
+
+const STRUCTURES: [&str; 5] = [
+    "minecraft:village_plains",
+    "minecraft:village_taiga",
+    "minecraft:village_desert",
+    "minecraft:village_savanna",
+    "minecraft:village_snowy",
+];
+
+/// The oil chunks: two nest cells, (12, 12) and (-19, 7), as the CLI's ecology scenario.
+pub const OIL_CHUNKS: [(i32, i32); 4] = [(100, 100), (101, 100), (100, 101), (-150, 60)];
+/// The wells, one beside each nest cell (chunk coordinates).
+pub const WELLS: [(i32, i32); 2] = [(100, 102), (-150, 62)];
+
+/// One village of the world.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Village {
+    pub key: u64,
+    pub ribbit: bool,
+    pub at: (i32, i32),
+    /// The census's beds (a human village's K; a Ribbit village's K is its largest complete
+    /// reading).
+    pub beds: u32,
+}
+
+/// One camp of the world: its faction key, culture and block position.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Camp {
+    pub key: u64,
+    pub culture: &'static str,
+    pub at: (i32, i32),
+    /// The home bodies it was declared with (a grove's K; a den's Frostmaw).
+    pub bodies: u16,
+}
+
+/// What [`populate`] founded.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Founded {
+    pub ranges: Vec<(i32, i32)>,
+    /// Lair keys and their homes.
+    pub lairs: Vec<(u64, (i32, i32, i32))>,
+    pub villages: Vec<Village>,
+    /// The ports (their villages' keys) and havens (keys and docks).
+    pub ports: Vec<u64>,
+    pub havens: Vec<(u64, (i32, i32, i32))>,
+    /// Pool camps (goblin, bandit, raider), outposts (raider camps a vanilla outpost reports),
+    /// dens and groves.
+    pub camps: Vec<Camp>,
+    pub outposts: Vec<Camp>,
+    pub dens: Vec<Camp>,
+    pub groves: Vec<Camp>,
+    /// The oil chunks reported, and the wells' chunks.
+    pub oil: Vec<(i32, i32)>,
+    pub wells: Vec<(i32, i32)>,
+    /// The fake plugin's nests when the world was saved (worms and last serial): Minecraft's
+    /// state, which the fork's Java takes over.
+    pub nest_worms: BTreeMap<u64, (u32, u32)>,
+}
+
+impl Founded {
+    /// The world's site count of a census kind (EQC436): what every sample must hold exactly.
+    pub fn sites(&self, kind: &str) -> u32 {
+        let n = match kind {
+            "village.human" => self.villages.iter().filter(|v| !v.ribbit).count(),
+            "village.ribbit" => self.villages.iter().filter(|v| v.ribbit).count(),
+            "dragon.lair" => self.lairs.len(),
+            "oil.nest" => 2,
+            "herd.range" => self.ranges.len(),
+            "ship.haven" => self.havens.len(),
+            "ship.port" => self.ports.len(),
+            "conflict.camp" => self.camps.len() + self.outposts.len(),
+            "conflict.den" => self.dens.len(),
+            "conflict.grove" | "conflict.umvuthi" => self.groves.len(),
+            _ => 0,
+        };
+        n as u32
+    }
+
+    pub fn village(&self, key: u64) -> Option<&Village> {
+        self.villages.iter().find(|v| v.key == key)
+    }
+}
+
+/// The sea the ports and havens need (blocks, EQC476): a ladder of channels one 32-block water
+/// cell wide (the ships' mask cell: a cell is water only when all its points are) that passes
+/// within 2 cells of every port's dock: east-west at z 64, 544 and 1,056, north-south at x 64 and
+/// 544, between the village grid's rows and columns. The rest of every region is land.
+fn is_channel(x: i32, z: i32) -> bool {
+    let band = |v: i32, lo: i32| (lo..lo + 32).contains(&v);
+    let across = (64..576).contains(&x) && [64, 544, 1_056].iter().any(|&lo| band(z, lo));
+    let down = (64..1_088).contains(&z) && [64, 544].iter().any(|&lo| band(x, lo));
+    across || down
+}
+
+/// Paints region (`rx`, `rz`) as habitat: 64 cells of one biome (land but for the channels of
+/// [`is_channel`]), sent as the core's sampler sends them (latest wins, as the buffers have room).
+fn paint_region(j: &mut Java, p: &mut rtsim_space::synth::Painter, rx: i32, rz: i32) {
+    use rtsim_space::synth::{land, sea};
+    let biomes = ["minecraft:plains", "minecraft:savanna", "minecraft:forest"];
+    let biome = biomes[(rx + 3 + 2 * (rz + 3)).rem_euclid(biomes.len() as i32) as usize];
+    let per = (rtsim_travel::legs::REGION_BLOCKS / 64) as i32;
+    for cz in rz * per..(rz + 1) * per {
+        for cx in rx * per..(rx + 1) * per {
+            let r = p.record(
+                0,
+                cx,
+                cz,
+                &|x, z| if is_channel(x, z) { sea() } else { land(biome) },
+                &[],
+            );
+            while !j.habitat(&r, &|i| p.biome_name(i).to_string(), &|i| {
+                p.body_name(i).to_string()
+            }) {
+                j.tick();
+            }
+        }
+    }
+}
+
+/// Founds every kind in `j`'s world (EQC402) and returns what it founded. The camps' bodies stand
+/// in the fake conflict plugin's camp worlds, as the jars place them.
+pub fn populate(j: &mut Java) -> Founded {
+    let mut f = Founded::default();
+    let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+    // (1) Herd ranges.
+    let mut painter = rtsim_space::synth::Painter::default();
+    for rz in RANGES_Z {
+        for rx in RANGES_X {
+            paint_region(j, &mut painter, rx, rz);
+            f.ranges.push((rx, rz));
+        }
+    }
+    j.idle();
+    // (2) Lairs, each with one roosting body.
+    for (i, l) in rtsim_ecology::synth::lairs().iter().enumerate() {
+        let home = (l.x, l.y, l.z);
+        j.dragon_obs(&db::Obs::LairFound(db::LairFound {
+            lair: l.key,
+            late: false,
+            placed: false,
+            dimension: dim,
+            species: l.species,
+            kind: l.kind,
+            min: (home.0 - 30, home.1 - 40, home.2 - 30),
+            max: (home.0 + 30, home.1 + 40, home.2 + 30),
+            home,
+            row: Default::default(),
+        }));
+        j.dragon_obs(&db::Obs::LairCensus(db::LairCensus {
+            lair: l.key,
+            epoch: 1,
+            dimension: dim,
+            flags: 0,
+            bodies: vec![db::CensusBody {
+                entity: (0xD1, 0x100 + i as u64),
+                agent: 0,
+                species: l.species,
+                flags: db::BODY_HAS_HOME,
+                age_ticks: 110 * 24_000,
+                hunger: 60,
+                health: 0.0,
+                gender: Gender::Female,
+                variant: 1,
+                pos: (
+                    f64::from(home.0),
+                    f64::from(home.1),
+                    f64::from(home.2),
+                ),
+            }],
+        }));
+        f.lairs.push((l.key, home));
+    }
+    // (3) Villages: nine on a 500-block grid, numbers 2, 5 and 8 Ribbit.
+    for i in 0..9u64 {
+        let at = ((i % 3) as i32 * 500, (i / 3) as i32 * 500);
+        let ribbit = RIBBITS.contains(&i);
+        let key = VILLAGE + i;
+        if ribbit {
+            j.adopt(key, "ribbits:village", "ribbit", 40, at.0, at.1);
+        } else {
+            j.adopt(
+                key,
+                STRUCTURES[i as usize % STRUCTURES.len()],
+                "human",
+                90,
+                at.0,
+                at.1,
+            );
+        }
+        f.villages.push(Village {
+            key,
+            ribbit,
+            at,
+            beds: if ribbit { RIBBIT_RESIDENTS } else { HUMAN_BEDS },
+        });
+    }
+    j.idle();
+    // (4) The human villages are sea ports; two havens.
+    for v in f.villages.iter().filter(|v| !v.ribbit) {
+        j.ship_obs(&sb::Obs::PortFound(sb::PortFound {
+            village: v.key,
+            medium: rtsim_travel::Medium::Sea,
+            dimension: dim,
+            structure: 0,
+            dock: (v.at.0 + 8, 63, v.at.1 + 8),
+            berths: 4,
+        }));
+        f.ports.push(v.key);
+    }
+    for (haven, dock) in [(0x42u64, (250, 63, 250)), (0x43, (750, 63, 750))] {
+        j.ship_obs(&sb::Obs::HavenFound(sb::HavenFound {
+            haven,
+            media: 1,
+            dimension: dim,
+            structure: 0,
+            dock,
+        }));
+        f.havens.push((haven, dock));
+    }
+    // (5) Pool camps and (6) outposts (raider camps, as core's `Outposts` reports a vanilla one:
+    // the outpost's structure, no bodies, not late).
+    let pool = [
+        (0xCA_0001u64, "goblin", "goblinstyranny:goblin_camp", (750, 250)),
+        (0xCA_0002, "bandit", "mic_rtsim:conflict/bandit_camp", (-750, 250)),
+        (0xCA_0003, "raider", "minecraft:pillager_outpost", (250, -750)),
+    ];
+    for (key, culture, structure, at) in pool {
+        found_camp(j, key, structure, at, 0, 0);
+        f.camps.push(Camp {
+            key,
+            culture,
+            at,
+            bodies: 0,
+        });
+    }
+    for (key, at) in [(0xCA_0011u64, (1750, 750)), (0xCA_0012, (-1250, -1250))] {
+        found_camp(j, key, "minecraft:pillager_outpost", at, 0, 0);
+        f.outposts.push(Camp {
+            key,
+            culture: "raider",
+            at,
+            bodies: 0,
+        });
+    }
+    // (7) Frostmaw dens (one Frostmaw, its crystal on it) and Umvuthana groves of K 5, 7 and 9,
+    // their bodies standing in the plugin's camp worlds as the jar places them.
+    for (k, at) in [(-1250, 1250), (1750, -1250), (2250, 1250)]
+        .into_iter()
+        .enumerate()
+    {
+        let key = 0xDE_0001 + k as u64;
+        found_camp(
+            j,
+            key,
+            "mowziesmobs:frostmaw_spawn",
+            at,
+            1,
+            (cb::CENSUS_CHIEF | cb::CENSUS_CRYSTAL) as u8,
+        );
+        f.dens.push(Camp {
+            key,
+            culture: "frostmaw",
+            at,
+            bodies: 1,
+        });
+    }
+    for (k, (warriors, at)) in [(5u16, (-500, 500)), (7, (1500, 500)), (9, (500, 1500))]
+        .into_iter()
+        .enumerate()
+    {
+        let key = 0x6E_0001 + k as u64;
+        found_camp(j, key, "mowziesmobs:umvuthana_grove", at, warriors, 0);
+        f.groves.push(Camp {
+            key,
+            culture: "umvuthana",
+            at,
+            bodies: warriors,
+        });
+    }
+    // (8) Oil nests: the chunks reported, and an endless well beside each nest cell.
+    j.dragon_obs(&db::Obs::OilChunks(db::OilChunks {
+        dimension: dim,
+        source: db::OIL_SOURCE_CDG,
+        chunks: OIL_CHUNKS
+            .iter()
+            .map(|&(cx, cz)| db::OilChunkRec {
+                cx,
+                cz,
+                amount: 1,
+                flags: 0,
+            })
+            .collect(),
+    }));
+    camp_bodies(j, &f);
+    f.oil = OIL_CHUNKS.to_vec();
+    let oil = Good(j.dict_id(DICT_GOOD, "createdieselgenerators:crude_oil"));
+    for (i, &(cx, cz)) in WELLS.iter().enumerate() {
+        well(j, DistrictId(0x0E11_0000 + i as u64), dim, oil, (cx, cz));
+        f.wells.push((cx, cz));
+    }
+    j.idle();
+    // Every village counted alive (S6's FB-1 (b)): a complete census of its residents.
+    for v in &f.villages {
+        j.village_census(v.key, v.beds, v.beds, true);
+    }
+    j.idle();
+    j.idle();
+    f
+}
+
+/// The dens' and groves' bodies standing in the fake conflict plugin's camp worlds, as the jars
+/// place them: a den's Frostmaw (its chief, crystal on it), a grove's warriors. Minecraft's state:
+/// the fork's Java stands them there again.
+pub fn camp_bodies(j: &mut Java, f: &Founded) {
+    let frostmaw = j.dict_id(wire::DICT_BODY, "mic_rtsim:conflict/frostmaw/frostmaw");
+    for d in &f.dens {
+        j.conflict_plugin.camp_world(d.key).bodies.clear();
+        j.conflict_plugin.camp_stray(d.key, frostmaw);
+        if let Some(b) = j.conflict_plugin.camp_world(d.key).bodies.first_mut() {
+            b.chief = true;
+            b.crystal = true;
+        }
+    }
+    let warrior = j.dict_id(wire::DICT_BODY, "mic_rtsim:conflict/umvuthana/warrior");
+    for g in &f.groves {
+        j.conflict_plugin.camp_world(g.key).bodies.clear();
+        for _ in 0..g.bodies {
+            j.conflict_plugin.camp_stray(g.key, warrior);
+        }
+    }
+}
+
+fn found_camp(j: &mut Java, key: u64, structure: &str, at: (i32, i32), bodies: u16, census: u8) {
+    let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+    let structure = j.dict_id(wire::DICT_STRUCTURE, structure);
+    j.conflict_obs(&cb::Obs::FactionFound(cb::FactionFound {
+        faction: key,
+        flags: 0,
+        dimension: dim,
+        structure,
+        pos: (at.0, 64, at.1),
+        home_bodies: bodies,
+        census,
+        row: Default::default(),
+    }));
+}
+
+/// An industry district with one chunk, `chunk`, whose last sweep holds an endless crude oil
+/// deposit: a well (`rtsim_ecology::infra::IndustryLink::wells`, R19).
+fn well(j: &mut Java, district: DistrictId, dim: u32, oil: Good, chunk: (i32, i32)) {
+    let at = Tick(j.game_time.max(0) as u64);
+    let name = j.dict_id(DICT_NAME, &format!("well {}", district.0));
+    for obs in [
+        IObs::District(DistrictDecl {
+            district,
+            revision: 1,
+            dim,
+            name,
+            not_learnable: None,
+            inventory_count: 0,
+        }),
+        IObs::DistrictChunks {
+            district,
+            revision: 1,
+            part: 0,
+            chunks: vec![chunk],
+        },
+        IObs::DepositSample(DepositSample {
+            district,
+            good: oil,
+            plugin: DepositPluginId::DieselOil,
+            chunk: ChunkPos {
+                dim,
+                x: chunk.0,
+                z: chunk.1,
+            },
+            remaining: 0,
+            infinite: true,
+            sweep: 1,
+        }),
+        IObs::SweepEnd(SweepEnd {
+            district,
+            sweep: 1,
+            records: 1,
+            inventories: 0,
+            live: false,
+            creative: false,
+            overstressed: false,
+        }),
+    ] {
+        j.industry_obs(&Timed { at, obs });
+    }
+}
+
+/// A scratch folder for one world.
+pub fn scratch(tag: &str) -> PathBuf {
+    let d = java::tmpdir(&format!("every-{tag}"));
+    fs::create_dir_all(&d).expect("a scratch folder");
+    d
+}
+
+fn write_level(world: &Path, time: i64) {
+    let root = Tag::Compound(vec![(
+        b"Data".to_vec(),
+        Tag::Compound(vec![
+            (b"Time".to_vec(), Tag::Long(time)),
+            (b"DayTime".to_vec(), Tag::Long(time)),
+            (b"LevelName".to_vec(), Tag::string("every-kind")),
+        ]),
+    )]);
+    save::write_atomic(&world.join(save::LEVEL), &nbt::write_gz(b"", &root))
+        .expect("level.dat written");
+}
+
+/// The every-kind world made in folder `world` on seed `seed` as a server would leave it: founded,
+/// `player_day` with a player in village 0 for the first game day (the soak's, EQC404), saved, and
+/// the engine stopped. Returns what was founded.
+pub fn make(world: &Path, seed: u64, player_day: bool) -> Founded {
+    let e = java::engine_with(&world.join(save::PAGES), 1 << 20, |c| {
+        c.seed = Some(seed);
+        c.industry_seed = Some(seed);
+        c.test = false;
+    });
+    let mut j = Java::open(e.clone(), WorldSave::fresh());
+    j.module_mask = save::ALL_MODULES;
+    j.policy = Policy::Every;
+    j.conflict_plugin = rtsim_conflict::synth::FakeConflict::new(PLAYER);
+    let mut f = populate(&mut j);
+    if player_day {
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        let v = f.villages[0].at;
+        j.players = vec![(PLAYER, dim, [f64::from(v.0) + 10.0, 64.0, f64::from(v.1)])];
+        let end = j.game_time + DAY;
+        while j.game_time < end {
+            j.game_time += 998;
+            j.idle();
+        }
+        j.players.clear();
+    }
+    j.idle();
+    assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+    let through = j.next_obs - 1;
+    j.e.request_save(through);
+    j.written_through = Some(through);
+    j.world_saved(through);
+    j.run_until("the world's save", |j| j.e.durable_obs_seq() >= through);
+    Journal {
+        save: j.world_save(),
+        data_version: Some(3955),
+    }
+    .write(world)
+    .expect("the journal written");
+    write_level(world, j.game_time);
+    f.nest_worms = j.nest_worms.clone();
+    j.crash();
+    f
+}
+
+/// The every-kind world forked and running in the headless host, with the villages' residents the
+/// suite keeps.
+pub struct Every {
+    pub host: Host,
+    pub founded: Founded,
+    pub seed: u64,
+    pub opts: Options,
+    ctl: &'static Control,
+    /// Each village's residents as the bridge's census would count them.
+    pub residents: BTreeMap<u64, u32>,
+    /// Villages whose count fell at the last census: read again at the next hand-over.
+    second: Vec<u64>,
+    /// The folders to delete at the end.
+    scratch: Vec<PathBuf>,
+}
+
+impl Every {
+    /// Makes the every-kind world on `seed` (`player_day` as [`make`]), forks it and opens it in
+    /// the host at max with `durability`.
+    pub fn open(tag: &str, seed: u64, player_day: bool, durability: Durability) -> Every {
+        let world = scratch(&format!("{tag}-{seed}"));
+        let founded = make(&world, seed, player_day);
+        let parent = scratch(&format!("{tag}-{seed}-fork"));
+        let dir = parent.join("fork");
+        fork::export(&world, &dir).expect("the fork");
+        let opts = Options {
+            speed: Speed::Max,
+            durability,
+            seed: Some(seed),
+            ..Options::default()
+        };
+        let mut host = Host::open(&dir, &opts).expect("the host opens the fork");
+        host.j.policy = Policy::Every;
+        host.j.conflict_plugin = rtsim_conflict::synth::FakeConflict::new(PLAYER);
+        host.j.nest_worms = founded.nest_worms.clone();
+        camp_bodies(&mut host.j, &founded);
+        let residents = founded.villages.iter().map(|v| (v.key, v.beds)).collect();
+        Every {
+            host,
+            founded,
+            seed,
+            opts,
+            ctl: Box::leak(Box::new(Control::new())),
+            residents,
+            second: Vec::new(),
+            scratch: vec![world, parent],
+        }
+    }
+
+    pub fn engine(&self) -> &Arc<Engine> {
+        &self.host.e
+    }
+
+    pub fn java(&mut self) -> &mut Java {
+        &mut self.host.j
+    }
+
+    /// The game day the host has handed over through, counted from the fork's start.
+    pub fn day(&self) -> u64 {
+        ((self.host.last_handed - self.host.start_time).max(0) / DAY) as u64
+    }
+
+    /// Runs the host until it has handed over game day `day` (from the fork's start), answering
+    /// the villages' residents as it goes: each day's new residents are counted, and a village
+    /// whose count changed gets a complete census.
+    pub fn run_to(&mut self, day: u64) {
+        while self.day() < day {
+            let next = self.day() + 1;
+            let o = Options {
+                until: Some(Until::At(self.host.start_time + next as i64 * DAY)),
+                ..self.opts.clone()
+            };
+            self.host
+                .run(&o, self.ctl, Duration::from_secs(3600), |_| {})
+                .unwrap_or_else(|e| panic!("seed {}: day {next}: {e}", self.seed));
+            self.villages();
+        }
+    }
+
+    /// The day's village censuses: residents the engine settled join their villages; every
+    /// village that changed (or fell at the last census) is counted complete.
+    fn villages(&mut self) {
+        let mut changed: Vec<u64> = std::mem::take(&mut self.second);
+        for v in std::mem::take(&mut self.host.j.settled) {
+            if let Some(n) = self.residents.get_mut(&v) {
+                *n += 1;
+                changed.push(v);
+            }
+        }
+        changed.sort_unstable();
+        changed.dedup();
+        for v in changed {
+            self.census_village(v);
+        }
+    }
+
+    /// A complete census of village `v` as it stands now.
+    pub fn census_village(&mut self, v: u64) {
+        let n = self.residents[&v];
+        let beds = self.founded.village(v).map_or(n, |x| x.beds.max(n));
+        self.host.j.village_census(v, n, beds, true);
+    }
+
+    /// The player kills `n` of village `v`'s residents (kind-8 reports, as the bridge's kill
+    /// credit sends them), and the village is counted complete now and again at the next
+    /// hand-over. How many died.
+    pub fn kill_residents(&mut self, v: u64, n: u32) -> u32 {
+        let have = self.residents.get(&v).copied().unwrap_or(0);
+        let n = n.min(have);
+        for _ in 0..n {
+            self.host.j.resident_killed(v, true);
+        }
+        if n > 0 {
+            self.residents.insert(v, have - n);
+            self.census_village(v);
+            self.second.push(v);
+        }
+        n
+    }
+
+    /// The engine's census now (between steps).
+    pub fn census(&self) -> Vec<KindCensus> {
+        self.host.e.census()
+    }
+
+    /// Stops the host (a final save) and deletes the world and its fork.
+    pub fn close(self) {
+        let protocol = self.host.e.protocol_error();
+        let _ = self.host.close();
+        for d in &self.scratch {
+            let _ = fs::remove_dir_all(d);
+        }
+        assert!(protocol.is_none(), "{protocol:?}");
+    }
+}
+
+/// One kind's row of a census.
+pub fn kind<'a>(cs: &'a [KindCensus], k: &str) -> Option<&'a KindCensus> {
+    cs.iter().find(|c| c.kind == k)
+}

@@ -165,6 +165,9 @@ pub struct Options {
     pub threads: Option<(usize, usize)>,
     /// Rows or bytes in the archive's buffer that bring a save forward ([`ARCHIVE_SAVE_AT`]).
     pub archive_save_at: (u64, u64),
+    /// TEST: the world seed the engine's modules mix in (`Config::seed` and the industry seed;
+    /// slice S11): the seed the world was made with. None, a server's, keeps the fixed seeds.
+    pub seed: Option<u64>,
 }
 
 impl Default for Options {
@@ -179,6 +182,7 @@ impl Default for Options {
             durability: Durability::Fsync,
             threads: None,
             archive_save_at: ARCHIVE_SAVE_AT,
+            seed: None,
         }
     }
 }
@@ -361,6 +365,10 @@ impl Host {
         cfg.test = opts.test;
         cfg.durability = opts.durability;
         cfg.exec = Exec::Host;
+        cfg.seed = opts.seed;
+        if opts.seed.is_some() {
+            cfg.industry_seed = opts.seed;
+        }
         let e = Engine::open(cfg)?;
         let nonce = java::nonce_of(&journal.save);
         let mut j = Java::try_open_as(e.clone(), journal.save, nonce)?;
