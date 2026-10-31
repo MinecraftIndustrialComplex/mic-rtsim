@@ -329,6 +329,7 @@ public final class DragonBridge implements SessionPlugin {
         for (UUID id : List.copyOf(corpses.keySet()))
             untagCorpse(id);
         nests.stopping();
+        homes.forgetChunks();
     }
 
     @Override
@@ -356,6 +357,7 @@ public final class DragonBridge implements SessionPlugin {
         } catch (RuntimeException e) {
             MicRtsimIceAndFire.LOGGER.error("[mic_rtsim_iceandfire] sending the nests' worms home after the bridge failed", e);
         }
+        homes.forgetChunks();
     }
 
     // ---- SessionPlugin: puppets -----------------------------------------------------------------

@@ -27,6 +27,8 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 
 /**
@@ -67,6 +69,12 @@ public final class HomeBodies {
     private final Map<Long, Long> epochs = new HashMap<>();
     private final Map<Long, Long> censusAt = new HashMap<>();
     private final ConcurrentLinkedQueue<ChunkNote> chunkEvents = new ConcurrentLinkedQueue<>();
+    /**
+     * The chunks a known lair's home lies in, by dimension: only their loads and unloads are queued (EQC319), so a chunk event
+     * of anywhere else, in any dimension, with or without a session or the ecology module, costs no memory. Read off the
+     * server thread.
+     */
+    private final Map<ResourceKey<Level>, Set<Long>> homeChunks = new ConcurrentHashMap<>();
     private long epochSeq;
     private long lastLeash;
     private boolean wasOn = true;
@@ -82,6 +90,7 @@ public final class HomeBodies {
         watch = null;
         active.clear();
         byHomeChunk.clear();
+        homeChunks.clear();
         epochs.clear();
         censusAt.clear();
         chunkEvents.clear();
@@ -117,6 +126,7 @@ public final class HomeBodies {
         List<Lairs.Lair> l = byHomeChunk.computeIfAbsent(lair.level().dimension(), k -> new HashMap<>()).computeIfAbsent(chunk, k -> new ArrayList<>(1));
         if (!l.contains(lair))
             l.add(lair);
+        homeChunks.computeIfAbsent(lair.level().dimension(), k -> ConcurrentHashMap.newKeySet()).add(chunk);
         if (lair.level().hasChunk(lair.home().getX() >> 4, lair.home().getZ() >> 4))
             activate(lair);
     }
@@ -130,13 +140,31 @@ public final class HomeBodies {
         a.tag = lair;
     }
 
-    /** ChunkEvent.Load or Unload, possibly off the server thread: applied at the end of the tick. */
-    void chunkLoaded(ServerLevel level, long chunk) {
-        chunkEvents.add(new ChunkNote(true, level.dimension(), chunk));
+    /** ChunkEvent.Load or Unload, possibly off the server thread: a known lair's home chunk is applied at the end of the tick. */
+    public void chunkLoaded(ServerLevel level, long chunk) {
+        if (isHomeChunk(level, chunk))
+            chunkEvents.add(new ChunkNote(true, level.dimension(), chunk));
     }
 
-    void chunkUnloaded(ServerLevel level, long chunk) {
-        chunkEvents.add(new ChunkNote(false, level.dimension(), chunk));
+    public void chunkUnloaded(ServerLevel level, long chunk) {
+        if (isHomeChunk(level, chunk))
+            chunkEvents.add(new ChunkNote(false, level.dimension(), chunk));
+    }
+
+    private boolean isHomeChunk(ServerLevel level, long chunk) {
+        Set<Long> c = homeChunks.get(level.dimension());
+        return c != null && c.contains(chunk);
+    }
+
+    /** The session ended: no home chunk is followed and nothing queued waits for a session that may not come (EQC319). */
+    void forgetChunks() {
+        homeChunks.clear();
+        chunkEvents.clear();
+    }
+
+    /** The chunk events queued and not yet applied (GameTests). */
+    public int queuedChunkEvents() {
+        return chunkEvents.size();
     }
 
     /** ChunkTicketLevelUpdatedEvent: an early hint only (C2ME does not post it); the poll is the authority. */
