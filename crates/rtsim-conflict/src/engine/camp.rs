@@ -754,6 +754,9 @@ impl Conflict {
         let c = self.culture(f);
         let half_life = c.renewal.or(c.chief_renewal).map(|r| r.rule.half_life_days);
         let renewal = c.renewal.is_some();
+        // No renewal waits longer than its cap: a wait left past it is a corrupt row's, held to the
+        // cap (MZB-1401), so the tick it ends never wraps.
+        let cap_wait = c.renewal.map_or(0, |r| r.rule.cap_ticks());
         let x = &self.factions[f as usize];
         let cap = x.cap;
         let short = (self.pool_at(f, at).floor() as u32) + x.away < cap;
@@ -782,7 +785,7 @@ impl Conflict {
         camp.gap = row.gap();
         camp.cap_next = row.away > 0;
         if renewal && short && row.waiting() {
-            let t = at + row.wait_now_ticks().max(1);
+            let t = at + row.wait_now_ticks().min(cap_wait).max(1);
             camp.arrival = camp.arrival.wrapping_add(1);
             camp.arrival_at = Some(t);
             let stamp = camp.arrival;

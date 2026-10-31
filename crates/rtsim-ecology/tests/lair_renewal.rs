@@ -571,3 +571,22 @@ fn a_restart_that_loses_the_marks_changes_no_decision() {
     assert_eq!(d2.take_site_states(), kept);
     assert_eq!(kept.len(), 2);
 }
+
+/// MZB-1401 (P3 6): a lair's row whose wait left is past anything an engine sends (a corrupt
+/// ledger row) waits the cap, the longest a renewal waits; the tick it ends never wraps.
+#[test]
+fn a_rows_wait_past_the_cap_is_held_to_the_cap() {
+    let (mut w, _) = synth::world(5);
+    let mut d = Dragons::new(5, DragonTunables::default(), Tick::ZERO);
+    let cap = d.tun.renewal().cap_ticks();
+    let at = Tick(50 * TICKS_PER_DAY);
+    let l = found(
+        &mut d,
+        &mut w,
+        1,
+        true,
+        &row(1.0, 0, Some(u64::MAX - 7), 3),
+        at,
+    );
+    assert_eq!(d.lairs[l as usize].due, at + cap);
+}

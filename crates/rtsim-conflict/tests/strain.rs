@@ -1543,3 +1543,29 @@ fn the_raider_plunders_at_the_slower_mean() {
         "{got} draws against {want}"
     );
 }
+
+/// MZB-1401 (P3 6): a broken camp's row whose wait left is past anything an engine sends (a
+/// corrupt ledger row) is broken for the refounding cap at most; the tick it ends never wraps.
+#[test]
+fn a_broken_rows_wait_past_the_cap_is_held_to_the_cap() {
+    let mut r = CampRun::new(1403, "goblin", 0);
+    let f = r.f;
+    let at = Tick(20 * DAY);
+    r.c.run_until(&mut r.w, &mut NoInfrastructure, at);
+    strained(&mut r.c, f, 3.0, 1.99, at);
+    r.c.slay(&mut r.w, f, 1, at);
+    assert!(broken(&r.c, f).is_some(), "broke");
+    let mut row = row_of(&r.c, f, 100);
+    assert!(row.waiting() && row.count == 0);
+    row.wait_left = u64::MAX - 7;
+    let now = Tick(at.0 + 100);
+    r.reborn(row, now);
+    let cap =
+        r.c.cultures
+            .get(r.c.factions[r.f as usize].culture)
+            .pool_renewal
+            .expect("a pool camp")
+            .refound
+            .cap_ticks();
+    assert_eq!(broken(&r.c, r.f).expect("still broken").due, now + cap);
+}
