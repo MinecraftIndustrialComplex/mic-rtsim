@@ -585,13 +585,17 @@ impl Conflict {
     }
 
     /// A camp's chief as the census reads it (the long-horizon suite's `conflict.umvuthi` row,
-    /// slice S11 EQC457): `None` for a faction whose culture has no chief body; else whether the
-    /// camp holds its chief (home, aloft or owed: a chief slot not dead, and no heir awaited) and
-    /// the chief's own pressure at `at`. Reads only.
+    /// slice S11 EQC457, EQC491): `None` for a faction whose culture has no chief body; else whether
+    /// the camp holds its chief (home, aloft or owed: a chief slot not dead and no heir awaited, or
+    /// an heir past its due, whom the camp's next load seats, as the closed form counts an out
+    /// camp's renewed warriors) and the chief's own pressure at `at`. Reads only.
     pub fn chief_census(&self, f: u32, at: Tick) -> Option<(bool, f32)> {
         self.culture(f).def.chief_body.as_ref()?;
         let camp = self.camp(f)?;
-        let held = camp.heir.is_none() && camp.chief().is_some_and(|s| s.state != SlotState::Dead);
+        let held = match camp.heir {
+            Some(h) => h.due <= at,
+            None => camp.chief().is_some_and(|s| s.state != SlotState::Dead),
+        };
         let day = (at.0 / TICKS_PER_DAY) as u32;
         let p = self
             .culture(f)

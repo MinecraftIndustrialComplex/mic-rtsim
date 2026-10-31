@@ -40,6 +40,9 @@ pub struct KindRefill {
     pub checks: Result<(), String>,
     /// What else the row counts across seeds (herds: ranges refounded by neighbours' dispersers).
     pub aux: u64,
+    /// The most pressure a site of the row held just after the kill, where the run reads it (the
+    /// together runs; the Umvuthi's row).
+    pub p_after: Option<f32>,
 }
 
 impl KindRefill {
@@ -57,6 +60,7 @@ impl KindRefill {
             breaks: 0,
             checks: Ok(()),
             aux: 0,
+            p_after: None,
         }
     }
 }
@@ -306,6 +310,119 @@ fn camps_judge(rs: &[KindRefill]) -> Result<(), String> {
     })
 }
 
+/// The day S9's den and grove kill-alls kill on, and the days the den and the groves run.
+const MOWZIE_KILL_DAY: u64 = 30;
+
+/// A den's or grove's [`eq::mowzie_run`] killed on [`MOWZIE_KILL_DAY`], read into the table's
+/// shape (no control: the run is the rule alone). Its checks: K before the kill and none after.
+fn mowzie(
+    row: &Row,
+    seed: u64,
+    culture: &'static str,
+    k: u16,
+    to: u64,
+) -> (KindRefill, eq::MowzieRun) {
+    let d = MOWZIE_KILL_DAY;
+    let r = eq::mowzie_run(
+        seed,
+        eq::mowzie_quiet_cultures(),
+        culture,
+        k,
+        eq::MowziePresser::KillAll(d),
+        to,
+    );
+    let pre = r.members[d as usize - 1];
+    let from = |n: u32| {
+        (d + 1..=to)
+            .find(|&x| r.members[x as usize] >= n)
+            .map(|x| (x - d) as f64)
+    };
+    let checks = need(pre == u32::from(k), || {
+        format!("{pre} of {k} before the kill")
+    })
+    .and(need(r.members[d as usize] == 0, || {
+        format!("{} left on the kill's day", r.members[d as usize])
+    }));
+    let out = KindRefill {
+        killed: r.kills.iter().map(|x| u64::from(x.1)).sum(),
+        pre: f64::from(pre),
+        half: from(pre.div_ceil(2)),
+        whole: r.whole_from(d + 1).map(|x| (x - d) as f64),
+        checks,
+        ..KindRefill::new(row, seed)
+    };
+    (out, r)
+}
+
+fn dens(row: &Row, seed: u64) -> KindRefill {
+    let (mut out, r) = mowzie(row, seed, "frostmaw", 1, 60);
+    let back = (MOWZIE_KILL_DAY + eq::EVERY) as usize;
+    out.checks = out
+        .checks
+        .and(within_of("whole", out.whole, 11.5, 13.0))
+        .and(need(r.members[back] == 1, || {
+            "not whole at the census 24 days on".into()
+        }))
+        .and(need(r.arrivals == 1, || format!("{} arrivals", r.arrivals)));
+    out
+}
+
+fn groves(row: &Row, seed: u64, k: u16) -> KindRefill {
+    let (mut out, _) = mowzie(row, seed, "umvuthana", k, 160);
+    out.checks = out.checks.and(within_of("whole", out.whole, 45.0, 100.0));
+    out
+}
+
+fn groves_k5(row: &Row, seed: u64) -> KindRefill {
+    groves(row, seed, 5)
+}
+
+fn groves_k7(row: &Row, seed: u64) -> KindRefill {
+    groves(row, seed, 7)
+}
+
+fn groves_k9(row: &Row, seed: u64) -> KindRefill {
+    groves(row, seed, 9)
+}
+
+/// No chance in the grove's rule: every seed's grove of one K is whole on the same day.
+fn groves_judge(rs: &[KindRefill]) -> Result<(), String> {
+    let first = rs.first().and_then(|r| r.whole);
+    need(rs.iter().all(|r| r.whole == first), || {
+        let ds: Vec<Option<f64>> = rs.iter().map(|r| r.whole).collect();
+        format!("not one day for one K: {ds:?}")
+    })
+}
+
+/// The grove the Umvuthi row kills in: S9's K 7.
+const UMVUTHI_GROVE: u16 = 7;
+
+fn umvuthi(row: &Row, seed: u64) -> KindRefill {
+    let d = MOWZIE_KILL_DAY;
+    let r = eq::umvuthi_kill(seed, UMVUTHI_GROVE, d, d + 60);
+    let checks = need(r.held_before && !r.held_after, || {
+        format!("held before {}, after {}", r.held_before, r.held_after)
+    })
+    .and(need((r.p_after - 1.0).abs() < 2e-3, || {
+        format!("P {} after one Umvuthi of one", r.p_after)
+    }))
+    .and(within_of("the heir", r.whole, r.rule, r.rule + 1.0))
+    .and(need(r.renewals == 1, || format!("{} heirs", r.renewals)))
+    .and(need(r.warriors.0 == r.warriors.1, || {
+        format!("warriors {:?}: the Umvuthi is no warrior", r.warriors)
+    }));
+    KindRefill {
+        killed: u64::from(r.held_before && !r.held_after),
+        pre: 1.0,
+        half: r.whole,
+        whole: r.whole,
+        aux: r.renewals,
+        p_after: Some(r.p_after),
+        checks,
+        ..KindRefill::new(row, seed)
+    }
+}
+
 fn pirates(row: &Row, seed: u64) -> KindRefill {
     let r = rtsim_ships::synth::equilibrium::kill_all_pirates(seed);
     let longest = |v: &[f64]| v.iter().copied().fold(0.0, f64::max);
@@ -346,6 +463,13 @@ fn pirates(row: &Row, seed: u64) -> KindRefill {
     }
 }
 
+/// `x` in `least..=most` days.
+fn within_of(what: &str, x: Option<f64>, least: f64, most: f64) -> Result<(), String> {
+    need(x.is_some_and(|d| (least..=most).contains(&d)), || {
+        format!("{what} after {x:?} days, the band {least} to {most}")
+    })
+}
+
 fn within(what: &str, x: Option<f64>, most: f64) -> Result<(), String> {
     need(x.is_some_and(|d| d <= most), || {
         format!("{what} after {x:?} days, the band's most {most}")
@@ -376,6 +500,37 @@ fn any_seed(_: &KindRefill) -> Result<(), String> {
 
 fn camps_together(r: &KindRefill) -> Result<(), String> {
     within("90% of the control", r.ninety_ctrl, 120.0)
+}
+
+/// The wait a boss's rule sets at pressure `p` (`min(cap, base x 2^P)`), days: a den's Frostmaw
+/// (`chief` false) or a grove's Umvuthi.
+fn boss_wait(culture: &str, chief: bool, p: f32) -> f64 {
+    let cs = rtsim_conflict::Cultures::builtin();
+    let c = cs.get(cs.index_of(culture).expect("a built-in culture"));
+    let rule = if chief { c.chief_renewal } else { c.renewal }
+        .expect("a renewal")
+        .rule;
+    f64::from((rule.base_days * p.exp2()).min(rule.cap_days))
+}
+
+/// The alone band at the pressure the kill left (EQC492): the alone row's 12 days is the wait at
+/// P 1, and a together site the roamer pressed before the shock is past 1 after it. The census
+/// day is the read's grain.
+fn boss_together(r: &KindRefill, culture: &str, chief: bool) -> Result<(), String> {
+    let p = r.p_after.unwrap_or(1.0);
+    within("whole", r.whole, boss_wait(culture, chief, p).ceil() + 1.0)
+}
+
+fn dens_together(r: &KindRefill) -> Result<(), String> {
+    boss_together(r, "frostmaw", false)
+}
+
+fn groves_together(r: &KindRefill) -> Result<(), String> {
+    within("whole", r.whole, 100.0)
+}
+
+fn umvuthi_together(r: &KindRefill) -> Result<(), String> {
+    boss_together(r, "umvuthana", true)
 }
 
 fn pirates_together(r: &KindRefill) -> Result<(), String> {
@@ -467,6 +622,58 @@ pub const ROWS: &[Row] = &[
         together: Some(camps_together),
     },
     Row {
+        name: "dens",
+        kind: "conflict.den",
+        test: "kill_all_dens_30_seeds",
+        band: "each Frostmaw back in 11.5 to 13 days (the wait at P 1, 12), whole at the census 24 \
+               days on, one arrival",
+        record: "S9 (MZB-1262)",
+        run: dens,
+        judge: no_judge,
+        together: Some(dens_together),
+    },
+    Row {
+        name: "groves.k5",
+        kind: "conflict.grove",
+        test: "kill_all_groves_30_seeds",
+        band: "whole in 45 to 100 days, every seed on one day; K 5 before K 7 before K 9",
+        record: "S9 (MZB-1210)",
+        run: groves_k5,
+        judge: groves_judge,
+        together: Some(groves_together),
+    },
+    Row {
+        name: "groves.k7",
+        kind: "conflict.grove",
+        test: "kill_all_groves_30_seeds",
+        band: "as groves.k5",
+        record: "S9 (MZB-1210)",
+        run: groves_k7,
+        judge: groves_judge,
+        together: Some(groves_together),
+    },
+    Row {
+        name: "groves.k9",
+        kind: "conflict.grove",
+        test: "kill_all_groves_30_seeds",
+        band: "as groves.k5",
+        record: "S9 (MZB-1210)",
+        run: groves_k9,
+        judge: groves_judge,
+        together: Some(groves_together),
+    },
+    Row {
+        name: "umvuthi",
+        kind: "conflict.umvuthi",
+        test: "kill_all_umvuthi_30_seeds",
+        band: "the heir within a day of the later of the cowed time and min(192, 6 x 2^P), 12 days \
+               at P 1; one heir; no warrior lost",
+        record: "EQC428; UNVERIFIED 8",
+        run: umvuthi,
+        judge: no_judge,
+        together: Some(umvuthi_together),
+    },
+    Row {
         name: "pirates",
         kind: "ship.haven",
         test: "kill_all_pirates_30_seeds",
@@ -505,7 +712,7 @@ pub fn verdict(row: &Row, rs: &[KindRefill]) -> Result<(), String> {
 /// The header of [`line`], in its widths.
 pub fn header() -> String {
     format!(
-        "{:<14} {:<15} {:>5}  {:>25}  {:>31}  {:>25}  {:>8}  verdict",
+        "{:<14} {:<16} {:>5}  {:>25}  {:>31}  {:>25}  {:>8}  verdict",
         "row",
         "kind",
         "seeds",
@@ -544,7 +751,7 @@ fn spread(rs: &[KindRefill], f: impl Fn(&KindRefill) -> Option<f64>) -> String {
 /// One fixed-width line for a row's seeds (EQC425).
 pub fn line(row: &Row, rs: &[KindRefill], v: &Result<(), String>) -> String {
     format!(
-        "{:<14} {:<15} {:>5}  {}  {:>31}  {:>25}  {:>8.3}  {}",
+        "{:<14} {:<16} {:>5}  {}  {:>31}  {:>25}  {:>8.3}  {}",
         row.name,
         row.kind,
         rs.len(),
@@ -564,7 +771,7 @@ pub fn print_seeds(rs: &[KindRefill]) {
     for r in rs {
         println!(
             "  seed {:>2}: killed {:>6} pre {:>9.2} half {:?} 90% {:?} whole {:?} end/ctrl {:.3} \
-             breaks {} aux {}{}",
+             breaks {} aux {}{}{}",
             r.seed,
             r.killed,
             r.pre,
@@ -574,6 +781,8 @@ pub fn print_seeds(rs: &[KindRefill]) {
             r.end_over_ctrl,
             r.breaks,
             r.aux,
+            r.p_after
+                .map_or(String::new(), |p| format!(" P after {p:.2}")),
             r.checks
                 .as_ref()
                 .err()
@@ -627,6 +836,7 @@ pub fn together_refill(row: &Row, w: &Together, c: &Together) -> KindRefill {
     let mut r = KindRefill {
         killed: w.killed,
         pre,
+        p_after: w.p_after.get(row.name).copied(),
         ..KindRefill::new(row, w.seed)
     };
     let (mut tail, mut tail_c) = (0.0, 0.0);
@@ -661,24 +871,29 @@ pub fn together_refill(row: &Row, w: &Together, c: &Together) -> KindRefill {
 /// The rows with a wipe in the every-kind world.
 pub fn together_rows() -> Vec<&'static Row> {
     ROWS.iter()
-        .filter(|r| r.together.is_some() && rtsim_host::every::WIPES.contains(&r.name))
+        .filter(|r| r.together.is_some() && rtsim_host::every::READS.contains(&r.name))
         .collect()
 }
 
-/// Every row of `rows` together on `seeds`: per seed a control for each shock day and one wipe a
-/// row, on [`threads`]. The rows' results in `rows`' order.
+/// Every row of `rows` together on `seeds`: per seed a control for each shock day and one run a
+/// wipe (the three grove rows read one wipe's run, [`rtsim_host::every::wipe_of`]), on
+/// [`threads`]. The rows' results in `rows`' order.
 pub fn run_together(rows: &[&'static Row], seeds: &[u64]) -> Vec<Vec<KindRefill>> {
+    use rtsim_host::every::wipe_of;
     let mut shocks: Vec<(u64, u64)> = rows.iter().map(|r| shock_of(r.name)).collect();
     shocks.sort_unstable();
     shocks.dedup();
+    let mut wipes: Vec<&'static str> = rows.iter().map(|r| wipe_of(r.name)).collect();
+    wipes.sort_unstable();
+    wipes.dedup();
     let mut jobs: Vec<(u64, Option<&'static str>, u64, u64)> = Vec::new();
     for &s in seeds {
         for &(at, after) in &shocks {
             jobs.push((s, None, at, at + after));
         }
-        for r in rows {
-            let (at, after) = shock_of(r.name);
-            jobs.push((s, Some(r.name), at, at + after));
+        for &x in &wipes {
+            let (at, after) = shock_of(x);
+            jobs.push((s, Some(x), at, at + after));
         }
     }
     let got = par_map(&jobs, threads(), |&(s, wipe, at, to)| {
@@ -692,7 +907,7 @@ pub fn run_together(rows: &[&'static Row], seeds: &[u64]) -> Vec<Vec<KindRefill>
                 .map(|&s| {
                     let w = got
                         .iter()
-                        .find(|t| t.seed == s && t.wipe == Some(row.name))
+                        .find(|t| t.seed == s && t.wipe == Some(wipe_of(row.name)))
                         .expect("the wipe ran");
                     let c = got
                         .iter()
@@ -890,6 +1105,18 @@ mod tests {
             }
         }
         assert!(failed.is_empty(), "failing rows: {failed:?}");
+    }
+
+    /// The Umvuthi's row (EQC428): S9 had no kill-all for the one boss with a pressure of its own.
+    #[test]
+    fn kill_all_umvuthi() {
+        assert_row("umvuthi", &[1, 2, 3]);
+    }
+
+    #[test]
+    #[ignore = "minutes: run in release with --ignored --nocapture"]
+    fn kill_all_umvuthi_30_seeds() {
+        assert_row("umvuthi", &(1..=30).collect::<Vec<_>>());
     }
 
     #[test]

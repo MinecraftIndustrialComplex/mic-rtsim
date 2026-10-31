@@ -933,7 +933,12 @@ impl Every {
     /// with `chief` the chief's body; then the camp goes out. A visit that kills nothing is a
     /// player passing by. How many members and chiefs died. Booked: the camp's pressure, 1/K a
     /// member, and the chief's own pressure, 1 a chief.
-    pub fn visit_camp(&mut self, key: u64, members: Option<&'static str>, chief: bool) -> (u64, u64) {
+    pub fn visit_camp(
+        &mut self,
+        key: u64,
+        members: Option<&'static str>,
+        chief: bool,
+    ) -> (u64, u64) {
         use rtsim_conflict::boundary as cb;
         use rtsim_conflict::engine::CHIEF_SLOT;
         let t0 = self.host.j.game_time - self.host.start_time;
@@ -985,13 +990,7 @@ impl Every {
         if let Some(p) = chief_before
             && chiefs > 0
         {
-            self.owe_pressure(
-                "conflict.umvuthi",
-                Site::Chief(key),
-                day,
-                p,
-                chiefs as f32,
-            );
+            self.owe_pressure("conflict.umvuthi", Site::Chief(key), day, p, chiefs as f32);
         }
         let t = self.host.j.game_time - self.host.start_time;
         self.run_ticks_to(t + 5);
@@ -1013,7 +1012,8 @@ impl Every {
     fn chief_pressure(&self, key: u64, day: u32) -> Option<f32> {
         self.host.e.with_conflict(|c, _| {
             let f = c.faction_of_key(key)?;
-            c.chief_census(f, Tick::from_days(u64::from(day))).map(|x| x.1)
+            c.chief_census(f, Tick::from_days(u64::from(day)))
+                .map(|x| x.1)
         })
     }
 
@@ -1198,6 +1198,18 @@ impl Every {
                         broken: fa.strain.as_ref().is_some_and(|s| s.broken.is_some()),
                         p: c.pressure_now(fi, now),
                     });
+                    if let Some((held, p)) = c.chief_census(fi, now) {
+                        out.push(SiteNow {
+                            kind: "conflict.umvuthi",
+                            key: x.key,
+                            members: u64::from(held),
+                            k: 1,
+                            // Still cowed: its rule bound counts from the later of its death
+                            // and its cowed time (EQC418).
+                            broken: fa.cowed_until > now,
+                            p,
+                        });
+                    }
                 }
             }
         });
@@ -1353,6 +1365,7 @@ pub struct SiteNow {
     pub key: u64,
     pub members: u64,
     pub k: u64,
+    /// Broken (a camp's strain, a haven shut or broken); for the Umvuthi, still cowed.
     pub broken: bool,
     /// Its pressure now (the conflict's sites; 0 for the rest).
     pub p: f32,
@@ -1373,10 +1386,48 @@ pub const WIPES: [&str; 11] = [
     "pirates",
 ];
 
+/// What the together runs read each day: every wipe's sites, and each grove of K 5, 7 and 9
+/// alone (the kill-all table's three grove rows, all wiped by `groves`).
+pub const READS: [&str; 14] = [
+    "herds.world",
+    "dragons",
+    "nests",
+    "villagers",
+    "ribbits",
+    "camps",
+    "outposts",
+    "dens",
+    "groves",
+    "groves.k5",
+    "groves.k7",
+    "groves.k9",
+    "umvuthi",
+    "pirates",
+];
+
+/// The wipe a read belongs to.
+pub fn wipe_of(read: &str) -> &str {
+    if read.starts_with("groves.") {
+        "groves"
+    } else {
+        read
+    }
+}
+
 /// The sites a wipe reads (its kind, and for the camps' two rows the camps it kills).
 pub fn wipe_reads(f: &Founded, wipe: &str) -> (&'static str, Vec<u64>) {
     let keys = |cs: &[Camp]| cs.iter().map(|c| c.key).collect::<Vec<_>>();
+    let grove_of = |k: u16| {
+        f.groves
+            .iter()
+            .filter(|g| g.bodies == k)
+            .map(|g| g.key)
+            .collect::<Vec<_>>()
+    };
     match wipe {
+        "groves.k5" => ("conflict.grove", grove_of(5)),
+        "groves.k7" => ("conflict.grove", grove_of(7)),
+        "groves.k9" => ("conflict.grove", grove_of(9)),
         "herds.world" => ("herd.range", Vec::new()),
         "dragons" => ("dragon.lair", Vec::new()),
         "nests" => ("oil.nest", Vec::new()),
@@ -1439,20 +1490,29 @@ pub struct Together {
     pub shock_day: u64,
     /// Members killed by the wipe.
     pub killed: u64,
-    /// By wipe ([`WIPES`]), its read sites at the end of each day from day 1: (day, members, K,
+    /// By read ([`READS`]), its sites at the end of each day from day 1: (day, members, K,
     /// every site whole).
     pub reads: BTreeMap<&'static str, Vec<(u64, u64, u64, bool)>>,
+    /// By read, the most pressure any of its sites held just after the wipe (the control: on the
+    /// shock day): what sets a boss's wait (EQC492).
+    pub p_after: BTreeMap<&'static str, f32>,
     pub teeth: Teeth,
+}
+
+/// The sites read `read` reads ([`wipe_reads`]).
+pub fn read_sites<'a>(f: &Founded, read: &str, sites: &'a [SiteNow]) -> Vec<&'a SiteNow> {
+    let (kind, keys) = wipe_reads(f, read);
+    sites
+        .iter()
+        .filter(|s| s.kind == kind && (keys.is_empty() || keys.contains(&s.key)))
+        .collect()
 }
 
 /// The wipe's kind's members and K over its read sites, and whether every one is whole (a herd
 /// range's whole is alive: it has no ceiling).
 pub fn read(f: &Founded, wipe: &str, sites: &[SiteNow]) -> (u64, u64, bool) {
-    let (kind, keys) = wipe_reads(f, wipe);
-    let ours: Vec<&SiteNow> = sites
-        .iter()
-        .filter(|s| s.kind == kind && (keys.is_empty() || keys.contains(&s.key)))
-        .collect();
+    let ours = read_sites(f, wipe, sites);
+    let kind = wipe_reads(f, wipe).0;
     let whole = if kind == "herd.range" {
         ours.iter().all(|s| s.members > 0)
     } else {
@@ -1476,6 +1536,7 @@ pub fn together(seed: u64, wipe: Option<&'static str>, shock_day: u64, to: u64) 
         shock_day,
         killed: 0,
         reads: BTreeMap::new(),
+        p_after: BTreeMap::new(),
         teeth: Teeth::default(),
     };
     for day in 1..=to {
@@ -1488,7 +1549,16 @@ pub fn together(seed: u64, wipe: Option<&'static str>, shock_day: u64, to: u64) 
         }
         roamer.day(&mut w, day);
         let sites = w.sites();
-        for x in WIPES {
+        if day == shock_day {
+            for x in READS {
+                let p = read_sites(&w.founded, x, &sites)
+                    .iter()
+                    .map(|s| s.p)
+                    .fold(0.0, f32::max);
+                out.p_after.insert(x, p);
+            }
+        }
+        for x in READS {
             let (n, k, whole) = read(&w.founded, x, &sites);
             out.reads.entry(x).or_default().push((day, n, k, whole));
         }
@@ -1551,6 +1621,9 @@ impl Bounds {
                 }
                 (true, Some(_)) => {}
             }
+            if s.kind == "conflict.umvuthi" && s.broken {
+                e.0 = Some(day);
+            }
             let since = e.0.unwrap_or(day);
             let quiet = day - e.1;
             let why = match s.kind {
@@ -1561,6 +1634,10 @@ impl Bounds {
                 // The next warrior within 96 days of the last arrival or loss.
                 "conflict.grove" if quiet > 96 + slack => {
                     Some("no warrior 96 days after the last change")
+                }
+                // The heir within 192 days of the later of its death and its cowed time.
+                "conflict.umvuthi" if day - since > 192 + slack => {
+                    Some("no Umvuthi 192 days after its death and cowing")
                 }
                 "village.human" | "village.ribbit" if day - since > 192 + slack => {
                     Some("no pair 192 days after falling below two")

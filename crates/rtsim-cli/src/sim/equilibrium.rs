@@ -1070,6 +1070,115 @@ pub fn mowzie_run(
     out
 }
 
+/// The built-in cultures with no plunder (nobody sends a pack anywhere, so nothing the faction
+/// loses itself blurs the rule's own numbers): the den and grove kill-alls' cultures (S9).
+pub fn mowzie_quiet_cultures() -> rtsim_conflict::Cultures {
+    camp_cultures(|d| {
+        if d.name == "umvuthana" {
+            d.plunder_mean_days = None;
+            d.plunder_mood = None; // the mood bends the wait that is gone (FB-S9-2)
+        }
+    })
+}
+
+/// One grove's Umvuthi killed by a player ([`umvuthi_kill`]): the kill-all table's Umvuthi row
+/// (EQC428, EQC490).
+#[derive(Clone, Debug, PartialEq)]
+pub struct UmvuthiKill {
+    /// The Umvuthi held the day before the kill, and right after it.
+    pub held_before: bool,
+    pub held_after: bool,
+    /// The Umvuthi's pressure right after the kill.
+    pub p_after: f32,
+    /// The rule's wait from the kill, days: the later of the grove's cowed time and
+    /// `min(cap, base x 2^P)` at that pressure.
+    pub rule: f64,
+    /// Days from the kill to an Umvuthi held again, read every game hour (`None`: never in the
+    /// run).
+    pub whole: Option<f64>,
+    /// The heirs who took the mask in the run (`synth::ChiefBook`).
+    pub renewals: u64,
+    /// The warriors just before the kill and just after: the Umvuthi is no warrior.
+    pub warriors: (u32, u32),
+}
+
+/// A grove of `found` bodies whose first is the jar's own Umvuthi (adopted at its first census, P 0),
+/// kept loaded, as a player who stands by keeps it (an heir takes the mask only while the grove is
+/// in); a player kills the Umvuthi alone on day `kill_day` (the path of S9's `kill_chief`), and
+/// the run goes on to day `to`.
+pub fn umvuthi_kill(seed: u64, found: u16, kill_day: u64, to: u64) -> UmvuthiKill {
+    use rtsim_conflict::boundary;
+    use rtsim_conflict::engine::{CHIEF_SLOT, body_id};
+    use rtsim_conflict::synth::{CampRun, ChiefBook};
+    use rtsim_kernel::clock::TICKS_PER_DAY;
+    use rtsim_kernel::renewal::Pressure;
+    let cultures = mowzie_quiet_cultures();
+    let rule = cultures
+        .get(cultures.index_of("umvuthana").expect("the grove's culture"))
+        .chief_renewal
+        .expect("an Umvuthi's renewal")
+        .rule;
+    let mut r = CampRun::with_cultures(seed, cultures, "umvuthana", found);
+    r.audits = false;
+    r.round_trips = false;
+    let umvuthi = body_id(&r.c.cultures, "mic_rtsim:conflict/umvuthana/umvuthi");
+    {
+        let b = r
+            .plugin
+            .camp_world(r.key)
+            .bodies
+            .first_mut()
+            .expect("a body");
+        b.body = umvuthi;
+        b.chief = true;
+    }
+    r.camp_in();
+    let census = |r: &CampRun| r.c.chief_census(r.f, r.c.now()).unwrap_or((false, 0.0));
+    let warriors = |r: &CampRun| r.c.pool_at(r.f, r.c.now()).max(0.0).floor() as u32;
+    let mut book = ChiefBook::default();
+    r.run(Tick::from_days(kill_day));
+    book.look(&r.c);
+    let held_before = census(&r).0;
+    let before = warriors(&r);
+    let at = r.c.now() + 1;
+    let chief = r.plugin.camps[&r.key]
+        .bodies
+        .iter()
+        .find(|b| b.slot == CHIEF_SLOT && b.generation != 0)
+        .map(|b| b.uuid);
+    if let Some(u) = chief {
+        r.plugin.camp_kill(r.key, u, boundary::BY_PLAYER, at);
+    }
+    r.run(at + 5);
+    book.look(&r.c);
+    let (held_after, p_after) = census(&r);
+    let after = warriors(&r);
+    let day = (at.0 / TICKS_PER_DAY) as u32;
+    let wait = f64::from(rule.delay_days(Pressure::from_parts(p_after, day), day));
+    let cowed = (r.c.factions[r.f as usize].cowed_until.0 as f64 - at.0 as f64).max(0.0)
+        / TICKS_PER_DAY as f64;
+    let mut whole = None;
+    let hour = TICKS_PER_DAY / 24;
+    let end = Tick::from_days(to);
+    while r.c.now() < end {
+        let t = (r.c.now() + hour).min(end);
+        r.run(t);
+        book.look(&r.c);
+        if whole.is_none() && census(&r).0 {
+            whole = Some((r.c.now().0 - at.0) as f64 / TICKS_PER_DAY as f64);
+        }
+    }
+    UmvuthiKill {
+        held_before,
+        held_after,
+        p_after,
+        rule: wait.max(cowed),
+        whole,
+        renewals: book.renewals,
+        warriors: (before, after),
+    }
+}
+
 /// How well stocked the villages of [`unattended_grove`]'s world are: a plunder finds something worth
 /// taking (livestock over the target) only in a village that has a surplus, and the grid's villages
 /// do not keep one.
@@ -1369,21 +1478,7 @@ mod tests {
     #[test]
     #[ignore]
     fn kill_all_herds_30_seeds() {
-        let rs = par_map(&seeds(), threads(), |&seed| {
-            wipe_run(
-                &Grid::world(),
-                seed,
-                Ecology::herd_tunables(),
-                Wipe::World,
-                10 * YEAR,
-                40 * YEAR,
-            )
-        });
-        print_refills("world wipe", &rs);
-        for r in &rs {
-            assert!(r.half.is_some_and(|d| d <= 25 * YEAR), "{r:?}");
-            assert!(r.alive_end && r.all_alive.is_some(), "{r:?}");
-        }
+        crate::sim::killall::assert_row("herds.world", &seeds());
     }
 
     /// The range at spawn wiped in its second year: its neighbours' dispersers found it again
@@ -1411,23 +1506,7 @@ mod tests {
     #[test]
     #[ignore]
     fn local_wipe_refills_from_neighbours_30_seeds() {
-        let rs = par_map(&seeds(), threads(), |&seed| {
-            wipe_run(
-                &Grid::world(),
-                seed,
-                Ecology::herd_tunables(),
-                Wipe::Local,
-                10 * YEAR,
-                40 * YEAR,
-            )
-        });
-        print_refills("local wipe", &rs);
-        for r in &rs {
-            assert!(r.half.is_some_and(|d| d <= 25 * YEAR), "{r:?}");
-            assert!(r.alive_end && r.all_alive.is_some(), "{r:?}");
-        }
-        let recol: u64 = rs.iter().map(|r| r.recolonised).sum();
-        assert!(recol > 0, "no range refilled from a neighbour");
+        crate::sim::killall::assert_row("herds.local", &seeds());
     }
 
     fn print_dragon_refills(rs: &[DragonRefill]) {
@@ -1479,19 +1558,7 @@ mod tests {
     #[test]
     #[ignore]
     fn kill_all_dragons_30_seeds() {
-        let rs = par_map(&seeds(), threads(), |&seed| {
-            dragon_kill_all(&Grid::world(), seed, 20 * YEAR, 6 * YEAR)
-        });
-        print_dragon_refills(&rs);
-        let cap = 192 + EVERY;
-        for r in &rs {
-            assert!(r.killed > 0, "{r:?}");
-            assert!(r.ninety_ctrl.is_some_and(|d| d <= cap), "{r:?}");
-        }
-        let ninety = band(&rs.iter().map(|r| days(r.ninety_ctrl)).collect::<Vec<_>>());
-        assert!(ninety.0 <= 72.0, "{ninety:?}");
-        let end = band(&rs.iter().map(|r| r.end_over_ctrl).collect::<Vec<_>>());
-        assert!((0.9..=1.1).contains(&end.0), "{end:?}");
+        crate::sim::killall::assert_row("dragons", &seeds());
     }
 
     fn print_dragon_runs(what: &str, rs: &[DragonRun], from: u64) {
@@ -1631,16 +1698,7 @@ mod tests {
     #[test]
     #[ignore]
     fn kill_all_villagers_30_seeds() {
-        let rs = par_map(&seeds(), threads(), |&seed| {
-            village_wipe(seed, rtsim_settle::Culture::Human, 100, 900, |_| {})
-        });
-        print_village_refills("kill all villagers", &rs);
-        for r in &rs {
-            assert_eq!(r.paired, r.wiped_villages, "{r:?}");
-            assert!(r.pair.0 >= 32.0 && r.pair.1 <= 33.0, "{r:?}");
-        }
-        let b = band(&rs.iter().map(|r| days(r.ninety_ctrl)).collect::<Vec<_>>());
-        assert!(b.0 <= 600.0, "median days to 90% of the control {b:?}");
+        crate::sim::killall::assert_row("villagers", &seeds());
     }
 
     /// Every Ribbit village killed by a player on day 100: each is settled 32 days after, refills
@@ -1681,15 +1739,7 @@ mod tests {
     #[test]
     #[ignore]
     fn kill_all_ribbits_30_seeds() {
-        let rs = par_map(&seeds(), threads(), |&seed| {
-            village_wipe(seed, rtsim_settle::Culture::Ribbit, 100, 700, |_| {})
-        });
-        print_village_refills("kill all ribbits", &rs);
-        for r in &rs {
-            assert_eq!(r.paired, r.wiped_villages, "{r:?}");
-        }
-        let b = band(&rs.iter().map(|r| days(r.ninety_ctrl)).collect::<Vec<_>>());
-        assert!(b.0 <= 300.0, "median days to 90% of the control {b:?}");
+        crate::sim::killall::assert_row("ribbits", &seeds());
     }
 
     // ---- pool camps (slice S7) -----------------------------------------------------------------
@@ -1738,14 +1788,7 @@ mod tests {
     #[test]
     #[ignore]
     fn kill_all_camps_30_seeds() {
-        let rs = par_map(&seeds(), threads(), |&seed| camp_wipe(seed, 100, 240));
-        print_camp_refills("kill all camps", &rs);
-        for r in &rs {
-            assert_eq!(r.breaks, 0, "{r:?}");
-            assert!(r.ninety_ctrl.is_some_and(|d| d <= 120), "{r:?}");
-        }
-        let b = band(&rs.iter().map(|r| days(r.ninety_ctrl)).collect::<Vec<_>>());
-        assert!(b.0 <= 96.0, "median days to 90% of the control {b:?}");
+        crate::sim::killall::assert_row("camps", &seeds());
     }
 
     fn print_camp_breaks(what: &str, r: &CampRun) {
@@ -1943,12 +1986,7 @@ mod tests {
     /// The built-in cultures with no plunder (nobody sends a pack anywhere, so nothing the faction
     /// loses itself blurs the rule's own numbers).
     fn quiet_cultures() -> rtsim_conflict::Cultures {
-        camp_cultures(|d| {
-            if d.name == "umvuthana" {
-                d.plunder_mean_days = None;
-                d.plunder_mood = None; // the mood bends the wait that is gone (FB-S9-2)
-            }
-        })
+        mowzie_quiet_cultures()
     }
 
     /// The built-in cultures with the grove's plunder out of reach of every village.
@@ -1969,77 +2007,28 @@ mod tests {
         (1..=n).collect()
     }
 
-    /// Every den killed by a player on a day: each Frostmaw is back in 12.0 days (the wait at P 1),
-    /// every seed within 13, and the census line `conflict.den` shows it whole again at 24.
-    fn kill_all_dens_over(seeds: &[u64]) {
-        let rs = par_map(seeds, threads(), |&seed| {
-            mowzie_run(
-                seed,
-                quiet_cultures(),
-                "frostmaw",
-                1,
-                MowziePresser::KillAll(30),
-                60,
-            )
-        });
-        let ds: Vec<f64> = rs
-            .iter()
-            .map(|r| {
-                assert_eq!(r.members[29], 1, "a den holds its Frostmaw before the kill");
-                assert_eq!(r.members[30], 0, "killed on day 30");
-                r.whole_from(31).map_or(f64::INFINITY, |d| (d - 30) as f64)
-            })
-            .collect();
-        println!("kill all dens over {} seeds, days to whole: {:?}", rs.len(), band(&ds));
-        for (r, d) in rs.iter().zip(&ds) {
-            assert!((11.5..=13.0).contains(d), "{d} days");
-            assert_eq!(r.members[54], 1, "whole at 24 days");
-            assert_eq!(r.arrivals, 1);
-        }
-    }
-
     #[test]
     fn kill_all_dens() {
-        kill_all_dens_over(&mowzie_seeds(3));
+        crate::sim::killall::assert_row("dens", &mowzie_seeds(3));
     }
 
     #[test]
     #[ignore]
     fn kill_all_dens_30_seeds() {
-        kill_all_dens_over(&seeds());
+        crate::sim::killall::assert_row("dens", &seeds());
     }
 
-    /// Every grove (K 5, 7 and 9) wiped by a player on a day, plunder out: the warriors come back
-    /// one at a time, whole in 45 to 100 days (K 5, 7, 9 in that order), and all groves of one K
-    /// are whole on the same day (no chance in the rule). The design's model reads 54, 73 and 91
-    /// days with every kill read at once; the engine's first wait is read at the first death.
+    /// Every grove (K 5, 7 and 9) wiped by a player on a day, plunder out: the kill-all table's
+    /// three grove rows, and a bigger grove whole later (the design's model reads 54, 73 and 91
+    /// days with every kill read at once; the engine's first wait is read at the first death).
     fn kill_all_groves_over(seeds: &[u64]) {
-        let mut at = Vec::new();
-        for k in [5u16, 7, 9] {
-            let rs = par_map(seeds, threads(), |&seed| {
-                mowzie_run(
-                    seed,
-                    quiet_cultures(),
-                    "umvuthana",
-                    k,
-                    MowziePresser::KillAll(30),
-                    160,
-                )
-            });
-            let ds: Vec<u64> = rs
-                .iter()
-                .map(|r| {
-                    assert_eq!(r.members[29], u32::from(k));
-                    assert_eq!(r.members[30], 0, "wiped on day 30");
-                    r.whole_from(31).map_or(u64::MAX, |d| d - 30)
-                })
-                .collect();
-            println!("kill all groves K {k}, days to whole over {} seeds: {ds:?}", rs.len());
-            assert!(ds.iter().all(|&d| d == ds[0]), "one day for one K: {ds:?}");
-            assert!((45..=100).contains(&ds[0]), "K {k}: {}", ds[0]);
-            at.push(ds[0]);
-        }
-        assert!(at[0] < at[1] && at[1] < at[2], "a bigger grove takes longer: {at:?}");
+        let at: Vec<Option<f64>> = ["groves.k5", "groves.k7", "groves.k9"]
+            .map(|n| crate::sim::killall::assert_row(n, seeds)[0].whole)
+            .into();
+        assert!(
+            at[0] < at[1] && at[1] < at[2],
+            "a bigger grove takes longer: {at:?}"
+        );
     }
 
     #[test]
