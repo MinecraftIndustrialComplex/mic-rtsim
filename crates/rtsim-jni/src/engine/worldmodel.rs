@@ -27,7 +27,7 @@
 use std::collections::{BTreeSet, VecDeque};
 
 use rtsim_ecology::herds::habitat::{
-    FoundingTunables, HabitatClimate, RegionPlan, plan_region, range_capacity,
+    FoundingTunables, HabitatClimate, RegionPlan, plan_region, range_capacity, region_herd_name,
 };
 use rtsim_kernel::page::{PageKey, PageStore, SaveBatch};
 use rtsim_space::habitat::{DICT_BIOME, HABITAT, HabitatRecord, KNOWN_END, KnownRecord};
@@ -343,11 +343,20 @@ pub(super) fn queue_ranges(st: &mut State, ranges: Vec<(u16, i32, i32)>) {
 }
 
 /// Re-caps the K of region `k`'s range to what its ground feeds now (EQC504): the cells of a
-/// founded region changed (more of it known, or its ground rebuilt), so its open cells' habitat
-/// and yield did. Like a founding, the change lands at the hand-over's time.
+/// founded region changed (more of it known, or its ground rebuilt), its herd was recolonised by
+/// another species (EQC511), or the engine started (EQC512). Only the world model's own range,
+/// the row named for the region (X2-11), is re-capped: a herd a test order founded there keeps
+/// the K it was ordered with (EQC516). Like a founding, the change lands at the hand-over's time.
 fn recap(st: &mut State, climate: &HabitatClimate, k: RegionKey) {
+    let name = region_herd_name(k);
     for h in st.herds.engine.range_herds((k.frame, k.rx, k.rz)) {
-        let Some(species) = st.herds.engine.herd(h).map(|x| x.species) else {
+        let Some(species) = st
+            .herds
+            .engine
+            .herd(h)
+            .filter(|x| x.name == name)
+            .map(|x| x.species)
+        else {
             continue;
         };
         let cap = {
