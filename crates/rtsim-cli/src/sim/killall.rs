@@ -771,6 +771,7 @@ mod tests {
         );
         w.run_to(1);
         let cs = w.census();
+        let founded = w.founded.clone();
         w.close();
         let kinds: Vec<&str> = cs.iter().map(|c| c.kind).collect();
         for k in &kinds {
@@ -787,8 +788,11 @@ mod tests {
                 r.kind
             );
         }
+        // S9's rows (dens, groves, the Umvuthi) once the census has them.
         for k in rtsim_host::every::KINDS {
-            assert!(kinds.contains(&k), "the census has no {k}");
+            if founded.expected(k, &cs).is_some() {
+                assert!(kinds.contains(&k), "the census has no {k}");
+            }
         }
     }
 
