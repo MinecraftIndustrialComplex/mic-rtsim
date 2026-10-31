@@ -2135,10 +2135,13 @@ pub fn mowzie_world_on(
                 structure: if den { DEN_STRUCTURE } else { GROVE_STRUCTURE },
                 pos: (p.x, 64, p.z),
                 home_bodies: if den { 1 } else { warriors },
+                // A grove is found with its Umvuthi, as the Mowzie plugin reports it (GroveKind,
+                // MZB-401): found without, it would wait for an heir at the cap that a grove
+                // nobody loads never seats (slice S11, EQC489).
                 census: if den {
                     (boundary::CENSUS_CHIEF | boundary::CENSUS_CRYSTAL) as u8
                 } else {
-                    0
+                    boundary::CENSUS_CHIEF as u8
                 },
                 row: FoundRow::none(),
             }),

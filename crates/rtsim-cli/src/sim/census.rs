@@ -128,10 +128,20 @@ impl Infrastructure for Wells {
     }
 }
 
-/// The conflict's world and its one camp.
+/// The conflict's world and its camps, and the heirs its groves seated (the Umvuthi's row,
+/// EQC487).
 pub struct Camp {
     pub w: World,
     pub c: rtsim_conflict::Conflict,
+    pub chiefs: rtsim_conflict::synth::ChiefBook,
+}
+
+impl Camp {
+    fn new(w: World, c: rtsim_conflict::Conflict) -> Box<Camp> {
+        let mut chiefs = rtsim_conflict::synth::ChiefBook::default();
+        chiefs.look(&c);
+        Box::new(Camp { w, c, chiefs })
+    }
 }
 
 /// The pirate haven's coast.
@@ -171,7 +181,7 @@ impl Scenario {
                 let mut c = synth::conflict(seed, &w);
                 c.add_faction(&mut w, synth::CAMP, "goblin", synth::CAMP_POS, Tick::ZERO)
                     .expect("the goblin culture");
-                Scenario::Conflict(Box::new(Camp { w, c }))
+                Scenario::Conflict(Camp::new(w, c))
             }
             Kind::Camps => {
                 let (w, c) = rtsim_conflict::synth::camps(
@@ -180,11 +190,11 @@ impl Scenario {
                     seed,
                     rtsim_conflict::Cultures::builtin(),
                 );
-                Scenario::Conflict(Box::new(Camp { w, c }))
+                Scenario::Conflict(Camp::new(w, c))
             }
             Kind::Mowzie => {
                 let (w, c, _) = rtsim_conflict::synth::mowzie_world(6, 3, 3, 7, seed);
-                Scenario::Conflict(Box::new(Camp { w, c }))
+                Scenario::Conflict(Camp::new(w, c))
             }
             Kind::Villages => Scenario::Villages(Box::new(Villages::new(seed))),
         }
@@ -209,6 +219,7 @@ impl Scenario {
                     t = (t + STEP).min(to);
                     c.c.run_until(&mut c.w, &mut NoInfrastructure, t);
                     c.w.run_until(t);
+                    c.chiefs.look(&c.c);
                 }
             }
             Scenario::Villages(v) => v.run_to(to),
@@ -232,6 +243,7 @@ impl Scenario {
             Scenario::Conflict(c) => {
                 let mut out = c.w.census();
                 out.extend(c.c.census());
+                out.extend(c.chiefs.row(&c.c));
                 out
             }
             Scenario::Villages(v) => v.w.census(),
@@ -730,6 +742,15 @@ mod tests {
         let g = kind(&cs, "conflict.grove");
         assert_eq!((g.sites, g.capacity, g.empty), (3, 21, 0), "{g:?}");
         assert!(g.members <= 21 && g.members >= 15, "{g:?}");
+        // The Umvuthi (slice S11, EQC457): a site a grove, K 1, each held from its founding
+        // (EQC489).
+        let u = kind(&cs, "conflict.umvuthi");
+        assert_eq!(
+            (u.sites, u.members, u.capacity, u.empty, u.renewals),
+            (3, 3, 3, 0, 0),
+            "{u:?}"
+        );
+        assert!(u.mean_p().abs() < 1e-6, "{u:?}");
     }
 
     /// The villages scenario counts each village by its K (slice S6): a human village's beds, a
@@ -844,6 +865,62 @@ mod tests {
         assert_eq!(census_of(&grove, "conflict.den").sites, 0);
         assert_eq!(census_of(&grove, "conflict.den").renewals, 0);
         assert_eq!(grove.c.stats.arrivals, grove.c.stats.grove_arrivals);
+
+        // The Umvuthi (slice S11, EQC457): a grove whose first body is its untagged Umvuthi,
+        // adopted at the first census. Killed by a player: the row reads it empty at P 1; its heir
+        // sits after `6 x 2^1` = 12 days, and the row reads it held again, one renewal.
+        let mut quiet = rtsim_conflict::Cultures::builtin();
+        for c in &mut quiet.list {
+            c.def.plunder_mean_days = None;
+        }
+        let mut grove = CampRun::with_cultures(10, quiet, "umvuthana", 7);
+        let umvuthi = rtsim_conflict::engine::body_id(
+            &grove.c.cultures,
+            "mic_rtsim:conflict/umvuthana/umvuthi",
+        );
+        {
+            let b = grove
+                .plugin
+                .camp_world(grove.key)
+                .bodies
+                .first_mut()
+                .unwrap();
+            b.body = umvuthi;
+            b.chief = true;
+        }
+        come_in(&mut grove);
+        let mut book = rtsim_conflict::synth::ChiefBook::default();
+        book.look(&grove.c);
+        let row = |r: &CampRun, b: &rtsim_conflict::synth::ChiefBook| b.row(&r.c).expect("a grove");
+        let u = row(&grove, &book);
+        assert_eq!(
+            (u.sites, u.members, u.empty, u.renewals),
+            (1, 1, 0, 0),
+            "{u:?}"
+        );
+        assert!(u.mean_p().abs() < 1e-6, "{u:?}");
+        let chief = grove.plugin.camps[&grove.key]
+            .bodies
+            .iter()
+            .find(|b| b.slot == rtsim_conflict::engine::CHIEF_SLOT && b.generation != 0)
+            .expect("a seated Umvuthi")
+            .uuid;
+        let at = grove.c.now() + 1;
+        assert!(
+            grove
+                .plugin
+                .camp_kill(grove.key, chief, boundary::BY_PLAYER, at)
+        );
+        grove.run(at + 5);
+        book.look(&grove.c);
+        let u = row(&grove, &book);
+        assert_eq!((u.members, u.empty), (0, 1), "{u:?}");
+        assert!((u.mean_p() - 1.0).abs() < 1e-3, "one Umvuthi: {u:?}");
+        let to = grove.c.now() + 13 * TICKS_PER_DAY;
+        grove.run(to);
+        book.look(&grove.c);
+        let u = row(&grove, &book);
+        assert_eq!((u.members, u.empty, u.renewals), (1, 0, 1), "{u:?}");
     }
 
     /// With nobody watching nothing presses: every kind keeps its sites, every pressure is 0, no

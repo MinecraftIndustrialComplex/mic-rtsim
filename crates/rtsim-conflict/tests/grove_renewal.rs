@@ -862,3 +862,37 @@ fn an_unclaimed_umvuthi_death_is_a_players_loss_and_a_mobs_is_not() {
         );
     }
 }
+
+/// Slice S11, EQC457 and EQC487: the census row `conflict.umvuthi` follows the grove's chief. A
+/// grove with its Umvuthi reads one site held at P 0; the Umvuthi killed by a player reads it
+/// empty at P 1 and is no warrior lost; its heir seated reads it held again, one renewal as
+/// `synth::ChiefBook` counts the heirs.
+#[test]
+fn the_umvuthi_row_follows_its_chief() {
+    let mut r = adopted(34, 7);
+    let mut book = synth::ChiefBook::default();
+    book.look(&r.c);
+    let row = |r: &CampRun, b: &synth::ChiefBook| b.row(&r.c).expect("a grove");
+    let u = row(&r, &book);
+    assert_eq!(
+        (u.kind, u.sites, u.members, u.capacity),
+        ("conflict.umvuthi", 1, 1, 1)
+    );
+    assert_eq!((u.empty, u.renewals), (0, 0));
+    near(u.mean_p() as f32, 0.0, "nobody has farmed it");
+    let warriors = whole(&r);
+    kill_chief(&mut r, boundary::BY_PLAYER);
+    book.look(&r.c);
+    let u = row(&r, &book);
+    assert_eq!((u.members, u.empty, u.renewals), (0, 1, 0), "{u:?}");
+    near(u.mean_p() as f32, 1.0, "one Umvuthi of one");
+    assert_eq!(whole(&r), warriors, "the Umvuthi is no warrior");
+    r.run(heir_due(&r) + 100);
+    book.look(&r.c);
+    let u = row(&r, &book);
+    assert_eq!((u.members, u.empty, u.renewals), (1, 0, 1), "{u:?}");
+    // A world with no grove has no row.
+    let camp = CampRun::new(35, "frostmaw", 1);
+    assert!(synth::ChiefBook::default().row(&camp.c).is_none());
+    ok(&mut r);
+}
