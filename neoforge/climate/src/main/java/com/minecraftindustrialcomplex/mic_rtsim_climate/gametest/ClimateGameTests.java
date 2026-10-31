@@ -26,7 +26,8 @@ public final class ClimateGameTests {
      * IND_CONDITIONS carries Serene Seasons' calendar (four seasons of its season duration, season 0 begun
      * its cycle ticks ago, the current season); after the cycle is moved to mid-summer (what
      * {@code /season set mid_summer} does) the next one says summer, with the origin moved by what was
-     * skipped; the temperature hook is mic-climate's.
+     * skipped; the temperature hook is mic-climate's, for the industry only (the habitat sampler gets no live
+     * degrees, EQC520).
      */
     @GameTest(template = "yard", batch = "climate_1", timeoutTicks = 400)
     public static void conditionsComeFromSereneSeasons(GameTestHelper helper) {
@@ -66,11 +67,12 @@ public final class ClimateGameTests {
                     record("conditionsComeFromSereneSeasons", "after the move to mid-summer", "origin " + last.getLong(IndRecords.Conditions.SEASON_ORIGIN)
                             + ", temperature " + t + " C (mic-climate " + mc + ")");
                     check("the temperature is mic-climate's", t == mc);
-                    // The habitat sampler's climate is the same source (choice X2-7).
+                    // The habitat sampler's season is the same source (choice X2-7); its degrees are not the
+                    // moment's: the plugin gives it none, so it reads the biome's (EQC520).
                     long[] hs = com.minecraftindustrialcomplex.mic_rtsim.habitat.Climates.season(helper.getLevel().getServer());
                     check("the habitat sampler's season: " + java.util.Arrays.toString(hs), hs != null && hs[0] == 1 && hs[1] == 4);
-                    float ht = com.minecraftindustrialcomplex.mic_rtsim.habitat.Climates.temperature(helper.getLevel(), p);
-                    check("the habitat sampler's temperature: " + ht, ht == mc);
+                    float ht = com.minecraftindustrialcomplex.mic_rtsim.habitat.Climates.yearRoundCelsius(helper.getLevel(), p);
+                    check("no year-round temperature for the habitat sampler from the plugin: " + ht, Float.isNaN(ht));
                 })
                 .thenSucceed();
     }

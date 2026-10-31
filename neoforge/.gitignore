@@ -13,6 +13,8 @@
 /*/run-samplerbench/
 /run/
 /run-gametest/
+# The unit tests' log4j files (core and iceandfire put Minecraft and NeoForge on their test classpath).
+/*/logs/
 
 .idea/
 .vscode/

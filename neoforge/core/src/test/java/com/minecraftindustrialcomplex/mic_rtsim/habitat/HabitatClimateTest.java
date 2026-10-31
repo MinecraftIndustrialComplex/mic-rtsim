@@ -89,4 +89,40 @@ final class HabitatClimateTest {
         assertEquals(19.52f, plains, 1e-3f, "plains on mic-climate's scale");
         assertEquals(56f, desert, 1e-3f, "desert on mic-climate's scale");
     }
+
+    /** A source that knows a year-round climate (Deep Time's annual mean, later): taken as it is, never its live degrees. */
+    @Test
+    void aSourcesYearRoundClimateIsTakenAndItsLiveDegreesNever() {
+        ClimateSource climatology = new ClimateSource() {
+            @Override
+            public String name() {
+                return "a year-round stub";
+            }
+
+            @Override
+            public float yearRoundCelsius(ServerLevel level, BlockPos pos) {
+                return 7.25f;
+            }
+        };
+        Climates.register(climatology);
+        try {
+            weather.night = true;
+            weather.rain = true;
+            assertEquals(7.25f, HabitatSampler.cellCelsius(null, 10, 20, cell(0.8f)), "at night in rain");
+            weather.night = false;
+            weather.rain = false;
+            assertEquals(7.25f, HabitatSampler.cellCelsius(null, 10, 20, cell(2.0f)), "at noon in clear weather");
+        } finally {
+            Climates.unregister(climatology);
+        }
+    }
+
+    /** The scale's ends and its float arithmetic, as rtsim_space::model::vanilla_celsius's test. */
+    @Test
+    void theScaleIsMicClimates() {
+        assertEquals(19.52f, HabitatSampler.vanillaCelsius(0.8f), 1e-3f);
+        assertEquals(56f, HabitatSampler.vanillaCelsius(2.0f), 1e-3f);
+        assertEquals(-20f, HabitatSampler.vanillaCelsius(-0.7f), 1e-3f);
+        assertEquals(-4.8f, HabitatSampler.vanillaCelsius(0.0f), 1e-3f);
+    }
 }
