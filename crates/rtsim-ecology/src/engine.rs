@@ -515,6 +515,9 @@ pub struct Dragons {
     /// A dragon whose home spawn the plugin refused is not asked again before this tick, so a
     /// refusal that stands does not make a record a step (EQC116). Not saved.
     pub(crate) home_hold: BTreeMap<DragonId, Tick>,
+    /// Young dragons that found no lair they could live in and left the sim (EQC534). A
+    /// diagnostic: not saved.
+    pub emigrated: u64,
 }
 
 /// How a lair new to the engine starts its wait ([`Dragons::found_lair`], MZB-1012).
@@ -680,6 +683,7 @@ impl Dragons {
             lairs_in: BTreeMap::new(),
             pending_home: BTreeSet::new(),
             home_hold: BTreeMap::new(),
+            emigrated: 0,
         }
         .with_oil_flags()
     }
@@ -1060,53 +1064,70 @@ impl Dragons {
         self.stats.player_losses += 1;
     }
 
-    /// The share of its need a newcomer would catch at lair `l` (the arrival gate, §2.4.1 and
-    /// §3.4): `W / (W + half)` over the lair's hunting ground, the nine regions around it (the
-    /// model's 3 x 3, §1's "the herds in the nine regions around the lair"). W is `gate_village`
-    /// with a village there (`gate_wild` without) plus `(N - R)^2 / K` for each herd there. With
-    /// no herds lent (an engine run without them) the gate is open: 1.
+    /// The share of its need one more dragon would catch at lair `l` (the arrival gate, §2.4.1
+    /// and §3.4, the dragon food gate EQC533): `W / (W + half)` over the lair's hunting ground,
+    /// the nine regions around it (the model's 3 x 3, §1's "the herds in the nine regions around
+    /// the lair"). W sums `gate_wild`, `gate_village` for each village there and `(N - R)^2 / K`
+    /// for each herd there, each divided by one more than the other occupied (or claimed) lairs
+    /// whose nine regions hold it: the newcomer's share of what every lair on the same ground
+    /// hunts. With no herds lent (an engine run without them) the gate is open: 1.
     pub fn ground_share(&self, w: &World, l: LairId, at: Tick) -> f64 {
         let Some(hd) = &self.wild else {
             return 1.0;
         };
         let lair = &self.lairs[l as usize];
         let rb = rtsim_travel::legs::REGION_BLOCKS;
+        let frame = lair.pos.frame;
         let (lx, lz) = (i64::from(lair.pos.x), i64::from(lair.pos.z));
-        let (rx, rz) = rtsim_travel::legs::LegIndex::region_of(lx, lz);
-        let t = self.topo(lair.pos.frame);
-        // In the nine regions: the point brought to the lair's side of any seam lies in a region
-        // within one of the lair's.
-        let ground = |p: (i64, i64)| {
-            let p = if t.is_flat() {
-                p
-            } else {
-                t.toward((lx, lz), p)
-            };
+        let t = self.topo(frame);
+        // Whether the nine regions around `from` hold `p`: the point brought to `from`'s side of
+        // any seam lies in a region within one of `from`'s.
+        let holds = |from: (i64, i64), p: (i64, i64)| {
+            let p = if t.is_flat() { p } else { t.toward(from, p) };
+            let (fx, fz) = rtsim_travel::legs::LegIndex::region_of(from.0, from.1);
             let (px, pz) = rtsim_travel::legs::LegIndex::region_of(p.0, p.1);
-            (px - rx).abs() <= 1 && (pz - rz).abs() <= 1
+            (px - fx).abs() <= 1 && (pz - fz).abs() <= 1
+        };
+        // The newcomer and the other lairs, occupied or claimed, whose nine regions hold `p`.
+        let mouths = |p: (i64, i64)| {
+            let mut n = 1.0;
+            for (rx, rz) in self.regions_near(frame, Rect::around(p.0, p.1, 2 * rb)) {
+                let Some(ls) = self.lair_cells.get(&(frame, rx, rz)) else {
+                    continue;
+                };
+                for &i in ls {
+                    if i == l || self.vacant.contains(&i) {
+                        continue;
+                    }
+                    let o = self.lairs[i as usize].pos;
+                    if holds((i64::from(o.x), i64::from(o.z)), p) {
+                        n += 1.0;
+                    }
+                }
+            }
+            n
         };
         // Every point of the nine regions is within this of the lair.
         let reach = 2 * rb * 1415 / 1000;
-        let village = self
+        let mut weight = self.tun.gate_wild / mouths((lx, lz));
+        for n in self
             .index
-            .villages_near(t, lair.pos.frame, lx, lz, reach)
-            .into_iter()
-            .any(|n| {
-                let p = w.nodes[n as usize].pos;
-                ground((i64::from(p.x), i64::from(p.z)))
-            });
-        let mut weight = if village {
-            self.tun.gate_village
-        } else {
-            self.tun.gate_wild
-        };
-        for o in hd.prey_near(lair.pos.frame, lx, lz, reach, at, 0) {
-            if !ground((i64::from(o.pos.0), i64::from(o.pos.1))) {
+            .villages_near(t, frame, lx, lz, reach)
+        {
+            let p = w.nodes[n as usize].pos;
+            let p = (i64::from(p.x), i64::from(p.z));
+            if holds((lx, lz), p) {
+                weight += self.tun.gate_village / mouths(p);
+            }
+        }
+        for o in hd.prey_near(frame, lx, lz, reach, at, 0) {
+            let p = (i64::from(o.pos.0), i64::from(o.pos.1));
+            if !holds((lx, lz), p) {
                 continue;
             }
             let k = hd.herd(o.herd).map_or(1, |h| h.k.max(1));
             let n = o.available as f64;
-            weight += n * n / k as f64;
+            weight += n * n / k as f64 / mouths(p);
         }
         weight / (weight + self.tun.gate_half)
     }
@@ -1244,6 +1265,9 @@ impl Dragons {
         }
         self.far.mark(d);
         self.schedule(at + left, Ev::Death { d });
+        // Its clutch timer (EQC532): one per dragon, for life; only a lair's breeder draws.
+        let t = self.next_clutch(d, at);
+        self.schedule(t, Ev::Breed { d });
         if let Some(l) = n.lair {
             self.occupy(w, d, l, at, false);
             self.roost(w, d, at);
@@ -1251,8 +1275,9 @@ impl Dragons {
         d
     }
 
-    /// Two dragons of a lair become mates; the pair breeds (M1's recommendation).
-    pub fn pair(&mut self, w: &mut World, a: DragonId, b: DragonId, at: Tick) {
+    /// Two dragons of a lair become mates (M1's recommendation). A pair is one breeder, its
+    /// lair's (EQC532): the clutch timers every dragon has decide when it breeds.
+    pub fn pair(&mut self, w: &mut World, a: DragonId, b: DragonId, _at: Tick) {
         if a == b || !self.dragons.contains(a) || !self.dragons.contains(b) {
             return;
         }
@@ -1260,13 +1285,39 @@ impl Dragons {
         self.dragons.get_mut(b).expect("live").mate = Some(a);
         self.refresh_heir(w, a);
         self.refresh_heir(w, b);
-        let female = if self.dragons[a].gender == Gender::Female {
-            a
-        } else {
-            b
-        };
-        let t = self.next_clutch(female, at);
-        self.schedule(t, Ev::Breed { d: female });
+    }
+
+    /// The chance a clutch hatches at a lair whose fed share is `fed` (§2.4.1, EQC531): zero at
+    /// or below maintenance (`starve_leave`), rising in a straight line with the surplus above
+    /// it to one at a full share. A breeder clutches every `breed_days`, so its births a day are
+    /// this over `breed_days`: the model's numerical response.
+    pub fn clutch_chance(&self, fed: f32) -> f64 {
+        let m = f64::from(self.tun.starve_leave);
+        let f = f64::from(fed);
+        if f <= m || m >= 1.0 {
+            return 0.0;
+        }
+        ((f - m) / (1.0 - m)).min(1.0)
+    }
+
+    /// Lair `l`'s breeder at `at` (EQC532): its oldest mature occupant (Ice and Fire's
+    /// `isMature`, stage 4), the lower id on a tie. A pair, or a parent with its young, is one
+    /// breeder.
+    pub fn breeder_of(&self, l: LairId, at: Tick) -> Option<DragonId> {
+        let mut best: Option<(u64, DragonId)> = None;
+        for &o in &self.lairs[l as usize].occupants {
+            let Some(x) = self.dragons.get(o) else {
+                continue;
+            };
+            if !x.stage(self.tun.species(x.species), at).is_mature() {
+                continue;
+            }
+            let age = x.age(at);
+            if best.is_none_or(|(a, b)| age > a || (age == a && o.to_bits() < b.to_bits())) {
+                best = Some((age, o));
+            }
+        }
+        best.map(|(_, d)| d)
     }
 
     fn next_clutch(&self, d: DragonId, at: Tick) -> Tick {
@@ -4631,25 +4682,34 @@ impl Dragons {
 
     // ---- population -----------------------------------------------------------------------------
 
+    /// A clutch timer (EQC531, EQC532): the lair's breeder hatches a young one with
+    /// [`Dragons::clutch_chance`] of its lair's fed share, mate or no mate; anyone else waits for
+    /// the next. Every dragon keeps one timer, every `breed_days` once mature.
     fn breed(&mut self, w: &mut World, d: DragonId, at: Tick) {
         let Some(x) = self.dragons.get(d) else {
             return;
         };
-        let Some(m) = x.mate.filter(|m| self.dragons.contains(*m)) else {
-            return;
-        };
+        let (lair, seed) = (x.lair, x.seed);
         let sp = self.tun.species(x.species).clone();
-        let (Some(l), true) = (x.lair, self.dragons[m].lair == x.lair) else {
-            let t = at + sp.breed_days * TICKS_PER_DAY;
-            self.schedule(t, Ev::Breed { d });
+        let mature = x.stage(&sp, at).is_mature();
+        let next = if mature {
+            at + sp.breed_days * TICKS_PER_DAY
+        } else {
+            self.next_clutch(d, at)
+        };
+        self.schedule(next, Ev::Breed { d });
+        let Some(l) = lair.filter(|_| mature) else {
             return;
         };
-        if !x.stage(&sp, at).is_mature() || !self.dragons[m].stage(&sp, at).is_mature() {
-            let t = self.next_clutch(d, at);
-            self.schedule(t, Ev::Breed { d });
+        if self.breeder_of(l, at) != Some(d) {
             return;
         }
-        let mut rng = StreamKey::new(self.seed, SYS_BREED, x.seed).slot(at.0);
+        let chance = self.clutch_chance(self.lairs[l as usize].fed);
+        let mut rng = StreamKey::new(self.seed, SYS_BREED, seed).slot(at.0);
+        if chance <= 0.0 || rng.next_f64() >= chance {
+            return;
+        }
+        let x = &self.dragons[d];
         let gender = if rng.below(2) == 0 {
             Gender::Female
         } else {
@@ -4696,7 +4756,6 @@ impl Dragons {
             Some(d),
             format!("hatches a young one, {}", self.dragons[child].name),
         );
-        self.schedule(at + sp.breed_days * TICKS_PER_DAY, Ev::Breed { d });
     }
 
     fn disperse(&mut self, w: &mut World, d: DragonId, at: Tick) {
@@ -4724,7 +4783,32 @@ impl Dragons {
                 self.track_lair(l);
                 self.fly(w, d, Purpose::Claim(l), at);
             }
-            None => self.schedule(at + 10 * TICKS_PER_DAY, Ev::Disperse { d }),
+            None => {
+                // No lair in reach would feed it (EQC534): past its dispersal age by
+                // `emigrate_after_days`, it flies off the map and leaves the sim.
+                let sp = self.tun.species(self.dragons[d].species);
+                let last = (sp.disperse_days + self.tun.emigrate_after_days) * TICKS_PER_DAY;
+                if self.dragons[d].age(at) < last {
+                    self.schedule(at + 10 * TICKS_PER_DAY, Ev::Disperse { d });
+                    return;
+                }
+                self.emigrated += 1;
+                let actor = self.dragons[d].actor;
+                let here = self.dragons[d].position(&self.topo, &self.lairs, at).0;
+                self.tape
+                    .event(kinds::DRAGONS_DEPART, spot(at, here), did(d), 0, 0)
+                    .text(|| "finds no lair it could live in and leaves the sim".to_string());
+                self.note(
+                    at,
+                    "emigrate",
+                    Some(d),
+                    "no lair in reach would feed it: flies off the map".to_string(),
+                );
+                if w.knowledge.notable(actor).is_some() {
+                    w.knowledge.die(actor, at);
+                }
+                self.remove(w, d, at);
+            }
         }
     }
 
