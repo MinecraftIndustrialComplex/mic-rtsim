@@ -197,6 +197,7 @@ public final class RibbitRenewalGameTests {
         ServerPlayer player = FakePlayers.add(level, c.add(0, 0, 4), "ribbit_watcher");
         double sx = v.meeting.getX() + 192, sz = v.meeting.getZ();
         List<ChunkPos> forced = corridor(level, v);
+        level.setDayTime(1000); // the walk is by day: another test's night is not this one's
         long op = engineOp();
         long[] arrived0 = {RtsimTests.session().phase1.walkers.arrived()};
         long[] placed0 = {RtsimTests.session().phase1.walkers.placed()};
@@ -316,8 +317,77 @@ public final class RibbitRenewalGameTests {
                             Math.hypot(home.getX() - v.meeting.getX(), home.getZ() - v.meeting.getZ()) <= 24);
                     check("the census counts it: " + Census.scan(villages, level, v).residents(),
                             Census.scan(villages, level, v).residents() >= 1);
+                    level.setDayTime(1000);
                     for (RibbitEntity each : ribbitsIn(helper, v))
                         each.discard();
+                    for (ChunkPos p : forced)
+                        level.setChunkForced(p.x, p.z, false);
+                    FakePlayers.remove(player);
+                    RtsimTests.forget(v);
+                })
+                .thenSucceed();
+    }
+
+    /**
+     * A settler walks in through the night (EQC330): Ribbits' go-home goal pulls a Ribbit to its home at night, and a home 96 to
+     * 176 blocks away is a place the goal cannot path to; each tick it fails it cancels the navigation the steering started,
+     * and the walk stalled for good (here at night from the start, the Ribbit stood 111 blocks out until the walk's deadline put
+     * it at the village). The home is where the walker is going, so the goal and the steering go the same way, and the walk
+     * ends within 12 blocks of the meeting point on its own.
+     */
+    @GameTest(template = "arena", timeoutTicks = 14000, batch = "mic_rtsim_ribbits_night_walk")
+    public static void aRibbitSettlerWalksInThroughTheNight(GameTestHelper helper) {
+        ServerLevel level = helper.getLevel();
+        Village v = RtsimTests.adoptArena(helper, MicRtsimRibbits.CULTURE);
+        ScriptedEngine stub = RtsimTests.engine();
+        VillageRegistry villages = RtsimTests.session().phase1.villages;
+        Vec3 c = RtsimTests.centre(helper);
+        ServerPlayer player = FakePlayers.add(level, c.add(0, 0, 4), "ribbit_night_walk");
+        List<ChunkPos> forced = corridor(level, v);
+        level.setDayTime(18000);
+        long op = engineOp();
+        long[] arrived0 = {RtsimTests.session().phase1.walkers.arrived()};
+        long[] placed0 = {RtsimTests.session().phase1.walkers.placed()};
+        long[] lastSample = {0};
+        java.util.UUID[] settlerId = {null};
+        StringBuilder trace = new StringBuilder();
+        arrive(stub, v, helper, op, WALK_IN, v.meeting.getX() + 192, v.meeting.getZ());
+        helper.startSequence()
+                .thenWaitUntil(() -> {
+                    level.setDayTime(18000);
+                    check("the order was answered and a walker is registered: " + villages.walkers.size(),
+                            result(stub, op) != null && villages.walkers.size() >= 1);
+                })
+                .thenExecute(() -> {
+                    for (VillageRegistry.Walker w : villages.walkers.values())
+                        if (w.village == v.id)
+                            settlerId[0] = w.id;
+                    check("the settler is registered", settlerId[0] != null);
+                })
+                .thenWaitUntil(() -> {
+                    level.setDayTime(18000);
+                    var settler = level.getEntity(settlerId[0]);
+                    long tick = helper.getTick();
+                    if (tick - lastSample[0] >= 500) {
+                        lastSample[0] = tick;
+                        trace.append(" t").append(tick).append(' ').append(settler == null ? "gone"
+                                : (int) Math.hypot(settler.getX() - (v.meeting.getX() + 0.5), settler.getZ() - (v.meeting.getZ() + 0.5)));
+                        trace.append(';');
+                    }
+                    check("it walked to within 12 blocks of the meeting point at night, not put there: placed "
+                            + (RtsimTests.session().phase1.walkers.placed() - placed0[0]) + ", arrived "
+                            + (RtsimTests.session().phase1.walkers.arrived() - arrived0[0]) + ", trace" + trace,
+                            RtsimTests.session().phase1.walkers.arrived() >= arrived0[0] + 1);
+                })
+                .thenExecute(() -> {
+                    check("it was not put at the village by the deadline: " + (RtsimTests.session().phase1.walkers.placed() - placed0[0]),
+                            RtsimTests.session().phase1.walkers.placed() == placed0[0]);
+                    level.setDayTime(1000);
+                    for (RibbitEntity r : ribbitsIn(helper, v))
+                        r.discard();
+                    var settler = level.getEntity(settlerId[0]);
+                    if (settler != null)
+                        settler.discard();
                     for (ChunkPos p : forced)
                         level.setChunkForced(p.x, p.z, false);
                     FakePlayers.remove(player);
@@ -341,6 +411,7 @@ public final class RibbitRenewalGameTests {
         Vec3 c = RtsimTests.centre(helper);
         ServerPlayer player = FakePlayers.add(level, c.add(0, 0, 4), "ribbit_pair");
         List<ChunkPos> forced = corridor(level, v);
+        level.setDayTime(1000);
         long first = opNotMerchant(), second = opNotMerchant();
         arrive(stub, v, helper, first, WALK_IN, v.meeting.getX() + 192, v.meeting.getZ());
         arrive(stub, v, helper, second, WALK_IN, v.meeting.getX() + 192, v.meeting.getZ());

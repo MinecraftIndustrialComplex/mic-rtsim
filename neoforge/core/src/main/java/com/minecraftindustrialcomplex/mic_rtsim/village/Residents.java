@@ -47,7 +47,8 @@ public final class Residents {
     /**
      * Makes a block a resident's home (slice S6 review, EQC330): the plugin's hook for a type whose own goals pull it home at
      * night ({@code ribbits:ribbit}'s go-home goal). A settler walks in from 96 to 176 blocks out and is made there, which is
-     * where such a type takes its home from; it is homed at the village's meeting point instead.
+     * where such a type takes its home from; it is homed at the point it walks to, and at the village's meeting point when the
+     * walk ends.
      */
     public interface Rehomer {
         void rehome(Entity e, BlockPos home);

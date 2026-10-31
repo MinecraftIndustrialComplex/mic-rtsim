@@ -148,9 +148,9 @@ public final class RtsimApi {
     }
 
     /**
-     * How a resident of this entity type is homed at the village's meeting point (slice S6 review, EQC330): called for a settler
-     * that walks in, when it is made, when its walk ends and when it is put at the village. For a type that has a home of its own
-     * its own goals pull it back to (a Ribbit's go-home goal does at night).
+     * How a resident of this entity type is homed (slice S6 review, EQC330): called for a settler that walks in, with the point
+     * it is steered to at each hop and with the village's meeting point when its walk ends or it is put at the village. For a
+     * type that has a home of its own that its own goals pull it back to (a Ribbit's go-home goal does at night).
      */
     public static void registerRehomer(net.minecraft.world.entity.EntityType<?> type, com.minecraftindustrialcomplex.mic_rtsim.village.Residents.Rehomer rehomer) {
         com.minecraftindustrialcomplex.mic_rtsim.village.Residents.registerRehomer(type, rehomer);
