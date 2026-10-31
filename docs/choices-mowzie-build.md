@@ -12635,6 +12635,58 @@ are superseded by these.
   stamps and waits are `long`. In the plugin `BossArrival` stores no time and the tests read `ServerLevel.getGameTime()` into
   `long`. Checked by reading the diff since a4717c1f for every `u32`, `i32`, `int` and cast near a tick, stamp, due or wait.
 
+**S9 review fixes (an Opus review before landing; branch `fix/s9-review`, MZB-1287 to MZB-1292).** Each behaviour fix has its test
+committed first and seen failing on the engine without the fix, then passing.
+
+- **MZB-1287** (P2, the Umvuthi's column that dies with it books the warriors as the player's; coordinator's choice, undoable): the jar's
+  `EntityUmvuthi.die` sets a countdown on the devoted Umvuthana, and they die by `indirectMagic(self, null)`, a BAND_CASUALTIES with `by`
+  NONE. MZB-1256 took "no loss to the warriors", but `pool_cause` (S7's district rule: an unclaimed death at a player's district is the
+  player's) made them the player's whenever the column's target was a district, i.e. on exactly the march MZB-1256 describes. Fix:
+  `pool_cause` does not take the district rule once the band has lost its chief (`lost_its_chief(p)`: the culture's chief is a body of
+  its own, leads this kind of party, and `Party.chief` is clear, which `chief_killed_by` and `succeed` do). The casualties are then Other
+  unless a record credits a player, whose are still his. No saved field and no format change. A raid, which the grove's chief never leads,
+  and an invasion with its Umvuthi alive keep the district rule (`a_band_that_still_has_its_chief_keeps_the_district_rule`). **Failing
+  first** (`an_umvuthi_killed_on_a_march_presses_only_its_own`, the engine without the fix): "they fell with the Umvuthi: no one's loss, at a
+  district too: 0.22222222 against 0" (two of nine warriors booked as the player's); with the fix it also asserts the one warrior a player
+  hit afterwards is his (+1/9, one renewal loss). Updated: EQUILIBRIUM.md S9's row, `docs/boundary.md` §2 grove line.
+- **MZB-1288** (P3.2, a chief lost away did not mark the ledger row): `chief_lost` stepped `chief_pressure` and booked the heir but never
+  called `site_touch(f)`; only other events marked the row, so a reset before any of them handed the old p2 over (an heir wait too short
+  by the loss). Now it marks the row at once. **Failing first** (`an_umvuthi_lost_on_a_march_marks_the_row_at_once`, the rows taken, the
+  Umvuthi killed on a march, the engine without the fix): "the row is behind" (`camp_site_dirty` false after the loss); with the fix the
+  row that goes out carries the new p2. (The test first compared with a pressure read before the muster, which had aged by 0.009: its
+  baseline is read after.)
+- **MZB-1289** (P3.3, nothing round-tripped p2 through the ledger's NBT; the test's javadoc said the GameTests did): `SiteRowPacking` now
+  owns the row's whole long array (`encode`, `decode`), which `SiteLedger.save` and its loader call, so `SiteLedgerTest` (no Minecraft on
+  its classpath) round-trips a row: p2 survives (1.25), a pressure of no worth saves 0, a huge one saturates at the u16 of thousandths,
+  and a wrong length, a short array and an unknown kind do not parse. The javadoc says what is left to the GameTests (the SavedData's own
+  tag, a SITE_STATE applied, the found tail). This is a refactor with a test, not a behaviour fix: no failing-first text.
+- **MZB-1290** (P3.4 and P3.5, the grove GameTests): (a) `aKilledWarriorIsReplacedAfterTheWait` asked `engineRecounts >= 1`, which the
+  grove's adoption could already have made true: it takes the count before the wait ends and asks that the arrival raised it. (b)
+  `aResetKeepsAGrovesTwoPressures` asked `b.p2() >= aged(a.p2(), elapsed) - 1e-3`, true by construction (`found_empty_heir` sets the cap
+  over whatever was handed, and the Umvuthi in that test is dead at the reset): it asks the cap's value, log2(192 / 6) = 5, and above the
+  row's aged. (c) New `aResetHandsAnAliveUmvuthisPressureOver`: a grove found with no Umvuthi, past the cap's wait (192 days) the heir is
+  seated and the row's p2 is 5 aged twice, about 1.25; after a plain reset the Umvuthi stands, the tail carries p2 and the new engine's
+  is the row's aged, not the cap's 5 again. **Not run here**: GameTests need the mowziesmobs round (queued after the merge into
+  `mic-rtsim-s9`); the three are unverified until it returns. README table updated.
+- **MZB-1291** (P3.4 and P3.5, the Rust tests): `a_credited_march_casualty_presses_the_grove` compared `chief_p` with itself and ended on
+  an always-true disjunction; it now takes the Umvuthi's pressure before and asserts it unchanged, and asserts the wait the casualties
+  planned is 6 x 2^(2/9) = 7.0 days (not the 6 of P 0, the order of the bump and `party_lost`) and is not pushed out by a later
+  casualty. `the_body_cultures_book_what_they_booked` (strain.rs) restated other tests and is deleted. `a_known_grove_found_again_changes_nothing`
+  handed over pressures of 0; it now has two warriors killed by a player, an Umvuthi seated by the cap's wait, both pressures
+  above their bounds, a running wait that ends where it did (within 200 ticks), and no SPAWN. The census scenario asserts that a den's
+  arrival stays out of the grove's renewals and the reverse (`conflict.grove` renewals 0 and `grove_arrivals` 0 at a den; `conflict.den`
+  renewals 0 and `arrivals == grove_arrivals` at a grove). New: `an_unclaimed_umvuthi_death_is_a_players_loss_and_a_mobs_is_not` (the
+  Umvuthi is a boss kind: BY_NONE and BY_OTHER press its own p2 by one and the warriors' not at all, BY_MOB presses nothing; the heir
+  waits 6 x 2^P days in each) and, in rtsim-jni's `protocol.rs`, `a_test_order_sends_a_camps_party` (order 42: an unknown key and an
+  unknown kind change nothing and the protocol stays clean; a real send makes one raid party toward the block and draws its warriors from
+  the pool). These pin behaviour that already held; they are green on the engine before the fixes except those named above. The
+  long-horizon band for a grove under a visitor was `0.0..=1.0` (true of any number): it is `0.75..=1.0`, from the quick run's
+  two seeds (roamer 0.870, worst 0.703; wanderer 0.922, worst 0.766) after MZB-1287.
+- **MZB-1292** (P3.6, text that predates FB-S9-3): `docs/boundary.md` §2 said the bosses' hold was "unchanged"; it now says the Mowzie
+  kinds do not use it, a boss is placed at once with `BossArrival`, and Rule U's removal hold is unchanged. The header of
+  `crates/rtsim-view/tests/fixtures.rs` said "FB-3 the built hold" and "FB-2 no plunder mood"; it says the hold was dropped and the grove
+  has the raider's plunder mood. The camera-shake reset at `camp.rs:2076` that zeroes a handed-over p2 is M12a's fix and is not touched.
+
 ### Build notes
 
 Built on the landed S7 (a4717c1f), first on the recommendations (FB-1 base 6, FB-2 no grove plunder mood, FB-3 the built hold of
