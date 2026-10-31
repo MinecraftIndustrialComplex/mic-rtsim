@@ -10269,6 +10269,70 @@ mod conflict {
         e.close(true, Duration::from_secs(5)).unwrap();
     }
 
+    /// Order 42 (TEST, slice S9, MZB-1233): the camp musters a party of the named kind toward a block at the
+    /// conflict's own time, as if its feud had decided. A key that is no camp and a kind that does not exist are
+    /// refused (logged) and change nothing, and the protocol stays clean.
+    #[test]
+    fn a_test_order_sends_a_camps_party() {
+        let (_dir, e, mut j) = pool_camp("pool-send");
+        let parties = |e: &Engine| {
+            e.with_conflict(|c, _| {
+                c.parties
+                    .iter()
+                    .map(|(_, p)| (p.kind, p.target))
+                    .collect::<Vec<_>>()
+            })
+        };
+        assert!(parties(&e).is_empty());
+        let raid = PartyKind::ALL
+            .iter()
+            .position(|k| *k == PartyKind::Raid)
+            .expect("a raid") as u8;
+        // Refused: no such camp, and no such kind.
+        e.order(vec![Order::ConflictSend {
+            faction: 0xBAD,
+            kind: raid,
+            frame: 0,
+            x: 400,
+            z: 400,
+        }])
+        .unwrap();
+        e.order(vec![Order::ConflictSend {
+            faction: CAMP,
+            kind: 99,
+            frame: 0,
+            x: 400,
+            z: 400,
+        }])
+        .unwrap();
+        j.idle();
+        j.idle();
+        assert!(parties(&e).is_empty(), "{:?}", parties(&e));
+        // Sent: one raid party toward the block, taken from the camp's warriors.
+        let before = strain_of(&e).0;
+        e.order(vec![Order::ConflictSend {
+            faction: CAMP,
+            kind: raid,
+            frame: 0,
+            x: 400,
+            z: 400,
+        }])
+        .unwrap();
+        j.idle();
+        j.idle();
+        let sent = parties(&e);
+        assert_eq!(sent.len(), 1, "{sent:?}");
+        assert_eq!(sent[0].0, PartyKind::Raid);
+        assert!(
+            matches!(sent[0].1, Target::Pos(p) if p.x == 400 && p.z == 400),
+            "{:?}",
+            sent[0].1
+        );
+        assert!(strain_of(&e).0 < before, "the party's warriors left the pool");
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
     /// The found tail across a reset (slice S7, EQC212): a pool camp that broke, found again three
     /// days later by a new engine that knows only core's ledger, is broken for the wait that was
     /// left less the days gone, with the pressure aged, and sends its own row at once; a camp with

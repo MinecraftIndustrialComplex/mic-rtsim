@@ -321,17 +321,31 @@ fn district() -> Target {
 fn a_credited_march_casualty_presses_the_grove() {
     let mut r = quiet(36, 9);
     come_in(&mut r);
+    let chief0 = chief_p(&r);
     let (p, e) = embodied_party(&mut r, PartyKind::Raid, Target::Pos(synth::FOREST_POS));
+    let at = r.c.now();
     let o = casualty(&r, p, e, boundary::BY_PLAYER, 2, next_op());
     ingest(&mut r, &o);
     near(members_p(&r), 2.0 / 9.0, "two of nine");
     assert_eq!(r.c.stats.renewal_losses, 2);
+    // The wait was planned from the pressure the two losses made, not from the pressure before them:
+    // the bump goes before `party_lost`, whose `unblock` plans the wait (6 x 2^(2/9) days, 7.0; read the
+    // other way round it would be the 6 of P 0).
+    let first = r.c.camp(r.f).unwrap().arrival_at.expect("a wait is booked");
+    let wait = in_days(at, first);
+    assert!(
+        (wait - 6.0 * (2.0f64 / 9.0).exp2()).abs() < 0.05,
+        "6 x 2^(2/9) = 7.0 days, not 6: {wait}"
+    );
     let o = casualty(&r, p, e, boundary::BY_TAKEN, 1, next_op());
     ingest(&mut r, &o);
     near(members_p(&r), 3.0 / 9.0, "a taken member too");
-    near(chief_p(&r), chief_p(&r), "the Umvuthi's is its own");
-    // The wait was planned from the pressure: the grove is short by the members away and killed.
-    assert!(r.c.camp(r.f).unwrap().arrival_at.is_none() || members_p(&r) > 0.0);
+    near(chief_p(&r), chief0, "the Umvuthi's is its own");
+    assert_eq!(
+        r.c.camp(r.f).unwrap().arrival_at,
+        Some(first),
+        "a running wait is never pushed out"
+    );
 }
 
 /// MZB-1213: a mob's kill on the road is a predator's: the members fall and the grove is not pressed.
@@ -442,12 +456,65 @@ fn an_umvuthi_killed_on_a_march_presses_only_its_own() {
     let muster = r.c.parties[p].until;
     r.run(muster + 200);
     let (members0, chief0) = (members_p(&r), chief_p(&r));
+    // The column is out on the road, embodied, when its Umvuthi falls.
+    let epoch = {
+        let x = &mut r.c.parties[p];
+        x.epoch += 1;
+        x.embodied = true;
+        x.spawned = x.units.clone();
+        x.epoch
+    };
     let at = r.c.now();
     let who = r.player;
     r.c.chief_killed_by(&mut r.w, p, Some(who), boundary::BY_PLAYER, None, at);
     r.flush(at);
     near(members_p(&r), members0, "the warriors' pressure is untouched");
     near(chief_p(&r), chief0 + 1.0, "the Umvuthi's takes one");
+    assert!(!r.c.parties[p].chief, "the band has lost its chief");
+
+    // S9 review P2: the jar's `EntityUmvuthi.die` sets a countdown on every devoted Umvuthana within 30
+    // blocks, and they die by `indirectMagic(self, null)`: BAND_CASUALTIES that credit no one, at a
+    // player's district. They are no one's loss (MZB-1256, F7 (a)): S7's district rule (an unclaimed
+    // death at a player's district is a player's) does not reach a band that has lost its chief.
+    let fell = r.c.stats.casualties;
+    let o = casualty(&r, p, epoch, boundary::BY_NONE, 2, next_op());
+    ingest(&mut r, &o);
+    assert_eq!(r.c.stats.casualties, fell + 2, "the warriors did fall");
+    near(members_p(&r), members0, "they fell with the Umvuthi: no one's loss, at a district too");
+    let losses = r.c.stats.renewal_losses;
+    // One of them a player did hit in the last 100 ticks is credited to him, and that one is his.
+    let o = casualty(&r, p, epoch, boundary::BY_PLAYER, 1, next_op());
+    ingest(&mut r, &o);
+    near(members_p(&r), members0 + 1.0 / 9.0, "the one the player hit is his");
+    assert_eq!(r.c.stats.renewal_losses, losses + 1);
+}
+
+/// S9 review P2, the other side: a grove's raid, which the chief never leads, keeps S7's district rule for its
+/// unclaimed deaths (a trap, a turret or a FakePlayer killed it at a player's district), and so does an invasion
+/// that set out with its Umvuthi while the Umvuthi stands (its warriors die for other reasons).
+#[test]
+fn a_band_that_still_has_its_chief_keeps_the_district_rule() {
+    let mut r = quiet(52, 9);
+    seat_chief(&mut r);
+    let members0 = members_p(&r);
+    let at = r.c.now();
+    let p =
+        r.c.order_party(&mut r.w, r.key, PartyKind::Invasion, district(), None, at)
+            .expect("an invasion");
+    r.flush(at);
+    assert!(r.c.parties[p].chief, "the chief leads");
+    let muster = r.c.parties[p].until;
+    r.run(muster + 200);
+    let epoch = {
+        let x = &mut r.c.parties[p];
+        x.epoch += 1;
+        x.embodied = true;
+        x.spawned = x.units.clone();
+        x.epoch
+    };
+    let o = casualty(&r, p, epoch, boundary::BY_NONE, 2, next_op());
+    ingest(&mut r, &o);
+    near(members_p(&r), members0 + 2.0 / 9.0, "a trap at a player's district, the Umvuthi alive");
 }
 
 // ---- found empty, adopted, found again ------------------------------------------------------------
@@ -548,16 +615,21 @@ fn the_row_restores_both_pressures_aged() {
     assert!(wait > 20.0);
 }
 
-/// MZB-1218: a known grove found again with its row, nothing killed meanwhile, changes nothing: K,
-/// both pressures and the wait stand and no body is minted.
+/// MZB-1218: a known grove found again with its row, nothing killed meanwhile, changes nothing: K, both
+/// pressures (both above 0: two warriors killed by a player, the Umvuthi seated by the cap's wait) and the
+/// wait that is running stand, and no body is minted.
 #[test]
 fn a_known_grove_found_again_changes_nothing() {
-    let mut r = adopted(47, 9);
-    let to = r.c.now() + days(3.0);
+    let mut r = quiet(47, 9);
+    seat_chief(&mut r);
+    kill_warriors(&mut r, 2, boundary::BY_PLAYER);
+    let to = r.c.now() + days(1.0);
     r.run(to);
-    let row = row_of(&r, 0, false);
-    assert!(!row.waiting() && row.count == 9, "whole: nine warriors and the Umvuthi");
+    let row = row_of(&r, 100, false);
+    assert!(row.waiting() && row.count == 6, "short: six warriors home and the Umvuthi: {row:?}");
     let before = (r.c.factions[r.f as usize].cap, members_p(&r), chief_p(&r));
+    assert!(before.1 > 0.2 && before.2 > 1.0, "both pressures stand: {before:?}");
+    let due = r.c.camp(r.f).unwrap().arrival_at.expect("a wait is running");
     let spawns = r
         .plugin
         .applied
@@ -569,7 +641,11 @@ fn a_known_grove_found_again_changes_nothing() {
     assert_eq!(r.c.factions[r.f as usize].cap, before.0);
     near(members_p(&r), before.1, "warriors");
     near(chief_p(&r), before.2, "chief");
-    assert!(r.c.camp(r.f).unwrap().arrival_at.is_none(), "no wait");
+    let again = r.c.camp(r.f).unwrap().arrival_at.expect("the wait runs on");
+    assert!(
+        (again.0 as i64 - due.0 as i64).abs() <= 200,
+        "to the same end: {due:?} then {again:?}"
+    );
     come_in(&mut r);
     let after = r
         .plugin
@@ -728,4 +804,60 @@ fn a_groves_lost_pack_lengthens_its_plunder_wait() {
         (clamped / before - 3.0).abs() < 1e-6,
         "clamped at three times: {clamped} against {before}"
     );
+}
+
+// ---- the Umvuthi lost (S9 review) ------------------------------------------------------------------
+
+/// S9 review P3: a chief lost away steps its pressure, and the ledger's row is marked behind at once: with
+/// a reset before anything else marks it, the old pressure would be handed over (a heir wait too short, a
+/// small mint of a boss kind, MZB-1231).
+#[test]
+fn an_umvuthi_lost_on_a_march_marks_the_row_at_once() {
+    let mut r = quiet(53, 9);
+    seat_chief(&mut r);
+    let chief0 = chief_p(&r);
+    let at = r.c.now();
+    let p =
+        r.c.order_party(&mut r.w, r.key, PartyKind::Invasion, district(), None, at)
+            .expect("an invasion");
+    r.flush(at);
+    let muster = r.c.parties[p].until;
+    r.run(muster + 200);
+    // Whatever marked the row so far has been taken (the host takes the rows every tick).
+    let _ = r.c.take_site_states();
+    assert!(!r.c.camp_site_dirty(r.f));
+    let at = r.c.now();
+    let who = r.player;
+    r.c.chief_killed_by(&mut r.w, p, Some(who), boundary::BY_PLAYER, None, at);
+    near(chief_p(&r), chief0 + 1.0, "the Umvuthi's takes one");
+    assert!(r.c.camp_site_dirty(r.f), "the row is behind");
+    let rows = r.c.take_site_states();
+    let row = rows.last().expect("the row goes out");
+    near(row.p2, chief0 + 1.0, "and carries the new pressure");
+}
+
+/// S9 review P3 (`chief_cause`): the Umvuthi is a boss kind, so a death that credits no one is a player's loss
+/// (EQUILIBRIUM.md §2.2) and presses its own pressure by one, not the warriors'; a mob's kill is a predator's
+/// and presses nothing.
+#[test]
+fn an_unclaimed_umvuthi_death_is_a_players_loss_and_a_mobs_is_not() {
+    for (by, presses) in [
+        (boundary::BY_NONE, true),
+        (boundary::BY_OTHER, true),
+        (boundary::BY_MOB, false),
+    ] {
+        let mut r = quiet(54, 9);
+        seat_chief(&mut r);
+        let (members0, chief0) = (members_p(&r), chief_p(&r));
+        let killed = kill_chief(&mut r, by);
+        near(members_p(&r), members0, "the warriors' are left alone");
+        let want = if presses { chief0 + 1.0 } else { chief0 };
+        near(chief_p(&r), want, &format!("by {by}"));
+        let wait = in_days(killed, heir_due(&r));
+        let rule = 6.0 * f64::from(want).exp2();
+        assert!(
+            (wait - rule).abs() < rule * 0.03,
+            "the heir waits 6 x 2^P = {rule:.1} days: {wait}"
+        );
+    }
 }
