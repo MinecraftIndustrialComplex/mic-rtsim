@@ -689,9 +689,31 @@ pub struct DragonRefill {
 /// Runs a ranges world of `seed` with the roamer to `shock_day + after_days` twice: every dragon
 /// killed at `shock_day`, and the control.
 pub fn dragon_kill_all(grid: &Grid, seed: u64, shock_day: u64, after_days: u64) -> DragonRefill {
+    let tun = (Ecology::herd_tunables(), Ecology::dragon_tunables());
+    let lairs = rtsim_ecology::synth::lairs();
+    dragon_kill_all_on(grid, seed, &lairs, tun, shock_day, after_days)
+}
+
+/// [`dragon_kill_all`] under `lairs`, with the herds' and the dragons' tunables `tun`.
+pub fn dragon_kill_all_on(
+    grid: &Grid,
+    seed: u64,
+    lairs: &[LairSpec],
+    tun: (HerdTunables, DragonTunables),
+    shock_day: u64,
+    after_days: u64,
+) -> DragonRefill {
     let end = shock_day + after_days;
-    let w = dragon_run(grid, seed, true, Shock::KillAll(shock_day), end);
-    let c = dragon_run(grid, seed, true, Shock::Control(shock_day), end);
+    let w = dragon_run_on(
+        grid,
+        seed,
+        lairs,
+        tun.clone(),
+        true,
+        Shock::KillAll(shock_day),
+        end,
+    );
+    let c = dragon_run_on(grid, seed, lairs, tun, true, Shock::Control(shock_day), end);
     let before: Vec<f64> = w
         .censuses
         .iter()
@@ -1916,6 +1938,30 @@ mod tests {
         let jobs: Vec<(usize, u64)> = (0..layouts.len())
             .flat_map(|l| seeds.iter().map(move |&s| (l, s)))
             .collect();
+        // The kill-all (`RTSIM_LD_KILLALL=1`): the roamer to `years`, every dragon killed, a
+        // peaceful player for 6 years more, against the same seed's control.
+        if env_or("RTSIM_LD_KILLALL", "0") == "1" {
+            let got = par_map(&jobs, threads(), |&(l, seed)| {
+                let lairs = layouts[l].lairs(&grid, seed);
+                let r =
+                    dragon_kill_all_on(&grid, seed, &lairs, tweak(&knobs), years * YEAR, 6 * YEAR);
+                (lairs.len(), r)
+            });
+            for (l, layout) in layouts.iter().enumerate() {
+                let rs: Vec<DragonRefill> = jobs
+                    .iter()
+                    .zip(&got)
+                    .filter(|((j, _), _)| *j == l)
+                    .map(|(_, (n, r))| {
+                        println!("  {layout:?}: {n} lairs");
+                        r.clone()
+                    })
+                    .collect();
+                println!("{layout:?}, kill-all at year {years}, tweak '{knobs}'");
+                print_dragon_refills(&rs);
+            }
+            return;
+        }
         let got = par_map(&jobs, threads(), |&(l, seed)| {
             let lairs = layouts[l].lairs(&grid, seed);
             dragon_run_on(
