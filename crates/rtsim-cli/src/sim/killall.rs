@@ -10,6 +10,8 @@
 
 use std::process::ExitCode;
 
+use rtsim_host::every::Together;
+
 use super::census::Ecology;
 use super::equilibrium::{self as eq, Grid, Wipe, YEAR, band, par_map, threads};
 
@@ -73,6 +75,10 @@ pub struct Row {
     pub run: fn(&Row, u64) -> KindRefill,
     /// The checks across seeds (medians, sums); the per-seed ones are in [`KindRefill::checks`].
     pub judge: fn(&[KindRefill]) -> Result<(), String>,
+    /// The band's per-seed checks a together run can read (EQC429): on the shape's own fields,
+    /// so they hold for the alone run and the together one alike. `None`: the row has no wipe in
+    /// the every-kind world.
+    pub together: Option<fn(&KindRefill) -> Result<(), String>>,
 }
 
 /// Census kinds with no kill-all, and why (EQC428).
@@ -317,6 +323,38 @@ fn pirates(row: &Row, seed: u64) -> KindRefill {
     }
 }
 
+fn within(what: &str, x: Option<f64>, most: f64) -> Result<(), String> {
+    need(x.is_some_and(|d| d <= most), || {
+        format!("{what} after {x:?} days, the band's most {most}")
+    })
+}
+
+fn herds_together(r: &KindRefill) -> Result<(), String> {
+    within("half back", r.half, (25 * YEAR) as f64).and(need(r.whole.is_some(), || {
+        "a range never alive again".into()
+    }))
+}
+
+fn dragons_together(r: &KindRefill) -> Result<(), String> {
+    within("90% of the control", r.ninety_ctrl, (192 + eq::EVERY) as f64)
+}
+
+fn nests_together(r: &KindRefill) -> Result<(), String> {
+    within("whole", r.whole, 72.0)
+}
+
+fn any_seed(_: &KindRefill) -> Result<(), String> {
+    Ok(())
+}
+
+fn camps_together(r: &KindRefill) -> Result<(), String> {
+    within("90% of the control", r.ninety_ctrl, 120.0)
+}
+
+fn pirates_together(r: &KindRefill) -> Result<(), String> {
+    within("every slot", r.whole, 180.0)
+}
+
 /// The table (EQC426, EQC428), in the census's order.
 pub const ROWS: &[Row] = &[
     Row {
@@ -327,6 +365,7 @@ pub const ROWS: &[Row] = &[
         record: "EQC21; S2",
         run: herds_world,
         judge: no_judge,
+        together: Some(herds_together),
     },
     Row {
         name: "herds.local",
@@ -336,6 +375,7 @@ pub const ROWS: &[Row] = &[
         record: "EQC21",
         run: herds_local,
         judge: herds_local_judge,
+        together: None,
     },
     Row {
         name: "dragons",
@@ -346,6 +386,7 @@ pub const ROWS: &[Row] = &[
         record: "EQC32; S4",
         run: dragons,
         judge: dragons_judge,
+        together: Some(dragons_together),
     },
     Row {
         name: "nests",
@@ -356,6 +397,7 @@ pub const ROWS: &[Row] = &[
         record: "S10, OGC76",
         run: nests,
         judge: no_judge,
+        together: Some(nests_together),
     },
     Row {
         name: "villagers",
@@ -365,6 +407,7 @@ pub const ROWS: &[Row] = &[
         record: "EQC185",
         run: villagers,
         judge: villagers_judge,
+        together: Some(any_seed),
     },
     Row {
         name: "ribbits",
@@ -374,6 +417,7 @@ pub const ROWS: &[Row] = &[
         record: "EQC184",
         run: ribbits,
         judge: ribbits_judge,
+        together: Some(any_seed),
     },
     Row {
         name: "camps",
@@ -383,6 +427,7 @@ pub const ROWS: &[Row] = &[
         record: "EQC270",
         run: camps,
         judge: camps_judge,
+        together: Some(camps_together),
     },
     Row {
         name: "outposts",
@@ -392,6 +437,7 @@ pub const ROWS: &[Row] = &[
         record: "FB-5 (b), EQC428",
         run: outposts,
         judge: camps_judge,
+        together: Some(camps_together),
     },
     Row {
         name: "pirates",
@@ -401,6 +447,7 @@ pub const ROWS: &[Row] = &[
         record: "S8 (T32 to T39), PC38",
         run: pirates,
         judge: no_judge,
+        together: Some(pirates_together),
     },
 ];
 
@@ -510,8 +557,117 @@ pub fn assert_row(name: &str, seeds: &[u64]) -> Vec<KindRefill> {
     rs
 }
 
+// ---- together (EQC429) ----------------------------------------------------------------------------
+
+/// The together kill-all's shock day and the days read after it: four years and 600 days, the
+/// herds' ten years and 40 (their alone row's).
+pub fn shock_of(row: &str) -> (u64, u64) {
+    if row == "herds.world" {
+        (10 * YEAR, 40 * YEAR)
+    } else {
+        (4 * YEAR, 600)
+    }
+}
+
+/// A together wipe read into the table's shape against its control (the same seed, the roamer
+/// stopping on the same day, nothing killed).
+pub fn together_refill(row: &Row, w: &Together, c: &Together) -> KindRefill {
+    let shock = w.shock_day;
+    let reads = |t: &Together| t.reads.get(row.name).cloned().unwrap_or_default();
+    let (a, b) = (reads(w), reads(c));
+    let before: Vec<f64> = a
+        .iter()
+        .filter(|x| x.0 + YEAR >= shock && x.0 < shock)
+        .map(|x| x.1 as f64)
+        .collect();
+    let pre = before.iter().sum::<f64>() / before.len().max(1) as f64;
+    let after = a.last().map_or(0, |x| x.0) - shock;
+    let mut r = KindRefill {
+        killed: w.killed,
+        pre,
+        ..KindRefill::new(row, w.seed)
+    };
+    let (mut tail, mut tail_c) = (0.0, 0.0);
+    for (x, xc) in a.iter().zip(&b) {
+        if x.0 <= shock {
+            continue;
+        }
+        let since = (x.0 - shock) as f64;
+        let (n, nc) = (x.1 as f64, xc.1 as f64);
+        if r.half.is_none() && n >= 0.5 * pre {
+            r.half = Some(since);
+        }
+        if r.ninety_ctrl.is_none() && n >= 0.9 * nc {
+            r.ninety_ctrl = Some(since);
+        }
+        if r.whole.is_none() && x.3 {
+            r.whole = Some(since);
+        }
+        if 2 * (x.0 - shock) >= after {
+            tail += n;
+            tail_c += nc;
+        }
+    }
+    r.end_over_ctrl = tail / tail_c.max(1.0);
+    let teeth = need(w.teeth.wrong.is_empty(), || {
+        format!("booked wrong: {:?}", w.teeth.wrong)
+    })
+    .and(need(w.killed > 0, || "the wipe killed nothing".into()));
+    r.checks = teeth.and(row.together.map_or(Ok(()), |f| f(&r)));
+    r
+}
+
+/// The rows with a wipe in the every-kind world.
+pub fn together_rows() -> Vec<&'static Row> {
+    ROWS.iter()
+        .filter(|r| r.together.is_some() && rtsim_host::every::WIPES.contains(&r.name))
+        .collect()
+}
+
+/// Every row of `rows` together on `seeds`: per seed a control for each shock day and one wipe a
+/// row, on [`threads`]. The rows' results in `rows`' order.
+pub fn run_together(rows: &[&'static Row], seeds: &[u64]) -> Vec<Vec<KindRefill>> {
+    let mut shocks: Vec<(u64, u64)> = rows.iter().map(|r| shock_of(r.name)).collect();
+    shocks.sort_unstable();
+    shocks.dedup();
+    let mut jobs: Vec<(u64, Option<&'static str>, u64, u64)> = Vec::new();
+    for &s in seeds {
+        for &(at, after) in &shocks {
+            jobs.push((s, None, at, at + after));
+        }
+        for r in rows {
+            let (at, after) = shock_of(r.name);
+            jobs.push((s, Some(r.name), at, at + after));
+        }
+    }
+    let got = par_map(&jobs, threads(), |&(s, wipe, at, to)| {
+        rtsim_host::every::together(s, wipe, at, to)
+    });
+    rows.iter()
+        .map(|row| {
+            let (at, _) = shock_of(row.name);
+            seeds
+                .iter()
+                .map(|&s| {
+                    let w = got
+                        .iter()
+                        .find(|t| t.seed == s && t.wipe == Some(row.name))
+                        .expect("the wipe ran");
+                    let c = got
+                        .iter()
+                        .find(|t| t.seed == s && t.wipe.is_none() && t.shock_day == at)
+                        .expect("its control ran");
+                    together_refill(row, w, c)
+                })
+                .collect()
+        })
+        .collect()
+}
+
 fn bad(why: &str) -> ExitCode {
-    eprintln!("{why}\nusage: rtsim-cli sim killall [--kind K[,K...]] [--seeds A..B] [--verbose]");
+    eprintln!(
+        "{why}\nusage: rtsim-cli sim killall [--kind K[,K...]] [--seeds A..B] [--together] [--verbose]"
+    );
     ExitCode::from(64)
 }
 
@@ -520,7 +676,7 @@ fn bad(why: &str) -> ExitCode {
 pub fn cli(rest: &[&str]) -> ExitCode {
     let mut rows: Vec<&'static Row> = ROWS.iter().collect();
     let (mut from, mut to) = (1u64, 30u64);
-    let mut verbose = false;
+    let (mut verbose, mut together) = (false, false);
     let mut it = rest.iter();
     while let Some(&a) = it.next() {
         match a {
@@ -551,21 +707,32 @@ pub fn cli(rest: &[&str]) -> ExitCode {
                 }
             }
             "--verbose" => verbose = true,
+            "--together" => together = true,
             other => return bad(&format!("unknown option {other}")),
         }
     }
     let seeds: Vec<u64> = (from..=to).collect();
     println!(
-        "# rtsim-cli sim killall: seeds {from} to {to}, {} threads; each row's alone harness",
-        threads()
+        "# rtsim-cli sim killall: seeds {from} to {to}, {} threads; {}",
+        threads(),
+        if together {
+            "every kind together in the every-kind world (EQC429)"
+        } else {
+            "each row's alone harness"
+        }
     );
     for (k, why) in NO_ROW {
         println!("# {k}: no row, {why}");
     }
     println!("{HEADER}");
     let mut failed = false;
-    for row in rows {
-        let rs = run_row(row, &seeds);
+    let results: Vec<(&'static Row, Vec<KindRefill>)> = if together {
+        let rows: Vec<&'static Row> = rows.into_iter().filter(|r| r.together.is_some()).collect();
+        rows.iter().copied().zip(run_together(&rows, &seeds)).collect()
+    } else {
+        rows.into_iter().map(|r| (r, run_row(r, &seeds))).collect()
+    };
+    for (row, rs) in results {
         let v = verdict(row, &rs);
         failed |= v.is_err();
         println!("{}", line(row, &rs, &v));
@@ -648,6 +815,27 @@ mod tests {
     #[ignore = "minutes: run in release with --ignored --nocapture"]
     fn kill_all_outposts_30_seeds() {
         assert_row("outposts", &(1..=30).collect::<Vec<_>>());
+    }
+
+    /// EQC429: every row's wipe in one engine with every other module running, seeds 1 to 8,
+    /// each against the same seed's control; the band is the alone row's, unchanged.
+    #[test]
+    #[ignore = "hours: run in release with --ignored --nocapture"]
+    fn kill_all_in_one_engine_8_seeds() {
+        let seeds: Vec<u64> = (1..=8).collect();
+        let rows = together_rows();
+        let got = run_together(&rows, &seeds);
+        println!("{HEADER}");
+        let mut failed = Vec::new();
+        for (row, rs) in rows.iter().zip(&got) {
+            let v = verdict(row, rs);
+            println!("{}", line(row, rs, &v));
+            print_seeds(rs);
+            if v.is_err() {
+                failed.push(row.name);
+            }
+        }
+        assert!(failed.is_empty(), "failing rows: {failed:?}");
     }
 
     #[test]

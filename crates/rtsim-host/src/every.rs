@@ -1314,7 +1314,7 @@ impl Every {
 }
 
 /// One together run (EQC429): the every-kind world with the roamer to `shock_day`, then `wipe`
-/// (or nothing, the control) and a peaceful player to `to`; the sites a day.
+/// (or nothing, the control) and a peaceful player to `to`; every wipe's read sites a day.
 #[derive(Clone, Debug)]
 pub struct Together {
     pub seed: u64,
@@ -1322,34 +1322,30 @@ pub struct Together {
     pub shock_day: u64,
     /// Members killed by the wipe.
     pub killed: u64,
-    /// The sites at the end of each day from day 1.
-    pub days: Vec<(u64, Vec<SiteNow>)>,
+    /// By wipe ([`WIPES`]), its read sites at the end of each day from day 1: (day, members, K,
+    /// every site whole).
+    pub reads: BTreeMap<&'static str, Vec<(u64, u64, u64, bool)>>,
     pub teeth: Teeth,
 }
 
-impl Together {
-    /// The wiped kind's members and K over its read sites, each day.
-    pub fn read(&self, f: &Founded, wipe: &str) -> Vec<(u64, u64, u64, bool)> {
-        let (kind, keys) = wipe_reads(f, wipe);
-        self.days
-            .iter()
-            .map(|(d, ss)| {
-                let ours: Vec<&SiteNow> = ss
-                    .iter()
-                    .filter(|s| s.kind == kind && (keys.is_empty() || keys.contains(&s.key)))
-                    .collect();
-                let n = ours.iter().map(|s| s.members).sum();
-                let k = ours.iter().map(|s| s.k).sum();
-                // Whole: every site full; a herd range's whole is alive (it has no ceiling).
-                let whole = if kind == "herd.range" {
-                    ours.iter().all(|s| s.members > 0)
-                } else {
-                    ours.iter().all(|s| s.members >= s.k && !s.broken)
-                };
-                (*d, n, k, whole)
-            })
-            .collect()
-    }
+/// The wipe's kind's members and K over its read sites, and whether every one is whole (a herd
+/// range's whole is alive: it has no ceiling).
+pub fn read(f: &Founded, wipe: &str, sites: &[SiteNow]) -> (u64, u64, bool) {
+    let (kind, keys) = wipe_reads(f, wipe);
+    let ours: Vec<&SiteNow> = sites
+        .iter()
+        .filter(|s| s.kind == kind && (keys.is_empty() || keys.contains(&s.key)))
+        .collect();
+    let whole = if kind == "herd.range" {
+        ours.iter().all(|s| s.members > 0)
+    } else {
+        ours.iter().all(|s| s.members >= s.k && !s.broken)
+    };
+    (
+        ours.iter().map(|s| s.members).sum(),
+        ours.iter().map(|s| s.k).sum(),
+        whole,
+    )
 }
 
 /// Runs one together arm on `seed` (TEST mode, so the orders are taken).
@@ -1362,7 +1358,7 @@ pub fn together(seed: u64, wipe: Option<&'static str>, shock_day: u64, to: u64) 
         wipe,
         shock_day,
         killed: 0,
-        days: Vec::new(),
+        reads: BTreeMap::new(),
         teeth: Teeth::default(),
     };
     for day in 1..=to {
@@ -1374,7 +1370,11 @@ pub fn together(seed: u64, wipe: Option<&'static str>, shock_day: u64, to: u64) 
             }
         }
         roamer.day(&mut w, day);
-        out.days.push((day, w.sites()));
+        let sites = w.sites();
+        for x in WIPES {
+            let (n, k, whole) = read(&w.founded, x, &sites);
+            out.reads.entry(x).or_default().push((day, n, k, whole));
+        }
     }
     out.teeth = w.teeth.clone();
     w.close();
