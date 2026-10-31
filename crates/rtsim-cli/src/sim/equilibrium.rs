@@ -935,6 +935,9 @@ pub struct MowzieRun {
     /// The most grief (a share of the cap lost in war parties lately) the camp's plunder mood held
     /// at the end of any day; 0 for a camp with no mood.
     pub grief_peak: f32,
+    /// The size of the engine's save at the end of each game year of an [`unattended_grove`] run
+    /// (empty for the other runs), bytes.
+    pub save_yearly: Vec<usize>,
 }
 
 impl MowzieRun {
@@ -1009,6 +1012,7 @@ pub fn mowzie_run(
         days: to,
         plunders: 0,
         grief_peak: 0.0,
+        save_yearly: Vec::new(),
     };
     // The den's farmer comes first `lag` days in, to the Frostmaw that stands there.
     let (mut seen, mut due_visit): (u64, Option<u64>) = (
@@ -1081,6 +1085,22 @@ pub fn unattended_grove(
     to: u64,
     villages: VillageStock,
 ) -> MowzieRun {
+    unattended_grove_with(seed, cultures, found, to, villages, true)
+}
+
+/// [`unattended_grove`], optionally with a host that never takes the engine's commands. A host takes
+/// them every tick (`Conflict::take_commands`, the bridge's), so the engine's outbox is empty at a save;
+/// an engine nobody drains queues every command it ever decided (a march record for each raid, about 35
+/// bytes), which is not state of the grove's and made the first S9 build's saves look like they grew by
+/// 7 bytes a game day.
+pub fn unattended_grove_with(
+    seed: u64,
+    cultures: rtsim_conflict::Cultures,
+    found: u16,
+    to: u64,
+    villages: VillageStock,
+    drain: bool,
+) -> MowzieRun {
     use rtsim_ecology::infra::NoInfrastructure;
     use rtsim_settle::NodeKind;
     let (mut w, mut c, keys) =
@@ -1099,6 +1119,7 @@ pub fn unattended_grove(
         days: to,
         plunders: 0,
         grief_peak: 0.0,
+        save_yearly: Vec::new(),
     };
     let villages_at: Vec<usize> = (0..w.nodes.len())
         .filter(|&i| matches!(w.nodes[i].kind, NodeKind::Village(_)))
@@ -1119,7 +1140,13 @@ pub fn unattended_grove(
         }
         c.run_until(&mut w, &mut NoInfrastructure, t);
         w.run_until(t);
+        if drain {
+            let _ = c.take_commands();
+        }
         out.members.push(members(&c, t));
+        if day % YEAR == 0 {
+            out.save_yearly.push(c.save().len());
+        }
         if let Some((grief, _)) = c.mood_now(f, t) {
             out.grief_peak = out.grief_peak.max(grief);
         }
@@ -2173,6 +2200,42 @@ mod tests {
         }
     }
 
+    /// A grove's saved state does not grow with the years (S9, the coordinator's check for S11's soak): sixty game
+    /// years among villages with a surplus, plundering about every 34 days, its save at the end of each year stays
+    /// under a fixed bound and within 256 bytes of its first year's, for K 5, 7 and 9. The first S9 build's run
+    /// looked like growth of 7 bytes a game day (1.8 MB over a soak of 262,980 days): the harness never took the
+    /// engine's commands, so the outbox kept a march record for each raid. Undrained it still grows, a host that
+    /// takes commands being the engine's contract; drained it is flat (1.6 to 1.8 KB at K 5 to 9).
+    #[test]
+    fn a_groves_save_does_not_grow_with_the_years() {
+        for k in [5u16, 7, 9] {
+            let r = unattended_grove(1, rtsim_conflict::Cultures::builtin(), k, 60 * YEAR, VillageStock::Rich);
+            assert_eq!(r.save_yearly.len(), 60);
+            assert!(r.plunders >= 100, "K {k}: the raids were exercised: {}", r.plunders);
+            let (lo, hi) = (
+                *r.save_yearly[1..].iter().min().unwrap(),
+                *r.save_yearly.iter().max().unwrap(),
+            );
+            println!("K {k}: save bytes by year min {lo} max {hi}, {} plunders", r.plunders);
+            assert!(hi <= 4096, "K {k}: the save reached {hi} bytes: {:?}", r.save_yearly);
+            assert!(hi - lo <= 256, "K {k}: {lo} to {hi}: {:?}", r.save_yearly);
+            assert!(
+                r.save_yearly[59] <= r.save_yearly[0] + 256,
+                "K {k}: {} then {}",
+                r.save_yearly[0],
+                r.save_yearly[59]
+            );
+        }
+        // The cause, pinned: the same grove with a host that never takes the commands grows by a march
+        // record for each raid.
+        let a = unattended_grove_with(1, rtsim_conflict::Cultures::builtin(), 7, 30 * YEAR, VillageStock::Rich, false);
+        assert!(
+            a.save_yearly[29] > a.save_yearly[4] + 500,
+            "undrained: {:?}",
+            a.save_yearly
+        );
+    }
+
     #[test]
     fn unattended_groves_hold_their_band() {
         unattended_groves_over(&mowzie_seeds(2), 12);
@@ -2249,13 +2312,11 @@ mod tests {
                         "{name} {script}: the renewals drift {ra} {rb}"
                     );
                 }
-                // The engine's save does not grow with the years, except by the plunder raids
-                // on the villages (about 7 bytes a game day in the rich-village grove, however
-                // many members it holds; found in this run, not diagnosed, S9 touches none of it).
-                let raids = name == "grove" && script == "none";
+                // The engine's save does not grow with the years. (The rich-village grove's once seemed to,
+                // by 7 bytes a game day: its harness never took the engine's commands, so the outbox
+                // grew by a march record for each raid, `a_groves_save_does_not_grow_with_the_years`.)
                 for (a, b) in &bytes {
-                    let room = if raids { 12 * (to as usize) } else { 4096 };
-                    assert!(*b <= 2 * *a + room, "{name} {script}: the save grows {a} {b}");
+                    assert!(*b <= 2 * *a + 4096, "{name} {script}: the save grows {a} {b}");
                 }
             }
         }
