@@ -1068,4 +1068,43 @@ public final class HomeBodyGameTests {
                 })
                 .thenSucceed();
     }
+
+    /**
+     * EQC317 (finding 8): with an oil field known to the engine, a fire dragon's home body adopted by its lair's census carries
+     * its oil reserve (ADOPT flag 4), as a spawned body does, so its fire is gated (OG-4, OG-13).
+     */
+    @GameTest(template = DragonKit.ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "home_oil")
+    public static void aCensusAdoptedFireDragonCarriesItsOilReserve(GameTestHelper helper) {
+        String test = "aCensusAdoptedFireDragonCarriesItsOilReserve";
+        if (!nativeOnly(helper, test))
+            return;
+        ChunkWait waits = ChunkWait.of(helper, 2400);
+        ServerLevel level = helper.getLevel();
+        long lair = DragonKit.newLair();
+        DragonBaseEntity[] d = new DragonBaseEntity[1];
+        long[] agent = new long[1];
+        BlockPos far = DragonKit.farSite();
+        helper.startSequence()
+                .thenExecute(() -> DragonKit.oilChunks(level, List.of(new int[]{far.getX() >> 4, far.getZ() >> 4, 1},
+                        new int[]{(far.getX() >> 4) + 1, far.getZ() >> 4, 1}, new int[]{far.getX() >> 4, (far.getZ() >> 4) + 1, 1})))
+                .thenIdle(5)
+                .thenExecute(() -> {
+                    bridge().lairs.declareForTest(level, lair, ROOST, DragonKit.arenaBox(helper), BlockPos.containing(DragonKit.centre(helper)),
+                            level.getGameTime());
+                    d[0] = DragonKit.roostDragon(level, DragonKit.centre(helper));
+                    bridge().homes.testIn(lair, false, level.getGameTime());
+                })
+                .thenWaitUntil(waits.engine(() -> {
+                    long a = bridge().agentOf(d[0]);
+                    check("the census adopted the lair's dragon as a home body", a != 0 && !homeAnswers(a).isEmpty());
+                }))
+                .thenExecute(() -> {
+                    agent[0] = bridge().agentOf(d[0]);
+                    record(test, "reserve", "the adopted home body's oil reserve " + bridge().oilOf(agent[0]) + " (-1: none, it breathes freely)");
+                    check("it carries a reserve", bridge().oilOf(agent[0]) >= 0);
+                    bridge().homes.testOut(lair, level.getGameTime());
+                    d[0].discard();
+                })
+                .thenSucceed();
+    }
 }

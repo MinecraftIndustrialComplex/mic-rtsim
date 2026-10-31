@@ -1287,6 +1287,44 @@ fn a_handed_back_body_keeps_no_departure() {
     );
 }
 
+/// A square oil field of `side` by `side` chunks from chunk (cx, cz): the engine knows an oil field,
+/// so its fire dragons carry a reserve (OG-4).
+fn oil_field(cx: i32, cz: i32, side: i32) -> Obs {
+    Obs::OilChunks(boundary::OilChunks {
+        dimension: 0,
+        source: boundary::OIL_SOURCE_DEEP_TIME,
+        chunks: (0..side * side)
+            .map(|k| boundary::OilChunkRec {
+                cx: cx + k % side,
+                cz: cz + k / side,
+                amount: 1,
+                flags: 0,
+            })
+            .collect(),
+    })
+}
+
+/// EQC317 (finding 8): a fire dragon's home body adopted by a census carries the dragon's oil
+/// reserve, as a spawned body does (OG-4, OG-13).
+#[test]
+fn a_census_adoption_carries_the_oil_reserve() {
+    let mut s = scene(45);
+    s.ingest(oil_field(40, 90, 3), 10);
+    let x = s.dragon("Fiery", Gender::Female);
+    s.census(1, false, &[body(0x8A, agent_of(x), 700.5)], 100);
+    let a = adopts(&s.cmds());
+    assert_eq!(a.len(), 1);
+    assert_ne!(
+        a[0].flags & boundary::ADOPT_OIL,
+        0,
+        "the reserve rides on the adoption: {:?}",
+        a[0]
+    );
+    let want = s.d.dragon(x).unwrap().oil_level(&s.d.tun.oil, Tick(100));
+    assert!(want > 0, "a reserve to carry: {want}");
+    assert_eq!(a[0].oil, want, "the dragon's own reserve");
+}
+
 /// The engine's commands through the fake plugin and its answers due by `at`, until quiet.
 fn pump(s: &mut Scene, iaf: &mut synth::FakeIaf, at: Tick) {
     loop {

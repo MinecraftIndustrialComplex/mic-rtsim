@@ -4975,6 +4975,7 @@ impl Dragons {
             age_ticks: 0,
             hunger: 0,
             health: 0.0,
+            oil: 0,
         }));
         self.by_entity.insert(u.entity, d);
         self.adopted.insert(u.entity, d);
@@ -5027,6 +5028,7 @@ impl Dragons {
             age_ticks: 0,
             hunger: 0,
             health: 0.0,
+            oil: 0,
         }));
         self.by_entity.insert(u.entity, d);
     }

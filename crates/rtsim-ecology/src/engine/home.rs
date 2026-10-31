@@ -375,6 +375,7 @@ impl Dragons {
     /// (EQC108), and makes the dragon embodied at a new epoch. The engine books the body when the
     /// plugin answers (H3), unless it already believed it.
     pub(crate) fn adopt_home(&mut self, w: &mut World, d: DragonId, u: Uuid, at: Tick) {
+        let gated = self.oil_gated(d);
         let epoch = self.next_epoch(d);
         let x = &self.dragons[d];
         let sp = self.tun.species(x.species).clone();
@@ -386,16 +387,25 @@ impl Dragons {
         let Some(l) = x.lair else {
             return;
         };
+        // A fire dragon's reserve rides on the body, as on a spawned one (EQC317).
+        let mut flags = boundary::ADOPT_HAS_HOME | boundary::ADOPT_HOME_BODY;
+        let oil = if gated {
+            flags |= boundary::ADOPT_OIL;
+            x.oil_level(&self.tun.oil, at)
+        } else {
+            0
+        };
         let (lp, ly) = (self.lairs[l as usize].pos, self.lairs[l as usize].y);
         self.outbox.push(Cmd::Adopt(boundary::Adopt {
             entity: u,
             agent: agent_of(d),
             epoch,
-            flags: boundary::ADOPT_HAS_HOME | boundary::ADOPT_HOME_BODY,
+            flags,
             home: (lp.x, ly, lp.z),
             age_ticks: age,
             hunger,
             health,
+            oil,
         }));
         self.by_entity.insert(u, d);
         self.pending_home.insert(d);
