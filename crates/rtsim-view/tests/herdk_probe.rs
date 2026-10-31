@@ -189,7 +189,11 @@ fn found_world(world: &WorldHandle, label_by_biome: bool) -> (Vec<Row>, Vec<NewH
     let (mut rows, mut news) = (Vec::new(), Vec::new());
     let (mut barren, mut notyet) = (0, 0);
     for k in keys {
-        match plan_region(&**w, &climate, k, FOUNDING_SEED, &FoundingTunables::default()) {
+        let mut ft = FoundingTunables::default();
+        if let Some(v) = std::env::var("HERDK_SHARE").ok().and_then(|v| v.parse().ok()) {
+            ft.forage_share = v;
+        }
+        match plan_region(&**w, &climate, k, FOUNDING_SEED, &ft) {
             RegionPlan::Found(n) => {
                 let (msy, cap, open) = region_msy(&climate, k.frame, k.rx, k.rz);
                 let (x0, z0, x1, z1) = k.rect();
@@ -237,6 +241,10 @@ fn is_channel(x: i32, z: i32) -> bool {
 
 /// S11's every-kind world's herd ranges (crates/rtsim-host/src/every.rs on feat/eq-s11).
 fn painted(biomes: &[&'static str]) -> WorldHandle {
+    painted_with(biomes, true)
+}
+
+fn painted_with(biomes: &[&'static str], channels: bool) -> WorldHandle {
     let mut w = SampledWorld::new();
     let mut p = Painter::default();
     let per = REGION_BLOCKS / 64;
@@ -249,7 +257,7 @@ fn painted(biomes: &[&'static str]) -> WorldHandle {
                         0,
                         cx,
                         cz,
-                        &|x, z| if is_channel(x, z) { sea() } else { land(biome) },
+                        &|x, z| if channels && is_channel(x, z) { sea() } else { land(biome) },
                         &[],
                     );
                     p.feed(&mut w, &r);
@@ -277,12 +285,22 @@ fn painted_world() {
         ),
         ("painted: plains only", vec!["minecraft:plains"]),
         (
+            "painted: plains and savanna",
+            vec!["minecraft:plains", "minecraft:savanna"],
+        ),
+        (
             "painted: plains and forest",
             vec!["minecraft:plains", "minecraft:forest"],
         ),
+        ("painted: savanna only", vec!["minecraft:savanna"]),
+        ("painted: forest only", vec!["minecraft:forest"]),
+        ("painted: snowy slopes only", vec!["minecraft:snowy_slopes"]),
     ];
     for (title, b) in variants {
-        let world = painted(&b);
+        if std::env::var("HERDK_ONLY").is_ok_and(|o| !title.contains(o.as_str())) {
+            continue;
+        }
+        let world = painted_with(&b, std::env::var("HERDK_NO_CHANNELS").is_err());
         let (rows, news) = found_world(&world, true);
         run_alone(title, Box::new(HabitatClimate::new(world)), &rows, news, days());
     }
@@ -436,5 +454,31 @@ fn real_world_climates() {
                 t / f64::from(n)
             );
         }
+    }
+}
+
+#[test]
+#[ignore]
+fn savanna_trace() {
+    let world = painted(&["minecraft:savanna"]);
+    let climate = HabitatClimate::new(world.clone());
+    let k = RegionKey { frame: 0, rx: 0, rz: 0 };
+    let RegionPlan::Found(mut n) = plan_region(&**world.read(), &climate, k, 3, &FoundingTunables::default()) else { panic!() };
+    n.count = std::env::var("HERDK_COUNT").ok().and_then(|v| v.parse().ok()).unwrap_or(n.count);
+    let c = HabitatClimate::new(world.clone());
+    println!("growth at 56: {} ; yield {:.1}", c.growth_share(56.0), rtsim_ecology::herds::habitat::range_yield(&c, 0, 0, 0));
+    let mut h = Herds::new(1, HerdTunables::default(), Box::new(c), Tick::ZERO);
+    let id = h.add_herd(n.clone(), Tick::ZERO);
+    let mut legs = LegIndex::new(1_000);
+    let subs = h.subs();
+    for s in 1..=36u64 {
+        let t = Tick(s * subs.len);
+        h.run_until(&mut legs, t);
+        let _ = h.take_commands();
+        let x = h.herd(id).unwrap();
+        let p = h.position(id, t);
+        let cc = rtsim_ecology::herds::forage::cell_of(p.0, p.1);
+        let f = h.forage.at(&*h.climate, &subs, (0, cc.0, cc.1), t);
+        println!("sub {s:>2}: {:?} N {} sat {:.3} pos {:?} forage here {:.0} footprint {}", n.species, h.count(id, t), f64::from(x.satisfaction) / 1000.0, p, f, h.footprint(id, t));
     }
 }
