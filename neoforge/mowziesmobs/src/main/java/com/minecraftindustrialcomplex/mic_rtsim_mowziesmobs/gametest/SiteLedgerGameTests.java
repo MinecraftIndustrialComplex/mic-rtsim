@@ -16,6 +16,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.gametest.FakePlayers;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests;
 import com.minecraftindustrialcomplex.mic_rtsim.sites.SiteLedger;
 import com.minecraftindustrialcomplex.mic_rtsim_mowziesmobs.DenKind;
+import com.minecraftindustrialcomplex.mic_rtsim_mowziesmobs.FrostmawFights;
 import com.minecraftindustrialcomplex.mic_rtsim_mowziesmobs.GroveKind;
 import com.minecraftindustrialcomplex.mic_rtsim_mowziesmobs.MicRtsimMowziesMobs;
 import com.minecraftindustrialcomplex.mic_rtsim_mowziesmobs.gametest.MowzieKit.Den;
@@ -525,17 +526,24 @@ public final class SiteLedgerGameTests {
 
     // ---- 8: a lured body --------------------------------------------------------------------------
 
+    /** Both Frostmaws' health for their fight (MZB-1404): the jar's 250 would make a fight of a few thousand ticks. */
+    private static final float FIGHT_HEALTH = 30f;
+
     /**
-     * A lured body is a player's loss and its later death counts (S3 test 8). A den's Frostmaw, adopted, is taken 400 blocks
-     * off into a chunk that is then released: its hide asks for a census (MZB-1015), which misses it, and the engine's daily
-     * recounts miss it twice more over two days: it is written off as a player's loss (P 1), its UUID missing. Past the
-     * wait a new Frostmaw spawns at the den. The far chunk forced again, the lured Frostmaw loads with its old tags: it is
-     * not removed and is still missing. A player kills it: its CAMP_DEATH carries its UUID and its old slot and generation
-     * (with the tags kept, not the stray flag, MZB-1014), P rises by 1 on the aged value, and missing is empty.
+     * A lured body is a player's loss, and back at its full den it fights its replacement to the death (S3 test 8; fork F3 as
+     * Ben changed it, 2026-10-30, MZB-1404). A den's Frostmaw, adopted, is taken 400 blocks off into a chunk that is then
+     * released: its hide asks for a census (MZB-1015), which misses it, and the engine's daily recounts miss it twice more
+     * over two days: it is written off as a player's loss (P 1), its UUID missing. Past the wait a new Frostmaw spawns at the
+     * den. The far chunk forced again, the lured Frostmaw loads with its old tags 400 blocks off: it is not removed and is
+     * still missing (no fight from there). It walks home (moved into the den, its AI on again) and the den counts: the census
+     * sets the two on each other (FIGHT). Both have {@link #FIGHT_HEALTH} so the fight is short. Within the fight's bound one
+     * Frostmaw is left of the two, whichever it is; the row names it at home, count 1, with nobody missing, no wait (no
+     * renewal owed) and the pressure the write-off left, aged (the fight's death books nothing). Its CAMP_DEATH names the
+     * dead one's UUID.
      */
     @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "site_lured_body", skyAccess = true)
-    public static void aLuredBodyIsAPlayerLossAndAStraysDeathCounts(GameTestHelper helper) {
-        String test = "aLuredBodyIsAPlayerLossAndAStraysDeathCounts";
+    public static void aLuredBodyIsAPlayerLossAndFightsItsReplacementOnItsReturn(GameTestHelper helper) {
+        String test = "aLuredBodyIsAPlayerLossAndFightsItsReplacementOnItsReturn";
         if (!nativeOnly(helper, test))
             return;
         ChunkWait waits = ChunkWait.of(helper, 8000);
@@ -545,10 +553,9 @@ public final class SiteLedgerGameTests {
         int lx = den.cx + 25, lz = den.cz;
         EntityFrostmaw[] f = new EntityFrostmaw[1];
         UUID[] id = new UUID[1];
-        CampMember[] tag = new CampMember[1];
         Entity[] lured = new Entity[1];
         SiteLedger.Row[] off = new SiteLedger.Row[1];
-        ServerPlayer[] killer = new ServerPlayer[1];
+        EntityFrostmaw[] replacement = new EntityFrostmaw[1], survivor = new EntityFrostmaw[1];
         int[] census = new int[1], deaths = new int[1];
 
         GameTestSequence s = helper.startSequence()
@@ -560,7 +567,6 @@ public final class SiteLedgerGameTests {
         s = realDen(s, waits, den, f);
         s.thenExecute(() -> {
                     id[0] = f[0].getUUID();
-                    tag[0] = MowzieKit.tag(f[0]);
                     census[0] = MowzieKit.censusCount(den.faction);
                     int x = lx * 16 + 8, z = lz * 16 + 8;
                     f[0].setNoAi(true);
@@ -592,6 +598,7 @@ public final class SiteLedgerGameTests {
                 .thenExecute(() -> {
                     List<Entity> h = MowzieKit.held(den.faction);
                     check("a new Frostmaw at the den (" + h.size() + ")", h.size() == 1 && !h.get(0).getUUID().equals(id[0]));
+                    replacement[0] = (EntityFrostmaw) h.get(0);
                     census[0] = MowzieKit.censusCount(den.faction);
                     far.force(lx, lz);
                 })
@@ -606,32 +613,49 @@ public final class SiteLedgerGameTests {
                     check("the lured Frostmaw is not removed", !lured[0].isRemoved() && lured[0].isAlive());
                     check("no REMOVE (" + lines(den.faction, REMOVE, -1) + ")", lines(den.faction, REMOVE, -1) == 0);
                     SiteLedger.Row r = row(level, den.faction);
-                    check("still missing: " + describe(r), r != null && r.missing().contains(id[0]));
-                    off[0] = r;
+                    check("still missing, 400 blocks off: " + describe(r), r != null && r.missing().contains(id[0]));
+                    check("no fight from there (" + MowzieKit.camps().fights + ")", MowzieKit.camps().fights == 0);
+                    // It walks home: into the den, its AI on again (the lure turned it off).
+                    EntityFrostmaw back = (EntityFrostmaw) lured[0];
+                    Vec3 home = den.at(6, 0);
+                    back.setNoAi(false);
+                    back.teleportTo(home.x, home.y, home.z);
+                    back.setHealth(FIGHT_HEALTH);
+                    replacement[0].setHealth(FIGHT_HEALTH);
                     deaths[0] = ConflictKit.campDeaths(den.faction).size();
-                    killer[0] = MowzieKit.player(helper, lured[0].position().add(4, 0, 0), "site-lure-killer");
-                    MowzieKit.kill((EntityFrostmaw) lured[0], level.damageSources().playerAttack(killer[0]));
-                    FakePlayers.remove(killer[0]);
+                    MowzieKit.camps().forceRecount(den.faction);
                 })
-                .thenWaitUntil(waits.engine(() -> check("its CAMP_DEATH", ConflictKit.campDeaths(den.faction).size() > deaths[0])))
-                .thenExecute(() -> {
-                    ScriptedEngine.Received d = last(ConflictKit.campDeaths(den.faction));
-                    ByteBuffer v = d.view();
-                    check("its UUID", id[0].equals(ConflictKit.uuidAt(d, ConflictRecords.CampDeath.BODY_MOST)));
-                    check("a player's kill, credited to the player", d.aux() == ConflictRecords.BY_PLAYER
-                            && killer[0].getUUID().equals(ConflictKit.uuidAt(d, ConflictRecords.CampDeath.KILLER_MOST)));
-                    check("its old slot and generation (" + v.getInt(ConflictRecords.CampDeath.SLOT) + ", "
-                                    + v.getInt(ConflictRecords.CampDeath.GENERATION) + ")",
-                            v.getInt(ConflictRecords.CampDeath.SLOT) == tag[0].slot() && v.getInt(ConflictRecords.CampDeath.GENERATION) == tag[0].generation());
-                    check("no stray flag: its tags were kept", (v.getInt(ConflictRecords.CampDeath.FLAGS) & ConflictRecords.CampDeath.FLAG_STRAY) == 0);
-                })
+                .thenWaitUntil(waits.engine(() -> check("the den's census set the two on each other (FIGHT " + MowzieKit.camps().fights + ")",
+                        MowzieKit.camps().fights >= 1)))
+                .thenWaitUntil(waits.engine(() -> {
+                    boolean a = replacement[0].isAlive(), b = lured[0].isAlive();
+                    check("one Frostmaw is left of the two (the replacement " + (a ? "stands" : "fell") + ", the returner "
+                            + (b ? "stands" : "fell") + "; health " + replacement[0].getHealth() + ", " + ((EntityFrostmaw) lured[0]).getHealth()
+                            + "; targets " + replacement[0].getTarget() + ", " + ((EntityFrostmaw) lured[0]).getTarget() + ")", a != b);
+                }))
+                .thenExecute(() -> survivor[0] = replacement[0].isAlive() ? replacement[0] : (EntityFrostmaw) lured[0])
                 .thenWaitUntil(waits.engine(() -> {
                     SiteLedger.Row r = row(level, den.faction);
-                    check("missing is empty: " + describe(r), r != null && r.missing().isEmpty() && r.stamp() > off[0].stamp());
-                    check(String.format("P rose by 1 on the aged value (%.4f, then %.4f)", off[0].p(), r.p()),
-                            r.p() <= off[0].p() + 1f + 1e-3 && r.p() >= aged(off[0].p(), 16 * DAY) + 1f - 1e-3);
-                    record(test, "the stray's death", "before: " + describe(off[0]) + "; after: " + describe(r));
+                    check("the row names the survivor at home, count 1, nobody missing: " + describe(r), r != null && r.count() == 1
+                            && r.home().equals(List.of(survivor[0].getUUID())) && r.missing().isEmpty());
                 }))
+                .thenExecute(() -> {
+                    SiteLedger.Row r = row(level, den.faction);
+                    SiteLedger.Row w = off[0];
+                    check("no renewal owed: " + describe(r), !r.waiting());
+                    check(String.format("P is the write-off's, aged: no loss booked for the fight (%.4f, then %.4f)", w.p(), r.p()),
+                            r.p() <= w.p() + 1e-3 && r.p() >= aged(w.p(), r.stamp() - w.stamp() + DAY) - 1e-3);
+                    List<EntityFrostmaw> standing = level.getEntitiesOfClass(EntityFrostmaw.class, den.area().inflate(32), Entity::isAlive);
+                    check("exactly one Frostmaw at the den (" + standing.size() + ")", standing.size() == 1 && standing.get(0) == survivor[0]);
+                    check("the den's own (" + MowzieKit.held(den.faction).size() + ")", adopted(survivor[0], den.faction));
+                    EntityFrostmaw dead = survivor[0] == replacement[0] ? (EntityFrostmaw) lured[0] : replacement[0];
+                    ScriptedEngine.Received d = last(ConflictKit.campDeaths(den.faction));
+                    check("the dead one's CAMP_DEATH names it", ConflictKit.campDeaths(den.faction).size() > deaths[0]
+                            && dead.getUUID().equals(ConflictKit.uuidAt(d, ConflictRecords.CampDeath.BODY_MOST)));
+                    record(test, "the fight", (survivor[0] == replacement[0] ? "the replacement" : "the returner") + " survived; its kill aux "
+                            + d.aux() + "; before: " + describe(w) + "; after: " + describe(r) + "; FrostmawFights started "
+                            + FrostmawFights.started + ", set again " + FrostmawFights.reasserted + ", over " + FrostmawFights.ended);
+                })
                 .thenSucceed();
     }
 

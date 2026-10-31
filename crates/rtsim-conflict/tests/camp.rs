@@ -3434,55 +3434,169 @@ fn a_missing_member_back_while_the_camp_is_short_cancels_the_wait() {
     ok(&mut r);
 }
 
-/// MZB-1014, fork F3: a member gone missing that comes home after its replacement arrived is a
-/// stray at a full camp, left standing (not removed), and its death, whatever killed it, is a
-/// player's loss (fork F4): a lured body cannot be farmed away from its den. It keeps its former
-/// tags (its death names its old slot and generation) or has lost them (an uninstall stripped
-/// them: Java's census lists it a stray and its death carries the stray flag); either way the
-/// death names its UUID.
+/// The den lured of its Frostmaw, which is written off (a player's loss) and replaced at the
+/// wait's end; then the lured one walks home to the full den, its tags kept or stripped (an
+/// uninstall's strip: Java's census lists it a stray). The census at which it is back: (the run,
+/// the lured body, the replacement's UUID and slot, the pressure and the losses just before).
+fn returner_at_full_den(
+    seed: u64,
+    stripped: bool,
+) -> (
+    CampRun,
+    synth::CampBody,
+    boundary::Uuid,
+    (u32, u32),
+    f32,
+    u64,
+) {
+    let mut r = renewal_den(seed);
+    come_in(&mut r);
+    let mut lured = lure(&mut r, 0);
+    write_off(&mut r);
+    let due = r.c.camp(r.f).unwrap().arrival_at.expect("a wait");
+    r.run(due + 10);
+    assert_eq!(r.c.stats.arrivals, 1);
+    assert_eq!(counts(&r), [1, 0, 0, 0, 0], "the replacement");
+    let rep = r.plugin.camps[&r.key].bodies[0];
+    if stripped {
+        lured.slot = 0;
+        lured.generation = 0;
+    }
+    r.plugin.camp_world(r.key).bodies.push(lured);
+    let t = r.c.now() + 1;
+    let (p, losses) = (pressure_at(&r, t), r.c.stats.renewal_losses);
+    census(&mut r);
+    (r, lured, rep.uuid, (rep.slot, rep.generation), p, losses)
+}
+
+/// FIGHT lines the plugin applied, with their outcomes.
+fn fights(r: &CampRun) -> Vec<(boundary::ReconcileLine, u8)> {
+    r.plugin
+        .applied
+        .iter()
+        .filter(|a| a.line.action == boundary::ACTION_FIGHT)
+        .map(|a| (a.line, a.outcome))
+        .collect()
+}
+
+/// MZB-1404 (fork F3 as Ben changed it, 2026-10-30: "They fight to the death"): a member gone
+/// missing that comes home after its replacement arrived is not removed, and not left standing
+/// beside it: the census pairs the two (a FIGHT line on the replacement's slot naming the
+/// returner's UUID), and the returner is a rival, missing no longer. Each census that sees the two
+/// sets the fight again. Its tags kept or stripped, the same. The row hands the rival over as
+/// missing, so a reset pairs them again.
 #[test]
-fn a_missing_member_back_at_a_full_camp_is_left_standing_and_its_death_counts() {
+fn a_missing_member_back_at_a_full_den_is_set_to_fight_its_replacement() {
     for stripped in [false, true] {
-        let mut r = renewal_den(75);
-        come_in(&mut r);
-        let mut lured = lure(&mut r, 0);
-        write_off(&mut r);
-        let due = r.c.camp(r.f).unwrap().arrival_at.expect("a wait");
-        r.run(due + 10);
-        assert_eq!(r.c.stats.arrivals, 1);
-        assert_eq!(counts(&r), [1, 0, 0, 0, 0], "the replacement");
-        if stripped {
-            lured.slot = 0;
-            lured.generation = 0;
-        }
-        r.plugin.camp_world(r.key).bodies.push(lured);
-        let removes = applied(&r, boundary::ACTION_REMOVE);
-        census(&mut r);
+        let (mut r, lured, rep, slot, _, _) = returner_at_full_den(1406, stripped);
         assert_eq!(
             applied(&r, boundary::ACTION_REMOVE),
-            removes,
-            "left standing (stripped {stripped})"
+            0,
+            "not removed (stripped {stripped})"
         );
-        assert_eq!(world_bodies(&r), 2);
+        let f = fights(&r);
+        assert_eq!(f.len(), 1, "one pairing (stripped {stripped}): {f:?}");
+        let (l, outcome) = f[0];
+        assert_eq!((l.slot, l.generation), slot, "the replacement's slot");
+        assert_eq!((l.a, l.b), lured.uuid, "the returner");
+        assert_eq!(outcome, boundary::LINE_DONE);
+        assert!(missing(&r).is_empty(), "missing no longer");
+        assert_eq!(r.c.camp(r.f).unwrap().rivals, vec![lured.uuid]);
+        assert_eq!(world_bodies(&r), 2, "both stand while they fight");
         assert_eq!(counts(&r), [1, 0, 0, 0, 0]);
-        assert_eq!(missing(&r), vec![lured.uuid]);
+        assert_eq!(r.c.camp(r.f).unwrap().slots[0].uuid, rep);
+        let s = r.c.camp_site_state(r.f, r.c.now()).unwrap();
+        assert_eq!(s.bodies.missing, vec![lured.uuid], "handed over as missing");
         ok(&mut r);
+        census(&mut r);
+        assert_eq!(fights(&r).len(), 2, "the next census sets it again");
+        assert_eq!(applied(&r, boundary::ACTION_REMOVE), 0);
+        ok(&mut r);
+    }
+}
+
+/// MZB-1404: the replacement dies in the fight (a mob's kill, the returner's, or one no one is
+/// credited with): the fight's death books no pressure and opens no renewal, and the den counts
+/// again at once, so the returner takes the slot (an ADOPT with its UUID). No SPAWN, no write-off,
+/// no wait. A player who strikes the killing blow kills the slot's body: a player's loss, as any,
+/// and the returner still takes the slot.
+#[test]
+fn the_replacement_dying_in_the_fight_gives_its_slot_to_the_returner() {
+    for by in [boundary::BY_MOB, boundary::BY_NONE, boundary::BY_PLAYER] {
+        let (mut r, lured, rep, _, _, _) = returner_at_full_den(1407, false);
+        let (spawns, offs) = (
+            applied(&r, boundary::ACTION_SPAWN),
+            r.c.stats.camp_written_off,
+        );
         let losses = r.c.stats.renewal_losses;
         let t = r.c.now() + 1;
-        let before = pressure_at(&r, t);
-        assert!(r.plugin.camp_kill(r.key, lured.uuid, boundary::BY_MOB, t));
+        let p = pressure_at(&r, t);
+        assert!(r.plugin.camp_kill(r.key, rep, by, t));
+        let to = t + 20;
+        r.run(to);
+        assert_eq!(
+            counts(&r),
+            [1, 0, 0, 0, 0],
+            "by {by}: the returner holds the slot"
+        );
+        let s = &r.c.camp(r.f).unwrap().slots[0];
+        assert_eq!(s.uuid, lured.uuid, "by {by}");
+        assert_eq!(world_bodies(&r), 1);
+        assert!(r.c.camp(r.f).unwrap().rivals.is_empty());
+        assert_eq!(
+            r.c.camp(r.f).unwrap().arrival_at,
+            None,
+            "by {by}: no renewal owed"
+        );
+        assert_eq!(
+            applied(&r, boundary::ACTION_SPAWN),
+            spawns,
+            "by {by}: no SPAWN"
+        );
+        assert_eq!(r.c.stats.camp_written_off, offs, "by {by}: no write-off");
+        if by == boundary::BY_PLAYER {
+            assert_eq!(r.c.stats.renewal_losses, losses + 1, "a player's kill");
+            assert!((pressure_at(&r, t) - p - 1.0).abs() < 1e-5);
+        } else {
+            assert_eq!(r.c.stats.renewal_losses, losses, "by {by}: the fight's");
+            assert!(
+                (pressure_at(&r, t) - p).abs() < 1e-6,
+                "by {by}: no pressure"
+            );
+        }
+        ok(&mut r);
+        r.run(to + days(30.0));
+        assert_eq!(r.c.stats.arrivals, 1, "by {by}: no second arrival");
+    }
+}
+
+/// MZB-1404: the returner dies (in the fight, by the replacement's swipe, or to a player): a
+/// stray's death, which books nothing, whatever killed it; the replacement holds the slot and the
+/// den owes nothing. A second record of the same death books nothing either.
+#[test]
+fn the_returner_dying_books_nothing() {
+    for (stripped, by) in [
+        (false, boundary::BY_MOB),
+        (true, boundary::BY_MOB),
+        (false, boundary::BY_PLAYER),
+    ] {
+        let (mut r, lured, rep, _, _, _) = returner_at_full_den(1408, stripped);
+        let losses = r.c.stats.renewal_losses;
+        let t = r.c.now() + 1;
+        let p = pressure_at(&r, t);
+        assert!(r.plugin.camp_kill(r.key, lured.uuid, by, t));
         r.run(t + 5);
         assert_eq!(
-            r.c.stats.renewal_losses,
-            losses + 1,
-            "a player's loss (stripped {stripped})"
+            r.c.stats.renewal_losses, losses,
+            "stripped {stripped}, by {by}"
         );
-        assert!((pressure_at(&r, t) - before - 1.0).abs() < 1e-5);
+        assert!((pressure_at(&r, t) - p).abs() < 1e-6);
+        assert!(r.c.camp(r.f).unwrap().rivals.is_empty());
         assert!(missing(&r).is_empty());
         assert_eq!(r.c.camp(r.f).unwrap().arrival_at, None, "the den is full");
         assert_eq!(counts(&r), [1, 0, 0, 0, 0]);
+        assert_eq!(r.c.camp(r.f).unwrap().slots[0].uuid, rep);
         ok(&mut r);
-        // A second record of its death books nothing more.
         let d = boundary::CampDeath {
             faction: r.key,
             by: boundary::BY_PLAYER,
@@ -3497,8 +3611,41 @@ fn a_missing_member_back_at_a_full_camp_is_left_standing_and_its_death_counts() 
         let t = r.c.now() + 1;
         r.plugin.push(t, Obs::CampDeath(d));
         r.run(t + 5);
-        assert_eq!(r.c.stats.renewal_losses, losses + 1);
+        assert_eq!(r.c.stats.renewal_losses, losses);
     }
+}
+
+/// MZB-1404: only a boss's camp fights. A grove's warrior gone missing that comes home after the
+/// grove regrew to full is left standing, as before (fork F3): no FIGHT, no REMOVE, still missing.
+#[test]
+fn a_missing_warrior_back_at_a_full_grove_is_left_standing() {
+    let mut r = grove(1409, 9);
+    come_in(&mut r);
+    let lured = lure(&mut r, 0);
+    write_off(&mut r);
+    assert_eq!(missing(&r), vec![lured.uuid]);
+    for _ in 0..200 {
+        let c = r.c.camp(r.f).unwrap();
+        if c.home_count() + c.away_count() >= r.c.factions[r.f as usize].cap {
+            break;
+        }
+        let to = r.c.now() + days(1.0);
+        r.run(to);
+    }
+    let full = world_bodies(&r);
+    r.plugin.camp_world(r.key).bodies.push(lured);
+    let removes = applied(&r, boundary::ACTION_REMOVE);
+    census(&mut r);
+    assert!(fights(&r).is_empty(), "no fight at a grove");
+    assert_eq!(
+        applied(&r, boundary::ACTION_REMOVE),
+        removes,
+        "left standing"
+    );
+    assert_eq!(world_bodies(&r), full + 1);
+    assert_eq!(missing(&r), vec![lured.uuid]);
+    assert!(r.c.camp(r.f).unwrap().rivals.is_empty());
+    ok(&mut r);
 }
 
 /// MZB-1014: the missing are at most K, the camp's cap, the oldest dropped; a dropped member's
