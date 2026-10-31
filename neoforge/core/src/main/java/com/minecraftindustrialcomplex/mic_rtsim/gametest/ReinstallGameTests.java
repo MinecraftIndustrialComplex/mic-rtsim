@@ -382,12 +382,16 @@ public final class ReinstallGameTests {
         helper.startSequence()
                 .thenExecute(() -> {
                     cleanUp(server);
+                    // No district from the tests before: a reset plans every seeded chunk's re-adoption (UR-1), and the
+                    // chunks of one that never loads again would stay to adopt again into the next reset's test.
+                    forgetAll(helper);
                     gaps[0] = ledgerNoTake(server).gaps();
                     check("the guard reset the sim", SiteTestHooks.gapRestart(server, 0) != null);
                     check("a session runs: " + RtsimSession.startFailure(), RtsimSession.current() != null);
                     SiteLedger l = ledgerNoTake(server);
                     check("the reset counted the gap at once (" + gaps[0] + ", then " + l.gaps() + ")", l.gaps() == gaps[0] + 1);
                     check("and marked the ledger dirty for the next save", l.isDirty());
+                    check("and planned no chunk to adopt again (" + ind().districts().readoptLeft() + ")", ind().districts().readoptLeft() == 0);
                     check("the marker stands until a save", Files.isRegularFile(worldDir(server).resolve(ReinstallRules.MARKER)));
                     server.saveEverything(true, true, true); // as the stop of a server nobody joined
                 })
