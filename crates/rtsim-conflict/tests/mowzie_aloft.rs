@@ -1722,8 +1722,9 @@ fn a_puppet_killed_while_its_hand_back_is_in_flight_dies_once() {
         assert_eq!(s.state, SlotState::Dead, "outcome {outcome}: dead");
         let removal = chief_line(&since(&r, mark));
         assert!(
-            removal.as_ref().is_some_and(|x| (x.2.action, x.2.generation)
-                == (boundary::ACTION_REMOVE, generation)),
+            removal.as_ref().is_some_and(
+                |x| (x.2.action, x.2.generation) == (boundary::ACTION_REMOVE, generation)
+            ),
             "outcome {outcome}: the answer sends the throne body's REMOVE at once, not at the next \
              census (line in flight {:?}, sent {:?})",
             s.line,
@@ -1745,7 +1746,11 @@ fn a_puppet_killed_while_its_hand_back_is_in_flight_dies_once() {
         let at = r.c.now();
         r.plugin.hold_chief(r.key, false, false, at);
         assert_eq!(answered(&mut r, rec.op, index), boundary::LINE_DONE);
-        assert_eq!(chief(&r), None, "outcome {outcome}: freed by the REMOVE's answer");
+        assert_eq!(
+            chief(&r),
+            None,
+            "outcome {outcome}: freed by the REMOVE's answer"
+        );
         assert!(
             r.plugin.camp_held(r.key, CHIEF_SLOT, generation).is_empty(),
             "outcome {outcome}: no throne body"
