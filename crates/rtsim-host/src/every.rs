@@ -188,12 +188,16 @@ fn is_channel(x: i32, z: i32) -> bool {
     across || down
 }
 
-/// Paints region (`rx`, `rz`) as habitat: 64 cells of one biome (land but for the channels of
-/// [`is_channel`]), sent as the core's sampler sends them (latest wins, as the buffers have room).
+/// Paints region (`rx`, `rz`) as habitat: 64 cells of one biome, plains and forest in a
+/// checkerboard (land but for the channels of [`is_channel`]), sent as the core's sampler sends
+/// them (latest wins, as the buffers have room).
 fn paint_region(j: &mut Java, p: &mut rtsim_space::synth::Painter, rx: i32, rz: i32) {
     use rtsim_space::synth::{land, sea};
-    let biomes = ["minecraft:plains", "minecraft:savanna", "minecraft:forest"];
-    let biome = biomes[(rx + 3 + 2 * (rz + 3)).rem_euclid(biomes.len() as i32) as usize];
+    // Plains and forest only: a savanna range gets a full K from its spawn weights and no forage
+    // (its 56 degrees are past the growth ramp's 45), so its herds starve their neighbours'
+    // pasture too (EQC482).
+    let biomes = ["minecraft:plains", "minecraft:forest"];
+    let biome = biomes[(rx + rz).rem_euclid(biomes.len() as i32) as usize];
     let per = (rtsim_travel::legs::REGION_BLOCKS / 64) as i32;
     for cz in rz * per..(rz + 1) * per {
         for cx in rx * per..(rx + 1) * per {
