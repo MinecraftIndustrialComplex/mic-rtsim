@@ -4,13 +4,13 @@
 //! under heavy pressure breaks, and a broken camp is refounded after a wait. The body camps (the
 //! Frostmaw's den, the Umvuthana's grove) are S9's and keep what they book today.
 
-use rtsim_conflict::boundary::{self, Obs};
+use rtsim_conflict::boundary::{self, Cmd, Obs};
 use rtsim_conflict::culture::PartyKind;
 use rtsim_conflict::culture::SignalKind;
 use rtsim_conflict::culture::{
     BANDIT_JSON, Culture, CultureDef, FROSTMAW_JSON, GOBLIN_JSON, RAIDER_JSON, UMVUTHANA_JSON,
 };
-use rtsim_conflict::engine::{BLOCKED, Demand, Party, Signal, Target, body_id};
+use rtsim_conflict::engine::{BLOCKED, Demand, Party, Phase, Signal, Target, body_id};
 use rtsim_conflict::synth::CampRun;
 use rtsim_conflict::{Conflict, ConflictTunables, Cultures, synth};
 use rtsim_ecology::infra::{DistrictSite, Infrastructure, NoInfrastructure, RaidOutcome};
@@ -432,23 +432,116 @@ fn a_mob_kill_adds_nothing() {
 }
 
 /// EQC204, FB-2 (a): a death that credits no one at a player's district (a trap, a turret, a
-/// FakePlayer's kill) is that player's loss; the same death on the road is no one's.
+/// FakePlayer's kill) is that player's loss: a band fighting or waiting there, as a fight at its
+/// walls leaves it. (EQC291: a band still mustering at its camp is not at the district.)
 #[test]
 fn an_unclaimed_death_at_a_players_district_is_his() {
-    for by in [boundary::BY_NONE, boundary::BY_OTHER] {
-        let (mut w, mut c, f) = camp(23, "goblin");
-        let (p, e) = embodied_raid(&mut c, &mut w, f, district(), Tick(21));
-        let o = casualty(&c, p, e, by, 2, next_op());
-        ingest(&mut c, &mut w, &o, Tick(200));
-        let got = pressure(&c, f, Tick(200));
-        assert!((got - 2.0 / 60.0).abs() < 1e-6, "by {by}: {got}");
+    for phase in [Phase::Fighting, Phase::Waiting] {
+        for by in [boundary::BY_NONE, boundary::BY_OTHER] {
+            let (mut w, mut c, f) = camp(23, "goblin");
+            let (p, e) = embodied_raid(&mut c, &mut w, f, district(), Tick(21));
+            c.parties[p].phase = phase;
+            let o = casualty(&c, p, e, by, 2, next_op());
+            ingest(&mut c, &mut w, &o, Tick(200));
+            let got = pressure(&c, f, Tick(200));
+            assert!((got - 2.0 / 60.0).abs() < 1e-6, "{phase:?} by {by}: {got}");
+        }
     }
     // The switch off: it is no one's.
     let (mut w, mut c, f) = camp(23, "goblin");
     c.tun.district_unclaimed_is_players = false;
     let (p, e) = embodied_raid(&mut c, &mut w, f, district(), Tick(21));
+    c.parties[p].phase = Phase::Fighting;
     let o = casualty(&c, p, e, boundary::BY_NONE, 2, next_op());
     ingest(&mut c, &mut w, &o, Tick(200));
+    assert_eq!(pressure(&c, f, Tick(200)), 0.0);
+}
+
+/// A raid of `f` on the refinery, run in steps of 60 ticks until `want` holds of the band (its
+/// phase and its distance from the refinery, blocks), then embodied at a new epoch as a watched
+/// fight leaves it. `NoInfrastructure`: the band raids nothing and walks home.
+fn raid_where(
+    seed: u64,
+    want: impl Fn(Phase, f64) -> bool,
+) -> (World, Conflict, u32, Handle<Party>, u32) {
+    let (mut w, mut c, f) = camp(seed, "goblin");
+    let key = c.factions[f as usize].key;
+    let p = c
+        .order_party(&mut w, key, PartyKind::Raid, district(), None, Tick(21))
+        .expect("a raid");
+    let mut t = Tick(21);
+    loop {
+        t = Tick(t.0 + 60);
+        assert!(
+            t.0 < 10 * DAY,
+            "the band never came to where the test wants it"
+        );
+        c.run_until(&mut w, &mut NoInfrastructure, t);
+        assert!(c.parties.contains(p), "the band is gone");
+        let (x, z) = c.party_pos(p, t);
+        let d = f64::from(x - synth::REFINERY_POS.x).hypot(f64::from(z - synth::REFINERY_POS.z));
+        if want(c.parties[p].phase, d) {
+            break;
+        }
+    }
+    let x = &mut c.parties[p];
+    x.epoch += 1;
+    x.embodied = true;
+    x.spawned = x.units.clone();
+    let e = x.epoch;
+    (w, c, f, p, e)
+}
+
+fn out_far(p: Phase, d: f64) -> bool {
+    p == Phase::Out && d > 200.0
+}
+fn home_far(p: Phase, d: f64) -> bool {
+    p == Phase::Home && d > 200.0
+}
+fn out_near(p: Phase, d: f64) -> bool {
+    p == Phase::Out && d < 100.0
+}
+fn home_near(p: Phase, d: f64) -> bool {
+    p == Phase::Home && d < 100.0
+}
+
+/// FB-2 (a), EQC291: a band bound for a player's district that loses a member to a fall, a death
+/// no one dealt, on the road out or walking home is not at the district: no one's loss. Walking
+/// in or just off the district it is his, as it is fighting or waiting there.
+#[test]
+fn an_unclaimed_death_on_the_road_to_a_district_is_no_ones() {
+    type Want = fn(Phase, f64) -> bool;
+    for (what, near, want) in [
+        ("on the road out", false, out_far as Want),
+        ("walking home", false, home_far as Want),
+        ("walking in", true, out_near as Want),
+        ("walking off", true, home_near as Want),
+    ] {
+        for by in [boundary::BY_NONE, boundary::BY_OTHER] {
+            let (mut w, mut c, f, p, e) = raid_where(24, want);
+            let at = c.now();
+            let o = casualty(&c, p, e, by, 2, next_op());
+            ingest(&mut c, &mut w, &o, at);
+            let got = pressure(&c, f, at);
+            if near {
+                assert!((got - 2.0 / 60.0).abs() < 1e-6, "{what}, by {by}: {got}");
+            } else {
+                assert_eq!(got, 0.0, "{what}, by {by}");
+            }
+        }
+    }
+}
+
+/// EQC291: a band still mustering at its camp is not at the district it is bound for.
+#[test]
+fn an_unclaimed_death_while_mustering_is_no_ones() {
+    let (mut w, mut c, f) = camp(23, "goblin");
+    let (p, e) = embodied_raid(&mut c, &mut w, f, district(), Tick(21));
+    assert_eq!(c.parties[p].phase, Phase::Mustering);
+    for by in [boundary::BY_NONE, boundary::BY_OTHER] {
+        let o = casualty(&c, p, e, by, 1, next_op());
+        ingest(&mut c, &mut w, &o, Tick(200));
+    }
     assert_eq!(pressure(&c, f, Tick(200)), 0.0);
 }
 
@@ -522,6 +615,34 @@ fn a_war_chief_killed_by_a_player_adds_one_over_cap() {
     );
     let got = pressure(&c, f, Tick(200));
     assert!((got - 1.0 / 60.0).abs() < 1e-6, "{got}");
+}
+
+/// EQC291: the war chief of a pool camp killed by a machine (a death no one is credited with) is
+/// one member lost, and is the player's at the district as any member's is; on the road it is
+/// no one's; a mob's kill is a predator's at either.
+#[test]
+fn a_war_chief_killed_by_a_machine_at_the_district_is_his() {
+    for by in [boundary::BY_NONE, boundary::BY_OTHER] {
+        let (mut w, mut c, f) = camp(27, "goblin");
+        let (p, _) = embodied_raid(&mut c, &mut w, f, district(), Tick(21));
+        c.parties[p].phase = Phase::Fighting;
+        c.chief_killed_by(&mut w, p, None, by, None, Tick(200));
+        let got = pressure(&c, f, Tick(200));
+        assert!(
+            (got - 1.0 / 60.0).abs() < 1e-6,
+            "at the district, by {by}: {got}"
+        );
+        // On the road out, far from the district: no one's.
+        let (mut w, mut c, f, p, _) = raid_where(27, out_far);
+        let at = c.now();
+        c.chief_killed_by(&mut w, p, None, by, None, at);
+        assert_eq!(pressure(&c, f, at), 0.0, "on the road, by {by}");
+    }
+    let (mut w, mut c, f) = camp(27, "goblin");
+    let (p, _) = embodied_raid(&mut c, &mut w, f, district(), Tick(21));
+    c.parties[p].phase = Phase::Fighting;
+    c.chief_killed_by(&mut w, p, None, boundary::BY_MOB, None, Tick(200));
+    assert_eq!(pressure(&c, f, Tick(200)), 0.0, "a mob's kill");
 }
 
 /// The test hook takes the pool first, then the parties' members, each a player's loss.
@@ -1336,6 +1457,8 @@ fn a_reset_resumes_a_pool_camps_break() {
         let row = row_of(&r.c, f, elapsed);
         assert!(row.waiting() && row.count == 0, "a broken camp's row");
         let now = Tick(at.0 + elapsed);
+        // What the old engine reads at the find's date, and what it read at the break.
+        let (was_then, want_p) = (r.c.pressure_now(f, at), r.c.pressure_now(f, now));
         r.reborn(row, now);
         let f = r.f;
         let again = broken(&r.c, f);
@@ -1360,11 +1483,14 @@ fn a_reset_resumes_a_pool_camps_break() {
             // Its plunder drive is off: no wake of the drive is live.
             r.c.check(&r.w).expect("books");
         }
-        // Aged: the pressure read at the find is the row's, decayed by the elapsed days.
+        // Aged: the pressure read at the find is the row's, decayed by the elapsed days: the old
+        // engine's reading at that date, less than the break's (the half-life is 192 days).
         let p = r.c.pressure_now(f, now);
-        let was = pressure(&r.c, f, now);
-        assert!((f64::from(p) - was).abs() < 1e-9);
-        assert!(p > 0.0);
+        assert!(
+            (p - want_p).abs() < 1e-4,
+            "{elapsed_days} days: {p} vs the old engine's {want_p}"
+        );
+        assert!(p > 0.0 && p < was_then, "aged: {p} under {was_then}");
     }
 }
 
@@ -1517,4 +1643,227 @@ fn the_raider_plunders_at_the_slower_mean() {
         (0.6 * want..=1.5 * want).contains(&got),
         "{got} draws against {want}"
     );
+}
+
+// ---------------------------------------------------------------- the S7 review's findings (EQC291 on)
+
+/// A fresh engine of the same seed finds the goblin camp again at `at` with `row`, while a
+/// player's smog already reaches it: the plugin reports its sources before the camp's FACTION_FOUND,
+/// so `add_faction` plans a feud for the newcomer before the row says it is broken (EQC292).
+fn found_in_smog(seed: u64, row: FoundRow, at: Tick) -> (World, Conflict, u32) {
+    let (mut w, _) = synth::world(seed);
+    let mut c = Conflict::new(
+        seed,
+        ConflictTunables::default(),
+        Cultures::builtin(),
+        Tick::ZERO,
+    );
+    synth::define_names(&mut c, &w);
+    let ci = c.cultures.index_of("goblin").unwrap();
+    let structure = c.cultures.get(ci).def.structures[0].clone();
+    c.define(4, synth::CAMP_STRUCTURE, &structure);
+    // The player has worked at the refinery for two hours: its smog is his.
+    let mut t = 20u64;
+    while t <= 20 + 144_000 {
+        c.observe_presence(&mut w, synth::PLAYER, synth::REFINERY_POS, Tick(t));
+        t += 1_200;
+    }
+    c.set_emission(
+        &mut w,
+        1,
+        SignalKind::Smog,
+        synth::REFINERY_POS,
+        Some(synth::REFINERY),
+        300.0,
+        Tick(144_100),
+    );
+    c.run_until(&mut w, &mut NoInfrastructure, Tick(at.0 - 1));
+    c.ingest(
+        &mut w,
+        &mut NoInfrastructure,
+        &Obs::FactionFound(boundary::FactionFound {
+            faction: synth::CAMP,
+            flags: 0,
+            dimension: u32::from(synth::CAMP_POS.frame),
+            structure: synth::CAMP_STRUCTURE,
+            pos: (synth::CAMP_POS.x, 64, synth::CAMP_POS.z),
+            home_bodies: 0,
+            census: 0,
+            row,
+        }),
+        at,
+    );
+    let f = c.faction_of_key(synth::CAMP).expect("found");
+    (w, c, f)
+}
+
+/// EQC292: a camp found broken after a reset, with a player's pollution in its reach, books no
+/// wake of a feud (the one `add_faction` planned as an active camp's is void), sends nothing and
+/// no notice while it is broken, and its feud is planned again at the refounding.
+#[test]
+fn a_camp_found_broken_in_a_players_smog_books_no_feud_wake() {
+    let (mut w1, mut c1, f1) = camp(70, "goblin");
+    break_now(&mut c1, &mut w1, f1, Tick(10 * DAY));
+    let elapsed = 5 * DAY;
+    let row = row_of(&c1, f1, elapsed);
+    assert!(row.waiting() && row.count == 0, "a broken camp's row");
+    let wait = row.wait_now_ticks();
+    let now = Tick(10 * DAY + elapsed);
+    let (mut w, mut c, f) = found_in_smog(70, row, now);
+    let player = c.player(&mut w, synth::PLAYER);
+    assert!(
+        c.feud(f, player).is_some(),
+        "the player's smog reached the camp: a feud"
+    );
+    assert!(broken(&c, f).is_some(), "found broken");
+    c.check(&w)
+        .expect("books: no live feud wake on a broken camp");
+    c.take_commands();
+    let due = broken(&c, f).unwrap().due;
+    assert_eq!(due.0, now.0 + wait);
+    c.run_until(&mut w, &mut NoInfrastructure, Tick(due.0 - 1));
+    assert!(broken(&c, f).is_some());
+    assert_eq!(c.stats.feud_wakes, 0, "no feud woke");
+    assert_eq!(c.stats.parties.iter().sum::<u64>(), 0);
+    assert!(
+        !c.take_commands()
+            .iter()
+            .any(|x| matches!(x, Cmd::Notice(_))),
+        "a notice was sent by a broken camp"
+    );
+    assert!(c.kept_notices().is_empty());
+    c.check(&w).expect("books");
+    // The refounding plans the feud again: the smog goes on, and the camp acts.
+    c.run_until(&mut w, &mut NoInfrastructure, Tick(due.0 + 30 * DAY));
+    assert!(broken(&c, f).is_none(), "refounded");
+    assert!(c.stats.feud_wakes > 0, "the feud is planned again");
+    c.check(&w).expect("books");
+}
+
+/// EQC292: the refounding ends a wait only the pool could end (`BLOCKED`), as the break does: the
+/// new band has a pool, and a feud held at `BLOCKED` is planned again, not stuck until some other
+/// change of the room unblocks it.
+#[test]
+fn the_refound_clears_a_wait_only_the_pool_could_end() {
+    let (mut w, mut c, f, b) = broken_until_due(72, "goblin");
+    let player = c.player(&mut w, synth::PLAYER);
+    // A grievance a day before the refounding, which the broken camp hears; its feud holds at
+    // `BLOCKED`, as a wake on the broken camp used to leave it.
+    kill_signal(&mut c, &mut w, player, 100.0, Tick(b.due.0 - DAY));
+    c.feud_mut(f, player).expect("a feud").wait_until = BLOCKED;
+    c.run_until(&mut w, &mut NoInfrastructure, b.due);
+    assert!(broken(&c, f).is_none(), "refounded");
+    let feud = c.feud(f, player).expect("the grievance stands");
+    assert!(
+        feud.wait_until < BLOCKED,
+        "the wait for the pool is over: {:?}",
+        feud.wait_until
+    );
+}
+
+/// EQC293: a camp that breaks keeps no notice (it sends nothing, and a notice kept would go again
+/// at the next session start), and `resend_notices` sends none for a broken camp whatever a feud
+/// holds; an active camp's notice goes again, as it did.
+#[test]
+fn a_broken_camp_resends_no_notice() {
+    let (mut w, mut c, f) = camp(73, "goblin");
+    let player = c.player(&mut w, synth::PLAYER);
+    kill_signal(&mut c, &mut w, player, 2.0, Tick(10 * DAY));
+    c.run_until(&mut w, &mut NoInfrastructure, Tick(10 * DAY + DAY / 4));
+    let notices = c.kept_notices();
+    assert_eq!(notices.len(), 1, "a notice kept unplayed");
+    let n = notices[0];
+    c.take_commands();
+    c.resend_notices();
+    assert_eq!(
+        c.take_commands()
+            .iter()
+            .filter(|x| matches!(x, Cmd::Notice(_)))
+            .count(),
+        1,
+        "an active camp's notice goes again"
+    );
+    break_now(&mut c, &mut w, f, Tick(11 * DAY));
+    assert!(
+        c.kept_notices().is_empty(),
+        "the break keeps no notice: {:?}",
+        c.kept_notices()
+    );
+    // A notice a feud holds anyway (put back by hand) is not sent for a broken camp.
+    c.feud_mut(f, player).expect("a feud").notice = Some(Box::new(n));
+    c.resend_notices();
+    assert!(
+        !c.take_commands()
+            .iter()
+            .any(|x| matches!(x, Cmd::Notice(_))),
+        "a broken camp sent a notice at the session start"
+    );
+}
+
+/// EQC294: a plunder band already on its way to a rival camp that has broken since finds it
+/// scattered and takes nothing (the pick already leaves a broken camp alone); a camp not broken is
+/// plundered as before.
+#[test]
+fn a_plunder_band_arriving_at_a_broken_camp_takes_nothing() {
+    for broke in [false, true] {
+        let (mut w, mut c, goblin, bandit) = rivals(75);
+        c.log_enabled = true;
+        let node = c.factions[bandit as usize].node;
+        // The haven stands over its targets, so there is something to carry off.
+        let m = w.market(node);
+        let rich: std::collections::BTreeMap<GoodId, i64> = w
+            .goods
+            .ids()
+            .map(|g| (g, m.line(g).target + 40 * MILLI - m.stock(g)))
+            .filter(|e| e.1 > 0)
+            .collect();
+        w.stock_from_players(node, &rich, Tick(10));
+        let key = c.factions[goblin as usize].key;
+        c.order_party(
+            &mut w,
+            key,
+            PartyKind::Plunder,
+            Target::Node(node),
+            None,
+            Tick(21),
+        )
+        .expect("a plunder band");
+        // On its way (it leaves its camp after the muster), the rival breaks.
+        c.run_until(&mut w, &mut NoInfrastructure, Tick(2_000));
+        if broke {
+            break_now(&mut c, &mut w, bandit, Tick(2_100));
+        }
+        c.run_until(&mut w, &mut NoInfrastructure, Tick(20 * DAY));
+        if broke {
+            assert_eq!(c.stats.raids_village, 0, "nothing was plundered");
+            assert!(
+                c.log
+                    .iter()
+                    .any(|e| e.what.contains("broken: nothing to take")),
+                "the band's note"
+            );
+        } else {
+            assert!(c.stats.raids_village > 0, "the control plunders the camp");
+        }
+        c.check(&w).expect("books");
+    }
+}
+
+/// EQC295: a pool camp's row counts its strain and, for a culture with a plunder mood, its mood
+/// box, in the bytes the tables report.
+#[test]
+fn a_pool_camps_row_counts_its_strain_and_mood_boxes() {
+    use rtsim_conflict::engine::{Mood, Strain};
+    use rtsim_kernel::rows::Row;
+    let strain = std::mem::size_of::<Strain>();
+    let mood = std::mem::size_of::<Mood>();
+    // A raider camp has both, a goblin camp a strain only, a body camp neither.
+    for (culture, want) in [("raider", strain + mood), ("goblin", strain)] {
+        let (_, c, f) = camp(80, culture);
+        assert_eq!(c.factions.row(f).heap_bytes(), want, "{culture}");
+    }
+    let (_, c, f) = camp(80, "frostmaw");
+    assert!(c.factions[f as usize].strain.is_none() && c.factions[f as usize].mood.is_none());
+    let (_, c, f) = camp(80, "raider");
+    assert!(c.factions[f as usize].strain.is_some() && c.factions[f as usize].mood.is_some());
 }

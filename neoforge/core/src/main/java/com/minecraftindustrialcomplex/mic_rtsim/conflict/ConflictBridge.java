@@ -40,6 +40,8 @@ import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Mob;
 import net.minecraft.world.entity.ai.goal.WrappedGoal;
 import net.minecraft.world.entity.ai.targeting.TargetingConditions;
+import net.minecraft.world.entity.animal.IronGolem;
+import net.minecraft.world.entity.animal.SnowGolem;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.Item;
@@ -2544,6 +2546,24 @@ public final class ConflictBridge implements SessionPlugin {
     }
 
     /**
+     * The credit of the death of a party's member or chief (EQC299, FB-2 (a): at a player's district every death no wild mob
+     * dealt is his): {@link #credit}, except that the kill of a golem a player built (an iron golem a player made, any snow
+     * golem: nothing but a player makes one) is OTHER, a machine's, not MOB. The engine then books it as it books a trap's: the
+     * player's at the district, no one's on the road. The camp bodies' credit ({@link Camps#killer}) is not touched.
+     */
+    static Credit memberCredit(LivingEntity dead, DamageSource source) {
+        Credit c = credit(dead, source);
+        if (c.by() == KillCredit.MOB && builtByPlayer(source.getEntity()))
+            return new Credit(KillCredit.OTHER, null);
+        return c;
+    }
+
+    /** A golem a player built: an iron golem flagged player-created, or a snow golem (built, never natural). */
+    static boolean builtByPlayer(Entity e) {
+        return e instanceof IronGolem g ? g.isPlayerCreated() : e instanceof SnowGolem;
+    }
+
+    /**
      * The faction whose chief an entity is: a chief puppet of a live party, else 0. (A camp's own body is
      * {@link Camps}'s to name.)
      */
@@ -2570,12 +2590,13 @@ public final class ConflictBridge implements SessionPlugin {
             // A chief's death goes by the kill credit (CHIEF_KILLED renews the den, MZB-261). So does every other member's, by the
             // camp's rule (a player the damage names, a tame animal's owner, the credit of a hit within 100 ticks, MZB-826), so the
             // warriors an Umvuthi's `die` takes are credited as vanilla credits them.
-            Credit c = sl.chief ? credit(dead, source) : Camps.killer(dead, source);
+            Credit c = memberCredit(dead, source);
             sl.pendingDeath = new Death(c.by(), c.killer());
             return;
         }
         // A camp's kin killed by a player inside its faction's territory: killing (4).
-        if (territories.isEmpty() || !(killer instanceof Player pl) || pl.isSpectator()
+        // A FakePlayer is a machine's (a Create deployer farm, MZB-111): its kill is a trap's, which is no killing (EQC243, EQC300).
+        if (territories.isEmpty() || !(killer instanceof Player pl) || pl.isSpectator() || pl instanceof FakePlayer
                 || RtsimAttachments.tag(dead) != null || !(dead.level() instanceof ServerLevel level))
             return;
         int x = Mth.floor(dead.getX()), z = Mth.floor(dead.getZ());
