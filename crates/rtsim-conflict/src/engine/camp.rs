@@ -3046,6 +3046,9 @@ impl Conflict {
             self.stats.renewal_losses += 1;
         }
         self.set_heir(f, due, false, at);
+        // The chief's own pressure is saved with the row (p2): the row is marked at once, or a
+        // grove whose Umvuthi fell away saves the pressure it had before (S9 review, MZB-1288).
+        self.site_touch(f);
         self.note(
             at,
             Some(f),
