@@ -518,11 +518,16 @@ public final class DragonBridge implements SessionPlugin {
             return true;
         }
         double x = b.getDouble(at + Materialize.X), y = b.getDouble(at + Materialize.Y), z = b.getDouble(at + Materialize.Z);
+        boolean homeBody = (flags & Materialize.FLAG_HOME_BODY) != 0;
+        if (homeBody && homes.carrying(level, agent, x, z)) {
+            // A loaded body carries the dragon's home attachment already, registered or not (EQC116, EQC311): no second body.
+            reject(agent, epoch, cmdSeq, DragonRecords.SpawnRejected.ALREADY_EMBODIED, now);
+            return true;
+        }
         if (!RtsimSession.entitiesTickAt(level, BlockPos.containing(x, y, z))) {
             reject(agent, epoch, cmdSeq, DragonRecords.SpawnRejected.NOT_TICKING, now);
             return true;
         }
-        boolean homeBody = (flags & Materialize.FLAG_HOME_BODY) != 0;
         Lairs.Lair homeLair = homeBody ? lairs.nearestKnown(level, new Vec3(x, y, z), HOME_LAIR_RADIUS) : null;
         if (homeBody && homeLair == null) {
             reject(agent, epoch, cmdSeq, DragonRecords.SpawnRejected.SPAWN_FAILED, now); // the engine orders it at a lair this session reported
