@@ -188,6 +188,18 @@ impl Row for FactionRow {
                 .camp
                 .as_deref()
                 .map_or(0, crate::engine::Camp::heap_bytes)
+            // The strain and the mood are boxes of their own (EQC201, EQC287), each on every
+            // faction of a culture with the block (EQC295).
+            + self
+                .x
+                .strain
+                .as_deref()
+                .map_or(0, |_| std::mem::size_of::<crate::engine::Strain>())
+            + self
+                .x
+                .mood
+                .as_deref()
+                .map_or(0, |_| std::mem::size_of::<crate::engine::Mood>())
     }
 }
 
