@@ -12014,6 +12014,139 @@ rounds of phase 2 are the check, and what they found is recorded after them.
   in sight), caused by the follower standing 20 blocks out, where the jar's raptor pulls a targetless follower back to 3
   blocks; the follower now stands 16 blocks out. Whether that also explains this cut on the beat is not known.
 
+### M11 review fixes (MZB-1300 to MZB-1309)
+
+An Opus review of M11 "Aloft" (landed on main as 13ac4d88) found one P1, three P2 and five P3 points. The fixes are on
+`fix/m11-review`, each its own commit, with the tests in one commit ahead of them (72a89a5c), so that the round at that commit is
+main's code with the new tests: what each test failed with there is in its record. Two tests passed there and were changed after (the
+let-go and the re-pair tests, MZB-1301 and MZB-1308); they failed in a round of the final code with those two fixes taken out of the
+working tree for its compile. The review's line numbers were at 13ac4d88; each place was found again on main after M12a, S5, S6 and S7.
+
+- **MZB-1300** (P1 of the review: a chief killed in the moment its band reaches home came back as a second Umvuthi with a second Sol
+  Visage):
+  - The path: the grove is in, the chief's slot Gone, and the engine's `home` sends the chief's HAND_BACK. A player kills the puppet in
+    the tick or two before Java plays that line (MZB-466's window): no line is held, so `journalLoss` journals CHIEF_KILLED, and the
+    engine's end of the band books it as the chief's death at its camp and frees the Owed slot (`chief_killed_home`, MZB-853 release
+    3). The HAND_BACK then comes: `retiredChief` was false (only a CAMP_DEATH added to `Camps.retired`), and `secondPuppet`, `puppetOf`
+    and `dyingChief` found nothing (the slot was forgotten at the settle), so `handBack` fell through to `spawnLine`, which stood a
+    throne Umvuthi of the dead generation (`makeBody` even set `chiefGeneration` to it). The engine ignored its DONE (no slot holds
+    that generation), so a persistent boss with full loot stood until the next census or the heir's seat. The code comment that said
+    such a boss "comes back at the next census" was MZB-824's, before MZB-853 booked the death.
+  - The fix, commit e45f78fb (Camps, ConflictBridge): when the bridge journals CHIEF_KILLED for a traveller chief it tells Camps
+    (`chiefKilledAway(faction, agent, epoch)`), which keeps the band's (agent, epoch) for the session in `killedAway` (memory only, as
+    `retired`; emptied at a session's start and at the server's stop). `handBack`, and `playHeldHandBack` before its spawn branch,
+    answer a LINE_CHIEF HAND_BACK naming such a band STALE, and the match also adds the line's generation to `retired`. The comment and
+    the javadoc of `chiefDeathsAfterEnd` say what happens now.
+  - The ADOPT: an ADOPT names a stray by UUID, not the band, so it is matched by generation. `adopt` answers a chief-slot ADOPT of a
+    generation in `retired` STALE, and `chiefKilledAway` adds the camp's chief generation as this session knows it
+    (`Site.chiefGeneration`, set by a chief SPAWN, ADOPT or hand-back) to `retired`. Why that is safe: while a chief lives in the
+    engine's books no other chief generation is made, so a known generation is the killed chief's or an older, retired one. What it
+    does not cover: a session that never made, adopted or handed back that chief (after a restart `chiefGeneration` is 0), whose ADOPT
+    in flight still tags the stray with the dead generation. Smaller than the HAND_BACK's case: the stray stood already (an ADOPT makes
+    no body), it is only tagged, and the next census removes it as a body of a retired generation.
+  - The test is `aChiefLineInFlightAcrossItsPuppetsDeathIsStale` (batch `aloft_killed_in_flight`; grove S the HAND_BACK in the
+    animation and after it, grove A the ADOPT, grove C the control). At 72a89a5c it failed with "S's HAND_BACK in the animation is
+    answered STALE, not DONE".
+- **MZB-1301** (P2 of the review: a dying chief's loot was lost when its chunk unloaded within one tick):
+  - The path: a player kills the puppet and logs out, teleports or dies and respawns far within the 115-tick animation (or a forced
+    chunk is let go). With no ticket left vanilla hides the chunk and unloads its entities in one level tick (`chunkSource.tick` sets
+    HIDDEN, `entityManager.tick` stores and removes), before the bridge's end of the tick. `EntitySaveMixin` keeps the tagged body out
+    of the save, `tickDying` finds it removed UNLOADED_TO_CHUNK and counts `deathLootLost`: the Sol Visage is gone.
+  - The review's first remedy (untag the body on the Dying list so the vanilla save keeps it mid-animation) does not work, read from
+    the 1.8.2 jar with javap: `MowzieEntity.tickDeath` drops its loot at the animation's end only when its `killDataCause` (the
+    `DamageSource` `die` stored) is set, and `addAdditionalSaveData` saves only the ability cooldowns, so a body read back dying ends
+    its animation and drops nothing. The review's premise that plain Mowzie "would save the dying body and drop on reload" is wrong for
+    the same reason: the test's control, the jar's own Umvuthi killed and let go the same way, saved dying (`UNLOADED_TO_CHUNK`), left
+    no Sol Visage after its reload (0 in the round at 72a89a5c).
+  - So the second remedy, the animation finished before the chunk is hidden. Commit 405cd6f0 (ConflictBridge): a dying entry holds its
+    chunk with a ticket (`DYING_TICKET`, a region ticket of distance 1 keyed by the body's entity id: the chunk it died in at block
+    ticking, the ring round it at FULL, a 600-tick lifespan as a backstop). When the player goes, the chunk only stops ticking
+    entities, and `endDying`'s existing early end (MZB-817) drops the loot at the end of that tick; the ticket goes with the entry (its
+    drops, its removal, alive again, a finish, a session's start or failure). The chunk then unloads with the loot in it. A body moved
+    more than a chunk from where it died in its animation is not covered (the ring is one chunk; in the tests it falls under 2 blocks).
+    The edge test 36b (`aDyingChiefTakenBackAtTheEdgeDropsItsLoot`) is unchanged by it: block ticking does not tick entities.
+  - The test is `aDyingChiefWhoseChunksAreLetGoDropsItsLoot` (batch `aloft_dying_let_go`): the lane's chunks let go 20 ticks into the
+    animation, waited out of memory, forced again; one Sol Visage read back where the puppet fell. At 72a89a5c it passed: it let the
+    chunks go inside a GameTest step, after the levels had ticked, and the end of that same tick found the chunk no longer ticking
+    entities and ended the animation in time (MZB-817's early end). A logout, teleport or far respawn is handled between ticks, so the
+    test now lets go in a server task (`server.tell`, a `TickTask`), run while the server waits for the next tick (a401f109): the next
+    level tick hides the chunk and unloads the body before the end of the tick. With MZB-1301 taken out it failed with (pending: the round is queued).
+- **MZB-1302** (P2 of the review: a puppet made or put back under leaves was pinned):
+  - The path: the bridge placed a floating body at `MOTION_BLOCKING_NO_LEAVES` plus its lift (the spawn in `tryPlace` and the put-back
+    in `checkPlaced`), while its height rule reads `MOTION_BLOCKING` (`UmvuthiAloft.top`, MZB-808), and `AloftRules.mayStepAcross`
+    takes no step across while the body is more than a block below its target. Under a canopy the body was made under the leaves, its
+    rise blocked by them, and it stayed pressed there until the stuck machine moved it (about 40 s).
+  - The fix, commits 1e906089 and a93e767a (ConflictBridge; at 1e906089 alone the core does not compile, as the follow goal still
+    called the one-argument `place`, which a93e767a puts back): `groundFor(lift)`, `MOTION_BLOCKING` for a body that floats (its lift
+    above 0) and `MOTION_BLOCKING_NO_LEAVES` for every other, at both places; `Slot.place` takes the heightmap (the follow goal's
+    walker keeps the ground under the leaves). A grounded (settled) puppet's lift is 0, so it is put back on the ground as before. The
+    other remedy (a step across after a blocked rise) is not taken: it would move a body inside the leaves' layer, and the spawn is
+    where the two heights disagreed. Left as it was: a puppet made where its camp body stood (a SET_OUT's hand-off) under leaves, and
+    one that settled under leaves and rises, still meet the leaves (the stuck machine takes them, as before).
+  - The test is `aPuppetMadeUnderACanopyFloatsOverIt` (batch `aloft_canopy`: leaves 8 over the floor, the puppet made under them and
+    then moved into a chunk that does not tick entities, so that the placing puts it back). At 72a89a5c it failed with "it is made over
+    the leaves (its foot 3.1000000000000014 over the floor, the leaves' top 9)".
+- **MZB-1303** (P2 of the review: in case B, the throne body and the puppet killed in one tick gave two Sol Visages):
+  - The path: both deaths are pending at the end of the tick, and the bridge settles its own (`settleDeaths`) before `reconciler.tick`
+    settles the camps'. The puppet's CHIEF_KILLED calls `Camps.chiefDiedAway`, which marks the standing chief body second, but
+    `standingChief` asks `isAlive()`, and the throne body was dying; then the camps journal its CAMP_DEATH, whose `markPuppetsSecond`
+    sees only live slots. Two deaths booked, two Sol Visages dropped.
+  - The fix, commit 813e4174 (Camps): the second mark takes `chiefBody(c, false)`, any chief-slot body of the camp that is not removed,
+    alive or dying, and not second already (a body whose CAMP_DEATH went out is untagged, so it is not found: its loot stays). `death`
+    already asks `secondBody`, so the dying throne body journals nothing and `ConflictEvents.onDrops` cancels its drops. The other
+    readers of `standingChief` (the chief's memory, case B's merge) keep the live body.
+  - The test is `aThroneBodyAndItsPuppetKilledInOneTickBookOneDeath` (batch `aloft_one_tick_deaths`: grove T kills the throne body and
+    then the puppet in one step, grove P the other way round). At 72a89a5c it failed with "T (the throne body first): one death booked
+    (1 CAMP_DEATH, 1 CHIEF_KILLED)".
+- **MZB-1304** (P3 of the review: no REMOVE after an answer landed on a dead chief slot):
+  - `chief_killed_home` makes a Body slot Dead and sends the throne body's REMOVE only with no line in flight; with the chief's
+    HAND_BACK in flight the REMOVE waited for the next census, as the answer (NOTHING after a merge, STALE since MZB-1300) books
+    nothing on a dead slot.
+  - The fix, commit cdb280f9 (`camp_bodies`): a dead slot's own line answered with its body maybe still standing (any answer but a
+    REMOVE's own, and but one that frees the slot) sends that body's REMOVE at a camp that is in, as a census would. It is the census's
+    rule for a dead slot (a body found is removed), for every dead slot.
+  - The test is `a_puppet_killed_while_its_hand_back_is_in_flight_dies_once`'s case 2, now for NOTHING and STALE: the answer sends the
+    REMOVE at once (it used to assert the census's REMOVE), and the slot is freed once the held lines play. At 72a89a5c it failed with
+    "outcome 2: the answer sends the throne body's REMOVE at once, not at the next census (line in flight None, sent None)". Its
+    first form also asked the REMOVE's answer to be DONE, which failed at cdb280f9 (`left: 2`, NOTHING): the census's TAKE that the
+    scenario (`left_home_in`) answers STALE itself is still held by the emulated plugin and plays first when the player at the throne
+    goes, taking the throne body, so the REMOVE finds none. NOTHING frees a dead slot as DONE does, and the test takes either
+    (9a847a7f).
+- **MZB-1305** (P3 of the review: a hovering puppet was never stepped or zeroed again):
+  - The path: `UmvuthiAloft.step` returned at once for a settled body until it rose, and a body that settled over a fluid (HOVER) keeps
+    its gravity off, so a push or Levitation that landed on it carried it off for good.
+  - The fix, commit 7ece7147 (UmvuthiAloft): the height it hovers at is kept (`hoverY`), and each tick a hovering body's motion is
+    zeroed and it steps back toward that height at the rule's pace (`verticalStep`, with collision). A grounded body is the jar's, as
+    before.
+  - The test is `aHoveringPuppetHoldsItsHeight` (batch `aloft_hover_push`: a push of 1 block a tick and Levitation II). At 72a89a5c it
+    failed with "100 ticks after the push, with Levitation on, it is back at its height (13.283608758783508 over it)".
+- **MZB-1306** (P3 of the review: two indexes read back with no range check): `chief_ended` (MZB-853) and `placing` were read back with
+  any faction, and `check_indexes` covered neither, so a bad entry loaded and panicked at its first use (`factions[f]`). Commit
+  e6cd8c4d (persist.rs): `check_indexes` refuses a placing or a band's end past the table, on both the blob load and the paged one. The
+  test is `a_placing_or_a_band_end_past_the_factions_is_an_error` (persist.rs's unit tests). At 72a89a5c it failed with "a band's end
+  naming faction 1 of 1" (`left: false`, the load was not an error).
+- **MZB-1307** (P3 of the review: `docs/replay-gate.md` understated the residual at a replayed generation switch): live the chief is
+  lost to no one at the first restart's replay end, while the crash replay books `chief_death` with the player's cause, so the
+  pressure, `renewal_losses`, the heir's due tick and everything the fall at the camp does differ too, not only the fall and the player
+  loss. Corrected in commit 9062d2cf. Not removed: booking one cause on both paths needs the live path to know at the restart that a
+  CAMP_DEATH will come, or the replay to run `chief_ends_lost` where the earlier session ended, which is the hook the entry already
+  names. A known residual; no code changed, so no test.
+- **MZB-1308** (P3 of the review: `Repairs.send` read the per-player data of the level's first player only): the bundle built for that
+  player was checked and then broadcast to every tracker, so a tracker whose own pairing would hold something per player was sent a
+  fresh copy without it. Commit c59cb49a (Repairs): the pairing is built for every player tracking the body
+  (`ChunkMap.getPlayersWatching`, the players `broadcast` sends to) and the re-pair is skipped if any one's holds anything but the
+  vanilla set and the complex spawn payload; with no tracker it is NOBODY. What can hold data of a player's own is an entity's own
+  `sendPairingData` override: NeoForge 21.1's synced attachments cannot (`AttachmentSync.syncInitialAttachments` ignores `sendToPlayer`
+  and adds the same payload to every pairing, so a synced attachment makes every bundle skip, for the first player too). The
+  Umvuthi the GameTests re-pair has none (its bundle is the vanilla set and the complex spawn payload, MZB-959); the fix guards a
+  body of a mod that has one.
+  - The test is `aRePairIsSkippedWhenAnyTrackerHasPerPlayerData` (batch `aloft_repair_per_player`), on `mic_rtsim:test_pairing`, a
+    zombie type the core registers on a GameTest server only (`gametest/TestPairing`), whose `sendPairingData` adds a payload for the
+    players `TestPairing.to` names (every player but the level's first, for the one call; nobody for the control). Its first form, an
+    attachment synced to some players (72a89a5c), failed its control on main's code too, "the control's re-pair went (false, repairs
+    +0)", for the reason above; the type replaced it (6f428530). With MZB-1308 taken out it failed with (pending: the round is queued).
+- **MZB-1309** (the checks): pending; the rounds are queued.
+
 ## M12 S9
 
 (none yet)
