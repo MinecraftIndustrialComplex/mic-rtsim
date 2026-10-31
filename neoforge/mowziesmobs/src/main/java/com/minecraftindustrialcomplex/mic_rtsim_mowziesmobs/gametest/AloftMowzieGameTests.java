@@ -5427,10 +5427,12 @@ public final class AloftMowzieGameTests {
     /**
      * A dying chief whose chunks are let go in its animation still drops its loot (the M11 review's P2, MZB-1301). A puppet floats over
      * a lane of forced chunks; a masked player 20 blocks off kills it. 20 ticks into its 115-tick animation the lane's chunks are let
-     * go, as a player's logout, teleport or far respawn lets go of its chunks: with no ticket left vanilla hides a chunk and unloads its
-     * entities in one tick, and the body (a puppet, never saved) went before the end of the tick could end its animation. Now its chunk
-     * is held until it has dropped: once the lane is out of memory and forced again, one Sol Visage lies where it fell, the body ended as
-     * KILLED, {@code deathLootLost} did not rise and nothing is dying. On a second lane the jar's own Umvuthi (a stray, made persistent)
+     * go between two ticks (a server task), as a player's logout, teleport or far respawn handled between ticks lets go of its chunks:
+     * with no ticket left the next level tick hides the chunk and unloads its entities, before the end of that tick could end the
+     * animation, and the body (a puppet, never saved) went with its loot. (Let go inside a GameTest step, after the levels ticked, the
+     * end of the same tick finds the chunk no longer ticking and ends the animation in time: the round at 72a89a5c passed that way.)
+     * Now its chunk is held until it has dropped: once the lane is out of memory and forced again, one Sol Visage lies where it fell,
+     * the body ended as KILLED, {@code deathLootLost} did not rise and nothing is dying. On a second lane the jar's own Umvuthi (a stray, made persistent)
      * is killed and let go the same way: what it drops after its reload is recorded, not asserted (the jar does not save the kill data its
      * drop reads, {@code MowzieEntity.killDataCause}). Fails on the code before MZB-1301: no Sol Visage, {@code deathLootLost} 1.
      */
@@ -5488,9 +5490,13 @@ public final class AloftMowzieGameTests {
                     check("and the control's (removed " + control[0].isRemoved() + ")", !control[0].isRemoved() && control[0].isDeadOrDying());
                     check("no Sol Visage yet (" + visagesNear(level, fell[0], 8) + " and " + visagesNear(level, fell[1], 8) + ")",
                             visagesNear(level, fell[0], 8) == 0 && visagesNear(level, fell[1], 8) == 0);
-                    was[1] = level.getGameTime();
-                    far.releaseRect(lane.cx0, lane.cz, lane.cx1, lane.cz);
-                    far.releaseRect(plain.cx0, plain.cz, plain.cx1, plain.cz);
+                    // Between this tick's end and the next tick's levels, as a packet the server handles while it waits for the next tick.
+                    net.minecraft.server.MinecraftServer server = level.getServer();
+                    server.tell(new net.minecraft.server.TickTask(server.getTickCount(), () -> {
+                        was[1] = level.getGameTime();
+                        far.releaseRect(lane.cx0, lane.cz, lane.cx1, lane.cz);
+                        far.releaseRect(plain.cx0, plain.cz, plain.cx1, plain.cz);
+                    }));
                     MowzieKit.everyTick(helper, () -> {
                         if (why[0] == null && puppet[0].isRemoved())
                             why[0] = puppet[0].getRemovalReason();
@@ -5520,7 +5526,7 @@ public final class AloftMowzieGameTests {
                     check("no loot record was lost (" + was[0] + " to " + ConflictKit.deathLootLost() + ")", ConflictKit.deathLootLost() == was[0]);
                     check("no Umvuthi floats in the lane (" + level.getEntitiesOfClass(EntityUmvuthi.class, lane.area(), Entity::isNoGravity).size() + ")",
                             level.getEntitiesOfClass(EntityUmvuthi.class, lane.area(), Entity::isNoGravity).isEmpty());
-                    record(test, "let go", "the lanes were let go 20 ticks into the animation; the puppet ended as " + why[0] + " and its Sol Visage was read back ("
+                    record(test, "let go", "the lanes were let go between ticks 20 into the animation (at " + was[1] + "); the puppet ended as " + why[0] + " and its Sol Visage was read back ("
                             + mine + "); the jar's own Umvuthi, saved dying (" + why[1] + "), left " + theirs + " after its reload");
                     recallAll(agent);
                 })
