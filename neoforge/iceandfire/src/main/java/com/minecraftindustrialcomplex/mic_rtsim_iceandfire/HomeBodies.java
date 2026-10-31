@@ -102,7 +102,7 @@ public final class HomeBodies {
 
                 @Override
                 public void out(ChunkWatch.Area area, long now) {
-                    leave((Lairs.Lair) area.tag, now);
+                    leave((Lairs.Lair) area.tag, now, false);
                 }
             }, DragonConfig.censusGap());
         }
@@ -244,19 +244,34 @@ public final class HomeBodies {
         return epoch;
     }
 
-    /** The lair went out: each loaded home body of it is released (reason 8), then LAIR_OUT. */
-    void leave(Lairs.Lair lair, long now) {
+    /**
+     * The lair went out: each loaded home body of it whose chunk no longer entity-ticks is released (reason 8), then LAIR_OUT.
+     * A body whose chunk still ticks (vanilla ticks entities within the simulation distance, so with view and simulation
+     * distance 10 a home chunk 10 chunks out still ticks while the footprint's far edge is out) stays registered and leashed,
+     * and {@link DragonBridge}'s pass releases it when its chunk stops ticking (EQC312): released while it ticks, it would
+     * wander off unleashed or stand beside a puppet of its dragon. {@code all} (the GameTests' {@link #testOut}: the whole
+     * footprint unloaded) releases every one.
+     */
+    void leave(Lairs.Lair lair, long now, boolean all) {
         Long epoch = epochs.remove(lair.id());
         if (epoch == null)
             return;
         RtsimSession s = bridge.session();
-        for (DragonBridge.Puppet p : bridge.homePuppetsOf(lair.id()))
+        for (DragonBridge.Puppet p : bridge.homePuppetsOf(lair.id())) {
+            if (!all && ticking(p.entity))
+                continue;
             bridge.capture(p, DragonRecords.Dematerialized.HOME_SAVED, now);
+        }
         ByteBuffer r = s.boundary().beginJournaled(DragonRecords.LAIR_OUT, DragonRecords.LairOut.SIZE, 0, now);
         r.putLong(DragonRecords.LairOut.LAIR, lair.id());
         r.putLong(DragonRecords.LairOut.EPOCH, epoch);
         s.boundary().commit(r);
         outs++;
+    }
+
+    /** Whether a body stands in a chunk that entity-ticks. */
+    static boolean ticking(Entity e) {
+        return e != null && !e.isRemoved() && e.level() instanceof ServerLevel level && RtsimSession.entitiesTickAt(level, e.blockPosition());
     }
 
     /**
@@ -268,15 +283,15 @@ public final class HomeBodies {
         if (lair == null)
             throw new IllegalStateException("no lair " + lairId);
         if (epochs.containsKey(lairId))
-            leave(lair, now);
+            leave(lair, now, true);
         return enter(lair, now, Boolean.FALSE.equals(watched), Boolean.TRUE.equals(watched));
     }
 
-    /** GameTests: the lair goes out now. */
+    /** GameTests: the lair goes out now, as its whole footprint unloading would: every home body of it is released. */
     public void testOut(long lairId, long now) {
         Lairs.Lair lair = bridge.lairs.known(lairId);
         if (lair != null)
-            leave(lair, now);
+            leave(lair, now, true);
     }
 
     /** The epoch of the lair's stay in, or 0 (GameTests). */

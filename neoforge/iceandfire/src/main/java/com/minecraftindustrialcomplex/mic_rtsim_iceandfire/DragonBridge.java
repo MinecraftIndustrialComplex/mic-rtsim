@@ -948,10 +948,13 @@ public final class DragonBridge implements SessionPlugin {
                 capture(p, p.home ? DragonRecords.Dematerialized.HOME_SAVED : DragonRecords.Dematerialized.UNLOADED, now);
                 continue;
             }
-            // A home body is kept while its lair is in (the census releases it at LAIR_OUT): not ticking is not a capture.
+            // A home body is kept while its lair is in: not ticking is not a capture. One kept past its lair's out because its
+            // chunk still ticked is released, saved by vanilla, once its chunk stops ticking (EQC312).
             if (!(e.level() instanceof ServerLevel level) || !RtsimSession.entitiesTickAt(level, e.blockPosition())) {
                 if (!p.home)
                     capture(p, DragonRecords.Dematerialized.NOT_TICKING, now);
+                else if (!homes.isIn(p.lair))
+                    capture(p, DragonRecords.Dematerialized.HOME_SAVED, now);
                 continue;
             }
             DragonBaseEntity d = p.dragon();
