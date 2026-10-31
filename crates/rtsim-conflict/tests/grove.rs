@@ -1486,7 +1486,9 @@ fn only_a_payment_to_the_live_chief_is_remembered() {
 /// (CHIEF_BODY). A census of another generation's chief says nothing about this one.
 #[test]
 fn the_censuss_trade_memory_is_unioned_and_a_short_body_is_written_to() {
-    let mut r = grove(12, 9);
+    // S9 (FB-S9-2): the grove's plunder mood moved its plunders, and seed 12 then had a raptor pack away at the heir's due
+    // tick, so the heir waited for the band (right, and not what this test is about): the plunder drive is off.
+    let mut r = quiet_grove(12);
     let (_, id) = item(&mut r, "gold_nugget");
     let generation = seat_chief(&mut r);
     paid(&mut r, CHIEF_SLOT, generation, 0, 0x51, &[(id, 9)]);

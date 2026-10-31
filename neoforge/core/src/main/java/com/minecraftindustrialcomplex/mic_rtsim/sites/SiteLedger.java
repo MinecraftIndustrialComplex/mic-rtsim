@@ -42,7 +42,8 @@ import java.util.UUID;
  *
  * <p><b>NBT</b> (MZB-1001): {@code v} (1), {@code gaps}, and {@code rows}, one LongArrayTag a row: 0 key; 1 kind (bits 0 to
  * 7), flags (8 to 15: 1 waiting, 2 broken), K (16 to 31), count (32 to 47), away (48 to 63); 2 P's f32 bits (0 to 31),
- * gapSeen (32 to 63); 3 stamp; 4 wait left; 5 n (0 to 15), l (16 to 31), m (32 to 47); then 2 (n + l + m) longs, each
+ * gapSeen (32 to 63); 3 stamp; 4 wait left; 5 n (0 to 15), l (16 to 31), m (32 to 47), the second pressure {@code p2}
+ * in thousandths, a saturating u16 (48 to 63, MZB-1231; a row written before it reads 0); then 2 (n + l + m) longs, each
  * UUID's most then least: home, left behind, missing.
  */
 public final class SiteLedger extends SavedData {
@@ -70,7 +71,7 @@ public final class SiteLedger extends SavedData {
         public static final int ELAPSED = 24;   // u64, game ticks since the stamp, 0 when the clock is below it
         public static final int L = 32;         // u16
         public static final int M = 34;         // u16
-        // 36: u32 reserved
+        public static final int P2 = 36;        // f32, as of the stamp: a camp with a chief of its own keeps the chief's here (MZB-1231)
         public static final int UUIDS = 40;     // (n + l + m) x (u64 most, u64 least)
         public static final int FIXED = UUIDS;
 
@@ -83,8 +84,8 @@ public final class SiteLedger extends SavedData {
      * One site's row: what its last SITE_STATE said, the game time it came ({@code stamp}) and the ledger's gap count
      * then. {@code uuids} is (most, least) pairs: n home, then l left behind, then m missing.
      */
-    public record Row(int kind, long key, int flags, int k, int count, int away, float p, int gapSeen, long stamp, long waitLeft,
-                      int n, int l, int m, long[] uuids) {
+    public record Row(int kind, long key, int flags, int k, int count, int away, float p, float p2, int gapSeen, long stamp,
+                      long waitLeft, int n, int l, int m, long[] uuids) {
         public boolean waiting() {
             return (flags & ROW_WAITING) != 0;
         }
@@ -204,7 +205,7 @@ public final class SiteLedger extends SavedData {
         copy(b, base, n + l + (m - bm), bm, uuids, w);
         long key = b.getLong(at + Cmd.SiteState.KEY);
         Row row = new Row(kind, key, rowFlags, k, u16(b, at + Cmd.SiteState.COUNT), u16(b, at + Cmd.SiteState.AWAY),
-                sane(b.getFloat(at + Cmd.SiteState.P)), gaps, now, waiting ? b.getLong(at + Cmd.SiteState.WAIT_LEFT) : 0, bn, bl, bm, uuids);
+                sane(b.getFloat(at + Cmd.SiteState.P)), sane(b.getFloat(at + Cmd.SiteState.P2)), gaps, now, waiting ? b.getLong(at + Cmd.SiteState.WAIT_LEFT) : 0, bn, bl, bm, uuids);
         rows.put(new Key(kind, key), row);
         applied++;
         setDirty();
@@ -251,6 +252,7 @@ public final class SiteLedger extends SavedData {
         b.putShort(at + Tail.K, (short) r.k);
         b.putShort(at + Tail.COUNT, (short) r.count);
         b.putFloat(at + Tail.P, r.p);
+        b.putFloat(at + Tail.P2, r.p2);
         b.putShort(at + Tail.AWAY, (short) r.away);
         b.putShort(at + Tail.N, (short) r.n);
         b.putLong(at + Tail.WAIT_LEFT, r.waitLeft);
@@ -269,15 +271,7 @@ public final class SiteLedger extends SavedData {
         tag.putInt("gaps", gaps);
         ListTag list = new ListTag();
         for (Row r : rows.values()) {
-            long[] a = new long[6 + r.uuids.length];
-            a[0] = r.key;
-            a[1] = (r.kind & 0xFFL) | (long) (r.flags & 0xFF) << 8 | (long) (r.k & 0xFFFF) << 16 | (long) (r.count & 0xFFFF) << 32
-                    | (long) (r.away & 0xFFFF) << 48;
-            a[2] = (Float.floatToRawIntBits(r.p) & 0xFFFF_FFFFL) | (long) r.gapSeen << 32;
-            a[3] = r.stamp;
-            a[4] = r.waitLeft;
-            a[5] = (r.n & 0xFFFFL) | (long) (r.l & 0xFFFF) << 16 | (long) (r.m & 0xFFFF) << 32;
-            System.arraycopy(r.uuids, 0, a, 6, r.uuids.length);
+            long[] a = SiteRowPacking.encode(r);
             list.add(new LongArrayTag(a));
         }
         tag.put("rows", list);
@@ -309,19 +303,7 @@ public final class SiteLedger extends SavedData {
 
     /** A row from its longs, or null when it does not parse (a wrong length, an unknown kind, a list above K). */
     static Row parse(long[] a) {
-        if (a.length < 6)
-            return null;
-        int kind = (int) (a[1] & 0xFF);
-        int flags = (int) (a[1] >>> 8 & 0xFF);
-        int k = (int) (a[1] >>> 16 & 0xFFFF);
-        int n = (int) (a[5] & 0xFFFF), l = (int) (a[5] >>> 16 & 0xFFFF), m = (int) (a[5] >>> 32 & 0xFFFF);
-        int cap = Math.min(k, MAX_BODIES / 3);
-        if (!knownKind(kind) || n > cap || l > cap || m > cap || a.length != 6 + 2 * (n + l + m))
-            return null;
-        long[] uuids = new long[a.length - 6];
-        System.arraycopy(a, 6, uuids, 0, uuids.length);
-        return new Row(kind, a[0], flags, k, (int) (a[1] >>> 32 & 0xFFFF), (int) (a[1] >>> 48 & 0xFFFF),
-                sane(Float.intBitsToFloat((int) a[2])), (int) (a[2] >>> 32), a[3], a[4], n, l, m, uuids);
+        return SiteRowPacking.decode(a);
     }
 
     private static int u16(ByteBuffer b, int at) {
@@ -330,6 +312,10 @@ public final class SiteLedger extends SavedData {
 
     /** A pressure that is not a finite positive number reads as 0 ({@code rtsim_kernel::sites}). */
     private static float sane(float p) {
-        return Float.isFinite(p) && p > 0 ? p : 0;
+        return SiteRowPacking.sane(p);
+    }
+
+    private static int milli(float p) {
+        return SiteRowPacking.milli(p);
     }
 }

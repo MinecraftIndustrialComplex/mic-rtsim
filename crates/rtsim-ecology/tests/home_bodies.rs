@@ -973,6 +973,7 @@ fn reset_lair(seed: u64, home: Vec<(u64, u64)>, gap: bool) -> Scene {
         k: 2,
         count: home.len() as u16,
         p: 1.5,
+        p2: 0.0,
         away: 0,
         wait_left: 0,
         elapsed: 0,

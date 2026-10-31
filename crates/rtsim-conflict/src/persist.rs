@@ -89,7 +89,9 @@ use crate::tunables::ConflictTunables;
 /// broken and until when, the stamp of its booked check and when it is next looked at (S7,
 /// EQC201), then its mood, an option of two pressures, its grief and its spoils (FB-8, EQC287); the wheel's tag 12 is `Ev::Strain`, and the stats end with the breaks, refounds and
 /// deferrals.
-const MAGIC: u32 = u32::from_le_bytes(*b"RTCE");
+/// RTC15, `RTCF`: a camp ends with its chief's pressure, an f32 and the day it stands at, after its
+/// recount; a grove's `pressure` is now its warriors' (S9, MZB-1211, MZB-1230).
+const MAGIC: u32 = u32::from_le_bytes(*b"RTCF");
 /// The meta page of a paged save ([`Conflict::save_paged`]). 2: the indexes, parties and wheel
 /// are in pages of their own, their headers after the row counts (PF10). 3: the resident state
 /// ends with the Peaceful flag, its start and the last notice's serial. 4: the party pages' rows
@@ -101,9 +103,10 @@ const MAGIC: u32 = u32::from_le_bytes(*b"RTCE");
 /// MZB-706). 11: a camp ends with its chief's band's end, and the resident state with their index
 /// (M11, MZB-853). 12: a camp's slots carry their bodies' UUIDs, and the camp its missing, its
 /// bodies left behind, its gap and cap flags and its recount (M12a, MZB-1014, MZB-1015). 13: a
-/// faction row ends with its strain, the wheel's tag 12 and the stats end as RTC14's (S7).
+/// faction row ends with its strain, the wheel's tag 12 and the stats end as RTC14's (S7). 14: a
+/// camp ends with its chief's pressure, as RTC15's (S9).
 const META_MAGIC: u32 = u32::from_le_bytes(*b"RTCM");
-const META_VERSION: u16 = 13;
+const META_VERSION: u16 = 14;
 
 /// Every page table the conflict owns when it pages: a meta key in none of them.
 pub const TABLES: [u16; 9] = [
@@ -249,7 +252,7 @@ fn get_pos(r: &mut Reader<'_>) -> codec::Result<Pos> {
 }
 
 /// Why a save does not start with this build's magic: another format of the same family is named
-/// (`RTCD`, this build reads `RTCE`), anything else is not a conflict save.
+/// (`RTCE`, this build reads `RTCF`), anything else is not a conflict save.
 fn magic_error(found: u32) -> String {
     let (f, m) = (found.to_le_bytes(), MAGIC.to_le_bytes());
     if f[..3] == *b"RTC" {
@@ -541,6 +544,9 @@ fn put_camp(w: &mut Writer, c: &Camp) {
     w.u8(u8::from(c.gap) | u8::from(c.cap_next) << 1);
     w.var_u64(u64::from(c.recount));
     put_opt(w, &c.recount_at, |w, t| w.u64(t.0));
+    let (p, at_day) = c.chief_pressure.parts();
+    w.f32(p);
+    w.u32(at_day);
 }
 
 /// A tribute stack in flight (MZB-423).
@@ -697,6 +703,11 @@ fn get_camp(r: &mut Reader<'_>) -> codec::Result<Camp> {
     }
     let recount = get_u32(r)?;
     let recount_at = get_opt(r, |r| Ok(Tick(r.u64()?)))?;
+    let p = r.f32()?;
+    if !p.is_finite() || p < 0.0 {
+        return bad(format!("camp chief pressure {p}"));
+    }
+    let chief_pressure = Pressure::from_parts(p, r.u32()?);
     Ok(Camp {
         epoch,
         seen,
@@ -708,6 +719,7 @@ fn get_camp(r: &mut Reader<'_>) -> codec::Result<Camp> {
         retired,
         throne,
         pressure,
+        chief_pressure,
         arrival,
         arrival_at,
         heir,
@@ -1335,6 +1347,7 @@ fn stats_fields(s: &ConflictStats) -> Vec<u64> {
         s.camp_deaths,
         s.camp_written_off,
         s.arrivals,
+        s.grove_arrivals,
         s.renewal_losses,
         s.tribute_stacks,
         s.hunts_owed,
@@ -1412,6 +1425,7 @@ fn stats_from(v: &[u64]) -> ConflictStats {
     s.camp_deaths = n();
     s.camp_written_off = n();
     s.arrivals = n();
+    s.grove_arrivals = n();
     s.renewal_losses = n();
     s.tribute_stacks = n();
     s.hunts_owed = n();

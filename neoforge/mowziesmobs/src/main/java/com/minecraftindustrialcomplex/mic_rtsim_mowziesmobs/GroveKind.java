@@ -41,8 +41,8 @@ import java.util.function.Predicate;
  * ({@link EntityUmvuthanaMinion}, {@code mowziesmobs:umvuthana}), restricted 25 blocks round the fire pit's centre,
  * and its chief is the jar's {@link EntityUmvuthi}, a body of the camp's chief slot (MZB-402, MZB-434): made on its
  * throne with the direction the engine kept, restricted as worldgen does, and its trade memory written without
- * journaling anything. Rule U (MZB-433) holds the chief's removal while a player is near or fights it, and a chief
- * SPAWN or SEAT_HEIR while a player is near its throne.
+ * journaling anything. Rule U (MZB-433) holds the chief's removal while a player is near or fights it; a chief SPAWN or
+ * SEAT_HEIR is not held (S9, FB-S9-3), and the Umvuthi arrives with {@link BossArrival#umvuthi}.
  */
 public final class GroveKind implements CampKind {
     public static final GroveKind INSTANCE = new GroveKind();
@@ -53,7 +53,7 @@ public final class GroveKind implements CampKind {
     public static final double EDGE = 20.0;
     /** The players a spawn turns away from: within this of the centre (a warrior's tracking range is 128). */
     public static final double SEEN_RANGE = 256.0;
-    /** A player this near the throne holds a chief's spawn or seating, and this near the chief holds its removal (MZB-433). */
+    /** A player this near the chief holds its removal (MZB-433); it no longer holds its spawn or seating (S9, FB-S9-3). */
     public static final double HOLD_RANGE = 160.0;
 
     private GroveKind() {}
@@ -216,14 +216,21 @@ public final class GroveKind implements CampKind {
     }
 
     /**
-     * A chief SPAWN, SEAT_HEIR and the MASK that goes with it wait while a non-spectator player is within
-     * {@link #HOLD_RANGE} of the throne (MZB-433); a warrior's spawn never waits.
+     * Never (S9, FB-S9-3; Ben, 2026-10-30): a chief SPAWN, SEAT_HEIR and the MASK that goes with it are played when due, with a
+     * player beside the throne, and the Umvuthi arrives with {@link BossArrival#umvuthi}. They waited while a non-spectator player
+     * was within {@link #HOLD_RANGE} of the throne (MZB-433), at most 6,000 ticks; a warrior's spawn never waited, and still comes
+     * quietly at the grove's edge, away from the nearest player.
      */
     @Override
     public boolean holdSpawn(ServerLevel level, Camps.Site site, String body, int lineFlags) {
-        if (!MicRtsimMowziesMobs.UMVUTHI.equals(body) && (lineFlags & ConflictRecords.CampReconcile.LINE_CHIEF) == 0)
-            return false;
-        return playerWithin(level, site.throne(), HOLD_RANGE);
+        return false;
+    }
+
+    /** The Umvuthi's return (a SPAWN or an heir seated): the jar's orbs, flames, smoke, its drum and roar, from the server; a warrior's is none. */
+    @Override
+    public void arrived(ServerLevel level, Camps.Site site, Mob body) {
+        if (body instanceof EntityUmvuthi)
+            BossArrival.umvuthi(level, body.position());
     }
 
     /**

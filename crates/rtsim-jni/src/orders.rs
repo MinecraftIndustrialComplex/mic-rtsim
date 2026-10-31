@@ -86,6 +86,9 @@ pub const OP_NEST_DAY: u16 = 34;
 /// TALK's test order (30 to 39 are left free for the orders other branches take).
 pub const OP_TALK_REPORT: u16 = 40;
 pub const OP_CONFLICT_SLAY: u16 = 41;
+/// A camp sends a party (slice S9, MZB-1233); 33 and 35 to 39 are left free for peers.
+pub const OP_CONFLICT_SEND: u16 = 42;
+/// A player's kill of a lair's dragons and of part of a range's herds (slice S11, EQC406).
 pub const OP_DRAGON_SLAY: u16 = 43;
 pub const OP_HERD_CULL: u16 = 44;
 
@@ -378,6 +381,17 @@ pub enum Order {
         n: u32,
         player: (u64, u64),
     },
+    /// TEST: the camp of faction key `faction` sends a party of `kind` (an index into
+    /// `PartyKind::ALL`) to the block (`x`, `z`) of `frame`, as if its feud had decided (slice S9,
+    /// MZB-1233). Refused (logged) for a key that is no camp or a kind the camp cannot field.
+    /// Applied when the engine takes the unit, after the replay.
+    ConflictSend {
+        faction: u64,
+        kind: u8,
+        frame: u16,
+        x: i32,
+        z: i32,
+    },
 }
 
 impl Order {
@@ -417,6 +431,7 @@ impl Order {
                 | Order::ConflictSlay { .. }
                 | Order::DragonSlay { .. }
                 | Order::HerdCull { .. }
+                | Order::ConflictSend { .. }
         )
     }
 }
@@ -779,6 +794,19 @@ pub fn decode(bytes: &[u8]) -> Result<Vec<Order>, String> {
                 n: c.u32()?,
                 player: (c.u64()?, c.u64()?),
             },
+            OP_CONFLICT_SEND => {
+                let faction = c.u64()?;
+                let kind = c.u8()?;
+                c.u8()?;
+                let frame = c.u16()?;
+                Order::ConflictSend {
+                    faction,
+                    kind,
+                    frame,
+                    x: c.i32()?,
+                    z: c.i32()?,
+                }
+            }
             OP_TALK_REPORT => Order::TalkReport(TalkReportCmd {
                 village: c.u64()?,
                 kind: c.u16()?,
@@ -1282,6 +1310,22 @@ impl Encoder {
                 self.u64(player.1);
                 self.end(at);
             }
+            Order::ConflictSend {
+                faction,
+                kind,
+                frame,
+                x,
+                z,
+            } => {
+                let at = self.begin(OP_CONFLICT_SEND);
+                self.u64(*faction);
+                self.u8(*kind);
+                self.u8(0);
+                self.u16(*frame);
+                self.i32(*x);
+                self.i32(*z);
+                self.end(at);
+            }
             Order::TalkReport(r) => {
                 let at = self.begin(OP_TALK_REPORT);
                 self.u64(r.village);
@@ -1555,6 +1599,13 @@ mod tests {
                 region: (-3, 4),
                 n: 17,
                 player: (7, 11),
+            },
+            Order::ConflictSend {
+                faction: 0xC0B1_0002,
+                kind: 3,
+                frame: 0,
+                x: -1_204,
+                z: 3_377,
             },
             Order::TalkReport(TalkReportCmd {
                 village: 6,

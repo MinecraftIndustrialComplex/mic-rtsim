@@ -31,6 +31,13 @@ fn grove(seed: u64, found: u16) -> CampRun {
     CampRun::new(seed, "umvuthana", found)
 }
 
+/// The grove refilling by rate (MZB-1260): its warriors' renewal is S9's (one back every 6 days
+/// or more, `tests/grove.rs`), and these are M4's, of the refill path, which a pool that gains
+/// two a day exercises.
+fn rate_grove(seed: u64, found: u16) -> CampRun {
+    CampRun::with_cultures(seed, synth::rate_grove_cultures(), "umvuthana", found)
+}
+
 /// The Frostmaw's den refilling by rate (MZB-286): the renewal is the Frostmaw's own, and M6's
 /// tests (`tests/frostmaw.rs`) play it; these are M4's, of the refill path.
 fn den(seed: u64, found: u16) -> CampRun {
@@ -193,9 +200,10 @@ fn a_den_found_empty_refills_to_its_cap_and_no_further() {
 
 /// A pool member recruited while its camp is out is a slot owed a body, with no order sent; the
 /// camp's next census spawns it (walkthrough A, day 21.5; test 5).
+// S9 (MZB-1260): on the rate, since this asserts a pool that refills two a day while the grove is out; the renewal books one owed warrior every 6 days or more.
 #[test]
 fn a_refill_while_the_camp_is_out_is_spawned_at_the_next_census() {
-    let mut r = grove(14, 9);
+    let mut r = rate_grove(14, 9);
     come_in(&mut r);
     // Four are killed with the grove in; it goes out before they are replaced.
     let uuids: Vec<_> = r.plugin.camps[&r.key]
@@ -776,10 +784,11 @@ fn a_dead_slots_body_is_removed_at_the_next_census() {
 /// (the stack less its survivors). Each member is one death in the camp's books: its slot, gone
 /// (away), is freed as died, once, whichever record counted it, and the survivors come home to
 /// owed slots that are spawned again (nothing is written off, nothing double counted).
+// S9 (MZB-1260): on the rate, since this asserts the pool refilled to the cap in 8 days; a warrior on the shared rule comes back in 6 days at no pressure, so 2 deaths and the walk home take more than that.
 #[test]
 fn a_member_lost_on_a_walk_off_books_once_in_the_camp() {
     use rtsim_conflict::engine::{Party, body_id};
-    let mut r = grove(75, 9);
+    let mut r = rate_grove(75, 9);
     come_in(&mut r);
     let p = r.raid().unwrap();
     let mut t = r.c.now();
@@ -943,9 +952,10 @@ fn a_draw_takes_found_bodies_then_a_missed_one_and_its_set_out_is_nothing_to_do(
 /// Test 22, the draw order with owed slots (the spec's walkthrough): a grove with three bodies
 /// found, one missed and two owed sends a party of four; the three found and the one missed are
 /// drawn, none owed, and the owed two stay owed.
+// S9 (MZB-1260): on the rate, since this asserts two owed slots from a rate refill while the camp is out; the renewal owes none until a wait ends.
 #[test]
 fn a_draw_leaves_the_owed_slots_for_last() {
-    let mut r = grove(124, 6);
+    let mut r = rate_grove(124, 6);
     come_in(&mut r);
     let lost = r
         .plugin
@@ -2754,9 +2764,10 @@ fn the_audit_names_a_broken_ledger() {
 /// I2 has its lower bound: the pool's value when it was last moved is held by slots at home, the
 /// refill since being the gain the next sync adds. A slot taken from home with the pool left as
 /// it was is named, and the books as the audit now leaves them (a pool that gained) are not.
+// S9 (MZB-1260): on the rate, since this asserts a pool that gains from a rate since it was last moved; the renewal gains by an arrival that adds its slot at once.
 #[test]
 fn the_audit_names_a_pool_the_slots_at_home_fall_short_of() {
-    let mut r = grove(66, 9);
+    let mut r = rate_grove(66, 9);
     come_in(&mut r);
     assert!(r.check().is_empty());
     let at = r.c.now();
@@ -2770,7 +2781,7 @@ fn the_audit_names_a_pool_the_slots_at_home_fall_short_of() {
         "{bad:?}"
     );
     // A pool that gained since it was last moved is no shortfall: the slots wait for the sync.
-    let mut r = grove(67, 9);
+    let mut r = rate_grove(67, 9);
     come_in(&mut r);
     r.c.factions[f].cap = 12;
     r.c.factions[f].pool = 9.0;
@@ -3012,10 +3023,11 @@ fn chaos_keeps_the_invariants_for_both_cultures_over_many_seeds() {
 /// ghosts, and four members written off, none other. With the holders' records journaled again at
 /// the restart (the real plugin's), the answer is booked by the set-out it carries: the slots are
 /// owed, spawned at the next census, and no member is lost.
+// S9 (MZB-1260): on the rate, since this asserts the four lost members refill in the days after by a rate; the renewal returns them one at a time over weeks.
 #[test]
 fn a_lost_set_out_answer_costs_the_ghosts_it_made_and_holders_make_none() {
     for holders_again in [false, true] {
-        let mut r = grove(70, 9);
+        let mut r = rate_grove(70, 9);
         r.plugin.holders_again = holders_again;
         come_in(&mut r);
         r.plugin.answer_ticks = days(30.0);

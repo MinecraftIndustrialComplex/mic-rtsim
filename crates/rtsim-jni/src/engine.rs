@@ -749,7 +749,8 @@ fn runs_the_clock(o: &Order) -> bool {
 /// §4.4, §4.5, §4.6, §4.7), NEST_DAY (RP-74), which books the nests' next watch from the engine's
 /// own clock, CONFLICT_SLAY (S7), which kills a pool camp's warriors at the conflict's own clock,
 /// DRAGON_SLAY and HERD_CULL (S11), which kill at the dragons' and the herds' own clocks,
-/// and a phase 1 advance (RP-74), which raises the offset every record's game time
+/// CONFLICT_SEND (S9), which musters a camp's party at it, and a phase 1 advance (RP-74), which
+/// raises the offset every record's game time
 /// takes (`phase1::world_tick`) and so shifts the replayed records still to come: none of them
 /// must go while the replay runs.
 fn waits_for_the_replay_end(o: &Order) -> bool {
@@ -764,6 +765,7 @@ fn waits_for_the_replay_end(o: &Order) -> bool {
                 | Order::ConflictSlay { .. }
                 | Order::DragonSlay { .. }
                 | Order::HerdCull { .. }
+                | Order::ConflictSend { .. }
                 | Order::Phase1Advance(_)
         )
 }
@@ -1934,6 +1936,13 @@ impl Engine {
                     n,
                     player,
                 } => herds::cull(st, dimension, region, n, player),
+                Order::ConflictSend {
+                    faction,
+                    kind,
+                    frame,
+                    x,
+                    z,
+                } => conflict::send(st, faction, kind, frame, x, z),
                 Order::TalkReport(c) => talk::post(st, &c),
                 d if d.is_directive() => phase1::directive(st, d),
                 // A rewind stays in the unit: it takes effect where it stands, when written.
@@ -3136,6 +3145,7 @@ mod tests {
             kind,
             flags: rtsim_kernel::sites::state_flags::WAITING,
             p,
+            p2: 0.0,
             k: 2,
             count: home.len() as u16,
             away: 0,

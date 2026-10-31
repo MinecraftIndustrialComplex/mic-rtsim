@@ -5,7 +5,8 @@
 //! camp's next plunder is drawn from a mean of 48 days that its chief's temperament bends (the
 //! aggression the engine already reads) and its recent history bends again: members lost lengthen
 //! the wait, raids that brought loot home shorten it, and both fade. A new band has no history.
-//! Only the raider carries the block; the other cultures keep their clocks exactly.
+//! The raider carries the block and, since S9 (Ben's FB-S9-2, 2026-10-30), the Umvuthana grove carries
+//! the same block unchanged; the other cultures keep their clocks exactly.
 
 use std::collections::BTreeMap;
 
@@ -64,14 +65,23 @@ fn mean(xs: &[f64]) -> f64 {
 
 // ---------------------------------------------------------------- the data
 
-/// The raider carries the block, with the numbers EQC286 decided; no other culture does, and each
-/// way the block can be wrong is its own error.
+/// The raider carries the block, with the numbers EQC286 decided, and the grove carries the same
+/// block (FB-S9-2: Ben said yes on 2026-10-30, no new code); no other culture does, and each way the
+/// block can be wrong is its own error.
 #[test]
-fn the_raider_has_a_plunder_mood_and_no_other_culture_does() {
+fn the_raider_and_the_grove_have_a_plunder_mood_and_no_other_culture_does() {
     let c = Cultures::builtin();
-    for n in ["goblin", "bandit", "frostmaw", "umvuthana"] {
+    for n in ["goblin", "bandit", "frostmaw"] {
         assert!(c.get(c.index_of(n).unwrap()).plunder_mood.is_none(), "{n}");
     }
+    let grove = c.get(c.index_of("umvuthana").unwrap());
+    let grove_mood = grove.plunder_mood.as_ref().expect("the grove has a mood");
+    let raider_mood = c
+        .get(c.index_of("raider").unwrap())
+        .plunder_mood
+        .as_ref()
+        .expect("the raider has a mood");
+    assert_eq!(grove_mood.def, raider_mood.def, "the raider's block, reused");
     let cu = c.get(c.index_of("raider").unwrap());
     let m = cu.plunder_mood.as_ref().expect("the raider has a mood");
     assert_eq!(m.def.half_life_days, 96.0);
@@ -84,10 +94,11 @@ fn the_raider_has_a_plunder_mood_and_no_other_culture_does() {
         "temper_mean {}",
         m.temper_mean
     );
-    // The body cultures' files and the other pool cultures' carry no such key.
-    for json in [FROSTMAW_JSON, UMVUTHANA_JSON, GOBLIN_JSON, BANDIT_JSON] {
+    // The den's file and the other pool cultures' carry no such key; the grove's does.
+    for json in [FROSTMAW_JSON, GOBLIN_JSON, BANDIT_JSON] {
         assert!(!json.contains("plunder_mood"));
     }
+    assert!(UMVUTHANA_JSON.contains("plunder_mood"));
 
     let e = refused(GOBLIN_JSON, |d| {
         d.plunder_mood = def(RAIDER_JSON).plunder_mood
@@ -146,10 +157,15 @@ fn the_raider_has_a_plunder_mood_and_no_other_culture_does() {
     assert!(e.contains("min_factor"), "{e}");
 }
 
-/// Only the raider's camps have a mood.
+/// Only the raider's and the grove's camps have a mood.
 #[test]
-fn only_a_raider_camp_has_a_mood() {
-    for (culture, has) in [("raider", true), ("goblin", false), ("bandit", false)] {
+fn only_a_raider_or_grove_camp_has_a_mood() {
+    for (culture, has) in [
+        ("raider", true),
+        ("umvuthana", true),
+        ("goblin", false),
+        ("bandit", false),
+    ] {
         let (_, c, f) = camp(3, culture);
         assert_eq!(c.mood_now(f, Tick::ZERO).is_some(), has, "{culture}");
         assert!(

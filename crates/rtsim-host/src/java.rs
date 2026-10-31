@@ -1191,8 +1191,9 @@ impl Java {
     ///   as the bridge and its plugins answer one for a body they do not have;
     /// - a transfer is answered COMMAND_RESULT not loaded (6), as CommandDispatcher answers one
     ///   whose container's chunk is not loaded;
+    /// - a house or a resident order is held, not answered: the real Java waits for the chunks;
     /// - every other command that carries an op id is answered COMMAND_RESULT failed (3):
-    ///   gossip, houses, residents, industry commands, ship cargo, and a dragon discard (op 0);
+    ///   gossip, industry commands, ship cargo, and a dragon discard (op 0);
     /// - latest-wins commands (markets, offers, sentiment, steering, timetables, territories,
     ///   notices, habitat) need no answer, nor do the dragons' lair placements and oil surveys,
     ///   which wait for chunks to load.
@@ -1201,12 +1202,13 @@ impl Java {
         use rtsim_ecology::boundary as db;
         use rtsim_ecology::herds::boundary as hb;
         use rtsim_ships::boundary as sb;
-        if kind == cmd::SPAWN_RESIDENT {
-            // A resident order with nobody online is held, as the real Java holds one for a chunk
-            // that is not loaded: it is not refused. Since slice S6 the engine acts on the answer
-            // (a refusal lapses the booking and lowers the village's count), and an answer
-            // reaches it at the next hand-over, so a refusal here would carry the hand-over
-            // stride into the engine's state and the stride comparisons would differ.
+        if kind == cmd::SPAWN_RESIDENT || kind == cmd::PLACE_HOUSE {
+            // A resident or a house order with nobody online is held, as the real Java holds one
+            // for a chunk that is not loaded (`ResidentSpawner` for its spawn chunk, `HouseBuilder`
+            // for its plot's): it is not refused. Since slice S6 the engine acts on the answer (a
+            // refusal lapses the booking and lowers the village's count), and an answer reaches it
+            // at the next hand-over, so a refusal here would carry the hand-over stride into the
+            // engine's state and the stride comparisons would differ.
             return;
         }
         *self.refused.entry(kind).or_default() += 1;
@@ -1229,8 +1231,6 @@ impl Java {
                 obs::command_result::NOT_LOADED,
             ),
             cmd::WRITE_GOSSIP => failed(self, wire::u64_at(b, cmd::write_gossip::OP_ID)),
-            cmd::PLACE_HOUSE => failed(self, wire::u64_at(b, cmd::place_house::OP_ID)),
-            cmd::SPAWN_RESIDENT => failed(self, wire::u64_at(b, cmd::spawn_resident::OP_ID)),
             cmd::SPAWN_GROUP => {
                 let agent = wire::u64_at(b, cmd::spawn_group::AGENT);
                 let epoch = wire::u32_at(b, cmd::spawn_group::EPOCH);

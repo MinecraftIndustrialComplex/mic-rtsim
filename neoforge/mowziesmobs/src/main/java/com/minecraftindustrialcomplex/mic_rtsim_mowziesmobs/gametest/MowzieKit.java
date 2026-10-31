@@ -649,8 +649,11 @@ public final class MowzieKit {
     // ---- a grove that holds a warrior's removal (test 30) ----------------------------------------
 
     /**
-     * The grove's own kind, except that it also holds the removal of the warriors a test names: the real kind never
-     * holds a warrior (MZB-433), so a MASK's "no line of its own in flight" needs a kind that does. Everything else is
+     * The grove's own kind, except that it also holds the removal of the warriors a test names (the real kind never
+     * holds a warrior, MZB-433, so a MASK's "no line of its own in flight" needs a kind that does) and that it still holds a
+     * chief's SPAWN, SEAT_HEIR and MASK while a player stands within {@link GroveKind#HOLD_RANGE} of the throne, as the
+     * real kind did until S9 (FB-S9-3: the real kinds place a boss in view). The core's hold machinery (HOLD_MAX, held pairs, an
+     * epoch's end answering held lines stale) is generic and stays under test through this kind. Everything else is
      * {@link GroveKind}'s.
      */
     public static final class HoldingKind implements CampKind {
@@ -706,9 +709,17 @@ public final class MowzieKit {
             return GroveKind.INSTANCE.spawnAt(level, site, body, lineFlags);
         }
 
+        /** The rule the real kind had before S9: a chief's SPAWN, SEAT_HEIR and MASK wait for a player within 160 blocks of the throne. */
         @Override
         public boolean holdSpawn(ServerLevel level, Camps.Site site, String body, int lineFlags) {
-            return GroveKind.INSTANCE.holdSpawn(level, site, body, lineFlags);
+            if (!MicRtsimMowziesMobs.UMVUTHI.equals(body) && (lineFlags & ConflictRecords.CampReconcile.LINE_CHIEF) == 0)
+                return false;
+            return GroveKind.playerWithin(level, site.throne(), GroveKind.HOLD_RANGE);
+        }
+
+        @Override
+        public void arrived(ServerLevel level, Camps.Site site, Mob body) {
+            GroveKind.INSTANCE.arrived(level, site, body);
         }
 
         @Override

@@ -2448,6 +2448,9 @@ public final class Districts {
         data.excluded(dim).clear();
         data.mergeLinks(dim).clear();
         data.stationJoins(dim).clear();
+        // A reset before plans its seeded chunks' re-adoption (UR-1); one that never loads again would stay to adopt
+        // again into the next reset test's count (MZB-1293).
+        data.readopt.remove(dim);
         byChunk.computeIfAbsent(dim, k -> new Long2ObjectOpenHashMap<>()).clear();
         dirty.remove(dim);
         data.setDirty();

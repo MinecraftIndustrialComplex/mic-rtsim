@@ -36,7 +36,9 @@
     "plunder": [["raptor", 1]]
   },
   "pool_cap": 9,
-  "recruits_per_day": 2.0,
+  "recruits_per_day": 0.0,
+  "renewal": { "base_days": 6.0, "cap_days": 96.0, "half_life_days": 96.0, "boss": false },
+  "found_cap": 5,
   "march_blocks_per_tick": 0.02,
   "muster_days": 1.0,
   "patience_days": 2.0,
@@ -47,6 +49,14 @@
   "reach_blocks": 0,
   "hates": ["human"],
   "plunder_mean_days": 12.0,
+  "plunder_mood": {
+    "half_life_days": 96.0,
+    "loss_gain": 2.8,
+    "spoils_gain": 0.15,
+    "chief_loss_share": 0.1,
+    "min_factor": 0.5,
+    "max_factor": 3.0
+  },
   "plunder_reach_blocks": 1500,
   "loot_share_milli": 150,
   "rout_share": 0.5,

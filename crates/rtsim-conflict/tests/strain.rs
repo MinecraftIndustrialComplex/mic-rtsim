@@ -524,32 +524,6 @@ fn a_war_chief_killed_by_a_player_adds_one_over_cap() {
     assert!((got - 1.0 / 60.0).abs() < 1e-6, "{got}");
 }
 
-/// The den and the grove book what they booked: S9's, not S7's.
-#[test]
-fn the_body_cultures_book_what_they_booked() {
-    for culture in ["frostmaw", "umvuthana"] {
-        let (mut w, mut c, f) = camp(28, culture);
-        let key = c.factions[f as usize].key;
-        let Some(p) = c.order_party(&mut w, key, PartyKind::Raid, district(), None, Tick(21))
-        else {
-            continue;
-        };
-        let x = &mut c.parties[p];
-        x.epoch += 1;
-        x.embodied = true;
-        x.spawned = x.units.clone();
-        let e = x.epoch;
-        let o = casualty(&c, p, e, boundary::BY_PLAYER, 1, next_op());
-        ingest(&mut c, &mut w, &o, Tick(200));
-        assert_eq!(
-            pressure(&c, f, Tick(200)),
-            0.0,
-            "{culture}: a casualty books no pressure"
-        );
-        assert!(c.factions[f as usize].strain.is_none());
-    }
-}
-
 /// The test hook takes the pool first, then the parties' members, each a player's loss.
 #[test]
 fn slay_takes_the_pool_then_the_parties() {
@@ -1106,14 +1080,15 @@ fn pages_round_trip_rtce() {
     assert_eq!(back.pending_by_kind().get("strain"), Some(&1));
     assert_eq!(back.next_due(), c.next_due());
     assert!(!back.camp_active(f));
-    // The older format is named, not read: the magic is RTCE.
+    // The older format is named, not read: the magic is RTCF (S9: a camp's chief pressure, so RTCE
+    // is the older one now).
     let mut old = c.save();
-    old[..4].copy_from_slice(b"RTCD");
+    old[..4].copy_from_slice(b"RTCE");
     let e = Conflict::load(c.tun.clone(), c.cultures.clone(), &old)
         .err()
         .expect("refused");
     let e = e.to_string();
-    assert!(e.contains("RTCD") && e.contains("RTCE"), "{e}");
+    assert!(e.contains("RTCE") && e.contains("RTCF"), "{e}");
 }
 
 // ---------------------------------------------------------------- the refounding (EQC210)

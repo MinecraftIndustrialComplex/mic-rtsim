@@ -795,6 +795,7 @@ fn nest_row(p: f32, count: u16, wait_milli: Option<u64>) -> FoundRow {
         k: 2,
         count,
         p,
+        p2: 0.0,
         away: 0,
         wait_left: wait_milli.unwrap_or(0),
         elapsed: 30 * DAY,

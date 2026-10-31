@@ -73,8 +73,9 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 
 use rtsim_conflict::boundary::{self, Cmd, Item, Obs};
+use rtsim_conflict::culture::PartyKind;
 use rtsim_conflict::engine::{
-    REPLAY_HOLD_SLACK_TICKS, RailCall, StationEnd, body_id, body_names, item_of,
+    REPLAY_HOLD_SLACK_TICKS, RailCall, StationEnd, Target, body_id, body_names, item_of,
 };
 use rtsim_conflict::presence::ChunkKey;
 use rtsim_conflict::{
@@ -1125,6 +1126,40 @@ pub(super) fn slay(st: &mut State, faction: u64, n: u32, pressure: f32) {
     let world = &mut st_ref.phase1.world;
     st_ref.conflict.engine.slay(world, f, n, at);
     st_ref.conflict.engine.pool_press(f, pressure, at);
+    st_ref.phase1.taint();
+    take_commands(st);
+}
+
+/// A camp's party sent by order (`Order::ConflictSend`, slice S9, MZB-1233): the camp of
+/// `faction` musters a party of kind `kind` (an index into `PartyKind::ALL`) toward the block
+/// (`x`, `z`) of `frame` at the conflict's own time, as if its feud had decided. Refused (logged)
+/// when the key is no camp, the kind is unknown or the camp cannot field it (a war party needs half
+/// its make-up at home, no heir due).
+pub(super) fn send(st: &mut State, faction: u64, kind: u8, frame: u16, x: i32, z: i32) {
+    let st_ref = &mut *st;
+    if st_ref.conflict.engine.faction_of_key(faction).is_none() {
+        log_warn(&format!("CONFLICT_SEND refused: {faction:#x} is no camp"));
+        return;
+    }
+    let Some(kind) = PartyKind::ALL.get(usize::from(kind)).copied() else {
+        log_warn(&format!("CONFLICT_SEND refused: party kind {kind} unknown"));
+        return;
+    };
+    let at = st_ref.conflict.engine.now();
+    let world = &mut st_ref.phase1.world;
+    let sent = st_ref.conflict.engine.order_party(
+        world,
+        faction,
+        kind,
+        Target::Pos(Pos::new(frame, x, z)),
+        None,
+        at,
+    );
+    if sent.is_none() {
+        log_warn(&format!(
+            "CONFLICT_SEND refused: {faction:#x} cannot field a {kind:?} party"
+        ));
+    }
     st_ref.phase1.taint();
     take_commands(st);
 }
