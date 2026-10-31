@@ -1009,7 +1009,8 @@ follow it.
 2. **§4.5 and §4.10, grove warriors:** the refill at `recruits_per_day` 2 (a grove of 7 whole in 3.5
    days) becomes one warrior at a time, each after `min(96, 6 x 2^P)` days, `P += killed/K`. War-party
    losses refill by the same rule (it is one pool). **Built in S9** (MZB-1210 to MZB-1214): a war
-   party's casualties press the grove by kill credit, S7's district rule for the unclaimed.
+   party's casualties press the grove by kill credit, S7's district rule for the unclaimed, except
+   once the band's Umvuthi has fallen: the warriors that die with it are no one's loss (MZB-1256, MZB-1287).
 3. **§4.5, §4.6 and §4.10, the Umvuthi:** "6 days, scaled by boldness, after the cowed time" becomes an
    Heir: after the later of the cowed time and `min(192, 6 x 2^P_chief)` days (MZ-14 (a), Ben,
    2026-10-21), a warrior of the grove takes up the mask. §4.6's placement stays (HOME_SPAWN with the

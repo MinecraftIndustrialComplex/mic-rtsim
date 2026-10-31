@@ -5,9 +5,9 @@
 //! archive and writes its own archive onto a copy of this one. The create save keeps its archive.
 //!
 //! - `tests/data/core`: neoforge/core's GameTest world, a fresh one, run from the S9 build of
-//!   `feat/eq-s9-mowzie` (Mowzie dens and groves on the shared renewal rule, EQUILIBRIUM.md S9, FB-1 base 6, FB-2 no plunder
-//!   mood, FB-3 the built hold, FB-4 the Umvuthi's pressure in the ledger row; docs/choices-mowzie-build.md MZB-1200 to
-//!   MZB-1271; S9's formats on top of S7's: the conflict's pages are RTCF (magic `RTCF`) with meta version 14, a camp's ledger
+//!   `feat/eq-s9-mowzie` (Mowzie dens and groves on the shared renewal rule, EQUILIBRIUM.md S9, FB-1 base 6, FB-2 the
+//!   raider's plunder mood, FB-3 the hold dropped for a boss's return, with an arrival effect, FB-4 the Umvuthi's pressure in the
+//!   ledger row; docs/choices-mowzie-build.md MZB-1200 to MZB-1279; S9's formats on top of S7's: the conflict's pages are RTCF (magic `RTCF`) with meta version 14, a camp's ledger
 //!   carrying the Umvuthi's own pressure after its recount stamp and the stats ending with the groves' arrivals; SITE_STATE
 //!   (table 0x8006) is 64 bytes, the second pressure at 56, and the found tail 40 bytes, the second pressure at 36; the wheel's
 //!   tags are unchanged; refreshed again after Ben's FB-S9-2 (2026-10-30) gave the grove the raider's plunder mood: the culture
