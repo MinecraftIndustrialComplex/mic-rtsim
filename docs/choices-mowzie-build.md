@@ -12166,8 +12166,10 @@ each place was found again on main after M12a, S5, S6 and S7.
     `anUmvuthanaEnvoyPartyIgnoresGolemsAndPlayersUntilStruckAndTakesPayment` with "party A placed", a timeout one second into the test
     (its 2400 ticks ran unthrottled, "chunks ready after 0.0 s (75 ticks)" just before), which passed in the next round; `mowziesmobs`
     at ce3a4bd1, "All 118 required tests passed". The envoy test's pass was not on the same code, but neither fix taken out touches an
-    envoy's placing: counted a flake. After the revert of MZB-1301 the core and `create -PwithMowzie` rounds ran again at ce3a4bd1:
-    (queued).
+    envoy's placing: counted a flake. After the revert of MZB-1301 the core and `create -PwithMowzie` rounds ran again on ff8016e8
+    (ce3a4bd1's code), from cleared worlds: `core`, `:core:test` 440 passed and "All 188 required tests passed"; `create -PwithMowzie`,
+    "All 271 required tests passed" (its first ticket's runner was ended by a SIGTERM from outside while it waited in the queue, exit
+    143, before it took the lock; it was queued again).
 
 ## M12 S9
 
