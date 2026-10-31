@@ -489,6 +489,11 @@ public final class ConflictBridge implements SessionPlugin {
             return RtsimSession.entitiesTickAt(level, at.set(Mth.floor(placeX(f)), level.getSeaLevel(), Mth.floor(placeZ(f))));
         }
 
+        /** Its place on the ground under the leaves, a walker's: the follow goal's path target. */
+        Vec3 place(Mob m) {
+            return place(m, Heightmap.Types.MOTION_BLOCKING_NO_LEAVES);
+        }
+
         /**
          * Its place at the mob's level's game time, on the {@code ground} heightmap where loaded; a held lurk puppet's is its hold
          * point (M8).
