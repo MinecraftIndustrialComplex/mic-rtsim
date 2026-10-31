@@ -720,9 +720,15 @@ public final class VillageRenewalGameTests {
         ScriptedEngine stub = RtsimTests.engine();
         ServerLevel level = helper.getLevel();
         Site s = new Site(helper, false, 4);
-        long op = engineOp();
+        long op = engineOp(), gossipOp = engineOp();
+        java.util.UUID heard = java.util.UUID.randomUUID();
         helper.startSequence()
                 .thenWaitUntil(() -> check("the reach is loaded", s.complete()))
+                .thenExecute(() -> {
+                    // The village has heard something about a player (a WRITE_GOSSIP with nobody to write it into: it is kept).
+                    stub.writeGossip(gossipOp, s.village.id, heard, 2, 25, 3, 0);
+                })
+                .thenWaitUntil(() -> check("the village keeps the news: " + s.village.gossip.size(), !s.village.gossip.isEmpty()))
                 .thenExecute(() -> arrival(s, op, AT_VILLAGE_ARRIVAL, 0, 0))
                 .thenWaitUntil(() -> check("answered", result(stub, op) != null))
                 .thenExecute(() -> {
@@ -730,6 +736,11 @@ public final class VillageRenewalGameTests {
                     List<Villager> in = s.inBox();
                     check("one villager: " + in.size(), in.size() == 1);
                     Villager v = in.get(0);
+                    // A new villager's mark is 0, so the next census writes the village's news into it (EQC176).
+                    RtsimTests.session().phase1.census.take(s.level, s.village, RtsimTests.session().gameTime());
+                    var entry = v.getGossips().getGossipEntries().get(heard);
+                    check("a village keeps what it heard about a player: the settler holds " + entry,
+                            entry != null && entry.getInt(net.minecraft.world.entity.ai.gossip.GossipType.MINOR_NEGATIVE) > 0);
                     check("of the biome's type: " + v.getVillagerData().getType(),
                             v.getVillagerData().getType() == VillagerType.byBiome(level.getBiome(v.blockPosition())));
                     check("an adult", !v.isBaby());
@@ -741,6 +752,257 @@ public final class VillageRenewalGameTests {
                     v.setVillagerData(v.getVillagerData().setProfession(VillagerProfession.FARMER).setLevel(1));
                     check("given a job it trades: " + v.getOffers().size(), !v.getOffers().isEmpty());
                     s.close();
+                })
+                .thenSucceed();
+    }
+
+    // ---- the review's walkers: unload, a crash, a death, a kill on the road ---------------------------------------
+
+    /** One scripted settler on the road: a watched scripted village, the ray forced, the order answered, the walker registered. */
+    private static final class Road {
+        final Site site;
+        final ServerPlayer watcher;
+        final long op = engineOp();
+        java.util.UUID id;
+
+        Road(GameTestHelper helper, String name) {
+            site = new Site(helper, false, 4);
+            watcher = FakePlayers.add(site.level, new Vec3(site.meet.getX() + 0.5, site.meet.getY(), site.meet.getZ() + 12.5), name);
+            site.forceRay(site.meet.getX() + 192, site.meet.getZ(), ResidentSpawner.WALK_DISTANCES);
+        }
+
+        void order() {
+            arrival(site, op, WALK_IN, site.meet.getX() + 192, site.meet.getZ());
+        }
+
+        /** Whether the order is answered and its walker registered; sets {@link #id}. */
+        boolean walking() {
+            VillageRegistry villages = RtsimTests.session().phase1.villages;
+            if (result(RtsimTests.engine(), op) == null)
+                return false;
+            for (VillageRegistry.Walker w : villages.walkers.values())
+                if (w.village == site.village.id)
+                    id = w.id;
+            return id != null;
+        }
+
+        void close() {
+            FakePlayers.remove(watcher);
+            site.close();
+        }
+    }
+
+    /**
+     * A walker whose chunk unloads is kept until it loads (EQC178): the road's chunks are let go with both settlers on
+     * it, the registry is aged by more than the old 24,000-tick stray timeout, and nothing forgets them (the census is
+     * incomplete meanwhile, so the engine never reads the village empty and orders no second pair in the 20 days that
+     * follow); when the chunks load again they are placed at the bell, counted and registered no more.
+     */
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 20000, batch = "mic_rtsim_renewal_unload")
+    public static void aWalkerWhoseChunkUnloadsIsKeptUntilItLoads(GameTestHelper helper) {
+        NativeEngine e = nativeEngine("renewalUnload");
+        if (e == null) {
+            helper.succeed();
+            return;
+        }
+        ServerLevel level = helper.getLevel();
+        Site s = new Site(helper, true, 12);
+        s.villagers(12);
+        VillageRegistry villages = RtsimTests.session().phase1.villages;
+        ServerPlayer player = FakePlayers.add(level, new Vec3(s.meet.getX() + 0.5, s.meet.getY(), s.meet.getZ() + 12.5),
+                "renewal_unload");
+        List<ChunkPos> road = new ArrayList<>();
+        List<java.util.UUID> settlers = new ArrayList<>();
+        long[] placed0 = {0};
+        long[] target = {0};
+        long age = 30_000;
+        helper.startSequence()
+                .thenWaitUntil(() -> {
+                    check("the reach is loaded", s.complete());
+                    ready(e, s, 12, 12);
+                })
+                .thenExecute(() -> {
+                    for (Villager v : s.villagers)
+                        v.discard();
+                })
+                .thenWaitUntil(() -> {
+                    long[] v = s.view(e);
+                    check("a wait runs", v[NativeEngine.VILLAGE_MEMBERS] == 0 && v[NativeEngine.VILLAGE_WAIT_DUE] >= 0);
+                })
+                .thenExecute(() -> e.phase1Advance(s.view(e)[NativeEngine.VILLAGE_WAIT_DUE] - now(e) + DAY / 2))
+                .thenWaitUntil(() -> {
+                    int mine = 0;
+                    for (VillageRegistry.ResidentOrder o : villages.residentOrders.values())
+                        if (o.village == s.village.id)
+                            mine++;
+                    check("the pair's orders wait in the registry, the village being watched: " + mine, mine == 2);
+                })
+                .thenExecute(() -> {
+                    List<ChunkPos> before = new ArrayList<>(s.forced);
+                    for (VillageRegistry.ResidentOrder o : villages.residentOrders.values())
+                        if (o.village == s.village.id) {
+                            s.forceRay(o.x, o.z, Site.CORRIDOR);
+                            break;
+                        }
+                    for (ChunkPos p : s.forced)
+                        if (!before.contains(p))
+                            road.add(p);
+                })
+                .thenWaitUntil(() -> {
+                    int walking = 0;
+                    for (VillageRegistry.Walker w : villages.walkers.values())
+                        if (w.village == s.village.id)
+                            walking++;
+                    check("both settlers stand on the road, walking: " + walking + why(s, villages), walking == 2);
+                })
+                .thenExecute(() -> {
+                    for (VillageRegistry.Walker w : villages.walkers.values())
+                        if (w.village == s.village.id)
+                            settlers.add(w.id);
+                    check("the pair is two: " + settlers.size(), settlers.size() == 2);
+                    // The road is let go: the chunks the settlers stand in unload, with them.
+                    for (ChunkPos p : road) {
+                        level.setChunkForced(p.x, p.z, false);
+                        s.forced.remove(p);
+                    }
+                })
+                .thenWaitUntil(() -> {
+                    for (java.util.UUID id : settlers)
+                        check("the settler is out of the level, its chunk unloaded", level.getEntity(id) == null);
+                })
+                .thenExecute(() -> {
+                    // More than the old stray timeout passes (the registry's clock is moved back instead of waiting).
+                    for (VillageRegistry.Walker w : villages.walkers.values()) {
+                        w.spawnedAt -= age;
+                        w.deadline -= age;
+                    }
+                    placed0[0] = RtsimTests.session().phase1.walkers.placed();
+                })
+                .thenIdle(400)
+                .thenExecute(() -> {
+                    int kept = 0;
+                    for (java.util.UUID id : settlers)
+                        if (villages.walkers.containsKey(id))
+                            kept++;
+                    check("both walkers are still on the list, their chunk never having loaded: " + kept + " of 2", kept == 2);
+                    target[0] = now(e) + 20L * DAY;
+                    e.phase1Advance(20L * DAY);
+                })
+                .thenWaitUntil(() -> check("the world ran 20 days on", now(e) >= target[0]))
+                .thenIdle(100)
+                .thenExecute(() -> {
+                    // A second pair's orders would wait in the registry (the village is watched) with the walk-in flag; a
+                    // growth step's have not. Other tests' villages are in the engine too, so the world's settlers count says nothing.
+                    int second = 0;
+                    for (VillageRegistry.ResidentOrder o : villages.residentOrders.values())
+                        if (o.village == s.village.id && (o.flags & Cmd.SpawnResident.FLAG_WALK_IN) != 0)
+                            second++;
+                    check("no second pair was ordered: " + second + " walk-in orders wait, " + java.util.Arrays.toString(s.view(e)),
+                            second == 0);
+                    // The road's chunks load again, and the settlers with them.
+                    for (ChunkPos p : road)
+                        s.force(p.x, p.z);
+                })
+                .thenWaitUntil(() -> {
+                    check("both are placed at the bell once found: placed "
+                            + (RtsimTests.session().phase1.walkers.placed() - placed0[0]) + ", on the list " + villages.walkers.size(),
+                            RtsimTests.session().phase1.walkers.placed() >= placed0[0] + 2 && villages.walkers.isEmpty());
+                })
+                .thenExecute(() -> {
+                    check("two villagers stand in the village: " + s.inBox().size(), s.inBox().size() == 2);
+                    Census.Scan scan = Census.scan(villages, level, s.village);
+                    check("the census counts both: " + scan.residents(), scan.residents() == 2);
+                    FakePlayers.remove(player);
+                    s.close();
+                })
+                .thenSucceed();
+    }
+
+    /**
+     * A walker saved ahead of the registry (a crash after its chunk was written and before the villages' file was) is
+     * registered when its order comes again and is answered DUPLICATE_OP (EQC178, EQC172): the registry loses the walker, the
+     * journal forgets the op, the order is sent again; the answer is DUPLICATE and the walker is on the list.
+     */
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 3000, batch = "mic_rtsim_renewal_duplicate")
+    public static void aResentWalkInOrderRegistersTheWalkerItIsAnsweredDuplicate(GameTestHelper helper) {
+        ScriptedEngine stub = RtsimTests.engine();
+        VillageRegistry villages = RtsimTests.session().phase1.villages;
+        Road r = new Road(helper, "renewal_duplicate");
+        boolean[] resent = {false};
+        helper.startSequence()
+                .thenWaitUntil(() -> check("the reach is loaded", r.site.complete()))
+                .thenExecute(r::order)
+                .thenWaitUntil(() -> check("the settler is on the road, registered", r.walking()))
+                .thenExecute(() -> {
+                    check("placed: status " + result(stub, r.op).aux(), result(stub, r.op).aux() == Obs.CommandResult.APPLIED);
+                    // The crash: the registry and the journal come back from before the order, the walker's chunk from after it.
+                    villages.walkers.remove(r.id);
+                    RtsimTests.session().boundary().journal().forgetAppliedForTest(r.op);
+                    check("the entity stands on the road: " + r.site.level.getEntity(r.id), r.site.level.getEntity(r.id) != null);
+                    arrival(r.site, r.op, WALK_IN, r.site.meet.getX() + 192, r.site.meet.getZ());
+                    resent[0] = true;
+                })
+                .thenWaitUntil(() -> check("the order is answered a second time",
+                        RtsimTests.recordsWith(stub, Obs.COMMAND_RESULT, Obs.CommandResult.OP_ID, r.op).size() >= 2))
+                .thenExecute(() -> {
+                    check("answered DUPLICATE_OP: " + result(stub, r.op).aux(), result(stub, r.op).aux() == Obs.CommandResult.DUPLICATE_OP);
+                    check("the walker is on the list again", villages.walkers.containsKey(r.id));
+                    check("and it is still the one body: " + r.site.level.getEntity(r.id),
+                            r.site.level.getEntity(r.id) instanceof Villager v && v.isAlive());
+                    r.site.level.getEntity(r.id).discard();
+                    r.close();
+                })
+                .thenSucceed();
+    }
+
+    /**
+     * A walker that dies is taken off the list (EQC178): killed on the road by a mob, it leaves the level after its death
+     * animation, and the registry must not wait for it (a day past its deadline, as the stray timeout was, the census reads
+     * the village incomplete and the dead settler is still counted as there).
+     */
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 3000, batch = "mic_rtsim_renewal_walker_dies")
+    public static void aWalkerThatDiesIsTakenOffTheList(GameTestHelper helper) {
+        VillageRegistry villages = RtsimTests.session().phase1.villages;
+        Road r = new Road(helper, "renewal_dies");
+        helper.startSequence()
+                .thenWaitUntil(() -> check("the reach is loaded", r.site.complete()))
+                .thenExecute(r::order)
+                .thenWaitUntil(() -> check("the settler is on the road, registered", r.walking()))
+                .thenExecute(() -> r.site.level.getEntity(r.id).hurt(r.site.level.damageSources().generic(), 1000f))
+                .thenWaitUntil(() -> check("the dead walker is off the list: " + villages.walkers.size()
+                        + " on it, the entity " + r.site.level.getEntity(r.id), !villages.walkers.containsKey(r.id)))
+                .thenExecute(r::close)
+                .thenSucceed();
+    }
+
+    /**
+     * Killing a settler on the road is a player's kill of the village (EQC178, EQC181): the report is journaled with the walker's
+     * village, though the road is outside its box, so the engine adds the pressure (R10, EQC158).
+     */
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 3000, batch = "mic_rtsim_renewal_walker_killed")
+    public static void aSettlerKilledOnTheRoadIsAPlayersKillOfItsVillage(GameTestHelper helper) {
+        ScriptedEngine stub = RtsimTests.engine();
+        Road r = new Road(helper, "renewal_killer");
+        ServerPlayer killer = FakePlayers.add(r.site.level, RtsimTests.centre(helper), "renewal_road_killer");
+        helper.startSequence()
+                .thenWaitUntil(() -> check("the reach is loaded", r.site.complete()))
+                .thenExecute(r::order)
+                .thenWaitUntil(() -> check("the settler is on the road, registered", r.walking()))
+                .thenExecute(() -> {
+                    var settler = r.site.level.getEntity(r.id);
+                    check("out of the village's box: " + settler.position(), r.site.inBox().isEmpty());
+                    settler.hurt(r.site.level.damageSources().playerAttack(killer), 1000f);
+                })
+                .thenWaitUntil(() -> {
+                    int killed = 0;
+                    for (ScriptedEngine.Received h : RtsimTests.recordsWith(stub, Obs.HURT, Obs.Hurt.NODE, r.site.village.id))
+                        if (h.aux() == Obs.Hurt.RESIDENT_KILLED)
+                            killed++;
+                    check("a RESIDENT_KILLED report names the village: " + killed, killed == 1);
+                })
+                .thenExecute(() -> {
+                    FakePlayers.remove(killer);
+                    r.close();
                 })
                 .thenSucceed();
     }
