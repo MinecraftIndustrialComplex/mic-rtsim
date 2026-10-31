@@ -285,6 +285,72 @@ fn a_failed_house_gives_its_booking_back() {
     assert_eq!(w.growth[&REEDHOLM].houses, 1, "the house stays booked: the clock counts it");
 }
 
+/// A Ribbit village whose house is booked at once and never answered, a booking the engine releases
+/// at the first confirmed census after `owed_max_days` (the lost-order case, EQC162).
+fn released_house() -> (World, Nodes, u64) {
+    let mut cfg = config(13);
+    cfg.ribbit_refill_needs_prosperity = true;
+    cfg.growth_max_houses = 1;
+    let (mut w, _) = synth::build(cfg, true);
+    let mut nodes: Nodes = (0..w.nodes.len()).map(|i| (w.nodes[i].key, i)).collect();
+    census(&mut w, &mut nodes, REEDHOLM, 10, 0, day(1));
+    let house = first_house(&mut w, 1).op;
+    let r = *w.village_row(REEDHOLM).unwrap();
+    assert_eq!((r.owed, r.pending_houses), (1, 1), "the house is booked: {r:?}");
+    let late = Tick(w.now().0 + 200 * TICKS_PER_DAY);
+    census(&mut w, &mut nodes, REEDHOLM, 10, 0, late);
+    let r = *w.village_row(REEDHOLM).unwrap();
+    assert_eq!((r.owed, r.pending_houses), (0, 0), "a booking older than 192 days is released: {r:?}");
+    (w, nodes, house)
+}
+
+#[test]
+fn a_released_booking_forgets_its_house_op() {
+    // The release took the booking and its resident's op; the house op stayed in `houses_pending`,
+    // so a NOT_FREE for it later subtracted from a newer booking (an extra refill could pass K), and
+    // a HOUSE_PLACED ordered a resident the world no longer holds a booking for.
+    let (mut w, mut nodes, house) = released_house();
+    assert!(
+        !w.wants_resident_result(house, false),
+        "the released booking's house op is no longer held"
+    );
+    let at = w.now();
+    let out = apply(&mut w, &mut nodes, &Input::ResidentResult { op: house, placed: false }, at.0);
+    assert!(out.refused, "a late NOT_FREE for the released house is no answer");
+    let out = apply(&mut w, &mut nodes, &Input::HousePlaced { op: house }, at.0);
+    assert!(out.refused, "a late HOUSE_PLACED for it orders nobody");
+    assert!(
+        w.take_commands()
+            .iter()
+            .all(|c| !matches!(c, Command::SpawnResident(s) if s.house == house)),
+        "no resident was ordered for the released house"
+    );
+}
+
+#[test]
+fn a_failed_house_does_not_raise_k_of_a_village_never_seen() {
+    // K of a Ribbit village no census has seen alive is its adoption count plus the houses the
+    // bridge has placed (EQC166): a house it could not place is no room for anybody.
+    let (mut w, mut nodes) = ribbit_world(13, false);
+    let house = first_house(&mut w, 1).op;
+    let at = w.now();
+    let r = *w.village_row(REEDHOLM).unwrap();
+    assert!(!r.seen, "no census has been taken: {r:?}");
+    let guess = r.k0;
+    result(&mut w, &mut nodes, house, false, at);
+    let r = *w.village_row(REEDHOLM).unwrap();
+    assert_eq!(r.k, guess, "the failed house added no room: {r:?}");
+    assert_eq!(w.growth[&REEDHOLM].houses, 1, "the house stays booked: the clock counts it");
+    // A house that is placed does.
+    let (mut w, mut nodes) = ribbit_world(13, false);
+    let house = first_house(&mut w, 1).op;
+    let at = w.now();
+    let out = apply(&mut w, &mut nodes, &Input::HousePlaced { op: house }, at.0);
+    assert!(!out.refused);
+    let r = *w.village_row(REEDHOLM).unwrap();
+    assert_eq!(r.k, r.k0 + 1, "a placed house is a bed: {r:?}");
+}
+
 #[test]
 fn ribbit_settlers_below_two() {
     // Nobody left: a pair walks in after the wait, counted when they exist.
