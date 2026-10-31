@@ -1098,6 +1098,19 @@ impl Herds {
             .unwrap_or_default()
     }
 
+    /// Sets range row `h`'s K: the world model re-caps a range when its region's ground changes
+    /// (EQC504). Births, the refuge, dispersal and frontier founding read the new K from then on.
+    /// Returns the K it had, or `None` when it had `k` already or is no row.
+    pub fn set_k(&mut self, h: HerdId, k: u64, at: Tick) -> Option<u64> {
+        let old = self.herds.get(h)?.k;
+        if old == k {
+            return None;
+        }
+        self.herds.get_mut(h)?.k = k;
+        self.note(at, "recap", Some(h), format!("K {old} to {k}"));
+        Some(old)
+    }
+
     /// Recomputes every herd's regions from its route (a new topology): a whole-table pass.
     pub(crate) fn rebuild_regions(&mut self) {
         self.regions.clear();

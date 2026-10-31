@@ -17214,6 +17214,57 @@ mod worldmodel {
         e.habitat_info(dim, x, z)
     }
 
+    /// EQC504: a range founded while a quarter of its region was known gets K from those cells;
+    /// when the rest of the region is sampled, the world model re-caps K to the whole region's.
+    #[test]
+    fn a_ranges_k_follows_its_ground_as_more_of_it_is_known() {
+        use rtsim_ecology::herds::habitat::{FoundingTunables, HabitatClimate, range_capacity};
+        use rtsim_space::{RegionKey, SampledWorld, WorldHandle};
+        let dir = tmpdir("worldmodel-recap");
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        j.module_mask = MODULES;
+        j.run_until("the engine's list", known_end);
+        let mut p = Painter::default();
+        let all = region(&mut p, 0);
+        // First the north-west quarter: habitat cells 0..4 x 0..4, four whole forage cells.
+        let (first, rest): (Vec<_>, Vec<_>) = all
+            .iter()
+            .cloned()
+            .partition(|r| r.cell.0 < 4 && r.cell.1 < 4);
+        send(&mut j, &p, &first);
+        j.run_until("a herd founded", |j| info(&e, j, 100, 100)[9] != 0);
+        let agent = info(&e, &mut j, 100, 100)[9] as u64;
+        let id = rtsim_ecology::herds::herd::herd_of(agent).unwrap();
+        let k_of = |e: &Engine| e.with_herds(|h, _| h.herd(id).unwrap().k);
+        let species = e.with_herds(|h, _| h.herd(id).unwrap().species);
+        let k0 = k_of(&e);
+        // What the engine's own rule gives on each ground (the same cells in a world of its own).
+        let capacity = |recs: &[HabitatRecord]| {
+            let mut w = SampledWorld::new();
+            for r in recs {
+                p.feed(&mut w, r);
+            }
+            let w = WorldHandle::new(Box::new(w));
+            let c = HabitatClimate::new(w.clone());
+            let k = RegionKey {
+                frame: 0,
+                rx: 0,
+                rz: 0,
+            };
+            range_capacity(&**w.read(), &c, k, species, &FoundingTunables::default())
+        };
+        assert_eq!(k0, capacity(&first), "founded on the quarter known");
+        send(&mut j, &p, &rest);
+        j.run_until("the range re-capped", |_| k_of(&e) != k0);
+        let k1 = k_of(&e);
+        assert_eq!(k1, capacity(&all), "re-capped to the whole region");
+        assert!(k1 > k0, "{species:?}: K {k0} to {k1}");
+        assert_eq!(e.herd_agents(), vec![agent], "the same herd, no second one");
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        eprintln!("world model: {species:?} range re-capped from K {k0} to {k1}");
+    }
+
     #[test]
     fn habitat_cells_found_a_herd_on_land_and_are_listed_again_after_a_restart() {
         let dir = tmpdir("worldmodel");
