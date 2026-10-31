@@ -965,9 +965,9 @@ public final class VillageRenewalGameTests {
     }
 
     /**
-     * A walker that dies is taken off the list (EQC178): killed on the road by a mob, it leaves the level after its death
-     * animation, and the registry must not wait for it (a day past its deadline, as the stray timeout was, the census reads
-     * the village incomplete and the dead settler is still counted as there).
+     * A walker that dies is taken off the list (EQC178): killed on the road, it leaves the level after its death animation (here
+     * at once, so that no 40-tick pass of the walkers can find it dying and forget it by luck), and the registry must not wait
+     * for it (until the stray timeout, the census reads the village incomplete and the engine never settles it).
      */
     @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 3000, batch = "mic_rtsim_renewal_walker_dies")
     public static void aWalkerThatDiesIsTakenOffTheList(GameTestHelper helper) {
@@ -977,7 +977,12 @@ public final class VillageRenewalGameTests {
                 .thenWaitUntil(() -> check("the reach is loaded", r.site.complete()))
                 .thenExecute(r::order)
                 .thenWaitUntil(() -> check("the settler is on the road, registered", r.walking()))
-                .thenExecute(() -> r.site.level.getEntity(r.id).hurt(r.site.level.damageSources().generic(), 1000f))
+                .thenExecute(() -> {
+                    var settler = r.site.level.getEntity(r.id);
+                    settler.hurt(r.site.level.damageSources().generic(), 1000f);
+                    check("it died: " + settler.isAlive(), !settler.isAlive());
+                    settler.remove(Entity.RemovalReason.KILLED);
+                })
                 .thenWaitUntil(() -> check("the dead walker is off the list: " + villages.walkers.size()
                         + " on it, the entity " + r.site.level.getEntity(r.id), !villages.walkers.containsKey(r.id)))
                 .thenExecute(r::close)
