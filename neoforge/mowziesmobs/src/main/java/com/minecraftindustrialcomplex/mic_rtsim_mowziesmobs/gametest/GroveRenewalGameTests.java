@@ -106,7 +106,7 @@ public final class GroveRenewalGameTests {
         EntityUmvuthanaMinion[] w = new EntityUmvuthanaMinion[3];
         ServerPlayer[] p = new ServerPlayer[1];
         SiteLedger.Row[] killed = new SiteLedger.Row[1];
-        int[] deaths = new int[1];
+        int[] deaths = new int[1], recounts = new int[1];
         long[] rest = new long[1];
 
         GameTestSequence s = realGrove(helper, waits, far, g, u, w, true);
@@ -140,6 +140,7 @@ public final class GroveRenewalGameTests {
                 .thenIdle(100)
                 .thenExecute(() -> {
                     check("no SPAWN half way through the wait (" + lines(g.faction, SPAWN, -1) + ")", lines(g.faction, SPAWN, -1) == 0);
+                    recounts[0] = MowzieKit.camps().engineRecounts;
                     advance(rest[0] + DAY / 4);
                 })
                 .thenWaitUntil(waits.engine(() -> check("the arrival's SPAWN is DONE", lines(g.faction, SPAWN, DONE) >= 1)))
@@ -148,10 +149,10 @@ public final class GroveRenewalGameTests {
                     check("one SPAWN (" + lines(g.faction, SPAWN, -1) + ")", lines(g.faction, SPAWN, -1) == 1);
                     List<EntityUmvuthanaMinion> standing = level.getEntitiesOfClass(EntityUmvuthanaMinion.class, g.area(), Entity::isAlive);
                     check("three warriors stand again (" + standing.size() + ")", standing.size() == 3);
-                    check("the arrival counted first (RECOUNT, MZB-1015): " + MowzieKit.camps().engineRecounts,
-                            MowzieKit.camps().engineRecounts >= 1);
-                    record(test, "replaced", "killed: " + describe(killed[0]) + "; one SPAWN past the wait, after " + MowzieKit.camps().engineRecounts
-                            + " RECOUNT");
+                    check("the arrival counted first (RECOUNT, MZB-1015): " + recounts[0] + " before the wait's end, " + MowzieKit.camps().engineRecounts
+                            + " after", MowzieKit.camps().engineRecounts > recounts[0]);
+                    record(test, "replaced", "killed: " + describe(killed[0]) + "; one SPAWN past the wait, after "
+                            + (MowzieKit.camps().engineRecounts - recounts[0]) + " RECOUNT");
                 })
                 .thenSucceed();
     }
@@ -195,8 +196,9 @@ public final class GroveRenewalGameTests {
     /**
      * A reset hands the grove's pressures over (S9, MZB-1231, MZB-1265). A player kills a warrior and then the Umvuthi: the row
      * has the warriors' P 1/K and the Umvuthi's 1. A plain reset: the found tail carries both (p and p2), the new engine's
-     * warriors' pressure is the row's aged and its Umvuthi's is not lower than the row's aged (a grove found without its
-     * Umvuthi waits the cap, a wait that can only be longer, MZB-1218), and the warriors' wait runs on.
+     * warriors' pressure is the row's aged, and its Umvuthi's is the cap's, 5 (the Umvuthi is dead, so the grove is found without
+     * one and waits the cap for an heir, MZB-1218; {@link #aResetHandsAnAliveUmvuthisPressureOver} is the other case), and the
+     * warriors' wait runs on.
      */
     @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "grove_reset_pressures", skyAccess = true)
     public static void aResetKeepsAGrovesTwoPressures(GameTestHelper helper) {
@@ -259,11 +261,81 @@ public final class GroveRenewalGameTests {
                     long elapsed = b.stamp() - a.stamp();
                     check(String.format("the warriors' P is the row's aged %d ticks: %.4f against %.4f", elapsed, b.p(), aged(a.p(), elapsed)),
                             Math.abs(b.p() - aged(a.p(), elapsed)) < 1e-3);
-                    check(String.format("the Umvuthi's is not lower than the row's aged: %.4f against %.4f", b.p2(), aged(a.p2(), elapsed)),
-                            b.p2() >= aged(a.p2(), elapsed) - 1e-3);
+                    // The Umvuthi is dead at the reset, so the grove is found without one and waits the cap for an heir (MZB-1218):
+                    // its pressure is the cap's, log2(192 / 6) = 5, whatever the row's 1 aged.
+                    check(String.format("found without its Umvuthi the grove is at the cap, 5: %.4f (the row's was %.4f)", b.p2(), a.p2()),
+                            Math.abs(b.p2() - 5f) < 0.05 && b.p2() > aged(a.p2(), elapsed));
                     check("the warriors' wait runs on: " + describe(b), b.waiting());
                     check("it is the wait left less the ticks since (" + b.waitLeft() + " against " + (a.waitLeft() - elapsed) + ")",
                             Math.abs(b.waitLeft() - (a.waitLeft() - elapsed)) <= TOL);
+                    record(test, "handed over", "before: " + describe(a) + String.format(", p2 %.4f", a.p2()) + "; after " + elapsed + " ticks: "
+                            + describe(b) + String.format(", p2 %.4f", b.p2()));
+                })
+                .thenSucceed();
+    }
+
+    /**
+     * A reset hands an Umvuthi that stands its pressure (S9 review, MZB-1290). A grove found with three warriors and no Umvuthi
+     * waits the cap's 192 days for an heir; the pressure of that wait, the cap's 5, is then halved twice (the chief's half-life is
+     * 96 days), 1.25, and the row carries it with the heir seated. A plain reset finds the Umvuthi alive: the new engine's
+     * pressure is the row's aged (the found tail carries it), not the cap's again, which a grove found without its Umvuthi would
+     * take (see {@link #aResetKeepsAGrovesTwoPressures}).
+     */
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "grove_reset_heir", skyAccess = true)
+    public static void aResetHandsAnAliveUmvuthisPressureOver(GameTestHelper helper) {
+        String test = "aResetHandsAnAliveUmvuthisPressureOver";
+        if (!nativeOnly(helper, test))
+            return;
+        ChunkWait waits = ChunkWait.of(helper, 8000);
+        Far far = new Far(helper, test);
+        ServerLevel level = far.level;
+        MinecraftServer server = level.getServer();
+        ConflictKit.onEnd(helper, () -> SiteTestHooks.cleanUp(server));
+        Grove g = new Grove(far, far.k, far.z0);
+        EntityUmvuthi[] u = new EntityUmvuthi[1];
+        EntityUmvuthanaMinion[] w = new EntityUmvuthanaMinion[3];
+        SiteLedger.Row[] before = new SiteLedger.Row[1], after = new SiteLedger.Row[1];
+        long[] t = new long[1];
+
+        GameTestSequence s = realGrove(helper, waits, far, g, u, w, false);
+        s.thenExecute(() -> {
+                    check("the grove has no Umvuthi", MowzieKit.held(g.faction).stream().noneMatch(e -> e instanceof EntityUmvuthi));
+                    advance(192 * DAY + DAY / 8);
+                })
+                .thenWaitUntil(waits.engine(() -> check("the heir's pair is DONE (MASK " + lines(g.faction, ConflictRecords.CampReconcile.MASK, DONE)
+                        + ", SEAT_HEIR " + lines(g.faction, ConflictRecords.CampReconcile.SEAT_HEIR, DONE) + ")",
+                        lines(g.faction, ConflictRecords.CampReconcile.MASK, DONE) >= 1
+                                && lines(g.faction, ConflictRecords.CampReconcile.SEAT_HEIR, DONE) >= 1)))
+                .thenWaitUntil(waits.engine(() -> {
+                    check("an Umvuthi stands at the grove", MowzieKit.held(g.faction).stream().anyMatch(e -> e instanceof EntityUmvuthi));
+                    SiteLedger.Row r = row(level, g.faction);
+                    check("the row carries the heir wait's pressure aged, 1.25, and the warriors' is 0: " + describe(r) + String.format(", p2 %.4f", r.p2()),
+                            r != null && r.n() == 2 && r.waiting() && r.p() == 0f && Math.abs(r.p2() - 1.25f) < 0.1f);
+                    before[0] = r;
+                }));
+        s = saved(s, waits);
+        s.thenExecute(() -> {
+                    t[0] = level.getGameTime();
+                    SiteTestHooks.plainReset(server);
+                    check("a session runs after the reset: " + RtsimSession.startFailure(), RtsimSession.current() != null);
+                })
+                .thenWaitUntil(waits.engine(() -> check("the new engine has the grove's FACTION_FOUND", !ConflictKit.factionsFound(g.faction).isEmpty())))
+                .thenExecute(() -> {
+                    java.nio.ByteBuffer v = ConflictKit.factionsFound(g.faction).get(0).view();
+                    float tp2 = v.getFloat(ConflictRecords.FactionFound.TAIL + SiteLedger.Tail.P2);
+                    check(String.format("its tail carries the Umvuthi's pressure: p2 %.4f (the row's %.4f)", tp2, before[0].p2()),
+                            Math.abs(tp2 - before[0].p2()) < 1e-3);
+                })
+                .thenWaitUntil(waits.engine(() -> {
+                    SiteLedger.Row r = row(level, g.faction);
+                    check("the new engine's row: " + describe(r), r != null && r.stamp() >= t[0]);
+                    after[0] = r;
+                }))
+                .thenExecute(() -> {
+                    SiteLedger.Row a = before[0], b = after[0];
+                    long elapsed = b.stamp() - a.stamp();
+                    check(String.format("the Umvuthi's is the row's aged %d ticks: %.4f against %.4f (the cap's would be 5)", elapsed, b.p2(),
+                            aged(a.p2(), elapsed)), Math.abs(b.p2() - aged(a.p2(), elapsed)) < 0.02);
                     record(test, "handed over", "before: " + describe(a) + String.format(", p2 %.4f", a.p2()) + "; after " + elapsed + " ticks: "
                             + describe(b) + String.format(", p2 %.4f", b.p2()));
                 })
