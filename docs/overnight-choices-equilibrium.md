@@ -1509,3 +1509,103 @@ Built in the engine (`crates/rtsim-conflict/src/engine/mood.rs`, the `plunder_mo
 | EQC288 | **Measured (the engine's own; all in `tests/mood.rs`).** (1) With no history, 3,200 camps on 16 seeds: the mean of `plunder_mean_days` is 48.0 (the test's band 47.5 to 48.5), the lowest about 29 days and the highest about 87 (0.6 to 1.8 of 48). (2) A quiet world (24 camps, no village with anything to take, 960 game days, 6 seeds): the camps draw a plunder every **48.1** days (band 45 to 51), 56 raids, grief 0.001. (3) A rich world (every village refilled to 20 items over its targets every ten days, the same days and seeds): a plunder every **47.1** days (band 42 to 54), 2,934 raids and 7,572 members lost, mean grief 0.146 (a seventh of the cap lost lately) and spoils 2.95, the camps' means ending between 17.6 and 129.2 days: the history spreads the camps well past the temperament's 29 to 87. At the first gains tried (`loss_gain` 3.5) the rich world's mean was 53.9 days: a typical camp's grief outweighed its spoils; 2.8 balances them. (4) One raid with loot lowers the next mean by 14%; losing 4 of 50 raises it by 25%; a chief's fall by 32%; both halve in 96 days (a quarter in two game years, nothing in the test's 2,000 days); the bounds hold at 100 times the loss and 100 times the loot (`the_factor_is_clamped`). | The coordinator asked for a test over many camps and seeds with the band. |
 | EQC289 | **How CONFLICT-LIFE.md takes it over.** The plunder clock reads one function, `Conflict::plunder_mean_days(f, at)`; the council replaces its body with a sitting (its voices' temperaments in place of the chief's aggression, their memories in place of `Mood`: `lost at` is grief, `raided them` and `paid` are spoils) and keeps the exponential draw and `schedule_plunder`. `Mood` and its three writers (`grieve_members`, `grieve_chief`, `gloat`) are the only places that know a camp's raiding history; deleting them removes the mood and nothing else reads them. The block's name in the JSON would go with them. | Ben: "shape it so the council can take it over". |
 | EQC290 | **Not done on purpose.** (1) The mood is not on a wire record, the ledger or the viewer: no player sees a temperament or a score (the raids come sooner or later, that is all). (2) `observed` and the pool's pressure are not folded in (a player's kills reach grief through the parties they kill). (3) The goblin, bandit and grove clocks are unchanged (FB-10). (4) A reset forgets the history (EQC287). (5) A pillager farm at an outpost: its kills of vanilla spawns are grievance (FB-6), not grief (they are not the camp's warriors). | Each can be added; none is needed for the answer Ben gave. |
+
+## S11: the long-horizon suite (designed 2026-10-30)
+
+**Designed 2026-10-30, not built.** EQUILIBRIUM.md §4's S11 row: `long_horizon_stability_with_kills` (every module, 60 game
+years, the roamer script, every kind inside its §3.6 band), `kill_all_<kind>` for every kind in one place, and
+`who_is_alive_soak` (262,980 game days in the host at max: every kind's census flat by century, state bytes flat, renewal
+events per day flat; nightly). Branch `design/s11`, cut from origin/main a4717c1f, designed against main plus S9
+(`feat/eq-s9-mowzie` at 795748fc, itself based on a4717c1f; S9's tests and helpers are named where the suite calls them). The
+review-fix branches `fix/s5-review`, `fix/s6-review`, `fix/s7-review`, `fix/m11-review` and `fix/m12a-review` are in flight;
+the work split says what waits for them. Ids EQC400 to EQC499 are S11's: EQC400 to EQC469 are the design, EQC470 to EQC499
+are kept for the build's own findings. Choices that are Ben's are marked **FOR BEN**, each with its options and a
+recommendation, and are gathered after the records. Nothing is built and no code changes here. Five light probes were run
+for this design (EQC453): two host runs, the always-run equilibrium tests timed once, and one run of the research model in a
+scratch copy outside the repository.
+
+**Words used.** A *kind* is one census row (`dragon.lair`, `herd.range`, and so on). The *every-kind world* is the world
+S11 builds in the shipped engine with sites of every kind on one map (EQC402). A kind's check is *alone* when it runs in its
+own harness world (the existing kill-alls) and *together* when it runs in the every-kind world. A *judged century* is one of
+centuries 2 to 27 of the soak, 9,600 game days each. A series' *drift* is its Theil-Sen slope times the judged span; it is
+*material* when it exceeds the series' threshold δ and *significant* when a Mann-Kendall test gives p < 0.001 (EQC438). The
+*calibration seeds* are the eight soak seeds the build runs once to set and check every threshold (EQC442). A *red night* is
+a nightly soak whose verdict is FAIL.
+
+### The shape
+
+1. **Every module runs together only in the shipped engine.** `rtsim-cli`'s harnesses each build their own world (only
+   herds and dragons share one); the jni `Engine` is the one place every module shares one clock (`shared::run_rounds`). The
+   host soak runs it, but on a world with one lair, one haven slot, one goblin camp, nine human villages and no herds, Ribbit
+   villages, nests, dens, groves or outposts: three kinds have no site at all and the rest have one each (the probe's census,
+   EQC453). S11 adds one world builder, `rtsim_host::every`, that founds every kind on one map through the fake Java's own
+   records, and it is shared by the three tests (EQC401 to EQC404).
+2. **Kills reach the engine as a player's** through real records where the fake Java already has them (villagers, Ribbits,
+   nest worms, pirate ships, dens, groves and the Umvuthi through the fake conflict plugin) and through TEST-mode orders where
+   it has none: 41 `CONFLICT_SLAY` (pool camps and outposts, exists), and two new ones, 43 `DRAGON_SLAY` and 44 `HERD_CULL`
+   (EQC405, EQC406).
+3. **The roamer reaches every kind.** Today's roamer kills dragons only, and the model's never touches herds, villagers or
+   Ribbits. S11's roamer walks as the model's and kills what it meets of every kind; each kind's booked player losses must equal
+   its kills, so "with kills" has teeth (EQC410 to EQC413).
+4. **Bands.** Every kind gets a band for each test, from (in order) the engine's own measured harness band, the model where it
+   counts the kind (including a model run made for this design for the Umvuthi and the base-6 den, EQC416), or the build's
+   first 30-seed run with its reason recorded; never looser than the rules' own caps (EQC415 to EQC420).
+5. **`long_horizon_stability_with_kills`**: the every-kind world, 60 game years, the roamer and nobody on the same 30 seeds,
+   years 30 to 60 against the band table; a four-year seed-1 cut runs by default (EQC417, EQC463).
+6. **`kill_all_<kind>` in one place**: one table, `rtsim-cli`'s `sim::killall`, with a row for every kind, its alone harness
+   and its band; the nest and pirate harnesses move from their crates' `tests/` into their `synth` modules so the table can call
+   them; two rows are new (the Umvuthi, outposts); the same table runs together in the every-kind world on eight seeds
+   (EQC425 to EQC430).
+7. **`who_is_alive_soak`**: the every-kind world with nobody, 262,980 game days in the host at max, the census every 10 days,
+   bytes, heap and queues at each century's end. It passes only if every kind is present and alive on every sample, every
+   judged century sits in its kind's band, and no series has a drift that is both material and significant (EQC433 to EQC447).
+8. **The engine's speed** (measured tonight on today's host world): 50.3 game days a second in the soak test under a load of
+   about 55, 82.3 through `rtsim-cli run` under about 40, and 112 recorded under about 10 (VIEWER.md §12.4). So 262,980 days
+   take 87, 53 and 39 minutes. The every-kind world costs more per day; derived, about 18 to 21 game days a second under
+   tonight's load and roughly twice that on a quiet laptop, so plan for 2 to 4 hours, to be measured first (EQC453).
+9. **Where it runs**: there is no CI. A script, `tools/nightly/soak.sh`, builds under the cargo heavy lock and runs the soak
+   at nice 19 outside it, writing a local report; whether a timer runs it each night, and how a red night reaches a session,
+   are **FOR BEN** S11-1 and S11-2 (EQC450 to EQC452).
+10. **The census** gains two rows, `conflict.umvuthi` and `ship.port`; outposts stay inside `conflict.camp` (EQC457 to EQC459).
+11. **The S11 row** was checked against the code and the probes and is unchanged (EQC460).
+
+### S11 base and reads
+
+Read for this design: EQUILIBRIUM.md (§1.1 and §1.2's unattended walkthrough, §2.1, §2.2, §2.3, §2.4.1 to §2.4.8, §2.8, §3.1,
+§3.3, §3.6, §3.8, §4's table and its rule on long-horizon tests), and S9's diff of it; this file's S1, S2, S4, S5, S6 and S7
+sections with the S7 build's findings; `docs/choices-mowzie-build.md` on S9 (MZB-1219, MZB-1259, MZB-1262, MZB-1266, MZB-1267,
+MZB-1281); `rtsim-cli`'s `sim/equilibrium.rs` and `sim/census.rs` at main and at S9; `crates/rtsim-host` (`tests/host.rs`,
+`tests/tap.rs`, `src/run.rs`, `src/java.rs`, `src/save.rs`); `crates/rtsim-jni/src/engine.rs` (`census`) and
+`engine/shared.rs` (`run_rounds`), `orders.rs`; `crates/rtsim-kernel/src/census.rs`; the census of every engine
+(`rtsim-world/src/world.rs`, `rtsim-ecology/src/engine.rs` and `herds/engine.rs`, `rtsim-ships/src/engine.rs`,
+`rtsim-conflict/src/engine.rs` at S9); `crates/rtsim-ships/tests/equilibrium.rs`; `crates/rtsim-ecology/tests/nests.rs`,
+`home_bodies_long.rs`, `lair_renewal.rs`; S9's `crates/rtsim-conflict/src/synth.rs` (`FakeConflict`, `CampRun`,
+`mowzie_world_on`); VIEWER.md §12.4; `docs/choices-leg-purge.md`; `README.md`'s commands, `tools/ci/*.sh`,
+`neoforge/gametest.sh`, `flake.nix`; `research/equilibrium-2026-10-21/` (`model.py`'s `Player`, `run.py`'s `steady`,
+`results/results.json`). Outside the repository: the laptop's user timers and `pack/tools/gc/README.md`, and GitHub's API
+for the repository. Three sub-agents read for the catalogue of tests, the host and engine composition, and the bands; every
+fact below was checked in the code or the docs named.
+
+**What is true in the repo** (main a4717c1f unless S9 795748fc is named; `EQ` is `crates/rtsim-cli/src/sim/equilibrium.rs`):
+
+| # | Fact | Where |
+|---|---|---|
+| R1 | `rtsim-cli` is a binary crate only, so its `sim::equilibrium` tests are the binary's unit tests: no other crate can call them, and rtsim-cli cannot call anything in another crate's `tests/`. | `crates/rtsim-cli/Cargo.toml:11-13` |
+| R2 | `sim::equilibrium` is five harnesses on five worlds: `wipe_run` and `dragon_run` on `census::Ecology` (herds and dragons on one world, the herds lent to the dragons' loop), `village_wipe` on `census::Villages`, `camp_run` on `rtsim_conflict::synth::camps`, and S9's `mowzie_run` (one camp on `CampRun`, the emulated plugin) and `unattended_grove` (one grove among six villages). | EQ `:182`, `:425`, `:653`, `:760`; S9 EQ `:986`, `:1077`; `census.rs:406-504` |
+| R3 | There is one `Roamer`, and it kills dragons only ("on the dragons alone (the other kinds' slices bring theirs)"). It starts at region (0, 0), steps every second day to one of the nine regions around it within `min(6, 2 + day / 48)` regions of spawn, and each day with chance 0.5 slays every occupant of the lairs of its region. The other scripted players belong to one harness each. | EQ `:326-378`; `Presser` `:713`; S9 `MowziePresser` `:902`; `census.rs:303`; `rtsim-ships/src/synth.rs:907`; `rtsim-ships/tests/equilibrium.rs:122`; `rtsim-ecology/tests/nests.rs:216` |
+| R4 | The model's roamer kills, each day in its region with these chances, the dragons (0.5), dens (0.5), groves and their Umvuthi (0.3), nests (0.5), camps (0.2) and ships (0.3). It never kills herds, villagers or Ribbits. The model counts the Umvuthi and prints no ratio for it. | `research/equilibrium-2026-10-21/model.py:753-762`, `:682`; `run.py:25-40` |
+| R5 | `sim census` has seven scenarios, each on its own world; only `ecology` and `ranges` run two engines together. | `census.rs:54`, `:135`; S9 adds `mowzie` |
+| R6 | `Engine::census` joins villages, dragons and nests, herds, ships and conflict. `shared::run_rounds` takes the earliest `next_due` over dragons, ships, herds and conflict and runs each to it: the one place every module shares one clock. | `crates/rtsim-jni/src/engine.rs:1016-1033`; `engine/shared.rs:555-586` |
+| R7 | The host soak's world: nine human villages, six sea ports, one haven (one slot), one fire lair with its body, one goblin camp; a player in the first village for a day, then nobody. The soak runs at `Speed::Max` with real fsyncs, a census and the saved page bytes every 10 game days. `a_thousand_days_at_max_keeps_the_state_bounded` asserts pages late at most twice early plus 64 KiB, heap late at most twice early plus 16 MiB, and the same kind names on every sample; no count is checked. | `crates/rtsim-host/tests/host.rs:65-146`, `:209-224`, `:1547-1625`, `:1689-1719` |
+| R8 | The fake Java plays two plugins, `FakeHerds` and `FakeConflict`, and only records dragon and ship commands. Its records: `adopt`, `village_census`, `resident_killed`, `habitat`, `herd_obs`, `dragon_obs`, `ship_obs`, `conflict_obs`, `conflict_flush`. | `crates/rtsim-host/src/java.rs:220`, `:226`, `:232`, `:239`, `:1623`, `:1733`, `:1841`, `:1879`, `:1921`, `:1955`, `:2018`, `:2051`, `:2143` |
+| R9 | The TEST-mode orders are 1 to 9, 16 to 32, 34, 40, 41 `CONFLICT_SLAY` (a player kills a pool camp's warriors) and S9's 42 `CONFLICT_SEND`. No order kills a dragon, a herd or a ship. | `crates/rtsim-jni/src/orders.rs:48-88` |
+| R10 | Kill-alls: herds (world and local), dragons, villagers, Ribbits and pool camps in EQ, S9's dens and groves there too, each with an always-run cut and an `#[ignore]`d 30-seed twin; `kill_all_nests` (one seed, no twin) and `kill_all_pirates` (30 seeds, always run) in other crates' `tests/`. None for the Umvuthi, outposts or ports. | EQ `:1024`, `:1066`, `:1137`, `:1291`, `:1324`, `:1403`; S9 EQ `:1967`, `:2011`; `rtsim-ecology/tests/nests.rs:361`; `rtsim-ships/tests/equilibrium.rs:198` |
+| R11 | Long runs: `long_horizon_dragons_and_herds_with_kills` (seed 1, 4 years; the twin 30 seeds by 60 years, the roamer and nobody); `bodies_do_not_move_the_s4_bands` (3 years; its 20-year 30-seed twin was never run); `pirates_survive_unattended_1000_years` (ten centuries: each century manned at least 0.83, hunts above 0, the save within the first's plus 10%); S9's `long_horizon_mowzie_with_kills` (dens and groves on separate worlds; halves within 0.08, renewals within 25%, the save within twice plus 4 KiB). | EQ `:1201`, `:1217`; `rtsim-ecology/tests/home_bodies_long.rs:143`, `:182`; this file EQC149's note at line 442; `rtsim-ships/tests/equilibrium.rs:555-605`; S9 EQ `:2200-2273` |
+| R12 | S9's long run found the rich-village grove's save growing "about 7 bytes a game day ... not diagnosed". Over 262,980 days that is about 1.8 MB. | S9 EQ `:2252-2255` |
+| R13 | The census row is `KindCensus` (sites, members, capacity, short, empty, broken, the summed P, cumulative renewals). The kinds are `village.human`, `village.ribbit`, `dragon.lair`, `oil.nest`, `herd.range`, `ship.haven` and `conflict.camp`, and at S9 `conflict.den` and `conflict.grove`. There is no row for the Umvuthi, outposts (they are raider camps inside `conflict.camp`) or ports. `conflict.camp`'s members are the pool only, not members away. | `crates/rtsim-kernel/src/census.rs:21-58`; `rtsim-world/src/world.rs:762-793` (S9); `rtsim-ecology/src/engine.rs:696-704`; `herds/engine.rs:661`; `rtsim-ships/src/engine.rs:995-1012`; S9 `rtsim-conflict/src/engine.rs:1377-1396` |
+| R14 | A kind's renewals: human villages settlers and growth; Ribbits settlers, refills and houses; havens refits and refounds; at S9 pool camps refounds, dens arrivals, groves grove arrivals; lairs claims and hatchings; nests broods and worms renewed; herds calvings, foundings and recolonisations. | the same lines; EQC4, EQC20 |
+| R15 | No CI: no `.github`, no workflow and no self-hosted runner (GitHub's API, 2026-10-30: the repository is private, 0 workflows, 0 runners); `flake.nix` has no apps; `tools/ci/determinism-check.sh` and `scale-check.sh` are run by hand under `/tmp/mic-rtsim-heavy.lock`, the lock `README.md`'s cargo commands take; GameTests take `/tmp/mic-rtsim-bridge-heavy.lock`. The laptop's one MIC timer is `pack-gc` (plain unit files in `~/.config/systemd/user`, 04:30, Nice 19, idle IO, written by its script's `install`; the durable home is Ben's Nix config). | `README.md:103-152`; `tools/ci/*.sh:7-9`; `neoforge/gametest.sh:53`; `pack/tools/gc/README.md:11-15` |
+| R16 | The host at max: strides up to two game days give the same hashes as 20 ticks; the stride is 2,400 ticks and a save every 10 game days; the populated world ran 112 game days a second with fsyncs under about 10 runnable, and 108 to 113 and 172 in later runs. | `crates/rtsim-host/src/run.rs:33-40`; VIEWER.md:937-943; `docs/choices-leg-purge.md:44` |
+| R17 | The fake conflict plugin answers a camp's load, census, spawns and kills (`camp_in`, `camp_kill`, `camp_out`), and S9's `mowzie_visit` drives a den's or a grove's player through it. | S9 `rtsim-conflict/src/synth.rs:1035-1124`, `:1419`; S9 EQ `:960-982` |
+| R18 | A ship sunk by a player is the record `Obs::Sunk { by: Player, agent, epoch, .. }`; a nest's worms killed are `NestLoss` with cause Player. | `rtsim-ships/tests/equilibrium.rs:122-146`; `rtsim-ecology/src/synth.rs:1052` |
+| R19 | The native engine's wells come from the industry module's districts: an oil deposit (`DieselOil` or `DestroyCrude`) of the district's current sweep, finite with some left or infinite. A nest wakes and renews only while drilled. | `rtsim-ecology/src/infra.rs:488-500`; EQUILIBRIUM.md §4's S10 row |
