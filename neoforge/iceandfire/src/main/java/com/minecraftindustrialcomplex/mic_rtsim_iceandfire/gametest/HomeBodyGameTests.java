@@ -759,10 +759,13 @@ public final class HomeBodyGameTests {
                 })
                 .thenWaitUntil(waits.chunks(() -> check("the lair went out by itself (LAIR_OUT)", !DragonKit.received(DragonRecords.LAIR_OUT,
                         DragonRecords.LairOut.LAIR, lair).isEmpty())))
-                .thenExecute(() -> {
-                    t[2] = level.getGameTime();
+                .thenWaitUntil(waits.chunks(() -> {
+                    // At the out, or as soon as its chunk stops ticking (EQC312): the whole footprint let go, at once.
                     List<ScriptedEngine.Received> demat = about(DragonRecords.DRAGON_DEMATERIALIZED, agent[0]);
                     check("the home body was released as saved (reason 8)", !demat.isEmpty() && demat.get(demat.size() - 1).aux() == DragonRecords.Dematerialized.HOME_SAVED);
+                }))
+                .thenExecute(() -> {
+                    t[2] = level.getGameTime();
                     record(test, "out", "the lair went out " + (t[2] - t[1]) + " ticks after the ticket was let go; the body released with reason 8");
                     giveUp[0] = System.nanoTime() + 30_000_000_000L;
                 })
@@ -937,6 +940,75 @@ public final class HomeBodyGameTests {
                     check("one body of the dragon", homeBodies(level, c, lair).size() == 1);
                     d[0].discard();
                     unforce.run();
+                })
+                .thenSucceed();
+    }
+
+    /**
+     * EQC312 (finding 3): a lair goes out (a footprint chunk drops past FULL) while its home body's chunk still entity-ticks
+     * (vanilla ticks entities to the simulation distance): the body is not released, it stays registered and leashed, and it is
+     * released with reason 8 only when its own chunk stops ticking. Core's chunk watch end to end at a far site.
+     */
+    @GameTest(template = DragonKit.ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "home_out_ticking")
+    public static void aHomeBodyWhoseChunkStillTicksStaysLeashedPastItsLairsOut(GameTestHelper helper) {
+        String test = "aHomeBodyWhoseChunkStillTicksStaysLeashedPastItsLairsOut";
+        if (!nativeOnly(helper, test))
+            return;
+        ChunkWait waits = ChunkWait.of(helper, 2400);
+        ServerLevel level = helper.getLevel();
+        BlockPos site = DragonKit.farSite();
+        long lair = DragonKit.newLair();
+        DragonConfig.Test.watchLairs = Boolean.TRUE;
+        DragonKit.onEnd(helper, DragonConfig.Test::reset);
+        ChunkWait.Hold hold = waits.hold(site, 48, ChunkWait.Need.ENTITY_TICKING);
+        DragonBaseEntity[] d = new DragonBaseEntity[1];
+        long[] agent = new long[1];
+        Runnable[] unforce = new Runnable[1];
+        long[] giveUp = new long[1];
+
+        helper.startSequence()
+                .thenWaitUntil(waits.ready(hold))
+                .thenExecute(() -> {
+                    int y = level.getHeight(Heightmap.Types.MOTION_BLOCKING, site.getX(), site.getZ());
+                    BlockPos home = new BlockPos(site.getX(), y, site.getZ());
+                    d[0] = DragonKit.roostDragon(level, new Vec3(site.getX() + 0.5, y, site.getZ() + 0.5));
+                    bridge().lairs.declareForTest(level, lair, ROOST, BoundingBox.fromCorners(home.offset(-5, -2, -5), home.offset(5, 6, 5)), home,
+                            level.getGameTime());
+                })
+                .thenWaitUntil(waits.engine(() -> {
+                    long a = bridge().agentOf(d[0]);
+                    check("the lair came in and its dragon is a home body", bridge().homes.isIn(lair) && a != 0 && !homeAnswers(a).isEmpty());
+                }))
+                .thenExecute(() -> {
+                    agent[0] = bridge().agentOf(d[0]);
+                    // The body's own chunk keeps entity-ticking (a forced chunk: level 31 there, 34 three chunks out, so the
+                    // footprint's far edge drops past FULL), then the footprint's hold is let go.
+                    unforce[0] = DragonKit.forceChunks(level, new ChunkPos(d[0].blockPosition()), 0);
+                    hold.release();
+                })
+                .thenWaitUntil(waits.chunks(() -> check("the lair went out by itself (LAIR_OUT)", !DragonKit.received(DragonRecords.LAIR_OUT,
+                        DragonRecords.LairOut.LAIR, lair).isEmpty())))
+                .thenIdle(40)
+                .thenExecute(() -> {
+                    List<ScriptedEngine.Received> demat = about(DragonRecords.DRAGON_DEMATERIALIZED, agent[0]);
+                    record(test, "out", "LAIR_OUT; the body's chunk ticking " + RtsimSession.entitiesTickAt(level, d[0].blockPosition())
+                            + ", registered " + (bridge().body(agent[0]) == d[0]) + ", DEMATERIALIZED " + demat.size());
+                    check("its chunk still ticks", RtsimSession.entitiesTickAt(level, d[0].blockPosition()));
+                    check("not released while its chunk ticks (no DEMATERIALIZED)", demat.isEmpty());
+                    check("still registered, so still leashed", bridge().body(agent[0]) == d[0] && !d[0].isRemoved());
+                    unforce[0].run();
+                    giveUp[0] = System.nanoTime() + 30_000_000_000L;
+                })
+                .thenWaitUntil(waits.chunks(() -> {
+                    List<ScriptedEngine.Received> demat = about(DragonRecords.DRAGON_DEMATERIALIZED, agent[0]);
+                    check("released as saved (reason 8) once its chunk stopped ticking", !demat.isEmpty()
+                            && demat.get(demat.size() - 1).aux() == DragonRecords.Dematerialized.HOME_SAVED && bridge().body(agent[0]) == null);
+                }))
+                .thenExecute(() -> {
+                    record(test, "released", "reason 8 after the body's chunk was let go; the body " + (d[0].isRemoved() ? "left the level ("
+                            + d[0].getRemovalReason() + ")" : "stands"));
+                    if (!d[0].isRemoved())
+                        d[0].discard();
                 })
                 .thenSucceed();
     }
