@@ -5269,6 +5269,21 @@ impl Conflict {
     fn raid_node(&mut self, w: &mut World, p: Handle<Party>, i: usize, at: Tick) -> i64 {
         let f = self.parties[p].faction;
         let c = self.culture(f).clone();
+        // A rival camp that broke while the band was on its way is nothing to plunder, as the
+        // pick says (EQC209): it finds the camp scattered and takes nothing (EQC294).
+        let n = &w.nodes[i];
+        if matches!(n.kind, NodeKind::Haven(_))
+            && let Some(&o) = self.by_key.get(&n.key)
+            && !self.camp_active(o)
+        {
+            self.note(
+                at,
+                Some(f),
+                "plunder",
+                format!("finds the camp at node {} broken: nothing to take", n.key),
+            );
+            return 0;
+        }
         // Something to take, before any blood is spilled: a raid takes from each line's surplus
         // over its target only. Below its target a line needs imports or a mint to refill, and a
         // quiet economy sends neither, so whole-stock raids drained villages for good (CL-D58).

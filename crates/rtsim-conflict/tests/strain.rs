@@ -1809,3 +1809,52 @@ fn a_broken_camp_resends_no_notice() {
     );
 }
 
+/// EQC294: a plunder band already on its way to a rival camp that has broken since finds it
+/// scattered and takes nothing (the pick already leaves a broken camp alone); a camp not broken is
+/// plundered as before.
+#[test]
+fn a_plunder_band_arriving_at_a_broken_camp_takes_nothing() {
+    for broke in [false, true] {
+        let (mut w, mut c, goblin, bandit) = rivals(75);
+        c.log_enabled = true;
+        let node = c.factions[bandit as usize].node;
+        // The haven stands over its targets, so there is something to carry off.
+        let m = w.market(node);
+        let rich: std::collections::BTreeMap<GoodId, i64> = w
+            .goods
+            .ids()
+            .map(|g| (g, m.line(g).target + 40 * MILLI - m.stock(g)))
+            .filter(|e| e.1 > 0)
+            .collect();
+        w.stock_from_players(node, &rich, Tick(10));
+        let key = c.factions[goblin as usize].key;
+        c.order_party(
+            &mut w,
+            key,
+            PartyKind::Plunder,
+            Target::Node(node),
+            None,
+            Tick(21),
+        )
+        .expect("a plunder band");
+        // On its way (it leaves its camp after the muster), the rival breaks.
+        c.run_until(&mut w, &mut NoInfrastructure, Tick(2_000));
+        if broke {
+            break_now(&mut c, &mut w, bandit, Tick(2_100));
+        }
+        c.run_until(&mut w, &mut NoInfrastructure, Tick(20 * DAY));
+        if broke {
+            assert_eq!(c.stats.raids_village, 0, "nothing was plundered");
+            assert!(
+                c.log
+                    .iter()
+                    .any(|e| e.what.contains("broken: nothing to take")),
+                "the band's note"
+            );
+        } else {
+            assert!(c.stats.raids_village > 0, "the control plunders the camp");
+        }
+        c.check(&w).expect("books");
+    }
+}
+
