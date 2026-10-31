@@ -906,7 +906,15 @@ fn hand_back_is_ordered_only_for_a_settled_puppet_at_a_lair_that_is_in() {
             _ => None,
         })
         .collect();
-    assert_eq!(hb, vec![boundary::HandBack { agent, epoch }]);
+    assert_eq!(
+        hb,
+        vec![boundary::HandBack {
+            agent,
+            epoch,
+            lair: KEY
+        }],
+        "the dragon's own lair named (EQC321)"
+    );
     // One in flight at a time.
     s.ingest(settled(boundary::STATE_SLEEPING, 701.5, 101.0), 260);
     assert!(s.cmds().iter().all(|c| !matches!(c, Cmd::HandBack(_))));

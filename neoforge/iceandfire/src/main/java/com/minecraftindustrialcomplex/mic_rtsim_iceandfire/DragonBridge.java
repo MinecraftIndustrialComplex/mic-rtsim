@@ -456,7 +456,7 @@ public final class DragonBridge implements SessionPlugin {
                 yield true;
             }
             case DragonRecords.DRAGON_HAND_BACK -> {
-                homes.handBack(b.getLong(at + HandBack.AGENT), b.getInt(at + HandBack.EPOCH), now);
+                homes.handBack(b.getLong(at + HandBack.AGENT), b.getInt(at + HandBack.EPOCH), b.getLong(at + HandBack.LAIR), now);
                 yield true;
             }
             case DragonRecords.PLACE_LAIR -> {

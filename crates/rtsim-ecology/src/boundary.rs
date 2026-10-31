@@ -657,11 +657,14 @@ pub struct Discard {
 }
 
 /// A puppet settled at its lair, the lair in: the plugin swaps its agent tag for the home
-/// attachment, in place, and answers MATERIALIZED with [`MATERIALIZED_HOME`] (EQC110).
+/// attachment, in place, and answers MATERIALIZED with [`MATERIALIZED_HOME`] (EQC110). `lair` is
+/// the key of the dragon's own lair (LAIR_FOUND's), which the attachment names (EQC321): the
+/// nearest lair to where the puppet stands may be another one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HandBack {
     pub agent: u64,
     pub epoch: u32,
+    pub lair: u64,
 }
 
 /// Place a lair structure near an oil field (`/place structure`'s code path, every biome allowed):
@@ -800,9 +803,9 @@ impl Cmd {
             Cmd::Materialize(_) => 136,
             Cmd::Steer(_) | Cmd::Depart(_) => 56,
             Cmd::Adopt(_) => 80,
-            Cmd::Discard(_) | Cmd::OilSurvey(_) | Cmd::HandBack(_) => 32,
+            Cmd::Discard(_) | Cmd::OilSurvey(_) => 32,
             Cmd::PlaceLair(_) => 48,
-            Cmd::PlaceNest(_) | Cmd::NestRenew(_) | Cmd::NestSortie(_) => 40,
+            Cmd::PlaceNest(_) | Cmd::NestRenew(_) | Cmd::NestSortie(_) | Cmd::HandBack(_) => 40,
         }
     }
 
@@ -1549,7 +1552,8 @@ pub fn encode_cmd(seq: u64, c: &Cmd, dict: &SpeciesDict, buf: &mut Vec<u8>) {
         Cmd::HandBack(h) => {
             w.u64(16, h.agent);
             w.u32(24, h.epoch);
-            w.finish(DRAGON_HAND_BACK, 0, 32);
+            w.u64(32, h.lair);
+            w.finish(DRAGON_HAND_BACK, 0, 40);
         }
     }
 }
@@ -1658,6 +1662,7 @@ pub fn decode_cmd(b: &[u8], dict: &SpeciesDict) -> Result<(usize, u64, Cmd), Cod
         DRAGON_HAND_BACK => Cmd::HandBack(HandBack {
             agent: r.u64(16)?,
             epoch: r.u32(24)?,
+            lair: r.u64(32)?,
         }),
         k => return Err(CodecError::Unknown(k)),
     };
@@ -1940,7 +1945,11 @@ mod tests {
                 health: 288.5,
                 oil: 61,
             }),
-            Cmd::HandBack(HandBack { agent: 10, epoch: 6 }),
+            Cmd::HandBack(HandBack {
+                agent: 10,
+                epoch: 6,
+                lair: 0x5EED_0001,
+            }),
             Cmd::Discard(Discard {
                 entity: (8, 9),
                 reason: 1,

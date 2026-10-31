@@ -502,14 +502,17 @@ public final class HomeBodies {
         leashed++;
     }
 
-    /** DRAGON_HAND_BACK: a settled puppet at its lair becomes a home body, in place (EQC110). */
-    void handBack(long agent, int epoch, long now) {
+    /**
+     * DRAGON_HAND_BACK: a settled puppet at its lair becomes a home body of the lair the engine names, in place (EQC110,
+     * EQC321: the nearest lair may be another). A home body ages as Ice and Fire's own does (EQC316).
+     */
+    void handBack(long agent, int epoch, long lairKey, long now) {
         DragonBridge.Puppet p = bridge.puppetOf(agent);
         if (p == null || p.epoch != epoch || p.home || !(p.entity instanceof DragonBaseEntity d) || d.isRemoved()
                 || IafDragons.dead(d) || d.isTame() || !(d.level() instanceof ServerLevel level))
             return;
-        Lairs.Lair lair = bridge.lairs.nearestKnown(level, d.position(), 64.0);
-        if (lair == null)
+        Lairs.Lair lair = bridge.lairs.known(lairKey);
+        if (lair == null || lair.level() != level)
             return;
         d.removeData(RtsimAttachments.AGENT);
         d.setData(MicRtsimIceAndFire.HOME, new HomeTag(lair.id(), agent));

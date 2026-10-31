@@ -1088,7 +1088,40 @@ impl FakeIaf {
                 Cmd::Discard(dc) => {
                     self.home.bodies.remove(&dc.entity);
                 }
-                Cmd::HandBack(_) => {}
+                Cmd::HandBack(h) => {
+                    // The puppet, still of that epoch, becomes a home body of the lair named, in
+                    // place (EQC110, EQC321).
+                    if let Some(b) = self.bodies.get(&h.agent).filter(|b| b.epoch == h.epoch).cloned()
+                    {
+                        self.bodies.remove(&h.agent);
+                        self.home.bodies.insert(
+                            b.entity,
+                            HomeBody {
+                                agent: b.agent,
+                                epoch: b.epoch,
+                                lair: h.lair,
+                                species: b.species,
+                                age_ticks: b.age_ticks,
+                                hunger: b.hunger,
+                                health: b.health,
+                                gender: Gender::Female,
+                                variant: 0,
+                                pos: b.pos,
+                                loaded: true,
+                            },
+                        );
+                        self.push(
+                            at + 1,
+                            Obs::Materialized(boundary::Materialized {
+                                agent: b.agent,
+                                epoch: b.epoch,
+                                dimension: 0,
+                                entity: b.entity,
+                                home: true,
+                            }),
+                        );
+                    }
+                }
             }
         }
     }
