@@ -12149,7 +12149,24 @@ test did is in MZB-1308. The review's line numbers were at 13ac4d88; each place 
     attachment synced to some players (72a89a5c), failed its control on main's code too, "the control's re-pair went (false, repairs
     +0)", for the reason above; the type replaced it (6f428530). With MZB-1308 taken out (the red round) it failed with "a re-pair with
     per-player data for every player but the level's first (mowzie-repair-pp-a) is skipped (sent true, repairs +2, skipped +0)".
-- **MZB-1309** (the checks): pending; the rounds are queued.
+- **MZB-1309** (the checks):
+  - `cargo test --workspace` on the Rust fixes (cdb280f9, e6cd8c4d): 2416 passed, 3 failed, 32 ignored. One failure was this branch's
+    own test expectation (`a_puppet_killed_while_its_hand_back_is_in_flight_dies_once`, MZB-1304, corrected in 9a847a7f; then
+    `mowzie_aloft` 17 of 17). Two passed on a rerun of the same code, so flakes: `rtsim-cli --test view`
+    `at_100000_districts_a_full_world_request_keeps_the_budget_and_the_sidecar_its_cap` (a district card still with its note "Its
+    machines are read from the world as the card is opened: 0 of its 2 chunks so far", under a load average near 70), and `rtsim-host
+    --test tap` `a_leased_run_with_a_page_hammering_it_keeps_lockstep_with_an_unleased_one` ("pages that differ (generations (save,
+    obs): leased (11, 258), unleased (12, 258))"). `cargo clippy --workspace --all-targets -- -D warnings` is clean at 9a847a7f, and
+    rustfmt passes on every Rust file the branch changes.
+  - The core did not compile at 1e906089 alone (MZB-1302); a Java compile of core, mowziesmobs and create found it before any round.
+  - Rounds from cleared worlds: `create -PwithMowzie` at c41dbfe9, "All 271 required tests passed"; `core` at c41dbfe9, `:core:test`
+    440 passed and "All 188 required tests passed"; the red round (`mowziesmobs` at c41dbfe9 with the two fixes taken out), "2 required
+    tests failed": the re-pair test, as it should (MZB-1308), and
+    `anUmvuthanaEnvoyPartyIgnoresGolemsAndPlayersUntilStruckAndTakesPayment` with "party A placed", a timeout one second into the test
+    (its 2400 ticks ran unthrottled, "chunks ready after 0.0 s (75 ticks)" just before), which passed in the next round; `mowziesmobs`
+    at ce3a4bd1, "All 118 required tests passed". The envoy test's pass was not on the same code, but neither fix taken out touches an
+    envoy's placing: counted a flake. After the revert of MZB-1301 the core and `create -PwithMowzie` rounds ran again at ce3a4bd1:
+    (queued).
 
 ## M12 S9
 
