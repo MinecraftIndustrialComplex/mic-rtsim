@@ -1632,7 +1632,7 @@ run each; the loads are the 1-minute averages before and after):
 | `rtsim-kernel` | `census::trend`: the Theil-Sen slope, the Mann-Kendall test and the flat rule, with their own tests (EQC447). |
 | `rtsim-cli` | `sim/killall.rs` (new): the kill-all table, `rtsim-cli sim killall`, `kill_all_every_kind_30_seeds`, `the_kill_all_table_names_every_kind`. |
 | `rtsim-ecology`, `rtsim-ships` | The nest and pirate kill-all harnesses move from `tests/nests.rs` and `tests/equilibrium.rs` into each crate's `synth` (pub); those tests call them and keep their assertions. |
-| Tools | `tools/nightly/soak.sh` (build, run, report; its `install` waits for S11-1). |
+| Tools | `tools/nightly/soak.sh` (build, run, report; its `install` writes the user timer of S11-1 (a)). |
 | Java | None. |
 | Documents | EQUILIBRIUM.md §4's S11 row once built; `docs/boundary.md`'s list of test orders (43, 44); this section's findings, EQC470 onward. |
 
@@ -1743,7 +1743,7 @@ over years 30 to 60 on the 24-day census, unless said:
 | EQC426 | **The rows**: the table below. Each keeps the band its alone test asserts today; the table adds no number. | |
 | EQC427 | **Two harnesses move so the table can call them** (R1): from `crates/rtsim-ecology/tests/nests.rs` (`Run` `:106`, `start` `:123`, `until` `:192`, `kill` `:216`, and the body of `kill_all_nests` `:361`) to `rtsim_ecology::synth::nests`, as `pub fn kill_all(seed, cells) -> NestRefill`; from `crates/rtsim-ships/tests/equilibrium.rs` (`scripted` `:104`, `sink_all` `:122`, `days_back` `:148`) to `rtsim_ships::synth::equilibrium`, pub. Each crate's test then calls the moved code and keeps every assertion. | Copying them would leave two harnesses to keep in step; the crates already export `synth` for the same reason. |
 | EQC428 | **Two new rows**: **outposts**, the camps harness with the raider culture alone (a new `camp_wipe_of(seed, names, kill_day, after_days)`, which `camp_wipe` becomes a call of), the camps' band; **the Umvuthi**, S9's `mowzie_run` with a new presser `MowziePresser::KillChief(day)` that kills the chief's body only (the path of `kill_chief`, S9 `crates/rtsim-conflict/tests/grove_renewal.rs:122`), its band the rule's: whole again within a day of the later of its cowed time and `min(192, 6 x 2^1)` = 12 days after the kill (UNVERIFIED 8). Ports get no row: not a population (§2.4.6); a port's closing is S8b's own test (`a_blockaded_port_closes_and_reopens`). | An outpost is a raider camp (FB-5 (b)) but a kind of the slice list; the Umvuthi is the one boss with no kill-all. |
-| EQC429 | **Together: `kill_all_in_one_engine_8_seeds`** (`crates/rtsim-host/tests/every.rs`, `#[ignore]`): the every-kind world on seeds 1 to 8; per seed a control for each shock day (EQC414) and one wiped run per kind (herds world, dragons, nests, human villages, Ribbit villages, pool camps, outposts, dens, groves, the Umvuthi, havens: eleven), each wiping every site of its kind through EQC403's paths. The shock comes on day 384 (four years), the herds' on day 960 (ten years, as their alone row); a kind is read for 600 days after (the longest alone band, the villagers'), the herds for 25 years. The band is the alone row's, unchanged: a kind slower together than its own band is a finding about coupling, explained in EQC470 onward before any band moves. Fork F11. | The alone harnesses are single-module worlds built for their kind; together is the only check that a kind still comes back with every other module running (a wiped village while camps plunder it, pirates while ports trade). Two controls a seed serve eleven wipes. |
+| EQC429 | **Together: `kill_all_in_one_engine_8_seeds`** (`crates/rtsim-host/tests/every.rs`, `#[ignore]`): the every-kind world on seeds 1 to 8; per seed a control for each shock day (EQC414) and one wiped run per kind (herds world, dragons, nests, human villages, Ribbit villages, pool camps, outposts, dens, groves, the Umvuthi, havens: eleven), each wiping every site of its kind through EQC403's paths. The shock comes on day 384 (four years), the herds' on day 960 (ten years, as their alone row); a kind is read for 600 days after (the longest alone band, the villagers'), the herds for 40 years (their alone row checks every range alive at 40). The band is the alone row's, unchanged: a kind slower together than its own band is a finding about coupling, explained in EQC470 onward before any band moves. Fork F11. | The alone harnesses are single-module worlds built for their kind; together is the only check that a kind still comes back with every other module running (a wiped village while camps plunder it, pirates while ports trade). Two controls a seed serve eleven wipes. |
 | EQC430 | **The 30-seed runs and the guard.** `kill_all_every_kind_30_seeds` (`#[ignore]`, in `sim::killall`) runs every row on seeds 1 to 30 and prints the table. The existing `_30_seeds` twins (herds, local, dragons, villagers, Ribbits, camps; S9's dens and groves) keep their names and become one-line calls of their row, so the logic lives once; the always-run short tests stay where their slices put them. A default test, `the_kill_all_table_names_every_kind`, builds the every-kind world for one game day and fails if a kind in its census has neither a row nor a recorded "no row" (ports). **S9's tests the suite calls or reads:** `kill_all_dens_30_seeds` and `kill_all_groves_30_seeds` become calls of their rows; `mowzie_run`, `MowziePresser` and `unattended_grove` are the rows' harnesses; the grove's bands come from `unattended_groves_hold_their_band_30_seeds` (MZB-1281) and the den's from `long_horizon_mowzie_with_kills_30_seeds` (MZB-1266); `the_mowzie_scenario_shows_a_players_pressure` gains the Umvuthi's row (EQC457). | One place without breaking the names the slices' records cite; a kind added later without a kill-all fails `cargo test`. |
 
 **The kill-all rows (EQC426, EQC428):**
@@ -1827,8 +1827,8 @@ nothing a player meets, and no number that is not sourced or labelled.
 ### FOR BEN
 
 Everything else in S11 can be undone and is decided here. These two touch Ben's laptop every night, his money, what GitHub
-may do, or this repository's CLAUDE.md. The build writes `tools/nightly/soak.sh` whatever the answers; only `install` and the
-CLAUDE.md line wait for them.
+may do, or this repository's CLAUDE.md. **Ben answered both on 2026-10-30: S11-1 (a), a user timer on this laptop; S11-2 (d),
+the report file only.** The options are kept below as asked.
 
 **S11-1 (EQC451, EQC452): Where does the nightly soak run?** There is no CI: the repository is private, with no workflow and no
 runner, and nothing schedules any rtsim job (R15). The soak takes about 2 to 4 hours of two niced cores a night by the
@@ -1846,6 +1846,7 @@ derivation of EQC453 (39 to 87 minutes for today's smaller world, measured).
 - (d) A self-hosted GitHub runner on this laptop. No minutes billed, but a GitHub-held registration lets GitHub start jobs on
   Ben's laptop, and the job still shares it with his sessions.
 Why it is Ben's: it runs on his machine every night, and (c) and (d) cost money or let GitHub start work on his laptop.
+**Ben (2026-10-30): (a).** `soak.sh install` writes the timer; its durable home is Ben's Nix config, as for `pack-gc`.
 
 **S11-2 (EQC445, EQC451): How does a red night reach a session?**
 - (a) **A line in this repository's CLAUDE.md (Recommended):** "Before starting work in mic-rtsim, read
@@ -1857,6 +1858,8 @@ Why it is Ben's: it runs on his machine every night, and (c) and (d) cost money 
 - (d) The report file only: whoever looks finds it.
 Why it is Ben's: (a) edits the repository's CLAUDE.md, which only Ben changes; (b) and (c) are channels to him or off the
 laptop.
+**Ben (2026-10-30): (d).** No CLAUDE.md line and no notification: a red night is found in `latest` and the night's log by
+whoever looks.
 
 ### Ids S11 takes
 
@@ -1925,7 +1928,7 @@ A night after S11 is built and calibrated and S11-1 (a) is installed, say 31 Oct
 | Each 4.6 minutes | A century closes: the bytes by table, the heap, the wheels, the renewals; a line in the log. |
 | 05:46 (day 262,980, about 2 hours 5 minutes at 35 a second) | The run ends. The checks: every kind present with its site count on all 26,298 samples, members above 0, every herd range alive (non-vacuity); every judged century in its band (levels); every series' drift and p (flatness). Say the lairs' held share drifts +0.004 over centuries 2 to 27 with p 0.41: flat. Say the conflict module's page table drifts +1.7 MB with p below 10^-6, against a δ of 16 KiB: material and significant, FAIL: S9's grove growth (R12), still there. |
 | 05:47 | The report is written, and `latest` reads `10-31 1a2b3c4d seed 1 FAIL bytes.conflict (+1.7 MB over centuries 2 to 27)`. The script exits 1. |
-| The next session in mic-rtsim | It reads `latest` (S11-2 (a)), reruns seed 1 on the last green commit (the A/B of EQC442): the growth is there too, so it is old, not 1a2b3c4d's. The work is then S9's growth itself (R12): find its cause, fix it with a failing test first, then a green night. |
+| The next session in mic-rtsim | Whoever looks at `latest` next (S11-2 (d)) reruns seed 1 on the last green commit (the A/B of EQC442): the growth is there too, so it is old, not 1a2b3c4d's. The work is then S9's growth itself (R12): find its cause, fix it with a failing test first, then a green night. |
 
 ### S11 cost (EQC467)
 
@@ -2052,8 +2055,8 @@ prints 0, and make the new worktree's `target/` a btrfs subvolume before the fir
 9. **`tests/soak.rs`**: `who_is_alive_soak`, `who_is_alive_soak_short`, the report. Settle UNVERIFIED 10 to 14.
 10. **Calibration**: the soak on seeds 1 to 8, four at a time; set every calibration-derived δ and band; record them; any series
     without margin is a finding to explain (EQC442).
-11. **`tools/nightly/soak.sh`** (`run`, `weekly`, `calibrate`; `install` and the CLAUDE.md line only after S11-1 and S11-2 are
-    answered).
+11. **`tools/nightly/soak.sh`** (`run`, `weekly`, `calibrate`, and `install` for the user timer of S11-1 (a); no CLAUDE.md line, S11-2
+    (d)).
 12. **Documents**: EQUILIBRIUM.md §4's S11 row (built, its records), a §3.6 note where the engine's bands differ from the
     model's; this file's findings, EQC470 onward.
 13. **Land** as CLAUDE.md says: merge `origin/main`, check for unmerged paths, run `cargo test --workspace` and clippy with
