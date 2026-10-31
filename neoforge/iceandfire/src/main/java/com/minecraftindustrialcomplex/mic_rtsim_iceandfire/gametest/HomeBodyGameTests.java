@@ -1177,4 +1177,15 @@ public final class HomeBodyGameTests {
                 })
                 .thenSucceed();
     }
+
+    /** EQC322 (finding 13): the leash is at most the footprint, whatever is configured. */
+    @GameTest(template = DragonKit.ARENA, timeoutTicks = 100, batch = "home_leash_clamp")
+    public static void aLeashBeyondTheFootprintIsClampedToIt(GameTestHelper helper) {
+        String test = "aLeashBeyondTheFootprintIsClampedToIt";
+        DragonConfig.Test.homeLeash = 100;
+        DragonKit.onEnd(helper, DragonConfig.Test::reset);
+        record(test, "leash", "configured 100, footprint " + DragonConfig.lairFootprint() + ": the leash is " + DragonConfig.homeLeash());
+        check("the leash is at most the footprint", DragonConfig.homeLeash() <= DragonConfig.lairFootprint());
+        helper.succeed();
+    }
 }
