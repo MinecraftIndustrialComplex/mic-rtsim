@@ -823,7 +823,9 @@ impl Conflict {
     /// (MZB-405; EQUILIBRIUM.md §2.3): the wait is the cap's, from now. The pressure is the larger
     /// of the cap's and the one the camp has (the site ledger's, handed over by `camp_restore`), so
     /// a grove farmed past the cap keeps its history; the camp's own is kept with the heir, and an
-    /// untagged Umvuthi adopted before the heir comes gives it back (MZB-1402).
+    /// untagged Umvuthi adopted before the heir comes gives it back (MZB-1402). The pressure here is
+    /// the chief's (a grove's warriors have no renewal); where the chief has a pressure of its own,
+    /// this applies to that one and leaves the warriors' alone.
     fn found_empty_heir(&mut self, f: u32, at: Tick) {
         let Some(r) = self.culture(f).chief_renewal else {
             return;

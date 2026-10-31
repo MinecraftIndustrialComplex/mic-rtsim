@@ -17505,8 +17505,11 @@ the review gave are at 43062c0b.
   history; its own is kept with the heir (`Heir.kept`), and the adoption gives that back, aged by its own half-life, rather
   than none ("the cap's pressure was only a stand-in", as before). The wait is the cap's either way (`delay_ticks` of a
   pressure at or past the cap's). An heir that comes after its wait leaves the pressure as it stood, as before. On main the
-  grove's `pressure` is the Umvuthi's (the warriors have no renewal); S9 gives the chief a pressure of its own
-  (`chief_pressure`), and the merge applies this to whichever is the Umvuthi's. **Save:** RTC15, `RTCF`, meta 14: a camp's
+  grove's `pressure` is the Umvuthi's (the warriors have no renewal). **On S9's tree** (`feat/eq-s9-mowzie`) the Umvuthi's
+  is `Camp.chief_pressure`, which `camp_restore` sets from the row's second pressure (`row.p2`, aged by the chief culture's
+  half-life), while `Camp.pressure` is the warriors' (from `row.p`): the merge compares the restored `chief_pressure` with the
+  cap's in `found_empty_heir` and keeps the larger there, `Heir.kept` holds the restored `chief_pressure`, and the census that
+  adopts a stray Umvuthi before the heir comes sets `chief_pressure` from it; `pressure` is left alone in both. **Save:** RTC15, `RTCF`, meta 14: a camp's
   heir ends with the kept pressure (an f32, refused when not finite and at least 0, and its day); `tests/strain.rs`'s format
   check names RTCE as the older format. The viewer fixtures are written again once for this branch's formats (MZB-1406).
   Tests (`tests/grove.rs`), both failing on main:
