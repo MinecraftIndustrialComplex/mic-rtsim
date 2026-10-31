@@ -730,6 +730,7 @@ fn the_chief_is_handed_back_at_home() {
                 generation,
                 action: boundary::ACTION_TAKE,
                 outcome: boundary::LINE_STALE,
+                uuid: (0, 0),
             }],
         }),
         at,
@@ -1081,6 +1082,7 @@ fn a_camp_death_after_home_books_once() {
                 generation,
                 action: boundary::ACTION_HAND_BACK,
                 outcome: boundary::LINE_STALE,
+                uuid: (0, 0),
             }],
         });
         let death = chief_death(&r, generation);
@@ -1350,6 +1352,7 @@ fn a_hand_back_answered_releases_the_end() {
                 generation,
                 action: boundary::ACTION_HAND_BACK,
                 outcome,
+                uuid: (0, 0),
             }],
         });
         let at = r.c.now();
@@ -1598,6 +1601,7 @@ fn left_home_in(seed: u64) -> (CampRun, Handle<Party>, Tick) {
                 generation,
                 action: boundary::ACTION_TAKE,
                 outcome: boundary::LINE_STALE,
+                uuid: (0, 0),
             }],
         }),
         at,
@@ -1624,6 +1628,7 @@ fn chief_answer(
             generation: l.generation,
             action: l.action,
             outcome,
+            uuid: (0, 0),
         }],
     })
 }

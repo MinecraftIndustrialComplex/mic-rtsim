@@ -1222,6 +1222,7 @@ fn mask_answer(r: &mut CampRun, slot: u32, generation: u32) {
             generation,
             action: boundary::ACTION_MASK,
             outcome: boundary::LINE_DONE,
+            uuid: (0, 0),
         }],
     };
     let at = r.c.now();
@@ -1310,6 +1311,7 @@ fn seat_copy(r: &mut CampRun, op: u64, line: u32, generation: u32) {
             generation,
             action: boundary::ACTION_SEAT_HEIR,
             outcome: boundary::LINE_DONE,
+            uuid: (0, 0),
         }],
     };
     let at = r.c.now();

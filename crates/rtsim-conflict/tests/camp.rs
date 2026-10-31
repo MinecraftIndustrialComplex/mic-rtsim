@@ -1570,6 +1570,7 @@ fn a_replayed_census_only_marks_its_camp_out() {
                     generation,
                     action: boundary::ACTION_SPAWN,
                     outcome: boundary::LINE_DONE,
+                    uuid: (0, 0),
                 }],
             }),
             at,
@@ -1636,6 +1637,7 @@ fn a_world_save_while_replaying_forgets_no_answer_until_the_replay_end() {
                 generation: s.generation,
                 action: boundary::ACTION_SPAWN,
                 outcome: boundary::LINE_DONE,
+                uuid: (0, 0),
             }],
         })
     };
@@ -1905,6 +1907,7 @@ fn a_booked_answer_is_forgotten_once_its_record_is_durable() {
                 generation,
                 action: boundary::ACTION_SPAWN,
                 outcome: boundary::LINE_DONE,
+                uuid: (0, 0),
             }],
         };
         let before = r.c.stats.camp_answers;
@@ -1993,6 +1996,7 @@ fn an_answer_of_a_superseded_epoch_books_nothing() {
                 generation: s.generation,
                 action: boundary::ACTION_TAKE,
                 outcome: boundary::LINE_DONE,
+                uuid: (0, 0),
             }]
         },
     };
@@ -2026,6 +2030,7 @@ fn an_answer_of_a_superseded_epoch_books_nothing() {
             generation: s.generation,
             action: boundary::ACTION_TAKE,
             outcome: boundary::LINE_DONE,
+            uuid: (0, 0),
         }]
     };
     ingest(&mut r, &Obs::CampBodies(now));
@@ -2079,6 +2084,7 @@ fn camp_records_of_a_camp_this_engine_never_founded_book_nothing() {
                 generation: 1,
                 action: boundary::ACTION_TAKE,
                 outcome: boundary::LINE_DONE,
+                uuid: (0, 0),
             }],
         }),
     );
@@ -2860,6 +2866,7 @@ fn an_answer_syncs_the_books_before_it_frees_a_slot() {
             generation,
             action: boundary::ACTION_REMOVE,
             outcome: boundary::LINE_DONE,
+            uuid: (0, 0),
         }],
     });
     r.c.ingest(
@@ -2948,6 +2955,7 @@ fn an_answer_names_a_gone_slot_whose_party_is_gone() {
             generation,
             action: boundary::ACTION_SPAWN,
             outcome: boundary::LINE_DONE,
+            uuid: (0, 0),
         }],
     });
     ingest(&mut r, &answer);
@@ -3719,6 +3727,7 @@ fn the_marks_change_no_decision() {
 
 /// MZB-1015, fork F10: a camp that is in when its wait runs out counts first. The arrival sends a
 /// RECOUNT with no lines (and nothing else); the census it brings orders the new member's SPAWN.
+/// The SPAWN's answer names the new body, whose UUID the slot keeps (MZB-1400).
 #[test]
 fn an_arrival_at_a_camp_that_is_in_counts_first_and_its_census_spawns() {
     let mut r = renewal_den(76);
@@ -3739,6 +3748,12 @@ fn an_arrival_at_a_camp_that_is_in_counts_first_and_its_census_spawns() {
     );
     let new = &orders(&r)[sent..];
     assert_eq!(new.len(), 2, "{new:#?}");
+    let b = r.plugin.camps[&r.key].bodies[0];
+    assert_eq!(
+        r.c.camp(r.f).unwrap().slots[0].uuid,
+        b.uuid,
+        "the SPAWN's answer named the new body"
+    );
     assert_ne!(new[0].1.flags & boundary::RECONCILE_RECOUNT, 0);
     assert!(new[0].1.lines.is_empty(), "a recount has no lines");
     assert_eq!(new[1].1.flags & boundary::RECONCILE_RECOUNT, 0);
@@ -3904,4 +3919,105 @@ fn a_recount_booked_on_the_wheel_survives_a_save_and_a_load() {
     let kept = end(false);
     assert_eq!(end(true), kept);
     assert_eq!((kept.1, kept.2), (2, 1));
+}
+
+// ---- the M12a review's fixes (MZB-1400 onward) -------------------------------------------------
+
+/// The plugin's bodies of the camp, as (UUID, slot, generation).
+fn world_tags(r: &CampRun) -> Vec<(boundary::Uuid, u32, u32)> {
+    r.plugin.camps[&r.key]
+        .bodies
+        .iter()
+        .map(|b| (b.uuid, b.slot, b.generation))
+        .collect()
+}
+
+/// MZB-1400 (P1, the mint): a renewed Frostmaw's row names its UUID. A player kills the den's
+/// Frostmaw; past the wait the arrival's census spawns a new one, whose UUID the SPAWN's answer
+/// does not carry. The row taken then hands the new body over by UUID, so a reset while that
+/// Frostmaw is away from the den (lured off, unloaded) expects it at home and spawns no second
+/// one: the census misses it, as any member body it expects.
+#[test]
+fn a_renewed_member_s_row_names_its_body_so_a_reset_with_it_away_spawns_none() {
+    let mut r = renewal_den(1400);
+    come_in(&mut r);
+    let b = r.plugin.camps[&r.key].bodies[0];
+    let died = r.c.now() + 1;
+    assert!(r.plugin.camp_kill(r.key, b.uuid, boundary::BY_PLAYER, died));
+    r.run(died + 5);
+    let due = r.c.camp(r.f).unwrap().arrival_at.expect("a wait");
+    r.run(due + 100);
+    assert_eq!(r.c.stats.arrivals, 1);
+    let renewed = world_tags(&r);
+    assert_eq!(renewed.len(), 1, "the renewed Frostmaw: {renewed:?}");
+    let row = row_of(&r, 0, false);
+    assert_eq!(row.count, 1);
+    let named = row.bodies.home.clone();
+    lure(&mut r, 0);
+    let at = r.c.now() + 100;
+    let spawns = applied(&r, boundary::ACTION_SPAWN);
+    r.reborn(row, at);
+    come_in(&mut r);
+    assert_eq!(
+        applied(&r, boundary::ACTION_SPAWN),
+        spawns,
+        "no second Frostmaw while the first is away"
+    );
+    assert_eq!(world_bodies(&r), 0);
+    assert_eq!(
+        named,
+        vec![renewed[0].0],
+        "the row named the renewed Frostmaw at home"
+    );
+    assert_eq!(counts(&r), [1, 0, 0, 0, 0], "expected at home, missed");
+    ok(&mut r);
+}
+
+/// MZB-1400 (P1, the stale UUID): a Frostmaw home from a raid is a new entity (the raid's puppet
+/// handed back, or a spawn), so its slot forgets the UUID of the body that set out and learns the
+/// new one. A reset before the den's next census of its own hands the new UUID over, and the
+/// fresh engine's first census finds the Frostmaw standing at home under its former life's tags:
+/// adopted (retagged), never removed as a second Frostmaw.
+#[test]
+fn a_member_home_from_a_raid_hands_its_new_body_over_and_a_reset_removes_none() {
+    let mut r = renewal_den(1401);
+    come_in(&mut r);
+    let before = world_tags(&r);
+    r.raid().expect("a raid goes");
+    for _ in 0..60 {
+        if !r.c.parties.iter().any(|(_, x)| x.kind.is_war()) {
+            break;
+        }
+        let to = r.c.now() + TICKS_PER_DAY;
+        r.run(to);
+    }
+    assert!(
+        !r.c.parties.iter().any(|(_, x)| x.kind.is_war()),
+        "the raid is home"
+    );
+    let to = r.c.now() + 200;
+    r.run(to);
+    let home = world_tags(&r);
+    assert_eq!(home.len(), 1, "one Frostmaw at home: {home:?}");
+    assert_ne!(home[0].0, before[0].0, "a new entity came home");
+    let row = row_of(&r, 0, false);
+    let named = row.bodies.home.clone();
+    let at = r.c.now() + 100;
+    let removes = applied(&r, boundary::ACTION_REMOVE);
+    r.reborn(row, at);
+    come_in(&mut r);
+    assert_eq!(
+        applied(&r, boundary::ACTION_REMOVE),
+        removes,
+        "the Frostmaw at home is not removed"
+    );
+    assert_eq!(
+        named,
+        vec![home[0].0],
+        "the row named the Frostmaw that came home"
+    );
+    assert_eq!(world_bodies(&r), 1);
+    assert_eq!(counts(&r), [1, 0, 0, 0, 0]);
+    assert_eq!(r.c.camp(r.f).unwrap().slots[0].uuid, home[0].0);
+    ok(&mut r);
 }
