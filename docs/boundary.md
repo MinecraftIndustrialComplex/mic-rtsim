@@ -2524,13 +2524,18 @@ footprint (MZB-1015). CHIEF_BODY is written into a chief's body (health, crystal
 - **The grove's warriors are arrivals** (MZB-1210 to MZB-1216): umvuthana.json has `renewal` 6, 96, 96 (no boss kind),
   `recruits_per_day` 0 and `found_cap` 5, so the engine books one `Ev::Arrival` while the grove is short, RECOUNT to a grove
   that is in, and the census's SPAWN at the grove's edge; the grove has no `Ev::Refill`. A casualty of a war party on the road
-  (BAND_CASUALTIES) presses the grove by kill credit, S7's district rule for the unclaimed (MZB-1213).
+  (BAND_CASUALTIES) presses the grove by kill credit, S7's district rule for the unclaimed (MZB-1213), except once the band's
+  Umvuthi has fallen: the warriors that go down with it are no one's loss unless a death names a player (MZB-1287).
 - **Test order 42, `CONFLICT_SEND`** (TEST mode only; `NativeCodec.CONFLICT_SEND`, `RtsimTests.sendParty`): `u64 faction, u8
   party kind (an index into the engine's party kinds: 0 envoy, 1 scouts, 2 raid, 3 invasion, 4 siege, 5 plunder), u8 reserved,
   u16 frame, i32 x, i32 z`. Applied at unit take after the replay's end: the camp musters a party of that kind toward the block
   as if its feud had decided. A key that is no camp, or a camp that cannot field the party, is refused (logged).
-- **The bosses' hold** (core `Camps`, as built in M6/M9, MZB-280; unchanged): a Frostmaw's or an Umvuthi's SPAWN waits while a
-  player is within 160 blocks, at most 6,000 ticks; a grove's warriors are never held (MZB-1220).
+- **The bosses' hold** (core `Camps`, MZB-280, changed by FB-S9-3, MZB-1272 to MZB-1279): the hold stays in the core as machinery
+  (`CampKind.holdSpawn`: a SPAWN waits while a player is within the kind's range, at most `Camps.HOLD_MAX` = 6,000 ticks, and
+  a census in progress still holds every SPAWN), but the Mowzie kinds do not use it: a Frostmaw's SPAWN and an Umvuthi's SPAWN or
+  heir (SEAT_HEIR) are placed when due even with a player beside the spot, and arrive with an effect (`CampKind.arrived`,
+  `BossArrival`, sent to players within 64 blocks). A grove's warriors are never held and get no effect (MZB-1220, MZB-1277).
+  Rule U's removal hold (a boss in a fight or with a player beside it is never taken away) is unchanged.
 
 ## 10. The world model: HABITAT (PLAN.md §5.1, SCALE.md §2, §4; the core's habitat sampler)
 
