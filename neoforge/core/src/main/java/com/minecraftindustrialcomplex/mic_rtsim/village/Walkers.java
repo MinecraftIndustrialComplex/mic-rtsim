@@ -77,6 +77,7 @@ public final class Walkers {
                 continue;
             }
             if (Arrivals.horizontal(e, v.meeting) <= DONE_BLOCKS) {
+                Residents.rehome(e, v.meeting);
                 arrived++;
                 forget(w);
                 continue;
@@ -89,6 +90,7 @@ public final class Walkers {
                 if (e instanceof Mob m)
                     m.getNavigation().stop();
                 ResidentSpawner.standNear(level, e, v.meeting);
+                Residents.rehome(e, v.meeting);
                 placed++;
                 forget(w);
                 continue;

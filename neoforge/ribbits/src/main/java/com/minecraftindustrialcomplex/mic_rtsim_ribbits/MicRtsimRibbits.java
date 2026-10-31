@@ -122,6 +122,8 @@ public final class MicRtsimRibbits {
                     e -> Ribbits.professionName((RibbitEntity) e),
                     e -> ((RibbitEntity) e).getHomePosition(),
                     false));
+            // A settler's home is the village's meeting point, not the spot it walked in from (EQC330).
+            RtsimApi.registerRehomer(type, Ribbits::rehome);
         });
     }
 
