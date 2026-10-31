@@ -337,6 +337,7 @@ public final class HomeBodyGameTests {
         long lair = DragonKit.newLair();
         DragonBaseEntity[] d = new DragonBaseEntity[1];
         long[] agent = new long[1], t = new long[1];
+        int[] age = new int[1];
         UUID[] id = new UUID[1];
 
         occupied(helper, waits, lair, d, agent)
@@ -358,6 +359,16 @@ public final class HomeBodyGameTests {
                     // The attachment type is unknown to a server without the plugin: the entity is the jar's own.
                     d[0].removeData(MicRtsimIceAndFire.HOME);
                     check("a plain untagged dragon", !d[0].hasData(MicRtsimIceAndFire.HOME) && !RtsimAttachments.isTagged(d[0]) && d[0].shouldBeSaved());
+                    // What a server without the plugin reads is the saved NBT: Ice and Fire's own dragon, aging (UR-1, EQC316).
+                    CompoundTag saved = new CompoundTag();
+                    check("it is saved", d[0].save(saved));
+                    check("saved aging, as Ice and Fire left it: AgingDisabled " + saved.getBoolean("AgingDisabled"), !saved.getBoolean("AgingDisabled"));
+                    age[0] = IafDragons.ageTicks(d[0]);
+                })
+                .thenIdle(40)
+                .thenExecute(() -> {
+                    int now = IafDragons.ageTicks(d[0]);
+                    check("with no plugin it ages: AgeTicks " + age[0] + " then " + now + " 40 ticks on", now > age[0]);
                     // The game clock moves by the gap, and a test's own clock (ChunkWait's) with it: a short gap.
                     SiteTestHooks.gapRestart(server, 1200);
                     check("a session runs after the reinstall: " + RtsimSession.startFailure(), RtsimSession.current() != null);
@@ -857,7 +868,8 @@ public final class HomeBodyGameTests {
         float m2 = d.getMaxHealth();
         record(test, "max health", "age " + old / DAY + " days: " + m0 + "; the setters alone to 110 days: " + m1 + "; after refreshDirtyAttributes: " + m2);
         check("the sync follows the age (" + m0 + " to " + m2 + ")", m2 > m0);
-        check("age and hunger are the engine's", IafDragons.ageTicks(d) == 110 * (int) DAY && IafDragons.hunger(d) == 80 && IafDragons.agingDisabled(d));
+        check("age and hunger are the engine's, and it ages as Ice and Fire's own (EQC316)", IafDragons.ageTicks(d) == 110 * (int) DAY
+                && IafDragons.hunger(d) == 80 && !IafDragons.agingDisabled(d));
         IafDragons.sync(d, 110 * (int) DAY, 80, 100f);
         check("a health to sync is clamped to the max (" + d.getHealth() + ")", d.getHealth() <= d.getMaxHealth() && d.getHealth() > 0f);
         d.discard();
