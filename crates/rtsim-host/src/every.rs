@@ -640,6 +640,13 @@ impl Every {
         }
     }
 
+    /// The teeth so far, with whether the census has S9's rows.
+    pub fn teeth_now(&self) -> Teeth {
+        let mut t = self.teeth.clone();
+        t.s9 = kind(&self.census(), "conflict.den").is_some();
+        t
+    }
+
     /// The fork's pages folder.
     pub fn pages(&self) -> PathBuf {
         self.host.dir.join(save::PAGES)
@@ -1028,6 +1035,8 @@ impl Every {
                     .iter()
                     .position(|n| n.key == v.key)
                     .and_then(|i| w.village_row(i));
+                // The real residents, as Java holds them (the alone harness's `real`): the
+                // engine's count follows two complete readings later.
                 out.push(SiteNow {
                     kind: if v.ribbit {
                         "village.ribbit"
@@ -1035,7 +1044,7 @@ impl Every {
                         "village.human"
                     },
                     key: v.key,
-                    members: row.map_or(0, |r| u64::from(r.members)),
+                    members: u64::from(self.residents.get(&v.key).copied().unwrap_or(0)),
                     k: row.map_or(u64::from(v.beds), |r| u64::from(r.k)),
                     broken: false,
                     p: 0.0,
@@ -1424,7 +1433,7 @@ pub fn together(seed: u64, wipe: Option<&'static str>, shock_day: u64, to: u64) 
             out.reads.entry(x).or_default().push((day, n, k, whole));
         }
     }
-    out.teeth = w.teeth.clone();
+    out.teeth = w.teeth_now();
     w.close();
     out
 }
@@ -1550,7 +1559,7 @@ pub fn long_run(seed: u64, roamer: bool, days: u64) -> LongRun {
         }
     }
     let rate = days as f64 / t0.elapsed().as_secs_f64().max(1e-9);
-    let teeth = w.teeth.clone();
+    let teeth = w.teeth_now();
     w.close();
     LongRun {
         seed,
@@ -1627,9 +1636,24 @@ pub struct Teeth {
     pub killed: BTreeMap<&'static str, u64>,
     pub checked: BTreeMap<&'static str, u64>,
     pub wrong: Vec<String>,
+    /// Whether the engine's census had S9's rows (`conflict.den` and the rest).
+    pub s9: bool,
 }
 
 impl Teeth {
+    /// Whether a kind's teeth wait for S9: until S9 puts the groves on the shared rule a grove's
+    /// warriors raise no pressure, and the Umvuthi's own pressure is S9's (EQC479).
+    pub fn awaits_s9(&self, kind_or_wrong: &str) -> bool {
+        !self.s9
+            && (kind_or_wrong.starts_with("conflict.grove")
+                || kind_or_wrong.starts_with("conflict.umvuthi"))
+    }
+
+    /// The mismatches that count now ([`Teeth::awaits_s9`]).
+    pub fn wrong_now(&self) -> Vec<&String> {
+        self.wrong.iter().filter(|w| !self.awaits_s9(w)).collect()
+    }
+
     fn killed(&mut self, kind: &'static str, n: u64) {
         *self.killed.entry(kind).or_default() += n;
     }

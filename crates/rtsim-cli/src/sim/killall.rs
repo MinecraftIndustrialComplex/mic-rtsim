@@ -473,10 +473,19 @@ pub fn verdict(row: &Row, rs: &[KindRefill]) -> Result<(), String> {
     need(bad.is_empty(), || bad.join("; ")).and((row.judge)(rs))
 }
 
-/// The header of [`line`].
-pub const HEADER: &str = "row            kind            seeds  half: median [5th, 95th]   \
-                          90% of ctrl: median [5th, 95th]  whole: median [5th, 95th]  \
-                          end/ctrl  verdict";
+/// The header of [`line`], in its widths.
+pub fn header() -> String {
+    format!(
+        "{:<14} {:<15} {:>5}  {:>25}  {:>31}  {:>25}  {:>8}  verdict",
+        "row",
+        "kind",
+        "seeds",
+        "half: median [5th, 95th]",
+        "90% of ctrl: median [5th, 95th]",
+        "whole: median [5th, 95th]",
+        "end/ctrl"
+    )
+}
 
 fn spread(rs: &[KindRefill], f: impl Fn(&KindRefill) -> Option<f64>) -> String {
     if rs.iter().all(|r| f(r).is_none()) {
@@ -552,7 +561,7 @@ pub fn assert_row(name: &str, seeds: &[u64]) -> Vec<KindRefill> {
     let rs = run_row(row, seeds);
     let v = verdict(row, &rs);
     println!("{} ({}; {})", row.test, row.band, row.record);
-    println!("{HEADER}");
+    println!("{}", header());
     println!("{}", line(row, &rs, &v));
     print_seeds(&rs);
     if let Err(e) = v {
@@ -613,9 +622,8 @@ pub fn together_refill(row: &Row, w: &Together, c: &Together) -> KindRefill {
         }
     }
     r.end_over_ctrl = tail / tail_c.max(1.0);
-    let teeth = need(w.teeth.wrong.is_empty(), || {
-        format!("booked wrong: {:?}", w.teeth.wrong)
-    })
+    let wrong = w.teeth.wrong_now();
+    let teeth = need(wrong.is_empty(), || format!("booked wrong: {wrong:?}"))
     .and(need(w.killed > 0, || "the wipe killed nothing".into()));
     r.checks = teeth.and(row.together.map_or(Ok(()), |f| f(&r)));
     r
@@ -731,7 +739,7 @@ pub fn cli(rest: &[&str]) -> ExitCode {
     for r in &rows {
         println!("# {}: {} ({}; {})", r.name, r.band, r.record, r.test);
     }
-    println!("{HEADER}");
+    println!("{}", header());
     let mut failed = false;
     let results: Vec<(&'static Row, Vec<KindRefill>)> = if together {
         let can = together_rows();
@@ -801,7 +809,7 @@ mod tests {
     #[ignore = "hours: run in release with --ignored --nocapture"]
     fn kill_all_every_kind_30_seeds() {
         let seeds: Vec<u64> = (1..=30).collect();
-        println!("{HEADER}");
+        println!("{}", header());
         let mut failed = Vec::new();
         for row in ROWS {
             let rs = run_row(row, &seeds);
@@ -837,7 +845,7 @@ mod tests {
         let seeds: Vec<u64> = (1..=8).collect();
         let rows = together_rows();
         let got = run_together(&rows, &seeds);
-        println!("{HEADER}");
+        println!("{}", header());
         let mut failed = Vec::new();
         for (row, rs) in rows.iter().zip(&got) {
             let v = verdict(row, rs);

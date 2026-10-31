@@ -234,16 +234,6 @@ fn print_long(what: &str, rs: &[every::LongRun], from: u64) {
     }
 }
 
-/// A booked-kill mismatch of a kind whose pressure S9 puts on the shared rule: a grove's warriors
-/// raise no pressure on main yet (EQC479).
-fn awaits_s9(r: &every::LongRun, wrong: &str) -> bool {
-    let s9 = r
-        .censuses
-        .last()
-        .is_some_and(|(_, cs)| every::kind(cs, "conflict.den").is_some());
-    !s9 && (wrong.starts_with("conflict.grove") || wrong.starts_with("conflict.umvuthi"))
-}
-
 /// EQC411 to EQC413, EQC418: the roamer for four years on seed 1. It kills (each kill booked as
 /// its player's, kind by kind), every rule bound holds on every site, and every herd range stays
 /// alive.
@@ -251,7 +241,7 @@ fn awaits_s9(r: &every::LongRun, wrong: &str) -> bool {
 fn long_horizon_stability_with_kills() {
     let r = every::long_run(1, true, 4 * 96);
     print_long("roamer, 4 years", std::slice::from_ref(&r), 2 * 96);
-    let wrong: Vec<&String> = r.teeth.wrong.iter().filter(|w| !awaits_s9(&r, w)).collect();
+    let wrong = r.teeth.wrong_now();
     assert!(wrong.is_empty(), "{wrong:?}");
     assert!(
         r.teeth.killed.get("dragon.lair").is_some_and(|&n| n > 0),
@@ -259,7 +249,7 @@ fn long_horizon_stability_with_kills() {
         r.teeth.killed
     );
     for (k, n) in &r.teeth.killed {
-        if *n > 0 && !awaits_s9(&r, k) {
+        if *n > 0 && !r.teeth.awaits_s9(k) {
             assert!(r.teeth.checked.get(k).is_some_and(|&c| c > 0), "{k}: never checked");
         }
     }
@@ -292,13 +282,13 @@ fn long_horizon_stability_with_kills_30_seeds() {
     };
     for r in roam.iter().chain(&none) {
         need(r.bounds.is_empty(), format!("seed {} roamer {}: bounds {:?}", r.seed, r.roamer, r.bounds));
-        let wrong: Vec<&String> = r.teeth.wrong.iter().filter(|w| !awaits_s9(r, w)).collect();
+        let wrong = r.teeth.wrong_now();
         need(wrong.is_empty(), format!("seed {}: booked wrong {wrong:?}", r.seed));
     }
     for r in &roam {
         for (k, _) in every::ROAMER_CHANCE {
             // The Umvuthi's kills wait for S9's chief path (EQC457).
-            if k == "conflict.umvuthi" {
+            if k == "conflict.umvuthi" && r.teeth.awaits_s9(k) {
                 continue;
             }
             need(
