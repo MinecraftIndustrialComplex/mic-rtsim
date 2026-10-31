@@ -119,9 +119,9 @@ fn climate(world: &WorldHandle) -> Box<HabitatClimate> {
     Box::new(HabitatClimate::new(world.clone()))
 }
 
-fn new_engine(world: &WorldHandle) -> Herds {
+fn new_engine(world: &WorldHandle, seed: Option<u64>) -> Herds {
     Herds::new(
-        HERD_SEED,
+        super::seeded(HERD_SEED, seed),
         HerdTunables::default(),
         climate(world),
         Tick::ZERO,
@@ -136,20 +136,21 @@ fn when_pages_unreadable(
     source: &Arc<dyn PageSource>,
     budget: usize,
     world: &WorldHandle,
+    seed: Option<u64>,
 ) -> Result<Link, String> {
     log_error(&format!(
         "HERD PAGES DROPPED: {why}. The herds start afresh and the next save replaces them"
     ));
-    let mut l = Link::fresh(source, budget, world);
+    let mut l = Link::fresh(source, budget, world, seed);
     l.dropped_pages = true;
     l.pager.purge = true;
     Ok(l)
 }
 
 impl Link {
-    pub(super) fn empty(world: &WorldHandle) -> Link {
+    pub(super) fn empty(world: &WorldHandle, seed: Option<u64>) -> Link {
         Link {
-            engine: new_engine(world),
+            engine: new_engine(world, seed),
             queue: VecDeque::new(),
             enabled: true,
             reset_due: false,
@@ -168,8 +169,13 @@ impl Link {
     }
 
     /// New herds paging through the engine's store under `budget` row bytes.
-    fn fresh(source: &Arc<dyn PageSource>, budget: usize, world: &WorldHandle) -> Link {
-        let mut l = Link::empty(world);
+    fn fresh(
+        source: &Arc<dyn PageSource>,
+        budget: usize,
+        world: &WorldHandle,
+        seed: Option<u64>,
+    ) -> Link {
+        let mut l = Link::empty(world, seed);
         l.engine.attach_store(source.clone(), budget);
         l
     }
@@ -184,8 +190,9 @@ impl Link {
         test: bool,
         world_restored: bool,
         world: &WorldHandle,
+        seed: Option<u64>,
     ) -> Result<Link, String> {
-        let unreadable = |why: &str| when_pages_unreadable(why, source, budget, world);
+        let unreadable = |why: &str| when_pages_unreadable(why, source, budget, world, seed);
         match source.read(KEY_HERDS) {
             Err(e) => return unreadable(&format!("cannot read the herds' meta page: {e}")),
             Ok(None) if paging::holds_pages_besides_kept(&**source, KEY_HERDS) => {
@@ -193,7 +200,7 @@ impl Link {
             }
             Ok(None) => {
                 // Switched off before their first save, they may have kept records all the same.
-                let mut l = Link::fresh(source, budget, world);
+                let mut l = Link::fresh(source, budget, world, seed);
                 l.kept = match Kept::load(&**source, KEY_HERDS) {
                     Ok(k) => k,
                     Err(e) => return unreadable(&e),
@@ -231,7 +238,7 @@ impl Link {
             Ok(k) => k,
             Err(e) => return unreadable(&e),
         };
-        let mut l = Link::empty(world);
+        let mut l = Link::empty(world, seed);
         l.engine = engine;
         l.from_pages = true;
         l.restore_diverged = diverged;

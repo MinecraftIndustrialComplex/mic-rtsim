@@ -129,8 +129,12 @@ pub(super) struct Link {
     pub(super) commands_written: u64,
 }
 
-fn new_engine() -> Ships {
-    Ships::new(SHIP_SEED, ShipTunables::default(), Tick::ZERO)
+fn new_engine(seed: Option<u64>) -> Ships {
+    Ships::new(
+        super::seeded(SHIP_SEED, seed),
+        ShipTunables::default(),
+        Tick::ZERO,
+    )
 }
 
 /// **The policy for ship pages this build cannot read** (as the dragons' S12 and phase 1's S5):
@@ -141,20 +145,21 @@ fn when_pages_unreadable(
     why: &str,
     source: &Arc<dyn PageSource>,
     budget: usize,
+    seed: Option<u64>,
 ) -> Result<Link, String> {
     log_error(&format!(
         "SHIP PAGES DROPPED: {why}. The ships start afresh (ports and havens are reported again as their chunks load) and the next save replaces them"
     ));
-    let mut l = Link::fresh(source, budget);
+    let mut l = Link::fresh(source, budget, seed);
     l.dropped_pages = true;
     l.pager.purge = true;
     Ok(l)
 }
 
 impl Link {
-    pub(super) fn empty() -> Link {
+    pub(super) fn empty(seed: Option<u64>) -> Link {
         Link {
-            engine: new_engine(),
+            engine: new_engine(seed),
             index: DistrictIndex::default(),
             queue: VecDeque::new(),
             enabled: true,
@@ -173,8 +178,8 @@ impl Link {
     }
 
     /// New ships paging through the engine's store under `budget` row bytes.
-    fn fresh(source: &Arc<dyn PageSource>, budget: usize) -> Link {
-        let mut l = Link::empty();
+    fn fresh(source: &Arc<dyn PageSource>, budget: usize, seed: Option<u64>) -> Link {
+        let mut l = Link::empty(seed);
         l.engine.attach_store(source.clone(), budget);
         l
     }
@@ -188,14 +193,15 @@ impl Link {
         budget: usize,
         test: bool,
         world_restored: bool,
+        seed: Option<u64>,
     ) -> Result<Link, String> {
-        let unreadable = |why: &str| when_pages_unreadable(why, source, budget);
+        let unreadable = |why: &str| when_pages_unreadable(why, source, budget, seed);
         match source.read(KEY_SHIPS) {
             Err(e) => return unreadable(&format!("cannot read the ships' meta page: {e}")),
             Ok(None) if paging::holds_pages(&**source, paging::tables(TABLE)) => {
                 return unreadable("ship pages without their meta page");
             }
-            Ok(None) => return Ok(Link::fresh(source, budget)),
+            Ok(None) => return Ok(Link::fresh(source, budget, seed)),
             Ok(Some(_)) => {}
         }
         if !world_restored {
@@ -225,7 +231,7 @@ impl Link {
             engine.pending_events(),
             hash.map_or(String::new(), |h| format!(", state {h:016x}"))
         ));
-        let mut l = Link::empty();
+        let mut l = Link::empty(seed);
         l.engine = engine;
         l.restore_diverged = diverged;
         l.from_pages = true;

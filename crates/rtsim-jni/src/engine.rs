@@ -181,6 +181,12 @@ pub struct Config {
     pub row_budget: usize,
     /// Record events in the archive under the pages folder (VIEWER.md §10; on by default).
     pub archive: bool,
+    /// TEST: a world seed every module's streams mix in (the phase 1 world's, the dragons', the
+    /// ships', the herds', the conflict's and the world model's founding draws), so a test can
+    /// run one world on many seeds (the long-horizon suite, slice S11 EQC475). None, the game's,
+    /// keeps the fixed seeds (`DRAGON_SEED` and the rest). An engine reopened on pages must be
+    /// given the seed its world was made with.
+    pub seed: Option<u64>,
 }
 
 impl Config {
@@ -195,7 +201,22 @@ impl Config {
             industry_seed: None,
             row_budget: DEFAULT_ROW_BUDGET,
             archive: true,
+            seed: None,
         }
+    }
+}
+
+/// A module's fixed seed `base`, mixed with a test's world seed (`Config::seed`): `base` itself
+/// when there is none.
+pub(crate) fn seeded(base: u64, seed: Option<u64>) -> u64 {
+    match seed {
+        None => base,
+        Some(s) => rtsim_kernel::rng::StreamKey::new(
+            s,
+            rtsim_kernel::rng::SystemId::named("engine.seed"),
+            base,
+        )
+        .block(0, 0)[0],
     }
 }
 
@@ -521,10 +542,16 @@ struct State {
     archive_serial: u64,
     /// The view tap's cursor and mailbox (`tap.rs`).
     tap: tap::Tap,
+    /// `Config::seed`: a test's world seed the modules' streams mix in (slice S11).
+    seed: Option<u64>,
 }
 
 impl State {
-    fn new(orders_rx: Receiver<Vec<Order>>, received_tx: Option<Sender<Received>>) -> Self {
+    fn new(
+        orders_rx: Receiver<Vec<Order>>,
+        received_tx: Option<Sender<Received>>,
+        seed: Option<u64>,
+    ) -> Self {
         let wm = worldmodel::Link::empty();
         State {
             replay: Replay::new(ObsSeq(0)),
@@ -566,11 +593,11 @@ impl State {
             op_salt: std::collections::hash_map::RandomState::new(),
             op_counter: 0,
             industry: industry::Link::empty(),
-            phase1: phase1::Link::empty(),
-            dragons: dragons::Link::empty(),
-            ships: ships::Link::empty(),
-            herds: herds::Link::empty(&wm.world),
-            conflict: conflict::Link::empty(),
+            phase1: phase1::Link::empty_seeded(seed),
+            dragons: dragons::Link::empty(seed),
+            ships: ships::Link::empty(seed),
+            herds: herds::Link::empty(&wm.world, seed),
+            conflict: conflict::Link::empty(seed),
             worldmodel: wm,
             shared: shared::Link::default(),
             topology: topology::Link::default(),
@@ -580,6 +607,7 @@ impl State {
             archive_on: false,
             archive_serial: 0,
             tap: tap::Tap::default(),
+            seed,
         }
     }
 
@@ -892,6 +920,7 @@ impl Engine {
         } else {
             (None, None)
         };
+        let seed = cfg.seed;
         let bufs = [
             Buf::new(cfg.capacity),
             Buf::new(cfg.capacity),
@@ -901,7 +930,7 @@ impl Engine {
         Ok(Arc::new(Engine {
             bufs: Arc::new(bufs),
             cfg,
-            state: Mutex::new(State::new(orders_rx, received_tx)),
+            state: Mutex::new(State::new(orders_rx, received_tx, seed)),
             store: Arc::new(Mutex::new(None)),
             archive: Mutex::new(None),
             crash_at_page_commit: AtomicBool::new(false),
@@ -1292,12 +1321,13 @@ impl Engine {
         *lock(&self.store) = Some(store);
         let source: Arc<dyn rtsim_kernel::rows::PageSource> = self.store.clone();
         let (budget, test) = (self.cfg.row_budget, self.cfg.test);
-        let p1link = phase1::Link::load(&source, budget, test)?;
+        let seed = self.cfg.seed;
+        let p1link = phase1::Link::load(&source, budget, test, seed)?;
         let restored = p1link.world_restored();
-        let dlink = dragons::Link::load(&source, budget, test, restored)?;
-        let slink = ships::Link::load(&source, budget, test, restored)?;
-        let hlink = herds::Link::load(&source, budget, test, restored, &wlink.world)?;
-        let clink = conflict::Link::load(&source, budget, test, restored)?;
+        let dlink = dragons::Link::load(&source, budget, test, restored, seed)?;
+        let slink = ships::Link::load(&source, budget, test, restored, seed)?;
+        let hlink = herds::Link::load(&source, budget, test, restored, &wlink.world, seed)?;
+        let clink = conflict::Link::load(&source, budget, test, restored, seed)?;
         // Pages a module dropped go before anything runs: a fresh table would read them as its
         // own (PF18).
         let purge: Vec<std::ops::RangeInclusive<u16>> = [
@@ -3069,7 +3099,7 @@ mod tests {
     fn site_states_coalesce_and_take_fresh_sequences() {
         use rtsim_kernel::sites::{Bodies, SiteKind};
         let (_tx, rx) = std::sync::mpsc::channel();
-        let mut st = State::new(rx, None);
+        let mut st = State::new(rx, None, None);
         st.outbox.resume_after(41);
         let site = |kind, key, p: f32, home: Vec<(u64, u64)>| SiteState {
             key,
@@ -3176,7 +3206,7 @@ mod tests {
     #[test]
     fn a_save_writes_the_generation_blocks_that_changed_and_all_after_a_failure() {
         let (_tx, rx) = std::sync::mpsc::channel();
-        let mut st = State::new(rx, None);
+        let mut st = State::new(rx, None, None);
         assert!(gen_blocks(&mut st).is_empty(), "none closed");
         // The first opens a generation and each later one closes the one before: a block and one.
         for g in 0..GEN_BLOCK as u64 + 2 {

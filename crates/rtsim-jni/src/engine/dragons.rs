@@ -125,8 +125,12 @@ pub(super) struct Link {
     pub(super) far_written: u64,
 }
 
-fn new_engine() -> Dragons {
-    Dragons::new(DRAGON_SEED, DragonTunables::default(), Tick::ZERO)
+fn new_engine(seed: Option<u64>) -> Dragons {
+    Dragons::new(
+        super::seeded(DRAGON_SEED, seed),
+        DragonTunables::default(),
+        Tick::ZERO,
+    )
 }
 
 /// **The policy for dragon pages this build cannot read** (S12, as phase 1's
@@ -138,20 +142,21 @@ fn when_pages_unreadable(
     why: &str,
     source: &Arc<dyn PageSource>,
     budget: usize,
+    seed: Option<u64>,
 ) -> Result<Link, String> {
     log_error(&format!(
         "DRAGON PAGES DROPPED: {why}. The dragons start afresh (lairs and bodies are reported again as their chunks load) and the next save replaces them"
     ));
-    let mut l = Link::fresh(source, budget);
+    let mut l = Link::fresh(source, budget, seed);
     l.dropped_pages = true;
     l.pager.purge = true;
     Ok(l)
 }
 
 impl Link {
-    pub(super) fn empty() -> Link {
+    pub(super) fn empty(seed: Option<u64>) -> Link {
         Link {
-            engine: new_engine(),
+            engine: new_engine(seed),
             index: DistrictIndex::default(),
             queue: VecDeque::new(),
             enabled: true,
@@ -174,8 +179,8 @@ impl Link {
     }
 
     /// New dragons paging through the engine's store under `budget` row bytes.
-    fn fresh(source: &Arc<dyn PageSource>, budget: usize) -> Link {
-        let mut l = Link::empty();
+    fn fresh(source: &Arc<dyn PageSource>, budget: usize, seed: Option<u64>) -> Link {
+        let mut l = Link::empty(seed);
         l.engine.attach_store(source.clone(), budget);
         l
     }
@@ -189,8 +194,9 @@ impl Link {
         budget: usize,
         test: bool,
         world_restored: bool,
+        seed: Option<u64>,
     ) -> Result<Link, String> {
-        let unreadable = |why: &str| when_pages_unreadable(why, source, budget);
+        let unreadable = |why: &str| when_pages_unreadable(why, source, budget, seed);
         match source.read(KEY_DRAGONS) {
             Err(e) => return unreadable(&format!("cannot read the dragons' meta page: {e}")),
             Ok(None) if paging::holds_pages_besides_kept(&**source, KEY_DRAGONS) => {
@@ -198,7 +204,7 @@ impl Link {
             }
             Ok(None) => {
                 // Switched off before their first save, they may have kept records all the same.
-                let mut l = Link::fresh(source, budget);
+                let mut l = Link::fresh(source, budget, seed);
                 l.kept = match Kept::load(&**source, KEY_DRAGONS) {
                     Ok(k) => k,
                     Err(e) => return unreadable(&e),
@@ -240,7 +246,7 @@ impl Link {
             Ok(k) => k,
             Err(e) => return unreadable(&e),
         };
-        let mut l = Link::empty();
+        let mut l = Link::empty(seed);
         l.engine = engine;
         l.restore_diverged = diverged;
         l.from_pages = true;

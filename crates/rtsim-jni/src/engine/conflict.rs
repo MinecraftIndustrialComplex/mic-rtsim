@@ -243,9 +243,9 @@ fn define_own(
     }
 }
 
-fn new_engine() -> Conflict {
+fn new_engine(seed: Option<u64>) -> Conflict {
     Conflict::new(
-        CONFLICT_SEED,
+        super::seeded(CONFLICT_SEED, seed),
         ConflictTunables::default(),
         Cultures::builtin(),
         Tick::ZERO,
@@ -260,19 +260,20 @@ fn when_pages_unreadable(
     why: &str,
     source: &Arc<dyn PageSource>,
     budget: usize,
+    seed: Option<u64>,
 ) -> Result<Link, String> {
     log_error(&format!(
         "CONFLICT PAGES DROPPED: {why}. The conflict starts afresh (camps are reported again as their chunks load) and the next save replaces them"
     ));
-    let mut l = Link::fresh(source, budget);
+    let mut l = Link::fresh(source, budget, seed);
     l.dropped_pages = true;
     l.pager.purge = true;
     Ok(l)
 }
 
 impl Link {
-    pub(super) fn empty() -> Link {
-        let mut engine = new_engine();
+    pub(super) fn empty(seed: Option<u64>) -> Link {
+        let mut engine = new_engine(seed);
         let (structures, pollution) = own_names(&engine.cultures, &engine.tun);
         define_own(&mut engine, &structures, &pollution);
         Link::with_engine(engine, structures, pollution)
@@ -314,8 +315,8 @@ impl Link {
     }
 
     /// A new conflict paging through the engine's store under `budget` row bytes.
-    fn fresh(source: &Arc<dyn PageSource>, budget: usize) -> Link {
-        let mut l = Link::empty();
+    fn fresh(source: &Arc<dyn PageSource>, budget: usize, seed: Option<u64>) -> Link {
+        let mut l = Link::empty(seed);
         l.engine.attach_store(source.clone(), budget);
         l
     }
@@ -329,8 +330,9 @@ impl Link {
         budget: usize,
         test: bool,
         world_restored: bool,
+        seed: Option<u64>,
     ) -> Result<Link, String> {
-        let unreadable = |why: &str| when_pages_unreadable(why, source, budget);
+        let unreadable = |why: &str| when_pages_unreadable(why, source, budget, seed);
         let opened = Conflict::open_paged(
             source.clone(),
             budget,
@@ -345,7 +347,7 @@ impl Link {
             }
             Ok(None) => {
                 // Switched off before its first save, it may have kept records all the same.
-                let mut l = Link::fresh(source, budget);
+                let mut l = Link::fresh(source, budget, seed);
                 l.kept = match Kept::load(&**source, KEY_CONFLICT) {
                     Ok(k) => k,
                     Err(e) => return unreadable(&e),

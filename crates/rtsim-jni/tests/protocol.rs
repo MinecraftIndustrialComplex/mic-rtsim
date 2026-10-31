@@ -17547,3 +17547,59 @@ mod worldmodel {
         assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
     }
 }
+
+// ---- a test's world seed (slice S11, EQC475) -------------------------------------------------------
+
+/// `Config::seed`: every module's streams mix in a test's world seed, so one world runs on many
+/// seeds; none (the game's) keeps the fixed seeds. Two seeds give every module a different seed,
+/// the same seed the same, and the seed survives a restart on the pages.
+#[test]
+fn a_test_seed_reaches_every_module() {
+    let seeds = |e: &Engine| {
+        let d = e.with_dragons(|d, w| (d.seed, w.cfg.seed));
+        let h = e.with_herds(|h, _| h.seed);
+        let s = e.with_ships(|s, _| s.seed);
+        let c = e.with_conflict(|c, _| c.seed);
+        [d.0, d.1, h, s, c]
+    };
+    let open = |tag: &str, seed: Option<u64>| {
+        let dir = tmpdir(tag);
+        let e = engine_with(&dir, 256 * 1024, |c| c.seed = seed);
+        let j = Java::open(e.clone(), WorldSave::fresh());
+        (dir, e, j)
+    };
+    let (_d0, e0, _j0) = open("seed-none", None);
+    let (d1, e1, mut j1) = open("seed-one", Some(1));
+    let (_d2, e2, _j2) = open("seed-two", Some(2));
+    let (_d3, e3, _j3) = open("seed-one-again", Some(1));
+    let (none, one, two) = (seeds(&e0), seeds(&e1), seeds(&e2));
+    assert_eq!(
+        none,
+        [
+            0x6d69_635f_6472_6167,
+            0x6d69_635f_7031,
+            0x6d69_635f_6865_7264,
+            0x6d69_635f_7368_6970,
+            0x6d69_635f_636f_6e66,
+        ],
+        "no seed: the game's fixed seeds"
+    );
+    for i in 0..5 {
+        assert!(
+            none[i] != one[i] && one[i] != two[i] && none[i] != two[i],
+            "module {i}: {none:?} {one:?} {two:?}"
+        );
+    }
+    assert_eq!(seeds(&e3), one, "the same seed, the same streams");
+    // Reopened on its pages with its seed, the world keeps it.
+    j1.idle();
+    save_durable(&e1, &mut j1);
+    let saved = j1.world_save();
+    for e in [e0, e1, e2, e3] {
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+    let e = engine_with(&d1, 256 * 1024, |c| c.seed = Some(1));
+    let _j = Java::open(e.clone(), saved);
+    assert_eq!(seeds(&e), one);
+    e.close(true, Duration::from_secs(5)).unwrap();
+}

@@ -164,7 +164,7 @@ impl Link {
     /// call it before anything joins.
     #[cfg(test)]
     pub(in crate::engine) fn small_report_table_for_test(&mut self, cap: u32) {
-        let (mut cfg, goods, book) = super::world_parts();
+        let (mut cfg, goods, book) = super::world_parts(None);
         cfg.knowledge.report_cap = cap;
         self.world = rtsim_world::World::build(cfg, goods, book, Vec::new());
     }

@@ -296,7 +296,13 @@ pub(super) fn simulate(st: &mut State) {
             if herds::has_range(st, k) {
                 RegionPlan::Barren // founded before a crash took the mark: decided
             } else {
-                plan_region(&**w, &climate, k, FOUNDING_SEED, &st.worldmodel.founding)
+                plan_region(
+                    &**w,
+                    &climate,
+                    k,
+                    super::seeded(FOUNDING_SEED, st.seed),
+                    &st.worldmodel.founding,
+                )
             }
         };
         let decided = match plan {

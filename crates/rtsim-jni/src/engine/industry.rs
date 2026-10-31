@@ -1871,7 +1871,7 @@ mod tests {
         use rtsim_industry::ids::GoodVec;
         use rtsim_industry::obs::LoadState;
         let (_tx, rx) = std::sync::mpsc::channel();
-        let mut st = State::new(rx, None);
+        let mut st = State::new(rx, None, None);
         st.session_first = 100;
         st.replaying = true;
         let present = Tick(10_000);
@@ -2160,7 +2160,7 @@ mod tests {
     /// still unheard ten periods past the switch-on frees the frogport for the next write (SC113).
     fn writes_after_a_held_write(back: Back) -> (Vec<OpId>, Vec<OpId>) {
         let (_tx, rx) = std::sync::mpsc::channel();
-        let mut st = State::new(rx, None);
+        let mut st = State::new(rx, None, None);
         st.industry.engine = chain_pair();
         st.industry.enabled = true;
         st.game_time = 20_100;

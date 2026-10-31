@@ -138,14 +138,20 @@ fn piece_key(k: usize) -> PageKey {
 }
 
 /// The phase 1 world's configuration, goods and recipes: what [`fresh_world`] builds with and a
-/// snapshot is read back with.
-fn world_parts() -> (
+/// snapshot is read back with; its seed mixed with a test's `seed` (`Config::seed`, slice S11).
+fn world_parts(
+    seed: Option<u64>,
+) -> (
     WorldConfig,
     rtsim_trade::Goods,
     rtsim_trade::labour::RecipeBook,
 ) {
     let c = catalog::Catalog::new();
-    (WorldConfig::new(WORLD_SEED), c.goods, c.book)
+    (
+        WorldConfig::new(super::seeded(WORLD_SEED, seed)),
+        c.goods,
+        c.book,
+    )
 }
 
 /// Java's module bits (`config/Module.java` ordinals) phase 1 runs under: knowledge,
@@ -401,9 +407,9 @@ pub(super) struct Link {
     restored: bool,
 }
 
-fn fresh_world() -> (World, catalog::Catalog) {
+fn fresh_world(seed: Option<u64>) -> (World, catalog::Catalog) {
     let cat = catalog::Catalog::new();
-    let (cfg, goods, book) = world_parts();
+    let (cfg, goods, book) = world_parts(seed);
     let world = World::build(cfg, goods, book, Vec::new());
     (world, cat)
 }
@@ -420,20 +426,27 @@ fn when_pages_unreadable(
     why: &str,
     source: &Arc<dyn PageSource>,
     budget: usize,
+    seed: Option<u64>,
 ) -> Result<Link, String> {
     super::log_error(&format!(
         "PHASE 1 PAGES DROPPED: {why}. This build cannot read them (another build's format, or a damaged page); \
          the phase 1 world starts afresh (villages join again as their chunks load) and the next save replaces them"
     ));
-    let mut l = Link::fresh(source, budget);
+    let mut l = Link::fresh(source, budget, seed);
     l.dropped_pages = true;
     l.purge = true;
     Ok(l)
 }
 
 impl Link {
+    #[cfg(test)]
     pub(super) fn empty() -> Link {
-        let (world, cat) = fresh_world();
+        Link::empty_seeded(None)
+    }
+
+    /// [`Link::empty`] with the world seed mixed with a test's `seed` (slice S11).
+    pub(super) fn empty_seeded(seed: Option<u64>) -> Link {
+        let (world, cat) = fresh_world(seed);
         Link {
             world,
             cat,
@@ -481,8 +494,8 @@ impl Link {
     }
 
     /// A fresh world paging its market rows through the engine's store under `budget` bytes.
-    fn fresh(source: &Arc<dyn PageSource>, budget: usize) -> Link {
-        let mut l = Link::empty();
+    fn fresh(source: &Arc<dyn PageSource>, budget: usize, seed: Option<u64>) -> Link {
+        let mut l = Link::empty_seeded(seed);
         l.world.attach_store(Arc::clone(source), budget);
         l
     }
@@ -495,15 +508,21 @@ impl Link {
         source: &Arc<dyn PageSource>,
         budget: usize,
         test: bool,
+        seed: Option<u64>,
     ) -> Result<Link, String> {
-        match Link::read_pages(source, budget, test) {
+        match Link::read_pages(source, budget, test, seed) {
             Ok(l) => Ok(l),
-            Err(why) => when_pages_unreadable(&why, source, budget),
+            Err(why) => when_pages_unreadable(&why, source, budget, seed),
         }
     }
 
-    fn read_pages(source: &Arc<dyn PageSource>, budget: usize, test: bool) -> Result<Link, String> {
-        let mut link = Link::fresh(source, budget);
+    fn read_pages(
+        source: &Arc<dyn PageSource>,
+        budget: usize,
+        test: bool,
+        seed: Option<u64>,
+    ) -> Result<Link, String> {
+        let mut link = Link::fresh(source, budget, seed);
         let Some(meta) = source
             .read(KEY_META)
             .map_err(|e| format!("cannot read the phase 1 meta page: {e}"))?
@@ -534,7 +553,7 @@ impl Link {
             }
             let nodes =
                 decode_snapshot(&blob).map_err(|e| format!("the phase 1 snapshot: {e}"))?;
-            let (cfg, goods, book) = world_parts();
+            let (cfg, goods, book) = world_parts(seed);
             let world = World::open_paged(Arc::clone(source), budget, WORLD_META, cfg, goods, book)
                 .map_err(|e| format!("the phase 1 snapshot's world: {e}"))?;
             if world.now().0 != m.snap_at {
@@ -3544,7 +3563,7 @@ mod tests {
     /// The phase 1 pages loaded as a restarted TEST engine loads them (no budget).
     fn load(s: &Store) -> Result<Link, String> {
         let source: Arc<dyn PageSource> = s.clone();
-        Link::load(&source, usize::MAX, true)
+        Link::load(&source, usize::MAX, true, None)
     }
 
     /// Saves `l`'s meta page and loads it back as a restarted engine would.
@@ -3602,7 +3621,7 @@ mod tests {
 
     fn state() -> State {
         let (_tx, rx) = std::sync::mpsc::channel();
-        State::new(rx, None)
+        State::new(rx, None, None)
     }
 
     /// Takes a save and commits it as the engine's `commit` does (stale phase 1 pages deleted

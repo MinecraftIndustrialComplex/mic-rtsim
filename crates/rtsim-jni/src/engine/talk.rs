@@ -1125,7 +1125,7 @@ mod tests {
 
     fn state() -> State {
         let (_tx, rx) = std::sync::mpsc::channel();
-        State::new(rx, None)
+        State::new(rx, None, None)
     }
 
     /// A state with villages 7 (human) at (1000, 1000) and 8 (ribbit) at (1100, 1000) in frame 0,
