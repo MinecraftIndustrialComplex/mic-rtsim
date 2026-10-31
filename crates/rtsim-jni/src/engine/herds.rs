@@ -561,6 +561,8 @@ pub(super) fn take_commands(st: &mut State) {
     }
     let cmds = st.herds.engine.take_commands();
     st.herds.queue.extend(cmds);
+    let recolonised = st.herds.engine.take_recolonised();
+    super::worldmodel::queue_ranges(st, recolonised);
 }
 
 // ---- orders (TEST) ------------------------------------------------------------------------------

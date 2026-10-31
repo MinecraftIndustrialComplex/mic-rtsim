@@ -283,6 +283,10 @@ pub struct Herds {
     pub(crate) follows: BTreeMap<u64, BTreeSet<HerdId>>,
     /// Plugin op ids applied, and when (forgotten after a while at the yearly sweep).
     pub(crate) ops: BTreeMap<u64, Tick>,
+    /// Ranges recolonised by dispersers since the last [`Herds::take_recolonised`]: their species
+    /// may have changed, so the world model re-derives their K (EQC511). In memory only: a
+    /// restart re-derives every range's K anyway (EQC512).
+    pub(crate) recolonised: Vec<(u16, i32, i32)>,
     pub stats: HerdStats,
     pub log_enabled: bool,
     pub log: Vec<HerdLog>,
@@ -471,6 +475,7 @@ impl Herds {
             replay_bound: u32::MAX,
             follows: BTreeMap::new(),
             ops: BTreeMap::new(),
+            recolonised: Vec::new(),
             stats: HerdStats::default(),
             log_enabled: false,
             log: Vec::new(),
@@ -1098,6 +1103,11 @@ impl Herds {
             .unwrap_or_default()
     }
 
+    /// The ranges recolonised by dispersers since the last call, in the order they were (EQC511).
+    pub fn take_recolonised(&mut self) -> Vec<(u16, i32, i32)> {
+        std::mem::take(&mut self.recolonised)
+    }
+
     /// Sets range row `h`'s K: the world model re-caps a range when its region's ground changes
     /// (EQC504). Births, the refuge, dispersal and frontier founding read the new K from then on.
     /// Returns the K it had, or `None` when it had `k` already or is no row.
@@ -1550,11 +1560,12 @@ impl Herds {
         y.bred_year = year;
         y.decided = at;
         y.route = Route::stay(y.home, at, at);
-        let (frame, home) = (y.frame, y.home);
+        let (frame, home, range) = (y.frame, y.home, y.range);
         let next = self.decide_at(g, at + 1);
         self.herds.get_mut(g).expect("live").next_decide = next;
         self.schedule(next, Ev::Decide { h: g });
         self.stats.recolonised += 1;
+        self.recolonised.push(range);
         self.tape.event(
             kinds::HERDS_FOUNDED,
             At::new(at.0, u32::from(frame), home.0, home.1),
