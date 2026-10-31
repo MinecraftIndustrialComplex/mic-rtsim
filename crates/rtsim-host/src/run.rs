@@ -482,6 +482,11 @@ impl Host {
     pub fn step(&mut self, stride: i64, limit: i64) -> Result<(), String> {
         self.wait_step()?;
         self.j.apply_commands();
+        if self.j.policy == Policy::Every {
+            // The fake conflict plugin's answers to the commands it played, journaled as the
+            // bridge journals a plugin's records (the every-kind world, slice S11 EQC478).
+            self.j.conflict_flush();
+        }
         if let Some(err) = self.e.protocol_error() {
             return Err(format!("the engine stopped: {err}"));
         }

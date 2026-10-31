@@ -33,10 +33,13 @@ use rtsim_ecology::species::Gender;
 use rtsim_industry::ids::{ChunkPos, DistrictId, Good};
 use rtsim_industry::obs::{DepositPluginId, DepositSample, DistrictDecl, Obs as IObs, SweepEnd, Timed};
 use rtsim_jni::engine::Engine;
+use rtsim_jni::orders::Order;
 use rtsim_jni::wire;
 use rtsim_kernel::census::KindCensus;
-use rtsim_kernel::clock::Tick;
+use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 use rtsim_kernel::page::Durability;
+use rtsim_kernel::renewal::Pressure;
+use rtsim_kernel::rng::{SlotRng, StreamKey, SystemId};
 use rtsim_ships::boundary as sb;
 
 use crate::fork;
@@ -544,6 +547,11 @@ pub struct Every {
     pub residents: BTreeMap<u64, u32>,
     /// Villages whose count fell at the last census: read again at the next hand-over.
     second: Vec<u64>,
+    /// What the kills since the last day's end should have booked, and what was ([`Teeth`]).
+    owed: Vec<Owed>,
+    pub teeth: Teeth,
+    /// The last op id a SUNK record took.
+    op: u64,
     /// The folders to delete at the end.
     scratch: Vec<PathBuf>,
 }
@@ -552,16 +560,24 @@ impl Every {
     /// Makes the every-kind world on `seed` (`player_day` as [`make`]), forks it and opens it in
     /// the host at max with `durability`, on [`Policy::Every`].
     pub fn open(tag: &str, seed: u64, player_day: bool, durability: Durability) -> Every {
-        Every::open_with(tag, seed, player_day, durability, Policy::Every)
+        Every::open_with(tag, seed, player_day, durability, Policy::Every, false)
     }
 
-    /// [`Every::open`] on another policy (the soak's is [`Policy::Refuse`], EQC404).
+    /// [`Every::open`] in TEST mode, so the kills' orders (41, 43, 44) are taken: the long run's
+    /// and the together kill-alls' world.
+    pub fn open_test(tag: &str, seed: u64) -> Every {
+        Every::open_with(tag, seed, false, Durability::NoSync, Policy::Every, true)
+    }
+
+    /// [`Every::open`] on another policy (the soak's is [`Policy::Refuse`], EQC404), and in TEST
+    /// mode or not.
     pub fn open_with(
         tag: &str,
         seed: u64,
         player_day: bool,
         durability: Durability,
         policy: Policy,
+        test: bool,
     ) -> Every {
         let world = scratch(&format!("{tag}-{seed}"));
         let founded = make(&world, seed, player_day);
@@ -572,6 +588,7 @@ impl Every {
             speed: Speed::Max,
             durability,
             seed: Some(seed),
+            test,
             ..Options::default()
         };
         let mut host = Host::open(&dir, &opts).expect("the host opens the fork");
@@ -588,6 +605,9 @@ impl Every {
             ctl: Box::leak(Box::new(Control::new())),
             residents,
             second: Vec::new(),
+            owed: Vec::new(),
+            teeth: Teeth::default(),
+            op: 0,
             scratch: vec![world, parent],
         }
     }
@@ -624,7 +644,19 @@ impl Every {
                 .run(&o, self.ctl, Duration::from_secs(3600), |_| {})
                 .unwrap_or_else(|e| panic!("seed {}: day {next}: {e}", self.seed));
             self.villages();
+            self.check_owed();
         }
+    }
+
+    /// Runs the host to game time `t` (from the fork's start), within a day: a camp visit's ticks.
+    fn run_ticks_to(&mut self, t: i64) {
+        let o = Options {
+            until: Some(Until::At(self.host.start_time + t)),
+            ..self.opts.clone()
+        };
+        self.host
+            .run(&o, self.ctl, Duration::from_secs(3600), |_| {})
+            .unwrap_or_else(|e| panic!("seed {}: tick {t}: {e}", self.seed));
     }
 
     /// The day's village censuses: residents the engine settled join their villages; every
@@ -653,10 +685,21 @@ impl Every {
 
     /// The player kills `n` of village `v`'s residents (kind-8 reports, as the bridge's kill
     /// credit sends them), and the village is counted complete now and again at the next
-    /// hand-over. How many died.
+    /// hand-over. How many died. Booked: the village's pressure, 1/K a resident.
     pub fn kill_residents(&mut self, v: u64, n: u32) -> u32 {
         let have = self.residents.get(&v).copied().unwrap_or(0);
         let n = n.min(have);
+        let kind = if self.founded.village(v).is_some_and(|x| x.ribbit) {
+            "village.ribbit"
+        } else {
+            "village.human"
+        };
+        if n > 0 {
+            let day = self.obs_day();
+            if let Some((p, h, k)) = self.pressure(Site::Village(v)) {
+                self.owe_pressure(kind, Site::Village(v), day, p.now(day, h), n as f32 / k);
+            }
+        }
         for _ in 0..n {
             self.host.j.resident_killed(v, true);
         }
@@ -665,7 +708,391 @@ impl Every {
             self.census_village(v);
             self.second.push(v);
         }
+        self.teeth.killed(kind, u64::from(n));
         n
+    }
+
+    // ---- the kills (EQC403, EQC405) ------------------------------------------------------------
+
+    /// The engine day a record journaled now is applied on (its hand-over's).
+    fn obs_day(&self) -> u32 {
+        (self.host.j.game_time.max(0) as u64 / TICKS_PER_DAY) as u32
+    }
+
+    fn dim(&mut self) -> u32 {
+        self.host.j.dict_id(wire::DICT_DIMENSION, OVERWORLD)
+    }
+
+    fn order(&self, o: Order) {
+        self.host
+            .e
+            .order(vec![o])
+            .unwrap_or_else(|e| panic!("an order: {e} (the world needs TEST mode)"));
+    }
+
+    /// Order 43: every dragon at lair `key` killed by [`PLAYER`]. How many it held. Booked: the
+    /// dragons' player losses.
+    pub fn slay_lair(&mut self, key: u64) -> u64 {
+        let (n, before) = self.host.e.with_dragons(|d, _| {
+            let n = d
+                .lair_of_key(key)
+                .map_or(0, |l| d.lairs[l as usize].occupants.len() as u64);
+            (n, d.stats.player_losses)
+        });
+        if n > 0 {
+            self.order(Order::DragonSlay {
+                lair: key,
+                player: PLAYER,
+            });
+            self.owe_count("dragon.lair", Counter::DragonLosses, before, n);
+        }
+        self.teeth.killed("dragon.lair", n);
+        n
+    }
+
+    /// The latent animals of the herds of range `region`, and the player kills they booked.
+    fn range(&mut self, region: (i32, i32)) -> (u64, u64) {
+        let dim = self.dim() as u16;
+        self.host.e.with_herds(|h, _| {
+            let now = h.now();
+            h.range_herds((dim, region.0, region.1))
+                .into_iter()
+                .fold((0, 0), |(n, k), id| {
+                    (
+                        n + h.count(id, now),
+                        k + h.herd(id).map_or(0, |x| x.ledger.killed),
+                    )
+                })
+        })
+    }
+
+    /// Order 44: up to `n` latent animals of range `region` killed by [`PLAYER`]. How many.
+    /// Booked: the range's herds' player kills.
+    pub fn cull_range(&mut self, region: (i32, i32), n: u64) -> u64 {
+        let (have, before) = self.range(region);
+        let n = n.min(have).min(u64::from(u32::MAX));
+        if n > 0 {
+            let dimension = self.dim();
+            self.order(Order::HerdCull {
+                dimension,
+                region,
+                n: n as u32,
+                player: PLAYER,
+            });
+            self.owe_count("herd.range", Counter::RangeKilled(region), before, n);
+        }
+        self.teeth.killed("herd.range", n);
+        n
+    }
+
+    /// A quarter of range `region`'s latent animals, rounded down (EQC412).
+    pub fn quarter_of_range(&mut self, region: (i32, i32)) -> u64 {
+        self.range(region).0 / 4
+    }
+
+    /// The engine's oil nests: (id, chunk, worms booked lost to a player).
+    pub fn nests(&self) -> Vec<(u64, (i32, i32), u32)> {
+        self.host.e.with_dragons(|d, _| {
+            d.nests
+                .ids()
+                .into_iter()
+                .filter_map(|id| d.nests.get(id).map(|n| (id, n.chunk, n.lost_player)))
+                .collect()
+        })
+    }
+
+    /// NEST_LOSS, cause Player: every worm of nest `id` killed by [`PLAYER`]. How many. Booked:
+    /// the nest's worms lost to a player.
+    pub fn kill_nest(&mut self, id: u64) -> u64 {
+        let before = self.nests().into_iter().find(|n| n.0 == id).map_or(0, |n| n.2);
+        let n = u64::from(self.host.j.kill_worms(id, u32::MAX, PLAYER));
+        if n > 0 {
+            self.owe_count("oil.nest", Counter::NestLost(id), u64::from(before), n);
+        }
+        self.teeth.killed("oil.nest", n);
+        n
+    }
+
+    /// A camp's warriors at home (the pool's whole ones) and away, its pressure on `day` and its
+    /// cap.
+    fn camp(&self, key: u64, day: u32) -> Option<CampNow> {
+        self.host.e.with_conflict(|c, _| {
+            let f = c.faction_of_key(key)?;
+            let now = c.now();
+            Some(CampNow {
+                home: c.pool_at(f, now).max(0.0).floor() as u32,
+                away: c.factions[f as usize].away,
+                pressure: c.pressure_now(f, Tick::from_days(u64::from(day))),
+                cap: c.factions[f as usize].cap,
+            })
+        })
+    }
+
+    /// Order 41: pool camp `key`'s warriors killed by a player: every one at home, and with `all`
+    /// the war parties away too (a kill-all, as `camp_run`'s). How many. Booked: the camp's
+    /// strain, 1/cap a warrior.
+    pub fn slay_camp(&mut self, key: u64, all: bool) -> u64 {
+        let day = self
+            .host
+            .e
+            .with_conflict(|c, _| (c.now().0 / TICKS_PER_DAY) as u32);
+        let Some(c) = self.camp(key, day) else {
+            return 0;
+        };
+        let n = c.home + if all { c.away } else { 0 };
+        if n == 0 {
+            return 0;
+        }
+        self.order(Order::ConflictSlay {
+            faction: key,
+            n: if all { u32::MAX } else { n },
+            pressure: 0.0,
+        });
+        self.owe_pressure(
+            "conflict.camp",
+            Site::Camp(key),
+            day,
+            c.pressure,
+            n as f32 / c.cap.max(1) as f32,
+        );
+        self.teeth.killed("conflict.camp", u64::from(n));
+        u64::from(n)
+    }
+
+    /// A player's visit to den or grove `key` through the fake conflict plugin, as S9's
+    /// `mowzie_visit`: the camp comes in, every member at home (`chief`: the chief's body alone)
+    /// is killed by the player, and the camp goes out. How many died. Booked: the camp's pressure,
+    /// 1/K a member (the chief's own pressure for the chief, which the census reads).
+    pub fn visit_camp(&mut self, key: u64, kind: &'static str, chief: bool) -> u64 {
+        use rtsim_conflict::boundary as cb;
+        use rtsim_conflict::engine::CHIEF_SLOT;
+        let t0 = self.host.j.game_time - self.host.start_time;
+        let at = Tick(self.host.j.game_time.max(0) as u64);
+        self.host.j.conflict_plugin.camp_in(key, at);
+        self.run_ticks_to(t0 + 10);
+        let ids: Vec<_> = self
+            .host
+            .j
+            .conflict_plugin
+            .camp_world(key)
+            .bodies
+            .iter()
+            .filter(|b| b.generation != 0 && (b.slot == CHIEF_SLOT) == chief)
+            .map(|b| b.uuid)
+            .collect();
+        let day = self.obs_day();
+        let before = self.camp(key, day);
+        let at = Tick(self.host.j.game_time.max(0) as u64);
+        // TODO(S9): the chief's own pressure (`Camp::chief_pressure`) for the Umvuthi's teeth.
+        let mut killed = 0u64;
+        for u in ids {
+            killed += u64::from(
+                self.host
+                    .j
+                    .conflict_plugin
+                    .camp_kill(key, u, cb::BY_PLAYER, at),
+            );
+        }
+        if killed > 0
+            && !chief
+            && let Some(c) = before
+        {
+            self.owe_pressure(
+                kind,
+                Site::Camp(key),
+                day,
+                c.pressure,
+                killed as f32 / c.cap.max(1) as f32,
+            );
+        }
+        let t = self.host.j.game_time - self.host.start_time;
+        self.run_ticks_to(t + 5);
+        let at = Tick(self.host.j.game_time.max(0) as u64);
+        self.host.j.conflict_plugin.camp_out(key, at);
+        let t = self.host.j.game_time - self.host.start_time;
+        self.run_ticks_to(t + 3);
+        self.teeth.killed(kind, killed);
+        killed
+    }
+
+    /// Haven `key`'s active pirate ships: (agent, epoch).
+    fn active_ships(&self, key: u64) -> Vec<(u64, u32)> {
+        self.host.e.with_ships(|s, w| {
+            let Some(h) = s.havens.iter().find(|h| w.nodes.get(h.node).is_some_and(|n| n.key == key))
+            else {
+                return Vec::new();
+            };
+            h.ships
+                .iter()
+                .filter_map(|&id| {
+                    s.ship(id)
+                        .filter(|x| x.is_active())
+                        .map(|x| (rtsim_ships::engine::Ship::agent(id), x.epoch))
+                })
+                .collect()
+        })
+    }
+
+    /// SUNK by a player for every active pirate of haven `key` (agent and epoch read between
+    /// steps, R18). How many. Booked: the haven's refit pressure, 1/slots a ship.
+    pub fn sink_haven(&mut self, key: u64) -> u64 {
+        let ships = self.active_ships(key);
+        if ships.is_empty() {
+            return 0;
+        }
+        let day = self.obs_day();
+        if let Some((p, h, slots)) = self.pressure(Site::Haven(key)) {
+            self.owe_pressure(
+                "ship.haven",
+                Site::Haven(key),
+                day,
+                p.now(day, h),
+                ships.len() as f32 / slots,
+            );
+        }
+        let dimension = self.dim();
+        let dock = self
+            .founded
+            .havens
+            .iter()
+            .find(|x| x.0 == key)
+            .map_or((0, 63, 0), |x| x.1);
+        for (agent, epoch) in &ships {
+            self.op += 1;
+            self.host.j.ship_obs(&sb::Obs::Sunk(sb::Sunk {
+                agent: *agent,
+                epoch: *epoch,
+                by: sb::By::Player,
+                dimension,
+                player: PLAYER,
+                ship: 0,
+                op: 1 << 62 | self.op,
+                pos: (f64::from(dock.0), f64::from(dock.1), f64::from(dock.2)),
+            }));
+        }
+        self.teeth.killed("ship.haven", ships.len() as u64);
+        ships.len() as u64
+    }
+
+    // ---- the teeth (EQC413) --------------------------------------------------------------------
+
+    /// A site's stored pressure, its half-life and the share one member is (1/K, 1/slots).
+    fn pressure(&self, site: Site) -> Option<(Pressure, f32, f32)> {
+        match site {
+            Site::Village(key) => self.host.e.with_dragons(|_, w| {
+                let i = w.nodes.iter().position(|n| n.key == key)?;
+                let r = w.village_row(i)?;
+                Some((
+                    r.pressure,
+                    w.cfg.village_rule.half_life_days,
+                    f32::from(r.k.max(1)),
+                ))
+            }),
+            Site::Haven(key) => self.host.e.with_ships(|s, w| {
+                let h = s
+                    .havens
+                    .iter()
+                    .find(|h| w.nodes.get(h.node).is_some_and(|n| n.key == key))?;
+                Some((
+                    h.pressure,
+                    s.tun.refit.half_life_days,
+                    h.ships.len().max(1) as f32,
+                ))
+            }),
+            Site::Camp(_) => None,
+        }
+    }
+
+    /// A site's pressure on `day`, as stored after the kill.
+    fn pressure_on(&self, site: Site, day: u32) -> Option<f32> {
+        match site {
+            Site::Camp(key) => self.camp(key, day).map(|c| c.pressure),
+            _ => self.pressure(site).map(|(p, h, _)| {
+                let (_, at) = p.parts();
+                // Read on the kill's day: a bump that day left it stored as of then.
+                p.now(day.max(at), h)
+            }),
+        }
+    }
+
+    fn owe_count(&mut self, kind: &'static str, what: Counter, before: u64, want: u64) {
+        if let Some(Owed::Count { want: w, .. }) = self
+            .owed
+            .iter_mut()
+            .find(|o| matches!(o, Owed::Count { what: x, .. } if *x == what))
+        {
+            *w += want;
+            return;
+        }
+        self.owed.push(Owed::Count {
+            kind,
+            what,
+            before,
+            want,
+        });
+    }
+
+    fn owe_pressure(&mut self, kind: &'static str, site: Site, day: u32, before: f32, want: f32) {
+        if let Some(Owed::Pressure { want: w, .. }) = self
+            .owed
+            .iter_mut()
+            .find(|o| matches!(o, Owed::Pressure { site: x, day: d, .. } if *x == site && *d == day))
+        {
+            *w += want;
+            return;
+        }
+        self.owed.push(Owed::Pressure {
+            kind,
+            site,
+            day,
+            before,
+            want,
+        });
+    }
+
+    fn count(&mut self, what: Counter) -> u64 {
+        match what {
+            Counter::DragonLosses => self.host.e.with_dragons(|d, _| d.stats.player_losses),
+            Counter::RangeKilled(r) => self.range(r).1,
+            Counter::NestLost(id) => self
+                .nests()
+                .into_iter()
+                .find(|n| n.0 == id)
+                .map_or(0, |n| u64::from(n.2)),
+        }
+    }
+
+    /// Reads what each kill since the last call booked against what it should have (after the
+    /// day's run, so every record and order has been taken).
+    fn check_owed(&mut self) {
+        for o in std::mem::take(&mut self.owed) {
+            match o {
+                Owed::Count {
+                    kind,
+                    what,
+                    before,
+                    want,
+                } => {
+                    let got = self.count(what).saturating_sub(before);
+                    self.teeth.booked(kind, got == want, || {
+                        format!("{kind} {what:?}: booked {got}, killed {want}")
+                    });
+                }
+                Owed::Pressure {
+                    kind,
+                    site,
+                    day,
+                    before,
+                    want,
+                } => {
+                    let got = self.pressure_on(site, day).map_or(0.0, |p| p - before);
+                    let ok = (got - want).abs() <= 1e-3 * want.max(1.0);
+                    self.teeth.booked(kind, ok, || {
+                        format!("{kind} {site:?} day {day}: pressure rose {got}, killed {want}")
+                    });
+                }
+            }
+        }
     }
 
     /// The engine's census now (between steps).
@@ -681,6 +1108,194 @@ impl Every {
             let _ = fs::remove_dir_all(d);
         }
         assert!(protocol.is_none(), "{protocol:?}");
+    }
+}
+
+/// A camp as the kills read it.
+#[derive(Clone, Copy, Debug)]
+struct CampNow {
+    home: u32,
+    away: u32,
+    pressure: f32,
+    cap: u32,
+}
+
+/// A counter a kill raises (EQC413).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Counter {
+    /// The dragons' player losses.
+    DragonLosses,
+    /// The player kills of a range's herds.
+    RangeKilled((i32, i32)),
+    /// A nest's worms lost to a player.
+    NestLost(u64),
+}
+
+/// A site whose pressure a kill raises.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Site {
+    Village(u64),
+    /// A pool camp, outpost, den or grove (its faction key).
+    Camp(u64),
+    Haven(u64),
+}
+
+/// What a kill should have booked.
+#[derive(Clone, Debug)]
+enum Owed {
+    Count {
+        kind: &'static str,
+        what: Counter,
+        before: u64,
+        want: u64,
+    },
+    Pressure {
+        kind: &'static str,
+        site: Site,
+        day: u32,
+        before: f32,
+        want: f32,
+    },
+}
+
+/// The teeth (EQC413): by kind, the members the suite killed, the kills checked against what the
+/// engine booked as a player's, and every mismatch.
+#[derive(Clone, Debug, Default)]
+pub struct Teeth {
+    pub killed: BTreeMap<&'static str, u64>,
+    pub checked: BTreeMap<&'static str, u64>,
+    pub wrong: Vec<String>,
+}
+
+impl Teeth {
+    fn killed(&mut self, kind: &'static str, n: u64) {
+        *self.killed.entry(kind).or_default() += n;
+    }
+
+    fn booked(&mut self, kind: &'static str, ok: bool, why: impl FnOnce() -> String) {
+        *self.checked.entry(kind).or_default() += 1;
+        if !ok {
+            self.wrong.push(why());
+        }
+    }
+}
+
+/// The region (512 blocks) of block position (`x`, `z`).
+pub fn region_of(x: i32, z: i32) -> (i32, i32) {
+    let r = rtsim_travel::legs::REGION_BLOCKS as i32;
+    (x.div_euclid(r), z.div_euclid(r))
+}
+
+/// The roamer's chance a day of killing a site of each kind it stands by (EQC411, EQC412).
+pub const ROAMER_CHANCE: [(&str, f64); 10] = [
+    ("dragon.lair", 0.5),
+    ("conflict.den", 0.5),
+    ("conflict.grove", 0.3),
+    ("conflict.umvuthi", 0.3),
+    ("oil.nest", 0.5),
+    ("conflict.camp", 0.2),
+    ("ship.haven", 0.3),
+    ("herd.range", 0.5),
+    ("village.human", 0.5),
+    ("village.ribbit", 0.5),
+];
+
+fn chance(kind: &str) -> f64 {
+    ROAMER_CHANCE
+        .iter()
+        .find(|(k, _)| *k == kind)
+        .map_or(0.0, |x| x.1)
+}
+
+/// S11's roamer (EQC411): the model's walk, a step every second day among the nine regions around
+/// it (refused beyond `min(6, 2 + day / 48)` regions of spawn), on its own stream; each day it may
+/// kill each site of the region it stands in, with its kind's chance, through the kill paths of
+/// EQC403. Nothing else: no position is sent, so no interest area opens (EQC404).
+pub struct Roamer {
+    rng: SlotRng,
+    pub at: (i32, i32),
+    /// Whether it still kills (the peaceful turn, EQC414).
+    pub kills: bool,
+}
+
+impl Roamer {
+    pub fn new(seed: u64) -> Roamer {
+        Roamer {
+            rng: StreamKey::new(seed, SystemId::named("eq.every_roamer"), 0).slot(0),
+            at: (0, 0),
+            kills: true,
+        }
+    }
+
+    /// Day `day`'s turn, after the world has run to it.
+    pub fn day(&mut self, w: &mut Every, day: u64) {
+        if day.is_multiple_of(2) {
+            let r = (2 + day / 48).min(6) as i32;
+            let dx = self.rng.below(3) as i32 - 1;
+            let dz = self.rng.below(3) as i32 - 1;
+            let next = (self.at.0 + dx, self.at.1 + dz);
+            if next.0.abs() <= r && next.1.abs() <= r {
+                self.at = next;
+            }
+        }
+        if !self.kills {
+            return;
+        }
+        let here = self.at;
+        let f = w.founded.clone();
+        // Every draw is made whatever the site holds, in a fixed order, so the walk and the
+        // draws of one seed do not depend on the world's state.
+        for &(key, home) in &f.lairs {
+            if region_of(home.0, home.2) == here && self.rng.bernoulli(chance("dragon.lair")) {
+                w.slay_lair(key);
+            }
+        }
+        for d in &f.dens {
+            if region_of(d.at.0, d.at.1) == here && self.rng.bernoulli(chance("conflict.den")) {
+                w.visit_camp(d.key, "conflict.den", false);
+            }
+        }
+        for g in &f.groves {
+            if region_of(g.at.0, g.at.1) == here {
+                if self.rng.bernoulli(chance("conflict.grove")) {
+                    w.visit_camp(g.key, "conflict.grove", false);
+                }
+                if self.rng.bernoulli(chance("conflict.umvuthi")) {
+                    w.visit_camp(g.key, "conflict.umvuthi", true);
+                }
+            }
+        }
+        for (id, chunk, _) in w.nests() {
+            if region_of(chunk.0 * 16, chunk.1 * 16) == here
+                && self.rng.bernoulli(chance("oil.nest"))
+            {
+                w.kill_nest(id);
+            }
+        }
+        for c in f.camps.iter().chain(&f.outposts) {
+            if region_of(c.at.0, c.at.1) == here && self.rng.bernoulli(chance("conflict.camp")) {
+                w.slay_camp(c.key, false);
+            }
+        }
+        for &(key, dock) in &f.havens {
+            if region_of(dock.0, dock.2) == here && self.rng.bernoulli(chance("ship.haven")) {
+                w.sink_haven(key);
+            }
+        }
+        if f.ranges.contains(&here) && self.rng.bernoulli(chance("herd.range")) {
+            let n = w.quarter_of_range(here);
+            w.cull_range(here, n);
+        }
+        for v in &f.villages {
+            let kind = if v.ribbit {
+                "village.ribbit"
+            } else {
+                "village.human"
+            };
+            if region_of(v.at.0, v.at.1) == here && self.rng.bernoulli(chance(kind)) {
+                w.kill_residents(v.key, 2);
+            }
+        }
     }
 }
 

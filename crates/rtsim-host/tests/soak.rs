@@ -209,6 +209,7 @@ fn soak(plan: &Plan) -> (Run, Founded) {
         true,
         Durability::Fsync,
         Policy::Refuse,
+        false,
     );
     let founded = w.founded.clone();
     let pages = w.pages();
