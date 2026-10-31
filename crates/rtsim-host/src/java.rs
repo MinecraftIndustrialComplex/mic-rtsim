@@ -1272,7 +1272,7 @@ impl Java {
                     Ok((_, _, c)) => match c {
                         db::Cmd::Materialize(db::Materialize { agent, epoch, .. })
                         | db::Cmd::Adopt(db::Adopt { agent, epoch, .. })
-                        | db::Cmd::HandBack(db::HandBack { agent, epoch }) => {
+                        | db::Cmd::HandBack(db::HandBack { agent, epoch, .. }) => {
                             self.dragon_obs(&db::Obs::SpawnRejected(db::SpawnRejected {
                                 agent,
                                 epoch,

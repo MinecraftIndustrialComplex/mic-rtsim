@@ -78,6 +78,8 @@ public final class DragonBridge implements SessionPlugin {
     public static final int CLAMP_MARGIN = 8;
     /** A DEPART with timeout 0 is captured after this many ticks at most (PLACEHOLDER, choice Z11). */
     public static final int DEFAULT_DEPART_TIMEOUT = 6000;
+    /** DRAGON_DEPART reason 5: the engine needs the dragon back (dead of age, starved away, removed). */
+    public static final int DEPART_GONE = 5;
     /** A home body's lair is the nearest one this session reported within this many blocks of where it stands (EQC105). */
     public static final double HOME_LAIR_RADIUS = 64.0;
     /** A puppet's breaths are summed into one DRAGON_BREATHS at most this often (OILGATE.md §4.3). */
@@ -327,6 +329,7 @@ public final class DragonBridge implements SessionPlugin {
         for (UUID id : List.copyOf(corpses.keySet()))
             untagCorpse(id);
         nests.stopping();
+        homes.forgetChunks();
     }
 
     @Override
@@ -354,6 +357,7 @@ public final class DragonBridge implements SessionPlugin {
         } catch (RuntimeException e) {
             MicRtsimIceAndFire.LOGGER.error("[mic_rtsim_iceandfire] sending the nests' worms home after the bridge failed", e);
         }
+        homes.forgetChunks();
     }
 
     // ---- SessionPlugin: puppets -----------------------------------------------------------------
@@ -438,7 +442,7 @@ public final class DragonBridge implements SessionPlugin {
                 yield true;
             }
             case DragonRecords.DRAGON_DEPART -> {
-                depart(b.getLong(at + Depart.AGENT), b.getInt(at + Depart.EPOCH), b.getInt(at + Depart.TIMEOUT_TICKS),
+                depart(b.getLong(at + Depart.AGENT), b.getInt(at + Depart.EPOCH), aux, b.getInt(at + Depart.TIMEOUT_TICKS),
                         new Vec3(b.getDouble(at + Depart.X), b.getDouble(at + Depart.Y), b.getDouble(at + Depart.Z)), now);
                 yield true;
             }
@@ -452,7 +456,7 @@ public final class DragonBridge implements SessionPlugin {
                 yield true;
             }
             case DragonRecords.DRAGON_HAND_BACK -> {
-                homes.handBack(b.getLong(at + HandBack.AGENT), b.getInt(at + HandBack.EPOCH), now);
+                homes.handBack(b.getLong(at + HandBack.AGENT), b.getInt(at + HandBack.EPOCH), b.getLong(at + HandBack.LAIR), now);
                 yield true;
             }
             case DragonRecords.PLACE_LAIR -> {
@@ -518,11 +522,16 @@ public final class DragonBridge implements SessionPlugin {
             return true;
         }
         double x = b.getDouble(at + Materialize.X), y = b.getDouble(at + Materialize.Y), z = b.getDouble(at + Materialize.Z);
+        boolean homeBody = (flags & Materialize.FLAG_HOME_BODY) != 0;
+        if (homeBody && homes.carrying(level, agent, x, z)) {
+            // A loaded body carries the dragon's home attachment already, registered or not (EQC116, EQC311): no second body.
+            reject(agent, epoch, cmdSeq, DragonRecords.SpawnRejected.ALREADY_EMBODIED, now);
+            return true;
+        }
         if (!RtsimSession.entitiesTickAt(level, BlockPos.containing(x, y, z))) {
             reject(agent, epoch, cmdSeq, DragonRecords.SpawnRejected.NOT_TICKING, now);
             return true;
         }
-        boolean homeBody = (flags & Materialize.FLAG_HOME_BODY) != 0;
         Lairs.Lair homeLair = homeBody ? lairs.nearestKnown(level, new Vec3(x, y, z), HOME_LAIR_RADIUS) : null;
         if (homeBody && homeLair == null) {
             reject(agent, epoch, cmdSeq, DragonRecords.SpawnRejected.SPAWN_FAILED, now); // the engine orders it at a lair this session reported
@@ -569,9 +578,10 @@ public final class DragonBridge implements SessionPlugin {
         float health = b.getFloat(at + Materialize.HEALTH);
         d.setHealth(health > 0 ? Math.min(health, d.getMaxHealth()) : d.getMaxHealth());
         d.setPersistenceRequired();
-        if (homeBody)
+        if (homeBody) {
             d.setData(MicRtsimIceAndFire.HOME, new HomeBodies.HomeTag(homeLair.id(), agent)); // vanilla saves it
-        else
+            d.setAgingDisabled(false); // it ages as Ice and Fire's own does, after an uninstall too (EQC316)
+        } else
             d.setData(RtsimAttachments.AGENT, new AgentTag(agent, epoch));
         Puppet p = new Puppet(agent, epoch, d, now);
         p.home = homeBody;
@@ -696,9 +706,11 @@ public final class DragonBridge implements SessionPlugin {
     /**
      * DRAGON_DEPART: fly to the target, and once no player has the dragon in entity-ticking range (or
      * the timeout passed) capture it: DRAGON_DEMATERIALIZED, reason 1. A dragon that is not embodied is
-     * answered at once (reason 6), so the engine never waits.
+     * answered at once (reason 6), so the engine never waits. A home body told to go because its dragon
+     * is gone from the sim (reason 5: dead of age, starved away) is discarded at once (EQC314): kept for
+     * the capture, a lair going out or an unload in the window would save it with a dead dragon's agent.
      */
-    private void depart(long agent, int epoch, int timeout, Vec3 target, long now) {
+    private void depart(long agent, int epoch, int reason, int timeout, Vec3 target, long now) {
         Puppet p = byAgent.get(agent);
         if (p == null || p.epoch != epoch) {
             ByteBuffer r = session.boundary().beginJournaled(DragonRecords.DRAGON_DEMATERIALIZED, DragonRecords.Dematerialized.SIZE,
@@ -706,6 +718,10 @@ public final class DragonBridge implements SessionPlugin {
             r.putLong(DragonRecords.Dematerialized.AGENT, agent);
             r.putInt(DragonRecords.Dematerialized.EPOCH, epoch);
             session.boundary().commit(r);
+            return;
+        }
+        if (p.home && reason == DEPART_GONE) {
+            capture(p, DragonRecords.Dematerialized.COMMAND, now);
             return;
         }
         p.mode = Mode.DEPART;
@@ -788,6 +804,9 @@ public final class DragonBridge implements SessionPlugin {
         Puppet p = new Puppet(agent, epoch, d, now);
         p.home = homeBody;
         p.lair = homeBody ? homeLair.id() : 0L;
+        if ((b.getInt(at + Adopt.FLAGS) & Adopt.FLAG_OIL) != 0)
+            p.oil = Math.max(0, b.getInt(at + Adopt.OIL)); // a census-adopted fire dragon's fire is gated too (EQC317)
+        p.lastBreathFlush = now;
         register(p);
         journalMaterialized(p, level, now);
         adopted++;
@@ -943,10 +962,13 @@ public final class DragonBridge implements SessionPlugin {
                 capture(p, p.home ? DragonRecords.Dematerialized.HOME_SAVED : DragonRecords.Dematerialized.UNLOADED, now);
                 continue;
             }
-            // A home body is kept while its lair is in (the census releases it at LAIR_OUT): not ticking is not a capture.
+            // A home body is kept while its lair is in: not ticking is not a capture. One kept past its lair's out because its
+            // chunk still ticked is released, saved by vanilla, once its chunk stops ticking (EQC312).
             if (!(e.level() instanceof ServerLevel level) || !RtsimSession.entitiesTickAt(level, e.blockPosition())) {
                 if (!p.home)
                     capture(p, DragonRecords.Dematerialized.NOT_TICKING, now);
+                else if (!homes.isIn(p.lair))
+                    capture(p, DragonRecords.Dematerialized.HOME_SAVED, now);
                 continue;
             }
             DragonBaseEntity d = p.dragon();
@@ -960,16 +982,16 @@ public final class DragonBridge implements SessionPlugin {
                 capture(p, DragonRecords.Dematerialized.COMMAND, now);
                 continue;
             }
+            if (p.oil == 0)
+                IafDragons.withoutFire(d); // bite and claws (OG-13), a home body's too (EQC317)
+            if (p.pendingBreaths > 0 && now - p.lastBreathFlush >= BREATH_INTERVAL)
+                flushBreaths(p, now);
             if (p.home) {
                 if (now - p.lastState >= STATE_INTERVAL)
                     state(p, d, level, now);
                 continue;
             }
-            if (p.oil == 0)
-                IafDragons.withoutFire(d); // bite and claws (OG-13)
             steerTick(p, d);
-            if (p.pendingBreaths > 0 && now - p.lastBreathFlush >= BREATH_INTERVAL)
-                flushBreaths(p, now);
             if (now - p.lastState >= STATE_INTERVAL)
                 state(p, d, level, now);
         }
@@ -1464,7 +1486,14 @@ public final class DragonBridge implements SessionPlugin {
             int species = IafDragons.species(d);
             if (species < 0)
                 continue;
+            // The lair whose box it stands in, or whose box its home (a roost's pivot) is in, or whose footprint it stands in:
+            // Ice and Fire's own dragon wanders 40 blocks from home (EQC313).
+            BlockPos ownHome = IafDragons.home(d);
             Lairs.Lair lair = lairs.at(level, e.blockPosition(), now);
+            if (lair == null && ownHome != null)
+                lair = lairs.at(level, ownHome, now);
+            if (lair == null)
+                lair = lairs.nearestKnown(level, e.position(), DragonConfig.lairFootprint());
             MobSpawnType type = e.getExistingDataOrNull(MicRtsimIceAndFire.SPAWN_TYPE.get());
             int kind = spawnKind(type, lair != null);
             if (lair != null && kind == DragonRecords.Untagged.SPAWN_STRUCTURE)
@@ -1472,7 +1501,7 @@ public final class DragonBridge implements SessionPlugin {
             int flags = 0;
             if (d.isTame())
                 flags |= DragonRecords.Untagged.FLAG_TAMED;
-            BlockPos home = IafDragons.home(d);
+            BlockPos home = ownHome;
             if (home != null)
                 flags |= DragonRecords.Untagged.FLAG_HAS_HOME;
             if (IafDragons.sleeping(d))

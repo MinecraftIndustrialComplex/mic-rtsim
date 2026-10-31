@@ -26,7 +26,9 @@
 
 use std::collections::{BTreeSet, VecDeque};
 
-use rtsim_ecology::herds::habitat::{FoundingTunables, HabitatClimate, RegionPlan, plan_region};
+use rtsim_ecology::herds::habitat::{
+    FoundingTunables, HabitatClimate, RegionPlan, plan_region, range_capacity, region_herd_name,
+};
 use rtsim_kernel::page::{PageKey, PageStore, SaveBatch};
 use rtsim_space::habitat::{DICT_BIOME, HABITAT, HabitatRecord, KNOWN_END, KnownRecord};
 use rtsim_space::sampled::mark;
@@ -68,6 +70,8 @@ pub(super) struct Link {
     pub(super) commands_written: u64,
     pub(super) herds_founded: u64,
     pub(super) regions_barren: u64,
+    /// Founded ranges whose K changed with their ground (EQC504).
+    pub(super) ranges_recapped: u64,
     /// Save failures seen at the last snapshot: a new one means a save may not have landed, so
     /// every region is written again.
     failures_seen: u64,
@@ -115,6 +119,7 @@ impl Link {
             commands_written: 0,
             herds_founded: 0,
             regions_barren: 0,
+            ranges_recapped: 0,
             failures_seen: 0,
         }
     }
@@ -166,6 +171,10 @@ impl Link {
                     w.cell_count(),
                     w.region_count()
                 ));
+                // Every region is judged again after a start (EQC512): the regions waiting to be
+                // judged, and the founded ranges whose K a lost recompute owed, are in no page.
+                // Barren regions are skipped at once; the rest cost one region read each.
+                l.pending = w.regions().map(|(k, _)| *k).collect();
                 l.world = WorldHandle::new(Box::new(w));
                 l
             }
@@ -286,24 +295,31 @@ pub(super) fn simulate(st: &mut State) {
     let climate = HabitatClimate::new(st.worldmodel.world.clone());
     for k in batch {
         st.worldmodel.pending.remove(&k);
-        let plan = {
+        let marked = st
+            .worldmodel
+            .world
+            .read()
+            .sampled_ref()
+            .is_some_and(|s| s.marks(k) & mark::HERDS != 0);
+        let ranged = herds::has_range(st, k);
+        if ranged {
+            // A founded range's K follows its ground (EQC504).
+            recap(st, &climate, k);
+        }
+        if marked {
+            continue;
+        }
+        let plan = if ranged {
+            RegionPlan::Barren // founded before a crash took the mark: decided
+        } else {
             let w = st.worldmodel.world.read();
-            if w.sampled_ref()
-                .is_some_and(|s| s.marks(k) & mark::HERDS != 0)
-            {
-                continue;
-            }
-            if herds::has_range(st, k) {
-                RegionPlan::Barren // founded before a crash took the mark: decided
-            } else {
-                plan_region(
-                    &**w,
-                    &climate,
-                    k,
-                    super::seeded(FOUNDING_SEED, st.seed),
-                    &st.worldmodel.founding,
-                )
-            }
+            plan_region(
+                &**w,
+                &climate,
+                k,
+                super::seeded(FOUNDING_SEED, st.seed),
+                &st.worldmodel.founding,
+            )
         };
         let decided = match plan {
             RegionPlan::NotYet => false,
@@ -320,6 +336,53 @@ pub(super) fn simulate(st: &mut State) {
         };
         if decided && let Some(s) = st.worldmodel.world.write().sampled() {
             s.set_mark(k, mark::HERDS);
+        }
+    }
+}
+
+/// Queues ranges to be judged again at the next founding pass: the herds recolonised them with
+/// dispersers, so their species may have changed (EQC511).
+pub(super) fn queue_ranges(st: &mut State, ranges: Vec<(u16, i32, i32)>) {
+    for (frame, rx, rz) in ranges {
+        st.worldmodel.pending.insert(RegionKey { frame, rx, rz });
+    }
+}
+
+/// Re-caps the K of region `k`'s range to what its ground feeds now (EQC504): the cells of a
+/// founded region changed (more of it known, or its ground rebuilt), its herd was recolonised by
+/// another species (EQC511), or the engine started (EQC512). Only the world model's own range,
+/// the row named for the region (X2-11), is re-capped: a herd a test order founded there keeps
+/// the K it was ordered with (EQC516). Like a founding, the change lands at the hand-over's time.
+fn recap(st: &mut State, climate: &HabitatClimate, k: RegionKey) {
+    let name = region_herd_name(k);
+    for h in st.herds.engine.range_herds((k.frame, k.rx, k.rz)) {
+        let Some(species) = st
+            .herds
+            .engine
+            .herd(h)
+            .filter(|x| x.name == name)
+            .map(|x| x.species)
+        else {
+            continue;
+        };
+        let cap = {
+            let w = st.worldmodel.world.read();
+            range_capacity(&**w, climate, k, species, &st.worldmodel.founding)
+        };
+        if st.herds.engine.herd(h).is_some_and(|x| x.k == cap) {
+            continue;
+        }
+        let at = shared::hand_over_target(st)
+            .max(st.herds.engine.now())
+            .max(st.phase1.world.now());
+        shared::run_to(st, at);
+        if let Some(old) = st.herds.engine.set_k(h, cap, at) {
+            st.worldmodel.ranges_recapped += 1;
+            st.phase1.taint();
+            log_info(&format!(
+                "herd range {}:{}:{} re-capped from its ground: K {old} to {cap}",
+                k.frame, k.rx, k.rz
+            ));
         }
     }
 }

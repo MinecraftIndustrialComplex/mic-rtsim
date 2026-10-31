@@ -425,8 +425,15 @@ sees; body; cost. Rates are the model's (§3); the engine's names are given wher
 
 #### 2.4.2 Herds and wild animals
 
-- **Site:** the 512-block herd range (one herd per region today). K = the range's carrying capacity:
-  today's founding size, `density x habitat cells`.
+- **Site:** the 512-block herd range (one herd per region today). K = the range's carrying capacity
+  (Ben, 2026-10-31; docs/overnight-choices-equilibrium.md EQC500 to EQC516), all on the forage
+  cells a herd may enter (known in full, at most half water):
+  `K = min(clamp(max(round(density x habitat cells), 4 x chunk-generation animals), 8, 4,000),
+  floor(0.5 x Y / intake))`, with Y those cells' sustained yield a day (each cell's logistic
+  maximum harvest, `growth x capacity / 4`, averaged over the year). Only species whose
+  `floor(0.5 x Y / intake)` is at least 8 are drawn; a region where none is founds no herd.
+  K is re-derived by the same rule, never below 8, when the region's cells change, when
+  dispersers of another species recolonise the range, and at every engine start.
 - **Births:** once a year, as today, with a density term: `Binomial(A x ceil(f), f x condition x
   1/(1 + A/M) / ceil(f))`, where M is set per species so that the herd's steady state is K (§3.2).
   Below K a herd grows; above it, it shrinks; it never overshoots. One multiply per herd per year.
