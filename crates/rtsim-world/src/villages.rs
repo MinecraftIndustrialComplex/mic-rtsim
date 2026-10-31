@@ -19,7 +19,7 @@
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 use rtsim_kernel::renewal::Pressure;
 use rtsim_kernel::rng::{StreamKey, SystemId};
-use rtsim_settle::{Culture, NodeKind, Pos};
+use rtsim_settle::{Culture, NodeKind};
 use rtsim_travel::caravan::Body;
 
 use crate::ribbits::{SpawnResident, identity_op};
@@ -480,7 +480,8 @@ impl World {
 
     /// Where a family comes from (EQC161): the point 192 blocks out on the side away from the
     /// other villages within 3,000 blocks, else along a bearing drawn from the village's stream.
-    /// The draw is always made, so the stream does not depend on which is used.
+    /// The draw is always made, so the stream does not depend on which is used. The point is the
+    /// village's plain offset, which near a toroidal frame's seam lies past it (EQC199).
     fn settlers_from(&self, node: usize, serial: u32) -> (i32, i32) {
         let me = self.nodes[node].pos;
         let key = self.nodes[node].key;
@@ -509,12 +510,14 @@ impl World {
             None
         };
         let a = away.unwrap_or(random);
-        let p = self.canonical_pos(Pos::new(
-            me.frame,
+        // In the village's own plain coordinates, not canonicalised: Java walks the family in along
+        // the ray from the bell toward this point, and a point past a seam is the right bearing
+        // there, where its canonical image at the far end of the world would send them in the
+        // other way (EQC199).
+        (
             me.x + (SOURCE_BLOCKS * a.cos()).round() as i32,
             me.z + (SOURCE_BLOCKS * a.sin()).round() as i32,
-        ));
-        (p.x, p.z)
+        )
     }
 
     /// A growth step is due (EQC163).
