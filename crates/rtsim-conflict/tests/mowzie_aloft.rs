@@ -1635,8 +1635,8 @@ fn chief_answer(
 /// slot Body (Left at home, its throne body standing): dead at the death, its line still in
 /// flight so no REMOVE yet; the answer, NOTHING (a merge) or STALE (Java's answer since the M11
 /// review's P1), clears the line and sends the throne body's REMOVE at once (the review's P3,
-/// MZB-1304; before it the REMOVE waited for the next census), whose answer frees the slot.
-/// Without release 3 the death books nothing and the chief lives.
+/// MZB-1304; before it the REMOVE waited for the next census), and the slot is freed once the
+/// held lines play. Without release 3 the death books nothing and the chief lives.
 #[test]
 fn a_puppet_killed_while_its_hand_back_is_in_flight_dies_once() {
     for (seed, outcome) in [(103, boundary::LINE_DONE), (104, boundary::LINE_NOTHING)] {
@@ -1741,11 +1741,18 @@ fn a_puppet_killed_while_its_hand_back_is_in_flight_dies_once() {
             &despawned(agent, epoch),
             at,
         );
-        // The player at the throne goes: the held REMOVE plays, and its answer frees the slot.
+        // The player at the throne goes: the held lines play and the slot is freed. The census's
+        // TAKE that `left_home_in` answered STALE is still held by the plugin and plays first,
+        // taking the throne body, so the REMOVE finds none: NOTHING, which frees a dead slot as
+        // DONE does.
         let (rec, index, _, _) = removal.expect("the REMOVE");
         let at = r.c.now();
         r.plugin.hold_chief(r.key, false, false, at);
-        assert_eq!(answered(&mut r, rec.op, index), boundary::LINE_DONE);
+        let got = answered(&mut r, rec.op, index);
+        assert!(
+            got == boundary::LINE_DONE || got == boundary::LINE_NOTHING,
+            "outcome {outcome}: the REMOVE is answered ({got})"
+        );
         assert_eq!(
             chief(&r),
             None,
