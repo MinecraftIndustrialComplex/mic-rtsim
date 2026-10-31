@@ -24,7 +24,8 @@
 #
 # Environment (all optional): MIC_RTSIM_REPO (the repository to fetch; default the one this script
 # lives in, or the one `install` baked in), RTSIM_SOAK_DAYS, RTSIM_SOAK_WALL_HOURS (passed to the
-# test), SOAK_SEED (override tonight's seed).
+# test), SOAK_SEED (override tonight's seed), SOAK_REF (the commit to export instead of
+# origin/main: a red night's A/B on the last green commit, EQC442 (4), or a branch before it lands).
 set -euo pipefail
 
 CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/mic-rtsim-nightly"
@@ -67,12 +68,12 @@ take_lock() {
     if ! flock -n 9; then log "refused: another soak holds $LOCK"; exit 3; fi
 }
 
-# Fetches origin and exports origin/main into $SRC; prints the commit.
+# Fetches origin and exports origin/main (or $SOAK_REF) into $SRC; prints the commit.
 export_main() {
-    local r sha tmp
+    local r sha tmp ref="${SOAK_REF:-origin/main}"
     r="$(repo)"
     git -C "$r" fetch -q origin
-    sha="$(git -C "$r" rev-parse --short=8 origin/main)"
+    sha="$(git -C "$r" rev-parse --short=8 "$ref")"
     mkdir -p "$CACHE"
     if [ ! -d "$TARGET" ]; then
         btrfs subvolume create "$TARGET" >/dev/null 2>&1 || mkdir -p "$TARGET"
@@ -80,7 +81,7 @@ export_main() {
     tmp="$CACHE/src.new"
     rm -rf "$tmp"
     mkdir -p "$tmp"
-    git -C "$r" archive origin/main | tar -x -C "$tmp"
+    git -C "$r" archive "$ref" | tar -x -C "$tmp"
     # Unchanged files keep their times, so cargo rebuilds only what the commit changed.
     mkdir -p "$SRC"
     rsync -a --checksum --delete "$tmp/" "$SRC/"
