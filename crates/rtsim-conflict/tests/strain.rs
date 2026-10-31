@@ -524,35 +524,6 @@ fn a_war_chief_killed_by_a_player_adds_one_over_cap() {
     assert!((got - 1.0 / 60.0).abs() < 1e-6, "{got}");
 }
 
-/// The den and the grove book what they booked: S9's, not S7's. (A fresh camp with no bodies cannot
-/// field a raid, so this holds nothing for either today; the den's Frostmaw dies as CHIEF_KILLED and
-/// never as a casualty, MZB-295, and the grove's march casualties are tested with a grove that has
-/// its warriors home, `tests/grove_renewal.rs`.)
-#[test]
-fn the_body_cultures_book_what_they_booked() {
-    for culture in ["frostmaw", "umvuthana"] {
-        let (mut w, mut c, f) = camp(28, culture);
-        let key = c.factions[f as usize].key;
-        let Some(p) = c.order_party(&mut w, key, PartyKind::Raid, district(), None, Tick(21))
-        else {
-            continue;
-        };
-        let x = &mut c.parties[p];
-        x.epoch += 1;
-        x.embodied = true;
-        x.spawned = x.units.clone();
-        let e = x.epoch;
-        let o = casualty(&c, p, e, boundary::BY_PLAYER, 1, next_op());
-        ingest(&mut c, &mut w, &o, Tick(200));
-        assert_eq!(
-            pressure(&c, f, Tick(200)),
-            0.0,
-            "{culture}: a casualty books no pressure"
-        );
-        assert!(c.factions[f as usize].strain.is_none());
-    }
-}
-
 /// The test hook takes the pool first, then the parties' members, each a player's loss.
 #[test]
 fn slay_takes_the_pool_then_the_parties() {

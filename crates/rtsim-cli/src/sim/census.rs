@@ -809,6 +809,10 @@ mod tests {
         den.run(to);
         let k = census_of(&den, "conflict.den");
         assert_eq!((k.members, k.empty, k.renewals), (1, 0, 1), "{k:?}");
+        // A den's arrival is in no grove's renewals (S9 review: the engine counts one `arrivals` and the
+        // groves' share of it apart).
+        assert_eq!(census_of(&den, "conflict.grove").renewals, 0);
+        assert_eq!(den.c.stats.grove_arrivals, 0);
 
         // A grove that does not plunder, so that no raptor pack is away at the census.
         let mut quiet = rtsim_conflict::Cultures::builtin();
@@ -825,8 +829,10 @@ mod tests {
         grove.run(to);
         let k = census_of(&grove, "conflict.grove");
         assert_eq!((k.members, k.renewals), (7, 1), "{k:?}");
-        // The two kinds are apart: the den's kill is in no grove's line.
+        // The two kinds are apart: the den's kill is in no grove's line, and the grove's arrival is in no den's.
         assert_eq!(census_of(&grove, "conflict.den").sites, 0);
+        assert_eq!(census_of(&grove, "conflict.den").renewals, 0);
+        assert_eq!(grove.c.stats.arrivals, grove.c.stats.grove_arrivals);
     }
 
     /// With nobody watching nothing presses: every kind keeps its sites, every pressure is 0, no
