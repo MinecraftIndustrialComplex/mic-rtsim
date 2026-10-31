@@ -817,7 +817,13 @@ impl Dragons {
                     n.hatched = row.count > 0 || row.waiting();
                 }
                 if row.waiting() {
-                    n.wait_milli = Some(u32::try_from(row.wait_left).unwrap_or(u32::MAX).max(1));
+                    // Never past the cap's wait: a longer one is a corrupt row's (MZB-1401).
+                    let cap = (self.nest_tun().cap_days * 1_000.0).round() as u64;
+                    n.wait_milli = Some(
+                        u32::try_from(row.wait_left.min(cap))
+                            .unwrap_or(u32::MAX)
+                            .max(1),
+                    );
                 }
             } else if row.existed() && f.placed {
                 n.found_unknown = true;

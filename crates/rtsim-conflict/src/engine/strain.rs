@@ -178,7 +178,8 @@ impl Conflict {
         };
         s.pressure = Pressure::handed_over(row.p, row.elapsed, day, pr.def.half_life_days);
         if row.waiting() && row.count == 0 {
-            let due = at + row.wait_now_ticks().max(1);
+            // No refounding waits past its cap: a wait left beyond it is a corrupt row's (MZB-1401).
+            let due = at + row.wait_now_ticks().min(pr.refound.cap_ticks()).max(1);
             (x.pool, x.pool_at, x.away) = (0.0, at, 0);
             x.plunder_stamp = x.plunder_stamp.wrapping_add(1);
             s.broken = Some(Broken { since: at, due });

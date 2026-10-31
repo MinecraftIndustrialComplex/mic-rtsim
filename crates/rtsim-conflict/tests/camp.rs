@@ -4021,3 +4021,27 @@ fn a_member_home_from_a_raid_hands_its_new_body_over_and_a_reset_removes_none() 
     assert_eq!(r.c.camp(r.f).unwrap().slots[0].uuid, home[0].0);
     ok(&mut r);
 }
+
+/// MZB-1401 (P3 6): a row whose wait left is past anything an engine sends (a corrupt ledger row:
+/// neither Java's parse nor `FoundRow::decode` bounds it) is held to the cap's wait, the longest a
+/// renewal waits; the tick it ends never wraps.
+#[test]
+fn a_rows_wait_past_the_cap_is_held_to_the_cap() {
+    let mut r = renewal_den(1402);
+    come_in(&mut r);
+    let b = r.plugin.camps[&r.key].bodies[0];
+    let died = r.c.now() + 1;
+    assert!(r.plugin.camp_kill(r.key, b.uuid, boundary::BY_PLAYER, died));
+    r.run(died + 5);
+    let mut row = row_of(&r, 0, false);
+    assert!(row.waiting());
+    row.wait_left = u64::MAX - 7;
+    let at = r.c.now() + 100;
+    r.reborn(row, at);
+    assert_eq!(
+        r.c.camp(r.f).unwrap().arrival_at,
+        Some(at + cap_ticks(&r)),
+        "the cap's wait"
+    );
+    ok(&mut r);
+}

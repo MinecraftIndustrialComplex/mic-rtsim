@@ -17484,3 +17484,17 @@ the review gave are at 43062c0b.
     the den comes in; on main "assertion `left == right` failed: the Frostmaw at home is not removed, left: 1, right: 0").
     `an_arrival_at_a_camp_that_is_in_counts_first_and_its_census_spawns` also asserts the slot's UUID after the SPAWN's answer;
     the codec's sample answer carries a UUID.
+- **MZB-1401** (P3 6, a corrupt row's wait left is held to the cap): neither Java's `SiteLedger.parse` nor
+  `FoundRow::decode` bounds a row's wait left, and the hand-overs computed `at + wait` (`camp_restore`, the ecology engine's
+  `found_lair`, and S7's `strain_found` for a broken pool camp, the same shape), which panics in a debug build and wraps in a
+  release one, booking the arrival at a tick far in the past (a mint at once). **Taken: clamp, at each hand-over, to the kind's
+  cap** (`RenewalRule::cap_ticks` for camps and lairs, the refounding rule's cap for a pool camp, the nest's `cap_days` in
+  thousandths of a drilling day; a nest saturated at `u32::MAX` thousandths before, 4.3 million drilling days). No engine
+  waits longer than its cap, so a longer wait can only be a corrupt row's, and the cap is the longest wait it could have meant:
+  it errs toward no mint. **Not taken: refusing the row**, which would throw away its pressure and bodies with the bad field,
+  and make the site found as new (a farmed site then reads unfarmed). Java is unchanged: the engine never trusts a tail
+  (MZB-1011). Tests, each failing on main: `tests/camp.rs::a_rows_wait_past_the_cap_is_held_to_the_cap`,
+  `tests/strain.rs::a_broken_rows_wait_past_the_cap_is_held_to_the_cap` and
+  `rtsim-ecology/tests/lair_renewal.rs::a_rows_wait_past_the_cap_is_held_to_the_cap` ("attempt to add with overflow" at
+  `rtsim-kernel/src/clock.rs:66:14`), `rtsim-ecology/tests/nests.rs::a_nest_rows_wait_past_the_cap_is_held_to_the_cap`
+  ("assertion `left == right` failed: the cap, left: Some(4294967295), right: Some(96000)").
