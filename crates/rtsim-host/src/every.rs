@@ -157,21 +157,6 @@ impl Founded {
         n as u32
     }
 
-    /// The sites a census row of `kind` must hold in census `cs`, or `None` for a kind the
-    /// census has no row for yet. Until S9's rows (`conflict.den`, `conflict.grove`,
-    /// `conflict.umvuthi`) are in the census, `conflict.camp` counts the dens and groves too.
-    pub fn expected(&self, kind: &str, cs: &[KindCensus]) -> Option<u32> {
-        let has = |k: &str| cs.iter().any(|c| c.kind == k);
-        let s9 = has("conflict.den");
-        match kind {
-            "conflict.camp" if !s9 => {
-                Some(self.sites(kind) + self.sites("conflict.den") + self.sites("conflict.grove"))
-            }
-            "conflict.den" | "conflict.grove" | "conflict.umvuthi" if !has(kind) => None,
-            _ => Some(self.sites(kind)),
-        }
-    }
-
     pub fn village(&self, key: u64) -> Option<&Village> {
         self.villages.iter().find(|v| v.key == key)
     }
@@ -613,6 +598,8 @@ pub struct Every {
     /// What the kills since the last day's end should have booked, and what was ([`Teeth`]).
     owed: Vec<Owed>,
     pub teeth: Teeth,
+    /// The heirs seated, for the Umvuthi's census row (EQC487).
+    pub chiefs: rtsim_conflict::synth::ChiefBook,
     /// The last op id a SUNK record took.
     op: u64,
     /// The folders to delete at the end.
@@ -670,16 +657,10 @@ impl Every {
             second: Vec::new(),
             owed: Vec::new(),
             teeth: Teeth::default(),
+            chiefs: Default::default(),
             op: 0,
             scratch: vec![world, parent],
         }
-    }
-
-    /// The teeth so far, with whether the census has S9's rows.
-    pub fn teeth_now(&self) -> Teeth {
-        let mut t = self.teeth.clone();
-        t.s9 = kind(&self.census(), "conflict.den").is_some();
-        t
     }
 
     /// The fork's pages folder.
@@ -715,6 +696,7 @@ impl Every {
                 .unwrap_or_else(|e| panic!("seed {}: day {next}: {e}", self.seed));
             self.villages();
             self.check_owed();
+            self.look_chiefs();
             self.trim_logs();
         }
     }
@@ -946,42 +928,51 @@ impl Every {
     }
 
     /// A player's visit to den or grove `key` through the fake conflict plugin, as S9's
-    /// `mowzie_visit`: the camp comes in, every member at home (`chief`: the chief's body alone)
-    /// is killed by the player, and the camp goes out. How many died. Booked: the camp's pressure,
-    /// 1/K a member (the chief's own pressure for the chief, which the census reads).
-    pub fn visit_camp(&mut self, key: u64, kind: &'static str, chief: bool) -> u64 {
+    /// `mowzie_visit`: the camp comes in (its owed bodies stand, an heir due is seated), and with
+    /// `members` (the census kind they count in) every member at home is killed by the player,
+    /// with `chief` the chief's body; then the camp goes out. A visit that kills nothing is a
+    /// player passing by. How many members and chiefs died. Booked: the camp's pressure, 1/K a
+    /// member, and the chief's own pressure, 1 a chief.
+    pub fn visit_camp(&mut self, key: u64, members: Option<&'static str>, chief: bool) -> (u64, u64) {
         use rtsim_conflict::boundary as cb;
         use rtsim_conflict::engine::CHIEF_SLOT;
         let t0 = self.host.j.game_time - self.host.start_time;
         let at = Tick(self.host.j.game_time.max(0) as u64);
         self.host.j.conflict_plugin.camp_in(key, at);
         self.run_ticks_to(t0 + 10);
-        let ids: Vec<_> = self
+        let bodies: Vec<(cb::Uuid, bool)> = self
             .host
             .j
             .conflict_plugin
             .camp_world(key)
             .bodies
             .iter()
-            .filter(|b| b.generation != 0 && (b.slot == CHIEF_SLOT) == chief)
-            .map(|b| b.uuid)
+            .filter(|b| b.generation != 0)
+            .map(|b| (b.uuid, b.slot == CHIEF_SLOT))
             .collect();
         let day = self.obs_day();
         let before = self.camp(key, day);
+        let chief_before = self.chief_pressure(key, day);
         let at = Tick(self.host.j.game_time.max(0) as u64);
-        // TODO(S9): the chief's own pressure (`Camp::chief_pressure`) for the Umvuthi's teeth.
-        let mut killed = 0u64;
-        for u in ids {
-            killed += u64::from(
+        let (mut killed, mut chiefs) = (0u64, 0u64);
+        for (u, is_chief) in bodies {
+            if (is_chief && !chief) || (!is_chief && members.is_none()) {
+                continue;
+            }
+            let dead = u64::from(
                 self.host
                     .j
                     .conflict_plugin
                     .camp_kill(key, u, cb::BY_PLAYER, at),
             );
+            if is_chief {
+                chiefs += dead;
+            } else {
+                killed += dead;
+            }
         }
-        if killed > 0
-            && !chief
-            && let Some(c) = before
+        if let (Some(kind), Some(c)) = (members, before)
+            && killed > 0
         {
             self.owe_pressure(
                 kind,
@@ -991,14 +982,45 @@ impl Every {
                 killed as f32 / c.cap.max(1) as f32,
             );
         }
+        if let Some(p) = chief_before
+            && chiefs > 0
+        {
+            self.owe_pressure(
+                "conflict.umvuthi",
+                Site::Chief(key),
+                day,
+                p,
+                chiefs as f32,
+            );
+        }
         let t = self.host.j.game_time - self.host.start_time;
         self.run_ticks_to(t + 5);
         let at = Tick(self.host.j.game_time.max(0) as u64);
         self.host.j.conflict_plugin.camp_out(key, at);
         let t = self.host.j.game_time - self.host.start_time;
         self.run_ticks_to(t + 3);
-        self.teeth.killed(kind, killed);
-        killed
+        if let Some(kind) = members {
+            self.teeth.killed(kind, killed);
+        }
+        if chief {
+            self.teeth.killed("conflict.umvuthi", chiefs);
+        }
+        self.look_chiefs();
+        (killed, chiefs)
+    }
+
+    /// Camp `key`'s chief's own pressure on `day`, if its culture has a chief.
+    fn chief_pressure(&self, key: u64, day: u32) -> Option<f32> {
+        self.host.e.with_conflict(|c, _| {
+            let f = c.faction_of_key(key)?;
+            c.chief_census(f, Tick::from_days(u64::from(day))).map(|x| x.1)
+        })
+    }
+
+    /// The heirs seated since the last look ([`ChiefBook`]).
+    fn look_chiefs(&mut self) {
+        let book = &mut self.chiefs;
+        self.host.e.with_conflict(|c, _| book.look(c));
     }
 
     /// Haven `key`'s active pirate ships: (agent, epoch).
@@ -1207,7 +1229,7 @@ impl Every {
                     h.ships.len().max(1) as f32,
                 ))
             }),
-            Site::Camp(_) => None,
+            Site::Camp(_) | Site::Chief(_) => None,
         }
     }
 
@@ -1215,6 +1237,7 @@ impl Every {
     fn pressure_on(&self, site: Site, day: u32) -> Option<f32> {
         match site {
             Site::Camp(key) => self.camp(key, day).map(|c| c.pressure),
+            Site::Chief(key) => self.chief_pressure(key, day),
             _ => self.pressure(site).map(|(p, h, _)| {
                 let (_, at) = p.parts();
                 // Read on the kill's day: a bump that day left it stored as of then.
@@ -1301,9 +1324,14 @@ impl Every {
         }
     }
 
-    /// The engine's census now (between steps).
+    /// The engine's census now (between steps), with the Umvuthi's row, which the suite's
+    /// harness counts the heirs of (EQC487).
     pub fn census(&self) -> Vec<KindCensus> {
-        self.host.e.census()
+        let mut cs = self.host.e.census();
+        if let Some(row) = self.host.e.with_conflict(|c, _| self.chiefs.row(c)) {
+            cs.push(row);
+        }
+        cs
     }
 
     /// Stops the host (a final save) and deletes the world and its fork.
@@ -1384,17 +1412,17 @@ impl Every {
             "dens" => f
                 .dens
                 .iter()
-                .map(|c| self.visit_camp(c.key, "conflict.den", false))
+                .map(|c| self.visit_camp(c.key, Some("conflict.den"), false).0)
                 .sum(),
             "groves" => f
                 .groves
                 .iter()
-                .map(|c| self.visit_camp(c.key, "conflict.grove", false))
+                .map(|c| self.visit_camp(c.key, Some("conflict.grove"), false).0)
                 .sum(),
             "umvuthi" => f
                 .groves
                 .iter()
-                .map(|c| self.visit_camp(c.key, "conflict.umvuthi", true))
+                .map(|c| self.visit_camp(c.key, None, true).1)
                 .sum(),
             "pirates" => f.havens.iter().map(|h| self.sink_haven(h.0)).sum(),
             _ => panic!("no wipe {wipe}"),
@@ -1465,7 +1493,7 @@ pub fn together(seed: u64, wipe: Option<&'static str>, shock_day: u64, to: u64) 
             out.reads.entry(x).or_default().push((day, n, k, whole));
         }
     }
-    out.teeth = w.teeth_now();
+    out.teeth = w.teeth.clone();
     w.close();
     out
 }
@@ -1597,7 +1625,7 @@ pub fn long_run(seed: u64, roamer: bool, days: u64) -> LongRun {
         }
     }
     let rate = days as f64 / t0.elapsed().as_secs_f64().max(1e-9);
-    let teeth = w.teeth_now();
+    let teeth = w.teeth.clone();
     w.close();
     LongRun {
         seed,
@@ -1646,6 +1674,8 @@ pub enum Site {
     Village(u64),
     /// A pool camp, outpost, den or grove (its faction key).
     Camp(u64),
+    /// A grove's chief, the Umvuthi (its faction key).
+    Chief(u64),
     Haven(u64),
 }
 
@@ -1674,24 +1704,9 @@ pub struct Teeth {
     pub killed: BTreeMap<&'static str, u64>,
     pub checked: BTreeMap<&'static str, u64>,
     pub wrong: Vec<String>,
-    /// Whether the engine's census had S9's rows (`conflict.den` and the rest).
-    pub s9: bool,
 }
 
 impl Teeth {
-    /// Whether a kind's teeth wait for S9: until S9 puts the groves on the shared rule a grove's
-    /// warriors raise no pressure, and the Umvuthi's own pressure is S9's (EQC479).
-    pub fn awaits_s9(&self, kind_or_wrong: &str) -> bool {
-        !self.s9
-            && (kind_or_wrong.starts_with("conflict.grove")
-                || kind_or_wrong.starts_with("conflict.umvuthi"))
-    }
-
-    /// The mismatches that count now ([`Teeth::awaits_s9`]).
-    pub fn wrong_now(&self) -> Vec<&String> {
-        self.wrong.iter().filter(|w| !self.awaits_s9(w)).collect()
-    }
-
     fn killed(&mut self, kind: &'static str, n: u64) {
         *self.killed.entry(kind).or_default() += n;
     }
@@ -1762,11 +1777,18 @@ impl Roamer {
                 self.at = next;
             }
         }
-        if !self.kills {
-            return;
-        }
         let here = self.at;
         let f = w.founded.clone();
+        if !self.kills {
+            // The peaceful player still loads the dens and groves it passes, so an heir due is
+            // seated (an out grove orders none, MZB-406).
+            for c in f.dens.iter().chain(&f.groves) {
+                if region_of(c.at.0, c.at.1) == here {
+                    w.visit_camp(c.key, None, false);
+                }
+            }
+            return;
+        }
         // Every draw is made whatever the site holds, in a fixed order, so the walk and the
         // draws of one seed do not depend on the world's state.
         for &(key, home) in &f.lairs {
@@ -1774,19 +1796,19 @@ impl Roamer {
                 w.slay_lair(key);
             }
         }
+        // A den or grove the roamer stands by is loaded for a visit every day it is there: it
+        // kills with its draws, and passes by when it draws none (an heir due is seated then).
         for d in &f.dens {
-            if region_of(d.at.0, d.at.1) == here && self.rng.bernoulli(chance("conflict.den")) {
-                w.visit_camp(d.key, "conflict.den", false);
+            if region_of(d.at.0, d.at.1) == here {
+                let kill = self.rng.bernoulli(chance("conflict.den"));
+                w.visit_camp(d.key, kill.then_some("conflict.den"), false);
             }
         }
         for g in &f.groves {
             if region_of(g.at.0, g.at.1) == here {
-                if self.rng.bernoulli(chance("conflict.grove")) {
-                    w.visit_camp(g.key, "conflict.grove", false);
-                }
-                if self.rng.bernoulli(chance("conflict.umvuthi")) {
-                    w.visit_camp(g.key, "conflict.umvuthi", true);
-                }
+                let warriors = self.rng.bernoulli(chance("conflict.grove"));
+                let chief = self.rng.bernoulli(chance("conflict.umvuthi"));
+                w.visit_camp(g.key, warriors.then_some("conflict.grove"), chief);
             }
         }
         for (id, chunk, _) in w.nests() {

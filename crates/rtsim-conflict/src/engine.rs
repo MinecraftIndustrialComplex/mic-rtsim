@@ -1402,6 +1402,22 @@ impl Conflict {
         vec![camp, den, grove]
     }
 
+    /// The Umvuthi's census row, `conflict.umvuthi` (slice S11, EQC457, EQC487): one site a camp
+    /// whose culture has a chief body, K 1, its member 1 while the camp holds its chief and 0
+    /// while it waits for an heir, P the chief's own pressure ([`Conflict::chief_census`]). The
+    /// engine keeps no count of the heirs that took the mask, so `renewals` is the caller's
+    /// ([`crate::synth::ChiefBook`]), and the save format is untouched.
+    pub fn umvuthi_census(&self, renewals: u64) -> rtsim_kernel::census::KindCensus {
+        let mut row = rtsim_kernel::census::KindCensus::new("conflict.umvuthi");
+        for f in 0..self.factions.len() as u32 {
+            if let Some((held, p)) = self.chief_census(f, self.now) {
+                row.site(u64::from(held), 1, false, p);
+            }
+        }
+        row.renewals = renewals;
+        row
+    }
+
     /// The camps' rows for core's site ledger (EQUILIBRIUM.md §2.3, S3, MZB-1014): one
     /// [`SiteState`] per faction marked since the last take, as it stands now. Nothing while the
     /// session's replay runs: the marks are kept and taken after its end, so a row is never one

@@ -651,7 +651,7 @@ pub fn together_refill(row: &Row, w: &Together, c: &Together) -> KindRefill {
         }
     }
     r.end_over_ctrl = tail / tail_c.max(1.0);
-    let wrong = w.teeth.wrong_now();
+    let wrong = &w.teeth.wrong;
     let teeth = need(wrong.is_empty(), || format!("booked wrong: {wrong:?}"))
         .and(need(w.killed > 0, || "the wipe killed nothing".into()));
     r.checks = teeth.and(row.together.map_or(Ok(()), |f| f(&r)));
@@ -831,11 +831,10 @@ mod tests {
                 r.kind
             );
         }
-        // S9's rows (dens, groves, the Umvuthi) once the census has them.
         for k in rtsim_host::every::KINDS {
-            if founded.expected(k, &cs).is_some() {
-                assert!(kinds.contains(&k), "the census has no {k}");
-            }
+            assert!(kinds.contains(&k), "the census has no {k}");
+            let c = cs.iter().find(|c| c.kind == k).expect("the row");
+            assert_eq!(c.sites, founded.sites(k), "{k}");
         }
     }
 

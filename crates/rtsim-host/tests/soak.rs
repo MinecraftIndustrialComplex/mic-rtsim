@@ -207,9 +207,7 @@ fn check_sample(
     dead: &mut Vec<(u64, String)>,
 ) {
     for k in KINDS {
-        let Some(want) = f.expected(k, cs) else {
-            continue;
-        };
+        let want = f.sites(k);
         let Some(c) = every::kind(cs, k) else {
             out.push((day, format!("{k}: missing")));
             continue;
@@ -227,9 +225,8 @@ fn check_sample(
             dead.push((day, format!("herd.range: {} ranges empty", c.empty)));
         }
     }
-    let kinds = KINDS.iter().filter(|k| f.expected(k, cs).is_some()).count();
-    if cs.len() != kinds {
-        out.push((day, format!("{} kinds, expected {kinds}", cs.len())));
+    if cs.len() != KINDS.len() {
+        out.push((day, format!("{} kinds, expected {}", cs.len(), KINDS.len())));
     }
 }
 
@@ -499,10 +496,6 @@ fn judge(plan: &Plan, run: &Run) -> Vec<Check> {
         return out;
     }
     for k in KINDS {
-        // A kind the census has no row for yet (S9's) is not judged.
-        if judged.iter().all(|w| !w.kinds.contains_key(k)) {
-            continue;
-        }
         let fills: Vec<f64> = judged
             .iter()
             .map(|w| w.kinds.get(k).map_or(0.0, |x| x.mean(x.fill)))

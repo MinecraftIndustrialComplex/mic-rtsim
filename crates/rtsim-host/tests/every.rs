@@ -24,16 +24,9 @@ fn every_kind_world_has_every_kind() {
     w.run_to(1);
     let cs = w.census();
     print_census(w.day(), &cs);
-    for s in w.sites().iter().filter(|s| s.kind.starts_with("conflict")) {
-        println!("{s:?}");
-    }
     for k in KINDS {
-        let Some(want) = w.founded.expected(k, &cs) else {
-            println!("{k}: no census row yet (S9)");
-            continue;
-        };
         let c = every::kind(&cs, k).unwrap_or_else(|| panic!("no {k} in the census"));
-        assert_eq!(c.sites, want, "{k}: {c:?}");
+        assert_eq!(c.sites, w.founded.sites(k), "{k}: {c:?}");
         assert!(c.members > 0, "{k}: {c:?}");
         assert!(c.capacity > 0, "{k}: {c:?}");
     }
@@ -269,15 +262,14 @@ fn print_long(what: &str, rs: &[every::LongRun], from: u64) {
 fn long_horizon_stability_with_kills() {
     let r = every::long_run(1, true, 4 * 96);
     print_long("roamer, 4 years", std::slice::from_ref(&r), 2 * 96);
-    let wrong = r.teeth.wrong_now();
-    assert!(wrong.is_empty(), "{wrong:?}");
+    assert!(r.teeth.wrong.is_empty(), "{:?}", r.teeth.wrong);
     assert!(
         r.teeth.killed.get("dragon.lair").is_some_and(|&n| n > 0),
         "{:?}",
         r.teeth.killed
     );
     for (k, n) in &r.teeth.killed {
-        if *n > 0 && !r.teeth.awaits_s9(k) {
+        if *n > 0 {
             assert!(
                 r.teeth.checked.get(k).is_some_and(|&c| c > 0),
                 "{k}: never checked"
@@ -316,18 +308,13 @@ fn long_horizon_stability_with_kills_30_seeds() {
             r.bounds.is_empty(),
             format!("seed {} roamer {}: bounds {:?}", r.seed, r.roamer, r.bounds),
         );
-        let wrong = r.teeth.wrong_now();
         need(
-            wrong.is_empty(),
-            format!("seed {}: booked wrong {wrong:?}", r.seed),
+            r.teeth.wrong.is_empty(),
+            format!("seed {}: booked wrong {:?}", r.seed, r.teeth.wrong),
         );
     }
     for r in &roam {
         for (k, _) in every::ROAMER_CHANCE {
-            // The Umvuthi's kills wait for S9's chief path (EQC457).
-            if k == "conflict.umvuthi" && r.teeth.awaits_s9(k) {
-                continue;
-            }
             need(
                 r.teeth.killed.get(k).is_some_and(|&n| n > 0),
                 format!("seed {}: the roamer never killed a {k}", r.seed),

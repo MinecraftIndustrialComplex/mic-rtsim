@@ -368,6 +368,37 @@ pub struct Holder {
     pub line: boundary::LineAnswer,
 }
 
+/// The heirs that took a camp's mask, counted by a harness that looks at the engine as often as
+/// it steps (the `conflict.umvuthi` row's renewals, slice S11 EQC487): a camp whose chief was
+/// missing at the last look and is held now has seated an heir. An heir waits days, so a daily
+/// look misses none.
+#[derive(Clone, Debug, Default)]
+pub struct ChiefBook {
+    held: BTreeMap<u64, bool>,
+    pub renewals: u64,
+}
+
+impl ChiefBook {
+    /// Looks at every chief camp of `c` now.
+    pub fn look(&mut self, c: &Conflict) {
+        let now = c.now();
+        for f in 0..c.factions.len() as u32 {
+            if let Some((held, _)) = c.chief_census(f, now) {
+                let was = self.held.insert(c.factions[f as usize].key, held);
+                if was == Some(false) && held {
+                    self.renewals += 1;
+                }
+            }
+        }
+    }
+
+    /// The Umvuthi's census row of `c` with the heirs counted so far; `None` with no chief camp.
+    pub fn row(&self, c: &Conflict) -> Option<rtsim_kernel::census::KindCensus> {
+        let row = c.umvuthi_census(self.renewals);
+        (row.sites > 0).then_some(row)
+    }
+}
+
 /// The plugin's side, headless: commands through the codec in, observations through the codec
 /// out, each some ticks late (docs/boundary.md §1.2).
 pub struct FakeConflict {

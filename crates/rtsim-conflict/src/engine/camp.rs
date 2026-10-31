@@ -584,6 +584,22 @@ impl Conflict {
         self.factions[f as usize].camp.as_deref_mut()
     }
 
+    /// A camp's chief as the census reads it (the long-horizon suite's `conflict.umvuthi` row,
+    /// slice S11 EQC457): `None` for a faction whose culture has no chief body; else whether the
+    /// camp holds its chief (home, aloft or owed: a chief slot not dead, and no heir awaited) and
+    /// the chief's own pressure at `at`. Reads only.
+    pub fn chief_census(&self, f: u32, at: Tick) -> Option<(bool, f32)> {
+        self.culture(f).def.chief_body.as_ref()?;
+        let camp = self.camp(f)?;
+        let held = camp.heir.is_none() && camp.chief().is_some_and(|s| s.state != SlotState::Dead);
+        let day = (at.0 / TICKS_PER_DAY) as u32;
+        let p = self
+            .culture(f)
+            .chief_renewal
+            .map_or(0.0, |r| camp.chief_pressure.now(day, r.rule.half_life_days));
+        Some((held, p))
+    }
+
     /// Whether a faction's camp is in (the plugin has its census and no CAMP_OUT since).
     pub fn camp_is_in(&self, f: u32) -> bool {
         self.camp(f).is_some_and(Camp::is_in)
