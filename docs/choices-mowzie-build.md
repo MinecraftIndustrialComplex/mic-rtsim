@@ -12019,8 +12019,9 @@ rounds of phase 2 are the check, and what they found is recorded after them.
 An Opus review of M11 "Aloft" (landed on main as 13ac4d88) found one P1, three P2 and five P3 points. The fixes are on
 `fix/m11-review`, each its own commit, with the tests in one commit ahead of them (72a89a5c), so that the round at that commit is
 main's code with the new tests: what each test failed with there is in its record. Two tests passed there and were changed after (the
-let-go and the re-pair tests, MZB-1301 and MZB-1308); they failed in a round of the final code with those two fixes taken out of the
-working tree for its compile. The review's line numbers were at 13ac4d88; each place was found again on main after M12a, S5, S6 and S7.
+let-go and the re-pair tests, MZB-1301 and MZB-1308); they ran again in a round of the final code with their two fixes taken out of the
+working tree for its compile (the "red round"): the let-go test passed again there (P2.2 is not fixed, MZB-1301), and what the re-pair
+test did is in MZB-1308. The review's line numbers were at 13ac4d88; each place was found again on main after M12a, S5, S6 and S7.
 
 - **MZB-1300** (P1 of the review: a chief killed in the moment its band reaches home came back as a second Umvuthi with a second Sol
   Visage):
@@ -12047,30 +12048,33 @@ working tree for its compile. The review's line numbers were at 13ac4d88; each p
   - The test is `aChiefLineInFlightAcrossItsPuppetsDeathIsStale` (batch `aloft_killed_in_flight`; grove S the HAND_BACK in the
     animation and after it, grove A the ADOPT, grove C the control). At 72a89a5c it failed with "S's HAND_BACK in the animation is
     answered STALE, not DONE".
-- **MZB-1301** (P2 of the review: a dying chief's loot was lost when its chunk unloaded within one tick):
-  - The path: a player kills the puppet and logs out, teleports or dies and respawns far within the 115-tick animation (or a forced
-    chunk is let go). With no ticket left vanilla hides the chunk and unloads its entities in one level tick (`chunkSource.tick` sets
-    HIDDEN, `entityManager.tick` stores and removes), before the bridge's end of the tick. `EntitySaveMixin` keeps the tagged body out
-    of the save, `tickDying` finds it removed UNLOADED_TO_CHUNK and counts `deathLootLost`: the Sol Visage is gone.
-  - The review's first remedy (untag the body on the Dying list so the vanilla save keeps it mid-animation) does not work, read from
-    the 1.8.2 jar with javap: `MowzieEntity.tickDeath` drops its loot at the animation's end only when its `killDataCause` (the
+- **MZB-1301** (P2 of the review: a dying chief's loot was lost when its chunk unloaded within one tick; not fixed, the path does not
+  happen):
+  - The review's path: a player kills the puppet and logs out, teleports or dies and respawns far within the 115-tick animation (or a
+    forced chunk is let go); with no ticket left vanilla hides the chunk and unloads its entities in one level tick, before the
+    bridge's end of the tick, and `tickDying` finds the body removed UNLOADED_TO_CHUNK and counts `deathLootLost`.
+  - Why it does not happen, read from the 1.21.1 source: `PersistentEntitySectionManager.processChunkUnload` unloads only what
+    `storeChunkSections` stores, and that filters the chunk's entities on `shouldBeSaved`, which `EntitySaveMixin` answers false for a
+    puppet. A hidden chunk's puppet is never removed by the unload: it stays in the level, ticking no more, and MZB-817's early end
+    (`endDying`, the chunk no longer ticks entities) ends its animation at the end of that tick and drops the Sol Visage. An item made
+    in a hidden chunk is not lost either: `getAllChunksToSave` takes every chunk with an entity section, so `autoSave` and `saveAll`
+    (the stop) load the chunk's stored entities and save it with them, and a load of the chunk shows it again. Only a puppet riding a
+    saved entity goes with the unload (`getPassengersAndSelf` of the saved one); no Aloft body rides.
+  - The review's first remedy (untag the body on the Dying list so the vanilla save keeps it mid-animation) would not have worked, read
+    from the 1.8.2 jar with javap: `MowzieEntity.tickDeath` drops its loot at the animation's end only when its `killDataCause` (the
     `DamageSource` `die` stored) is set, and `addAdditionalSaveData` saves only the ability cooldowns, so a body read back dying ends
     its animation and drops nothing. The review's premise that plain Mowzie "would save the dying body and drop on reload" is wrong for
     the same reason: the test's control, the jar's own Umvuthi killed and let go the same way, saved dying (`UNLOADED_TO_CHUNK`), left
-    no Sol Visage after its reload (0 in the round at 72a89a5c).
-  - So the second remedy, the animation finished before the chunk is hidden. Commit 405cd6f0 (ConflictBridge): a dying entry holds its
-    chunk with a ticket (`DYING_TICKET`, a region ticket of distance 1 keyed by the body's entity id: the chunk it died in at block
-    ticking, the ring round it at FULL, a 600-tick lifespan as a backstop). When the player goes, the chunk only stops ticking
-    entities, and `endDying`'s existing early end (MZB-817) drops the loot at the end of that tick; the ticket goes with the entry (its
-    drops, its removal, alive again, a finish, a session's start or failure). The chunk then unloads with the loot in it. A body moved
-    more than a chunk from where it died in its animation is not covered (the ring is one chunk; in the tests it falls under 2 blocks).
-    The edge test 36b (`aDyingChiefTakenBackAtTheEdgeDropsItsLoot`) is unchanged by it: block ticking does not tick entities.
-  - The test is `aDyingChiefWhoseChunksAreLetGoDropsItsLoot` (batch `aloft_dying_let_go`): the lane's chunks let go 20 ticks into the
-    animation, waited out of memory, forced again; one Sol Visage read back where the puppet fell. At 72a89a5c it passed: it let the
-    chunks go inside a GameTest step, after the levels had ticked, and the end of that same tick found the chunk no longer ticking
-    entities and ended the animation in time (MZB-817's early end). A logout, teleport or far respawn is handled between ticks, so the
-    test now lets go in a server task (`server.tell`, a `TickTask`), run while the server waits for the next tick (a401f109): the next
-    level tick hides the chunk and unloads the body before the end of the tick. With MZB-1301 taken out it failed with (pending: the round is queued).
+    no Sol Visage after its reload (0 in the round at 72a89a5c, 0 in the red round).
+  - A fix was made and taken out again: commit 405cd6f0 held a dying entry's chunk with a region ticket (`DYING_TICKET`, distance 1:
+    the chunk at block ticking, the ring round it at FULL, which can load the ring) until its drops. Reverted in ac8697fd: no test
+    showed a loss without it.
+  - The test stays, as a regression test: `aDyingChiefWhoseChunksAreLetGoDropsItsLoot` (batch `aloft_dying_let_go`), the lane's chunks
+    let go 20 ticks into the animation, waited out of memory, forced again; one Sol Visage read back where the puppet fell, the body
+    ended as KILLED, `deathLootLost` unchanged. It passed on main's code twice: at 72a89a5c, with the chunks let go inside a GameTest
+    step (after the levels had ticked), and in the red round of the final code without the ticket, with the chunks let go between two
+    ticks in a server task (`server.tell`, a `TickTask`, a401f109), as a logout, teleport or far respawn is handled: "the lanes were
+    let go between ticks 20 into the animation (at 597097); the puppet ended as KILLED and its Sol Visage was read back (1)".
 - **MZB-1302** (P2 of the review: a puppet made or put back under leaves was pinned):
   - The path: the bridge placed a floating body at `MOTION_BLOCKING_NO_LEAVES` plus its lift (the spawn in `tryPlace` and the put-back
     in `checkPlaced`), while its height rule reads `MOTION_BLOCKING` (`UmvuthiAloft.top`, MZB-808), and `AloftRules.mayStepAcross`
@@ -12107,11 +12111,10 @@ working tree for its compile. The review's line numbers were at 13ac4d88; each p
     rule for a dead slot (a body found is removed), for every dead slot.
   - The test is `a_puppet_killed_while_its_hand_back_is_in_flight_dies_once`'s case 2, now for NOTHING and STALE: the answer sends the
     REMOVE at once (it used to assert the census's REMOVE), and the slot is freed once the held lines play. At 72a89a5c it failed with
-    "outcome 2: the answer sends the throne body's REMOVE at once, not at the next census (line in flight None, sent None)". Its
-    first form also asked the REMOVE's answer to be DONE, which failed at cdb280f9 (`left: 2`, NOTHING): the census's TAKE that the
-    scenario (`left_home_in`) answers STALE itself is still held by the emulated plugin and plays first when the player at the throne
-    goes, taking the throne body, so the REMOVE finds none. NOTHING frees a dead slot as DONE does, and the test takes either
-    (9a847a7f).
+    "outcome 2: the answer sends the throne body's REMOVE at once, not at the next census (line in flight None, sent None)". Its first
+    form also asked the REMOVE's answer to be DONE, which failed at cdb280f9 (`left: 2`, NOTHING): the census's TAKE that the scenario
+    (`left_home_in`) answers STALE itself is still held by the emulated plugin and plays first when the player at the throne goes,
+    taking the throne body, so the REMOVE finds none. NOTHING frees a dead slot as DONE does, and the test takes either (9a847a7f).
 - **MZB-1305** (P3 of the review: a hovering puppet was never stepped or zeroed again):
   - The path: `UmvuthiAloft.step` returned at once for a settled body until it rose, and a body that settled over a fluid (HOVER) keeps
     its gravity off, so a push or Levitation that landed on it carried it off for good.
@@ -12137,9 +12140,9 @@ working tree for its compile. The review's line numbers were at 13ac4d88; each p
   (`ChunkMap.getPlayersWatching`, the players `broadcast` sends to) and the re-pair is skipped if any one's holds anything but the
   vanilla set and the complex spawn payload; with no tracker it is NOBODY. What can hold data of a player's own is an entity's own
   `sendPairingData` override: NeoForge 21.1's synced attachments cannot (`AttachmentSync.syncInitialAttachments` ignores `sendToPlayer`
-  and adds the same payload to every pairing, so a synced attachment makes every bundle skip, for the first player too). The
-  Umvuthi the GameTests re-pair has none (its bundle is the vanilla set and the complex spawn payload, MZB-959); the fix guards a
-  body of a mod that has one.
+  and adds the same payload to every pairing, so a synced attachment makes every bundle skip, for the first player too). The Umvuthi
+  the GameTests re-pair has none (its bundle is the vanilla set and the complex spawn payload, MZB-959); the fix guards a body of a mod
+  that has one.
   - The test is `aRePairIsSkippedWhenAnyTrackerHasPerPlayerData` (batch `aloft_repair_per_player`), on `mic_rtsim:test_pairing`, a
     zombie type the core registers on a GameTest server only (`gametest/TestPairing`), whose `sendPairingData` adds a payload for the
     players `TestPairing.to` names (every player but the level's first, for the one call; nobody for the control). Its first form, an
