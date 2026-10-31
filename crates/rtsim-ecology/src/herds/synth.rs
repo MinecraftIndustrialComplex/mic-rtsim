@@ -161,7 +161,34 @@ pub fn ranges(
     rx: std::ops::RangeInclusive<i32>,
     rz: std::ops::RangeInclusive<i32>,
 ) -> Herds {
-    let density = super::habitat::FoundingTunables::default().density;
+    ranges_on(seed, tun, at, rx, rz, false)
+}
+
+/// [`ranges`] with each range's K capped as the world model caps a founded one (EQUILIBRIUM.md
+/// §2.4.2, EQC500): at most `floor(forage_share x yield / intake)`, the yield the valley's
+/// region's cells sustain ([`super::habitat::range_yield`]), and no herd where that is under
+/// `min_count`. The species are [`ranges`]'s, drawn the same way.
+pub fn ranges_capped(
+    seed: u64,
+    tun: super::HerdTunables,
+    at: Tick,
+    rx: std::ops::RangeInclusive<i32>,
+    rz: std::ops::RangeInclusive<i32>,
+) -> Herds {
+    ranges_on(seed, tun, at, rx, rz, true)
+}
+
+fn ranges_on(
+    seed: u64,
+    tun: super::HerdTunables,
+    at: Tick,
+    rx: std::ops::RangeInclusive<i32>,
+    rz: std::ops::RangeInclusive<i32>,
+    cap: bool,
+) -> Herds {
+    let found = super::habitat::FoundingTunables::default();
+    let density = found.density;
+    let valley = Valley::default();
     let mut h = Herds::new(seed, tun, Box::new(Valley::default()), at);
     let key = StreamKey::new(seed, SystemId::named("synth.ranges"), 0);
     let rb = rtsim_space::habitat::REGION_BLOCKS;
@@ -169,7 +196,15 @@ pub fn ranges(
         for x in rx.clone() {
             let id = (u64::from(x as u32) << 32) | u64::from(z as u32);
             let species = HerdSpecies::ALL[key.slot(id).below(HerdSpecies::COUNT as u64) as usize];
-            let count = (density[species.index()] * RANGE_HABITAT_CELLS).round() as u64;
+            let mut count = (density[species.index()] * RANGE_HABITAT_CELLS).round() as u64;
+            if cap {
+                let y = super::habitat::range_yield(&valley, 0, x, z);
+                let fed = (found.forage_share * y / found.intake[species.index()]).floor();
+                if !fed.is_finite() || fed < found.min_count as f64 {
+                    continue;
+                }
+                count = count.min(fed as u64);
+            }
             h.add_herd(
                 NewHerd {
                     name: format!("range {x}:{z}"),
