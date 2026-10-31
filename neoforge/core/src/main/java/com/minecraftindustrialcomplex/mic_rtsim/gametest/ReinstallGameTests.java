@@ -4,6 +4,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.MicRtsim;
 import com.minecraftindustrialcomplex.mic_rtsim.bridge.ReinstallGuard;
 import com.minecraftindustrialcomplex.mic_rtsim.bridge.ReinstallRules;
 import com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession;
+import com.minecraftindustrialcomplex.mic_rtsim.bridge.SiteTestHooks;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.BoundarySession;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.District;
@@ -14,6 +15,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.industry.IndustryConfig;
 import com.minecraftindustrialcomplex.mic_rtsim.journal.Journal;
 import com.minecraftindustrialcomplex.mic_rtsim.puppet.PendingRecords;
 import com.minecraftindustrialcomplex.mic_rtsim.puppet.RtsimAttachments;
+import com.minecraftindustrialcomplex.mic_rtsim.sites.SiteLedger;
 import net.minecraft.core.BlockPos;
 import net.minecraft.gametest.framework.AfterBatch;
 import net.minecraft.gametest.framework.GameTest;
@@ -364,6 +366,56 @@ public final class ReinstallGameTests {
                 .thenSucceed();
     }
 
+    /**
+     * The reset counts the site ledger's gap itself (MZB-1403, the M12a review's P2 A). An admin reinstalls rtsim, boots with no
+     * player, and stops: no site is found and no engine sends a SITE_STATE, so a gap counted at the ledger's first use would
+     * never be, and the first world save would delete the marker. Here the reset is the guard's own emulation of a reinstall
+     * ({@link SiteTestHooks#gapRestart}); at once after it, before any site could be found, the ledger has counted the gap and
+     * is dirty. A world save then writes it, and only after that write does the marker go: the file on disk has the gap.
+     */
+    @GameTest(template = YARD, batch = "reinstall_3", timeoutTicks = 2000)
+    public static void aReinstallResetCountsTheSiteGapBeforeAnySiteIsSeen(GameTestHelper helper) {
+        MinecraftServer server = helper.getLevel().getServer();
+        Path file = worldDir(server).resolve("data").resolve(SiteLedger.FILE + ".dat");
+        int[] gaps = new int[1];
+        ConflictKit.onEnd(helper, () -> SiteTestHooks.cleanUp(server));
+        helper.startSequence()
+                .thenExecute(() -> {
+                    cleanUp(server);
+                    // No district from the tests before: a reset plans every seeded chunk's re-adoption (UR-1), and the
+                    // chunks of one that never loads again would stay to adopt again into the next reset's test.
+                    forgetAll(helper);
+                    gaps[0] = ledgerNoTake(server).gaps();
+                    check("the guard reset the sim", SiteTestHooks.gapRestart(server, 0) != null);
+                    check("a session runs: " + RtsimSession.startFailure(), RtsimSession.current() != null);
+                    SiteLedger l = ledgerNoTake(server);
+                    check("the reset counted the gap at once (" + gaps[0] + ", then " + l.gaps() + ")", l.gaps() == gaps[0] + 1);
+                    check("and marked the ledger dirty for the next save", l.isDirty());
+                    check("and planned no chunk to adopt again (" + ind().districts().readoptLeft() + ")", ind().districts().readoptLeft() == 0);
+                    check("the marker stands until a save", Files.isRegularFile(worldDir(server).resolve(ReinstallRules.MARKER)));
+                    server.saveEverything(true, true, true); // as the stop of a server nobody joined
+                })
+                .thenWaitUntil(() -> check("the save deleted the marker", ReinstallGuard.markerCleared(server)
+                        && !Files.exists(worldDir(server).resolve(ReinstallRules.MARKER))))
+                .thenExecute(() -> {
+                    int onDisk;
+                    try {
+                        onDisk = net.minecraft.nbt.NbtIo.readCompressed(file, net.minecraft.nbt.NbtAccounter.unlimitedHeap())
+                                .getCompound("data").getInt("gaps");
+                    } catch (IOException e) {
+                        throw new UncheckedIOException(e);
+                    }
+                    check("the ledger on disk has the gap (" + onDisk + " against " + (gaps[0] + 1) + ")", onDisk == gaps[0] + 1);
+                    SiteTestHooks.cleanUp(server);
+                })
+                .thenSucceed();
+    }
+
+    /** The world's site ledger, read without counting a gap ({@link SiteLedger#get} would). */
+    private static SiteLedger ledgerNoTake(MinecraftServer server) {
+        return server.overworld().getDataStorage().computeIfAbsent(SiteLedger.FACTORY, SiteLedger.FILE);
+    }
+
     /** A {@code level.dat} that lists rtsim, as every save with rtsim writes it: no gap, no marker. */
     @GameTest(template = YARD, batch = "reinstall_2", timeoutTicks = 200)
     public static void aLevelDatThatListsRtsimIsNoGap(GameTestHelper helper) {
@@ -455,5 +507,10 @@ public final class ReinstallGameTests {
     @AfterBatch(batch = "reinstall_2")
     public static void resetAfter2(ServerLevel level) {
         cleanUp(level.getServer());
+    }
+
+    @AfterBatch(batch = "reinstall_3")
+    public static void resetAfter3(ServerLevel level) {
+        SiteTestHooks.cleanUp(level.getServer());
     }
 }

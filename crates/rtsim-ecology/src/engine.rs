@@ -997,8 +997,9 @@ impl Dragons {
                 lair.left_behind = row.bodies.left_behind.clone();
                 lair.missing = row.bodies.missing.clone();
                 if row.waiting() {
-                    // The wait it had, less the game time since (due at once when it ran out).
-                    self.start_wait_for(id, row.wait_now_ticks(), at);
+                    // The wait it had, less the game time since (due at once when it ran out), and
+                    // never past the cap: a longer one is a corrupt row's (MZB-1401).
+                    self.start_wait_for(id, row.wait_now_ticks().min(rule.cap_ticks()), at);
                 } else if row.count > 0 {
                     // F12: its dragons were the old engine's puppets, lost with it, a loss no
                     // player made whose history is gone: the cap, the pressure kept.

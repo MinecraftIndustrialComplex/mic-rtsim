@@ -734,6 +734,9 @@ pub struct ConflictStats {
     pub breaks: u64,
     pub refounds: u64,
     pub break_deferrals: u64,
+    /// FIGHT lines sent: a member gone missing back at its full boss's camp set against the body
+    /// holding its slot (MZB-1404).
+    pub camp_fights: u64,
 }
 
 /// Where goods went, per world good (thousandths).
@@ -1489,7 +1492,10 @@ impl Conflict {
                 }
             }
             bodies.left_behind.extend(camp.left_behind.iter().copied());
+            // A rival is a member gone missing that came back to fight (MZB-1404): after a reset it
+            // is missing again, and fights again at the full camp.
             bodies.missing = camp.missing.clone();
+            bodies.missing.extend(camp.rivals.iter().copied());
         }
         let u16_of = |n: u32| u16::try_from(n).unwrap_or(u16::MAX);
         let mut s = SiteState {

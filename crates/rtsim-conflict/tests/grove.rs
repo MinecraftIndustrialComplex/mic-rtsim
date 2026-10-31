@@ -1222,6 +1222,7 @@ fn mask_answer(r: &mut CampRun, slot: u32, generation: u32) {
             generation,
             action: boundary::ACTION_MASK,
             outcome: boundary::LINE_DONE,
+            uuid: (0, 0),
         }],
     };
     let at = r.c.now();
@@ -1310,6 +1311,7 @@ fn seat_copy(r: &mut CampRun, op: u64, line: u32, generation: u32) {
             generation,
             action: boundary::ACTION_SEAT_HEIR,
             outcome: boundary::LINE_DONE,
+            uuid: (0, 0),
         }],
     };
     let at = r.c.now();
@@ -3350,4 +3352,132 @@ fn chest_at(r: &mut CampRun, free: u32, at: Tick) {
         }),
         at,
     );
+}
+
+// ---- the M12a review's fixes (MZB-1400 onward) -------------------------------------------------
+
+/// The grove's chief pressure read at `at` (the Umvuthi's, its half-life 96 days): S9's
+/// `chief_pressure`, the Umvuthi's own (MZB-1402 on S9's tree, MZB-1408).
+fn chief_pressure_at(r: &CampRun, at: Tick) -> f32 {
+    let h =
+        r.c.cultures
+            .get(r.c.factions[r.f as usize].culture)
+            .chief_renewal
+            .expect("a chief renewal")
+            .rule
+            .half_life_days;
+    r.c.camp(r.f)
+        .unwrap()
+        .chief_pressure
+        .now((at.0 / TICKS_PER_DAY) as u32, h)
+}
+
+/// The grove's warriors' pressure read at `at` (S9's `pressure`, the warriors' renewal's
+/// half-life), which neither the found-empty wait nor the adoption touches (MZB-1408).
+fn warriors_pressure_at(r: &CampRun, at: Tick) -> f32 {
+    let h =
+        r.c.cultures
+            .get(r.c.factions[r.f as usize].culture)
+            .renewal
+            .expect("the warriors' renewal")
+            .rule
+            .half_life_days;
+    r.c.camp(r.f)
+        .unwrap()
+        .pressure
+        .now((at.0 / TICKS_PER_DAY) as u32, h)
+}
+
+/// The warriors' pressure the reset's row hands over in `found_empty_with`, apart from the
+/// Umvuthi's (MZB-1408).
+const WARRIORS_P: f32 = 0.5;
+
+/// A reset of the grove, its row handed over with the Umvuthi's pressure `p` (the row's second,
+/// S9) and the warriors' [`WARRIORS_P`] as of now, and the Umvuthi gone from the world: the fresh
+/// engine finds the grove without its chief.
+fn found_empty_with(seed: u64, p: f32) -> CampRun {
+    let mut r = grove(seed, 9);
+    come_in(&mut r);
+    let s = r.c.camp_site_state(r.f, r.c.now()).expect("a row");
+    let mut row = rtsim_kernel::sites::FoundRow::from_state(&s, 0, false);
+    row.p = WARRIORS_P;
+    row.p2 = p;
+    assert!(
+        !r.plugin.camps[&r.key].bodies.iter().any(|b| b.chief),
+        "no Umvuthi stands"
+    );
+    let at = r.c.now() + 100;
+    r.reborn(row, at);
+    assert!(
+        r.c.camp(r.f).unwrap().heir.is_some_and(|h| h.found_empty),
+        "found without its chief"
+    );
+    r
+}
+
+/// MZB-1402 (P3 4): a grove found without its Umvuthi after a reset waits the cap for its heir with
+/// the larger of the cap's pressure and the one its row handed over: a grove farmed past the cap
+/// keeps its history (P 7 against the cap's 5).
+#[test]
+fn a_grove_found_empty_keeps_a_handed_over_pressure_above_the_caps() {
+    let r = found_empty_with(1404, 7.0);
+    let at = r.c.now();
+    let p = chief_pressure_at(&r, at);
+    assert!((p - 7.0).abs() < 1e-4, "the row's pressure kept: {p}");
+    let w = warriors_pressure_at(&r, at);
+    assert!(
+        (w - WARRIORS_P).abs() < 1e-4,
+        "the warriors' pressure left alone: {w}"
+    );
+}
+
+/// MZB-1402 (P3 4): a grove found without its Umvuthi after a reset, with a handed-over pressure
+/// under the cap's (P 2 against 5), waits the cap; when a census then finds an untagged Umvuthi in
+/// it, the chief was there all along, and the stand-in's pressure gives way to the row's, aged,
+/// not to none.
+#[test]
+fn a_grove_found_empty_and_adopting_its_umvuthi_restores_the_handed_over_pressure() {
+    let mut r = found_empty_with(1405, 2.0);
+    let at = r.c.now();
+    let cap = chief_pressure_at(&r, at);
+    assert!(
+        (cap - 5.0).abs() < 1e-4,
+        "the cap's pressure stands in: {cap}"
+    );
+    let umvuthi = body_id(&r.c.cultures, "mic_rtsim:conflict/umvuthana/umvuthi");
+    let key = r.key;
+    r.plugin.camp_stray(key, umvuthi);
+    r.plugin.camp_world(key).bodies.last_mut().unwrap().chief = true;
+    let to = r.c.now() + days(4.0);
+    r.run(to);
+    r.camp_out();
+    let to = r.c.now() + 3;
+    r.run(to);
+    come_in(&mut r);
+    assert!(r.c.camp(r.f).unwrap().heir.is_none(), "the wait is over");
+    assert!(matches!(chief(&r), Some((SlotState::Body, g)) if g != 0));
+    let now = r.c.now();
+    let want = 2.0 * (-((now.0 - at.0) as f32) / TICKS_PER_DAY as f32 / 96.0).exp2();
+    let got = chief_pressure_at(&r, now);
+    assert!(
+        (got - want).abs() < 1e-3,
+        "the row's pressure, aged: {got} against {want}"
+    );
+    // The warriors' half-life is their own; the adoption leaves their pressure as the row had it,
+    // aged (MZB-1408).
+    let h =
+        r.c.cultures
+            .get(r.c.factions[r.f as usize].culture)
+            .renewal
+            .expect("the warriors' renewal")
+            .rule
+            .half_life_days;
+    let want_w =
+        WARRIORS_P * (-((now.0 - at.0) as f32) / TICKS_PER_DAY as f32 / h).exp2();
+    let got_w = warriors_pressure_at(&r, now);
+    assert!(
+        (got_w - want_w).abs() < 1e-3,
+        "the warriors' pressure left alone, aged: {got_w} against {want_w}"
+    );
+    ok(&mut r);
 }
