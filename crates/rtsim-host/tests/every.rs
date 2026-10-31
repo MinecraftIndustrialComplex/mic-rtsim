@@ -58,14 +58,23 @@ fn every_kind_world_speed_probe() {
     let mut w = Every::open("speed-probe", 1, true, Durability::Fsync);
     let t0 = std::time::Instant::now();
     let mut last = (t0, 0u64);
-    // Samples on which a kind had no member at all, by kind.
+    // Samples on which a kind had no member at all, by kind, and its spells of them: the one
+    // running and the longest, in samples (EQC485).
     let mut none: std::collections::BTreeMap<&'static str, u64> = Default::default();
+    let mut spell: std::collections::BTreeMap<&'static str, (u64, u64)> = Default::default();
     while w.day() < days {
         let next = (w.day() + 10).min(days);
         w.run_to(next);
         let cs = w.census();
-        for c in cs.iter().filter(|c| c.members == 0) {
-            *none.entry(c.kind).or_default() += 1;
+        for c in &cs {
+            let e = spell.entry(c.kind).or_default();
+            if c.members == 0 {
+                *none.entry(c.kind).or_default() += 1;
+                e.0 += 1;
+                e.1 = e.1.max(e.0);
+            } else {
+                e.0 = 0;
+            }
         }
         if next.is_multiple_of(500) || next == days {
             let rate = (next - last.1) as f64 / last.0.elapsed().as_secs_f64();
@@ -98,6 +107,12 @@ fn every_kind_world_speed_probe() {
         }
     });
     println!("samples (every 10 days) with no member, by kind: {none:?}");
+    let longest: std::collections::BTreeMap<_, _> = spell
+        .iter()
+        .filter(|x| x.1.1 > 0)
+        .map(|(k, x)| (*k, x.1 * 10))
+        .collect();
+    println!("the longest spell with no member, days: {longest:?}");
     w.engine()
         .with_dragons(|d, _| println!("dragons: {:?}", d.stats));
     let secs = t0.elapsed().as_secs_f64();

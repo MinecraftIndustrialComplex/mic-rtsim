@@ -30,6 +30,18 @@ const SAMPLE: u64 = 10;
 /// The flat rule's significance (EQC438).
 const ALPHA: f64 = 0.001;
 
+/// The kinds whose arrivals are gated by food, which may touch zero for a spell and refill
+/// (EQC485): judged by their spells with no member, not on every sample.
+const FOOD_GATED: [&str; 1] = ["dragon.lair"];
+/// W: at least one lair is held in every window of W game days. Twice the longest spell with
+/// every lair empty, rounded up to the sample step. PROVISIONAL (EQC485): seed 1's first century,
+/// 20 days; the calibration seeds replace it (EQC442).
+const EMPTY_SPELL_WINDOW_DAYS: u64 = 40;
+/// The share of a century's samples with every lair empty: at most twice seed 1's first
+/// century's (5 of 960), and a drift as large as that share is material. PROVISIONAL (EQC485).
+const ALL_EMPTY_SHARE_MAX: f64 = 10.0 / 960.0;
+const ALL_EMPTY_SHARE_DELTA: f64 = 5.0 / 960.0;
+
 /// One run's shape.
 #[derive(Clone, Debug)]
 struct Plan {
@@ -69,6 +81,8 @@ struct KindWindow {
     /// Samples on which some site was broken, and the largest mean P seen.
     broken_samples: u64,
     max_p: f64,
+    /// Samples on which the kind had no member at all.
+    all_empty: u64,
 }
 
 impl KindWindow {
@@ -80,6 +94,7 @@ impl KindWindow {
             self.renewals_at_start = c.renewals;
         }
         self.samples += 1;
+        self.all_empty += u64::from(c.members == 0);
         self.fill += every::level(c);
         let sites = f64::from(c.sites.max(1));
         self.empty += f64::from(c.empty) / sites;
@@ -141,8 +156,12 @@ struct Run {
     windows: Vec<Window>,
     /// Sample checks that failed: (day, what).
     sample_failures: Vec<(u64, String)>,
-    /// Samples on which a kind had no member, or a herd range was empty (EQC436 (3)).
+    /// Samples on which a kind had no member, or a herd range was empty (EQC436 (3)); a
+    /// food-gated kind's are its spells instead.
     dead: Vec<(u64, String)>,
+    /// A food-gated kind's spells with no member after the first window, days: the one running,
+    /// the longest, and how many (EQC485).
+    spells: BTreeMap<&'static str, (u64, u64, u64)>,
     peak_journal: usize,
     peak_in_flight: u64,
     /// The industry outbox and the core's pages (table 1) at each sample: (day, industry, core).
@@ -201,7 +220,7 @@ fn check_sample(
         if c.capacity == 0 {
             out.push((day, format!("{k}: capacity 0")));
         }
-        if day > plan.window && c.members == 0 {
+        if day > plan.window && c.members == 0 && !FOOD_GATED.contains(&k) {
             dead.push((day, format!("{k}: no member")));
         }
         if k == "herd.range" && c.empty > 0 {
@@ -254,6 +273,18 @@ fn soak(plan: &Plan) -> (Run, Founded) {
         for c in &cs {
             if let Some(&k) = KINDS.iter().find(|k| **k == c.kind) {
                 win.kinds.entry(k).or_default().add(c);
+            }
+        }
+        if next > plan.window {
+            for k in FOOD_GATED {
+                let e = run.spells.entry(k).or_default();
+                if every::kind(&cs, k).is_some_and(|c| c.members == 0) {
+                    e.2 += u64::from(e.0 == 0);
+                    e.0 += SAMPLE;
+                    e.1 = e.1.max(e.0);
+                } else {
+                    e.0 = 0;
+                }
             }
         }
         run.peak_journal = run.peak_journal.max(w.host.j.journal.len());
@@ -443,6 +474,17 @@ fn judge(plan: &Plan, run: &Run) -> Vec<Check> {
         ok: run.dead.is_empty(),
         detail: json!({"samples": run.dead.len(), "first": days(&run.dead)}),
     });
+    // A food-gated kind may touch zero, never for long (EQC485): at least one site held in every
+    // window of W days, so no spell with none of W days or more.
+    for k in FOOD_GATED {
+        let (_, longest, spells) = run.spells.get(k).copied().unwrap_or_default();
+        out.push(Check {
+            name: format!("alive.{k}"),
+            ok: longest < EMPTY_SPELL_WINDOW_DAYS,
+            detail: json!({"longest_spell_days": longest, "spells": spells,
+                           "window_days": EMPTY_SPELL_WINDOW_DAYS}),
+        });
+    }
     let judged: Vec<&Window> = run
         .windows
         .iter()
@@ -541,6 +583,29 @@ fn judge(plan: &Plan, run: &Run) -> Vec<Check> {
         ok: camp_bad.is_empty(),
         detail: json!({"windows": camp_bad}),
     });
+    // A food-gated kind's share of samples with no member, by judged window (EQC485): in its band,
+    // and no slide toward an absorbing zero.
+    for k in FOOD_GATED {
+        let share: Vec<f64> = judged
+            .iter()
+            .map(|w| {
+                w.kinds
+                    .get(k)
+                    .map_or(0.0, |x| x.all_empty as f64 / x.samples.max(1) as f64)
+            })
+            .collect();
+        out.push(Check {
+            name: format!("level.{k}.all_empty"),
+            ok: share.iter().all(|&x| x <= ALL_EMPTY_SHARE_MAX),
+            detail: json!({"most": ALL_EMPTY_SHARE_MAX, "values": share}),
+        });
+        flat_check(
+            format!("flat.all_empty.{k}"),
+            &share,
+            ALL_EMPTY_SHARE_DELTA,
+            &mut out,
+        );
+    }
     // Ports: never every port closed at once; closed at most 0.01 of port-days.
     let port: Vec<f64> = judged
         .iter()
@@ -751,13 +816,15 @@ fn run_plan(plan: Plan) {
     let mut checks = judge(&plan, &run);
     if plan.short {
         // The short cut's windows are 100 days, shorter than a herd's or a lair's swings, and its
-        // first thousand days are the world's settling: the kinds' series and whether a swinging
-        // kind ever emptied are printed, not judged (EQC480, EQC484). Its presence, bytes, heap,
-        // queues and exact levels are judged as the soak's.
+        // first thousand days are the world's settling: the kinds' series, and the lairs' share of
+        // samples all empty (one sample is a tenth of a window), are printed, not judged (EQC480,
+        // EQC485). Its presence, alive checks, bytes, heap, queues and exact levels are judged as
+        // the soak's.
         for c in checks.iter_mut().filter(|c| {
             c.name.starts_with("flat.fill.")
                 || c.name.starts_with("flat.renewals.")
-                || c.name == "alive"
+                || c.name.starts_with("flat.all_empty.")
+                || c.name.ends_with(".all_empty")
         }) {
             c.detail["judged"] = json!(false);
             c.detail["would_fail"] = json!(!c.ok);
