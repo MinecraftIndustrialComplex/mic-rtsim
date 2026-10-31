@@ -337,6 +337,7 @@ public final class HomeBodyGameTests {
         long lair = DragonKit.newLair();
         DragonBaseEntity[] d = new DragonBaseEntity[1];
         long[] agent = new long[1], t = new long[1];
+        int[] age = new int[1];
         UUID[] id = new UUID[1];
 
         occupied(helper, waits, lair, d, agent)
@@ -358,6 +359,16 @@ public final class HomeBodyGameTests {
                     // The attachment type is unknown to a server without the plugin: the entity is the jar's own.
                     d[0].removeData(MicRtsimIceAndFire.HOME);
                     check("a plain untagged dragon", !d[0].hasData(MicRtsimIceAndFire.HOME) && !RtsimAttachments.isTagged(d[0]) && d[0].shouldBeSaved());
+                    // What a server without the plugin reads is the saved NBT: Ice and Fire's own dragon, aging (UR-1, EQC316).
+                    CompoundTag saved = new CompoundTag();
+                    check("it is saved", d[0].save(saved));
+                    check("saved aging, as Ice and Fire left it: AgingDisabled " + saved.getBoolean("AgingDisabled"), !saved.getBoolean("AgingDisabled"));
+                    age[0] = IafDragons.ageTicks(d[0]);
+                })
+                .thenIdle(40)
+                .thenExecute(() -> {
+                    int now = IafDragons.ageTicks(d[0]);
+                    check("with no plugin it ages: AgeTicks " + age[0] + " then " + now + " 40 ticks on", now > age[0]);
                     // The game clock moves by the gap, and a test's own clock (ChunkWait's) with it: a short gap.
                     SiteTestHooks.gapRestart(server, 1200);
                     check("a session runs after the reinstall: " + RtsimSession.startFailure(), RtsimSession.current() != null);
@@ -759,10 +770,13 @@ public final class HomeBodyGameTests {
                 })
                 .thenWaitUntil(waits.chunks(() -> check("the lair went out by itself (LAIR_OUT)", !DragonKit.received(DragonRecords.LAIR_OUT,
                         DragonRecords.LairOut.LAIR, lair).isEmpty())))
-                .thenExecute(() -> {
-                    t[2] = level.getGameTime();
+                .thenWaitUntil(waits.chunks(() -> {
+                    // At the out, or as soon as its chunk stops ticking (EQC312): the whole footprint let go, at once.
                     List<ScriptedEngine.Received> demat = about(DragonRecords.DRAGON_DEMATERIALIZED, agent[0]);
                     check("the home body was released as saved (reason 8)", !demat.isEmpty() && demat.get(demat.size() - 1).aux() == DragonRecords.Dematerialized.HOME_SAVED);
+                }))
+                .thenExecute(() -> {
+                    t[2] = level.getGameTime();
                     record(test, "out", "the lair went out " + (t[2] - t[1]) + " ticks after the ticket was let go; the body released with reason 8");
                     giveUp[0] = System.nanoTime() + 30_000_000_000L;
                 })
@@ -854,7 +868,8 @@ public final class HomeBodyGameTests {
         float m2 = d.getMaxHealth();
         record(test, "max health", "age " + old / DAY + " days: " + m0 + "; the setters alone to 110 days: " + m1 + "; after refreshDirtyAttributes: " + m2);
         check("the sync follows the age (" + m0 + " to " + m2 + ")", m2 > m0);
-        check("age and hunger are the engine's", IafDragons.ageTicks(d) == 110 * (int) DAY && IafDragons.hunger(d) == 80 && IafDragons.agingDisabled(d));
+        check("age and hunger are the engine's, and it ages as Ice and Fire's own (EQC316)", IafDragons.ageTicks(d) == 110 * (int) DAY
+                && IafDragons.hunger(d) == 80 && !IafDragons.agingDisabled(d));
         IafDragons.sync(d, 110 * (int) DAY, 80, 100f);
         check("a health to sync is clamped to the max (" + d.getHealth() + ")", d.getHealth() <= d.getMaxHealth() && d.getHealth() > 0f);
         d.discard();
@@ -886,6 +901,296 @@ public final class HomeBodyGameTests {
                     want[i].toShortString() + " read back as " + (got[i] == null ? "no home (flag " + b.hasHomePosition + ")" : got[i].toShortString()));
         }
         check("a home of nonzero coordinates survives the save and read", home.equals(got[0]));
+        helper.succeed();
+    }
+
+    // ---- the S5 review's findings (EQC310 onward) -------------------------------------------------
+
+    /**
+     * EQC311 (finding 2): a home body of the dragon stands loaded but unregistered (its lair went out, vanilla holds it), and a
+     * spawn of a home body for the same agent comes: the plugin refuses it (SPAWN_REJECTED ALREADY_EMBODIED), so no second body
+     * of one dragon stands. The registry alone does not know such a body.
+     */
+    @GameTest(template = DragonKit.ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "home_spawn_refused")
+    public static void aHomeSpawnBesideAStandingHomeBodyOfTheDragonIsRefused(GameTestHelper helper) {
+        String test = "aHomeSpawnBesideAStandingHomeBodyOfTheDragonIsRefused";
+        if (!nativeOnly(helper, test))
+            return;
+        ChunkWait waits = ChunkWait.of(helper, 2400);
+        ServerLevel level = helper.getLevel();
+        Vec3 c = DragonKit.centre(helper);
+        Runnable unforce = DragonKit.forceAround(helper, 3);
+        long lair = DragonKit.newLair();
+        DragonBaseEntity[] d = new DragonBaseEntity[1];
+        long[] agent = new long[1];
+        int[] epoch = new int[1];
+        long[] rejected0 = new long[1];
+        SequenceHolder h = new SequenceHolder();
+        h.s = helper.startSequence()
+                .thenWaitUntil(waits.chunks(() -> check("the ring of chunks is loaded", DragonKit.ready(level, arenaChunk(helper), 3))));
+        occupiedAfter(h, helper, waits, lair, d, agent);
+        h.s.thenExecute(() -> {
+                    epoch[0] = homeEpoch(agent[0]);
+                    bridge().homes.testOut(lair, level.getGameTime());
+                    check("released, it stands with its attachment", !d[0].isRemoved() && d[0].hasData(MicRtsimIceAndFire.HOME)
+                            && bridge().body(agent[0]) == null);
+                    rejected0[0] = bridge().rejected;
+                    DragonKit.Spawn y = DragonKit.young(agent[0], helper, c, DragonRecords.Materialize.FLAG_HOME_BODY | DragonRecords.Materialize.FLAG_SLEEPING);
+                    DragonKit.materialize(new DragonKit.Spawn(y.agent(), epoch[0] + 1, y.species(), y.dimension(), y.at(), y.ageTicks(), y.hunger(), y.male(),
+                            y.variant(), y.health(), BlockPos.containing(c), y.target(), null, y.flags()));
+                })
+                .thenWaitUntil(waits.engine(() -> check("the spawn was answered", bridge().rejected > rejected0[0] || bridge().body(agent[0]) != null)))
+                .thenExecute(() -> {
+                    Entity second = bridge().body(agent[0]);
+                    List<ScriptedEngine.Received> r = about(DragonRecords.DRAGON_SPAWN_REJECTED, agent[0]);
+                    record(test, "answer", "rejected " + (bridge().rejected - rejected0[0]) + (r.isEmpty() ? "" : " (reason " + r.get(r.size() - 1).aux() + ")")
+                            + ", a body registered " + (second != null) + ", home bodies standing " + homeBodies(level, c, lair).size());
+                    if (second != null && second != d[0])
+                        second.discard();
+                    check("refused: a body carrying the agent stands (SPAWN_REJECTED ALREADY_EMBODIED)", second == null && !r.isEmpty()
+                            && r.get(r.size() - 1).aux() == DragonRecords.SpawnRejected.ALREADY_EMBODIED);
+                    check("one body of the dragon", homeBodies(level, c, lair).size() == 1);
+                    d[0].discard();
+                    unforce.run();
+                })
+                .thenSucceed();
+    }
+
+    /**
+     * EQC312 (finding 3): a lair goes out (a footprint chunk drops past FULL) while its home body's chunk still entity-ticks
+     * (vanilla ticks entities to the simulation distance): the body is not released, it stays registered and leashed, and it is
+     * released with reason 8 only when its own chunk stops ticking. Core's chunk watch end to end at a far site.
+     */
+    @GameTest(template = DragonKit.ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "home_out_ticking")
+    public static void aHomeBodyWhoseChunkStillTicksStaysLeashedPastItsLairsOut(GameTestHelper helper) {
+        String test = "aHomeBodyWhoseChunkStillTicksStaysLeashedPastItsLairsOut";
+        if (!nativeOnly(helper, test))
+            return;
+        ChunkWait waits = ChunkWait.of(helper, 2400);
+        ServerLevel level = helper.getLevel();
+        BlockPos site = DragonKit.farSite();
+        long lair = DragonKit.newLair();
+        DragonConfig.Test.watchLairs = Boolean.TRUE;
+        DragonKit.onEnd(helper, DragonConfig.Test::reset);
+        ChunkWait.Hold hold = waits.hold(site, 48, ChunkWait.Need.ENTITY_TICKING);
+        DragonBaseEntity[] d = new DragonBaseEntity[1];
+        long[] agent = new long[1];
+        Runnable[] unforce = new Runnable[1];
+        long[] giveUp = new long[1];
+
+        helper.startSequence()
+                .thenWaitUntil(waits.ready(hold))
+                .thenExecute(() -> {
+                    int y = level.getHeight(Heightmap.Types.MOTION_BLOCKING, site.getX(), site.getZ());
+                    BlockPos home = new BlockPos(site.getX(), y, site.getZ());
+                    d[0] = DragonKit.roostDragon(level, new Vec3(site.getX() + 0.5, y, site.getZ() + 0.5));
+                    bridge().lairs.declareForTest(level, lair, ROOST, BoundingBox.fromCorners(home.offset(-5, -2, -5), home.offset(5, 6, 5)), home,
+                            level.getGameTime());
+                })
+                .thenWaitUntil(waits.engine(() -> {
+                    long a = bridge().agentOf(d[0]);
+                    check("the lair came in and its dragon is a home body", bridge().homes.isIn(lair) && a != 0 && !homeAnswers(a).isEmpty());
+                }))
+                .thenExecute(() -> {
+                    agent[0] = bridge().agentOf(d[0]);
+                    // The body's own chunk keeps entity-ticking (a forced chunk: level 31 there, 34 three chunks out, so the
+                    // footprint's far edge drops past FULL), then the footprint's hold is let go.
+                    unforce[0] = DragonKit.forceChunks(level, new ChunkPos(d[0].blockPosition()), 0);
+                    hold.release();
+                })
+                .thenWaitUntil(waits.chunks(() -> check("the lair went out by itself (LAIR_OUT)", !DragonKit.received(DragonRecords.LAIR_OUT,
+                        DragonRecords.LairOut.LAIR, lair).isEmpty())))
+                .thenIdle(40)
+                .thenExecute(() -> {
+                    List<ScriptedEngine.Received> demat = about(DragonRecords.DRAGON_DEMATERIALIZED, agent[0]);
+                    record(test, "out", "LAIR_OUT; the body's chunk ticking " + RtsimSession.entitiesTickAt(level, d[0].blockPosition())
+                            + ", registered " + (bridge().body(agent[0]) == d[0]) + ", DEMATERIALIZED " + demat.size());
+                    check("its chunk still ticks", RtsimSession.entitiesTickAt(level, d[0].blockPosition()));
+                    check("not released while its chunk ticks (no DEMATERIALIZED)", demat.isEmpty());
+                    check("still registered, so still leashed", bridge().body(agent[0]) == d[0] && !d[0].isRemoved());
+                    unforce[0].run();
+                    giveUp[0] = System.nanoTime() + 30_000_000_000L;
+                })
+                .thenWaitUntil(waits.chunks(() -> {
+                    List<ScriptedEngine.Received> demat = about(DragonRecords.DRAGON_DEMATERIALIZED, agent[0]);
+                    check("released as saved (reason 8) once its chunk stopped ticking", !demat.isEmpty()
+                            && demat.get(demat.size() - 1).aux() == DragonRecords.Dematerialized.HOME_SAVED && bridge().body(agent[0]) == null);
+                }))
+                .thenExecute(() -> {
+                    record(test, "released", "reason 8 after the body's chunk was let go; the body " + (d[0].isRemoved() ? "left the level ("
+                            + d[0].getRemovalReason() + ")" : "stands"));
+                    if (!d[0].isRemoved())
+                        d[0].discard();
+                })
+                .thenSucceed();
+    }
+
+    /**
+     * EQC314 (finding 5): DRAGON_DEPART reason 5 (the engine's dragon is gone: dead of age, starved away) to a home body with a
+     * player in range: the plugin discards it at once. Kept for the capture (a player near holds it up to 6,000 ticks), a lair
+     * going out in the window saved it with a dead dragon's agent, and the next census adopted it. The GameTest server's
+     * simulation distance is 0 (its PlayerList never sets one), so the player is kept on the dragon each tick and the DEPART
+     * targets the dragon's own place: only a player in the body's own chunk has it in range.
+     */
+    @GameTest(template = DragonKit.ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "home_depart_gone")
+    public static void aHomeBodyToldItsDragonIsGoneIsDiscardedAtOnce(GameTestHelper helper) {
+        String test = "aHomeBodyToldItsDragonIsGoneIsDiscardedAtOnce";
+        if (!nativeOnly(helper, test))
+            return;
+        ChunkWait waits = ChunkWait.of(helper, 2400);
+        ServerLevel level = helper.getLevel();
+        Runnable unforce = DragonKit.forceAround(helper, 3);
+        long lair = DragonKit.newLair();
+        DragonBaseEntity[] d = new DragonBaseEntity[1];
+        long[] agent = new long[1], told = new long[1];
+        ServerPlayer[] near = new ServerPlayer[1];
+        SequenceHolder h = new SequenceHolder();
+        h.s = helper.startSequence()
+                .thenWaitUntil(waits.chunks(() -> check("the ring of chunks is loaded", DragonKit.ready(level, arenaChunk(helper), 3))));
+        occupiedAfter(h, helper, waits, lair, d, agent);
+        h.s.thenExecute(() -> {
+                    near[0] = FakePlayers.add(level, d[0].position(), "home-near");
+                    told[0] = level.getGameTime();
+                    DragonKit.depart(agent[0], homeEpoch(agent[0]), 5, 0, d[0].position());
+                })
+                .thenWaitUntil(waits.engine(() -> {
+                    if (!d[0].isRemoved())
+                        near[0].moveTo(d[0].getX(), d[0].getY(), d[0].getZ());
+                    check("the engine passed the DEPART on and the plugin answered", bridge().body(agent[0]) == null
+                            || level.getGameTime() - told[0] > 200);
+                }))
+                .thenExecute(() -> {
+                    record(test, "after DEPART 5", "removed " + d[0].isRemoved() + ", registered " + (bridge().body(agent[0]) != null) + ", "
+                            + (level.getGameTime() - told[0]) + " ticks after the order");
+                    check("discarded at once, a player near", d[0].isRemoved() && bridge().body(agent[0]) == null);
+                    bridge().homes.testOut(lair, level.getGameTime());
+                    List<ScriptedEngine.Received> demat = about(DragonRecords.DRAGON_DEMATERIALIZED, agent[0]);
+                    check("never released as saved (reason 8)", demat.stream().noneMatch(r -> r.aux() == DragonRecords.Dematerialized.HOME_SAVED));
+                    FakePlayers.remove(near[0]);
+                    if (!d[0].isRemoved())
+                        d[0].discard();
+                    unforce.run();
+                })
+                .thenSucceed();
+    }
+
+    /**
+     * EQC317 (finding 8): with an oil field known to the engine, a fire dragon's home body adopted by its lair's census carries
+     * its oil reserve (ADOPT flag 4), as a spawned body does, so its fire is gated (OG-4, OG-13).
+     */
+    @GameTest(template = DragonKit.ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "home_oil")
+    public static void aCensusAdoptedFireDragonCarriesItsOilReserve(GameTestHelper helper) {
+        String test = "aCensusAdoptedFireDragonCarriesItsOilReserve";
+        if (!nativeOnly(helper, test))
+            return;
+        ChunkWait waits = ChunkWait.of(helper, 2400);
+        ServerLevel level = helper.getLevel();
+        long lair = DragonKit.newLair();
+        DragonBaseEntity[] d = new DragonBaseEntity[1];
+        long[] agent = new long[1];
+        BlockPos far = DragonKit.farSite();
+        helper.startSequence()
+                .thenExecute(() -> DragonKit.oilChunks(level, List.of(new int[]{far.getX() >> 4, far.getZ() >> 4, 1},
+                        new int[]{(far.getX() >> 4) + 1, far.getZ() >> 4, 1}, new int[]{far.getX() >> 4, (far.getZ() >> 4) + 1, 1})))
+                .thenIdle(5)
+                .thenExecute(() -> {
+                    bridge().lairs.declareForTest(level, lair, ROOST, DragonKit.arenaBox(helper), BlockPos.containing(DragonKit.centre(helper)),
+                            level.getGameTime());
+                    d[0] = DragonKit.roostDragon(level, DragonKit.centre(helper));
+                    bridge().homes.testIn(lair, false, level.getGameTime());
+                })
+                .thenWaitUntil(waits.engine(() -> {
+                    long a = bridge().agentOf(d[0]);
+                    check("the census adopted the lair's dragon as a home body", a != 0 && !homeAnswers(a).isEmpty());
+                }))
+                .thenExecute(() -> {
+                    agent[0] = bridge().agentOf(d[0]);
+                    record(test, "reserve", "the adopted home body's oil reserve " + bridge().oilOf(agent[0]) + " (-1: none, it breathes freely)");
+                    check("it carries a reserve", bridge().oilOf(agent[0]) >= 0);
+                    bridge().homes.testOut(lair, level.getGameTime());
+                    d[0].discard();
+                })
+                .thenSucceed();
+    }
+
+    /**
+     * EQC319 (finding 10): a chunk load or unload is queued for the end of the tick only when the chunk holds a known lair's
+     * home; any other (every chunk of every dimension, with or without a session) costs nothing.
+     */
+    @GameTest(template = DragonKit.ARENA, timeoutTicks = 100, batch = "home_chunk_events")
+    public static void onlyAKnownLairsHomeChunkIsQueued(GameTestHelper helper) {
+        String test = "onlyAKnownLairsHomeChunkIsQueued";
+        ServerLevel level = helper.getLevel();
+        long lair = DragonKit.newLair();
+        BlockPos home = BlockPos.containing(DragonKit.centre(helper));
+        bridge().lairs.declareForTest(level, lair, ROOST, DragonKit.arenaBox(helper), home, level.getGameTime());
+        int before = bridge().homes.queuedChunkEvents();
+        for (int i = 0; i < 1000; i++) {
+            long chunk = ChunkPos.asLong(1_000_000 + i, -1_000_000);
+            bridge().homes.chunkLoaded(level, chunk);
+            bridge().homes.chunkUnloaded(level, chunk);
+        }
+        int strangers = bridge().homes.queuedChunkEvents() - before;
+        bridge().homes.chunkLoaded(level, new ChunkPos(home).toLong());
+        int own = bridge().homes.queuedChunkEvents() - before - strangers;
+        record(test, "queued", "2,000 events of chunks no lair's home lies in: " + strangers + " queued; the lair's own home chunk: " + own);
+        check("no stranger's chunk event is queued", strangers == 0);
+        check("the lair's home chunk is", own == 1);
+        helper.succeed();
+    }
+
+    /**
+     * EQC321 (finding 12): a puppet settles at its own lair, nearer to a neighbouring lair's home: the hand-back names the
+     * dragon's own lair (the engine's key), not the nearest one.
+     */
+    @GameTest(template = DragonKit.ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "home_hand_back_lair")
+    public static void aHandBackNamesTheDragonsOwnLairNotTheNearest(GameTestHelper helper) {
+        String test = "aHandBackNamesTheDragonsOwnLairNotTheNearest";
+        if (!nativeOnly(helper, test))
+            return;
+        ChunkWait waits = ChunkWait.of(helper, 2400);
+        ServerLevel level = helper.getLevel();
+        Vec3 c = DragonKit.centre(helper);
+        lowerLeash(helper);
+        Runnable unforce = DragonKit.forceAround(helper, 3);
+        long lair = DragonKit.newLair(), neighbour = DragonKit.newLair();
+        DragonBaseEntity[] d = new DragonBaseEntity[1];
+        long[] agent = new long[1];
+        int[] epoch = new int[1];
+        SequenceHolder h = new SequenceHolder();
+        h.s = helper.startSequence()
+                .thenWaitUntil(waits.chunks(() -> check("the ring of chunks is loaded", DragonKit.ready(level, arenaChunk(helper), 3))));
+        occupiedAfter(h, helper, waits, lair, d, agent);
+        leashed(h.s, helper, waits, agent, d, epoch, LURED)
+                .thenExecute(() -> {
+                    // A neighbouring lair whose home is 16 blocks east; the puppet lands 12 blocks east of its own: 4 from the
+                    // neighbour's home, inside its own hand-back radius.
+                    BlockPos nh = BlockPos.containing(c.add(16, 0, 0));
+                    bridge().lairs.declareForTest(level, neighbour, ROOST, BoundingBox.fromCorners(nh.offset(-2, -2, -2), nh.offset(2, 4, 2)), nh,
+                            level.getGameTime());
+                    d[0].moveTo(c.x + 12, c.y, c.z, 0f, 0f);
+                })
+                .thenWaitUntil(waits.engine(() -> check("a second home answer: the puppet is a home body again", homeAnswers(agent[0]).size() >= 2)))
+                .thenExecute(() -> {
+                    HomeBodies.HomeTag tag = d[0].getExistingDataOrNull(MicRtsimIceAndFire.HOME);
+                    record(test, "handed back", "the attachment " + tag + "; its own lair " + Long.toHexString(lair) + ", the neighbour "
+                            + Long.toHexString(neighbour));
+                    check("the home attachment names its own lair: " + tag, tag != null && tag.lair() == lair && tag.agent() == agent[0]);
+                    bridge().homes.testOut(lair, level.getGameTime());
+                    d[0].discard();
+                    unforce.run();
+                })
+                .thenSucceed();
+    }
+
+    /** EQC322 (finding 13): the leash is at most the footprint, whatever is configured. */
+    @GameTest(template = DragonKit.ARENA, timeoutTicks = 100, batch = "home_leash_clamp")
+    public static void aLeashBeyondTheFootprintIsClampedToIt(GameTestHelper helper) {
+        String test = "aLeashBeyondTheFootprintIsClampedToIt";
+        DragonConfig.Test.homeLeash = 100;
+        DragonKit.onEnd(helper, DragonConfig.Test::reset);
+        record(test, "leash", "configured 100, footprint " + DragonConfig.lairFootprint() + ": the leash is " + DragonConfig.homeLeash());
+        check("the leash is at most the footprint", DragonConfig.homeLeash() <= DragonConfig.lairFootprint());
         helper.succeed();
     }
 }

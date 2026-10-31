@@ -906,7 +906,15 @@ fn hand_back_is_ordered_only_for_a_settled_puppet_at_a_lair_that_is_in() {
             _ => None,
         })
         .collect();
-    assert_eq!(hb, vec![boundary::HandBack { agent, epoch }]);
+    assert_eq!(
+        hb,
+        vec![boundary::HandBack {
+            agent,
+            epoch,
+            lair: KEY
+        }],
+        "the dragon's own lair named (EQC321)"
+    );
     // One in flight at a time.
     s.ingest(settled(boundary::STATE_SLEEPING, 701.5, 101.0), 260);
     assert!(s.cmds().iter().all(|c| !matches!(c, Cmd::HandBack(_))));
@@ -1066,4 +1074,382 @@ fn a_replayed_census_marks_in_and_sends_nothing() {
     assert!(s.cmds().is_empty());
     assert!(s.d.lairs[s.l as usize].occupants.is_empty());
     s.d.replay_done(&mut s.w, Tick(200));
+}
+
+// ---- the S5 review's findings (EQC310 onward) -------------------------------------------------
+
+/// A live dragon of another lair, with the agent `agent_of(y)`: an agent a rebuilt engine (or a
+/// crash's replay) handed out again, as a body of this lair may still carry an old one.
+fn other_lairs_dragon(s: &mut Scene) -> DragonId {
+    let other = s.d.add_lair(
+        &mut s.w,
+        KEY + 9,
+        "Elsewhere",
+        Species::Fire,
+        LairKind::Roost,
+        Pos::new(0, 6000, 6000),
+        100,
+        Tick(0),
+    );
+    s.d.add_dragon(
+        &mut s.w,
+        newdragon("Elsewhere", other, Gender::Male, 110),
+        Tick(0),
+    )
+}
+
+/// EQC310 (finding 1): after a reset the lair expects its body by UUID; the body still carries an
+/// agent of the old engine life, which in the new engine is a live dragon of another lair. The body
+/// is the lair's own, matched by its UUID first: adopted, not removed as that dragon's.
+#[test]
+fn a_reset_lairs_body_carrying_another_lairs_agent_is_adopted_by_its_uuid() {
+    let mut s = reset_lair(40, vec![uuid(0x2A)], false);
+    let y = other_lairs_dragon(&mut s);
+    s.census(1, false, &[body(0x2A, agent_of(y), 700.5)], 100);
+    let cmds = s.cmds();
+    assert!(
+        discards(&cmds).iter().all(|d| d.entity != uuid(0x2A)),
+        "the lair's own body is not removed: {cmds:?}"
+    );
+    let a = adopts(&cmds);
+    assert_eq!(a.len(), 1, "adopted by its UUID: {cmds:?}");
+    assert_eq!(a[0].entity, uuid(0x2A));
+    assert_ne!(a[0].agent, agent_of(y), "a dragon of its own, not the other lair's");
+    let lair = &s.d.lairs[s.l as usize];
+    assert_eq!(lair.occupants.len(), 1);
+    assert!(lair.vacant_since.is_none(), "no wait for the cap");
+    assert_eq!(
+        s.d.dragon(y).unwrap().body,
+        None,
+        "the other lair's dragon is not given it"
+    );
+}
+
+/// EQC310 (finding 1): an agent that names a live dragon of another lair, on a body at an empty
+/// lair with no row: a stray, adopted as the lair's own, not removed as the other dragon's.
+#[test]
+fn an_agent_of_another_lairs_dragon_at_an_empty_lair_is_a_stray_not_removed() {
+    let mut s = scene(41);
+    let y = other_lairs_dragon(&mut s);
+    s.census(1, false, &[body(0x2B, agent_of(y), 700.5)], 100);
+    let cmds = s.cmds();
+    assert!(discards(&cmds).is_empty(), "nothing removed: {cmds:?}");
+    let a = adopts(&cmds);
+    assert_eq!(a.len(), 1, "{cmds:?}");
+    assert_eq!(a[0].entity, uuid(0x2B));
+    assert_ne!(a[0].agent, agent_of(y));
+    assert_eq!(s.d.lairs[s.l as usize].occupants.len(), 1);
+    assert_eq!(s.d.stats.strays_adopted, 1);
+}
+
+/// EQC311 (finding 2): a dragon that is a puppet (led past the leash) and an old home body of it
+/// listed by a watched census: the old body is removed, watched or not, so it does not tick beside
+/// the puppet (H1).
+#[test]
+fn a_watched_census_removes_an_old_body_of_a_dragon_that_is_a_puppet() {
+    let mut s = scene(42);
+    let x = s.dragon("Lured", Gender::Female);
+    let (agent, epoch) = s.homed(x, 0x5A, 100);
+    s.ingest(
+        Obs::DragonLeftHome(boundary::DragonLeftHome {
+            agent,
+            epoch,
+            dimension: 0,
+            entity: uuid(0x5A),
+            pos: (760.0, 100.0, 1500.0),
+        }),
+        200,
+    );
+    s.cmds();
+    // A crash between the swap and the chunk's rewrite left the old home body on disk.
+    s.census(2, true, &[body(0x5B, agent, 701.5)], 300);
+    let cmds = s.cmds();
+    let gone = discards(&cmds);
+    assert_eq!(gone.len(), 1, "the old body goes: {cmds:?}");
+    assert_eq!(gone[0].entity, uuid(0x5B));
+    assert!(adopts(&cmds).is_empty(), "{cmds:?}");
+    assert_eq!(s.d.lairs[s.l as usize].occupants, vec![x], "no second dragon");
+}
+
+/// EQC313 (finding 4): a lair that got a newcomer while it was seen only from afar, and Ice and
+/// Fire's own generated dragon found by its first census: the generated dragon is removed (the
+/// untagged path's rule), not adopted as a second occupant.
+#[test]
+fn a_lairs_generated_dragon_found_after_a_newcomer_is_removed_not_adopted() {
+    let mut s = scene(43);
+    let x = s.dragon("Newcomer", Gender::Female);
+    s.census(1, false, &[body(0x4A, 0, 702.5)], 100);
+    let cmds = s.cmds();
+    assert!(adopts(&cmds).is_empty(), "no second occupant: {cmds:?}");
+    let gone = discards(&cmds);
+    assert_eq!(gone.len(), 1, "{cmds:?}");
+    assert_eq!(
+        (gone[0].entity, gone[0].reason),
+        (uuid(0x4A), DISCARD_LAIR_FULL)
+    );
+    assert_eq!(s.d.lairs[s.l as usize].occupants, vec![x]);
+    assert_eq!(s.d.stats.strays_adopted, 0);
+    assert_eq!(
+        materializes(&cmds).len(),
+        1,
+        "the newcomer, owed, gets its body"
+    );
+}
+
+/// EQC315 (finding 6): a passing puppet (its departure booked) settles at its lair and is handed
+/// back as a home body. Its booked departure and the wound rule are a puppet's: the home body is
+/// never sent away.
+#[test]
+fn a_handed_back_body_keeps_no_departure() {
+    let mut s = scene(44);
+    let x = s.dragon("Passer", Gender::Female);
+    s.run(90_100);
+    assert!(
+        matches!(s.d.dragon(x).unwrap().state, State::Flying(_)),
+        "it left to hunt: {:?}",
+        s.d.dragon(x).unwrap().state
+    );
+    s.cmds();
+    s.d.player_stays(
+        &mut s.w,
+        PLAYER,
+        Pos::new(0, 700, 1500),
+        Tick(90_100),
+        Tick(400_000),
+    );
+    s.run(90_200);
+    let m = materializes(&s.cmds())
+        .into_iter()
+        .find(|m| m.agent == agent_of(x))
+        .expect("the player sees it pass");
+    assert_eq!(m.flags & boundary::MAT_HOME_BODY, 0, "a puppet");
+    let (agent, epoch) = (m.agent, m.epoch);
+    let State::Embodied { depart_at, .. } = s.d.dragon(x).unwrap().state else {
+        panic!("embodied")
+    };
+    assert_ne!(depart_at.0, u64::MAX, "a passing puppet books its departure");
+    s.ingest(
+        Obs::Materialized(boundary::Materialized {
+            agent,
+            epoch,
+            dimension: 0,
+            entity: uuid(0x6A),
+            home: false,
+        }),
+        90_201,
+    );
+    s.census(1, true, &[], 90_210);
+    s.cmds();
+    s.ingest(
+        Obs::State(boundary::State {
+            agent,
+            epoch,
+            flags: boundary::STATE_SLEEPING,
+            dimension: 0,
+            health: 400.0,
+            max_health: 500.0,
+            hunger: 80,
+            age_ticks: 1,
+            pos: (701.5, 100.0, 1500.5),
+        }),
+        90_220,
+    );
+    assert!(
+        s.cmds().iter().any(|c| matches!(c, Cmd::HandBack(h) if h.agent == agent)),
+        "settled at its lair, the lair in: handed back"
+    );
+    s.answer(agent, epoch, uuid(0x6A), 90_230);
+    assert_eq!(s.d.dragon(x).unwrap().body, Some(uuid(0x6A)));
+    s.run(depart_at.0 + 100);
+    let cmds = s.cmds();
+    assert!(
+        cmds.iter()
+            .all(|c| !matches!(c, Cmd::Depart(dp) if dp.agent == agent)),
+        "the home body is not sent away: {cmds:?}"
+    );
+    let dx = s.d.dragon(x).unwrap();
+    assert!(
+        matches!(dx.state, State::Embodied { depart_at, harass: false, .. } if depart_at.0 == u64::MAX),
+        "{:?}",
+        dx.state
+    );
+    // A heavy wound does not send it off either (the wound rule is a puppet's).
+    let t = s.d.now().0 + 10;
+    s.ingest(
+        Obs::Hurt(boundary::Hurt {
+            agent,
+            epoch,
+            attacker_kind: AttackerKind::Player,
+            attacker: PLAYER,
+            hits: 9,
+            amount: 10_000.0,
+            health_after: 1.0,
+        }),
+        t,
+    );
+    assert!(
+        s.cmds()
+            .iter()
+            .all(|c| !matches!(c, Cmd::Depart(dp) if dp.agent == agent)),
+        "wounded, a home body still stays"
+    );
+}
+
+/// A square oil field of `side` by `side` chunks from chunk (cx, cz): the engine knows an oil field,
+/// so its fire dragons carry a reserve (OG-4).
+fn oil_field(cx: i32, cz: i32, side: i32) -> Obs {
+    Obs::OilChunks(boundary::OilChunks {
+        dimension: 0,
+        source: boundary::OIL_SOURCE_DEEP_TIME,
+        chunks: (0..side * side)
+            .map(|k| boundary::OilChunkRec {
+                cx: cx + k % side,
+                cz: cz + k / side,
+                amount: 1,
+                flags: 0,
+            })
+            .collect(),
+    })
+}
+
+/// EQC317 (finding 8): a fire dragon's home body adopted by a census carries the dragon's oil
+/// reserve, as a spawned body does (OG-4, OG-13).
+#[test]
+fn a_census_adoption_carries_the_oil_reserve() {
+    let mut s = scene(45);
+    s.ingest(oil_field(40, 90, 3), 10);
+    let x = s.dragon("Fiery", Gender::Female);
+    s.census(1, false, &[body(0x8A, agent_of(x), 700.5)], 100);
+    let a = adopts(&s.cmds());
+    assert_eq!(a.len(), 1);
+    assert_ne!(
+        a[0].flags & boundary::ADOPT_OIL,
+        0,
+        "the reserve rides on the adoption: {:?}",
+        a[0]
+    );
+    let want = s.d.dragon(x).unwrap().oil_level(&s.d.tun.oil, Tick(100));
+    assert!(want > 0, "a reserve to carry: {want}");
+    assert_eq!(a[0].oil, want, "the dragon's own reserve");
+}
+
+/// EQC318 (finding 9): a home spawn refused because the roost's chunk does not entity-tick (a
+/// simulation distance under the view distance) holds only a moment: the next sighting asks again,
+/// not a day later. A refusal still makes no record a step.
+#[test]
+fn a_spawn_refused_for_a_chunk_not_ticking_is_asked_again_soon() {
+    let mut s = scene(46);
+    let x = s.dragon("Owed", Gender::Female);
+    s.d.player_stays(
+        &mut s.w,
+        PLAYER,
+        Pos::new(0, 700, 1500),
+        Tick(100),
+        Tick(3_000),
+    );
+    s.run(120);
+    let m = materializes(&s.cmds());
+    assert_eq!(m.len(), 1, "seen at its lair");
+    assert_eq!(m[0].agent, agent_of(x));
+    s.ingest(
+        Obs::SpawnRejected(boundary::SpawnRejected {
+            agent: m[0].agent,
+            epoch: m[0].epoch,
+            reason: 1,
+            cmd_seq: 1,
+        }),
+        130,
+    );
+    s.run(200);
+    assert!(
+        materializes(&s.cmds()).is_empty(),
+        "not again at once: it settles at its lair, and the refusal holds"
+    );
+    // The player comes closer: its area is booked again, and the roost's chunk ticks now.
+    s.d.player_stays(
+        &mut s.w,
+        PLAYER,
+        Pos::new(0, 710, 1500),
+        Tick(2_500),
+        Tick(150_000),
+    );
+    s.run(2_520);
+    let m2 = materializes(&s.cmds());
+    assert_eq!(m2.len(), 1, "asked again at the next sighting");
+    assert_ne!(m2[0].flags & boundary::MAT_HOME_BODY, 0);
+}
+
+/// EQC320 (finding 11): a dragon's misses count against the body it believes; when that belief is
+/// cleared (its old body found gone while it is away) the misses go with it, so a body it is given
+/// later starts with none.
+#[test]
+fn clearing_a_believed_body_resets_its_misses() {
+    let mut s = scene(47);
+    let x = s.dragon("Rover", Gender::Female);
+    s.d.dragons.get_mut(x).unwrap().miss = (2, Tick(100));
+    away_with_body(&mut s, x, 0xB5);
+    let t = s.d.now().0 + 10;
+    s.census(1, false, &[], t);
+    assert_eq!(s.d.dragon(x).unwrap().body, None, "its old body is gone");
+    assert_eq!(
+        s.d.dragon(x).unwrap().miss,
+        (0, Tick(0)),
+        "the misses were the old body's"
+    );
+}
+
+/// The engine's commands through the fake plugin and its answers due by `at`, until quiet.
+fn pump(s: &mut Scene, iaf: &mut synth::FakeIaf, at: Tick) {
+    loop {
+        let cmds = s.d.take_commands();
+        let quiet = cmds.is_empty();
+        iaf.apply(cmds, at);
+        let due = iaf.due(at);
+        if quiet && due.is_empty() {
+            break;
+        }
+        for (t, o) in due {
+            let t = t.max(s.d.now());
+            s.d.ingest(&mut s.w, &mut NoInfrastructure, &o, t);
+        }
+    }
+}
+
+/// EQC314 (finding 5): a dragon dead of age while its home body is loaded: the plugin discards the
+/// body at once on DEPART reason 5 (Java waited for the capture, and a lair going out in that window
+/// saved a dead dragon's body, which the next census adopted). The lair going out and coming in
+/// again finds nothing: no body saved, no stray.
+#[test]
+fn a_dead_of_age_dragons_home_body_is_gone_at_once_and_never_comes_back() {
+    let mut s = scene(48);
+    let life = s.d.tun.species(Species::Fire).lifespan_ticks();
+    let x = s.d.add_dragon(
+        &mut s.w,
+        NewDragon {
+            age_ticks: life,
+            ..newdragon("Old", s.l, Gender::Female, 0)
+        },
+        Tick(0),
+    );
+    let mut iaf = synth::FakeIaf::new(PLAYER);
+    iaf.home.on = true;
+    iaf.home.lairs.insert(KEY, (700, 1500));
+    iaf.set_lair_in(KEY, false, Tick(100));
+    pump(&mut s, &mut iaf, Tick(100));
+    pump(&mut s, &mut iaf, Tick(110));
+    assert!(s.d.dragon(x).unwrap().body.is_some(), "its owed body spawned");
+    s.run(3 * DAY);
+    assert!(s.d.dragon(x).is_none(), "dead of age");
+    pump(&mut s, &mut iaf, Tick(3 * DAY));
+    assert!(
+        iaf.home.bodies.is_empty(),
+        "discarded at once: {:?}",
+        iaf.home.bodies
+    );
+    iaf.set_lair_out(KEY, Tick(3 * DAY + 10));
+    pump(&mut s, &mut iaf, Tick(3 * DAY + 10));
+    iaf.set_lair_in(KEY, false, Tick(3 * DAY + 400));
+    pump(&mut s, &mut iaf, Tick(3 * DAY + 400));
+    assert_eq!(s.d.stats.strays_adopted, 0, "the dead dragon does not come back");
+    assert!(s.d.lairs[s.l as usize].occupants.is_empty());
 }
