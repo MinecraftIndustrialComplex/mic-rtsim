@@ -1267,9 +1267,11 @@ fn the_archive_records_the_dragons() {
     assert!(claims[0].tick > arrive[0].tick);
 
     // A mated pair hatches a young one at its lair. Nothing feeds this pair, so it would starve
-    // out of the lair before the hatching (EQUILIBRIUM.md §2.4.1); the hatching is the subject.
+    // out of the lair before the hatching (EQUILIBRIUM.md §2.4.1), and a lair with no surplus
+    // hatches nothing (the dragon food gate, EQC531): it never grows hungry here, so its lair's
+    // fed share stays full and the first clutch hatches. The hatching is the subject.
     let (mut w, mut d) = world(23);
-    d.tun.starve_leave = 0.0;
+    d.tun.hunger_tick_rate = u64::MAX / 4;
     let l = d.add_lair(
         &mut w,
         8,
