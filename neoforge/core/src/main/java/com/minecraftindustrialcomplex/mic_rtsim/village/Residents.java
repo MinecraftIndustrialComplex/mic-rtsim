@@ -44,11 +44,21 @@ public final class Residents {
         String choose(ServerLevel level, VillageRegistry villages, Village village, long op);
     }
 
+    /**
+     * Makes a block a resident's home (slice S6 review, EQC330): the plugin's hook for a type whose own goals pull it home at
+     * night ({@code ribbits:ribbit}'s go-home goal). A settler walks in from 96 to 176 blocks out and is made there, which is
+     * where such a type takes its home from; it is homed at the village's meeting point instead.
+     */
+    public interface Rehomer {
+        void rehome(Entity e, BlockPos home);
+    }
+
     // Copy on write: registration is rare (mod construction, setup), lookups are on every damage event,
     // interaction and census entity, so they read a published immutable map with no lock.
     private static volatile Map<EntityType<?>, Kind> KINDS = Map.of();
     private static volatile Map<String, Factory> FACTORIES = Map.of();
     private static volatile Map<String, ProfessionChooser> CHOOSERS = Map.of();
+    private static volatile Map<EntityType<?>, Rehomer> REHOMERS = Map.of();
 
     static {
         register(EntityType.VILLAGER, new Kind(
@@ -96,6 +106,19 @@ public final class Residents {
         Map<String, ProfessionChooser> m = new HashMap<>(CHOOSERS);
         m.put(bodyKind, chooser);
         CHOOSERS = Map.copyOf(m);
+    }
+
+    public static synchronized void registerRehomer(EntityType<?> type, Rehomer rehomer) {
+        Map<EntityType<?>, Rehomer> m = new HashMap<>(REHOMERS);
+        m.put(type, rehomer);
+        REHOMERS = Map.copyOf(m);
+    }
+
+    /** Homes a resident at {@code home} when its type has a hook for it (EQC330); nothing otherwise. */
+    public static void rehome(Entity e, BlockPos home) {
+        Rehomer r = REHOMERS.get(e.getType());
+        if (r != null)
+            r.rehome(e, home);
     }
 
     /** The profession a renewal arrival of this body kind takes, or null when the plugin registered no chooser. */
