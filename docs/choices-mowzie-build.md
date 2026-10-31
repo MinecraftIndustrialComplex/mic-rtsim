@@ -12665,8 +12665,7 @@ Where the build differs from the design text above, and why:
   test replays the chain from the kernel's own `Pressure` and `RenewalRule` rather than comparing with §3.3's 5.8).
 - **A den's farmer** needs its first visit seeded at the `lag` (the presser never starts otherwise); the den's wanderer rate is
   `2.0/400` per even day.
-- **Save growth**: a raiding grove's save is larger by the pressure it now carries (one f32 and its day in the camp ledger, eight
-  bytes in SITE_STATE); nothing else grows.
+- **Save growth**: none in a grove's saved state. The first build's run seemed to show 7 bytes a game day in the rich-village grove; that was the harness's undrained outbox, fixed and tested in MZB-1285. S9's own additions to a save are a pressure and a day (the camp ledger), eight bytes in SITE_STATE and a counter.
 - **Order 42 `CONFLICT_SEND`** takes a u16 frame (41 is S7's SLAY); `a_reset_hands_a_groves_two_pressures_to_the_new_engine`
   pins p2 through a reset (failing-first: without p2 the heir waits 12 days).
 - **Not built as GameTests**: the Frostmaw killed away and the march of a grove stay with the Rust tests
