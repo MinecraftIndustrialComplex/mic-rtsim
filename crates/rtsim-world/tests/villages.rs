@@ -121,6 +121,27 @@ fn k_follows_beds_and_is_capped_at_32() {
 }
 
 #[test]
+fn a_population_input_goes_through_set_members() {
+    // The legacy census input (a test's, kept for scripted worlds) writes the count where every other
+    // change of it does (EQC155): a seen village it leaves short starts the settlers' wait, and the
+    // growth step booked for the old count is dropped.
+    let mut w = world();
+    let mut nodes: BTreeMap<u64, usize> = (0..w.nodes.len()).map(|i| (w.nodes[i].key, i)).collect();
+    count(&mut w, BRINDLE, 8, 12, true, day(1));
+    let r = *w.village_row(BRINDLE).unwrap();
+    assert!(r.seen && r.breed_due != u64::MAX, "seen alive and growing: {r:?}");
+    assert_eq!(r.wait_due, u64::MAX);
+    let key = w.nodes[BRINDLE].key;
+    let out = apply(&mut w, &mut nodes, &Input::Population { key, pop: 1 }, day(2).0);
+    assert!(!out.refused);
+    let r = *w.village_row(BRINDLE).unwrap();
+    assert_eq!(r.members, 1);
+    assert_eq!(w.nodes[BRINDLE].local.pop, 1);
+    assert_ne!(r.wait_due, u64::MAX, "one is short of a pair: the settlers' wait runs: {r:?}");
+    assert_eq!(r.breed_due, u64::MAX, "no growth step for one villager: {r:?}");
+}
+
+#[test]
 fn the_census_is_an_input_and_a_refused_one_names_no_village() {
     let mut w = world();
     let mut nodes: BTreeMap<u64, usize> = (0..w.nodes.len()).map(|i| (w.nodes[i].key, i)).collect();
