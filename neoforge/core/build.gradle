@@ -92,6 +92,10 @@ neoForge {
     }
 }
 
+// The unit tests (src/test) see Minecraft and NeoForge, for HabitatClimateTest (BlockPos, and the
+// ServerLevel in the climate hooks' signatures, passed as null), as the iceandfire plugin's tests do.
+neoForge.addModdingDependenciesTo(sourceSets.test)
+
 // The MDK pattern: localRuntime is on the runs' classpath (runtimeClasspath), never a dependency of
 // anything that depends on this mod.
 configurations {
@@ -107,8 +111,10 @@ dependencies {
     if (project.hasProperty('c2me'))
         localRuntime files("${rootProject.file(project.findProperty('packMods')).absolutePath}/${c2me_jar}")
 
-    // Pure-Java unit tests: the boundary protocol, the journal and the stub engine. They touch no
-    // Minecraft class, so they need no game on the classpath.
+    // Unit tests: the boundary protocol, the journal and the stub engine, which touch no Minecraft
+    // class, and the habitat sampler's climate (HabitatClimateTest), which names BlockPos and the
+    // climate hooks' signatures only; the test source set gets Minecraft and NeoForge from the plugin
+    // (neoForge.addModdingDependenciesTo below), no game runs.
     testImplementation(platform("org.junit:junit-bom:${junit_version}"))
     testImplementation('org.junit.jupiter:junit-jupiter')
     testRuntimeOnly('org.junit.platform:junit-platform-launcher')

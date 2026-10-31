@@ -394,6 +394,31 @@ mod tests {
     }
 
     #[test]
+    fn a_cells_year_round_climate_is_read_as_sent_and_the_season_added_once() {
+        let mut w = SampledWorld::new();
+        let mut p = Painter::default();
+        let plains = |_: i32, _: i32| land("minecraft:plains");
+        // A cell sent in summer (season 1 of 4) with its year-round climate, 10 °C.
+        let mut r = p.record(0, 0, 0, &plains, &[]);
+        r.celsius = 10.0;
+        r.season = 1;
+        r.season_count = 4;
+        p.feed(&mut w, &r);
+        let a = w.area(0, 0, 0, 64, 64);
+        assert!(
+            (a.base_celsius - 10.0).abs() < 1e-6,
+            "a year-round climate of 10 °C sent in summer reads {} °C",
+            a.base_celsius
+        );
+        // The season is the engine's, added once, by sub-season: summer +4, winter -8.
+        assert_eq!(w.season_offset(0, 4), 4.0);
+        assert_eq!(w.season_offset(0, 10), -8.0);
+        // A record with no climate reads vanilla's temperature on mic-climate's scale.
+        p.paint(&mut w, 0, (64, 0, 128, 64), &plains);
+        assert!((w.area(0, 64, 0, 128, 64).base_celsius - 19.52).abs() < 1e-3);
+    }
+
+    #[test]
     fn latest_wins_and_generation_counts_only_rise() {
         let mut w = SampledWorld::new();
         let mut p = Painter::default();
