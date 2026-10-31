@@ -153,6 +153,26 @@ fn village_pop_follows_census_down() {
     e.close(true, Duration::from_secs(5)).unwrap();
 }
 
+/// Nobody online (the host's [`Policy::Refuse`]): Java holds a house and a resident order, as the real
+/// bridge holds one for chunks that are not loaded (`HouseBuilder` waits for its plot's chunks,
+/// `ResidentSpawner` for its spawn chunk), and answers neither FAILED. An answer would reach the
+/// engine at the next hand-over and lapse the booking, and the engine acts on both answers.
+#[test]
+fn nobody_online_holds_house_and_resident_orders() {
+    let (_dir, e, mut j) = open("village-held");
+    j.policy = Policy::Refuse;
+    let before = j.journal.len();
+    let mut house = vec![0u8; cmd::place_house::SIZE];
+    wire::put_u64(&mut house, cmd::place_house::OP_ID, 0x1234);
+    j.refuse(cmd::PLACE_HOUSE, 1, &house);
+    let mut order = vec![0u8; cmd::spawn_resident::SIZE];
+    wire::put_u64(&mut order, cmd::spawn_resident::OP_ID, 0x5678);
+    j.refuse(cmd::SPAWN_RESIDENT, 2, &order);
+    assert_eq!(j.journal.len(), before, "neither order is answered");
+    assert!(j.refused.is_empty(), "nor counted as refused: {:?}", j.refused);
+    e.close(true, Duration::from_secs(5)).unwrap();
+}
+
 #[test]
 fn census_flapping_never_reaches_the_world() {
     let (_dir, e, mut j) = open("village-census-flap");
@@ -280,17 +300,20 @@ impl Rig {
         }
     }
 
-    /// A save, a crash and a start from what the pages hold.
+    /// A crash before the next save: the engine comes back from the pages of the last save (the
+    /// test's `save_durable`) and replays Java's journal past them, as it does after a real crash;
+    /// the test's clock (`Phase1Advance`) is not in the journal, so the world is back at the save's
+    /// day and runs the days since again, booking what it booked before under the same op ids.
     fn crash(self) -> Rig {
-        let Rig { dir, e, mut j, real, first, sent, t0, .. } = self;
-        save_durable(&e, &mut j);
+        let Rig { dir, e, j, real, first, sent, t0, .. } = self;
         let saved = j.world_save();
         let _ = j.crash();
         let e = engine(&dir, 256 * 1024);
         let mut j = Java::open(e.clone(), saved);
         j.module_mask = 0b1111;
+        j.idle();
         let (_, ok, _) = e.phase1_state();
-        assert!(ok, "the replayed world is the saved one");
+        assert!(ok, "the replayed world is the one the journal leads to");
         Rig { dir, e, j, real, first, sent, seen: 0, t0 }
     }
 }
@@ -343,9 +366,17 @@ fn villages_renew_end_to_end() {
     assert!((pa - 1_000).abs() <= 2, "a player's twelve kills at K 12: {pa}");
     assert_eq!(pb, 0, "a siege's add nothing");
 
+    rig.run_to(5.0);
+    save_durable(&rig.e, &mut rig.j);
     rig.run_to(10.0);
     assert!(rig.sent.is_empty(), "nothing before the shortest wait: {:?}", rig.sent);
+    let clock = rig.e.clocks()[2];
     let mut rig = rig.crash();
+    assert!(rig.e.clocks()[2] < clock - 2 * DAY, "rolled back to the save's day: {} of {clock}", rig.e.clocks()[2]);
+    for v in [A, B] {
+        let r = rig.e.phase1_village(v).unwrap();
+        assert_eq!((r[MEMBERS], r[WAIT_DUE] >= 0), (0, true), "village {v:x} after the replay: {r:?}");
+    }
     rig.run_to(15.0);
     assert!(rig.sent.is_empty(), "nothing at day 15: {:?}", rig.sent);
     rig.run_to(18.0);
@@ -370,15 +401,17 @@ fn villages_renew_end_to_end() {
 }
 
 /// A pair ordered and never answered (Java down between placing the bodies and saying so), then a
-/// crash: the bookings are in the saved world, so the answers Java gives when it is back (its
-/// registry still holds the orders) settle them, once; an answer for an op the world no longer
-/// holds is no answer.
+/// crash before the engine's next save: the engine is rolled back to its pages and, its clock being
+/// the journal's, books the same pair again under the same op ids, so the answers Java gives when it
+/// is back settle them, once; an answer for an op the world no longer holds is no answer.
 #[test]
 fn a_settlers_order_survives_a_crash_between_its_order_and_its_result() {
     let (dir, e, mut j) = open("village-settlers-crash");
     j.hold_arrivals = true;
     j.village_census(A, 6, 12, true);
     j.idle();
+    // The pages hold the village seen alive, and no more.
+    save_durable(&e, &mut j);
     for _ in 0..2 {
         j.village_census(A, 0, 12, true);
         j.idle();
@@ -389,15 +422,26 @@ fn a_settlers_order_survives_a_crash_between_its_order_and_its_result() {
     assert_eq!(ops.len(), 2, "a pair was ordered: {:?}", e.phase1_stats());
     let r = row(&e);
     assert_eq!((r[MEMBERS], r[OWED]), (2, 2), "booked, not answered: {r:?}");
-    save_durable(&e, &mut j);
+    // The crash comes before the next save: the engine is back at the pages (the order and the
+    // booking are lost with them) and replays the journal's censuses past them, the village wiped
+    // again; Java's registry is gone with it, and the order comes again.
     let saved = j.world_save();
     let _ = j.crash();
     let e = engine(&dir, 256 * 1024);
     let mut j = Java::open(e.clone(), saved);
     j.module_mask = 0b1111;
+    j.hold_arrivals = true;
     j.idle();
+    let (_, ok, _) = e.phase1_state();
+    assert!(ok, "the replay led to the state the journal does");
     let r = row(&e);
-    assert_eq!((r[MEMBERS], r[OWED]), (2, 2), "the bookings survived the crash: {r:?}");
+    assert_eq!((r[MEMBERS], r[OWED]), (0, 0), "rolled back to before the order: {r:?}");
+    assert!(r[WAIT_DUE] >= 0, "the wiped census was replayed, so the wait runs again: {r:?}");
+    advance(&e, &mut j, 16 * 24_000 + 3_000);
+    let again: Vec<u64> = j.p1_of(cmd::SPAWN_RESIDENT).iter().map(|s| wire::u64_at(s, k::OP_ID)).collect();
+    assert_eq!(again, ops, "a rolled back engine books the same pair under the same op ids");
+    let r = row(&e);
+    assert_eq!((r[MEMBERS], r[OWED]), (2, 2), "booked again, not answered: {r:?}");
     // Java is back and answers what its registry held: both placed, one of them told twice.
     let answer = |j: &mut Java, op: u64, status: u32| {
         j.journal(obs::COMMAND_RESULT, obs::command_result::SIZE, status, |r| {
