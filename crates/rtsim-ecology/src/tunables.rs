@@ -119,24 +119,30 @@ pub struct DragonTunables {
     pub respawn_cap_days: u64,
     /// The half-life of a lair's pressure, days (§2.2's H, one game year). TUNABLE, 96.
     pub respawn_half_life_days: u32,
-    /// A dragon older than `starve_leave_age_days` whose lair's fed share falls below this
-    /// leaves (§2.4.1's starve-leave). TUNABLE, 0.35.
+    /// Maintenance (§2.4.1, the dragon food gate, EQC531): a dragon older than
+    /// `starve_leave_age_days` whose lair's fed share falls below this leaves (starve-leave),
+    /// and a lair whose fed share is at or below it hatches nothing. TUNABLE, 0.35.
     pub starve_leave: f32,
     pub starve_leave_age_days: u64,
     /// A newcomer settles only where the hunting ground would feed it at least this share of
-    /// its need (§2.4.1's arrive-food), else the lair checks again after
-    /// `arrive_recheck_days`. TUNABLE, 0.5 and 24.
+    /// its need, its share of every weight counted (§2.4.1's arrive-food, EQC533), else the lair
+    /// checks again after `arrive_recheck_days`. TUNABLE, 0.5 and 24.
     pub arrive_food: f32,
     pub arrive_recheck_days: u64,
     /// The fed share's moving-average time constant, days. TUNABLE, 30.
     pub fed_tau_days: f32,
-    /// What the arrival gate reads for an empty lair (§2.4.1 and §3.4): the share of its need a
-    /// newcomer would catch there, `W / (W + gate_half)`, where W is `gate_village` with a
-    /// village in the nine regions around the lair (`gate_wild` without) plus `(N - R)^2 / K`
-    /// for each herd in them. TUNABLE, 300, 30 and 200 (the model's).
+    /// What the arrival gate reads for a lair (§2.4.1 and §3.4, EQC533): the share of its need
+    /// one more dragon would catch there, `W / (W + gate_half)`. W sums `gate_wild` (roads and
+    /// stray prey), `gate_village` for each village in the nine regions around the lair and
+    /// `(N - R)^2 / K` for each herd in them, each divided by one more than the occupied lairs
+    /// whose nine regions hold it. TUNABLE, 150 (a village alone reads 0.47, short of
+    /// `arrive_food`; the model's was 300 with no sharing), 30 and 200 (the model's).
     pub gate_village: f64,
     pub gate_wild: f64,
     pub gate_half: f64,
+    /// A young dragon that has found no lair it may claim this many days after its dispersal
+    /// age leaves the sim, off the map (EQC534). TUNABLE, 50 (it is then 100 days old, stage 5).
+    pub emigrate_after_days: u64,
     /// Age in days of a dragon the respawn rule brings in. PLACEHOLDER 30 (stage 2: it grows into
     /// the roost).
     pub respawn_age_days: u64,
@@ -220,9 +226,10 @@ impl Default for DragonTunables {
             arrive_food: 0.5,
             arrive_recheck_days: 24,
             fed_tau_days: 30.0,
-            gate_village: 300.0,
+            gate_village: 150.0,
             gate_wild: 30.0,
             gate_half: 200.0,
+            emigrate_after_days: 50,
             respawn_age_days: 30,
             respawn_from_blocks: 3_000,
             view_radius: 160,
