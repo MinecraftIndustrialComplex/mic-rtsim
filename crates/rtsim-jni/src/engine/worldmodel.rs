@@ -330,6 +330,14 @@ pub(super) fn simulate(st: &mut State) {
     }
 }
 
+/// Queues ranges to be judged again at the next founding pass: the herds recolonised them with
+/// dispersers, so their species may have changed (EQC511).
+pub(super) fn queue_ranges(st: &mut State, ranges: Vec<(u16, i32, i32)>) {
+    for (frame, rx, rz) in ranges {
+        st.worldmodel.pending.insert(RegionKey { frame, rx, rz });
+    }
+}
+
 /// Re-caps the K of region `k`'s range to what its ground feeds now (EQC504): the cells of a
 /// founded region changed (more of it known, or its ground rebuilt), so its open cells' habitat
 /// and yield did. Like a founding, the change lands at the hand-over's time.
