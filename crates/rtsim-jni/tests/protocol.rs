@@ -10277,7 +10277,11 @@ mod conflict {
     fn a_pool_camps_found_tail_restores_its_pressure_and_break() {
         use rtsim_kernel::sites::{SiteKind, state_flags};
         for broke in [true, false] {
-            let (_dir, e, mut j) = pool_camp(if broke { "pool-sites" } else { "pool-sites-home" });
+            let (_dir, e, mut j) = pool_camp(if broke {
+                "pool-sites"
+            } else {
+                "pool-sites-home"
+            });
             // Broken: all of them, with the pressure as if more had died. Not: 25 of 60, a pressure
             // that is over nothing.
             e.order(vec![Order::ConflictSlay {
@@ -10304,7 +10308,11 @@ mod conflict {
             reset.dict = saved.dict;
             reset.sites = saved.sites;
             reset.sites.gap();
-            let dir = tmpdir(if broke { "pool-sites-reset" } else { "pool-sites-home-reset" });
+            let dir = tmpdir(if broke {
+                "pool-sites-reset"
+            } else {
+                "pool-sites-home-reset"
+            });
             let e = engine(&dir, 256 * 1024);
             let mut j = Java::open(e.clone(), reset);
             j.module_mask = MODULES;

@@ -472,7 +472,10 @@ fn raid_where(
     let mut t = Tick(21);
     loop {
         t = Tick(t.0 + 60);
-        assert!(t.0 < 10 * DAY, "the band never came to where the test wants it");
+        assert!(
+            t.0 < 10 * DAY,
+            "the band never came to where the test wants it"
+        );
         c.run_until(&mut w, &mut NoInfrastructure, t);
         assert!(c.parties.contains(p), "the band is gone");
         let (x, z) = c.party_pos(p, t);
@@ -625,7 +628,10 @@ fn a_war_chief_killed_by_a_machine_at_the_district_is_his() {
         c.parties[p].phase = Phase::Fighting;
         c.chief_killed_by(&mut w, p, None, by, None, Tick(200));
         let got = pressure(&c, f, Tick(200));
-        assert!((got - 1.0 / 60.0).abs() < 1e-6, "at the district, by {by}: {got}");
+        assert!(
+            (got - 1.0 / 60.0).abs() < 1e-6,
+            "at the district, by {by}: {got}"
+        );
         // On the road out, far from the district: no one's.
         let (mut w, mut c, f, p, _) = raid_where(27, out_far);
         let at = c.now();
@@ -1735,7 +1741,8 @@ fn a_camp_found_broken_in_a_players_smog_books_no_feud_wake() {
         "the player's smog reached the camp: a feud"
     );
     assert!(broken(&c, f).is_some(), "found broken");
-    c.check(&w).expect("books: no live feud wake on a broken camp");
+    c.check(&w)
+        .expect("books: no live feud wake on a broken camp");
     c.take_commands();
     let due = broken(&c, f).unwrap().due;
     assert_eq!(due.0, now.0 + wait);
@@ -1744,7 +1751,9 @@ fn a_camp_found_broken_in_a_players_smog_books_no_feud_wake() {
     assert_eq!(c.stats.feud_wakes, 0, "no feud woke");
     assert_eq!(c.stats.parties.iter().sum::<u64>(), 0);
     assert!(
-        !c.take_commands().iter().any(|x| matches!(x, Cmd::Notice(_))),
+        !c.take_commands()
+            .iter()
+            .any(|x| matches!(x, Cmd::Notice(_))),
         "a notice was sent by a broken camp"
     );
     assert!(c.kept_notices().is_empty());
@@ -1809,7 +1818,9 @@ fn a_broken_camp_resends_no_notice() {
     c.feud_mut(f, player).expect("a feud").notice = Some(Box::new(n));
     c.resend_notices();
     assert!(
-        !c.take_commands().iter().any(|x| matches!(x, Cmd::Notice(_))),
+        !c.take_commands()
+            .iter()
+            .any(|x| matches!(x, Cmd::Notice(_))),
         "a broken camp sent a notice at the session start"
     );
 }
