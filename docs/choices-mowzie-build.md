@@ -12172,6 +12172,12 @@ each place was found again on main after M12a, S5, S6 and S7.
     at ce3a4bd1, "All 118 required tests passed". The envoy test's pass was not on the same code, but neither fix taken out touches an
     envoy's placing: counted a flake. After the revert of MZB-1301 the core and `create -PwithMowzie` rounds ran again at ce3a4bd1:
     (queued).
+- **MZB-1310** (the merge with S9 and the S7 and M12a review fixes, `integrate/conflict-fixes`): this branch merged without a
+  conflict. Where its `camp_bodies` change (MZB-1304, a REMOVE after a dead slot's own line is answered) meets M12a's in the same
+  function was checked and left as it is: M12a's FIGHT line (MZB-1404) marks the holder's slot as its line in flight, but a
+  holder is a body at home, whose death frees its slot (`Camp::free`), so a FIGHT answered after it finds no slot and books
+  nothing; MZB-1304's REMOVE needs a `Dead` slot, which only a death away leaves. M12a's UUID on an answer (MZB-1400) is read
+  only for an owed or gone slot, never a dead one. No code change.
 
 ## M12 S9
 
@@ -18546,3 +18552,39 @@ the review gave are at 43062c0b.
     centre is the puppet's block (12.165525060596439 off)", the first summons' centre at its fifth step, M11's), and the rerun
     on the same code passed it with the rest. Nothing on this branch touches a summons' restriction (the chief's slot is
     outside MZB-1400's UUIDs, and MZB-1404's pairing is for a boss's member slots).
+
+**The merge with S9 and the S7 and M11 review fixes (MZB-1408 onward).** On `integrate/conflict-fixes`: S9
+(`feat/eq-s9-mowzie`, with S5's and S6's review fixes) as the base, `origin/main` 1d7974c0, then `fix/m11-review`,
+`fix/s7-review` and this branch, each a merge commit. What the merge with this branch decided beyond the text:
+
+- **MZB-1408** (MZB-1402 and MZB-1404 on S9's two pressures): as MZB-1402 said it would map. `found_empty_heir` compares the
+  restored `chief_pressure` (the row's `p2`, aged by the chief culture's half-life, `camp_restore`) with the cap's, keeps the
+  larger in `chief_pressure`, and `Heir.kept` holds the restored one; the census that adopts a stray Umvuthi before the heir comes
+  sets `chief_pressure` from `h.kept` (S9's line set it to none). `Camp.pressure`, the warriors', is touched by neither.
+  `tests/grove.rs`'s two MZB-1402 tests read `chief_pressure` (`chief_pressure_at`), hand the Umvuthi's pressure over in the row's
+  `p2` (the row's `p` is the warriors' on S9's tree, so `row.p = 7` there would have tested the warriors), and also hand the
+  warriors 0.5 and assert it stands (aged by the warriors' own half-life) after the found-empty wait and after the adoption. The
+  fight rule's member death (MZB-1404) keeps S9's split: a death while a rival stands that no player struck is `Other`, any other
+  goes by `member_cause` (S9's `renewal_cause` for the members, MZB-1211). Rivals arise only where the members' renewal is a
+  boss's, the den's; the grove's warriors' renewal is no boss's (MZB-1210), so `a_missing_warrior_back_at_a_full_grove_is_left_standing`
+  holds on S9's tree as the pairing's gate reads it.
+- **MZB-1409** (the format): S9 (MZB-1230) and this branch (MZB-1402, MZB-1404) each took RTC15, `RTCF`, meta 14 with different
+  contents. The merged format is **RTC16, `RTCG`, meta 15**: S9's camp ending with `chief_pressure` after its recount, and this
+  branch's heir ending with its kept pressure, the camp's lists with its rivals and the stats with `camp_fights`. `put_camp` and
+  `get_camp` had merged without a conflict (the two branches write different places), so only the magic, the meta version and
+  their documentation changed; `magic_error` names RTCF as the older format and `tests/strain.rs`'s format check asserts it. No
+  reader for RTCF (no compatibility before a release): a save of S9 as it lands on main, or of this branch alone, is refused by
+  name. The viewer fixtures are written again for it (MZB-1411). docs/boundary.md §9.8's pages bullet says so.
+- **MZB-1410** (the reinstall test's count of chunks to adopt again, S7's round too): `aReinstallResetsTheSimAndAdoptsTheStrippedDistrictsAgain`
+  asserts `readoptLeft() == 3` after its reset, and `Districts.forgetAllForTest`, which it calls first, forgot the districts but
+  not `IndustryData.readopt`. So any earlier reinstall reset in the round (UR-1's `planReadopt`) that planned chunks of districts
+  that never load again left them in the count: this branch's first round failed it with 7 (MZB-1407's new gap test), and S7's
+  review round 2 (`fix/s7-review`, `target/s7fix-core2.log` in `mic-rtsim-s7fix`) failed it with 8: there S7's
+  `uninstallLeavesTheOutpostAsVanilla` (batch `mic_rtsim_outposts_uninstall`, `SiteTestHooks.gapRestart`) ran first and planned "3
+  chunks of 2 districts", and the round's world was not a fresh one (the reset read game time 8,210,693; round 1's 127,007), so
+  the later resets of an earlier round may have left more. The same cause as MZB-1407's, from another test; S7's three outpost
+  tests that call `gapRestart` (`_rerun`, `_farmed`, `_uninstall`) and the Mowzie and Ice and Fire site tests can all leave such
+  chunks. **Fix, at the one place:** `forgetAllForTest` also drops the dimension's chunks to adopt again, so a test that forgets
+  every district starts with none planned (the reinstall test, and 8da19617's gap test, whose `readoptLeft() == 0` check the
+  same leftovers could fail). A test hook only; the reset's own planning is unchanged. Not seen failing first on this code: the
+  failure needs a reset of the round to plan chunks that then never load, which the batch order decides.
