@@ -3669,6 +3669,39 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A reading the filter holds waits for an equal one at the next census, and a village is read
+    /// every 100 ticks while loaded; one that is not read for a heartbeat has no reading to wait
+    /// for, so a reading that equals it later is a first reading again (EQC152).
+    #[test]
+    fn a_held_reading_expires_after_a_heartbeat() {
+        let mut st = state();
+        st.phase1.input(
+            Input::Join {
+                key: 5,
+                culture: 0,
+                frame: 0,
+                x: 0,
+                z: 0,
+                pop: 30,
+                resources: Vec::new(),
+            },
+            0,
+        );
+        census(&mut st, 5, 25, 30, 0, true);
+        let i = st.phase1.nodes[&5];
+        census(&mut st, 5, 20, 30, 0, true);
+        assert_eq!(st.phase1.world.nodes[i].local.pop, 25, "one differing reading is held");
+        // The village is not read again for a heartbeat and a little: the held reading is stale.
+        st.game_time += CENSUS_HEARTBEAT_TICKS as i64 + 1;
+        census(&mut st, 5, 20, 30, 0, true);
+        assert_eq!(
+            st.phase1.world.nodes[i].local.pop, 25,
+            "a reading a heartbeat later is not the second equal reading of the stale one"
+        );
+        census(&mut st, 5, 20, 30, 0, true);
+        assert_eq!(st.phase1.world.nodes[i].local.pop, 20, "its own second reading is believed");
+    }
+
     /// Review 3, P5: a save whose pages never reached the disk (the IO lane's commit failed) must
     /// not count its log chunks as written, or the next save leaves a chunk stale and every later
     /// start fails ("the phase 1 log holds ... inputs, its meta page says ...").
