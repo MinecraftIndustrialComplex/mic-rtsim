@@ -197,7 +197,9 @@ impl World {
     }
 
     /// A booking older than `owed_max_days` is released at a confirmed census: a lost order must
-    /// not hold a count up for ever (EQC162).
+    /// not hold a count up for ever (EQC162). The village's booked houses are forgotten with its
+    /// resident bookings; a house the bridge places after that is nobody's booking, and K counts
+    /// it when a census finds its resident.
     fn release_stale_owed(&mut self, i: usize, at: Tick) {
         let limit = self.cfg.owed_max_days * TICKS_PER_DAY;
         let Some(row) = self.villages.get_mut(&i) else {
@@ -211,6 +213,9 @@ impl World {
         row.owed_at = u64::MAX;
         row.pending_houses = 0;
         self.resident_ops.retain(|_, (n, _)| *n != i);
+        // The booked houses go with them: an answer that came for one later (NOT_FREE, or HOUSE_PLACED with
+        // its resident's order) would take from the bookings made since, and let an extra refill pass K.
+        self.houses_pending.retain(|_, n| *n != i);
         self.recompute_k(i);
     }
 
