@@ -561,6 +561,8 @@ pub(super) fn take_commands(st: &mut State) {
     }
     let cmds = st.herds.engine.take_commands();
     st.herds.queue.extend(cmds);
+    let recolonised = st.herds.engine.take_recolonised();
+    super::worldmodel::queue_ranges(st, recolonised);
 }
 
 // ---- orders (TEST) ------------------------------------------------------------------------------
@@ -768,6 +770,20 @@ impl super::Engine {
     pub fn with_herds<R>(&self, f: impl FnOnce(&Herds, &rtsim_world::World) -> R) -> R {
         let st = super::lock(&self.state);
         f(&st.herds.engine, &st.phase1.world)
+    }
+
+    /// Kills every latent animal of the herd of group agent `agent` now, booked as killed: a test
+    /// and tool hook, as `Herds::cull` (EQC15). Returns how many died, 0 for an agent that is no
+    /// herd's. Between steps only.
+    pub fn cull_herd(&self, agent: u64) -> u64 {
+        let mut st = super::lock(&self.state);
+        let Some(id) = herd_of(agent).filter(|id| st.herds.engine.herd(*id).is_some()) else {
+            return 0;
+        };
+        let at = st.herds.engine.now();
+        let n = st.herds.engine.cull(id, at);
+        st.phase1.taint();
+        n
     }
 
     /// Whether the last start read the herds back to the state hash they were saved with
