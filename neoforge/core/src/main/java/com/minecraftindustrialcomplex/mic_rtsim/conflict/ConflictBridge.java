@@ -2577,7 +2577,8 @@ public final class ConflictBridge implements SessionPlugin {
             return;
         }
         // A camp's kin killed by a player inside its faction's territory: killing (4).
-        if (territories.isEmpty() || !(killer instanceof Player pl) || pl.isSpectator()
+        // A FakePlayer is a machine's (a Create deployer farm, MZB-111): its kill is a trap's, which is no killing (EQC243, EQC300).
+        if (territories.isEmpty() || !(killer instanceof Player pl) || pl.isSpectator() || pl instanceof FakePlayer
                 || RtsimAttachments.tag(dead) != null || !(dead.level() instanceof ServerLevel level))
             return;
         int x = Mth.floor(dead.getX()), z = Mth.floor(dead.getZ());
