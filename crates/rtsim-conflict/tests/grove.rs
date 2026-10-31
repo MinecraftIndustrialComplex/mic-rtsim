@@ -3356,13 +3356,17 @@ fn chest_at(r: &mut CampRun, free: u32, at: Tick) {
 
 /// The grove's chief pressure read at `at` (the Umvuthi's, its half-life 96 days).
 fn chief_pressure_at(r: &CampRun, at: Tick) -> f32 {
-    let h = r.c.cultures
-        .get(r.c.factions[r.f as usize].culture)
-        .chief_renewal
-        .expect("a chief renewal")
-        .rule
-        .half_life_days;
-    r.c.camp(r.f).unwrap().pressure.now((at.0 / TICKS_PER_DAY) as u32, h)
+    let h =
+        r.c.cultures
+            .get(r.c.factions[r.f as usize].culture)
+            .chief_renewal
+            .expect("a chief renewal")
+            .rule
+            .half_life_days;
+    r.c.camp(r.f)
+        .unwrap()
+        .pressure
+        .now((at.0 / TICKS_PER_DAY) as u32, h)
 }
 
 /// A reset of the grove, its row handed over with pressure `p` as of now and the Umvuthi gone from
@@ -3406,7 +3410,10 @@ fn a_grove_found_empty_and_adopting_its_umvuthi_restores_the_handed_over_pressur
     let mut r = found_empty_with(1405, 2.0);
     let at = r.c.now();
     let cap = chief_pressure_at(&r, at);
-    assert!((cap - 5.0).abs() < 1e-4, "the cap's pressure stands in: {cap}");
+    assert!(
+        (cap - 5.0).abs() < 1e-4,
+        "the cap's pressure stands in: {cap}"
+    );
     let umvuthi = body_id(&r.c.cultures, "mic_rtsim:conflict/umvuthana/umvuthi");
     let key = r.key;
     r.plugin.camp_stray(key, umvuthi);
@@ -3422,6 +3429,9 @@ fn a_grove_found_empty_and_adopting_its_umvuthi_restores_the_handed_over_pressur
     let now = r.c.now();
     let want = 2.0 * (-((now.0 - at.0) as f32) / TICKS_PER_DAY as f32 / 96.0).exp2();
     let got = chief_pressure_at(&r, now);
-    assert!((got - want).abs() < 1e-3, "the row's pressure, aged: {got} against {want}");
+    assert!(
+        (got - want).abs() < 1e-3,
+        "the row's pressure, aged: {got} against {want}"
+    );
     ok(&mut r);
 }

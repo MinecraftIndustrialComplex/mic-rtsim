@@ -28,12 +28,12 @@ use rtsim_kernel::sites::FoundRow;
 
 use super::*;
 use crate::boundary::{
-    ACTION_ADOPT, ACTION_HAND_BACK, ACTION_MASK, ACTION_REMOVE, ACTION_SEAT_HEIR, ACTION_SET_OUT,
-    ACTION_SPAWN, ACTION_TAKE, BODY_CHIEF, BODY_CRYSTAL, BODY_ELSEWHERE, BODY_STRAY, CENSUS_CHIEF,
-    CENSUS_CRYSTAL, CENSUS_THRONE, CHIEF_CRYSTAL, CampBodies, CampCensus, CampDeath, CampOut,
-    CampReconcile, CensusBody, ChiefBody, ChiefKilled, ChiefState, DEATH_CHIEF, DEATH_STRAY,
-    LINE_CHIEF, LINE_CRYSTAL, LINE_DONE, LINE_NOTHING, RECONCILE_RECOUNT, RECONCILE_THRONE,
-    ReconcileLine,
+    ACTION_ADOPT, ACTION_FIGHT, ACTION_HAND_BACK, ACTION_MASK, ACTION_REMOVE, ACTION_SEAT_HEIR,
+    ACTION_SET_OUT, ACTION_SPAWN, ACTION_TAKE, BODY_CHIEF, BODY_CRYSTAL, BODY_ELSEWHERE,
+    BODY_STRAY, CENSUS_CHIEF, CENSUS_CRYSTAL, CENSUS_THRONE, CHIEF_CRYSTAL, CampBodies, CampCensus,
+    CampDeath, CampOut, CampReconcile, CensusBody, ChiefBody, ChiefKilled, ChiefState, DEATH_CHIEF,
+    DEATH_STRAY, LINE_CHIEF, LINE_CRYSTAL, LINE_DONE, LINE_NOTHING, RECONCILE_RECOUNT,
+    RECONCILE_THRONE, ReconcileLine,
 };
 
 /// Whole days after a body's first miss before the third miss writes its member off
@@ -273,6 +273,12 @@ pub struct Camp {
     /// were away or dead with their bodies still in the camp): removed when a census sees them,
     /// dropped when one does not (MZB-1014).
     pub left_behind: Vec<boundary::Uuid>,
+    /// Members gone missing that came back to the camp while it was full, at a boss's camp: each
+    /// fights the body holding the slot until one dies (fork F3 as Ben changed it, MZB-1404). A
+    /// census that sees one at the full camp sets the fight again; one at a short camp is home
+    /// again; its death books nothing, and a member's death while one stands is the fight's, not
+    /// a player's loss unless a player struck the blow. At most the camp's cap, the oldest dropped.
+    pub rivals: Vec<boundary::Uuid>,
     /// The site ledger said the sim was reset since its row (GAP): a body the row expected and no
     /// census finds is no one's loss (MZB-1014). Cleared by the first census that misses no member
     /// and by the write-off it causes.
@@ -483,7 +489,7 @@ impl Camp {
             + self.answered.capacity() * std::mem::size_of::<Answered>()
             + self.traded.capacity() * std::mem::size_of::<(u64, u64)>()
             + self.owed_tribute.capacity() * std::mem::size_of::<(u32, i64)>()
-            + (self.missing.capacity() + self.left_behind.capacity())
+            + (self.missing.capacity() + self.left_behind.capacity() + self.rivals.capacity())
                 * std::mem::size_of::<boundary::Uuid>()
     }
 
@@ -500,11 +506,27 @@ impl Camp {
         }
     }
 
-    /// Takes `uuid` out of the missing; whether it was there.
+    /// Takes `uuid` out of the missing, and out of the rivals (a body home again); whether it was
+    /// missing.
     fn found_missing(&mut self, uuid: boundary::Uuid) -> bool {
+        self.rivals.retain(|u| *u != uuid);
         let before = self.missing.len();
         self.missing.retain(|u| *u != uuid);
         self.missing.len() != before
+    }
+
+    /// A member gone missing back at the full camp becomes a rival (MZB-1404): missing no longer,
+    /// the oldest rival dropped above `cap`.
+    fn go_rival(&mut self, uuid: boundary::Uuid, cap: u32) {
+        self.missing.retain(|u| *u != uuid);
+        if self.rivals.contains(&uuid) {
+            return;
+        }
+        self.rivals.push(uuid);
+        let k = cap.max(1) as usize;
+        if self.rivals.len() > k {
+            self.rivals.drain(..self.rivals.len() - k);
+        }
     }
 }
 
@@ -2106,6 +2128,26 @@ impl Conflict {
             .filter(|s| s.id != CHIEF_SLOT && s.state == SlotState::Owed)
             .map(|s| (s.id, s.generation))
             .collect();
+        // At a boss's camp, the member bodies this census found at home by their tags, in the
+        // footprint: each holds its slot, and a member gone missing back at the full camp fights one
+        // of them (fork F3 as Ben changed it, MZB-1404). None of them has a line in this census.
+        let mut holders: Vec<(u32, u32)> = if self.culture(f).renewal.is_some_and(|r| r.boss) {
+            camp.slots
+                .iter()
+                .filter(|s| {
+                    let key = (s.id, s.generation);
+                    s.id != CHIEF_SLOT
+                        && s.state == SlotState::Body
+                        && matched.contains(&key)
+                        && held
+                            .get(&key)
+                            .is_some_and(|k| k.flags & BODY_ELSEWHERE == 0)
+                })
+                .map(|s| (s.id, s.generation))
+                .collect()
+        } else {
+            Vec::new()
+        };
         for b in rest {
             if let Some((id, generation)) = owed.pop_front() {
                 let i = camp.index(id, generation).expect("owed");
@@ -2135,9 +2177,21 @@ impl Conflict {
                 camp.slots[i].uuid = b.uuid;
                 camp.found_missing(b.uuid);
                 lines.push(line(&camp.slots[i], ACTION_ADOPT, b.uuid.0, b.uuid.1));
-            } else if camp.missing.contains(&b.uuid) {
-                // A member gone missing, back at a full camp: a stray left standing, whose death
-                // still counts (MZB-1014, fork F3).
+            } else if camp.missing.contains(&b.uuid) || camp.rivals.contains(&b.uuid) {
+                // A member gone missing, back at a full camp (MZB-1014). At a boss's camp, standing
+                // in the footprint with a body holding its slot there, the two fight until one dies
+                // (fork F3 as Ben changed it, 2026-10-30, MZB-1404): it is a rival, missing no
+                // longer, so its death books nothing, and each census that sees the two sets the
+                // fight again (a mob's target is not saved). Otherwise it is left standing: a stray
+                // whose death still counts while it is missing (fork F3, F4).
+                if b.flags & BODY_ELSEWHERE == 0
+                    && let Some((id, generation)) = holders.pop()
+                {
+                    camp.go_rival(b.uuid, cap);
+                    let i = camp.index(id, generation).expect("a holder");
+                    lines.push(line(&camp.slots[i], ACTION_FIGHT, b.uuid.0, b.uuid.1));
+                    self.stats.camp_fights += 1;
+                }
             } else {
                 lines.push(by_uuid(b, ACTION_REMOVE));
             }
@@ -2980,8 +3034,16 @@ impl Conflict {
             return;
         }
         // A member that died away was lost then: its body's death at the camp is no second loss.
-        // The bump goes first: the `unblock` that follows plans the wait from it.
-        let cause = self.renewal_cause(f, d.by);
+        // The bump goes first: the `unblock` that follows plans the wait from it. While a rival
+        // stands, a death a player did not strike is the fight's (MZB-1404): no one's loss, since
+        // the lure was charged when the rival was written off.
+        let fought = self.camp(f).is_some_and(|c| !c.rivals.is_empty())
+            && !matches!(d.by, boundary::BY_PLAYER | boundary::BY_TAKEN);
+        let cause = if fought {
+            LossCause::Other
+        } else {
+            self.renewal_cause(f, d.by)
+        };
         if state != SlotState::Dead {
             self.renewal_bump(f, 1, cause, at);
         }
@@ -3011,12 +3073,33 @@ impl Conflict {
             }
         }
         self.unblock(f, at);
+        // The survivor holds the slot (MZB-1404): a rival standing in a camp that is in takes the
+        // room a member's death at home left, as soon as a census sees it, so the camp counts again
+        // now. One that is out adopts it at its next census.
+        if state.home()
+            && self
+                .camp(f)
+                .is_some_and(|c| c.is_in() && !c.rivals.is_empty())
+        {
+            self.send_recount(f, at);
+        }
     }
 
     /// The death of a body no slot holds (MZB-1014): a member the camp wrote off as missing still
     /// counts, a player's loss whatever killed it (§2.3, fork F4: so a lured body cannot be
-    /// farmed away from its camp), and is missing no longer. Any other stray's books nothing.
+    /// farmed away from its camp), and is missing no longer. A rival's books nothing (MZB-1404),
+    /// nor does any other stray's.
     fn stray_death(&mut self, f: u32, d: &CampDeath, at: Tick) {
+        // A rival's death, in its fight or not, books nothing: it was written off a player's loss
+        // already (MZB-1404). It is a rival no longer.
+        if d.uuid != (0, 0)
+            && let Some(c) = self.camp_mut(f)
+            && c.rivals.contains(&d.uuid)
+        {
+            c.rivals.retain(|u| *u != d.uuid);
+            self.site_touch(f);
+            return;
+        }
         if d.uuid == (0, 0) || !self.camp_mut(f).is_some_and(|c| c.found_missing(d.uuid)) {
             return;
         }

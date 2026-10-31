@@ -144,6 +144,18 @@ public final class DenKind implements CampKind {
         return MMSounds.ENTITY_FROSTMAW_ROAR;
     }
 
+    /**
+     * A Frostmaw written off as missing that came back to its full den, and the den's Frostmaw: they fight until one dies
+     * (FIGHT, MZB-1404; {@link FrostmawFights}).
+     */
+    @Override
+    public boolean fight(ServerLevel level, Camps.Site site, Mob holder, Mob rival) {
+        if (!(holder instanceof EntityFrostmaw a) || !(rival instanceof EntityFrostmaw b))
+            return false;
+        FrostmawFights.start(a, b);
+        return true;
+    }
+
     @Override
     public void copy(Mob from, Mob to) {
         to.setHealth(Math.min(from.getHealth(), to.getMaxHealth()));

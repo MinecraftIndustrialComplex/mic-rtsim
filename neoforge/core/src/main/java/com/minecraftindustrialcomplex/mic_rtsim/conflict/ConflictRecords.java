@@ -431,6 +431,14 @@ public final class ConflictRecords {
          * it names no slot (slot 0, generation 0), and its answer names the warrior taken.
          */
         public static final int MASK = 8;
+        /**
+         * MZB-1404 (fork F3 as Ben changed it, 2026-10-30): the body holding the line's slot (by its tags) and the member gone
+         * missing that came back to its full camp (by the UUID in {@code L_A}, {@code L_B}) fight until one dies; the kind sets
+         * them on each other ({@link CampKind#fight}). DONE when both stand and the kind set the fight, NOTHING when either is
+         * not here, STALE for a kind with no fight. The engine books nothing for it, and sends it again at each census that
+         * sees the two.
+         */
+        public static final int FIGHT = 9;
         /** The chief's slot (the Umvuthi's, MZB-401): {@code u32::MAX} in the engine, -1 as a Java int; outside the pool. */
         public static final int CHIEF_SLOT = -1;
         /** A line's flags: the slot is the camp's chief; the body holds its crystal. */

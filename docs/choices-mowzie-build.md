@@ -17514,3 +17514,65 @@ the review gave are at 43062c0b.
   pressure kept: 5") and `a_grove_found_empty_and_adopting_its_umvuthi_restores_the_handed_over_pressure` (a row's P 2, the
   cap's 5 while waiting, then an untagged Umvuthi adopted four days on; on main "the row's pressure, aged: 0 against
   1.9430562").
+- **MZB-1404** (P3 7: fork F3 changed by Ben's answer of 2026-10-30, "They fight to the death"; amends MZB-1014's "at a full
+  camp it is left standing" and MZB-1022): a home body written off as missing that comes back to its full boss's camp, while
+  its replacement holds the slot, fights the replacement until one dies, so the den has one boss again. Before, both stood
+  (`aLuredBodyIsAPlayerLossAndAStraysDeathCounts` asserted it). The engine decides the pairing and Java plays it.
+  - **The protocol: a line action, no size change.** CAMP_RECONCILE's action 9, FIGHT (`boundary::ACTION_FIGHT`,
+    `ConflictRecords.CampReconcile.FIGHT`): slot, generation and body name the replacement (Java finds it by its tags), `a` and
+    `b` the returner's UUID. Answered DONE when both stand and the kind set the fight, NOTHING when either is not there (dead,
+    unloaded, another camp's, a puppet), STALE for a kind with no fight (`CampKind.fight`, false by default); the engine books
+    nothing for the answer (the slot's line clears, as any). Not taken: a flag on an existing line (an ADOPT or a REMOVE flagged
+    "fight" would book that line's fact on its answer, and a line names one body by UUID, not two). docs/boundary.md's
+    CAMP_RECONCILE row.
+  - **The engine** (`camp_census`): a member gone missing seen at its full camp, at a boss's camp (the culture's member
+    renewal has `boss`: the Frostmaw's den), in the footprint (not ELSEWHERE) while a member body found at home by its tags,
+    in the footprint, holds a slot: a FIGHT line on that slot, and the returner goes from `Camp.missing` to `Camp.rivals`
+    (at most K, the oldest dropped). A rival seen again at the full camp is paired again at each census (a mob's target is
+    not saved); seen at a short camp it is home again (adopted, as any missing member); seen ELSEWHERE, or with no holder
+    standing, it is left standing. A member gone missing seen far off is still left standing (no fight from 400 blocks).
+  - **The outcomes.** The replacement dies: while a rival is listed, a member's death not credited to a player (MOB, NONE,
+    OTHER) is the fight's, booked `LossCause::Other` (no pressure: the lure was charged at the write-off); a player's kill
+    (PLAYER, TAKEN) is a player's loss as any. Either way, at a camp that is in, the death sends a RECOUNT, and its census
+    adopts the returner into the room the death left (its UUID, a Body slot; the arrival the death booked is cancelled at
+    once: no renewal owed, no write-off, no SPAWN). A camp that is out adopts it at its next census. The returner dies: a
+    rival's death books nothing whatever killed it (`stray_death`), and it is a rival no longer; the replacement holds the
+    slot. A second record of the same death books nothing.
+  - **The row:** rivals ride in the row's missing (`camp_site_state`), so after a reset each is missing again and is paired
+    again at the full den; a rival's death between a reset and that census is a missing stray's, a player's loss (fork F4).
+  - **Java, the mowziesmobs plugin (D4):** `Camps.fight` (core) finds the two and asks the kind; `DenKind.fight` hands two
+    Frostmaws to `FrostmawFights`, which wakes both (`setActive(true)`) and sets each as the other's target, and every 20 ticks
+    (PLACEHOLDER) sets them again while both stand alive in one level, unless one has a player as its target (a player who
+    joins the fight is fought). A pair one of whose bodies died, unloaded or changed level is over; the next census of the
+    full den pairs them again. **Read from the 1.8.2 jar** (vineflower of `EntityFrostmaw`, `AnimationAreaAttackAI`,
+    `MowzieEntity`): its only target goal is a `NearestAttackableTargetGoal` for players, whose `stop()` clears the target when
+    a player it chased goes; `hurt` never targets an attacker that is a Frostmaw, so the jar alone never lets two fight; a
+    target set from outside stays until it dies or turns invisible (`tick`, lines 230 and 571), and with one an active
+    Frostmaw walks to it and swipes, `hitEntities` striking every living entity in its arc; an asleep one wakes only with an
+    attackable entity within 8 blocks. **No mixin:** the setter and the 20-tick re-assert are enough, since nothing in the jar
+    refuses a Frostmaw target.
+  - **Loot:** vanilla's, the jar's `loot_table/entities/frostmaw.json`: both its pools need `killed_by_player` (the ice
+    crystal when it has one; the Petiole disc without one, in rain), and no pack datapack or KubeJS script overrides it. So a
+    Frostmaw killed by the other drops nothing, and no experience (vanilla drops experience only after a player's hit), unless
+    a player hit it within 100 ticks of its death, which is then a player's kill for the loot as for the credit: a player who
+    lures a Frostmaw home and finishes the loser gets its crystal, as a kill at the den would give (for Ben, if it matters).
+  - **Scope:** boss member slots only (the Frostmaw's den; no other camp culture's member renewal is a boss's). A grove's
+    warrior gone missing back at a full grove is left standing as before (fork F3): the census path is shared but the pairing
+    is gated on `boss`, which keeps the rule where Ben's answer put it. The grove's Umvuthi is the chief's slot, whose
+    write-off retires its generation at a death, so a returning Umvuthi was removed already. Lairs (dragons, S5) are not on
+    this path.
+  - **Save:** rides MZB-1402's RTCF and meta 14 (nothing released between them): a camp's lists end with its rivals, after
+    left behind, and the stats with `camp_fights`. Java's `Camps.fights` counts the lines played.
+  - **Tests** (`tests/camp.rs`; `a_missing_member_back_at_a_full_camp_is_left_standing_and_its_death_counts` replaced):
+    `a_missing_member_back_at_a_full_den_is_set_to_fight_its_replacement` (the pairing, its tags kept or stripped, not
+    removed, a rival handed over as missing, set again at the next census), `the_replacement_dying_in_the_fight_gives_its_slot_to_the_returner`
+    (by a mob or no one: no pressure, no SPAWN, no write-off, no wait, the returner's UUID in the slot; by a player: a
+    player's loss and the returner still takes the slot), `the_returner_dying_books_nothing` (by a mob, stripped, by a
+    player), `a_missing_warrior_back_at_a_full_grove_is_left_standing`; synth's I3 counts a rival as a body no slot holds.
+    mowziesmobs `aLuredBodyIsAPlayerLossAndFightsItsReplacementOnItsReturn` (renamed from
+    `aLuredBodyIsAPlayerLossAndAStraysDeathCounts`): the lured Frostmaw, written off and replaced, loads 400 blocks off and is
+    left standing, missing, with no fight; moved into the den with its AI on, the den's census pairs the two; **both healths
+    are lowered to 30 in the test setup** (the jar's 250 would make a fight of thousands of ticks, a timeout sized to that
+    would be most of the test's budget), and within the logic wait's bound one of the two is left, the row names it at home
+    with count 1 and nobody missing, no wait, and P the write-off's aged; the dead one's CAMP_DEATH names its UUID. Either
+    may win; both outcomes meet the same checks. EQUILIBRIUM.md §2.3's missing members are amended.

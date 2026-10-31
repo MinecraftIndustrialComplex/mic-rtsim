@@ -344,6 +344,8 @@ public final class Camps {
     public long heldHandBacks, chiefHandBacksLate, chiefMerges, staleTakes, homeDeaths, puppetPaid, puppetsSecond, chiefBodiesAway;
     /** Untagged strays' deaths journaled, so a member written off as missing whose tag was stripped still counts (MZB-1014). */
     public long strayDeaths;
+    /** FIGHT lines played: a returner and the body holding its slot set on each other by their kind (MZB-1404). */
+    public long fights;
     /**
      * MZB-1015: the engine's RECOUNT reconciles taken (a camp that is in counts again), and the recounts a tagged body
      * hidden with its chunk outside its camp's footprint asked for.
@@ -399,7 +401,7 @@ public final class Camps {
         deaths = carried = markers = heldSpawns = recounts = strayWatches = strays = 0;
         heldRemovals = heldPairs = heirs = masks = secondBodies = chiefBodies = chiefBodiesWritten = chiefPaid = traded = 0;
         heldHandBacks = chiefHandBacksLate = chiefMerges = staleTakes = homeDeaths = puppetPaid = puppetsSecond = chiefBodiesAway = 0;
-        strayDeaths = engineRecounts = leaveRecounts = 0;
+        strayDeaths = engineRecounts = leaveRecounts = fights = 0;
         unseen.clear();
         polls = pollChanges = 0;
         chiefStates = chiefStatesQueued = 0;
@@ -1267,6 +1269,7 @@ public final class Camps {
                 yield 0;
             }
             case ConflictRecords.CampReconcile.HAND_BACK -> handBack(level, c, epoch, op, ln, homecoming, now);
+            case ConflictRecords.CampReconcile.FIGHT -> fight(level, c, ln);
             default -> ConflictRecords.CampBodies.STALE; // the heir's pair is played whole by heirPair
         };
     }
@@ -1332,6 +1335,27 @@ public final class Camps {
             c.memory = null;
         }
         return m;
+    }
+
+    /**
+     * FIGHT (MZB-1404, fork F3 as Ben changed it): the body holding the line's slot, by its tags, and the member gone missing
+     * that came back to the full camp, by the UUID the line names, are set on each other by the kind, until one dies. Nothing
+     * when either is not here (dead, unloaded, another camp's, a puppet); stale for a kind with no fight. Answered at once,
+     * with no holder: the engine books nothing for it.
+     */
+    private int fight(ServerLevel level, Site c, Line ln) {
+        Entity holder = tagged(c.faction, ln.slot(), ln.generation());
+        Entity rival = byUuid(level, c, ln.a(), ln.b());
+        if (!(holder instanceof Mob h) || !h.isAlive() || !(rival instanceof Mob r) || !r.isAlive() || r == h || r.isRemoved()
+                || r.level() != h.level() || !c.kind.isBody(r) || RtsimAttachments.isTagged(r))
+            return ConflictRecords.CampBodies.NOTHING;
+        CampMember was = RtsimAttachments.campMember(r);
+        if (was != null && was.faction() != c.faction)
+            return ConflictRecords.CampBodies.NOTHING;
+        if (!c.kind.fight(level, c, h, r))
+            return ConflictRecords.CampBodies.STALE;
+        fights++;
+        return ConflictRecords.CampBodies.DONE;
     }
 
     /** ADOPT: the stray named by UUID becomes the slot's body where it stands. */

@@ -176,6 +176,10 @@ pub const ACTION_SEAT_HEIR: u8 = 7;
 /// Take a warrior at home for the heir (slot 0, generation 0: Java picks the one farthest from
 /// every player); always paired with `ACTION_SEAT_HEIR` in one CAMP_RECONCILE (MZB-408).
 pub const ACTION_MASK: u8 = 8;
+/// The body of the line's slot and a member gone missing that came back to its full camp fight
+/// until one dies (fork F3 as Ben changed it, MZB-1404): the slot names the body holding it (by its
+/// tags), `a` and `b` the returner's UUID. Its answer books nothing.
+pub const ACTION_FIGHT: u8 = 9;
 /// CAMP_RECONCILE line flags.
 pub const LINE_CHIEF: u8 = 1;
 pub const LINE_CRYSTAL: u8 = 2;
@@ -772,11 +776,12 @@ pub struct ReconcileLine {
     pub slot: u32,
     pub generation: u32,
     pub body: u32,
-    /// `ACTION_SPAWN` to `ACTION_MASK`.
+    /// `ACTION_SPAWN` to `ACTION_FIGHT`.
     pub action: u8,
     /// `LINE_CHIEF`, `LINE_CRYSTAL`.
     pub flags: u8,
     /// Adopt and remove a stray: its UUID. Set out and hand back: the party's agent and epoch.
+    /// Fight: the returner's UUID.
     pub a: u64,
     pub b: u64,
 }

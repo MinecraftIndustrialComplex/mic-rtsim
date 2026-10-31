@@ -90,7 +90,8 @@ use crate::tunables::ConflictTunables;
 /// EQC201), then its mood, an option of two pressures, its grief and its spoils (FB-8, EQC287); the wheel's tag 12 is `Ev::Strain`, and the stats end with the breaks, refounds and
 /// deferrals.
 /// RTC15, `RTCF`: a camp's heir ends with the chief's pressure kept while a camp found without
-/// its chief waits the cap (an f32 and its day, MZB-1402).
+/// its chief waits the cap (an f32 and its day, MZB-1402), its left behind is followed by its
+/// rivals (MZB-1404), and the stats end with `camp_fights`.
 const MAGIC: u32 = u32::from_le_bytes(*b"RTCF");
 /// The meta page of a paged save ([`Conflict::save_paged`]). 2: the indexes, parties and wheel
 /// are in pages of their own, their headers after the row counts (PF10). 3: the resident state
@@ -104,7 +105,8 @@ const MAGIC: u32 = u32::from_le_bytes(*b"RTCF");
 /// (M11, MZB-853). 12: a camp's slots carry their bodies' UUIDs, and the camp its missing, its
 /// bodies left behind, its gap and cap flags and its recount (M12a, MZB-1014, MZB-1015). 13: a
 /// faction row ends with its strain, the wheel's tag 12 and the stats end as RTC14's (S7). 14: a
-/// camp's heir carries its kept pressure, as RTC15's (M12a review, MZB-1402).
+/// camp's heir carries its kept pressure, a camp its rivals, and the stats end as RTC15's (M12a
+/// review, MZB-1402, MZB-1404).
 const META_MAGIC: u32 = u32::from_le_bytes(*b"RTCM");
 const META_VERSION: u16 = 14;
 
@@ -537,7 +539,7 @@ fn put_camp(w: &mut Writer, c: &Camp) {
         w.var_u64(u64::from(e.epoch));
         w.u32(e.generation);
     });
-    for list in [&c.missing, &c.left_behind] {
+    for list in [&c.missing, &c.left_behind, &c.rivals] {
         put_usize(w, list.len());
         for u in list {
             w.u64(u.0);
@@ -695,7 +697,7 @@ fn get_camp(r: &mut Reader<'_>) -> codec::Result<Camp> {
     if ended.is_some_and(|e| e.agent == 0 || e.generation == 0) {
         return bad("a band's end with no agent or generation".to_string());
     }
-    let mut lists: [Vec<boundary::Uuid>; 2] = Default::default();
+    let mut lists: [Vec<boundary::Uuid>; 3] = Default::default();
     for list in &mut lists {
         let n = r.len_prefix(16)?;
         list.reserve_exact(n);
@@ -703,7 +705,7 @@ fn get_camp(r: &mut Reader<'_>) -> codec::Result<Camp> {
             list.push((r.u64()?, r.u64()?));
         }
     }
-    let [missing, left_behind] = lists;
+    let [missing, left_behind, rivals] = lists;
     let flags = r.u8()?;
     if flags > 3 {
         return bad(format!("camp flags {flags:#x}"));
@@ -734,6 +736,7 @@ fn get_camp(r: &mut Reader<'_>) -> codec::Result<Camp> {
         ended,
         missing,
         left_behind,
+        rivals,
         gap: flags & 1 != 0,
         cap_next: flags & 2 != 0,
         recount,
@@ -1368,6 +1371,7 @@ fn stats_fields(s: &ConflictStats) -> Vec<u64> {
         s.breaks,
         s.refounds,
         s.break_deferrals,
+        s.camp_fights,
     ]);
     v
 }
@@ -1445,6 +1449,7 @@ fn stats_from(v: &[u64]) -> ConflictStats {
     s.breaks = n();
     s.refounds = n();
     s.break_deferrals = n();
+    s.camp_fights = n();
     s
 }
 
