@@ -467,6 +467,8 @@ public final class HomeBodies {
         s.boundary().commit(r);
         e.removeData(MicRtsimIceAndFire.HOME);
         e.setData(RtsimAttachments.AGENT, new AgentTag(p.agent, p.epoch));
+        if (e instanceof DragonBaseEntity d)
+            d.setAgingDisabled(true); // a puppet's age is the engine's, as an adopted one's
         p.home = false;
         p.lair = 0L;
         leashed++;
@@ -484,7 +486,7 @@ public final class HomeBodies {
         d.removeData(RtsimAttachments.AGENT);
         d.setData(MicRtsimIceAndFire.HOME, new HomeTag(lair.id(), agent));
         d.setPersistenceRequired();
-        d.setAgingDisabled(true);
+        d.setAgingDisabled(false);
         p.home = true;
         p.lair = lair.id();
         p.mode = DragonBridge.Mode.IDLE;

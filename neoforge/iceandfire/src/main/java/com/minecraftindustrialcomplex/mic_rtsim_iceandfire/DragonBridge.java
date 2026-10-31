@@ -576,9 +576,10 @@ public final class DragonBridge implements SessionPlugin {
         float health = b.getFloat(at + Materialize.HEALTH);
         d.setHealth(health > 0 ? Math.min(health, d.getMaxHealth()) : d.getMaxHealth());
         d.setPersistenceRequired();
-        if (homeBody)
+        if (homeBody) {
             d.setData(MicRtsimIceAndFire.HOME, new HomeBodies.HomeTag(homeLair.id(), agent)); // vanilla saves it
-        else
+            d.setAgingDisabled(false); // it ages as Ice and Fire's own does, after an uninstall too (EQC316)
+        } else
             d.setData(RtsimAttachments.AGENT, new AgentTag(agent, epoch));
         Puppet p = new Puppet(agent, epoch, d, now);
         p.home = homeBody;
