@@ -3354,7 +3354,9 @@ fn chest_at(r: &mut CampRun, free: u32, at: Tick) {
 
 // ---- the M12a review's fixes (MZB-1400 onward) -------------------------------------------------
 
-/// The grove's chief pressure read at `at` (the Umvuthi's, its half-life 96 days).
+/// The grove's chief pressure read at `at` (the Umvuthi's, its half-life 96 days): the camp's
+/// `pressure` while it is the chief's alone (S9 gives the chief a `chief_pressure` of its own,
+/// which this reads there, MZB-1402).
 fn chief_pressure_at(r: &CampRun, at: Tick) -> f32 {
     let h =
         r.c.cultures
