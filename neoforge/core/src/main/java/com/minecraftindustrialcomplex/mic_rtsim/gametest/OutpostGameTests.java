@@ -1,5 +1,6 @@
 package com.minecraftindustrialcomplex.mic_rtsim.gametest;
 
+import com.mojang.authlib.GameProfile;
 import com.minecraftindustrialcomplex.mic_rtsim.MicRtsim;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs;
 import com.minecraftindustrialcomplex.mic_rtsim.bridge.BridgeEvents;
@@ -20,12 +21,14 @@ import net.minecraft.core.SectionPos;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
+import net.minecraft.gametest.framework.GameTestSequence;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.Mob;
+import net.minecraft.world.entity.MobSpawnType;
 import net.minecraft.world.entity.monster.Pillager;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.GameType;
@@ -35,12 +38,15 @@ import net.minecraft.world.level.levelgen.structure.BoundingBox;
 import net.minecraft.world.level.levelgen.structure.Structure;
 import net.minecraft.world.level.levelgen.structure.StructureStart;
 import net.minecraft.world.phys.Vec3;
+import net.neoforged.neoforge.common.util.FakePlayer;
+import net.neoforged.neoforge.common.util.FakePlayerFactory;
 import net.neoforged.neoforge.event.level.ChunkEvent;
 import net.neoforged.neoforge.gametest.GameTestHolder;
 import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.UUID;
 
 import static com.minecraftindustrialcomplex.mic_rtsim.gametest.ConflictKit.bridge;
 import static com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests.check;
@@ -91,6 +97,18 @@ public final class OutpostGameTests {
         return new Placed(level, cp, chunk, start, key);
     }
 
+    /**
+     * A player standing at the outpost, in its level's list: the finder reports an outpost only when one is within the server's
+     * view distance of it (EQC296), and a test's outpost stands at a far base nobody visits. Removed when the test ends.
+     */
+    private static ServerPlayer viewer(GameTestHelper helper, Placed p, String name) {
+        BlockPos in = p.inside();
+        ServerPlayer v = FakePlayers.add(p.level(), new Vec3(in.getX() + 0.5, in.getY(), in.getZ() + 0.5), name);
+        v.setGameMode(GameType.CREATIVE);
+        ConflictKit.onEnd(helper, () -> FakePlayers.remove(v));
+        return v;
+    }
+
     private static void load(Placed p, boolean isNew) {
         net.neoforged.neoforge.common.NeoForge.EVENT_BUS.post(new ChunkEvent.Load(p.chunk(), isNew));
     }
@@ -123,6 +141,7 @@ public final class OutpostGameTests {
         if (!nativeOnly(helper, test))
             return;
         Placed p = generate(helper);
+        viewer(helper, p, "outpost_finder");
         long[] before = {Outposts.found};
         load(p, true);
         helper.startSequence()
@@ -151,6 +170,54 @@ public final class OutpostGameTests {
                 .thenSucceed();
     }
 
+    // ---- 1b: only an outpost a player has explored --------------------------------------------------
+
+    /**
+     * Pre-generation is not exploration (EQC296): a chunk that loads with no player within view distance of it (a forced chunk far
+     * from everyone, as Chunky's chunks load) makes its outpost known and reports nothing; when the chunk loads again with a player
+     * near, the outpost is reported, once.
+     */
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "mic_rtsim_outposts_explored")
+    public static void anOutpostNoPlayerHasSeenIsKnownAndNotReported(GameTestHelper helper) {
+        String test = "anOutpostNoPlayerHasSeenIsKnownAndNotReported";
+        if (!nativeOnly(helper, test))
+            return;
+        ChunkWait waits = ChunkWait.of(helper, 6000);
+        Placed p = generate(helper);
+        ServerLevel level = p.level();
+        boolean forced = ConflictKit.force(level, p.cp().x, p.cp().z, true);
+        ConflictKit.onEnd(helper, () -> {
+            if (forced)
+                ConflictKit.force(level, p.cp().x, p.cp().z, false);
+        });
+        long[] before = {Outposts.found};
+        int view = level.getServer().getPlayerList().getViewDistance();
+        for (ServerPlayer other : level.players())
+            check("no player within view distance of the test's far outpost", Math.max(Math.abs(other.chunkPosition().x - p.cp().x),
+                    Math.abs(other.chunkPosition().z - p.cp().z)) > view + 1);
+        load(p, true);
+        helper.startSequence()
+                .thenIdle(60)
+                .thenExecute(() -> {
+                    check("known (" + (Outposts.found - before[0]) + " found)", Outposts.found == before[0] + 1);
+                    check("not reported with no player near (" + found(p.faction()).size() + " FACTION_FOUND)", found(p.faction()).isEmpty());
+                    check("no territory", bridge().territories().get(p.faction()) == null);
+                    viewer(helper, p, "outpost_explorer");
+                    // The chunk loads again, now with a player near.
+                    load(p, false);
+                })
+                .thenWaitUntil(waits.engine(() -> check("FACTION_FOUND once a player is near", !found(p.faction()).isEmpty())))
+                .thenIdle(20)
+                .thenExecute(() -> {
+                    ScriptedEngine.Received r = found(p.faction()).get(0);
+                    check("one FACTION_FOUND (" + found(p.faction()).size() + ")", found(p.faction()).size() == 1);
+                    check("not late: it was found as a new chunk (aux " + r.aux() + ")", (r.aux() & ConflictRecords.FactionFound.FLAG_LATE) == 0);
+                    check("found once (" + (Outposts.found - before[0]) + ")", Outposts.found == before[0] + 1);
+                    record(test, "explored", "known at the first load, reported at the second with a player near");
+                })
+                .thenSucceed();
+    }
+
     // ---- 2: the conflict switch -------------------------------------------------------------------
 
     /**
@@ -164,6 +231,7 @@ public final class OutpostGameTests {
             return;
         MinecraftServer server = helper.getLevel().getServer();
         Placed p = generate(helper);
+        viewer(helper, p, "outpost_switch");
         ConflictKit.onEnd(helper, () -> {
             RtsimConfig.Test.setModule(Module.CONFLICT, null);
             BridgeEvents.moduleSwitchesChanged(server);
@@ -198,6 +266,8 @@ public final class OutpostGameTests {
         Placed off = generate(helper);
         Placed on = generate(helper);
         ConflictKit.onEnd(helper, () -> RtsimConfig.Test.setOutpostsJoinExisting(null));
+        viewer(helper, off, "outpost_existing_off");
+        viewer(helper, on, "outpost_existing_on");
         RtsimConfig.Test.setOutpostsJoinExisting(false);
         load(off, false);
         helper.startSequence()
@@ -237,14 +307,13 @@ public final class OutpostGameTests {
             for (int dz = -1; dz <= 1; dz++)
                 if (ConflictKit.force(level, p.cp().x + dx, p.cp().z + dz, true))
                     forced.add(ChunkPos.asLong(p.cp().x + dx, p.cp().z + dz));
-        ServerPlayer[] player = new ServerPlayer[1];
         long[] mark = new long[1];
         ConflictKit.onEnd(helper, () -> {
             for (long c : forced)
                 ConflictKit.force(level, ChunkPos.getX(c), ChunkPos.getZ(c), false);
-            if (player[0] != null)
-                FakePlayers.remove(player[0]);
         });
+        // The player who explores the outpost (a player near it is what makes it a camp, EQC296) is the one who kills.
+        ServerPlayer[] player = {viewer(helper, p, "outpost_kin")};
         load(p, true);
         helper.startSequence()
                 .thenWaitUntil(waits.chunks(() -> {
@@ -256,8 +325,6 @@ public final class OutpostGameTests {
                 .thenWaitUntil(waits.logic(() -> check("the engine gave the territory back", bridge().territories().get(p.faction()) != null)))
                 .thenExecute(() -> {
                     BlockPos in = p.inside();
-                    player[0] = FakePlayers.add(level, new Vec3(in.getX() + 0.5, in.getY(), in.getZ() + 0.5), "outpost_kin");
-                    player[0].setGameMode(GameType.CREATIVE);
                     mark[0] = bridge().signalsCounted;
                     // A witch inside the box: a raider, but not the camp's kin.
                     kill(level, player[0], EntityType.WITCH.create(level), in);
@@ -292,6 +359,71 @@ public final class OutpostGameTests {
     // ---- 5: a provoked outpost sends its envoy -----------------------------------------------------
 
     /**
+     * The ladder to an outpost's envoy (EQC246), the steps of the sequence after the forced chunks tick: the engine's clock caught up
+     * to game time (a reused world's runs ahead of it by the last run's asks), the territory back, thirty-two pillagers killed by
+     * {@code player}, who stands in the box, then the world's clock moved on 1,200 ticks at an ask, the player reporting, until the
+     * camp's envoy exists and is placed ({@code envoy[0]}).
+     */
+    private static GameTestSequence provoke(GameTestSequence seq, ChunkWait waits, NativeEngine e, Placed p, ServerPlayer player,
+                                            ConflictBridge.Party[] envoy, int[] asks) {
+        ServerLevel level = p.level();
+        long[] mark = new long[1];
+        return seq
+                .thenExecute(() -> {
+                    mark[0] = e.phase1Stats()[NativeEngine.P1_WORLD_TICK];
+                    long gap = mark[0] - level.getGameTime();
+                    if (gap > 0)
+                        e.phase1Advance(gap);
+                })
+                .thenWaitUntil(waits.logic(() -> check("the world's clock moves", e.phase1Stats()[NativeEngine.P1_WORLD_TICK] > mark[0])))
+                .thenWaitUntil(waits.logic(() -> check("the engine gave the territory back", bridge().territories().get(p.faction()) != null)))
+                .thenExecute(() -> {
+                    BlockPos in = p.inside();
+                    for (int i = 0; i < 32; i++)
+                        kill(level, player, EntityType.PILLAGER.create(level), in);
+                })
+                .thenWaitUntil(waits.logic(() -> {
+                    ConflictKit.reportPlayer(player);
+                    for (ConflictBridge.Party q : bridge().parties())
+                        if (q.faction == p.faction() && q.envoy)
+                            return;
+                    check("an envoy within 300 asks of 1200 ticks (asks " + asks[1] + ")", asks[1] < 300);
+                    if (asks[0]++ % 4 == 0) {
+                        e.phase1Advance(1_200);
+                        asks[1]++;
+                    }
+                    check("the envoy comes", false);
+                }))
+                .thenWaitUntil(waits.logic(() -> {
+                    ConflictKit.reportPlayer(player);
+                    for (ConflictBridge.Party q : bridge().parties())
+                        if (q.faction == p.faction() && q.envoy)
+                            envoy[0] = q;
+                    check("the envoy is placed", envoy[0] != null && envoy[0].stacks().get(0).state() == ConflictBridge.StackState.PLACED);
+                }));
+    }
+
+    /** The five by five chunks round the outpost, forced for a test that walks bodies there; released when it ends. */
+    private static void forceAround(GameTestHelper helper, Placed p, List<Long> forced) {
+        ServerLevel level = p.level();
+        for (int dx = -2; dx <= 2; dx++)
+            for (int dz = -2; dz <= 2; dz++)
+                if (ConflictKit.force(level, p.cp().x + dx, p.cp().z + dz, true))
+                    forced.add(ChunkPos.asLong(p.cp().x + dx, p.cp().z + dz));
+        ConflictKit.onEnd(helper, () -> {
+            for (long c : forced)
+                ConflictKit.force(level, ChunkPos.getX(c), ChunkPos.getZ(c), false);
+        });
+    }
+
+    private static void forcedChunksTick(Placed p) {
+        for (int dx = -2; dx <= 2; dx++)
+            for (int dz = -2; dz <= 2; dz++)
+                check("the forced chunks tick entities", RtsimSession.entitiesTickAt(p.level(),
+                        new BlockPos((p.cp().x + dx) * 16 + 8, 64, (p.cp().z + dz) * 16 + 8)));
+    }
+
+    /**
      * A provoked outpost sends its envoy (EQC246): a player who kills thirty-two of its pillagers gets a herald with two
      * pillagers asking emeralds or the killing stopped, as any camp's envoy comes. The world's clock moves on 1,200 ticks to an ask
      * with the player reporting, as the ladder test has it.
@@ -306,65 +438,12 @@ public final class OutpostGameTests {
         }
         ChunkWait waits = ChunkWait.of(helper, 6000);
         Placed p = generate(helper);
-        ServerLevel level = p.level();
-        List<Long> forced = new ArrayList<>();
-        for (int dx = -2; dx <= 2; dx++)
-            for (int dz = -2; dz <= 2; dz++)
-                if (ConflictKit.force(level, p.cp().x + dx, p.cp().z + dz, true))
-                    forced.add(ChunkPos.asLong(p.cp().x + dx, p.cp().z + dz));
-        ServerPlayer[] player = new ServerPlayer[1];
-        long[] mark = new long[2];
+        forceAround(helper, p, new ArrayList<>());
+        ServerPlayer player = viewer(helper, p, "outpost_provoker");
         int[] asks = {0, 0};
         ConflictBridge.Party[] envoy = new ConflictBridge.Party[1];
-        ConflictKit.onEnd(helper, () -> {
-            for (long c : forced)
-                ConflictKit.force(level, ChunkPos.getX(c), ChunkPos.getZ(c), false);
-            if (player[0] != null)
-                FakePlayers.remove(player[0]);
-        });
         load(p, true);
-        helper.startSequence()
-                .thenWaitUntil(waits.chunks(() -> {
-                    for (int dx = -2; dx <= 2; dx++)
-                        for (int dz = -2; dz <= 2; dz++)
-                            check("the forced chunks tick entities", RtsimSession.entitiesTickAt(level,
-                                    new BlockPos((p.cp().x + dx) * 16 + 8, 64, (p.cp().z + dz) * 16 + 8)));
-                }))
-                .thenExecute(() -> {
-                    // A reused world's clock runs ahead of game time by the last run's asks: one ask of the gap catches it up.
-                    mark[0] = e.phase1Stats()[NativeEngine.P1_WORLD_TICK];
-                    long gap = mark[0] - level.getGameTime();
-                    if (gap > 0)
-                        e.phase1Advance(gap);
-                })
-                .thenWaitUntil(waits.logic(() -> check("the world's clock moves", e.phase1Stats()[NativeEngine.P1_WORLD_TICK] > mark[0])))
-                .thenWaitUntil(waits.logic(() -> check("the engine gave the territory back", bridge().territories().get(p.faction()) != null)))
-                .thenExecute(() -> {
-                    BlockPos in = p.inside();
-                    player[0] = FakePlayers.add(level, new Vec3(in.getX() + 0.5, in.getY(), in.getZ() + 0.5), "outpost_provoker");
-                    player[0].setGameMode(GameType.CREATIVE);
-                    for (int i = 0; i < 32; i++)
-                        kill(level, player[0], EntityType.PILLAGER.create(level), in);
-                })
-                .thenWaitUntil(waits.logic(() -> {
-                    ConflictKit.reportPlayer(player[0]);
-                    for (ConflictBridge.Party q : bridge().parties())
-                        if (q.faction == p.faction() && q.envoy)
-                            return;
-                    check("an envoy within 300 asks of 1200 ticks (asks " + asks[1] + ")", asks[1] < 300);
-                    if (asks[0]++ % 4 == 0) {
-                        e.phase1Advance(1_200);
-                        asks[1]++;
-                    }
-                    check("the envoy comes", false);
-                }))
-                .thenWaitUntil(waits.logic(() -> {
-                    ConflictKit.reportPlayer(player[0]);
-                    for (ConflictBridge.Party q : bridge().parties())
-                        if (q.faction == p.faction() && q.envoy)
-                            envoy[0] = q;
-                    check("the envoy is placed", envoy[0] != null && envoy[0].stacks().get(0).state() == ConflictBridge.StackState.PLACED);
-                }))
+        provoke(helper.startSequence().thenWaitUntil(waits.chunks(() -> forcedChunksTick(p))), waits, e, p, player, envoy, asks)
                 .thenExecute(() -> {
                     ConflictBridge.Demand d = envoy[0].demand();
                     check("a demand", d != null);
@@ -403,6 +482,7 @@ public final class OutpostGameTests {
             if (forced)
                 ConflictKit.force(level, p.cp().x, p.cp().z, false);
         });
+        viewer(helper, p, "outpost_farmer");
         load(p, true);
         helper.startSequence()
                 .thenWaitUntil(waits.engine(() -> check("the engine gave the territory back", bridge().territories().get(p.faction()) != null)))
@@ -457,6 +537,7 @@ public final class OutpostGameTests {
             return;
         ChunkWait waits = ChunkWait.of(helper, 6000);
         Placed p = generate(helper);
+        viewer(helper, p, "outpost_vanilla");
         ServerLevel level = p.level();
         List<Long> forced = new ArrayList<>();
         for (int dx = -1; dx <= 1; dx++)
@@ -518,6 +599,7 @@ public final class OutpostGameTests {
         ConflictKit.onEnd(helper, () -> SiteTestHooks.cleanUp(server));
         long[] upTo = new long[1];
         int[] starts = new int[1];
+        viewer(helper, p, "outpost_uninstall");
         load(p, true);
         helper.startSequence()
                 .thenWaitUntil(waits.engine(() -> check("the outpost joined", !found(p.faction()).isEmpty())))
