@@ -1067,3 +1067,28 @@ fn a_replayed_census_marks_in_and_sends_nothing() {
     assert!(s.d.lairs[s.l as usize].occupants.is_empty());
     s.d.replay_done(&mut s.w, Tick(200));
 }
+
+/// EQC313 (finding 4): a lair that got a newcomer while it was seen only from afar, and Ice and
+/// Fire's own generated dragon found by its first census: the generated dragon is removed (the
+/// untagged path's rule), not adopted as a second occupant.
+#[test]
+fn a_lairs_generated_dragon_found_after_a_newcomer_is_removed_not_adopted() {
+    let mut s = scene(43);
+    let x = s.dragon("Newcomer", Gender::Female);
+    s.census(1, false, &[body(0x4A, 0, 702.5)], 100);
+    let cmds = s.cmds();
+    assert!(adopts(&cmds).is_empty(), "no second occupant: {cmds:?}");
+    let gone = discards(&cmds);
+    assert_eq!(gone.len(), 1, "{cmds:?}");
+    assert_eq!(
+        (gone[0].entity, gone[0].reason),
+        (uuid(0x4A), DISCARD_LAIR_FULL)
+    );
+    assert_eq!(s.d.lairs[s.l as usize].occupants, vec![x]);
+    assert_eq!(s.d.stats.strays_adopted, 0);
+    assert_eq!(
+        materializes(&cmds).len(),
+        1,
+        "the newcomer, owed, gets its body"
+    );
+}
