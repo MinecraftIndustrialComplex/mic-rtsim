@@ -426,7 +426,9 @@ sees; body; cost. Rates are the model's (§3); the engine's names are given wher
 #### 2.4.2 Herds and wild animals
 
 - **Site:** the 512-block herd range (one herd per region today). K = the range's carrying capacity:
-  today's founding size, `density x habitat cells`.
+  `density x habitat cells` on the forage cells a herd may enter, at most what half those cells'
+  sustained yield feeds, re-derived when the region's ground changes (Ben, 2026-10-31;
+  docs/overnight-choices-equilibrium.md EQC500 to EQC504).
 - **Births:** once a year, as today, with a density term: `Binomial(A x ceil(f), f x condition x
   1/(1 + A/M) / ceil(f))`, where M is set per species so that the herd's steady state is K (§3.2).
   Below K a herd grows; above it, it shrinks; it never overshoots. One multiply per herd per year.
