@@ -1026,7 +1026,7 @@ impl Engine {
             out.extend(st.herds.engine.census());
         }
         if st.ships.enabled {
-            out.extend(st.ships.engine.census());
+            out.extend(st.ships.engine.census(&st.phase1.world));
         }
         if st.conflict.enabled {
             out.extend(st.conflict.engine.census());

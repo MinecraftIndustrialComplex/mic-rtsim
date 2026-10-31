@@ -213,7 +213,7 @@ impl Scenario {
             }
             Scenario::Ships(s) => {
                 let mut out = s.c.world.census();
-                out.extend(s.c.ships.census());
+                out.extend(s.c.ships.census(&s.c.world));
                 out
             }
             Scenario::Conflict(c) => {
@@ -648,6 +648,17 @@ mod tests {
         let Scenario::Ships(sea) = &mut s else {
             unreachable!()
         };
+        // Ports (slice S11): every trade port a site of K 1, open.
+        let trade = (0..sea.c.ships.docks.len() as u32)
+            .filter(|&d| sea.c.ships.is_trade_port(&sea.c.world, d))
+            .count() as u32;
+        let p = kind(&sea.c.ships.census(&sea.c.world), "ship.port").clone();
+        assert!(trade > 0);
+        assert_eq!(
+            (p.sites, p.capacity, p.members, p.empty, p.broken),
+            (trade, u64::from(trade), u64::from(trade), 0, 0),
+            "{p:?}"
+        );
         let at = sea.c.ships.now();
         let h = sea.c.haven as usize;
         let mut op = 0u64;

@@ -991,8 +991,11 @@ impl Ships {
 
     /// The census (EQUILIBRIUM.md S1) now: `ship.haven`, K its slots, its members the pirates
     /// afloat (not lost and not yet refitted), P its refit pressure; a shut haven is `broken`
-    /// (§2.4.6a rule 4); renewals are refits and refounds.
-    pub fn census(&self) -> Vec<rtsim_kernel::census::KindCensus> {
+    /// (§2.4.6a rule 4); renewals are refits and refounds. Then `ship.port` (slice S11, EQC458):
+    /// one site a trade port of `w` (a village's dock), K 1, its member 1 while open and 0 while a
+    /// blockade holds it closed (empty, never broken: it reopens), no pressure; renewals are its
+    /// reopenings.
+    pub fn census(&self, w: &World) -> Vec<rtsim_kernel::census::KindCensus> {
         let mut c = rtsim_kernel::census::KindCensus::new("ship.haven");
         let day = day_num(self.now);
         for hv in &self.havens {
@@ -1009,7 +1012,14 @@ impl Ships {
             );
         }
         c.renewals = self.stats.rebuilds + self.haven_counts().refounds;
-        vec![c]
+        let mut ports = rtsim_kernel::census::KindCensus::new("ship.port");
+        for d in 0..self.docks.len() as u32 {
+            if self.is_trade_port(w, d) {
+                ports.site(u64::from(!self.port_closed(d)), 1, false, 0.0);
+            }
+        }
+        ports.renewals = self.stats.reopenings;
+        vec![c, ports]
     }
 
     /// Every haven's lifecycle counters, summed (§2.4.6a).

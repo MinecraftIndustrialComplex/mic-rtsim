@@ -125,6 +125,58 @@ fn volume(c: &Coastal, l: u32) -> i64 {
         .sum()
 }
 
+/// The census's `ship.port` row (slice S11, EQC458): one site a trade port, K 1, a member while
+/// open. On the blockade coast, seed 1, the closed port reads as one empty site, never broken and
+/// with no pressure, and when it reopens it is full again with one renewal, its reopening.
+#[test]
+fn a_blockaded_port_reads_empty_and_reopens() {
+    let tun = ShipTunables::default();
+    let (mut c, mut fake) = blockade_coast(1, &tun);
+    let trade = (0..c.ships.docks.len() as u32)
+        .filter(|&d| c.ships.is_trade_port(&c.world, d))
+        .count() as u32;
+    let port = |c: &Coastal| {
+        c.ships
+            .census(&c.world)
+            .into_iter()
+            .find(|k| k.kind == "ship.port")
+            .expect("a ship.port row")
+    };
+    let open = port(&c);
+    assert!(trade > 1);
+    assert_eq!(
+        (open.sites, open.members, open.capacity, open.empty, open.broken),
+        (trade, u64::from(trade), u64::from(trade), 0, 0),
+        "{open:?}"
+    );
+    assert!(run_until(
+        &mut c,
+        &mut fake,
+        Tick::from_days(90),
+        |c, _| c.ships.stats.closures == 1
+    ));
+    let shut = port(&c);
+    assert_eq!(
+        (shut.members, shut.empty, shut.short, shut.broken),
+        (u64::from(trade) - 1, 1, 0, 0),
+        "{shut:?}"
+    );
+    assert_eq!((shut.mean_p(), shut.renewals), (0.0, 0));
+    let closed = c.ships.port(TARGET).and_then(|p| p.closed).expect("closed");
+    assert!(run_until(
+        &mut c,
+        &mut fake,
+        closed + 150 * TICKS_PER_DAY,
+        |c, _| c.ships.stats.reopenings == 1
+    ));
+    let back = port(&c);
+    assert_eq!(
+        (back.members, back.empty, back.renewals),
+        (u64::from(trade), 0, 1),
+        "{back:?}"
+    );
+}
+
 /// Rule 7 on the blockade coast, seeds 1 to 3. The pirates hunt dock 3's two lanes: the port is
 /// blockaded once both lanes' heats reach a quarter of full, and closes at the first check that
 /// finds both at half. Closed, its lanes carry nothing new, its services lie in port (nobody

@@ -396,7 +396,7 @@ fn a_starving_haven_shuts_and_refounds() {
         let wait = tun.refound.delay_ticks(Pressure::default(), 0);
         assert_eq!(wait, Tick::from_days(48).0);
         assert_eq!(sh.back, sh.since + wait, "seed {seed}");
-        let census = &c.ships.census()[0];
+        let census = &c.ships.census(&c.world)[0];
         assert_eq!((census.broken, census.members), (1, 0));
         // Both crews went ashore (capped), and the pool deserts from there.
         let full = c.ships.crew_pool_milli(h, sh.since);
@@ -460,7 +460,7 @@ fn a_starving_haven_shuts_and_refounds() {
                 (tun.medium(x.medium).pirate_crew, 1000)
             );
         }
-        let census = &c.ships.census()[0];
+        let census = &c.ships.census(&c.world)[0];
         assert_eq!((census.broken, census.members), (0, 2));
         assert_eq!(census.renewals, c.ships.stats.rebuilds + 1);
         // And they hunt again.
@@ -1052,7 +1052,7 @@ fn a_navy_breaks_a_weak_haven() {
         assert_eq!(r.whom, c.world.nodes[c.ships.havens[h as usize].node].actor);
         assert_eq!((r.severity, r.at), (2, due), "seed {seed}");
         assert!(k.knows(port, id), "seed {seed}: the navy's port knows");
-        let census = &c.ships.census()[0];
+        let census = &c.ships.census(&c.world)[0];
         assert_eq!((census.broken, census.members), (1, 1));
         let s2 = Ships::load(tun.clone(), &c.ships.save()).expect("ships load");
         assert_eq!(s2.havens, c.ships.havens);
@@ -1090,7 +1090,7 @@ fn a_navy_breaks_a_weak_haven() {
             (1, 1, 1)
         );
         assert_eq!(sh.back, sh.since + Tick::from_days(48).0, "seed {seed}");
-        assert_eq!(c.ships.census()[0].broken, 1);
+        assert_eq!(c.ships.census(&c.world)[0].broken, 1);
         c.ships.check(&c.world).expect("check");
 
         // The site refounds 48 days on.
