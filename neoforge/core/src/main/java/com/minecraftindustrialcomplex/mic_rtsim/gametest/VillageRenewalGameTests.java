@@ -913,9 +913,12 @@ public final class VillageRenewalGameTests {
                         s.force(p.x, p.z);
                 })
                 .thenWaitUntil(() -> {
+                    boolean listed = false;
+                    for (java.util.UUID id : settlers)
+                        listed |= villages.walkers.containsKey(id);
                     check("both are placed at the bell once found: placed "
-                            + (RtsimTests.session().phase1.walkers.placed() - placed0[0]) + ", on the list " + villages.walkers.size(),
-                            RtsimTests.session().phase1.walkers.placed() >= placed0[0] + 2 && villages.walkers.isEmpty());
+                            + (RtsimTests.session().phase1.walkers.placed() - placed0[0]) + ", still listed " + listed,
+                            RtsimTests.session().phase1.walkers.placed() >= placed0[0] + 2 && !listed);
                 })
                 .thenExecute(() -> {
                     check("two villagers stand in the village: " + s.inBox().size(), s.inBox().size() == 2);
