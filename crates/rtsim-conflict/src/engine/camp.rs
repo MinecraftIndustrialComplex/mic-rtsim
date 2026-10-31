@@ -2634,7 +2634,9 @@ impl Conflict {
     /// body becomes owed; away, left becomes gone; dead, left is freed. *Body there* (a spawn, a
     /// hand-back or an adoption, done or with nothing to do): home, owed becomes home, body; away,
     /// gone becomes left, reconciled as at a census. A stale line books nothing. An answer for a
-    /// generation its slot no longer holds books nothing.
+    /// generation its slot no longer holds books nothing. A dead slot's own line answered with its
+    /// body maybe standing (any answer but a REMOVE's, and but one that frees it) sends that body's
+    /// REMOVE at a camp that is in, as a census would (MZB-1304).
     ///
     /// The action is the answer's own, not the slot's line in flight: a line voided at CAMP_OUT or
     /// at a session start is answered all the same (Java applied it before), and the slot's state
@@ -2712,16 +2714,38 @@ impl Conflict {
                 self.chief_ended.remove(&e.agent);
             }
             let s = &mut camp.slots[i];
-            if s.line.is_some_and(|l| l.op == b.op) {
+            let own = s.line.is_some_and(|l| l.op == b.op);
+            if own {
                 s.line = None;
                 cleared += 1;
             }
-            // A stale line books nothing (nor does an outcome this build does not know).
-            if a.outcome != LINE_DONE && a.outcome != LINE_NOTHING {
-                continue;
-            }
+            let booked = a.outcome == LINE_DONE || a.outcome == LINE_NOTHING;
             let action = a.action;
             let gone = matches!(action, ACTION_TAKE | ACTION_SET_OUT | ACTION_REMOVE);
+            // A dead slot's own line answered with its body maybe still standing (the chief's
+            // HAND_BACK in flight when its puppet was killed, answered stale or merged): the body's
+            // REMOVE goes now, as the next census would order it (the M11 review's P3, MZB-1304).
+            // Not for a REMOVE's own answer, nor one that frees the slot below.
+            if own
+                && s.state == SlotState::Dead
+                && is_in
+                && action != ACTION_REMOVE
+                && !(booked && gone)
+            {
+                lines.push(ReconcileLine {
+                    slot: s.id,
+                    generation: s.generation,
+                    body: s.body,
+                    action: ACTION_REMOVE,
+                    flags,
+                    a: 0,
+                    b: 0,
+                });
+            }
+            // A stale line books nothing (nor does an outcome this build does not know).
+            if !booked {
+                continue;
+            }
             // An adoption with nothing to do found no stray to adopt: no body is there.
             let there = match action {
                 ACTION_SPAWN | ACTION_HAND_BACK => true,

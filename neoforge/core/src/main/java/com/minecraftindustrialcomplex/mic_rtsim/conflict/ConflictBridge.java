@@ -488,8 +488,16 @@ public final class ConflictBridge implements SessionPlugin {
             return RtsimSession.entitiesTickAt(level, at.set(Mth.floor(placeX(f)), level.getSeaLevel(), Mth.floor(placeZ(f))));
         }
 
-        /** Its place at the mob's level's game time, on the ground where loaded; a held lurk puppet's is its hold point (M8). */
+        /** Its place on the ground under the leaves, a walker's: the follow goal's path target. */
         Vec3 place(Mob m) {
+            return place(m, Heightmap.Types.MOTION_BLOCKING_NO_LEAVES);
+        }
+
+        /**
+         * Its place at the mob's level's game time, on the {@code ground} heightmap where loaded; a held lurk puppet's is its hold
+         * point (M8).
+         */
+        Vec3 place(Mob m, Heightmap.Types ground) {
             if (holdAt != null)
                 return holdAt;
             double f = stack.walked(m.level().getGameTime());
@@ -497,7 +505,7 @@ public final class ConflictBridge implements SessionPlugin {
             double y = m.getY();
             int bx = Mth.floor(x), bz = Mth.floor(z);
             if (m.level().hasChunk(bx >> 4, bz >> 4))
-                y = m.level().getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, bx, bz);
+                y = m.level().getHeight(ground, bx, bz);
             return new Vec3(x, y, z);
         }
 
@@ -656,8 +664,9 @@ public final class ConflictBridge implements SessionPlugin {
     public long deathLootLost;
     /**
      * M11's (this session): chief puppets a recall despawned while their camp's throne body stood, so the puppet's health was lost
-     * (MZB-823); chief deaths journaled as CHIEF_KILLED for a party whose march had ended, which the engine counts for nothing
-     * (MZB-824); chief puppets called home (MZB-822).
+     * (MZB-823); chief deaths journaled as CHIEF_KILLED for a party whose march had ended with no HAND_BACK held, which the engine
+     * books by the band's end (MZB-824, MZB-853 release 3; its HAND_BACK in flight is stale, MZB-1300); chief puppets called home
+     * (MZB-822).
      */
     public long chiefMergesMissed, chiefDeathsAfterEnd, chiefsCalledHome;
     /** M11's (this session): a chief puppet's summons adopted as the slot's extras, and ones whose join failed (MZB-816). */
@@ -1595,9 +1604,8 @@ public final class ConflictBridge implements SessionPlugin {
                 double[] q = sl.placeXZ(now);
                 x = q[0];
                 z = q[1];
-                y = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, Mth.floor(x), Mth.floor(z));
-                if (sl.traveller != null)
-                    y += sl.traveller.lift(null); // a floating body is made in the air (MZB-808), not set down to be lifted
+                double lift = sl.traveller == null ? 0.0 : sl.traveller.lift(null); // a floating body is made in the air (MZB-808), not set down to be lifted
+                y = level.getHeight(groundFor(lift), Mth.floor(x), Mth.floor(z)) + lift;
             }
             Mob m;
             List<Mob> extras = new ArrayList<>();
@@ -2257,6 +2265,16 @@ public final class ConflictBridge implements SessionPlugin {
     }
 
     /**
+     * The ground a body is placed on (its spawn, and a displaced body's teleport back): a walker's below the leaves, as ever; a body
+     * that floats {@code lift} over it, over the leaves, the height its {@link Traveller}'s rule reads (MOTION_BLOCKING, MZB-808).
+     * Under a canopy a floating body made below the leaves was pinned there, its rise blocked and no step across while its target
+     * was above it (the M11 review's P2, MZB-1302).
+     */
+    static Heightmap.Types groundFor(double lift) {
+        return lift > 0.0 ? Heightmap.Types.MOTION_BLOCKING : Heightmap.Types.MOTION_BLOCKING_NO_LEAVES;
+    }
+
+    /**
      * A placed stack keeps to the area (MZB-125). A member out of it (not ticking where it stands, or its
      * body gone) whose place still ticks is moved back to its place, or, its body gone, made again at its
      * place after {@value #REQUEUE_COOLDOWN} ticks; the stack goes back to pending (every body out of the
@@ -2282,8 +2300,8 @@ public final class ConflictBridge implements SessionPlugin {
                 return;
             }
             if (present) {
-                Vec3 q = sl.place(e);
                 double lift = sl.traveller == null ? 0.0 : sl.traveller.lift(sl.travelMemo); // a floating body goes back up there
+                Vec3 q = sl.place(e, groundFor(lift));
                 e.stopRiding();
                 e.teleportTo(q.x, q.y + lift, q.z);
                 e.getNavigation().stop();
@@ -2757,8 +2775,13 @@ public final class ConflictBridge implements SessionPlugin {
                 if (home != null)
                     return home;
                 reconciler.chiefDiedAway(p.faction); // a throne body that stands is the engine's dead chief now: nobody's (MZB-825)
+                // The engine books this death (the band's end, MZB-853 release 3, or the chief's death away), so the band's HAND_BACK in
+                // flight, and an ADOPT of the chief's slot at its generation, are answered stale (MZB-1300).
+                reconciler.chiefKilledAway(p.faction, p.agent, p.epoch);
                 if (ended) {
-                    chiefDeathsAfterEnd++; // no line held: a boss killed in this window comes back at the next census (MZB-824, counted)
+                    // No line held: the engine's end of the band books the death at its camp (MZB-853 release 3) and the HAND_BACK
+                    // that may still come is stale, so no boss comes back (MZB-824, MZB-1300; counted).
+                    chiefDeathsAfterEnd++;
                     MicRtsim.LOGGER.debug("[mic_rtsim] a chief of party {} (epoch {}) died after its march ended, with no HAND_BACK held",
                             p.agent, p.epoch);
                 }
