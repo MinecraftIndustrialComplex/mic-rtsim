@@ -1012,4 +1012,48 @@ public final class HomeBodyGameTests {
                 })
                 .thenSucceed();
     }
+
+    /**
+     * EQC314 (finding 5): DRAGON_DEPART reason 5 (the engine's dragon is gone: dead of age, starved away) to a home body with a
+     * player in range: the plugin discards it at once. Kept for the capture (a player near holds it up to 6,000 ticks), a lair
+     * going out in the window saved it with a dead dragon's agent, and the next census adopted it.
+     */
+    @GameTest(template = DragonKit.ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "home_depart_gone")
+    public static void aHomeBodyToldItsDragonIsGoneIsDiscardedAtOnce(GameTestHelper helper) {
+        String test = "aHomeBodyToldItsDragonIsGoneIsDiscardedAtOnce";
+        if (!nativeOnly(helper, test))
+            return;
+        ChunkWait waits = ChunkWait.of(helper, 2400);
+        ServerLevel level = helper.getLevel();
+        Vec3 c = DragonKit.centre(helper);
+        Runnable unforce = DragonKit.forceAround(helper, 3);
+        long lair = DragonKit.newLair();
+        DragonBaseEntity[] d = new DragonBaseEntity[1];
+        long[] agent = new long[1], told = new long[1];
+        ServerPlayer[] near = new ServerPlayer[1];
+        SequenceHolder h = new SequenceHolder();
+        h.s = helper.startSequence()
+                .thenWaitUntil(waits.chunks(() -> check("the ring of chunks is loaded", DragonKit.ready(level, arenaChunk(helper), 3))));
+        occupiedAfter(h, helper, waits, lair, d, agent);
+        h.s.thenExecute(() -> {
+                    near[0] = FakePlayers.add(level, c.add(12, 0, 12), "home-near");
+                    told[0] = level.getGameTime();
+                    DragonKit.depart(agent[0], homeEpoch(agent[0]), 5, 0, c.add(-400, 40, 0));
+                })
+                .thenWaitUntil(waits.engine(() -> check("the engine passed the DEPART on and the plugin answered", bridge().body(agent[0]) == null
+                        || level.getGameTime() - told[0] > 200)))
+                .thenExecute(() -> {
+                    record(test, "after DEPART 5", "removed " + d[0].isRemoved() + ", registered " + (bridge().body(agent[0]) != null) + ", "
+                            + (level.getGameTime() - told[0]) + " ticks after the order");
+                    check("discarded at once, a player near", d[0].isRemoved() && bridge().body(agent[0]) == null);
+                    bridge().homes.testOut(lair, level.getGameTime());
+                    List<ScriptedEngine.Received> demat = about(DragonRecords.DRAGON_DEMATERIALIZED, agent[0]);
+                    check("never released as saved (reason 8)", demat.stream().noneMatch(r -> r.aux() == DragonRecords.Dematerialized.HOME_SAVED));
+                    FakePlayers.remove(near[0]);
+                    if (!d[0].isRemoved())
+                        d[0].discard();
+                    unforce.run();
+                })
+                .thenSucceed();
+    }
 }
