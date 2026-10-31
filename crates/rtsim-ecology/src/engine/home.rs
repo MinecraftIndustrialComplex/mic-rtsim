@@ -86,31 +86,47 @@ impl Dragons {
             )
         };
 
-        // Which bodies are whose.
+        // Which bodies are whose (EQC112), by UUID first (EQC310): the body a dragon of the lair
+        // believes is its own; then the lair's own lists (left behind: removed; expected after a
+        // reset, or missing: the lair's own, a stray that may come home). An agent names its
+        // dragon only for a dragon of this lair owed a body, of the body's species: an agent is
+        // not unique across engine lives (a rebuilt engine, and a crash's replay, hand its index
+        // out again), so a body whose agent is anything else is a stray.
         let mut owned: BTreeMap<DragonId, Vec<usize>> = BTreeMap::new();
         let mut strays: Vec<usize> = Vec::new();
         let mut removals: Vec<(Uuid, u32)> = Vec::new();
         for (i, b) in c.bodies.iter().enumerate() {
-            let by_body = occupants.iter().copied().find(|o| {
-                self.dragons
-                    .get(*o)
-                    .is_some_and(|x| x.body == Some(b.entity))
-            });
+            let u = b.entity;
+            let by_body = occupants
+                .iter()
+                .copied()
+                .find(|o| self.dragons.get(*o).is_some_and(|x| x.body == Some(u)));
             if let Some(d) = by_body {
                 owned.entry(d).or_default().push(i);
+                continue;
+            }
+            let lair = &self.lairs[l as usize];
+            if lair.left_behind.contains(&u) {
+                removals.push((u, boundary::DISCARD_AWAY));
+                continue;
+            }
+            if lair.expect.contains(&u) || lair.missing.contains(&u) {
+                strays.push(i);
                 continue;
             }
             let by_agent = (b.agent != 0)
                 .then(|| dragon_of(b.agent))
                 .flatten()
-                .filter(|d| self.dragons.contains(*d));
+                .filter(|d| {
+                    occupants.contains(d)
+                        && self.dragons.get(*d).is_some_and(|x| {
+                            matches!(x.state, State::Roosting)
+                                && x.body.is_none()
+                                && x.species == b.species
+                        })
+                });
             match by_agent {
-                Some(d) if occupants.contains(&d) => owned.entry(d).or_default().push(i),
-                // The agent of a dragon of another lair: a body it left behind.
-                Some(_) => removals.push((b.entity, boundary::DISCARD_AWAY)),
-                None if self.lairs[l as usize].left_behind.contains(&b.entity) => {
-                    removals.push((b.entity, boundary::DISCARD_AWAY));
-                }
+                Some(d) => owned.entry(d).or_default().push(i),
                 None => strays.push(i),
             }
         }

@@ -1068,6 +1068,72 @@ fn a_replayed_census_marks_in_and_sends_nothing() {
     s.d.replay_done(&mut s.w, Tick(200));
 }
 
+// ---- the S5 review's findings (EQC310 onward) -------------------------------------------------
+
+/// A live dragon of another lair, with the agent `agent_of(y)`: an agent a rebuilt engine (or a
+/// crash's replay) handed out again, as a body of this lair may still carry an old one.
+fn other_lairs_dragon(s: &mut Scene) -> DragonId {
+    let other = s.d.add_lair(
+        &mut s.w,
+        KEY + 9,
+        "Elsewhere",
+        Species::Fire,
+        LairKind::Roost,
+        Pos::new(0, 6000, 6000),
+        100,
+        Tick(0),
+    );
+    s.d.add_dragon(
+        &mut s.w,
+        newdragon("Elsewhere", other, Gender::Male, 110),
+        Tick(0),
+    )
+}
+
+/// EQC310 (finding 1): after a reset the lair expects its body by UUID; the body still carries an
+/// agent of the old engine life, which in the new engine is a live dragon of another lair. The body
+/// is the lair's own, matched by its UUID first: adopted, not removed as that dragon's.
+#[test]
+fn a_reset_lairs_body_carrying_another_lairs_agent_is_adopted_by_its_uuid() {
+    let mut s = reset_lair(40, vec![uuid(0x2A)], false);
+    let y = other_lairs_dragon(&mut s);
+    s.census(1, false, &[body(0x2A, agent_of(y), 700.5)], 100);
+    let cmds = s.cmds();
+    assert!(
+        discards(&cmds).iter().all(|d| d.entity != uuid(0x2A)),
+        "the lair's own body is not removed: {cmds:?}"
+    );
+    let a = adopts(&cmds);
+    assert_eq!(a.len(), 1, "adopted by its UUID: {cmds:?}");
+    assert_eq!(a[0].entity, uuid(0x2A));
+    assert_ne!(a[0].agent, agent_of(y), "a dragon of its own, not the other lair's");
+    let lair = &s.d.lairs[s.l as usize];
+    assert_eq!(lair.occupants.len(), 1);
+    assert!(lair.vacant_since.is_none(), "no wait for the cap");
+    assert_eq!(
+        s.d.dragon(y).unwrap().body,
+        None,
+        "the other lair's dragon is not given it"
+    );
+}
+
+/// EQC310 (finding 1): an agent that names a live dragon of another lair, on a body at an empty
+/// lair with no row: a stray, adopted as the lair's own, not removed as the other dragon's.
+#[test]
+fn an_agent_of_another_lairs_dragon_at_an_empty_lair_is_a_stray_not_removed() {
+    let mut s = scene(41);
+    let y = other_lairs_dragon(&mut s);
+    s.census(1, false, &[body(0x2B, agent_of(y), 700.5)], 100);
+    let cmds = s.cmds();
+    assert!(discards(&cmds).is_empty(), "nothing removed: {cmds:?}");
+    let a = adopts(&cmds);
+    assert_eq!(a.len(), 1, "{cmds:?}");
+    assert_eq!(a[0].entity, uuid(0x2B));
+    assert_ne!(a[0].agent, agent_of(y));
+    assert_eq!(s.d.lairs[s.l as usize].occupants.len(), 1);
+    assert_eq!(s.d.stats.strays_adopted, 1);
+}
+
 /// EQC313 (finding 4): a lair that got a newcomer while it was seen only from afar, and Ice and
 /// Fire's own generated dragon found by its first census: the generated dragon is removed (the
 /// untagged path's rule), not adopted as a second occupant.
