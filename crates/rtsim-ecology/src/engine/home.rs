@@ -58,6 +58,15 @@ impl Dragons {
             .count()
     }
 
+    /// The engine no longer believes `d`'s home body stands: its misses were that body's and go
+    /// with it (EQC320), so a body it is given later starts with none.
+    pub(crate) fn clear_body(&mut self, d: DragonId) {
+        if let Some(x) = self.dragons.get_mut(d) {
+            x.body = None;
+            x.miss = (0, Tick(0));
+        }
+    }
+
     /// A lair came in (EQC112): reconcile its books with the bodies the plugin found.
     pub(crate) fn lair_census(&mut self, w: &mut World, c: &boundary::LairCensus, at: Tick) {
         let Some(l) = self.lair_of_key(c.lair) else {
@@ -86,31 +95,47 @@ impl Dragons {
             )
         };
 
-        // Which bodies are whose.
+        // Which bodies are whose (EQC112), by UUID first (EQC310): the body a dragon of the lair
+        // believes is its own; then the lair's own lists (left behind: removed; expected after a
+        // reset, or missing: the lair's own, a stray that may come home). An agent names its
+        // dragon only for a dragon of this lair owed a body, of the body's species: an agent is
+        // not unique across engine lives (a rebuilt engine, and a crash's replay, hand its index
+        // out again), so a body whose agent is anything else is a stray.
         let mut owned: BTreeMap<DragonId, Vec<usize>> = BTreeMap::new();
         let mut strays: Vec<usize> = Vec::new();
         let mut removals: Vec<(Uuid, u32)> = Vec::new();
         for (i, b) in c.bodies.iter().enumerate() {
-            let by_body = occupants.iter().copied().find(|o| {
-                self.dragons
-                    .get(*o)
-                    .is_some_and(|x| x.body == Some(b.entity))
-            });
+            let u = b.entity;
+            let by_body = occupants
+                .iter()
+                .copied()
+                .find(|o| self.dragons.get(*o).is_some_and(|x| x.body == Some(u)));
             if let Some(d) = by_body {
                 owned.entry(d).or_default().push(i);
+                continue;
+            }
+            let lair = &self.lairs[l as usize];
+            if lair.left_behind.contains(&u) {
+                removals.push((u, boundary::DISCARD_AWAY));
+                continue;
+            }
+            if lair.expect.contains(&u) || lair.missing.contains(&u) {
+                strays.push(i);
                 continue;
             }
             let by_agent = (b.agent != 0)
                 .then(|| dragon_of(b.agent))
                 .flatten()
-                .filter(|d| self.dragons.contains(*d));
+                .filter(|d| {
+                    occupants.contains(d)
+                        && self.dragons.get(*d).is_some_and(|x| {
+                            matches!(x.state, State::Roosting)
+                                && x.body.is_none()
+                                && x.species == b.species
+                        })
+                });
             match by_agent {
-                Some(d) if occupants.contains(&d) => owned.entry(d).or_default().push(i),
-                // The agent of a dragon of another lair: a body it left behind.
-                Some(_) => removals.push((b.entity, boundary::DISCARD_AWAY)),
-                None if self.lairs[l as usize].left_behind.contains(&b.entity) => {
-                    removals.push((b.entity, boundary::DISCARD_AWAY));
-                }
+                Some(d) => owned.entry(d).or_default().push(i),
                 None => strays.push(i),
             }
         }
@@ -145,7 +170,7 @@ impl Dragons {
                     // A third body of a pair (H2): it is not this dragon's to keep.
                     removals.push((c.bodies[i].entity, boundary::DISCARD_LAIR_FULL));
                     if believed == Some(c.bodies[i].entity) {
-                        self.dragons.get_mut(d).expect("live").body = None;
+                        self.clear_body(d);
                     }
                 }
                 Some(i) if matches!(state, State::Roosting) => plans.push(Plan::Adopt(d, i)),
@@ -154,20 +179,21 @@ impl Dragons {
                         plans.push(Plan::Recall(d, i));
                     } else {
                         removals.push((c.bodies[i].entity, boundary::DISCARD_AWAY));
-                        self.dragons.get_mut(d).expect("live").body = None;
+                        self.clear_body(d);
                     }
                 }
                 Some(i) => {
-                    // Embodied: the body listed is the one in control, or a second one of a
-                    // puppet that is away. A removal in view is not sent (EQC129).
+                    // Embodied: only the body it believes is matched to it (the one in control).
+                    // Any other would be a second body of a dragon embodied elsewhere, a puppet
+                    // away or a home body in control: removed, watched or not (H1, EQC311).
                     let e = c.bodies[i].entity;
                     if believed == Some(e) {
                         let x = self.dragons.get_mut(d).expect("live");
                         if x.miss.0 != 0 {
                             x.miss = (0, Tick(0));
                         }
-                    } else if !watched {
-                        removals.push((e, boundary::DISCARD_AWAY));
+                    } else {
+                        removals.push((e, boundary::DISCARD_SECOND_BODY));
                     }
                 }
                 None => match state {
@@ -177,7 +203,7 @@ impl Dragons {
                     }
                     _ if away && believed.is_some() => {
                         // Its old body is gone: the dragon is alive and away, no loss.
-                        self.dragons.get_mut(d).expect("live").body = None;
+                        self.clear_body(d);
                     }
                     _ => {}
                 },
@@ -195,10 +221,23 @@ impl Dragons {
             }
         }
 
-        // Strays: adopted below a pair, else removed, nearest first.
+        // Strays (EQC113, EQC313): the lair's own by UUID (expected after a reset, or missing)
+        // while it has room; any other only into a lair this census found empty, as the untagged
+        // path did before S5 (a lair that got a newcomer while it was seen from afar keeps it,
+        // and Ice and Fire's generated dragon found later is removed); the rest removed. The
+        // lair's own first, then nearest first. A written-off body that turns up at a lair that
+        // has refilled stays standing: a stray whose death still presses its old lair (S3's F3
+        // and F4).
+        let empty = occupants.is_empty();
+        let own = |s: &Self, i: usize| {
+            let lair = &s.lairs[l as usize];
+            let u = c.bodies[i].entity;
+            lair.expect.contains(&u) || lair.missing.contains(&u)
+        };
         strays.sort_by(|&a, &b| {
-            dist(self, &c.bodies[a])
-                .total_cmp(&dist(self, &c.bodies[b]))
+            own(self, b)
+                .cmp(&own(self, a))
+                .then(dist(self, &c.bodies[a]).total_cmp(&dist(self, &c.bodies[b])))
                 .then(a.cmp(&b))
         });
         let mut room = self.tun.home_bodies_max.saturating_sub(occupants.len());
@@ -206,14 +245,12 @@ impl Dragons {
         for i in strays {
             let u = c.bodies[i].entity;
             let back = self.lairs[l as usize].missing.contains(&u);
-            if room > 0 {
+            if room > 0 && (empty || own(self, i)) {
                 room -= 1;
                 adoptable.push(i);
             } else if !back {
                 removals.push((u, boundary::DISCARD_LAIR_FULL));
             }
-            // A written-off body that turns up at a lair that has refilled stays standing: a
-            // stray whose death still presses its old lair (S3's F3 and F4).
         }
 
         // The lines: removals, then adoptions, then spawns (EQC112).
@@ -347,6 +384,7 @@ impl Dragons {
     /// (EQC108), and makes the dragon embodied at a new epoch. The engine books the body when the
     /// plugin answers (H3), unless it already believed it.
     pub(crate) fn adopt_home(&mut self, w: &mut World, d: DragonId, u: Uuid, at: Tick) {
+        let gated = self.oil_gated(d);
         let epoch = self.next_epoch(d);
         let x = &self.dragons[d];
         let sp = self.tun.species(x.species).clone();
@@ -358,16 +396,25 @@ impl Dragons {
         let Some(l) = x.lair else {
             return;
         };
+        // A fire dragon's reserve rides on the body, as on a spawned one (EQC317).
+        let mut flags = boundary::ADOPT_HAS_HOME | boundary::ADOPT_HOME_BODY;
+        let oil = if gated {
+            flags |= boundary::ADOPT_OIL;
+            x.oil_level(&self.tun.oil, at)
+        } else {
+            0
+        };
         let (lp, ly) = (self.lairs[l as usize].pos, self.lairs[l as usize].y);
         self.outbox.push(Cmd::Adopt(boundary::Adopt {
             entity: u,
             agent: agent_of(d),
             epoch,
-            flags: boundary::ADOPT_HAS_HOME | boundary::ADOPT_HOME_BODY,
+            flags,
             home: (lp.x, ly, lp.z),
             age_ticks: age,
             hunger,
             health,
+            oil,
         }));
         self.by_entity.insert(u, d);
         self.pending_home.insert(d);
@@ -457,11 +504,26 @@ impl Dragons {
         );
     }
 
-    /// The plugin answered an adoption, a spawn or a hand-back with the home body (EQC122).
+    /// The plugin answered an adoption, a spawn or a hand-back with the home body (EQC122). A home
+    /// body is the Ice and Fire AI's while it is loaded (EQC117), so whatever the puppet it was
+    /// had booked goes (a hand-back's puppet may have been passing or harassing): no departure,
+    /// purpose home, the plan bumped so a departure already booked is stale (EQC315). A new body
+    /// starts with no misses (EQC320).
     pub(crate) fn home_answered(&mut self, d: DragonId, entity: Uuid) {
         self.pending_home.remove(&d);
+        self.bump(d);
         let x = self.dragons.get_mut(d).expect("live");
         x.body = Some(entity);
+        x.miss = (0, Tick(0));
+        if let State::Embodied { epoch, since, .. } = x.state {
+            x.state = State::Embodied {
+                epoch,
+                since,
+                depart_at: Tick(u64::MAX),
+                purpose: Purpose::Home,
+                harass: false,
+            };
+        }
         let l = x.lair;
         self.adopted.insert(entity, d);
         if let Some(l) = l {
@@ -545,8 +607,8 @@ impl Dragons {
             return;
         };
         let here = self.canon(h.dimension, h.pos.0, h.pos.2);
+        self.clear_body(d);
         let x = self.dragons.get_mut(d).expect("live");
-        x.body = None;
         x.rest = Some((here, h.pos.1 as i32));
         let l = x.lair;
         self.pending_home.remove(&d);
@@ -625,6 +687,7 @@ impl Dragons {
         self.outbox.push(Cmd::HandBack(boundary::HandBack {
             agent: agent_of(d),
             epoch,
+            lair: self.lairs[l as usize].key,
         }));
         self.pending_home.insert(d);
         self.stats.home_hand_backs += 1;
