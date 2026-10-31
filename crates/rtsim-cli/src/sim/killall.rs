@@ -162,10 +162,10 @@ fn dragons(row: &Row, seed: u64) -> KindRefill {
         half: days(r.half),
         ninety_ctrl: days(r.ninety_ctrl),
         end_over_ctrl: r.end_over_ctrl,
-        checks: need(r.killed > 0, || format!("nothing killed: {r:?}")).and(need(
-            r.ninety_ctrl.is_some_and(|d| d <= cap),
-            || format!("not 90% of the control within {cap} days: {r:?}"),
-        )),
+        checks: need(r.killed > 0, || format!("nothing killed: {r:?}"))
+            .and(need(r.ninety_ctrl.is_some_and(|d| d <= cap), || {
+                format!("not 90% of the control within {cap} days: {r:?}")
+            })),
         ..KindRefill::new(row, seed)
     }
 }
@@ -188,31 +188,42 @@ fn nests(row: &Row, seed: u64) -> KindRefill {
     let r = rtsim_ecology::synth::nests::kill_all(seed, &NEST_CELLS);
     let k = r.k;
     let checks = need(r.nests == NEST_CELLS.len(), || format!("{} nests", r.nests))
-        .and(need(r.hatched && r.cleared, || "not hatched or not cleared".into()))
+        .and(need(r.hatched && r.cleared, || {
+            "not hatched or not cleared".into()
+        }))
         .and(need(r.killed == r.nests as u32 * k, || {
             format!("killed {}", r.killed)
         }))
         .and(need(r.whole.is_some_and(|d| d <= 72), || {
             format!("drilled, back after {:?} days", r.whole)
         }))
-        .and(need(r.half.is_some_and(|h| r.whole.is_some_and(|w| h <= w)), || {
-            format!("half {:?} whole {:?}", r.half, r.whole)
-        }))
+        .and(need(
+            r.half.is_some_and(|h| r.whole.is_some_and(|w| h <= w)),
+            || format!("half {:?} whole {:?}", r.half, r.whole),
+        ))
         .and(need(r.one_at_a_time, || "a renewal not from a wait".into()))
         .and(need(
-            r.lost_player.iter().zip(&r.renewed).all(|(l, n)| *l == k && *n == k),
+            r.lost_player
+                .iter()
+                .zip(&r.renewed)
+                .all(|(l, n)| *l == k && *n == k),
             || format!("lost {:?} renewed {:?}", r.lost_player, r.renewed),
         ))
-        .and(need(r.undrilled_renewals == 0 && r.undrilled_worms == 0, || {
-            format!(
-                "undrilled: {} renewals, {} worms",
-                r.undrilled_renewals, r.undrilled_worms
-            )
-        }))
+        .and(need(
+            r.undrilled_renewals == 0 && r.undrilled_worms == 0,
+            || {
+                format!(
+                    "undrilled: {} renewals, {} worms",
+                    r.undrilled_renewals, r.undrilled_worms
+                )
+            },
+        ))
         .and(need(r.redrilled.is_some_and(|d| d <= 150), || {
             format!("drilled again: {:?}", r.redrilled)
         }))
-        .and(need(r.plugin_agrees, || "the plugin's counts differ".into()));
+        .and(need(r.plugin_agrees, || {
+            "the plugin's counts differ".into()
+        }));
     KindRefill {
         killed: u64::from(r.killed),
         pre: f64::from(r.nests as u32 * k),
@@ -248,7 +259,9 @@ fn villagers(row: &Row, seed: u64) -> KindRefill {
 
 fn villagers_judge(rs: &[KindRefill]) -> Result<(), String> {
     let b = median(rs, |r| r.ninety_ctrl);
-    need(b <= 600.0, || format!("median days to 90% of the control {b}"))
+    need(b <= 600.0, || {
+        format!("median days to 90% of the control {b}")
+    })
 }
 
 fn ribbits(row: &Row, seed: u64) -> KindRefill {
@@ -257,7 +270,9 @@ fn ribbits(row: &Row, seed: u64) -> KindRefill {
 
 fn ribbits_judge(rs: &[KindRefill]) -> Result<(), String> {
     let b = median(rs, |r| r.ninety_ctrl);
-    need(b <= 300.0, || format!("median days to 90% of the control {b}"))
+    need(b <= 300.0, || {
+        format!("median days to 90% of the control {b}")
+    })
 }
 
 fn camps_of(row: &Row, seed: u64, names: &[&str]) -> KindRefill {
@@ -268,10 +283,10 @@ fn camps_of(row: &Row, seed: u64, names: &[&str]) -> KindRefill {
         ninety_ctrl: days(r.ninety_ctrl),
         end_over_ctrl: r.end_over_ctrl,
         breaks: r.breaks,
-        checks: need(r.breaks == 0, || format!("a camp broke: {r:?}")).and(need(
-            r.ninety_ctrl.is_some_and(|d| d <= 120),
-            || format!("not 90% of the control within 120 days: {r:?}"),
-        )),
+        checks: need(r.breaks == 0, || format!("a camp broke: {r:?}"))
+            .and(need(r.ninety_ctrl.is_some_and(|d| d <= 120), || {
+                format!("not 90% of the control within 120 days: {r:?}")
+            })),
         ..KindRefill::new(row, seed)
     }
 }
@@ -286,14 +301,19 @@ fn outposts(row: &Row, seed: u64) -> KindRefill {
 
 fn camps_judge(rs: &[KindRefill]) -> Result<(), String> {
     let b = median(rs, |r| r.ninety_ctrl);
-    need(b <= 96.0, || format!("median days to 90% of the control {b}"))
+    need(b <= 96.0, || {
+        format!("median days to 90% of the control {b}")
+    })
 }
 
 fn pirates(row: &Row, seed: u64) -> KindRefill {
     let r = rtsim_ships::synth::equilibrium::kill_all_pirates(seed);
     let longest = |v: &[f64]| v.iter().copied().fold(0.0, f64::max);
     let checks = need(r.sunk > 0 && r.active_after == 0, || {
-        format!("sunk {} of {}, {} still active", r.sunk, r.slots, r.active_after)
+        format!(
+            "sunk {} of {}, {} still active",
+            r.sunk, r.slots, r.active_after
+        )
     })
     .and(need(r.whole.is_some_and(|d| d <= 180.0), || {
         format!("not every slot back within 180 days: {:?}", r.whole)
@@ -339,7 +359,11 @@ fn herds_together(r: &KindRefill) -> Result<(), String> {
 }
 
 fn dragons_together(r: &KindRefill) -> Result<(), String> {
-    within("90% of the control", r.ninety_ctrl, (192 + eq::EVERY) as f64)
+    within(
+        "90% of the control",
+        r.ninety_ctrl,
+        (192 + eq::EVERY) as f64,
+    )
 }
 
 fn nests_together(r: &KindRefill) -> Result<(), String> {
@@ -468,7 +492,12 @@ pub fn run_row(row: &'static Row, seeds: &[u64]) -> Vec<KindRefill> {
 pub fn verdict(row: &Row, rs: &[KindRefill]) -> Result<(), String> {
     let bad: Vec<String> = rs
         .iter()
-        .filter_map(|r| r.checks.as_ref().err().map(|e| format!("seed {}: {e}", r.seed)))
+        .filter_map(|r| {
+            r.checks
+                .as_ref()
+                .err()
+                .map(|e| format!("seed {}: {e}", r.seed))
+        })
         .collect();
     need(bad.is_empty(), || bad.join("; ")).and((row.judge)(rs))
 }
@@ -624,7 +653,7 @@ pub fn together_refill(row: &Row, w: &Together, c: &Together) -> KindRefill {
     r.end_over_ctrl = tail / tail_c.max(1.0);
     let wrong = w.teeth.wrong_now();
     let teeth = need(wrong.is_empty(), || format!("booked wrong: {wrong:?}"))
-    .and(need(w.killed > 0, || "the wipe killed nothing".into()));
+        .and(need(w.killed > 0, || "the wipe killed nothing".into()));
     r.checks = teeth.and(row.together.map_or(Ok(()), |f| f(&r)));
     r
 }
@@ -743,8 +772,14 @@ pub fn cli(rest: &[&str]) -> ExitCode {
     let mut failed = false;
     let results: Vec<(&'static Row, Vec<KindRefill>)> = if together {
         let can = together_rows();
-        let rows: Vec<&'static Row> = rows.into_iter().filter(|r| can.iter().any(|c| c.name == r.name)).collect();
-        rows.iter().copied().zip(run_together(&rows, &seeds)).collect()
+        let rows: Vec<&'static Row> = rows
+            .into_iter()
+            .filter(|r| can.iter().any(|c| c.name == r.name))
+            .collect();
+        rows.iter()
+            .copied()
+            .zip(run_together(&rows, &seeds))
+            .collect()
     } else {
         rows.into_iter().map(|r| (r, run_row(r, &seeds))).collect()
     };

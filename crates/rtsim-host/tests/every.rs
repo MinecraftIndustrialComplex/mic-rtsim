@@ -196,16 +196,21 @@ fn means(r: &every::LongRun, from: u64) -> Means {
             m.ports_all_closed |= p.members == 0;
         }
     }
-    let renewals = |cs: &[rtsim_kernel::census::KindCensus]| cs.iter().map(|c| c.renewals).sum::<u64>();
+    let renewals =
+        |cs: &[rtsim_kernel::census::KindCensus]| cs.iter().map(|c| c.renewals).sum::<u64>();
     if let (Some(a), Some(b)) = (late.first(), r.censuses.last()) {
-        m.renewals_a_day = renewals(&b.1).saturating_sub(renewals(&a.1)) as f64 / (b.0 - a.0).max(1) as f64;
+        m.renewals_a_day =
+            renewals(&b.1).saturating_sub(renewals(&a.1)) as f64 / (b.0 - a.0).max(1) as f64;
     }
     m
 }
 
 fn print_long(what: &str, rs: &[every::LongRun], from: u64) {
     let ms: Vec<Means> = rs.iter().map(|r| means(r, from)).collect();
-    println!("{what} over {} seeds, median [5th, 95th] of each seed's mean after day {from}:", rs.len());
+    println!(
+        "{what} over {} seeds, median [5th, 95th] of each seed's mean after day {from}:",
+        rs.len()
+    );
     for k in KINDS {
         let b = band(&ms.iter().map(|m| m.level[k]).collect::<Vec<_>>());
         println!("  {k:<17} {b:.3?}");
@@ -250,7 +255,10 @@ fn long_horizon_stability_with_kills() {
     );
     for (k, n) in &r.teeth.killed {
         if *n > 0 && !r.teeth.awaits_s9(k) {
-            assert!(r.teeth.checked.get(k).is_some_and(|&c| c > 0), "{k}: never checked");
+            assert!(
+                r.teeth.checked.get(k).is_some_and(|&c| c > 0),
+                "{k}: never checked"
+            );
         }
     }
     assert!(r.bounds.is_empty(), "{:?}", r.bounds);
@@ -281,9 +289,15 @@ fn long_horizon_stability_with_kills_30_seeds() {
         }
     };
     for r in roam.iter().chain(&none) {
-        need(r.bounds.is_empty(), format!("seed {} roamer {}: bounds {:?}", r.seed, r.roamer, r.bounds));
+        need(
+            r.bounds.is_empty(),
+            format!("seed {} roamer {}: bounds {:?}", r.seed, r.roamer, r.bounds),
+        );
         let wrong = r.teeth.wrong_now();
-        need(wrong.is_empty(), format!("seed {}: booked wrong {wrong:?}", r.seed));
+        need(
+            wrong.is_empty(),
+            format!("seed {}: booked wrong {wrong:?}", r.seed),
+        );
     }
     for r in &roam {
         for (k, _) in every::ROAMER_CHANCE {
@@ -299,10 +313,19 @@ fn long_horizon_stability_with_kills_30_seeds() {
     }
     let lv = |ms: &[Means], k: &str| band(&ms.iter().map(|m| m.level[k]).collect::<Vec<_>>());
     let (hr, hn) = (lv(&mr, "herd.range"), lv(&mn, "herd.range"));
-    need((0.73..=0.83).contains(&hn.0), format!("herds nobody {hn:?}"));
-    need(hr.1 >= 0.50 && hr.2 < 1.0 && hr.0 < hn.0, format!("herds roamer {hr:?} nobody {hn:?}"));
+    need(
+        (0.73..=0.83).contains(&hn.0),
+        format!("herds nobody {hn:?}"),
+    );
+    need(
+        hr.1 >= 0.50 && hr.2 < 1.0 && hr.0 < hn.0,
+        format!("herds roamer {hr:?} nobody {hn:?}"),
+    );
     for m in mr.iter().chain(&mn) {
-        need(m.ranges_alive_min == 1.0, format!("a herd range empty: {m:?}"));
+        need(
+            m.ranges_alive_min == 1.0,
+            format!("a herd range empty: {m:?}"),
+        );
     }
     let (dr, dn) = (lv(&mr, "dragon.lair"), lv(&mn, "dragon.lair"));
     need((0.88..=1.0).contains(&dn.0), format!("lairs nobody {dn:?}"));
@@ -311,29 +334,77 @@ fn long_horizon_stability_with_kills_30_seeds() {
         format!("lairs roamer {dr:?} nobody {dn:?}"),
     );
     for m in &mn {
-        need(m.level["oil.nest"] == 1.0, format!("nests nobody {:?}", m.level["oil.nest"]));
-        need(m.camps_broken == 0.0 && m.camps_max_p == 0.0, format!("camps nobody {m:?}"));
+        need(
+            m.level["oil.nest"] == 1.0,
+            format!("nests nobody {:?}", m.level["oil.nest"]),
+        );
+        need(
+            m.camps_broken == 0.0 && m.camps_max_p == 0.0,
+            format!("camps nobody {m:?}"),
+        );
     }
-    need(lv(&mr, "oil.nest").0 >= 0.86, format!("nests roamer {:?}", lv(&mr, "oil.nest")));
-    need(lv(&mn, "village.human").0 >= 0.95, format!("villages nobody {:?}", lv(&mn, "village.human")));
-    need(lv(&mr, "village.human").0 >= 0.93, format!("villages roamer {:?}", lv(&mr, "village.human")));
-    need(lv(&mn, "village.ribbit").0 >= 0.95, format!("ribbits nobody {:?}", lv(&mn, "village.ribbit")));
-    need(lv(&mr, "village.ribbit").0 >= 0.95, format!("ribbits roamer {:?}", lv(&mr, "village.ribbit")));
-    need(lv(&mr, "conflict.camp").0 >= 0.91, format!("camps roamer {:?}", lv(&mr, "conflict.camp")));
+    need(
+        lv(&mr, "oil.nest").0 >= 0.86,
+        format!("nests roamer {:?}", lv(&mr, "oil.nest")),
+    );
+    need(
+        lv(&mn, "village.human").0 >= 0.95,
+        format!("villages nobody {:?}", lv(&mn, "village.human")),
+    );
+    need(
+        lv(&mr, "village.human").0 >= 0.93,
+        format!("villages roamer {:?}", lv(&mr, "village.human")),
+    );
+    need(
+        lv(&mn, "village.ribbit").0 >= 0.95,
+        format!("ribbits nobody {:?}", lv(&mn, "village.ribbit")),
+    );
+    need(
+        lv(&mr, "village.ribbit").0 >= 0.95,
+        format!("ribbits roamer {:?}", lv(&mr, "village.ribbit")),
+    );
+    need(
+        lv(&mr, "conflict.camp").0 >= 0.91,
+        format!("camps roamer {:?}", lv(&mr, "conflict.camp")),
+    );
     let broken = band(&mr.iter().map(|m| m.camps_broken).collect::<Vec<_>>());
     need(broken.0 <= 0.05, format!("camps roamer broken {broken:?}"));
-    need(lv(&mn, "conflict.den").0 >= 0.995, format!("dens nobody {:?}", lv(&mn, "conflict.den")));
-    need(lv(&mr, "conflict.den").0 >= 0.907, format!("dens roamer {:?}", lv(&mr, "conflict.den")));
+    need(
+        lv(&mn, "conflict.den").0 >= 0.995,
+        format!("dens nobody {:?}", lv(&mn, "conflict.den")),
+    );
+    need(
+        lv(&mr, "conflict.den").0 >= 0.907,
+        format!("dens roamer {:?}", lv(&mr, "conflict.den")),
+    );
     let gn = lv(&mn, "conflict.grove");
-    need((0.90..=1.0).contains(&gn.0), format!("groves nobody {gn:?}"));
-    need(lv(&mr, "conflict.grove").0 >= 0.866, format!("groves roamer {:?}", lv(&mr, "conflict.grove")));
-    need(lv(&mn, "ship.haven").0 >= 0.83, format!("havens nobody {:?}", lv(&mn, "ship.haven")));
-    need(lv(&mr, "ship.haven").0 >= 0.78, format!("havens roamer {:?}", lv(&mr, "ship.haven")));
+    need(
+        (0.90..=1.0).contains(&gn.0),
+        format!("groves nobody {gn:?}"),
+    );
+    need(
+        lv(&mr, "conflict.grove").0 >= 0.866,
+        format!("groves roamer {:?}", lv(&mr, "conflict.grove")),
+    );
+    need(
+        lv(&mn, "ship.haven").0 >= 0.83,
+        format!("havens nobody {:?}", lv(&mn, "ship.haven")),
+    );
+    need(
+        lv(&mr, "ship.haven").0 >= 0.78,
+        format!("havens roamer {:?}", lv(&mr, "ship.haven")),
+    );
     for m in mr.iter().chain(&mn) {
-        need(!m.ports_all_closed && m.ports_closed <= 0.01, format!("ports {m:?}"));
+        need(
+            !m.ports_all_closed && m.ports_closed <= 0.01,
+            format!("ports {m:?}"),
+        );
     }
     for (a, b) in mr.iter().zip(&mn) {
-        need(a.renewals_a_day > b.renewals_a_day, format!("renewals roamer {a:?} nobody {b:?}"));
+        need(
+            a.renewals_a_day > b.renewals_a_day,
+            format!("renewals roamer {a:?} nobody {b:?}"),
+        );
     }
     assert!(bad.is_empty(), "{}", bad.join("\n"));
 }

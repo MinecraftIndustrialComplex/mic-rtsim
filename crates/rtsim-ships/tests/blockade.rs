@@ -145,16 +145,21 @@ fn a_blockaded_port_reads_empty_and_reopens() {
     let open = port(&c);
     assert!(trade > 1);
     assert_eq!(
-        (open.sites, open.members, open.capacity, open.empty, open.broken),
+        (
+            open.sites,
+            open.members,
+            open.capacity,
+            open.empty,
+            open.broken
+        ),
         (trade, u64::from(trade), u64::from(trade), 0, 0),
         "{open:?}"
     );
-    assert!(run_until(
-        &mut c,
-        &mut fake,
-        Tick::from_days(90),
-        |c, _| c.ships.stats.closures == 1
-    ));
+    assert!(run_until(&mut c, &mut fake, Tick::from_days(90), |c, _| c
+        .ships
+        .stats
+        .closures
+        == 1));
     let shut = port(&c);
     assert_eq!(
         (shut.members, shut.empty, shut.short, shut.broken),

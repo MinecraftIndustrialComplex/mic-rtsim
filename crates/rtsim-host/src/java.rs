@@ -930,9 +930,7 @@ impl Java {
                     self.last_applied_cmd = seq;
                     continue;
                 }
-                if self.policy == Policy::Every
-                    && (0x8500..=0x85FF).contains(&rec.kind)
-                {
+                if self.policy == Policy::Every && (0x8500..=0x85FF).contains(&rec.kind) {
                     self.every_nest_command(rec.bytes);
                     self.last_applied_cmd = seq;
                     continue;

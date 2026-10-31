@@ -177,7 +177,13 @@ fn dir_bytes(d: &Path) -> u64 {
 }
 
 /// The checks on one sample's census (EQC436 (2) and (3)).
-fn check_sample(f: &Founded, day: u64, plan: &Plan, cs: &[KindCensus], out: &mut Vec<(u64, String)>) {
+fn check_sample(
+    f: &Founded,
+    day: u64,
+    plan: &Plan,
+    cs: &[KindCensus],
+    out: &mut Vec<(u64, String)>,
+) {
     for k in KINDS {
         let Some(want) = f.expected(k, cs) else {
             continue;
@@ -414,7 +420,13 @@ fn judge(plan: &Plan, run: &Run) -> Vec<Check> {
     out.push(Check {
         name: "present_and_alive".into(),
         ok: run.sample_failures.is_empty(),
-        detail: json!(run.sample_failures.iter().take(40).map(|(d, s)| format!("day {d}: {s}")).collect::<Vec<_>>()),
+        detail: json!(
+            run.sample_failures
+                .iter()
+                .take(40)
+                .map(|(d, s)| format!("day {d}: {s}"))
+                .collect::<Vec<_>>()
+        ),
     });
     let judged: Vec<&Window> = run
         .windows
@@ -445,7 +457,9 @@ fn judge(plan: &Plan, run: &Run) -> Vec<Check> {
                 .zip(&fills)
                 .filter(|(w, x)| {
                     let k = w.kinds.get(k);
-                    **x < lo - 1e-9 || **x > hi + 1e-9 || (exact && k.is_some_and(|k| k.not_full > 0))
+                    **x < lo - 1e-9
+                        || **x > hi + 1e-9
+                        || (exact && k.is_some_and(|k| k.not_full > 0))
                 })
                 .map(|(w, x)| (w.index, *x))
                 .collect();
@@ -489,7 +503,12 @@ fn judge(plan: &Plan, run: &Run) -> Vec<Check> {
         let n = median(&counts);
         let delta = (0.1 * median(&rates)).max(3.0 * n.sqrt() / plan.window as f64);
         if !NEVER.contains(&k) {
-            flat_check(format!("flat.renewals.{k}"), &rates, delta.max(1e-9), &mut out);
+            flat_check(
+                format!("flat.renewals.{k}"),
+                &rates,
+                delta.max(1e-9),
+                &mut out,
+            );
         }
     }
     // The pool camps: no break, no P, on every sample (EQC419's exact rows).
@@ -530,7 +549,12 @@ fn judge(plan: &Plan, run: &Run) -> Vec<Check> {
         .collect();
     let n = median(&world) * plan.window as f64;
     let delta = (0.1 * median(&world)).max(3.0 * n.sqrt() / plan.window as f64);
-    flat_check("flat.renewals.world".into(), &world, delta.max(1e-9), &mut out);
+    flat_check(
+        "flat.renewals.world".into(),
+        &world,
+        delta.max(1e-9),
+        &mut out,
+    );
     // State bytes (EQC439): every table, their total and the heap.
     let tables: Vec<u16> = judged
         .iter()
@@ -623,8 +647,10 @@ fn judge(plan: &Plan, run: &Run) -> Vec<Check> {
     });
     let half = run.outboxes.len() / 2;
     if half > 0 {
-        let early = |f: fn(&(u64, u64, u64)) -> u64| run.outboxes[..half].iter().map(f).max().unwrap_or(0);
-        let late = |f: fn(&(u64, u64, u64)) -> u64| run.outboxes[half..].iter().map(f).max().unwrap_or(0);
+        let early =
+            |f: fn(&(u64, u64, u64)) -> u64| run.outboxes[..half].iter().map(f).max().unwrap_or(0);
+        let late =
+            |f: fn(&(u64, u64, u64)) -> u64| run.outboxes[half..].iter().map(f).max().unwrap_or(0);
         let (ie, il) = (early(|x| x.1), late(|x| x.1));
         let (ce, cl) = (early(|x| x.2), late(|x| x.2));
         out.push(Check {
@@ -696,8 +722,11 @@ fn report(plan: &Plan, run: &Run, checks: &[Check]) -> (String, Vec<String>) {
         if let Some(d) = p.parent() {
             let _ = std::fs::create_dir_all(d);
         }
-        std::fs::write(p, serde_json::to_vec_pretty(&r).expect("the report encodes"))
-            .expect("the report written");
+        std::fs::write(
+            p,
+            serde_json::to_vec_pretty(&r).expect("the report encodes"),
+        )
+        .expect("the report written");
     }
     (verdict.to_string(), failing)
 }
@@ -719,7 +748,12 @@ fn run_plan(plan: Plan) {
         }
     }
     for c in &checks {
-        println!("{} {} {}", if c.ok { "ok  " } else { "FAIL" }, c.name, c.detail);
+        println!(
+            "{} {} {}",
+            if c.ok { "ok  " } else { "FAIL" },
+            c.name,
+            c.detail
+        );
     }
     let (verdict, failing) = report(&plan, &run, &checks);
     println!(

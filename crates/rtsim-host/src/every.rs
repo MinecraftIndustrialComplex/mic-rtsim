@@ -31,7 +31,9 @@ use rtsim_conflict::boundary as cb;
 use rtsim_ecology::boundary as db;
 use rtsim_ecology::species::Gender;
 use rtsim_industry::ids::{ChunkPos, DistrictId, Good};
-use rtsim_industry::obs::{DepositPluginId, DepositSample, DistrictDecl, Obs as IObs, SweepEnd, Timed};
+use rtsim_industry::obs::{
+    DepositPluginId, DepositSample, DistrictDecl, Obs as IObs, SweepEnd, Timed,
+};
 use rtsim_jni::engine::Engine;
 use rtsim_jni::orders::Order;
 use rtsim_jni::wire;
@@ -162,7 +164,9 @@ impl Founded {
         let has = |k: &str| cs.iter().any(|c| c.kind == k);
         let s9 = has("conflict.den");
         match kind {
-            "conflict.camp" if !s9 => Some(self.sites(kind) + self.sites("conflict.den") + self.sites("conflict.grove")),
+            "conflict.camp" if !s9 => {
+                Some(self.sites(kind) + self.sites("conflict.den") + self.sites("conflict.grove"))
+            }
             "conflict.den" | "conflict.grove" | "conflict.umvuthi" if !has(kind) => None,
             _ => Some(self.sites(kind)),
         }
@@ -253,11 +257,7 @@ pub fn populate(j: &mut Java) -> Founded {
                 health: 0.0,
                 gender: Gender::Female,
                 variant: 1,
-                pos: (
-                    f64::from(home.0),
-                    f64::from(home.1),
-                    f64::from(home.2),
-                ),
+                pos: (f64::from(home.0), f64::from(home.1), f64::from(home.2)),
             }],
         }));
         f.lairs.push((l.key, home));
@@ -312,9 +312,24 @@ pub fn populate(j: &mut Java) -> Founded {
     // (5) Pool camps and (6) outposts (raider camps, as core's `Outposts` reports a vanilla one:
     // the outpost's structure, no bodies, not late).
     let pool = [
-        (0xCA_0001u64, "goblin", "goblinstyranny:goblin_camp", (750, 250)),
-        (0xCA_0002, "bandit", "mic_rtsim:conflict/bandit_camp", (-750, 250)),
-        (0xCA_0003, "raider", "minecraft:pillager_outpost", (250, -750)),
+        (
+            0xCA_0001u64,
+            "goblin",
+            "goblinstyranny:goblin_camp",
+            (750, 250),
+        ),
+        (
+            0xCA_0002,
+            "bandit",
+            "mic_rtsim:conflict/bandit_camp",
+            (-750, 250),
+        ),
+        (
+            0xCA_0003,
+            "raider",
+            "minecraft:pillager_outpost",
+            (250, -750),
+        ),
     ];
     for (key, culture, structure, at) in pool {
         found_camp(j, key, structure, at, 0, 0);
@@ -851,7 +866,11 @@ impl Every {
     /// NEST_LOSS, cause Player: every worm of nest `id` killed by [`PLAYER`]. How many. Booked:
     /// the nest's worms lost to a player.
     pub fn kill_nest(&mut self, id: u64) -> u64 {
-        let before = self.nests().into_iter().find(|n| n.0 == id).map_or(0, |n| n.2);
+        let before = self
+            .nests()
+            .into_iter()
+            .find(|n| n.0 == id)
+            .map_or(0, |n| n.2);
         let n = u64::from(self.host.j.kill_worms(id, u32::MAX, PLAYER));
         if n > 0 {
             self.owe_count("oil.nest", Counter::NestLost(id), u64::from(before), n);
@@ -965,7 +984,10 @@ impl Every {
     /// Haven `key`'s active pirate ships: (agent, epoch).
     fn active_ships(&self, key: u64) -> Vec<(u64, u32)> {
         self.host.e.with_ships(|s, w| {
-            let Some(h) = s.havens.iter().find(|h| w.nodes.get(h.node).is_some_and(|n| n.key == key))
+            let Some(h) = s
+                .havens
+                .iter()
+                .find(|h| w.nodes.get(h.node).is_some_and(|n| n.key == key))
             else {
                 return Vec::new();
             };
@@ -1199,11 +1221,9 @@ impl Every {
     }
 
     fn owe_pressure(&mut self, kind: &'static str, site: Site, day: u32, before: f32, want: f32) {
-        if let Some(Owed::Pressure { want: w, .. }) = self
-            .owed
-            .iter_mut()
-            .find(|o| matches!(o, Owed::Pressure { site: x, day: d, .. } if *x == site && *d == day))
-        {
+        if let Some(Owed::Pressure { want: w, .. }) = self.owed.iter_mut().find(
+            |o| matches!(o, Owed::Pressure { site: x, day: d, .. } if *x == site && *d == day),
+        ) {
             *w += want;
             return;
         }
@@ -1330,17 +1350,9 @@ impl Every {
     pub fn wipe(&mut self, wipe: &str) -> u64 {
         let f = self.founded.clone();
         match wipe {
-            "herds.world" => f
-                .ranges
-                .iter()
-                .map(|&r| self.cull_range(r, u64::MAX))
-                .sum(),
+            "herds.world" => f.ranges.iter().map(|&r| self.cull_range(r, u64::MAX)).sum(),
             "dragons" => f.lairs.iter().map(|l| self.slay_lair(l.0)).sum(),
-            "nests" => self
-                .nests()
-                .into_iter()
-                .map(|n| self.kill_nest(n.0))
-                .sum(),
+            "nests" => self.nests().into_iter().map(|n| self.kill_nest(n.0)).sum(),
             "villagers" | "ribbits" => f
                 .villages
                 .iter()
@@ -1495,13 +1507,19 @@ impl Bounds {
             let quiet = day - e.1;
             let why = match s.kind {
                 // Whole within 192 days of its loss (a den's only loss is its Frostmaw's).
-                "conflict.den" if day - since > 192 + slack => Some("not whole 192 days after its loss"),
+                "conflict.den" if day - since > 192 + slack => {
+                    Some("not whole 192 days after its loss")
+                }
                 // The next warrior within 96 days of the last arrival or loss.
-                "conflict.grove" if quiet > 96 + slack => Some("no warrior 96 days after the last change"),
+                "conflict.grove" if quiet > 96 + slack => {
+                    Some("no warrior 96 days after the last change")
+                }
                 "village.human" | "village.ribbit" if day - since > 192 + slack => {
                     Some("no pair 192 days after falling below two")
                 }
-                "conflict.camp" if day - since > 384 + slack => Some("not refounded 384 days after its break"),
+                "conflict.camp" if day - since > 384 + slack => {
+                    Some("not refounded 384 days after its break")
+                }
                 "oil.nest" if quiet > 96 + slack => Some("no worm 96 days after the last change"),
                 "herd.range" if day.is_multiple_of(EVERY_DAYS) => Some("empty at a census"),
                 "dragon.lair"
