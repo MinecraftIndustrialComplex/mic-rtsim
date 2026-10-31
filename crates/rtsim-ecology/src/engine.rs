@@ -1111,6 +1111,16 @@ impl Dragons {
         weight / (weight + self.tun.gate_half)
     }
 
+    /// [`Dragons::ground_share`] with `herds` lent for the call, as a run lends them: what the
+    /// arrival gate would read at lair `l` now (tests and diagnostics).
+    pub fn ground_share_with(&mut self, w: &World, herds: &mut Herds, l: LairId, at: Tick) -> f64 {
+        self.index.refresh(w, &self.topo);
+        self.wild = Some(std::mem::replace(herds, Herds::empty()));
+        let share = self.ground_share(w, l, at);
+        *herds = self.wild.take().expect("lent");
+        share
+    }
+
     /// `d`'s lair's fed share takes in a share of its need caught (a hunt's catch, or 0 for a day
     /// with nothing in reach). A dragon with no lair has none.
     fn fold_fed(&mut self, d: DragonId, share: f32, at: Tick) {
