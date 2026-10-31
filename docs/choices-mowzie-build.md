@@ -12686,6 +12686,12 @@ committed first and seen failing on the engine without the fix, then passing.
   kinds do not use it, a boss is placed at once with `BossArrival`, and Rule U's removal hold is unchanged. The header of
   `crates/rtsim-view/tests/fixtures.rs` said "FB-3 the built hold" and "FB-2 no plunder mood"; it says the hold was dropped and the grove
   has the raider's plunder mood. The camera-shake reset at `camp.rs:2076` that zeroes a handed-over p2 is M12a's fix and is not touched.
+- **MZB-1293** (the coordinator, 2026-10-31, found landing S9 with S5's and S6's fixes): `aReinstallResetsTheSimAndAdoptsTheStrippedDistrictsAgain`
+  failed with "A, B and C are to be adopted again: 8" in the core round of the merged head, as it had on `fix/s7-review`'s second core
+  round. A reset plans the re-adoption of every seeded chunk (UR-1), and `Districts.forgetAllForTest` forgot the districts but not that
+  plan, so the chunks of an earlier test's district that never loaded again were still to adopt again when this test's reset counted
+  them. `forgetAllForTest` now clears the dimension's plan too, so each reset test counts only its own chunks, whatever ran before it.
+  M12a's MZB-1403 fixed one such earlier test; this fixes the count for all of them.
 
 ### Build notes
 
