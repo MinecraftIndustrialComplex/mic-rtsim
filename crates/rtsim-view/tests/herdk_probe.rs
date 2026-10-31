@@ -46,6 +46,9 @@ fn region_msy(c: &dyn Climate, frame: u16, rx: i32, rz: i32) -> (f64, f64, u32) 
     (msy, cap, open)
 }
 
+/// Sum K, sum N, starved, born and ranges, by habitat and species.
+type Agg = (u64, u64, u64, u64, usize);
+
 struct Row {
     name: String,
     label: String,
@@ -57,13 +60,7 @@ struct Row {
     temp: f32,
 }
 
-fn run_alone(
-    title: &str,
-    climate: Box<dyn Climate>,
-    rows: &[Row],
-    news: Vec<NewHerd>,
-    days: u64,
-) {
+fn run_alone(title: &str, climate: Box<dyn Climate>, rows: &[Row], news: Vec<NewHerd>, days: u64) {
     let tun = HerdTunables::default();
     let mut h = Herds::new(0x6865_7264, tun.clone(), climate, Tick::ZERO);
     for n in news {
@@ -90,7 +87,7 @@ fn run_alone(
         "{:<26} {:<34} {:>6} {:>6} {:>6} {:>5} {:>8} {:>6} {:>5} {:>7} {:>7} {:>7}  N at 500d steps",
         "herd", "habitat", "sp", "K", "N", "N/K", "MSY/dmd", "cap", "open", "born", "starve", "sat"
     );
-    let mut agg: BTreeMap<(String, String), (u64, u64, u64, u64, usize)> = BTreeMap::new();
+    let mut agg: BTreeMap<(String, String), Agg> = BTreeMap::new();
     let mut far: Vec<f64> = Vec::new();
     for (id, x) in h.herds.iter() {
         let Some(r) = rows.iter().find(|r| r.name == x.name) else {
@@ -99,7 +96,9 @@ fn run_alone(
         let sp = tun.species(x.species);
         let n = h.count(id, t);
         let p = h.position(id, t);
-        let away = (((p.0 - i64::from(x.home.0)).pow(2) + (p.1 - i64::from(x.home.1)).pow(2)) as f64).sqrt();
+        let away = (((p.0 - i64::from(x.home.0)).pow(2) + (p.1 - i64::from(x.home.1)).pow(2))
+            as f64)
+            .sqrt();
         far.push(away);
         let dmd = r.k as f64 * sp.intake_per_day;
         println!(
@@ -146,7 +145,10 @@ fn run_alone(
         e.1 += h.count(id, t);
     }
     for (s, (k, n)) in &by_sp {
-        println!("species {s:<6} K {k:>6} N {n:>6} N/K {:.2}", *n as f64 / (*k).max(1) as f64);
+        println!(
+            "species {s:<6} K {k:>6} N {n:>6} N/K {:.2}",
+            *n as f64 / (*k).max(1) as f64
+        );
     }
     far.sort_by(|a, b| a.total_cmp(b));
     if !far.is_empty() {
@@ -166,13 +168,16 @@ fn biome_mix(w: &SampledWorld, k: RegionKey) -> String {
     for cz in k.rz * per..(k.rz + 1) * per {
         for cx in k.rx * per..(k.rx + 1) * per {
             if let Some(h) = w.cell(k.frame, cx, cz) {
-                let n = w.biome_name(h.land_biome).trim_start_matches("minecraft:").to_string();
+                let n = w
+                    .biome_name(h.land_biome)
+                    .trim_start_matches("minecraft:")
+                    .to_string();
                 *by.entry(n).or_default() += 1;
             }
         }
     }
     let mut v: Vec<(String, u32)> = by.into_iter().collect();
-    v.sort_by(|a, b| b.1.cmp(&a.1));
+    v.sort_by_key(|e| std::cmp::Reverse(e.1));
     v.iter()
         .take(3)
         .map(|(n, c)| format!("{n}:{c}"))
@@ -190,7 +195,10 @@ fn found_world(world: &WorldHandle, label_by_biome: bool) -> (Vec<Row>, Vec<NewH
     let (mut barren, mut notyet) = (0, 0);
     for k in keys {
         let mut ft = FoundingTunables::default();
-        if let Some(v) = std::env::var("HERDK_SHARE").ok().and_then(|v| v.parse().ok()) {
+        if let Some(v) = std::env::var("HERDK_SHARE")
+            .ok()
+            .and_then(|v| v.parse().ok())
+        {
             ft.forage_share = v;
         }
         match plan_region(&**w, &climate, k, FOUNDING_SEED, &ft) {
@@ -257,7 +265,13 @@ fn painted_with(biomes: &[&'static str], channels: bool) -> WorldHandle {
                         0,
                         cx,
                         cz,
-                        &|x, z| if channels && is_channel(x, z) { sea() } else { land(biome) },
+                        &|x, z| {
+                            if channels && is_channel(x, z) {
+                                sea()
+                            } else {
+                                land(biome)
+                            }
+                        },
                         &[],
                     );
                     p.feed(&mut w, &r);
@@ -302,7 +316,13 @@ fn painted_world() {
         }
         let world = painted_with(&b, std::env::var("HERDK_NO_CHANNELS").is_err());
         let (rows, news) = found_world(&world, true);
-        run_alone(title, Box::new(HabitatClimate::new(world)), &rows, news, days());
+        run_alone(
+            title,
+            Box::new(HabitatClimate::new(world)),
+            &rows,
+            news,
+            days(),
+        );
     }
 }
 
@@ -310,7 +330,13 @@ fn painted_world() {
 struct Fenced(Valley);
 
 impl Climate for Fenced {
-    fn forage(&self, f: u16, cx: i32, cz: i32, sub: u32) -> rtsim_ecology::herds::climate::ForageRates {
+    fn forage(
+        &self,
+        f: u16,
+        cx: i32,
+        cz: i32,
+        sub: u32,
+    ) -> rtsim_ecology::herds::climate::ForageRates {
         self.0.forage(f, cx, cz, sub)
     }
     fn temperature(&self, f: u16, cx: i32, cz: i32, sub: u32) -> f32 {
@@ -364,7 +390,13 @@ fn s2_grid(fenced: bool) {
         });
     }
     if fenced {
-        run_alone("S2 ranges grid, valley closed outside the grid", Box::new(Fenced(v)), &rows, news, days());
+        run_alone(
+            "S2 ranges grid, valley closed outside the grid",
+            Box::new(Fenced(v)),
+            &rows,
+            news,
+            days(),
+        );
     } else {
         run_alone("S2 ranges grid (valley)", Box::new(v), &rows, news, days());
     }
@@ -418,7 +450,13 @@ fn real_worlds() {
         if news.is_empty() {
             continue;
         }
-        run_alone(dir, Box::new(HabitatClimate::new(world)), &rows, news, days());
+        run_alone(
+            dir,
+            Box::new(HabitatClimate::new(world)),
+            &rows,
+            news,
+            days(),
+        );
     }
 }
 
@@ -462,11 +500,30 @@ fn real_world_climates() {
 fn savanna_trace() {
     let world = painted(&["minecraft:savanna"]);
     let climate = HabitatClimate::new(world.clone());
-    let k = RegionKey { frame: 0, rx: 0, rz: 0 };
-    let RegionPlan::Found(mut n) = plan_region(&**world.read(), &climate, k, 3, &FoundingTunables::default()) else { panic!() };
-    n.count = std::env::var("HERDK_COUNT").ok().and_then(|v| v.parse().ok()).unwrap_or(n.count);
+    let k = RegionKey {
+        frame: 0,
+        rx: 0,
+        rz: 0,
+    };
+    let RegionPlan::Found(mut n) = plan_region(
+        &**world.read(),
+        &climate,
+        k,
+        3,
+        &FoundingTunables::default(),
+    ) else {
+        panic!()
+    };
+    n.count = std::env::var("HERDK_COUNT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(n.count);
     let c = HabitatClimate::new(world.clone());
-    println!("growth at 56: {} ; yield {:.1}", c.growth_share(56.0), rtsim_ecology::herds::habitat::range_yield(&c, 0, 0, 0));
+    println!(
+        "growth at 56: {} ; yield {:.1}",
+        c.growth_share(56.0),
+        rtsim_ecology::herds::habitat::range_yield(&c, 0, 0, 0)
+    );
     let mut h = Herds::new(1, HerdTunables::default(), Box::new(c), Tick::ZERO);
     let id = h.add_herd(n.clone(), Tick::ZERO);
     let mut legs = LegIndex::new(1_000);
@@ -479,6 +536,14 @@ fn savanna_trace() {
         let p = h.position(id, t);
         let cc = rtsim_ecology::herds::forage::cell_of(p.0, p.1);
         let f = h.forage.at(&*h.climate, &subs, (0, cc.0, cc.1), t);
-        println!("sub {s:>2}: {:?} N {} sat {:.3} pos {:?} forage here {:.0} footprint {}", n.species, h.count(id, t), f64::from(x.satisfaction) / 1000.0, p, f, h.footprint(id, t));
+        println!(
+            "sub {s:>2}: {:?} N {} sat {:.3} pos {:?} forage here {:.0} footprint {}",
+            n.species,
+            h.count(id, t),
+            f64::from(x.satisfaction) / 1000.0,
+            p,
+            f,
+            h.footprint(id, t)
+        );
     }
 }
