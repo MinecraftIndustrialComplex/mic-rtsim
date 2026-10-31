@@ -78,7 +78,9 @@ public final class Arrivals {
     /**
      * The first standable spot on the ray from {@code from} toward ({@code toX}, {@code toZ}) at one of {@code distances}
      * (tried in order, blocks from {@code from}) that is entity-ticking and at least {@code clear} blocks from every
-     * player; null when none is. A zero ray points along +x.
+     * player; null when none is. A zero ray points along +x. The target is in the plain coordinates of the level (the engine
+     * sends a settlers' source as the village's own offset, which near a toroidal frame's seam lies past it, EQC199): the ray
+     * is a straight line in them and never wraps.
      */
     public static BlockPos spotOnRay(ServerLevel level, BlockPos from, double toX, double toZ, int[] distances, double clear) {
         double dx = toX - from.getX(), dz = toZ - from.getZ();

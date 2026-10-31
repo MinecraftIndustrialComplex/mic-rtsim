@@ -3,6 +3,7 @@ package com.minecraftindustrialcomplex.mic_rtsim_ribbits;
 import com.yungnickyoung.minecraft.ribbits.data.RibbitData;
 import com.yungnickyoung.minecraft.ribbits.data.RibbitProfession;
 import com.yungnickyoung.minecraft.ribbits.data.RibbitUmbrellaType;
+import com.minecraftindustrialcomplex.mic_rtsim_ribbits.mixin.RibbitEntityAccessor;
 import com.yungnickyoung.minecraft.ribbits.entity.RibbitEntity;
 import com.yungnickyoung.minecraft.ribbits.module.RibbitInstrumentModule;
 import com.yungnickyoung.minecraft.ribbits.module.RibbitUmbrellaTypeModule;
@@ -66,6 +67,15 @@ public final class Ribbits {
         ribbit.setRibbitData(new RibbitData(profession, umbrella, RibbitInstrumentModule.NONE));
         ribbit.reassessGoals();
         return ribbit;
+    }
+
+    /**
+     * Makes a block a ribbit's home, through the {@code homePosition} accessor (PATCHES.md row 16): Ribbits' go-home goal walks
+     * a ribbit to it at night, so a settler that walked in from the edge must not keep the spot it was made at (EQC330).
+     */
+    public static void rehome(Entity e, BlockPos home) {
+        if (e instanceof RibbitEntity r)
+            ((RibbitEntityAccessor) r).mic_rtsim_ribbits$setHomePosition(home);
     }
 
     /** The profession's dictionary name, e.g. {@code ribbits:merchant}. */

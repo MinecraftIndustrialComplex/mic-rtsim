@@ -72,8 +72,11 @@ Calendar used throughout: a game day is 24,000 ticks (20 real minutes); a game y
 - **A server left alone for ten real years keeps every kind alive at a steady share,** and the number
   of renewal events per day stays flat from the second game century on (§3.6). Today a third of the herd ranges die out over that
   time with no player at all, and every pirate fleet is gone within the first game century.
-- **Nothing pops in front of the player.** An arrival is placed when its site loads, or walks in from
-  its source while a player watches; it is never conjured inside a site a player is looking at.
+- **Nothing pops in front of the player, but a boss.** An arrival is placed when its site loads, or walks in from
+  its source while a player watches; it is never conjured inside a site a player is looking at. The two
+  bosses are the exception, by Ben's choice (S9, FB-S9-3, 2026-10-30: "just spawn anyway, bonus points if you
+  have some cool effects"): a Frostmaw or an Umvuthi that is due is placed with a player beside it, and says so
+  with an effect (§2.2).
 - **Nothing new in the world.** Every body, structure and item is the pack's (D3).
 
 ### 1.2 Walkthroughs
@@ -214,14 +217,23 @@ belonging to it, and a **pressure** P:
 - **Arrival.** How it appears:
   - **OnLoad:** placed when the site's chunk next loads, only if no player is within 128 blocks of the
     site (TUNABLE). The chunk loads at view distance, so the body is simply there when it renders.
+    **As built for the bosses (S9, FB-S9-3, Ben, 2026-10-30, MZB-1272):** a Frostmaw or an Umvuthi (the
+    two bodies a player can see appear whole, asleep or on a throne) is placed when it is due, **with a
+    player beside the spot or watching**, and is not held for him (M12a held it while a player was within
+    160 blocks, for at most 6,000 ticks: MZB-280). It arrives with a short effect the server sends to every
+    client in range, built of the game's and the Mowzie's Mobs jar's own particles, sounds and camera shake
+    (D3): the Frostmaw's roar ring, ice and snow, the Umvuthi's orbs, flames, smoke, drum and roar
+    (MOWZIE.md §4.9). A grove's warriors are never held and have no effect: they appear quietly at the
+    grove's edge, 20 blocks from the fire pit on the side away from the nearest player within 256 blocks.
   - **WalkIn:** a puppet walks or flies in from the source's direction while a player is near.
   - **Abstract:** the count changes while the site is unloaded; the next load's census reconciles.
   - **Never** into a watched site: an OnLoad arrival due while a player is within 128 blocks waits for
-    the next unwatched load, or comes as a WalkIn if the kind can walk.
+    the next unwatched load, or comes as a WalkIn if the kind can walk. (The two bosses are the exception,
+    above: they are placed in view, so no den is empty for ever because a player lives beside it, §2.1 (a) 2.)
   - **A site that never unloads** (spawn chunks, a forced chunk, a chunk loader such as the MIC grid
     loader) would never see a next load. So when a wait ends with the site already loaded, the plugin
-    runs the census there and then and places the arrival if no player is within 128 blocks; if one is,
-    it tries again a game day later (one wheel entry).
+    runs the census there and then (RECOUNT, then the census's SPAWN) and places the arrival (a boss
+    in view, with its effect, as the bullet above says); there is no daily retry.
   - **A war party on the march is not an arrival** (MZ-15, MOWZIE.md §4.16). An arrival adds a member
     the site did not have; a party's members are its camp's own, out on a route that BAND_MARCH holds
     and the far view draws from about a kilometre away. So the 128-block rule does not apply to it: its
@@ -879,9 +891,20 @@ for it). §2.6 lists exactly what MOWZIE.md must change to match.
   den's yield: about 1.8 a year from a den farmed without pause. A robbed Frostmaw stays in its den
   (MOWZIE keeps it persistent) and is still a member: theft is not a loss, so the den refills only
   after its Frostmaw dies or goes missing.
-- **Umvuthana grove:** K = the census count at first load (5 to 9). Warriors refill one at a time,
-  each after `min(96, 6 x 2^P)` days, with `P += killed/K`; from the grove's edge farthest from any
-  player when loaded (WalkIn), or at the next load (OnLoad).
+- **Umvuthana grove:** K = the census count at first load (5 to 9; a grove found with no warrior and
+  no ledger row, 5). Warriors refill one at a time, each after `min(96, 6 x 2^P)` days, with
+  `P += killed/K`, **built in S9** (umvuthana.json `renewal` 6, 96, 96, no boss kind; MZB-1210): a
+  grove wiped on a day is whole again in 51, 70 and 88 days for K 5, 7 and 9 (the engine; the model
+  reads 54, 73 and 91, since the engine's first wait is read at the first death), a farmed one yields
+  5.75, 6.67 and 7.42 warriors a game year (the waits chain; §3.3's 5.8 was the one-at-a-time form),
+  and an unattended one loses a raptor pack at every plunder that finds a village with a surplus
+  (the faction's own loss, no pressure) and, with the raider's plunder mood that Ben chose for it
+  (FB-S9-2, 2026-10-30; MZB-1280), plunders about every 34 days instead of every 12 and holds 0.963,
+  0.974 and 0.979 of its K there (0.91, 0.94 and 0.95 without the mood; 1.00 where a raid finds
+  nothing worth taking). The warriors have their own pressure and the Umvuthi its own
+  (`Camp.chief_pressure`): a warrior killed presses the warriors, the Umvuthi killed presses the
+  Umvuthi, and a casualty of a war party on the road presses the warriors by kill credit. A warrior
+  appears at the grove's edge farthest from any player (never held, §2.2).
 - **The Umvuthi (Heir):** after the later of MOWZIE's cowed time and `min(192, 6 x 2^P_chief)` days
   (MZ-14 (a), Ben, 2026-10-21: the Frostmaw's base of 6, EQ-4 (b)), one warrior takes up the mask: at
   the next unwatched load the plugin removes one warrior body and places the Umvuthi on its throne, 18
@@ -894,8 +917,8 @@ for it). §2.6 lists exactly what MOWZIE.md must change to match.
   village's livestock goods (plunder), never the sim's herds. Vanilla animals are outside the sim (Y20)
   and goods are the market's, so the herd balance needs nothing from them. If a later plan lets parties
   hunt the sim's herds on the march, they go through `predate` with the refuge.
-- **What the player sees:** a cleared grove is back to 90% in about a game year (96 days in the
-  model); a farmed grove yields about 6 warriors a year, not 12; the dens as in §1.2.
+- **What the player sees:** a cleared grove is back to full in 51 to 88 days, three quarters of a
+  game year; a farmed grove yields 6 to 7 warriors a year, not 12; the dens as in §1.2.
 - **Body:** vanilla at home, puppets in parties (MOWZIE §4.9). **Cost:** as conflict factions.
 
 #### 2.4.8 Death Worms and oil nests (OG-9e)
@@ -992,7 +1015,9 @@ follow it.
    `chief_lifespan_days` 1,000,000 stays). The base is 6 (EQ-4 (b), Ben, 2026-10-21).
 2. **§4.5 and §4.10, grove warriors:** the refill at `recruits_per_day` 2 (a grove of 7 whole in 3.5
    days) becomes one warrior at a time, each after `min(96, 6 x 2^P)` days, `P += killed/K`. War-party
-   losses refill by the same rule (it is one pool).
+   losses refill by the same rule (it is one pool). **Built in S9** (MZB-1210 to MZB-1214): a war
+   party's casualties press the grove by kill credit, S7's district rule for the unclaimed, except
+   once the band's Umvuthi has fallen: the warriors that die with it are no one's loss (MZB-1256, MZB-1287).
 3. **§4.5, §4.6 and §4.10, the Umvuthi:** "6 days, scaled by boldness, after the cowed time" becomes an
    Heir: after the later of the cowed time and `min(192, 6 x 2^P_chief)` days (MZ-14 (a), Ben,
    2026-10-21), a warrior of the grove takes up the mask. §4.6's placement stays (HOME_SPAWN with the
@@ -1014,7 +1039,9 @@ follow it.
 7. **§4.9, resets:** FACTION_FOUND carries the site ledger row (pressure now, ticks until due, members
    left behind and missing), so a reset neither shortens a wait nor brings back a member that died
    away (§2.3). The ledger's times are world game time (§2.3).
-8. **§4.9 and §4.10, arrivals:** HOME_SPAWN never places into a camp with a player within 128 blocks;
+8. **§4.9 and §4.10, arrivals:** HOME_SPAWN never places into a camp with a player within 128 blocks
+   (**as built, a den's Frostmaw and an Umvuthi are placed when due with a player beside them, and
+   arrive with an effect, S9 FB-S9-3, MZB-1272; a grove's warriors are never held, MZB-1220**);
    a den's Frostmaw is OnLoad only (asleep), a grove's warriors may WalkIn from the far edge. A camp
    that never unloads gets its census and arrival when the wait ends (§2.2). A war party on the march
    is not an arrival (§2.2, MZ-15): its bodies come where BAND_MARCH puts them as they enter the
@@ -1168,7 +1195,7 @@ side falls as P rises, so there is one root (`run.py: closed_form`, bisection). 
 | Frostmaw den (EQ-4 (b), Ben 2026-10-21: MOWZIE's base 6 with pressure) | 6, 192, 1 | 3.11 | 54 | **1.79** | 1.83 |
 | Frostmaw den, base 24 (EQ-4 (a), not chosen) | 24, 192, 1 | 1.99 | 97 | 0.99 | 1.02 |
 | Frostmaw den, MOWZIE's draft (6 days flat, EQ-4 (c)) | 6, 6, 1 | none | 6 to 8 | 12 to 16 | 16.0 |
-| Umvuthana grove, per warrior | 6, 96, 7 | 1.27 | 16.5 | **5.8** warriors | 6.05 (flat 6 days: 12.1) |
+| Umvuthana grove, per warrior | 6, 96, 7 | 1.27 | 16.5 | **5.8** warriors one at a time; **6.67** chained (S9: the engine, a visitor every 2 days; K 5 5.75, K 9 7.42) | 6.05 (flat 6 days: 12.1) |
 | Village settlers, pairs | 16, 192, 12 (a pair adds 2/12) | 0.84 | 30.6 | **3.1** pairs | 6.6 villagers |
 | Den with H 48 (base 24) | 24, 192, 1 | 1.55 | 72 | 1.33 | 1.35 |
 | Den with H 192 (base 24) | 24, 192, 1 | 2.52 | 140 | 0.69 | 0.72 |
@@ -1302,7 +1329,7 @@ roamer explores and kills everything it meets):
 |---|---|---|---|---|
 | Dragons | 24 days (the 20-day respawn) | 48 | 48 [48, 72] | 1.01 |
 | Frostmaw dens (base 6, EQ-4 (b); base 24 gave 72 and 72 [72, 78]) | never | 24 | 24 [24, 24] | 1.00 |
-| Umvuthana groves | never | 48 | 96 [90, 96] | 1.00 |
+| Umvuthana groves | never | 34 to 54 (the model, K 5 to 9) | 51 to 88 by K (S9, K 5, 7, 9; the model 54, 73, 91) | 1.00; an unattended grove holds 0.96 to 0.98 of K where its plunders lose their pack (with its plunder mood, FB-S9-2; 0.91 to 0.95 without)s |
 | Oil nests | never | 48 | 72 [48, 72] | 1.00 |
 | Camps | 48 days (the linear refill) | 48 | 48 [48, 72] | 1.00 |
 | Pirate fleets | never | 48 | 72 [48, 150] | 0.99 |
@@ -1399,7 +1426,7 @@ GameTest lock.
 | S7 | Conflict: pressure on recruits, break and refound; when parties go out is `CONFLICT-LIFE.md`'s build plan (EQ-5 rejected the gate). **Built 2026-10-30** (`crates/rtsim-conflict/src/engine/strain.rs`, `engine.rs`, `culture.rs`, `persist.rs` (pages RTCE, meta 13), `crates/rtsim-jni` (test order 41), `rtsim-cli`'s `camps` census and the harness of `sim::equilibrium`; core's `conflict/Outposts`, the reporter of Ben's FB-5 (b): vanilla pillager outposts as raider camps; `docs/boundary.md` §9.7; docs/overnight-choices-equilibrium.md EQC200 to EQC299, with the measured bands in EQC270). Ben's FB-1 (a): half-life 192 days; FB-2 (a): an unclaimed death at a player's district is his; FB-4: no news; FB-6 (a), FB-7 (a) and FB-9 (a) (2026-10-30); FB-8: the raiders' plunder wait of about 48 days depends on the chief's temperament and the camp's recent raids (the plunder mood, EQC285 to EQC290) | Rust `crates/rtsim-conflict/tests/strain.rs` (44), `kill_all_camps` (90% back in a median of 51 days over 30 seeds, 48 to 69), `farmed_camp_breaks_and_refounds` (0.23 to 0.30 breaks a year), `farmed_camps_do_not_break_at_a_half_life_of_96`, `no_player_no_pressure_for_60_years`, the wanderer and wipe tests, `a_test_order_slays_a_camp`; GameTests `crates/rtsim-conflict/tests/mood.rs` (12), GameTests `PoolCampGameTests` (a reset keeps the pressure and the break; a broken camp sends no party) and `OutpostGameTests` (eight: found once, the module switch, existing worlds, the kin rule, the envoy, a farmed outpost breaks and refounds, vanilla's raiders left alone, uninstall) | S0 |
 | S8 | Ships: hires and cap, refit pressure, EV lanes. **Built 2026-10-22** (`crates/rtsim-ships/src/engine.rs`, docs/overnight-choices-ships.md T32 to T39) | `kill_all_pirates` (90% within 180 days), `crew_pool_is_bounded`, `a_haven_with_no_lane_worth_hunting_rests`, `pirates_survive_unattended_1000_years` (hunting havens inside their §3.6 band; the engine holds the floor and sits at 1.00, T37) (`crates/rtsim-ships/tests/equilibrium.rs`) | S0 |
 | S8b | Havens and ports that rise and fall (§2.4.6a): the toll, starving, navy assaults, shut down and refound, port raids, ports closed by blockade. **Built 2026-10-22 and 23**: S8b-1 (rules 1, 2, 4 and 5), S8b-2 (rule 3), S8b-3 (rule 6) and rule 8's PortRaided and HavenFell (PC10, PC45) on main; S8b-4 (rule 7) and its news, Blockade, PortClosed and PortReopened (PC100), on branch `ports/close` (`docs/choices-ports.md`) | `unattended_havens_rise_and_fall` (many worlds: havens neither all die nor fill every site; pirates still hunt), `a_starving_haven_shuts_and_refounds`, `a_navy_breaks_a_weak_haven`, `a_port_raid_conserves_goods`, `a_port_raid_is_news`, `a_blockaded_port_closes_and_reopens`, `a_port_change_is_news`, `blockade_min_open_sweep` | S8 |
-| S9 | MOWZIE on the shared rule (in its plan, §2.6) | `kill_all_dens`, `kill_all_groves`, `farmed_den_yields_closed_form`, GameTests `resetDoesNotMintAFrostmaw`, `aLuredFrostmawIsAPlayerLoss`, `aStrayFrostmawsDeathRaisesItsDensPressure`, `aPetOrTrapKillAtADenIsAPlayerLoss`, `anUmvuthiHeirTakesAWarrior` | S0, S3, MOWZIE |
+| S9 | MOWZIE on the shared rule (in its plan, §2.6). **Built 2026-10-30** (`crates/rtsim-conflict`, docs/choices-mowzie-build.md "M12 S9", MZB-1200 to MZB-1271): the grove's warriors on the renewal rule, the Umvuthi's own pressure, march casualties, `found_cap`, the second pressure in the ledger row (SITE_STATE 64 bytes), test order 42 | `kill_all_dens`, `kill_all_groves`, `farmed_den_yields_closed_form`, `farmed_grove_yields_the_chained_rate`, `unattended_groves_hold_their_band`, `long_horizon_mowzie_with_kills` (`crates/rtsim-cli/src/sim/equilibrium.rs`), GameTests `resetDoesNotMintAFrostmaw`, `aLuredFrostmawIsAPlayerLoss`, `aStrayFrostmawsDeathRaisesItsDensPressure`, `aPetsKillAtADenIsAPlayerLoss`, `anUmvuthiHeirTakesAWarrior` and the grove's (`neoforge/README.md`) | S0, S3, MOWZIE |
 | S10 | Oil nests on the shared rule (with OG-9e's build). **Built 2026-10-22** (`crates/rtsim-ecology/src/nest.rs`, docs/choices-oilgate.md OGC70 onward) | `kill_all_nests` (regrow only while drilled), `asleep_nest_holds` (`crates/rtsim-ecology/tests/nests.rs`) | S0, OG-9e |
 | S11 | The long-horizon suite | `long_horizon_stability_with_kills` (every module, 60 game years, the roamer script, every kind inside its §3.6 band), `kill_all_<kind>` for every kind above in one place, `who_is_alive_soak` (262,980 game days in the host at max: every kind's census flat by century, state bytes flat, renewal events per day flat; nightly; its length is the engine's speed, about 45 minutes if the host runs 100 game days a second) | all |
 
@@ -1472,7 +1499,7 @@ boss loot, how fights feel, an interface another plan must follow).
 | A human village's K is every bed inside its box, capped at 32 | Ben, 2026-10-29 (FB-2 a): the same beds vanilla breeds into; a cap keeps a modded mega-village from owing thirty settlers. |
 | A Ribbit refill is a merchant when the village has none, else a profession by the order's hash | Ben, 2026-10-29 (FB-4 b): a killed-out village keeps a trader, and the choice is a function of the order so a replay makes the same Ribbit. |
 | The Ribbit refill takes no prosperity test (a house still does) | The S6 checks: with the test on, a wiped Ribbit world never reached 90% of the control in 700 days; off, it did in 122 (EQC184). |
-| A site is watched when a player is within 128 blocks | A chunk normally loads at the server's view distance, past 128 blocks, so a body placed as it loads is there before it can be seen; a player within 128 blocks at a load (a login or a teleport) could see it appear, so the arrival waits. A war party on the march is not an arrival (MZ-15): its bodies come where its march puts them, stack by stack at the entity-ticking edge (128 to 144 blocks off along an axis at a simulation distance of 8, 160 to 176 at 10), having walked toward the player from about a kilometre in the far view, and only the Umvuthi, at the rear, can be seen to appear (128 to 132 blocks off at 8); one that reaches a watched target bodiless walks in along its route from the ticking edge. |
+| A site is watched when a player is within 128 blocks | A chunk normally loads at the server's view distance, past 128 blocks, so a body placed as it loads is there before it can be seen; a player within 128 blocks at a load (a login or a teleport) could see it appear, so the arrival waits. The bosses (a Frostmaw, an Umvuthi) do not wait: Ben's FB-S9-3 (2026-10-30) has them placed when due with a player beside them, with an effect (S9, MZB-1272; they were held within 160 blocks for at most 6,000 ticks, MZB-280); a grove's warriors are never held. A war party on the march is not an arrival (MZ-15): its bodies come where its march puts them, stack by stack at the entity-ticking edge (128 to 144 blocks off along an axis at a simulation distance of 8, 160 to 176 at 10), having walked toward the player from about a kilometre in the far view, and only the Umvuthi, at the rear, can be seen to appear (128 to 132 blocks off at 8); one that reaches a watched target bodiless walks in along its route from the ticking edge. |
 | Camps break at pressure 2 with the pool under 10%, and refound after `min(384, 48 x 2^P)` days with a quarter of the cap | A camp the player keeps emptying goes quiet for months instead of feeding him warriors for ever; only players break camps. |
 | A pool camp's pressure halves in 192 days, not 96 | Ben, 2026-10-30 (FB-1 (a)): at 96 the farmer's P settles under 2 and no camp ever breaks (EQC202, EQC270). The recruit rate has a floor of one a day per 96 (`recruit_cap_days`), so no pressure empties a camp for ever. |
 | An unclaimed death of a camp's party member at a player's district is the player's loss; one on the road is not | Ben, 2026-10-30 (FB-2 (a)): the district's turrets, traps and walls are the player's; the tunable `district_unclaimed_is_players` switches it. |

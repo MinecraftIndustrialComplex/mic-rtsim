@@ -44,11 +44,22 @@ public final class Residents {
         String choose(ServerLevel level, VillageRegistry villages, Village village, long op);
     }
 
+    /**
+     * Makes a block a resident's home (slice S6 review, EQC330): the plugin's hook for a type whose own goals pull it home at
+     * night ({@code ribbits:ribbit}'s go-home goal). A settler walks in from 96 to 176 blocks out and is made there, which is
+     * where such a type takes its home from; it is homed at the point it walks to, and at the village's meeting point when the
+     * walk ends.
+     */
+    public interface Rehomer {
+        void rehome(Entity e, BlockPos home);
+    }
+
     // Copy on write: registration is rare (mod construction, setup), lookups are on every damage event,
     // interaction and census entity, so they read a published immutable map with no lock.
     private static volatile Map<EntityType<?>, Kind> KINDS = Map.of();
     private static volatile Map<String, Factory> FACTORIES = Map.of();
     private static volatile Map<String, ProfessionChooser> CHOOSERS = Map.of();
+    private static volatile Map<EntityType<?>, Rehomer> REHOMERS = Map.of();
 
     static {
         register(EntityType.VILLAGER, new Kind(
@@ -98,6 +109,19 @@ public final class Residents {
         CHOOSERS = Map.copyOf(m);
     }
 
+    public static synchronized void registerRehomer(EntityType<?> type, Rehomer rehomer) {
+        Map<EntityType<?>, Rehomer> m = new HashMap<>(REHOMERS);
+        m.put(type, rehomer);
+        REHOMERS = Map.copyOf(m);
+    }
+
+    /** Homes a resident at {@code home} when its type has a hook for it (EQC330); nothing otherwise. */
+    public static void rehome(Entity e, BlockPos home) {
+        Rehomer r = REHOMERS.get(e.getType());
+        if (r != null)
+            r.rehome(e, home);
+    }
+
     /** The profession a renewal arrival of this body kind takes, or null when the plugin registered no chooser. */
     public static String chooseProfession(String bodyKind, ServerLevel level, VillageRegistry villages, Village village, long op) {
         ProfessionChooser c = CHOOSERS.get(bodyKind);
@@ -123,11 +147,21 @@ public final class Residents {
         }
     }
 
-    /** The village a resident belongs to: its home (or meeting point) if that is in a village, else where it stands. */
+    /**
+     * The village a resident belongs to: the one it walks to if it is a settler on the road (outside the village's box, and
+     * near another village's perhaps: EQC178, EQC333), else its home (or meeting point) if that is in a village, else where it
+     * stands.
+     */
     public static Village villageOf(VillageRegistry villages, Entity e) {
         Kind k = kind(e);
         if (k == null)
             return null;
+        if (!villages.walkers.isEmpty()) {
+            VillageRegistry.Walker w = villages.walkers.get(e.getUUID());
+            Village walking = w == null ? null : villages.get(w.village);
+            if (walking != null)
+                return walking;
+        }
         BlockPos home = null;
         try {
             home = k.home().apply(e);

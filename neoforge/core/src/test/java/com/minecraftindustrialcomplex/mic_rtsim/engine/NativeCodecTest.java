@@ -496,6 +496,25 @@ class NativeCodecTest {
         assertEquals(bytes.length, r.b.position());
     }
 
+    /** CONFLICT_SEND (test order 42), pinned against orders.rs OP_CONFLICT_SEND: the faction, the kind, the frame, the block. */
+    @Test
+    void conflictSendEncodesEveryFieldInOrder() {
+        byte[] bytes = new NativeCodec.Orders().conflictSend(0xC0B1_0001_1234_5678L, 3, 0, -1_204, 3_377).toBytes();
+        Reader r = new Reader(bytes);
+        int start = r.b.position();
+        int end = r.header(NativeCodec.CONFLICT_SEND);
+        assertEquals(42, NativeCodec.CONFLICT_SEND, "the agreed opcode");
+        assertEquals(0xC0B1_0001_1234_5678L, r.u64(), "faction");
+        assertEquals(3, r.b.get(), "kind: an index into the engine's party kinds");
+        assertEquals(0, r.b.get(), "reserved");
+        assertEquals(0, r.u16(), "frame");
+        assertEquals(-1_204, r.u32(), "x");
+        assertEquals(3_377, r.u32(), "z");
+        assertEquals(end, r.b.position());
+        assertEquals(8 + 8 + 1 + 1 + 2 + 4 + 4, end - start);
+        assertEquals(bytes.length, r.b.position());
+    }
+
     /** One received-log entry as rtsim-jni writes it. */
     private static byte[] entry(long handover, long obsSeq, int flags, byte[] record) {
         ByteBuffer b = ByteBuffer.allocate(NativeCodec.RECEIVED_HEADER + record.length).order(ByteOrder.LITTLE_ENDIAN);

@@ -1240,11 +1240,11 @@ public final class MowzieGameTests {
     /**
      * A refilled pool is spawned at the next census (§7 test 5). A den and a grove 12 chunks apart, one stray
      * warrior in the grove, a player 40 blocks east of the den (so also the grove's nearest, 150 blocks from it).
-     * The den's SPAWN (chief, crystal) is held (one held line, no answer, no Frostmaw after 40 ticks). The
-     * grove's ADOPT and SPAWN are both DONE: the new warrior is born 20 (+-1.5) blocks from the centre on the
-     * side away from the player, restricted 25 and persistence-required; a second SPAWN for its slot is
-     * NOTHING. With the player gone the den's line is DONE: a sleeping Frostmaw with its crystal at the spot,
-     * restricted 8, tagged (faction, 0, 1).
+     * The den's SPAWN (chief, crystal) is DONE at once, not held for the player (S9, FB-S9-3, Ben, 2026-10-30; it
+     * was held while a player stood within 160 blocks): a sleeping Frostmaw with its crystal at the spot, restricted
+     * 8, tagged (faction, 0, 1), nothing held. The grove's ADOPT and SPAWN are both DONE: the new warrior is born
+     * 20 (+-1.5) blocks from the centre on the side away from the player, restricted 25 and persistence-required; a
+     * second SPAWN for its slot is NOTHING.
      */
     @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "mowzie_refill", skyAccess = true)
     public static void aRefilledPoolIsSpawnedAtTheNextCensus(GameTestHelper helper) {
@@ -1293,13 +1293,15 @@ public final class MowzieGameTests {
                             CampLine.of(0, 1, MowzieKit.WARRIOR, ADOPT, 0, stray[0].getUUID()),
                             CampLine.of(1, 1, MowzieKit.WARRIOR, SPAWN, 0)));
                 })
-                .thenWaitUntil(waits.logic(() -> MowzieKit.answered(grove.faction, op[1], 2)))
+                .thenWaitUntil(waits.logic(() -> {
+                    MowzieKit.answered(grove.faction, op[1], 2);
+                    MowzieKit.answered(den.faction, op[0], 1);
+                }))
                 .thenExecute(() -> {
                     MowzieKit.allOutcomes("the grove's ADOPT and SPAWN", ConflictKit.outcomes(grove.faction, op[1]), DONE);
-                    check("the den's SPAWN is held: one held line (" + MowzieKit.camps().heldLines() + ")", MowzieKit.camps().heldLines() == 1);
-                    check("with no answer yet", ConflictKit.outcomes(den.faction, op[0]).isEmpty());
-                    check("and no Frostmaw", MowzieKit.held(den.faction).isEmpty()
-                            && level.getEntitiesOfClass(EntityFrostmaw.class, den.area()).isEmpty());
+                    // S9, FB-S9-3 (Ben, 2026-10-30): a boss that is due is placed with a player 40 blocks off, not held for him
+                    MowzieKit.allOutcomes("the den's SPAWN, with a player 40 blocks off", ConflictKit.outcomes(den.faction, op[0]), DONE);
+                    check("nothing is held (" + MowzieKit.camps().heldLines() + ")", MowzieKit.camps().heldLines() == 0);
                     List<Entity> h0 = MowzieKit.held(grove.faction, 0, 1), h1 = MowzieKit.held(grove.faction, 1, 1);
                     check("slot 0 is the stray adopted, slot 1 a new warrior", h0.size() == 1 && h0.get(0) == stray[0] && h1.size() == 1);
                     check("seen at the end of its tick", born[0] != null);
@@ -1317,18 +1319,6 @@ public final class MowzieGameTests {
                 .thenExecute(() -> {
                     MowzieKit.allOutcomes("a second SPAWN for the slot", ConflictKit.outcomes(grove.faction, op[2]), NOTHING);
                     check("still one body in slot 1", MowzieKit.held(grove.faction, 1, 1).size() == 1 && MowzieKit.held(grove.faction).size() == 2);
-                })
-                .thenIdle(40)
-                .thenExecute(() -> {
-                    check("40 ticks later the den's line is still held", MowzieKit.camps().heldLines() == 1
-                            && ConflictKit.outcomes(den.faction, op[0]).isEmpty());
-                    check("and there is no Frostmaw", MowzieKit.held(den.faction).isEmpty()
-                            && level.getEntitiesOfClass(EntityFrostmaw.class, den.area()).isEmpty());
-                    FakePlayers.remove(player[0]);
-                })
-                .thenWaitUntil(waits.logic(() -> MowzieKit.answered(den.faction, op[0], 1)))
-                .thenExecute(() -> {
-                    MowzieKit.allOutcomes("the den's SPAWN once the player is gone", ConflictKit.outcomes(den.faction, op[0]), DONE);
                     List<Entity> h = MowzieKit.held(den.faction, 0, 1);
                     check("a Frostmaw is the den's (" + h.size() + ")", h.size() == 1 && h.get(0) instanceof EntityFrostmaw);
                     EntityFrostmaw f = (EntityFrostmaw) h.get(0);
@@ -1338,65 +1328,15 @@ public final class MowzieGameTests {
                             && f.getRestrictCenter().equals(BlockPos.containing(den.spot)));
                     check("persistence-required", f.isPersistenceRequired());
                     check("no held line left", MowzieKit.camps().heldLines() == 0);
-                    record(test, "refill", "the grove's spawn at once, the den's Frostmaw once the player left");
+                    record(test, "refill", "the grove's spawn at once, away from the player; the den's Frostmaw at once too, the player 40 blocks off");
                 })
                 .thenSucceed();
     }
 
-    // ---- 5: the hold's limit ---------------------------------------------------------------------
-
-    /**
-     * A Frostmaw's SPAWN with a player staying within 160 blocks of the den is placed at {@link Camps#HOLD_MAX}
-     * and not before: the line is DONE no sooner than HOLD_MAX ticks after it was sent (2 ticks of slack for the
-     * tick it was applied in) and within 40 ticks after that, the Frostmaw standing at the spot.
-     */
-    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "mowzie_hold_max", skyAccess = true)
-    public static void aHeldFrostmawIsPlacedAfterHoldMaxWithAPlayerStillNear(GameTestHelper helper) {
-        ChunkWait waits = ChunkWait.of(helper, 9000);
-        String test = "aHeldFrostmawIsPlacedAfterHoldMaxWithAPlayerStillNear";
-        Far far = new Far(helper, test);
-        ServerLevel level = far.level;
-        Den den = new Den(far, far.k, far.z0);
-        ServerPlayer[] player = new ServerPlayer[1];
-        long[] sent = new long[1], placed = new long[1], op = new long[1], heldAt = new long[1];
-
-        MowzieKit.seq(helper)
-                .thenExecute(den::force)
-                .thenWaitUntil(waits.chunks(far.ready()))
-                .thenExecute(() -> {
-                    den.lay().declare();
-                    player[0] = FakePlayers.add(level, den.spot.add(40, 1, 0), "mowzie-hold");
-                    ConflictKit.onEnd(helper, () -> FakePlayers.remove(player[0]));
-                    MowzieKit.everyTick(helper, () -> {
-                        // The hold starts when the camp holds the line (MZB-663), not when the test sent it: the
-                        // line may wait in the engine's queue or the session's step first.
-                        if (heldAt[0] == 0 && MowzieKit.camps().heldLines() > 0)
-                            heldAt[0] = level.getGameTime();
-                        if (placed[0] == 0 && !MowzieKit.held(den.faction, 0, 1).isEmpty())
-                            placed[0] = level.getGameTime();
-                    });
-                })
-                .thenWaitUntil(waits.logic(() -> check("census 1", MowzieKit.censusCount(den.faction) >= 1)))
-                .thenExecute(() -> {
-                    sent[0] = level.getGameTime();
-                    op[0] = MowzieKit.reconcile(den.faction, MowzieKit.epoch(MowzieKit.census(den.faction, 1)),
-                            List.of(CampLine.of(0, 1, MowzieKit.FROSTMAW, SPAWN, CHIEF | CRYSTAL)));
-                })
-                .thenWaitUntil(waits.logic(() -> MowzieKit.answered(den.faction, op[0], 1)))
-                .thenExecute(() -> {
-                    check("the camp held the line (" + heldAt[0] + ")", heldAt[0] != 0 && heldAt[0] >= sent[0]);
-                    long waited = placed[0] - heldAt[0];
-                    record(test, "hold", "sent at " + sent[0] + ", held at " + heldAt[0] + ", placed at " + placed[0] + " (" + waited
-                            + " ticks held), HOLD_MAX " + Camps.HOLD_MAX);
-                    MowzieKit.allOutcomes("the held SPAWN", ConflictKit.outcomes(den.faction, op[0]), DONE);
-                    check("placed no sooner than HOLD_MAX (" + waited + ")", placed[0] != 0 && waited >= Camps.HOLD_MAX - 2);
-                    check("and within 40 ticks after it (" + waited + ")", waited <= Camps.HOLD_MAX + 40);
-                    check("the player was near all along", player[0].distanceToSqr(den.spot) < DenKind.HOLD_RANGE * DenKind.HOLD_RANGE);
-                    List<Entity> h = MowzieKit.held(den.faction, 0, 1);
-                    check("the Frostmaw stands at the spot", h.size() == 1 && h.get(0).position().distanceTo(den.spot) < 1.5);
-                })
-                .thenSucceed();
-    }
+    // ---- 5: the hold's limit (removed at S9) -----------------------------------------------------
+    // A Frostmaw is no longer held for a player (S9, FB-S9-3): `aDueFrostmawIsPlacedAtOnceBesideAPlayer` in
+    // BossArrivalGameTests is the new test 5, and the core's HOLD_MAX limit is tested on the holding grove kind
+    // (UmvuthiGameTests.aHoldingKindsChiefSpawnWaitsForThePlayerToLeaveOrSixThousandTicks).
 
     // ---- 6: a cold load --------------------------------------------------------------------------
 
@@ -1590,60 +1530,10 @@ public final class MowzieGameTests {
                 .thenSucceed();
     }
 
-    // ---- 8: a held spawn when the den goes out ---------------------------------------------------
-
-    /**
-     * A held SPAWN is answered STALE when its den goes out (§7 test 22). A Frostmaw SPAWN held by a player,
-     * then the den's chunks released: CAMP_OUT, the line STALE, nothing held. With the player gone and the den
-     * forced again: census 2, no held line, and no Frostmaw (the stale line is not played later).
-     */
-    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "mowzie_held_out", skyAccess = true)
-    public static void aHeldSpawnIsAnsweredStaleWhenTheDenGoesOut(GameTestHelper helper) {
-        ChunkWait waits = ChunkWait.of(helper, 2500);
-        String test = "aHeldSpawnIsAnsweredStaleWhenTheDenGoesOut";
-        Far far = new Far(helper, test);
-        ServerLevel level = far.level;
-        Den den = new Den(far, far.k, far.z0);
-        ServerPlayer[] player = new ServerPlayer[1];
-        long[] op = new long[1];
-
-        MowzieKit.seq(helper)
-                .thenExecute(den::force)
-                .thenWaitUntil(waits.chunks(far.ready()))
-                .thenExecute(() -> {
-                    den.lay().declare();
-                    player[0] = FakePlayers.add(level, den.spot.add(40, 1, 0), "mowzie-held-out");
-                    ConflictKit.onEnd(helper, () -> FakePlayers.remove(player[0]));
-                })
-                .thenWaitUntil(waits.logic(() -> check("census 1", MowzieKit.censusCount(den.faction) >= 1)))
-                .thenExecute(() -> op[0] = MowzieKit.reconcile(den.faction, MowzieKit.epoch(MowzieKit.census(den.faction, 1)),
-                        List.of(CampLine.of(0, 1, MowzieKit.FROSTMAW, SPAWN, CHIEF | CRYSTAL))))
-                .thenIdle(20)
-                .thenExecute(() -> {
-                    check("the line is held (" + MowzieKit.camps().heldLines() + ")", MowzieKit.camps().heldLines() == 1);
-                    check("with no answer", ConflictKit.outcomes(den.faction, op[0]).isEmpty());
-                    den.release();
-                })
-                .thenWaitUntil(waits.logic(() -> check("CAMP_OUT", ConflictKit.campOuts(den.faction).size() == 1)))
-                .thenWaitUntil(waits.logic(() -> MowzieKit.answered(den.faction, op[0], 1)))
-                .thenExecute(() -> {
-                    MowzieKit.allOutcomes("the held SPAWN when the den went out", ConflictKit.outcomes(den.faction, op[0]), STALE);
-                    check("nothing is held now", MowzieKit.camps().heldLines() == 0);
-                    FakePlayers.remove(player[0]);
-                    den.force();
-                })
-                .thenWaitUntil(waits.chunks(far.ready()))
-                .thenWaitUntil(waits.logic(() -> check("census 2", MowzieKit.censusCount(den.faction) >= 2)))
-                .thenIdle(20)
-                .thenExecute(() -> {
-                    check("no held line", MowzieKit.camps().heldLines() == 0);
-                    check("no Frostmaw", MowzieKit.held(den.faction).isEmpty()
-                            && level.getEntitiesOfClass(EntityFrostmaw.class, den.area()).isEmpty());
-                    check("the line has one answer, STALE", ConflictKit.outcomes(den.faction, op[0]).equals(Map.of(0, STALE)));
-                    record(test, "held then out", "the held SPAWN was STALE at CAMP_OUT and was not played at the next census");
-                })
-                .thenSucceed();
-    }
+    // ---- 8: a held spawn when the den goes out (removed at S9) -----------------------------------
+    // No Frostmaw SPAWN is held for a player now (S9, FB-S9-3); "held lines answered STALE when the camp goes out" is
+    // tested on the holding grove kind (UmvuthiGameTests.anEpochsEndAnswersEveryHeldLineStale), and the held census's
+    // SPAWN is test 21's (aSpawnWaitsWhileACensusIsHeldForAHiddenChunkAndIsStaleAfterIt).
 
     // ---- 9: deaths --------------------------------------------------------------------------------
 

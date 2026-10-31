@@ -339,7 +339,7 @@ start at 16.
 | 0x8003 | DESPAWN_GROUP | 0 | 16 u64 agent, 24 u32 epoch, 28 u32 reason | 32 | DEMATERIALIZED |
 | 0x8004 | STEER_GROUP | 0 | 16 u64 agent, 24 u32 epoch, 28 f32 speed, 32 f64 x, 40 f64 y, 48 f64 z | 56 | |
 | 0x8005 | TRANSFER_TO_CONTAINER | 0 | 16 u64 opId, 24 u32 dimension, 28 u32 item, 32 i32 x, 36 i32 y, 40 i32 z, 44 i32 count | 48 | COMMAND_RESULT |
-| 0x8006 | SITE_STATE | 0 | 16 u64 key (the module's site key), 24 u32 kind (1 camp, 2 lair, 3 nest), 28 u32 flags (1 short, 2 empty, 4 broken, 8 waiting), 32 f32 P now, 36 u16 K, 38 u16 count (members at home), 40 u16 away (members out), 42 u16 n, 44 u16 l, 46 u16 m, 48 u64 wait left now (kind units: game ticks, nests thousandths of a drilling day; 0 unless waiting), 56 (n + l + m) x (u64 most, u64 least): home, then left behind, then missing | 56 + 16(n + l + m) | |
+| 0x8006 | SITE_STATE | 0 | 16 u64 key (the module's site key), 24 u32 kind (1 camp, 2 lair, 3 nest), 28 u32 flags (1 short, 2 empty, 4 broken, 8 waiting), 32 f32 P now (a camp's members'), 36 u16 K, 38 u16 count (members at home), 40 u16 away (members out), 42 u16 n, 44 u16 l, 46 u16 m, 48 u64 wait left now (kind units: game ticks, nests thousandths of a drilling day; 0 unless waiting), 56 f32 P2 now (a camp with a chief of its own, a grove's Umvuthi: the chief's pressure; 0 for every other site; slice S9, MZB-1231), 60 u32 reserved, 64 (n + l + m) x (u64 most, u64 least): home, then left behind, then missing | 64 + 16(n + l + m) | |
 | 0x8010 to 0x8015 | phase 1 | | §4.2 | | |
 
 **SPAWN_GROUP member block** (24 bytes, then its items): 0 u32 member index, 4 u32 itemCount, 8 f32
@@ -383,11 +383,11 @@ and NEST_FOUND at 48 (§6.3). Always 40 bytes, plus 16 a UUID (`SiteLedger.write
 |---|---|
 | +0 | u32 flags: 1 ROW (a row follows), 2 GAP (the reinstall guard reset the sim since the row was written), 4 WAITING (the wait left is set), 8 EXISTED (no row, but the plugin knows the site stood before this engine life; nests only, since lairs and camps have LATE) |
 | +4 | u16 K, +6 u16 count |
-| +8 | f32 P as of the stamp |
+| +8 | f32 P as of the stamp (a camp's members') |
 | +12 | u16 away, +14 u16 n |
 | +16 | u64 wait left as of the stamp (kind units) |
 | +24 | u64 elapsed: game ticks since the stamp, 0 when the world's clock is below it |
-| +32 | u16 l, +34 u16 m, +36 u32 reserved |
+| +32 | u16 l, +34 u16 m, +36 f32 P2 as of the stamp (a grove's Umvuthi's pressure; 0 for every other site and in a tail written before S9, MZB-1231) |
 | +40 | (n + l + m) x (u64 most, u64 least): home, left behind, missing |
 
 - Without a row it is 40 zero bytes, EXISTED aside. The engine decodes it to the record's end: the
@@ -771,9 +771,13 @@ killing).
   box (`api/Arrivals.WATCH_BLOCKS`): it waits (retrying every 40 ticks, dropped as FAILED after 192 days),
   or, with WALK_IN, spawns at the first standable, entity-ticking point on the ray from the meeting
   point toward (x, z) 176, 160, 144, 128, 112 or 96 blocks out that is at least 128 blocks from every
-  player, and walks in (`village/Walkers`: a hop of 24 blocks toward the meeting point every 40 ticks;
+  player (x and z are the village's plain offset, so near a toroidal seam the point lies past it, not
+  at its canonical image: EQC199), is homed at the meeting point (a plugin's rehome hook, EQC330) and
+  walks in (`village/Walkers`: a hop of 24 blocks toward the meeting point every 40 ticks;
   done within 12 blocks; put at the meeting point at once when nobody can see it, and at its deadline of
-  6,000 ticks). Nobody watching: placed beside the meeting point as an AT_VILLAGE body is. A human
+  6,000 ticks; one whose chunk is not loaded stays on the list until it loads, and a death or a discard
+  takes it off, EQC331; a resent order answered DUPLICATE_OP enters a walker nothing lists, EQC332).
+  Nobody watching: placed beside the meeting point as an AT_VILLAGE body is. A human
   body (`minecraft:villager`, the type of the biome, an adult, no profession) never takes more than the
   free beds (a fresh complete census, `NOT_FREE` when there is none; a village whose reach is still
   loading is waited for 600 ticks, then placed without the clamp); a Ribbit's profession is the Ribbits
@@ -2511,7 +2515,7 @@ footprint (MZB-1015). CHIEF_BODY is written into a chief's body (health, crystal
 - **Pages.** The conflict's pages are `RTCE` (magic `RTCE`, was `RTCD`) with meta version 13: a faction row ends with an
   optional strain (`put_opt`: pressure, `broken` as since and due ticks, the stamp, the check tick), the wheel's events may
   be tag 12 `Ev::Strain` (a break check or a refound), and the stats end with `breaks`, `refounds` and `break_deferrals`. An
-  older page is refused by name ("conflict save format RTCD, this build reads RTCE").
+  older page is refused by name ("conflict save format RTCD, this build reads RTCE"). (Since S9, §9.8: `RTCF` and meta 14.)
   The faction row also ends with the plunder mood (FB-8, EQC287), an option after the strain: the camp's grief and spoils, each an
   f32 and the day it was last bumped; `Some` only for a culture with a `plunder_mood` block (the raider).
 - **Archive kinds** `conflict.broken` and `conflict.refounded`, appended after the fifteen existing `conflict.*` kinds (kind
@@ -2528,6 +2532,33 @@ footprint (MZB-1015). CHIEF_BODY is written into a chief's body (health, crystal
   not a sim puppet, inside the start's box widened by `outpostKinMargin` (24) blocks. Reported once per session and again at
   the conflict module's switch-on edge; nothing is reported while the module or `outpostsJoin` is off. Config keys
   `outpostsJoin`, `outpostsJoinExisting`, `outpostKinMargin` in the `[conflict]` group.
+
+### 9.8 The Frostmaw den and the Umvuthana grove on the shared renewal rule (EQUILIBRIUM.md slice S9; records MZB-1200 to MZB-1271 in `docs/choices-mowzie-build.md`)
+
+**No new record kind, flag, wheel tag or archive kind.** What changes on the wire:
+
+- **SITE_STATE grows eight bytes and the found tail uses its reserved word** (§2.4, §2.5; MZB-1231): `p2`, the second
+  pressure (SITE_STATE +56, the tail +36), is a grove's Umvuthi's pressure; `p` is its warriors'. Every other site sends 0.
+  The Java ledger row keeps its six longs and packs `p2` in thousandths (a saturating u16) into bits 48 to 63 of the long
+  that holds n, l and m; an older row reads 0.
+- **Pages.** The conflict's pages are `RTCF` (magic `RTCF`, was `RTCE`) with meta version 14: a camp ends with its chief's
+  pressure (an f32 and the day it stands at) after its recount, and the stats carry `grove_arrivals` after `arrivals`. An older
+  page is refused by name ("conflict save format RTCE, this build reads RTCF").
+- **The grove's warriors are arrivals** (MZB-1210 to MZB-1216): umvuthana.json has `renewal` 6, 96, 96 (no boss kind),
+  `recruits_per_day` 0 and `found_cap` 5, so the engine books one `Ev::Arrival` while the grove is short, RECOUNT to a grove
+  that is in, and the census's SPAWN at the grove's edge; the grove has no `Ev::Refill`. A casualty of a war party on the road
+  (BAND_CASUALTIES) presses the grove by kill credit, S7's district rule for the unclaimed (MZB-1213), except once the band's
+  Umvuthi has fallen: the warriors that go down with it are no one's loss unless a death names a player (MZB-1287).
+- **Test order 42, `CONFLICT_SEND`** (TEST mode only; `NativeCodec.CONFLICT_SEND`, `RtsimTests.sendParty`): `u64 faction, u8
+  party kind (an index into the engine's party kinds: 0 envoy, 1 scouts, 2 raid, 3 invasion, 4 siege, 5 plunder), u8 reserved,
+  u16 frame, i32 x, i32 z`. Applied at unit take after the replay's end: the camp musters a party of that kind toward the block
+  as if its feud had decided. A key that is no camp, or a camp that cannot field the party, is refused (logged).
+- **The bosses' hold** (core `Camps`, MZB-280, changed by FB-S9-3, MZB-1272 to MZB-1279): the hold stays in the core as machinery
+  (`CampKind.holdSpawn`: a SPAWN waits while a player is within the kind's range, at most `Camps.HOLD_MAX` = 6,000 ticks, and
+  a census in progress still holds every SPAWN), but the Mowzie kinds do not use it: a Frostmaw's SPAWN and an Umvuthi's SPAWN or
+  heir (SEAT_HEIR) are placed when due even with a player beside the spot, and arrive with an effect (`CampKind.arrived`,
+  `BossArrival`, sent to players within 64 blocks). A grove's warriors are never held and get no effect (MZB-1220, MZB-1277).
+  Rule U's removal hold (a boss in a fight or with a player beside it is never taken away) is unchanged.
 
 ## 10. The world model: HABITAT (PLAN.md §5.1, SCALE.md §2, §4; the core's habitat sampler)
 

@@ -78,6 +78,19 @@ public final class FakePlayers {
     }
 
     /**
+     * A {@link #hearing} player that also keeps every packet it is sent ({@link Hearer#packets}, a bundle flattened into its
+     * parts): in the level's player list only, so no chunk is loaded round it and no entity is paired with it. For a test of
+     * what a server sends to a player standing near a point (a boss's arrival effect: particles and sounds), not of what is
+     * tracked to it. Take it out with {@link #remove}.
+     */
+    public static Hearer overhearing(ServerLevel level, Vec3 at, String name) {
+        Hearer p = newHearer(level, at, name, null);
+        p.keepAll = true;
+        level.players().add(p);
+        return p;
+    }
+
+    /**
      * A {@link Hearer} that keeps every packet it is sent ({@link Hearer#packets}, a bundle flattened into its parts) and that
      * the level tracks entities to (M11, MZB-839): joined through {@code level.addNewPlayer}, as {@link #addSeen}'s is, since a
      * player only in {@code level.players()} is not in the chunk map, and no tracked entity is paired with it.
