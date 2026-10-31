@@ -718,12 +718,16 @@ public final class SiteLedgerGameTests {
                     check("the row names the survivor at home, count 1, nobody missing: " + describe(r), r != null && r.count() == 1
                             && r.home().equals(List.of(survivor[0].getUUID())) && r.missing().isEmpty());
                 }))
+                .thenIdle(20)
                 .thenExecute(() -> {
                     SiteLedger.Row r = row(level, den.faction);
                     SiteLedger.Row w = off[0];
                     check("no renewal owed: " + describe(r), !r.waiting());
+                    // The engine's clock ran on by the wait's advance (P1_ADVANCE), which the stamps (game time) do not show; a
+                    // day more for the engine's whole days.
+                    long ran = w.waitLeft() + DAY / 4 + (r.stamp() - w.stamp()) + DAY;
                     check(String.format("P is the write-off's, aged: no loss booked for the fight (%.4f, then %.4f)", w.p(), r.p()),
-                            r.p() <= w.p() + 1e-3 && r.p() >= aged(w.p(), r.stamp() - w.stamp() + DAY) - 1e-3);
+                            r.p() <= w.p() + 1e-3 && r.p() >= aged(w.p(), ran) - 1e-3);
                     List<EntityFrostmaw> standing = level.getEntitiesOfClass(EntityFrostmaw.class, den.area().inflate(32), Entity::isAlive);
                     check("exactly one Frostmaw at the den (" + standing.size() + ")", standing.size() == 1 && standing.get(0) == survivor[0]);
                     check("the den's own (" + MowzieKit.held(den.faction).size() + ")", adopted(survivor[0], den.faction));
