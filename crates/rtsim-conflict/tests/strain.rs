@@ -1201,15 +1201,15 @@ fn pages_round_trip_rtce() {
     assert_eq!(back.pending_by_kind().get("strain"), Some(&1));
     assert_eq!(back.next_due(), c.next_due());
     assert!(!back.camp_active(f));
-    // The older format is named, not read: the magic is RTCF (S9: a camp's chief pressure, so RTCE
-    // is the older one now).
+    // The older format is named, not read: the magic is RTCG (S9's camp chief pressure and the
+    // M12a review's heir pressure kept and rivals, MZB-1402, MZB-1409), so RTCF is the older one.
     let mut old = c.save();
-    old[..4].copy_from_slice(b"RTCE");
+    old[..4].copy_from_slice(b"RTCF");
     let e = Conflict::load(c.tun.clone(), c.cultures.clone(), &old)
         .err()
         .expect("refused");
     let e = e.to_string();
-    assert!(e.contains("RTCE") && e.contains("RTCF"), "{e}");
+    assert!(e.contains("RTCF") && e.contains("RTCG"), "{e}");
 }
 
 // ---------------------------------------------------------------- the refounding (EQC210)
@@ -1866,4 +1866,30 @@ fn a_pool_camps_row_counts_its_strain_and_mood_boxes() {
     assert!(c.factions[f as usize].strain.is_none() && c.factions[f as usize].mood.is_none());
     let (_, c, f) = camp(80, "raider");
     assert!(c.factions[f as usize].strain.is_some() && c.factions[f as usize].mood.is_some());
+}
+
+/// MZB-1401 (P3 6): a broken camp's row whose wait left is past anything an engine sends (a
+/// corrupt ledger row) is broken for the refounding cap at most; the tick it ends never wraps.
+#[test]
+fn a_broken_rows_wait_past_the_cap_is_held_to_the_cap() {
+    let mut r = CampRun::new(1403, "goblin", 0);
+    let f = r.f;
+    let at = Tick(20 * DAY);
+    r.c.run_until(&mut r.w, &mut NoInfrastructure, at);
+    strained(&mut r.c, f, 3.0, 1.99, at);
+    r.c.slay(&mut r.w, f, 1, at);
+    assert!(broken(&r.c, f).is_some(), "broke");
+    let mut row = row_of(&r.c, f, 100);
+    assert!(row.waiting() && row.count == 0);
+    row.wait_left = u64::MAX - 7;
+    let now = Tick(at.0 + 100);
+    r.reborn(row, now);
+    let cap =
+        r.c.cultures
+            .get(r.c.factions[r.f as usize].culture)
+            .pool_renewal
+            .expect("a pool camp")
+            .refound
+            .cap_ticks();
+    assert_eq!(broken(&r.c, r.f).expect("still broken").due, now + cap);
 }

@@ -11,6 +11,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.journal.JournalDependent;
 import com.minecraftindustrialcomplex.mic_rtsim.journal.JournalSavedData;
 import com.minecraftindustrialcomplex.mic_rtsim.journal.SavedDataWrites;
 import com.minecraftindustrialcomplex.mic_rtsim.journal.WorldSaveOrder;
+import com.minecraftindustrialcomplex.mic_rtsim.sites.SiteLedger;
 import com.minecraftindustrialcomplex.mic_rtsim.village.VillageRegistry;
 import net.minecraft.core.HolderLookup;
 import net.minecraft.gametest.framework.GameTest;
@@ -419,6 +420,100 @@ public final class SavedDataWriteHoldGameTests {
                 })).thenSucceed();
     }
 
+    /**
+     * The site ledger is a file the journal counts on (MZB-1403, the M12a review's P3 5): a SITE_STATE the journal records as
+     * applied (its command sequence) is never sent again, so a failed write of the ledger with the journal's file ahead of it
+     * loses the row for good. A failed write of it holds the journal's file, as {@link IndustryData}'s does, and the next
+     * world save writes it again without any change to it.
+     */
+    @GameTest(template = RtsimTests.TEMPLATE, batch = "mic_rtsim_saved_data_write_hold_f", timeoutTicks = 6000)
+    public static void aFailedWriteOfTheSiteLedgerHoldsTheJournalsFileToo(GameTestHelper helper) {
+        SiteLedger ledger = SiteLedger.FACTORY.constructor().get();
+        Kit kit = new Kit(helper.getLevel(), ledger, true);
+        byte[][] w0 = {null};
+        helper.startSequence()
+                .thenExecute(kit.step(() -> {
+                    check("SiteLedger is marked for the journal", (Object) ledger instanceof JournalDependent);
+                    ledger.setDirty();
+                    kit.journalMoves();
+                    kit.save();
+                }))
+                .thenWaitUntil(kit.looked())
+                .thenExecute(kit.step(() -> {
+                    Look l = kit.look.get();
+                    check("W0 wrote the journal's file: " + l.writes(), l.journal().length > 0 && l.writes() == 1);
+                    check("and the ledger's: " + Files.isRegularFile(kit.dataFile), Files.isRegularFile(kit.dataFile));
+                    w0[0] = l.journal();
+                    kit.diskFull();
+                    ledger.setDirty();
+                    kit.journalMoves();
+                    kit.save();
+                }))
+                .thenWaitUntil(kit.looked())
+                .thenExecute(kit.step(() -> {
+                    Look l = kit.look.get();
+                    check("the failed write of the ledger is recorded", kit.heldByFailedWrite());
+                    check("the journal's file stays W0's and dirty: " + l.writes(), Arrays.equals(w0[0], l.journal()) && l.writes() == 1 && l.dirty());
+                    check("vanilla cleared the ledger's dirty flag (the premise)", !ledger.isDirty());
+                    kit.diskFree();
+                    kit.journalMoves(); // nothing of the ledger changes: only the mark brings it to this save
+                    kit.save();
+                }))
+                .thenWaitUntil(kit.looked())
+                .thenExecute(kit.step(() -> {
+                    Look l = kit.look.get();
+                    check("the ledger is written again without a change to it: " + Files.isRegularFile(kit.dataFile), Files.isRegularFile(kit.dataFile));
+                    check("then the journal's file: " + l.writes(), l.writes() == 2 && !Arrays.equals(w0[0], l.journal()) && !l.dirty());
+                    kit.cleanup();
+                })).thenSucceed();
+    }
+
+    /**
+     * The reinstall reset's marker waits for the site ledger too (MZB-1403, the M12a review's P2 B). The reset's gap is counted
+     * in the ledger ({@code gaps}), and a crash after a failed write of it, with the marker deleted, would leave the next start
+     * with no reset and a ledger that never counted the gap: every row written before the uninstall would read as if rtsim ran
+     * throughout, and a home body lost meanwhile would be a player's loss. So the marker stays while that write has failed, and
+     * the next save deletes it once the file has written.
+     */
+    @GameTest(template = RtsimTests.TEMPLATE, batch = "mic_rtsim_saved_data_write_hold_g", timeoutTicks = 6000)
+    public static void theReinstallMarkerWaitsForAFailedWriteOfTheSiteLedger(GameTestHelper helper) {
+        MinecraftServer server = helper.getLevel().getServer();
+        Path world = server.getWorldPath(LevelResource.ROOT).toAbsolutePath().normalize();
+        Path marker = world.resolve(ReinstallRules.MARKER);
+        Path sitesFile = world.resolve("data").resolve(SiteLedger.FILE + ".dat");
+        Pad owner = new Pad();
+        Object[] before = {null};
+        AtomicBoolean chain = new AtomicBoolean();
+        Runnable cleanup = () -> reinstallTestCleanup(server, sitesFile, before[0]);
+        helper.startSequence()
+                .thenExecute(guarded(cleanup, () -> {
+                    try {
+                        before[0] = ReinstallGuard.installResetForTest(server);
+                    } catch (IOException e) {
+                        throw new UncheckedIOException(e);
+                    }
+                    check("a reset's marker is on disk", Files.isRegularFile(marker) && !ReinstallGuard.markerCleared(server));
+                    SavedDataWrites.INSTANCE.failed(owner, sitesFile, new IOException("disk full"));
+                    ReinstallGuard.onOverworldSave(server); // as LevelEvent.Save calls it, behind the overworld's saved data
+                    chain.set(false);
+                    IOUtilities.withIOWorker(() -> chain.set(true));
+                }))
+                .thenWaitUntil(RtsimTests.io(() -> check("the IO chain ran", chain.get())))
+                .thenExecute(guarded(cleanup, () -> {
+                    check("the site ledger's write failed, so the marker stays on disk", Files.isRegularFile(marker));
+                    check("and the guard says it was not deleted", !ReinstallGuard.markerCleared(server));
+                    SavedDataWrites.INSTANCE.written(sitesFile); // the next save wrote it
+                    ReinstallGuard.onOverworldSave(server);
+                    chain.set(false);
+                    IOUtilities.withIOWorker(() -> chain.set(true));
+                }))
+                .thenWaitUntil(RtsimTests.io(() -> check("the IO chain ran again", chain.get())))
+                .thenExecute(guarded(cleanup, () -> {
+                    check("the ledger written, the next save deleted the marker", !Files.exists(marker) && ReinstallGuard.markerCleared(server));
+                    cleanup.run();
+                })).thenSucceed();
+    }
+
     private static Runnable guarded(Runnable cleanup, Runnable body) {
         return () -> {
             try {
@@ -431,8 +526,8 @@ public final class SavedDataWriteHoldGameTests {
         };
     }
 
-    private static void reinstallTestCleanup(MinecraftServer server, Path industryFile, Object before) {
-        SavedDataWrites.INSTANCE.written(industryFile);
+    private static void reinstallTestCleanup(MinecraftServer server, Path failedFile, Object before) {
+        SavedDataWrites.INSTANCE.written(failedFile);
         if (before != null)
             ReinstallGuard.restoreStatusForTest(server, before);
         try {
@@ -466,5 +561,17 @@ public final class SavedDataWriteHoldGameTests {
     public static void cleanUpE(ServerLevel level) {
         MinecraftServer server = level.getServer();
         reinstallTestCleanup(server, server.getWorldPath(LevelResource.ROOT).toAbsolutePath().normalize().resolve("data").resolve(IndustryData.FILE + ".dat"), null);
+    }
+
+    @AfterBatch(batch = "mic_rtsim_saved_data_write_hold_f")
+    public static void cleanUpF(ServerLevel level) {
+        SavedDataWriteKit.cleanupAll();
+    }
+
+    /** The ledger's marker test: as {@link #cleanUpE}, for the site ledger's file. */
+    @AfterBatch(batch = "mic_rtsim_saved_data_write_hold_g")
+    public static void cleanUpG(ServerLevel level) {
+        MinecraftServer server = level.getServer();
+        reinstallTestCleanup(server, server.getWorldPath(LevelResource.ROOT).toAbsolutePath().normalize().resolve("data").resolve(SiteLedger.FILE + ".dat"), null);
     }
 }

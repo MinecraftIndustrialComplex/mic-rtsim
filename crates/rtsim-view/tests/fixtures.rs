@@ -11,7 +11,12 @@
 //!   carrying the Umvuthi's own pressure after its recount stamp and the stats ending with the groves' arrivals; SITE_STATE
 //!   (table 0x8006) is 64 bytes, the second pressure at 56, and the found tail 40 bytes, the second pressure at 36; the wheel's
 //!   tags are unchanged; refreshed again after Ben's FB-S9-2 (2026-10-30) gave the grove the raider's plunder mood: the culture
-//!   data's hash changed, so a save made before it is read as "made with other culture data"); before that, the S7 build of
+//!   data's hash changed, so a save made before it is read as "made with other culture data"); beside it, on a branch of its
+//!   own, the M12a review fixes' build of `fix/m12a-review` at 4d43c6ff (docs/choices-mowzie-build.md MZB-1400 to MZB-1407;
+//!   their formats on top of S7's: the conflict's pages are RTCF (magic `RTCF`) with meta version 14, a camp's heir ending
+//!   with the pressure it keeps (MZB-1402), its lists ending with its rivals and the stats with the fights (MZB-1404); a
+//!   CAMP_BODIES record's lines are 32 bytes, each ending with the UUID of the body it left in its slot (MZB-1400), so the
+//!   journal is written again too; the site ledger's file is unchanged); before both, the S7 build of
 //!   `feat/eq-s7-conflict` at 7f7110eb (Conflict pressure and the outposts, EQUILIBRIUM.md S7, FB-1 (a), FB-5 (b),
 //!   FB-8; docs/overnight-choices-equilibrium.md EQC200 to EQC290; S7's formats on top of S6's: the conflict's
 //!   pages are RTCE (magic `RTCE`) with meta version 13, a faction row ending with its strain (a pool camp's
@@ -135,7 +140,9 @@
 //! - `tests/data/create`: neoforge/create's GameTest world, run from the S9 build of
 //!   `feat/eq-s9-mowzie` with `-Psec1fx` (the core save's formats, S9's: RTCF and meta 14, as the core entry says; a fresh
 //!   world copied to `target/` after its JVM exited; refreshed again after FB-S9-2 gave the grove the raider's plunder mood, which
-//!   changed the culture data's hash); before that, the S7 build of
+//!   changed the culture data's hash); beside it, on a branch of its own, the M12a review fixes' build of `fix/m12a-review`
+//!   at 8da19617 with `-Psec1fx` (the core save's formats, the M12a review fixes': RTCF and meta 14, and CAMP_BODIES lines
+//!   of 32 bytes, as the core entry says; a fresh world copied to `target/` after its JVM exited); before both, the S7 build of
 //!   `feat/eq-s7-conflict` at 7f7110eb with `-Psec1fx` (the core save's formats, S7's: RTCE and meta 13, as the core
 //!   entry says; a fresh world copied to `target/` after its JVM exited); before that, the S6 build of
 //!   `feat/eq-s6-villages` at db46b196 (merged with main c9111cc0) with `-Psec1fx` (the core

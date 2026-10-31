@@ -17320,6 +17320,7 @@ mod conflict {
                 generation,
                 action: cb::ACTION_HAND_BACK,
                 outcome: cb::LINE_STALE,
+                uuid: (0, 0),
             }],
         });
         let dead = (falls + 1, losses + 1, true, false);

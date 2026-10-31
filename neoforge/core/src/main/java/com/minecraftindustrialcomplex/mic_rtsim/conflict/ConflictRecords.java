@@ -400,10 +400,14 @@ public final class ConflictRecords {
         }
     }
 
-    /** CAMP_BODIES (aux = lines n): the answer to a CAMP_RECONCILE, each line with the action it answers. */
+    /**
+     * CAMP_BODIES (aux = lines n): the answer to a CAMP_RECONCILE, each line with the action it answers and, for a SPAWN, a
+     * HAND_BACK or an ADOPT done or with nothing to do, the UUID of the body standing with the line's slot and generation (0, 0
+     * otherwise): the engine keeps it for the site ledger's row (MZB-1400).
+     */
     public static final class CampBodies {
-        public static final int FACTION = 24, EPOCH = 32, OP_ID = 40, LINES = 48, LINE = 16;
-        public static final int L_LINE = 0, L_SLOT = 4, L_GENERATION = 8, L_ACTION = 12, L_OUTCOME = 13;
+        public static final int FACTION = 24, EPOCH = 32, OP_ID = 40, LINES = 48, LINE = 32;
+        public static final int L_LINE = 0, L_SLOT = 4, L_GENERATION = 8, L_ACTION = 12, L_OUTCOME = 13, L_UUID_MOST = 16, L_UUID_LEAST = 24;
         public static final int DONE = 1, NOTHING = 2, STALE = 3;
 
         public static int size(int n) {
@@ -427,6 +431,14 @@ public final class ConflictRecords {
          * it names no slot (slot 0, generation 0), and its answer names the warrior taken.
          */
         public static final int MASK = 8;
+        /**
+         * MZB-1404 (fork F3 as Ben changed it, 2026-10-30): the body holding the line's slot (by its tags) and the member gone
+         * missing that came back to its full camp (by the UUID in {@code L_A}, {@code L_B}) fight until one dies; the kind sets
+         * them on each other ({@link CampKind#fight}). DONE when both stand and the kind set the fight, NOTHING when either is
+         * not here, STALE for a kind with no fight. The engine books nothing for it, and sends it again at each census that
+         * sees the two.
+         */
+        public static final int FIGHT = 9;
         /** The chief's slot (the Umvuthi's, MZB-401): {@code u32::MAX} in the engine, -1 as a Java int; outside the pool. */
         public static final int CHIEF_SLOT = -1;
         /** A line's flags: the slot is the camp's chief; the body holds its crystal. */

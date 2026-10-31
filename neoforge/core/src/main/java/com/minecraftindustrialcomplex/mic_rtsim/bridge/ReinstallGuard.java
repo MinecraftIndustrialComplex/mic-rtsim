@@ -3,6 +3,7 @@ package com.minecraftindustrialcomplex.mic_rtsim.bridge;
 import com.minecraftindustrialcomplex.mic_rtsim.MicRtsim;
 import com.minecraftindustrialcomplex.mic_rtsim.industry.IndustryData;
 import com.minecraftindustrialcomplex.mic_rtsim.journal.SavedDataWrites;
+import com.minecraftindustrialcomplex.mic_rtsim.sites.SiteLedger;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.ListTag;
 import net.minecraft.nbt.Tag;
@@ -37,7 +38,8 @@ import java.util.concurrent.ConcurrentHashMap;
  * <p><b>The marker.</b> A gap is written to {@code world/mic_rtsim-reinstall.txt} at once, synced, before the start
  * rewrites {@code level.dat} with rtsim in its list: a crash anywhere in the start after that still owes the reset
  * to the next start. The marker goes only after the reset's first world save has written the industry data that
- * remembers what to re-adopt ({@link #onOverworldSave}), queued behind that write on NeoForge's save-data chain.
+ * remembers what to re-adopt and the site ledger that counted the gap ({@link #onOverworldSave}), queued behind those
+ * writes on NeoForge's save-data chain.
  *
  * <p><b>The reset</b> ({@link #beforeEngineOpens}): {@code world/rtsim/} is moved to
  * {@code world/rtsim-reinstall-<time>/} (kept for the admin, never read again) and the engine opens empty, as after
@@ -71,7 +73,7 @@ public final class ReinstallGuard {
         volatile boolean markerCleared;
         /** The deletion is queued behind a save. */
         volatile boolean deletionQueued;
-        /** The industry file's failed write kept the marker, and the line is logged (once per reset). */
+        /** The industry file's or the site ledger's failed write kept the marker, and the line is logged (once per reset). */
         volatile boolean keptSaid;
         /** The industry module of the session this reset opened has planned its re-adoption (RG7). */
         final java.util.concurrent.atomic.AtomicBoolean readoptTaken = new java.util.concurrent.atomic.AtomicBoolean();
@@ -155,12 +157,29 @@ public final class ReinstallGuard {
         Path aside = ReinstallRules.moveAside(dir, at);
         Reset reset = new Reset(reason, aside, at);
         STATUS.put(dir, new Status(capture, reset));
+        countSiteGap(server);
         MicRtsim.LOGGER.error("[mic_rtsim] REINSTALL RESET (UR-1): {}. {}; the engine starts empty and every module announces"
                         + " what it knows again; districts whose seeds the gap stripped are adopted again as their chunks load."
                         + " Lost: the sim's economy and memory (SRV2), players' block marks in chunks that loaded during the gap."
                         + " `rtsim perf` shows the progress.",
                 reason, aside == null ? "There were no engine pages to move" : "The engine's pages are moved to " + dir.relativize(aside));
         return reset;
+    }
+
+    /**
+     * The site ledger counts this reset's gap now, before the engine opens (MZB-1403), rather than at its first use: a start
+     * that finds no site (no player joined, the server stopped at once) would else never count it, and its first world save
+     * would delete the marker with the gap uncounted, so every row from before the uninstall would read as if rtsim had run.
+     * The ledger is then dirty, and {@link #onOverworldSave} keeps the marker until it is written. Never throws: a failure
+     * leaves the count to the ledger's first use, as before, and the reset goes on.
+     */
+    private static void countSiteGap(MinecraftServer server) {
+        try {
+            SiteLedger l = SiteLedger.get(server);
+            MicRtsim.LOGGER.info("[mic_rtsim] reinstall reset: the site ledger counted the gap ({} so far)", l.gaps());
+        } catch (RuntimeException e) {
+            MicRtsim.LOGGER.error("[mic_rtsim] reinstall reset: the site ledger could not count the gap now; its first use counts it", e);
+        }
     }
 
     /** This start's reset for the server's world, or null. */
@@ -192,10 +211,11 @@ public final class ReinstallGuard {
     /**
      * The overworld saved (LevelEvent.Save, after its saved data queued their writes): the first save after a
      * reset deletes the marker behind them on the same chain, so after the industry data that remembers what to
-     * re-adopt. A crash before then resets again at the next start, which is harmless (the engine is still new).
-     * When the industry data's write failed ({@link SavedDataWrites}, docs/choices-journal-barrier.md U-g11) the marker
-     * stays: deleted, it would leave the next start with no reset and no file that remembers what to re-adopt. The next
-     * world save tries again, after marking the data dirty again.
+     * re-adopt and the site ledger that counted the gap (MZB-1403). A crash before then resets again at the next start,
+     * which is harmless (the engine is still new). When either file's write failed ({@link SavedDataWrites},
+     * docs/choices-journal-barrier.md U-g11) the marker stays: deleted, it would leave the next start with no reset and no
+     * file that remembers what to re-adopt, or a ledger that never counted the gap. The next world save tries again, after
+     * marking the data dirty again.
      */
     public static void onOverworldSave(MinecraftServer server) {
         Path dir = worldDir(server);
@@ -204,13 +224,17 @@ public final class ReinstallGuard {
             return;
         s.deletionQueued = true;
         Path industry = dir.resolve("data").resolve(IndustryData.FILE + ".dat");
+        Path sites = dir.resolve("data").resolve(SiteLedger.FILE + ".dat");
         net.neoforged.neoforge.common.IOUtilities.withIOWorker(() -> {
-            if (SavedDataWrites.INSTANCE.holds(industry)) { // after the industry data's own write on this chain: its failure is known
+            // After both files' own writes on this chain: their failures are known.
+            Path failed = SavedDataWrites.INSTANCE.holds(industry) ? industry : SavedDataWrites.INSTANCE.holds(sites) ? sites : null;
+            if (failed != null) {
                 s.deletionQueued = false;
                 if (!s.keptSaid) {
                     s.keptSaid = true;
-                    MicRtsim.LOGGER.error("[mic_rtsim] reinstall reset: the industry data's write failed, so the marker {} stays until it is written;"
-                            + " a restart before then resets again; said once (docs/choices-journal-barrier.md U-g11)", MARKER);
+                    MicRtsim.LOGGER.error("[mic_rtsim] reinstall reset: the write of {} failed, so the marker {} stays until it is written;"
+                            + " a restart before then resets again; said once (docs/choices-journal-barrier.md U-g11, MZB-1403)",
+                            failed.getFileName(), MARKER);
                 }
                 return;
             }

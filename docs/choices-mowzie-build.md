@@ -18336,3 +18336,213 @@ sweep mixin, the flake fixes MZB-1100 to MZB-1104) into this branch, commit 24fb
   `:core:test` 431 passed), `create -Psec1fx` All 266, `create -PwithMowzie` All 271 (default heap, no out-of-memory), mowziesmobs All
   112, iceandfire All 42. None failed, so no flake this time.
 
+
+### M12a review fixes (MZB-1400 onward)
+
+The Opus review of slice M12a (S3, landed on main as 43062c0b) and its fixes, on `fix/m12a-review` from main a4717c1f (S5, S6
+and S7 landed), one commit each; every behaviour fix has a test that failed on main first, its failure text below. Line numbers
+the review gave are at 43062c0b.
+
+- **MZB-1400** (P1, a home body's UUID after its slot is given a new body; amends MZB-1014's "a slot knows its body's UUID"): a
+  slot learned its body's UUID only from a census that found the body by its tags, or when an ADOPT line was made. A SPAWN or a
+  HAND_BACK answered made the slot a body with no UUID (CAMP_BODIES named none), and a raid member coming home went gone to owed
+  keeping the UUID of the body that set out, though the HAND_BACK's body is a new entity (`Camps.handBack`). So the row named no
+  UUID, or a removed one, until the den's next census (never, for a force-loaded den). After a reset the first left the slot
+  owed, and the found census spawned a second Frostmaw beside the first when that one stood outside the footprint (the mint);
+  the second left the slot expecting a UUID that no longer existed, the real Frostmaw at home was removed as a stray at a full
+  den, and three misses later the slot was written off as a loss nobody caused (the stale UUID).
+  - **The fix, a protocol change:** each CAMP_BODIES line grows by the UUID of the body it left in its slot, 16 to 32 bytes (the
+    record 48 + 32n, a multiple of 8): for a SPAWN, a HAND_BACK or an ADOPT done, the body made, handed back or adopted (the
+    line's holder, `Camps.leftInSlot`); with nothing to do, the body standing with the line's slot and generation
+    (`Camps.tagged`); any other line, or none standing, 0. The engine (`camp_bodies`): when a SPAWN, HAND_BACK or ADOPT answer
+    gives a member slot that was owed or gone its body, the slot takes the answer's UUID, and 0 when nothing stands (an
+    adoption that found no stray). The chief's slot is not in the row and is left alone. `boundary::LineAnswer.uuid`,
+    `ConflictRecords.CampBodies.L_UUID_MOST` and `L_UUID_LEAST`; docs/boundary.md's CAMP_BODIES row. `synth::FakeConflict`
+    names the body with the line's tags, as Java does. No old-size reader (no compatibility before a release): a journal's
+    16-byte lines from before do not decode.
+  - **Not taken: a RECOUNT after a SPAWN or HAND_BACK done at a camp that is in** (the review's other option, engine only). It
+    was built first and is the smaller change, but not a correct one: a recount ends the epoch, so Java answers stale every line
+    it holds (a SPAWN held while a player is near the den, a TAKE held at the throne, MZB-823), and two M11 tests in
+    `tests/mowzie_aloft.rs` failed with it (`the_chief_is_handed_back_at_home`, "held": the held TAKE was answered stale by the
+    recount's census; `a_puppet_killed_while_its_hand_back_is_in_flight_dies_once`, "a chief line"). It also costs a census per
+    spawn, leaves the row without the UUID until that census answers, and a replayed engine would not learn it again (a
+    replayed census books nothing). The answer's UUID is exact, is the same live and replayed, and orders nothing.
+  - **Tests** (`tests/camp.rs`), both failing on main: `a_renewed_member_s_row_names_its_body_so_a_reset_with_it_away_spawns_none`
+    (a player's kill, the arrival's spawn, the row taken, the Frostmaw lured off, `reborn`; on main "assertion `left == right`
+    failed: no second Frostmaw while the first is away, left: 2, right: 1") and
+    `a_member_home_from_a_raid_hands_its_new_body_over_and_a_reset_removes_none` (a raid out and home, the row taken, `reborn`,
+    the den comes in; on main "assertion `left == right` failed: the Frostmaw at home is not removed, left: 1, right: 0").
+    `an_arrival_at_a_camp_that_is_in_counts_first_and_its_census_spawns` also asserts the slot's UUID after the SPAWN's answer;
+    the codec's sample answer carries a UUID.
+- **MZB-1401** (P3 6, a corrupt row's wait left is held to the cap): neither Java's `SiteLedger.parse` nor
+  `FoundRow::decode` bounds a row's wait left, and the hand-overs computed `at + wait` (`camp_restore`, the ecology engine's
+  `found_lair`, and S7's `strain_found` for a broken pool camp, the same shape), which panics in a debug build and wraps in a
+  release one, booking the arrival at a tick far in the past (a mint at once). **Taken: clamp, at each hand-over, to the kind's
+  cap** (`RenewalRule::cap_ticks` for camps and lairs, the refounding rule's cap for a pool camp, the nest's `cap_days` in
+  thousandths of a drilling day; a nest saturated at `u32::MAX` thousandths before, 4.3 million drilling days). No engine
+  waits longer than its cap, so a longer wait can only be a corrupt row's, and the cap is the longest wait it could have meant:
+  it errs toward no mint. **Not taken: refusing the row**, which would throw away its pressure and bodies with the bad field,
+  and make the site found as new (a farmed site then reads unfarmed). Java is unchanged: the engine never trusts a tail
+  (MZB-1011). Tests, each failing on main: `tests/camp.rs::a_rows_wait_past_the_cap_is_held_to_the_cap`,
+  `tests/strain.rs::a_broken_rows_wait_past_the_cap_is_held_to_the_cap` and
+  `rtsim-ecology/tests/lair_renewal.rs::a_rows_wait_past_the_cap_is_held_to_the_cap` ("attempt to add with overflow" at
+  `rtsim-kernel/src/clock.rs:66:14`), `rtsim-ecology/tests/nests.rs::a_nest_rows_wait_past_the_cap_is_held_to_the_cap`
+  ("assertion `left == right` failed: the cap, left: Some(4294967295), right: Some(96000)").
+- **MZB-1402** (P3 4, a grove found without its Umvuthi keeps the pressure its row handed over): `found_empty_heir`, which runs
+  after `camp_restore`, set the camp's pressure to the cap's (`Pressure::at_cap`) whatever the row had handed over, and the
+  census that adopts an untagged Umvuthi before the heir comes set it to none. **The fix:** while the heir waits the camp has
+  the larger of the cap's pressure and its own (the row's, aged; none without a row), so a grove farmed past the cap keeps its
+  history; its own is kept with the heir (`Heir.kept`), and the adoption gives that back, aged by its own half-life, rather
+  than none ("the cap's pressure was only a stand-in", as before). The wait is the cap's either way (`delay_ticks` of a
+  pressure at or past the cap's). An heir that comes after its wait leaves the pressure as it stood, as before. On main the
+  grove's `pressure` is the Umvuthi's (the warriors have no renewal). **On S9's tree** (`feat/eq-s9-mowzie`) the Umvuthi's
+  is `Camp.chief_pressure`, which `camp_restore` sets from the row's second pressure (`row.p2`, aged by the chief culture's
+  half-life), while `Camp.pressure` is the warriors' (from `row.p`): the merge compares the restored `chief_pressure` with the
+  cap's in `found_empty_heir` and keeps the larger there, `Heir.kept` holds the restored `chief_pressure`, and the census that
+  adopts a stray Umvuthi before the heir comes sets `chief_pressure` from it (S9's `camp_census` reset it to none, "the cap's
+  pressure was only a stand-in", at its `camp.rs:2076` at f530c07c, the line this branch's `h.kept` replaces); `pressure` is
+  left alone in both. `tests/grove.rs`'s two tests cover both points; on S9's tree their helper `chief_pressure_at`
+  reads `chief_pressure` instead of `pressure`. **Save:** RTC15, `RTCF`, meta 14: a camp's
+  heir ends with the kept pressure (an f32, refused when not finite and at least 0, and its day); `tests/strain.rs`'s format
+  check names RTCE as the older format. The viewer fixtures are written again once for this branch's formats (MZB-1406).
+  Tests (`tests/grove.rs`), both failing on main:
+  `a_grove_found_empty_keeps_a_handed_over_pressure_above_the_caps` (a row's P 7 against the cap's 5; on main "the row's
+  pressure kept: 5") and `a_grove_found_empty_and_adopting_its_umvuthi_restores_the_handed_over_pressure` (a row's P 2, the
+  cap's 5 while waiting, then an untagged Umvuthi adopted four days on; on main "the row's pressure, aged: 0 against
+  1.9430562").
+- **MZB-1404** (P3 7: fork F3 changed by Ben's answer of 2026-10-30, "They fight to the death"; amends MZB-1014's "at a full
+  camp it is left standing" and MZB-1022): a home body written off as missing that comes back to its full boss's camp, while
+  its replacement holds the slot, fights the replacement until one dies, so the den has one boss again. Before, both stood
+  (`aLuredBodyIsAPlayerLossAndAStraysDeathCounts` asserted it). The engine decides the pairing and Java plays it.
+  - **The protocol: a line action, no size change.** CAMP_RECONCILE's action 9, FIGHT (`boundary::ACTION_FIGHT`,
+    `ConflictRecords.CampReconcile.FIGHT`): slot, generation and body name the replacement (Java finds it by its tags), `a` and
+    `b` the returner's UUID. Answered DONE when both stand and the kind set the fight, NOTHING when either is not there (dead,
+    unloaded, another camp's, a puppet), STALE for a kind with no fight (`CampKind.fight`, false by default); the engine books
+    nothing for the answer (the slot's line clears, as any). Not taken: a flag on an existing line (an ADOPT or a REMOVE flagged
+    "fight" would book that line's fact on its answer, and a line names one body by UUID, not two). docs/boundary.md's
+    CAMP_RECONCILE row.
+  - **The engine** (`camp_census`): a member gone missing seen at its full camp, at a boss's camp (the culture's member
+    renewal has `boss`: the Frostmaw's den), in the footprint (not ELSEWHERE) while a member body found at home by its tags,
+    in the footprint, holds a slot: a FIGHT line on that slot, and the returner goes from `Camp.missing` to `Camp.rivals`
+    (at most K, the oldest dropped). A rival seen again at the full camp is paired again at each census (a mob's target is
+    not saved); seen at a short camp it is home again (adopted, as any missing member); seen ELSEWHERE, or with no holder
+    standing, it is left standing. A member gone missing seen far off is still left standing (no fight from 400 blocks).
+  - **The outcomes.** The replacement dies: while a rival is listed, a member's death not credited to a player (MOB, NONE,
+    OTHER) is the fight's, booked `LossCause::Other` (no pressure: the lure was charged at the write-off); a player's kill
+    (PLAYER, TAKEN) is a player's loss as any. Either way, at a camp that is in, the death sends a RECOUNT, and its census
+    adopts the returner into the room the death left (its UUID, a Body slot; the arrival the death booked is cancelled at
+    once: no renewal owed, no write-off, no SPAWN). A camp that is out adopts it at its next census. The returner dies: a
+    rival's death books nothing whatever killed it (`stray_death`), and it is a rival no longer; the replacement holds the
+    slot. A second record of the same death books nothing.
+  - **The row:** rivals ride in the row's missing (`camp_site_state`), so after a reset each is missing again and is paired
+    again at the full den; a rival's death between a reset and that census is a missing stray's, a player's loss (fork F4).
+  - **Java, the mowziesmobs plugin (D4):** `Camps.fight` (core) finds the two and asks the kind; `DenKind.fight` hands two
+    Frostmaws to `FrostmawFights`, which wakes both (`setActive(true)`) and sets each as the other's target, and every 20 ticks
+    (PLACEHOLDER) sets them again while both stand alive in one level, unless one has a player as its target (a player who
+    joins the fight is fought). A pair one of whose bodies died, unloaded or changed level is over; the next census of the
+    full den pairs them again. **Read from the 1.8.2 jar** (vineflower of `EntityFrostmaw`, `AnimationAreaAttackAI`,
+    `MowzieEntity`): its only target goal is a `NearestAttackableTargetGoal` for players, whose `stop()` clears the target when
+    a player it chased goes; `hurt` never targets an attacker that is a Frostmaw, so the jar alone never lets two fight; a
+    target set from outside stays until it dies or turns invisible (`tick`, lines 230 and 571), and with one an active
+    Frostmaw walks to it and swipes, `hitEntities` striking every living entity in its arc; an asleep one wakes only with an
+    attackable entity within 8 blocks. **No mixin:** the setter and the 20-tick re-assert are enough, since nothing in the jar
+    refuses a Frostmaw target.
+  - **Loot:** vanilla's, the jar's `loot_table/entities/frostmaw.json`: both its pools need `killed_by_player` (the ice
+    crystal when it has one; the Petiole disc without one, in rain), and no pack datapack or KubeJS script overrides it. So a
+    Frostmaw killed by the other drops nothing, and no experience (vanilla drops experience only after a player's hit), unless
+    a player hit it within 100 ticks of its death, which is then a player's kill for the loot as for the credit: a player who
+    lures a Frostmaw home and finishes the loser gets its crystal, as a kill at the den would give (for Ben, if it matters).
+  - **Scope:** boss member slots only (the Frostmaw's den; no other camp culture's member renewal is a boss's). A grove's
+    warrior gone missing back at a full grove is left standing as before (fork F3): the census path is shared but the pairing
+    is gated on `boss`, which keeps the rule where Ben's answer put it. The grove's Umvuthi is the chief's slot, whose
+    write-off retires its generation at a death, so a returning Umvuthi was removed already. Lairs (dragons, S5) are not on
+    this path.
+  - **Save:** rides MZB-1402's RTCF and meta 14 (nothing released between them): a camp's lists end with its rivals, after
+    left behind, and the stats with `camp_fights`. Java's `Camps.fights` counts the lines played.
+  - **Tests** (`tests/camp.rs`; `a_missing_member_back_at_a_full_camp_is_left_standing_and_its_death_counts` replaced):
+    `a_missing_member_back_at_a_full_den_is_set_to_fight_its_replacement` (the pairing, its tags kept or stripped, not
+    removed, a rival handed over as missing, set again at the next census), `the_replacement_dying_in_the_fight_gives_its_slot_to_the_returner`
+    (by a mob or no one: no pressure, no SPAWN, no write-off, no wait, the returner's UUID in the slot; by a player: a
+    player's loss and the returner still takes the slot), `the_returner_dying_books_nothing` (by a mob, stripped, by a
+    player), `a_missing_warrior_back_at_a_full_grove_is_left_standing`; synth's I3 counts a rival as a body no slot holds.
+    mowziesmobs `aLuredBodyIsAPlayerLossAndFightsItsReplacementOnItsReturn` (renamed from
+    `aLuredBodyIsAPlayerLossAndAStraysDeathCounts`): the lured Frostmaw, written off and replaced, loads 400 blocks off and is
+    left standing, missing, with no fight; moved into the den with its AI on, the den's census pairs the two; **both healths
+    are lowered to 30 in the test setup** (the jar's 250 would make a fight of thousands of ticks, a timeout sized to that
+    would be most of the test's budget), and within the logic wait's bound one of the two is left, the row names it at home
+    with count 1 and nobody missing, no wait, and P the write-off's aged; the dead one's CAMP_DEATH names its UUID. Either
+    may win; both outcomes meet the same checks. EQUILIBRIUM.md §2.3's missing members are amended.
+  - **Failing first:** the three den tests, written with main's API (the action as 9, no `rivals`) in a scratch worktree at
+    a4717c1f, fail there: the pairing "assertion `left == right` failed: one pairing, left: 0, right: 1"; the replacement's
+    death "assertion `left == right` failed: the returner holds the slot, left: [0, 0, 0, 0, 0], right: [1, 0, 0, 0, 0]";
+    the returner's death "assertion `left == right` failed: books nothing, left: 2, right: 1" (F4's player's loss).
+- **MZB-1405** (P3 3, the uninstall's GAP rule at a boss den, a test only): `uninstallLeavesHomeBodies`'s pressure check could
+  not fail on main, since the grove's warriors have no member renewal there (`renewal_bump` returns at once for them; S9
+  changes the grove's renewal), so F5's GAP rule (a home body lost while rtsim was out is no one's loss) had no GameTest at a
+  site where it books anything. **Added:** mowziesmobs `uninstallAtADenMakesAFrostmawKilledMeanwhileNoOnesLoss`, a den whose
+  adopted Frostmaw is killed while the session is stopped (the uninstall: a vanilla death, nothing journaled), then the
+  reinstall after a day's gap: the den's tail carries ROW and GAP, the new engine expects the Frostmaw at home by its UUID
+  (count 1) and spawns nothing for it, the found census and two daily recounts miss it, and it is written off as missing with
+  P unchanged and the cap's 192-day wait (within 40 ticks), where a write-off without the gap is a player's loss at P 1 with
+  a 12-day wait (the Rust test `a_write_off_under_the_ledgers_gap_is_no_ones_loss_and_waits_the_cap` has both). The grove's
+  test is unchanged. No behaviour changed, so no test fails on main for it; EQUILIBRIUM.md's S3 row names it.
+- **MZB-1403** (P2, the reinstall gap counted at the reset, and the ledger journal dependent; P3 5; supersedes MZB-1011's "not
+  journal dependent" and MZB-1036's last two points): the gap was counted only at the first `SiteLedger.get` of a server run
+  (the found records' tails, a SITE_STATE), and the marker was deleted at the first overworld save, which waited only for the
+  industry file. (A) An admin reinstalls, boots with no player and stops: no found record and no SITE_STATE, so `gaps` was
+  never bumped and the marker was gone. (B) The ledger's write that carried `gaps + 1` fails and the server crashes before
+  the next good write (the ledger was not tracked by `SavedDataWrites`): the marker was gone too. Either way the rows from
+  before the reinstall read without GAP at the next start, and a home body lost during the uninstall was a player's loss (a
+  12-day wait at P 1) instead of no one's at the cap.
+  - **The fix:** `ReinstallGuard.beforeEngineOpens`, once it has reset, calls `SiteLedger.get` (`countSiteGap`), which takes
+    the gap (`takeSiteGap`, once per reset as before) and marks the ledger dirty; a failure there is logged and leaves the count
+    to the ledger's first use, and never fails the reset. `SiteLedger` implements `JournalDependent` (its `mic_rtsim$remark` is
+    `setDirty()`, docs/choices-journal-barrier.md U-g3 and U-g4), so a failed write of it is recorded, holds the journal's file
+    and is written again at the next world save; and `onOverworldSave` keeps the marker while the industry file's write or the
+    ledger's has failed, the log line naming the file. The second also closes P3 5: a SITE_STATE the journal records as applied
+    (its command sequence) is never sent again, so with the journal's file ahead of a failed ledger write the row was lost for
+    good; now the journal's file waits for it, as for any file that holds an op's effect.
+  - **Costs (D1):** one more file in the marker's wait and in the journal's hold (one map lookup on the IO chain per save while
+    a reset's marker stands); the ledger's write failing holds the journal's file as the industry file's does (U-g1, with its
+    give-up, U-g12).
+  - **Tests** (core GameTests): `ReinstallGameTests.aReinstallResetCountsTheSiteGapBeforeAnySiteIsSeen` (A: the guard's
+    reinstall emulation, then at once, before any site could be found, the ledger has counted the gap and is dirty; a save
+    deletes the marker, and the file on disk has the gap), `SavedDataWriteHoldGameTests.theReinstallMarkerWaitsForAFailedWriteOfTheSiteLedger`
+    (B: a failed write of `mic_rtsim_sites.dat` keeps the marker, and the next save, the file written, deletes it) and
+    `SavedDataWriteHoldGameTests.aFailedWriteOfTheSiteLedgerHoldsTheJournalsFileToo` (P3 5: a real `SiteLedger` through
+    vanilla's `save(File, ...)`, a directory where its file goes: the journal's file stays W0's until the ledger writes again).
+    The first forgets the industry before its reset (`forgetAll`, as the industry tests do at their start) and checks that the
+    reset planned no chunk to adopt again: a reset plans every seeded chunk's re-adoption (UR-1), and the chunks of an earlier
+    test's district that never loads again stayed planned into `aReinstallResetsTheSimAndAdoptsTheStrippedDistrictsAgain`, which
+    ran after it and counts its own three (MZB-1407). Their failures before the fix are in MZB-1407.
+- **MZB-1406** (the viewer fixtures, written again once for this branch's formats; MZB-1039's procedure): MZB-1402's and
+  MZB-1404's RTCF and meta 14, and MZB-1400's 32-byte CAMP_BODIES lines (a journal record, so the journals are new too).
+  `crates/rtsim-view/tests/data/create` is a fresh `create -Psec1fx` round's world at 8da19617, copied to `target/` after its
+  JVM exited (its `rtsim/` with the archive, and `data/mic_rtsim_journal.dat`); `tests/data/core` a fresh core round's at
+  4d43c6ff (8da19617's code; its `rtsim/` without the archive, and the journal); `tests/fixtures.rs`'s header names both. Before, the viewer's
+  `fixtures` and `hashes` tests and rtsim-host's `gametest_worlds_open_in_the_host_with_their_saved_state` failed on the old
+  saves, as a format change makes them ("the conflict's meta page: invalid: meta page version 13, this build reads 14";
+  "conflict: pages dropped").
+- **MZB-1407** (the checks, and P2's tests failing first).
+  - **P2's GameTests failing first:** a core round at 7098aa56 (the tests, not the fix) in a scratch worktree: 191 tests, "4
+    required tests failed": `aReinstallResetCountsTheSiteGapBeforeAnySiteIsSeen` "the reset counted the gap at once (1, then
+    1)", `theReinstallMarkerWaitsForAFailedWriteOfTheSiteLedger` "the site ledger's write failed, so the marker stays on
+    disk", `aFailedWriteOfTheSiteLedgerHoldsTheJournalsFileToo` "SiteLedger is marked for the journal", and
+    `aReinstallResetsTheSimAndAdoptsTheStrippedDistrictsAgain` "A, B and C are to be adopted again: 7", which is not P2's.
+  - **That fourth failure was the new test's**, not a flake: the first core round on the branch (6729227d) failed it alone,
+    with the same text. The new reset test's reset (batch `reinstall_3`, which runs before `reinstall_1`) planned "4 chunks
+    of 1 districts" left by an earlier test, which never load again, so `reinstall_1`'s reset found 3 of its own and 4
+    still planned. 8da19617 makes the new test forget the industry first (MZB-1403).
+  - **Results.** Cargo: the workspace's tests (`--no-fail-fast`) at e7dca238 passed but for the five that read the fixtures,
+    which failed on the old saves (MZB-1406), and pass on the new ones (rtsim-view and rtsim-host at 61bc50ce, every suite);
+    on the branch merged with main 1d7974c0 (S5's review fixes, 2719c453) every suite of the workspace passed (149) and
+    clippy `-D warnings` is clean. `:core:test` (in the core rounds): 440 JUnit tests passed. GameTests from cleared worlds:
+    core "All 191 required tests passed" at 4d43c6ff (the first round, at 6729227d, failed the one above); mowziesmobs "All
+    113 required tests passed" at 8da19617's code; iceandfire "All 54 required tests passed" and `create -Psec1fx` "All 266
+    required tests passed" at 8da19617; `create -PwithMowzie` "All 271 required tests passed" at 61bc50ce (8da19617's code). The GameTest rounds ran before the merge with
+    main 1d7974c0, which merged clean (S5's review fixes are the dragons'; this branch's only ecology change is MZB-1401's
+    clamp in `found_lair`, which the merged head's cargo tests cover); no round ran on the merged head.
+  - **A flake:** mowziesmobs's first round at 8da19617's code failed `anAloftUmvuthiSettlesAndRises` alone ("its restriction
+    centre is the puppet's block (12.165525060596439 off)", the first summons' centre at its fifth step, M11's), and the rerun
+    on the same code passed it with the rest. Nothing on this branch touches a summons' restriction (the chief's slot is
+    outside MZB-1400's UUIDs, and MZB-1404's pairing is for a boss's member slots).
