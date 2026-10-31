@@ -287,6 +287,61 @@ public final class OutpostGameTests {
                 .thenSucceed();
     }
 
+    /**
+     * An outpost that joined as new in an earlier run is reported again with {@code outpostsJoinExisting} off (EQC297): the next run
+     * reads its chunk as an old one (late), which the setting refuses for an outpost the world has not met, but the site ledger
+     * holds the camp, and the engine's camp plunders on, so the bridge needs its kin predicate back. The test is the second run:
+     * the finder forgets what it knew, the reinstall guard resets the engine, nobody stands near, the chunk loads as old, and the
+     * new session is told of the camp by the ledger's row alone.
+     */
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "mic_rtsim_outposts_rerun", skyAccess = true)
+    public static void anOutpostThatJoinedAsNewIsReportedAgainWhenExistingOnesDoNotJoin(GameTestHelper helper) {
+        String test = "anOutpostThatJoinedAsNewIsReportedAgainWhenExistingOnesDoNotJoin";
+        if (!nativeOnly(helper, test))
+            return;
+        ChunkWait waits = ChunkWait.of(helper, 8000);
+        Placed p = generate(helper);
+        MinecraftServer server = p.level().getServer();
+        ConflictKit.onEnd(helper, () -> {
+            RtsimConfig.Test.setOutpostsJoinExisting(null);
+            SiteTestHooks.cleanUp(server);
+        });
+        RtsimConfig.Test.setOutpostsJoinExisting(false);
+        ServerPlayer[] viewer = {viewer(helper, p, "outpost_rerun")};
+        long[] upTo = new long[1], at = new long[1];
+        load(p, true);
+        helper.startSequence()
+                .thenWaitUntil(waits.engine(() -> check("the new outpost joined, existing ones not wanted", !found(p.faction()).isEmpty())))
+                .thenWaitUntil(waits.engine(() -> check("the ledger holds the camp: " + row(p.level(), p.faction()), row(p.level(), p.faction()) != null)))
+                .thenExecute(() -> {
+                    upTo[0] = SiteTestHooks.journalEnd();
+                    SiteTestHooks.requestSave();
+                })
+                .thenWaitUntil(waits.engine(() -> check("an engine save covers the journal through " + upTo[0], SiteTestHooks.savedThrough(upTo[0]))))
+                .thenExecute(() -> {
+                    // The next run: nothing known, nobody near, a reinstall's reset engine, the chunk loads as an old one.
+                    FakePlayers.remove(viewer[0]);
+                    Outposts.forgetForTest();
+                    SiteTestHooks.gapRestart(server, 3 * DAY);
+                    check("a session runs after the reinstall: " + RtsimSession.startFailure(), RtsimSession.current() != null);
+                    check("the new engine knows nothing of it", found(p.faction()).isEmpty());
+                })
+                .thenExecute(() -> at[0] = helper.getTick())
+                .thenWaitUntil(() -> check("the tick after the restart", helper.getTick() > at[0]))
+                .thenWaitUntil(waits.chunks(() -> check("the outpost's chunk stands through the restart",
+                        p.level().getChunkSource().getChunkNow(p.cp().x, p.cp().z) != null)))
+                .thenExecute(() -> load(p, false))
+                .thenWaitUntil(waits.engine(() -> check("the camp the ledger holds was reported to the new session although its chunk read as old",
+                        !found(p.faction()).isEmpty())))
+                .thenExecute(() -> {
+                    ScriptedEngine.Received r = found(p.faction()).get(0);
+                    check("flagged late, as the chunk read (aux " + r.aux() + ")", (r.aux() & ConflictRecords.FactionFound.FLAG_LATE) != 0);
+                })
+                .thenWaitUntil(waits.engine(() -> check("the engine gave the territory back", bridge().territories().get(p.faction()) != null)))
+                .thenExecute(() -> record(test, "rerun", "reported by the ledger's row with outpostsJoinExisting off"))
+                .thenSucceed();
+    }
+
     // ---- 4: what counts as clearing an outpost ----------------------------------------------------
 
     /**
@@ -482,7 +537,7 @@ public final class OutpostGameTests {
             if (forced)
                 ConflictKit.force(level, p.cp().x, p.cp().z, false);
         });
-        viewer(helper, p, "outpost_farmer");
+        ServerPlayer[] viewer = {viewer(helper, p, "outpost_farmer")};
         load(p, true);
         helper.startSequence()
                 .thenWaitUntil(waits.engine(() -> check("the engine gave the territory back", bridge().territories().get(p.faction()) != null)))
@@ -500,6 +555,8 @@ public final class OutpostGameTests {
                 })
                 .thenWaitUntil(waits.engine(() -> check("an engine save covers the journal through " + upTo[0], SiteTestHooks.savedThrough(upTo[0]))))
                 .thenExecute(() -> {
+                    // Nobody is near when the new session starts: the camp is in the ledger, which is enough for its report (EQC297).
+                    FakePlayers.remove(viewer[0]);
                     SiteTestHooks.gapRestart(server, 250 * DAY);
                     check("a session runs after the reinstall: " + RtsimSession.startFailure(), RtsimSession.current() != null);
                 })
