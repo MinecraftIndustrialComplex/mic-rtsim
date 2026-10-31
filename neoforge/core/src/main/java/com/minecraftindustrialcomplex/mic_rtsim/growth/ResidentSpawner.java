@@ -231,10 +231,6 @@ public final class ResidentSpawner {
         }
         if (standNear)
             standNear(level, e, pos);
-        // A settler from the edge is made 96 to 176 blocks out, where a Ribbit takes its home from: home it at the village, or
-        // its go-home goal walks it back out every night (EQC330).
-        if (walker && village != null)
-            Residents.rehome(e, village.meeting);
         if (e instanceof Mob mob)
             mob.setPersistenceRequired();
         e.setUUID(id);

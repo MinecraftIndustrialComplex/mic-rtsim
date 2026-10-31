@@ -20,7 +20,8 @@ import java.util.ArrayList;
  * arrival is spawned 96 to 176 blocks out ({@link ResidentSpawner}) and registered in {@link VillageRegistry#walkers}; this
  * steers each every {@link #WALK_STEP_TICKS}, a hop of {@link #HOP_BLOCKS} at a time toward the meeting point, which vanilla's
  * {@code MoveToTargetSink} (a villager) or the navigation (a Ribbit) walks. The walk ends within {@link #DONE_BLOCKS} of the
- * meeting point, where the schedule, beds and job sites take over.
+ * meeting point, where the schedule, beds and job sites take over. A resident type with a home of its own (a Ribbit's) is homed
+ * at each hop's target while it walks and at the meeting point when the walk ends ({@link Residents#rehome}, EQC330).
  *
  * <p>The sim said they arrived, and the walk is only how it looks: a walker nobody can see (no player within the watch radius
  * of it or of the village) is put at the meeting point at once, and so is one still walking at its deadline. A walker whose
@@ -137,6 +138,10 @@ public final class Walkers {
         if (level.getChunkSource().getChunkNow(tx >> 4, tz >> 4) == null)
             return;
         BlockPos target = new BlockPos(tx, level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, tx, tz), tz);
+        // Its home is where it is going (a Ribbit's go-home goal takes it there at night, as the steering does), not the spot
+        // it was made at, 96 to 176 blocks out: a goal whose home is that far away cannot path to it and cancels the walk
+        // (EQC330). The walk's end homes it at the meeting point.
+        Residents.rehome(e, target);
         if (e instanceof Villager v)
             v.getBrain().setMemory(MemoryModuleType.WALK_TARGET, new WalkTarget(new BlockPosTracker(target), 0.5f, 2));
         else if (e instanceof Mob m)
