@@ -1371,6 +1371,25 @@ fn a_spawn_refused_for_a_chunk_not_ticking_is_asked_again_soon() {
     assert_ne!(m2[0].flags & boundary::MAT_HOME_BODY, 0);
 }
 
+/// EQC320 (finding 11): a dragon's misses count against the body it believes; when that belief is
+/// cleared (its old body found gone while it is away) the misses go with it, so a body it is given
+/// later starts with none.
+#[test]
+fn clearing_a_believed_body_resets_its_misses() {
+    let mut s = scene(47);
+    let x = s.dragon("Rover", Gender::Female);
+    s.d.dragons.get_mut(x).unwrap().miss = (2, Tick(100));
+    away_with_body(&mut s, x, 0xB5);
+    let t = s.d.now().0 + 10;
+    s.census(1, false, &[], t);
+    assert_eq!(s.d.dragon(x).unwrap().body, None, "its old body is gone");
+    assert_eq!(
+        s.d.dragon(x).unwrap().miss,
+        (0, Tick(0)),
+        "the misses were the old body's"
+    );
+}
+
 /// The engine's commands through the fake plugin and its answers due by `at`, until quiet.
 fn pump(s: &mut Scene, iaf: &mut synth::FakeIaf, at: Tick) {
     loop {
