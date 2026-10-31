@@ -672,7 +672,7 @@ public final class OutpostGameTests {
         Pillager[] vanilla = new Pillager[3]; // the patrol's leader and member, and the spawn override's pillager
         ConflictBridge.Party[] envoy = new ConflictBridge.Party[1];
         int[] asks = {0, 0};
-        long[] at = new long[1];
+        long[] since = new long[1];
         ConflictKit.onEnd(helper, () -> {
             for (Pillager x : vanilla)
                 if (x != null)
@@ -706,10 +706,10 @@ public final class OutpostGameTests {
                 })
                 // 2,000 ticks with the player reporting where it stands, as a connected one does: a player who goes quiet is gone
                 // after 2,400 ticks, and the party with it.
-                .thenExecute(() -> at[0] = level.getGameTime())
+                .thenExecute(() -> since[0] = level.getGameTime())
                 .thenWaitUntil(waits.logic(() -> {
                     ConflictKit.reportPlayer(player);
-                    check("2,000 ticks pass (" + (level.getGameTime() - at[0]) + ")", level.getGameTime() - at[0] >= 2_000);
+                    check("2,000 ticks pass (" + (level.getGameTime() - since[0]) + ")", level.getGameTime() - since[0] >= 2_000);
                 }))
                 .thenExecute(() -> {
                     for (Pillager x : vanilla) {
