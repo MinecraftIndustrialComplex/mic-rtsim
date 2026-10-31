@@ -1325,6 +1325,52 @@ fn a_census_adoption_carries_the_oil_reserve() {
     assert_eq!(a[0].oil, want, "the dragon's own reserve");
 }
 
+/// EQC318 (finding 9): a home spawn refused because the roost's chunk does not entity-tick (a
+/// simulation distance under the view distance) holds only a moment: the next sighting asks again,
+/// not a day later. A refusal still makes no record a step.
+#[test]
+fn a_spawn_refused_for_a_chunk_not_ticking_is_asked_again_soon() {
+    let mut s = scene(46);
+    let x = s.dragon("Owed", Gender::Female);
+    s.d.player_stays(
+        &mut s.w,
+        PLAYER,
+        Pos::new(0, 700, 1500),
+        Tick(100),
+        Tick(3_000),
+    );
+    s.run(120);
+    let m = materializes(&s.cmds());
+    assert_eq!(m.len(), 1, "seen at its lair");
+    assert_eq!(m[0].agent, agent_of(x));
+    s.ingest(
+        Obs::SpawnRejected(boundary::SpawnRejected {
+            agent: m[0].agent,
+            epoch: m[0].epoch,
+            reason: 1,
+            cmd_seq: 1,
+        }),
+        130,
+    );
+    s.run(200);
+    assert!(
+        materializes(&s.cmds()).is_empty(),
+        "not again at once: it settles at its lair, and the refusal holds"
+    );
+    // The player comes closer: its area is booked again, and the roost's chunk ticks now.
+    s.d.player_stays(
+        &mut s.w,
+        PLAYER,
+        Pos::new(0, 710, 1500),
+        Tick(2_500),
+        Tick(150_000),
+    );
+    s.run(2_520);
+    let m2 = materializes(&s.cmds());
+    assert_eq!(m2.len(), 1, "asked again at the next sighting");
+    assert_ne!(m2[0].flags & boundary::MAT_HOME_BODY, 0);
+}
+
 /// The engine's commands through the fake plugin and its answers due by `at`, until quiet.
 fn pump(s: &mut Scene, iaf: &mut synth::FakeIaf, at: Tick) {
     loop {
