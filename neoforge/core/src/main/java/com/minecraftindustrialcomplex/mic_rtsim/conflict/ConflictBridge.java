@@ -27,6 +27,7 @@ import net.minecraft.resources.ResourceKey;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.server.level.TicketType;
 import net.minecraft.sounds.SoundEvent;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.sounds.SoundSource;
@@ -597,9 +598,17 @@ public final class ConflictBridge implements SessionPlugin {
      * A chief puppet in its death animation that its band has forgotten (M11, MZB-817): the jar drops its loot when the
      * animation ends, long after {@code settleDeaths} journaled CHIEF_KILLED. Its body, that record and the record's sequence.
      */
-    private record Dying(Mob body, byte[] record, long seq) {}
+    private record Dying(Mob body, byte[] record, long seq, ServerLevel level, ChunkPos chunk) {}
     /** Named apart from {@code Camps}' own dying list. Empty but while a chief puppet is in its animation (D1). */
     private final List<Dying> dying = new ArrayList<>();
+    /**
+     * The ticket that holds a dying chief's chunk loaded until its loot is dropped (the M11 review's P2, MZB-1301): the chunk it died
+     * in at block ticking and the ring round it at FULL, keyed by the body's entity id. The body is never saved (UR-1), and a chunk that
+     * goes from ticking entities to hidden in one tick (its player logs out, teleports or respawns far, a forced chunk let go)
+     * unloads its entities in that tick, before the end of the tick could end the animation. Held, the chunk only stops ticking
+     * entities, and {@link #endDying} drops the loot at the end of that tick. Removed with the entry; the lifespan is a backstop.
+     */
+    private static final TicketType<Integer> DYING_TICKET = TicketType.create("mic_rtsim_dying_chief", Integer::compare, 600);
     /** What {@code deathTime} is set to for the jar's own end of the animation (MZB-817): past any duration. */
     private static final int DEATH_TIME_DONE = 1_000_000;
     private final Territories territories = new Territories();
@@ -720,7 +729,7 @@ public final class ConflictBridge implements SessionPlugin {
         travelling.clear();
         if (!dying.isEmpty())
             MicRtsim.LOGGER.warn("[mic_rtsim] {} dying chief bodies were left by the last session; their loot carries no record", dying.size());
-        dying.clear(); // every end of a session finishes them first (MZB-817); one left is lost
+        clearDying(); // every end of a session finishes them first (MZB-817); one left is lost
         territories.clear();
         notices.clear();
         signals.clear();
@@ -769,7 +778,7 @@ public final class ConflictBridge implements SessionPlugin {
             finishDying(); // the loot is not lost with the session (MZB-817); a failed session carries no record
         } catch (RuntimeException ex) {
             MicRtsim.LOGGER.error("[mic_rtsim] a dying chief could not be finished at the session's failure", ex);
-            dying.clear();
+            clearDying();
         }
         for (Party p : List.copyOf(byAgent.values()))
             discardAll(p);
@@ -2584,7 +2593,7 @@ public final class ConflictBridge implements SessionPlugin {
             for (int i = 0; i < dying.size(); i++) {
                 Dying d = dying.get(i);
                 if (d.body() == dead) {
-                    dying.remove(i);
+                    undying(dying.remove(i));
                     for (ItemEntity drop : drops)
                         if (!drop.isRemoved())
                             session.carryOnEntity(drop, List.of(d.record()), d.seq());
@@ -2623,7 +2632,7 @@ public final class ConflictBridge implements SessionPlugin {
                         if (!drop.isRemoved())
                             session.carryOnEntity(drop, List.of(r.array()), seq);
                 } else if (sl.chief && e != null && !e.isRemoved()) {
-                    dying.add(new Dying(e, r.array(), seq)); // its drops are yet to come, at the animation's end (MZB-817)
+                    dying.add(dyingEntry(e, r.array(), seq)); // its drops are yet to come, at the animation's end (MZB-817)
                 }
                 sl.drops = null;
                 forget(sl);
@@ -2640,6 +2649,28 @@ public final class ConflictBridge implements SessionPlugin {
             if (travellerErrors++ < 3)
                 MicRtsim.LOGGER.error("[mic_rtsim] a traveller's death hook failed for {}", sl.body, ex);
         }
+    }
+
+    /** A dying chief's entry, its chunk held by {@link #DYING_TICKET} (MZB-1301). */
+    private static Dying dyingEntry(Mob body, byte[] record, long seq) {
+        if (!(body.level() instanceof ServerLevel level))
+            return new Dying(body, record, seq, null, null);
+        ChunkPos at = body.chunkPosition();
+        level.getChunkSource().addRegionTicket(DYING_TICKET, at, 1, body.getId());
+        return new Dying(body, record, seq, level, at);
+    }
+
+    /** Lets go of an entry's chunk (MZB-1301); the entry has left the list. */
+    private static void undying(Dying d) {
+        if (d != null && d.level() != null)
+            d.level().getChunkSource().removeRegionTicket(DYING_TICKET, d.chunk(), 1, d.body().getId());
+    }
+
+    /** Empties the dying list, letting go of each entry's chunk. */
+    private void clearDying() {
+        for (Dying d : dying)
+            undying(d);
+        dying.clear();
     }
 
     /** Whether a body is a chief puppet in its death animation, kept for its loot (MZB-817). */
@@ -2660,7 +2691,8 @@ public final class ConflictBridge implements SessionPlugin {
     /**
      * Ends the death animation of a dying chief whose chunk no longer ticks entities (M11, MZB-817): the jar's own end
      * runs from the body's tick, which a chunk past the ticking edge never gives, and the body is not saved (UR-1), so
-     * its loot would go with its unload. One {@code isPositionEntityTicking} read per entry per tick.
+     * its loot would go with its unload. Its chunk is held loaded meanwhile ({@link #DYING_TICKET}, MZB-1301), so it is
+     * here at the end of the tick its chunk stopped ticking. One {@code isPositionEntityTicking} read per entry per tick.
      */
     private void tickDying() {
         endDying(false);
@@ -2669,7 +2701,7 @@ public final class ConflictBridge implements SessionPlugin {
     /** Ends every dying chief's animation (the session's stop or failure, MZB-817), so no loot waits on a body. */
     private void finishDying() {
         endDying(true);
-        dying.clear();
+        clearDying();
     }
 
     private void endDying(boolean all) {
@@ -2679,7 +2711,7 @@ public final class ConflictBridge implements SessionPlugin {
             Dying d = dying.get(i);
             Mob b = d.body();
             if (b.isRemoved()) {
-                dying.remove(i);
+                undying(dying.remove(i));
                 // The jar's own end removes it as KILLED (its drops, if any, were met by onDrops); any other removal
                 // (its chunk unloading, a command, another dimension) took the body before its loot.
                 if (b.getRemovalReason() != Entity.RemovalReason.KILLED) {
@@ -2689,7 +2721,7 @@ public final class ConflictBridge implements SessionPlugin {
                 continue;
             }
             if (!b.isDeadOrDying()) {
-                dying.remove(i); // alive again (another mod): no loot is coming
+                undying(dying.remove(i)); // alive again (another mod): no loot is coming
                 continue;
             }
             if (!all && b.level() instanceof ServerLevel level && RtsimSession.entitiesTickAt(level, b.blockPosition()))
@@ -2703,7 +2735,8 @@ public final class ConflictBridge implements SessionPlugin {
             if (b.isRemoved() || all) {
                 if (!b.isRemoved())
                     deathLootLost++;
-                dying.remove(d); // its drops, if any, took it off the list already
+                if (dying.remove(d)) // its drops, if any, took it off the list already
+                    undying(d);
             }
         }
     }
