@@ -4,7 +4,7 @@
 //! under heavy pressure breaks, and a broken camp is refounded after a wait. The body camps (the
 //! Frostmaw's den, the Umvuthana's grove) are S9's and keep what they book today.
 
-use rtsim_conflict::boundary::{self, Obs};
+use rtsim_conflict::boundary::{self, Cmd, Obs};
 use rtsim_conflict::culture::PartyKind;
 use rtsim_conflict::culture::SignalKind;
 use rtsim_conflict::culture::{
@@ -1658,3 +1658,117 @@ fn the_raider_plunders_at_the_slower_mean() {
         "{got} draws against {want}"
     );
 }
+
+// ---------------------------------------------------------------- the S7 review's findings (EQC291 on)
+
+/// A fresh engine of the same seed finds the goblin camp again at `at` with `row`, while a
+/// player's smog already reaches it: the plugin reports its sources before the camp's FACTION_FOUND,
+/// so `add_faction` plans a feud for the newcomer before the row says it is broken (EQC292).
+fn found_in_smog(seed: u64, row: FoundRow, at: Tick) -> (World, Conflict, u32) {
+    let (mut w, _) = synth::world(seed);
+    let mut c = Conflict::new(
+        seed,
+        ConflictTunables::default(),
+        Cultures::builtin(),
+        Tick::ZERO,
+    );
+    synth::define_names(&mut c, &w);
+    let ci = c.cultures.index_of("goblin").unwrap();
+    let structure = c.cultures.get(ci).def.structures[0].clone();
+    c.define(4, synth::CAMP_STRUCTURE, &structure);
+    // The player has worked at the refinery for two hours: its smog is his.
+    let mut t = 20u64;
+    while t <= 20 + 144_000 {
+        c.observe_presence(&mut w, synth::PLAYER, synth::REFINERY_POS, Tick(t));
+        t += 1_200;
+    }
+    c.set_emission(
+        &mut w,
+        1,
+        SignalKind::Smog,
+        synth::REFINERY_POS,
+        Some(synth::REFINERY),
+        300.0,
+        Tick(144_100),
+    );
+    c.run_until(&mut w, &mut NoInfrastructure, Tick(at.0 - 1));
+    c.ingest(
+        &mut w,
+        &mut NoInfrastructure,
+        &Obs::FactionFound(boundary::FactionFound {
+            faction: synth::CAMP,
+            flags: 0,
+            dimension: u32::from(synth::CAMP_POS.frame),
+            structure: synth::CAMP_STRUCTURE,
+            pos: (synth::CAMP_POS.x, 64, synth::CAMP_POS.z),
+            home_bodies: 0,
+            census: 0,
+            row,
+        }),
+        at,
+    );
+    let f = c.faction_of_key(synth::CAMP).expect("found");
+    (w, c, f)
+}
+
+/// EQC292: a camp found broken after a reset, with a player's pollution in its reach, books no
+/// wake of a feud (the one `add_faction` planned as an active camp's is void), sends nothing and
+/// no notice while it is broken, and its feud is planned again at the refounding.
+#[test]
+fn a_camp_found_broken_in_a_players_smog_books_no_feud_wake() {
+    let (mut w1, mut c1, f1) = camp(70, "goblin");
+    break_now(&mut c1, &mut w1, f1, Tick(10 * DAY));
+    let elapsed = 5 * DAY;
+    let row = row_of(&c1, f1, elapsed);
+    assert!(row.waiting() && row.count == 0, "a broken camp's row");
+    let wait = row.wait_now_ticks();
+    let now = Tick(10 * DAY + elapsed);
+    let (mut w, mut c, f) = found_in_smog(70, row, now);
+    let player = c.player(&mut w, synth::PLAYER);
+    assert!(
+        c.feud(f, player).is_some(),
+        "the player's smog reached the camp: a feud"
+    );
+    assert!(broken(&c, f).is_some(), "found broken");
+    c.check(&w).expect("books: no live feud wake on a broken camp");
+    c.take_commands();
+    let due = broken(&c, f).unwrap().due;
+    assert_eq!(due.0, now.0 + wait);
+    c.run_until(&mut w, &mut NoInfrastructure, Tick(due.0 - 1));
+    assert!(broken(&c, f).is_some());
+    assert_eq!(c.stats.feud_wakes, 0, "no feud woke");
+    assert_eq!(c.stats.parties.iter().sum::<u64>(), 0);
+    assert!(
+        !c.take_commands().iter().any(|x| matches!(x, Cmd::Notice(_))),
+        "a notice was sent by a broken camp"
+    );
+    assert!(c.kept_notices().is_empty());
+    c.check(&w).expect("books");
+    // The refounding plans the feud again: the smog goes on, and the camp acts.
+    c.run_until(&mut w, &mut NoInfrastructure, Tick(due.0 + 30 * DAY));
+    assert!(broken(&c, f).is_none(), "refounded");
+    assert!(c.stats.feud_wakes > 0, "the feud is planned again");
+    c.check(&w).expect("books");
+}
+
+/// EQC292: the refounding ends a wait only the pool could end (`BLOCKED`), as the break does: the
+/// new band has a pool, and a feud held at `BLOCKED` is planned again, not stuck until some other
+/// change of the room unblocks it.
+#[test]
+fn the_refound_clears_a_wait_only_the_pool_could_end() {
+    let (mut w, mut c, f, b) = broken_until_due(72, "goblin");
+    let player = c.player(&mut w, synth::PLAYER);
+    // A grievance a day before the refounding, which the broken camp hears; its feud holds at
+    // `BLOCKED`, as a wake on the broken camp used to leave it.
+    kill_signal(&mut c, &mut w, player, 100.0, Tick(b.due.0 - DAY));
+    c.feud_mut(f, player).expect("a feud").wait_until = BLOCKED;
+    c.run_until(&mut w, &mut NoInfrastructure, b.due);
+    assert!(broken(&c, f).is_none(), "refounded");
+    let feud = c.feud(f, player).expect("the grievance stands");
+    assert!(
+        feud.wait_until < BLOCKED,
+        "the wait for the pool is over: {:?}",
+        feud.wait_until
+    );
+}
+

@@ -121,15 +121,7 @@ impl Conflict {
             s.broken = Some(Broken { since: at, due });
             s.check_at = None;
         }
-        // Every booked wake of a feud is void, and a wait only the pool could end is over.
-        for a in self.feud_actors(f) {
-            if let Some(feud) = self.feud_mut(f, a) {
-                feud.stamp = feud.stamp.wrapping_add(1);
-                if feud.wait_until >= BLOCKED {
-                    feud.wait_until = Tick::ZERO;
-                }
-            }
-        }
+        self.void_feuds(f);
         self.book_strain(f, due);
         self.site_touch(f);
         self.stats.breaks += 1;
@@ -160,6 +152,20 @@ impl Conflict {
         );
     }
 
+    /// Every booked wake of the camp's feuds is void, and a wait only the pool could end is over
+    /// (EQC209): what a break does to the ledger of feuds, and what a camp found broken must do
+    /// too, since `add_faction` planned its feuds before the row said it was broken (EQC292).
+    fn void_feuds(&mut self, f: u32) {
+        for a in self.feud_actors(f) {
+            if let Some(feud) = self.feud_mut(f, a) {
+                feud.stamp = feud.stamp.wrapping_add(1);
+                if feud.wait_until >= BLOCKED {
+                    feud.wait_until = Tick::ZERO;
+                }
+            }
+        }
+    }
+
     /// A pool camp new to this engine life, found with the site ledger's row (EQC212): the
     /// pressure the row had, aged by the ticks elapsed since its stamp; and a row that says WAITING
     /// with no warriors is a camp that was broken, broken still for the wait that was left (a
@@ -182,6 +188,9 @@ impl Conflict {
             (x.pool, x.pool_at, x.away) = (0.0, at, 0);
             x.plunder_stamp = x.plunder_stamp.wrapping_add(1);
             s.broken = Some(Broken { since: at, due });
+            // `add_faction` booked the camp's feuds as an active camp's (a source already
+            // emitting in reach): void, or a wake fires on a broken camp (EQC292).
+            self.void_feuds(f);
             self.book_strain(f, due);
         } else {
             self.strain_check(f, at);
@@ -235,6 +244,8 @@ impl Conflict {
         self.site_touch(f);
         self.stats.refounds += 1;
         self.schedule_plunder(f, at);
+        // A wait only the pool could end is over: the new band has a pool (EQC292).
+        self.void_feuds(f);
         for a in self.feud_actors(f) {
             self.plan_feud(f, a, at, false);
         }
