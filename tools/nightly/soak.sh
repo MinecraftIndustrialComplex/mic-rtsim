@@ -179,14 +179,16 @@ cmd_weekly() {
     every="$(build_test -p rtsim-host --test every)" || exit 4
     cli="$(build_test -p rtsim-cli --bin rtsim-cli)" || exit 4
     stem="$STATE/$(date +%F)-$sha-weekly"
-    for t in long_horizon_stability_with_kills_30_seeds kill_all_in_one_engine_8_seeds; do
+    log "weekly: long_horizon_stability_with_kills_30_seeds"
+    (cd "$SRC" && nice -n 19 ionice -c 3 "$every" long_horizon_stability_with_kills_30_seeds \
+        --ignored --exact --nocapture) >"$stem-long_horizon_stability_with_kills_30_seeds.log" 2>&1 \
+        || rc=1
+    # The kill-all table, alone and together, lives in rtsim-cli's `sim::killall`.
+    for t in kill_all_every_kind_30_seeds kill_all_in_one_engine_8_seeds; do
         log "weekly: $t"
-        (cd "$SRC" && nice -n 19 ionice -c 3 "$every" "$t" --ignored --exact --nocapture) \
-            >"$stem-$t.log" 2>&1 || rc=1
+        (cd "$SRC" && nice -n 19 ionice -c 3 "$cli" "sim::killall::tests::$t" \
+            --ignored --exact --nocapture) >"$stem-$t.log" 2>&1 || rc=1
     done
-    log "weekly: kill_all_every_kind_30_seeds"
-    (cd "$SRC" && nice -n 19 ionice -c 3 "$cli" sim::killall::tests::kill_all_every_kind_30_seeds \
-        --ignored --exact --nocapture) >"$stem-kill_all_every_kind_30_seeds.log" 2>&1 || rc=1
     echo "$(date +%F) $sha weekly $([ $rc = 0 ] && echo PASS || echo FAIL)" >"$STATE/latest-weekly"
     prune
     exit "$rc"
