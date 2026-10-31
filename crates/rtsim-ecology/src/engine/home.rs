@@ -485,11 +485,25 @@ impl Dragons {
         );
     }
 
-    /// The plugin answered an adoption, a spawn or a hand-back with the home body (EQC122).
+    /// The plugin answered an adoption, a spawn or a hand-back with the home body (EQC122). A home
+    /// body is the Ice and Fire AI's while it is loaded (EQC117), so whatever the puppet it was
+    /// had booked goes (a hand-back's puppet may have been passing or harassing): no departure,
+    /// purpose home, the plan bumped so a departure already booked is stale (EQC315). A new body
+    /// starts with no misses (EQC320).
     pub(crate) fn home_answered(&mut self, d: DragonId, entity: Uuid) {
         self.pending_home.remove(&d);
+        self.bump(d);
         let x = self.dragons.get_mut(d).expect("live");
         x.body = Some(entity);
+        if let State::Embodied { epoch, since, .. } = x.state {
+            x.state = State::Embodied {
+                epoch,
+                since,
+                depart_at: Tick(u64::MAX),
+                purpose: Purpose::Home,
+                harass: false,
+            };
+        }
         let l = x.lair;
         self.adopted.insert(entity, d);
         if let Some(l) = l {
