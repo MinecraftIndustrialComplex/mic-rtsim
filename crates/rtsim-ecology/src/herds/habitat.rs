@@ -275,6 +275,47 @@ pub enum RegionPlan {
     Found(NewHerd),
 }
 
+/// A forage cell's sustained yield, forage units a day over the year (EQC500): the most a herd
+/// can take from it, sub-season after sub-season, without running it down. In a sub-season the
+/// cell follows `F' = g F - h F²` (`forage.rs`, g = growth - decay, h = growth / capacity); a
+/// harvest H holds F still where `H = g F - h F²`, which is largest at `F = g / 2h` and gives
+/// `g² / 4h` (with no decay, `growth x capacity / 4`: the logistic's maximum sustained harvest).
+/// The yield is the mean of that over the year's twelve sub-seasons (of equal length). It is
+/// exact when the capacity is the same all year and nothing decays, as `HabitatClimate`'s cells
+/// are wherever anything grows, since one standing stock, half the capacity, is then best in
+/// every sub-season; otherwise it is an upper bound.
+pub fn cell_yield(climate: &dyn Climate, frame: u16, cx: i32, cz: i32) -> f64 {
+    let subs = super::climate::SUB_SEASONS;
+    let mut sum = 0.0;
+    for s in 0..subs {
+        let r = climate.forage(frame, cx, cz, s);
+        if r.growth_per_day <= 0.0 || r.capacity <= 0.0 {
+            continue;
+        }
+        let g = r.growth_per_day - r.decay_per_day;
+        if g > 0.0 {
+            sum += g * g * r.capacity / (4.0 * r.growth_per_day);
+        }
+    }
+    sum / f64::from(subs)
+}
+
+/// What region `(rx, rz)`'s open forage cells (those a herd may enter: known in full, not water)
+/// yield a day over the year: the sum of their [`cell_yield`]s.
+pub fn range_yield(climate: &dyn Climate, frame: u16, rx: i32, rz: i32) -> f64 {
+    let per = REGION_BLOCKS / CELL_BLOCKS;
+    let mut sum = 0.0;
+    for dz in 0..per {
+        for dx in 0..per {
+            let (cx, cz) = (rx * per + dx, rz * per + dz);
+            if climate.terrain(frame, cx, cz).is_finite() {
+                sum += cell_yield(climate, frame, cx, cz);
+            }
+        }
+    }
+    sum
+}
+
 /// The herd species of a body kind name (its vanilla entity id).
 pub fn species_of_body(body: &str) -> Option<HerdSpecies> {
     HerdSpecies::ALL.into_iter().find(|s| s.entity_id() == body)
@@ -547,5 +588,101 @@ mod tests {
             "150 cells of founders outweigh the rest"
         );
         assert_eq!(n.count, 1_200, "four animals a founder");
+    }
+
+    /// Ben's answer (EQC500): founding caps a range's K at what its open forage cells yield, so
+    /// K is the range's carrying capacity (EQUILIBRIUM.md §2.4.2) in every biome that founds a
+    /// herd, the hot and the frozen ones included.
+    #[test]
+    fn a_founded_range_is_fed_by_its_own_forage() {
+        let k = RegionKey {
+            frame: 0,
+            rx: 0,
+            rz: 0,
+        };
+        for biome in [
+            "minecraft:plains",
+            "minecraft:forest",
+            "minecraft:savanna",
+            "minecraft:snowy_slopes",
+        ] {
+            let h = world(&|p, w| p.paint(w, 0, (0, 0, 512, 512), &|_, _| land(biome)));
+            let c = HabitatClimate::new(h.clone());
+            let yields = range_yield(&c, 0, 0, 0);
+            for seed in 0..16 {
+                let RegionPlan::Found(n) =
+                    plan_region(&**h.read(), &c, k, seed, &FoundingTunables::default())
+                else {
+                    panic!("{biome} founds a herd (seed {seed})");
+                };
+                let need = n.count as f64
+                    * super::super::species::HerdSpeciesData::of(n.species).intake_per_day;
+                assert!(
+                    need <= yields,
+                    "{biome}, seed {seed}: {} {:?} eat {need:.0} a day; the range yields {yields:.0}",
+                    n.count,
+                    n.species
+                );
+            }
+        }
+    }
+
+    /// A region judged while partly explored (EQC501): its K counts only the forage cells a herd
+    /// may enter (known in full), so the known cells around them add nothing.
+    #[test]
+    fn a_partly_explored_regions_range_gets_k_from_its_open_cells_only() {
+        let k = RegionKey {
+            frame: 0,
+            rx: 0,
+            rz: 0,
+        };
+        let paint = |cells: &[(i32, i32)]| {
+            let mut w = SampledWorld::new();
+            let mut p = Painter::default();
+            for &(cx, cz) in cells {
+                let r = p.record(0, cx, cz, &|_, _| land("minecraft:plains"), &[]);
+                p.feed(&mut w, &r);
+            }
+            WorldHandle::new(Box::new(w))
+        };
+        // Four forage cells known in full: habitat cells 0..4 x 0..4.
+        let open: Vec<(i32, i32)> = (0..4).flat_map(|z| (0..4).map(move |x| (x, z))).collect();
+        // The same, and one habitat cell in each of eight other forage cells (each 1 of its 4).
+        let mut ragged = open.clone();
+        ragged.extend([
+            (4, 0),
+            (4, 2),
+            (6, 0),
+            (6, 2),
+            (0, 4),
+            (2, 4),
+            (0, 6),
+            (2, 6),
+        ]);
+        let (a, b) = (paint(&open), paint(&ragged));
+        let (ca, cb) = (
+            HabitatClimate::new(a.clone()),
+            HabitatClimate::new(b.clone()),
+        );
+        let open_cells = |c: &HabitatClimate| {
+            (0..4)
+                .flat_map(|z| (0..4).map(move |x| (x, z)))
+                .filter(|&(x, z)| c.terrain(0, x, z).is_finite())
+                .count()
+        };
+        assert_eq!(
+            (open_cells(&ca), open_cells(&cb)),
+            (4, 4),
+            "four open cells each"
+        );
+        for seed in 0..8 {
+            let pa = plan_region(&**a.read(), &ca, k, seed, &FoundingTunables::default());
+            let pb = plan_region(&**b.read(), &cb, k, seed, &FoundingTunables::default());
+            assert!(matches!(pa, RegionPlan::Found(_)), "{pa:?}");
+            assert_eq!(
+                pb, pa,
+                "seed {seed}: the cells a herd cannot enter add nothing to K"
+            );
+        }
     }
 }

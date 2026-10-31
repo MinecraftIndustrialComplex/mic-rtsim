@@ -274,3 +274,80 @@ fn decision_cost_on_the_world_model() {
         );
     }
 }
+
+/// Herds alone (no predator, no player) on an `n` x `n` checkerboard of plains and savanna
+/// regions, every region founded as the world model founds one, run for `years` sim years.
+/// Returns the herds' mean N / K over the second half (read at each year's end) and their
+/// starved over born.
+fn checkerboard(n: i32, years: u64) -> (f64, f64) {
+    let mut w = SampledWorld::new();
+    let mut p = Painter::default();
+    for rz in 0..n {
+        for rx in 0..n {
+            let biome = if (rx + rz) % 2 == 0 {
+                "minecraft:plains"
+            } else {
+                "minecraft:savanna"
+            };
+            p.paint(
+                &mut w,
+                0,
+                (rx * 512, rz * 512, (rx + 1) * 512, (rz + 1) * 512),
+                &|_, _| land(biome),
+            );
+        }
+    }
+    let world = WorldHandle::new(Box::new(w));
+    let climate = HabitatClimate::new(world.clone());
+    let mut h = herds_on(&world);
+    for rz in 0..n {
+        for rx in 0..n {
+            let k = RegionKey { frame: 0, rx, rz };
+            let plan = plan_region(
+                &**world.read(),
+                &climate,
+                k,
+                5,
+                &FoundingTunables::default(),
+            );
+            let RegionPlan::Found(f) = plan else {
+                panic!("region {rx}:{rz} founds a herd: {plan:?}");
+            };
+            h.add_herd(f, Tick::ZERO);
+        }
+    }
+    let mut legs = LegIndex::new(1_000);
+    let year = h.subs().year_ticks();
+    let (mut sum, mut reads) = (0.0, 0u32);
+    for y in 1..=years {
+        let t = Tick(y * year);
+        h.run_until(&mut legs, t);
+        let _ = h.take_commands();
+        if y > years / 2 {
+            let (mut n, mut k) = (0u64, 0u64);
+            for (id, x) in h.herds.iter() {
+                n += h.count(id, t);
+                k += x.k;
+            }
+            sum += n as f64 / k as f64;
+            reads += 1;
+        }
+    }
+    let (mut born, mut starved) = (0u64, 0u64);
+    for (_, x) in h.herds.iter() {
+        born += x.ledger.born;
+        starved += x.ledger.starved;
+    }
+    (sum / f64::from(reads), starved as f64 / born.max(1) as f64)
+}
+
+/// Ben's answer (EQC500, EQC502): savanna ranges are fed by their own forage, so their herds no
+/// longer eat out their plains neighbours: herds alone hold 0.8 of K and starve at most 5% of
+/// what is born.
+#[test]
+fn herds_alone_on_plains_and_savanna_hold_their_k() {
+    let (fill, starved) = checkerboard(4, 16);
+    eprintln!("plains and savanna: N/K {fill:.3}, starved/born {starved:.3}");
+    assert!(fill >= 0.8, "the herds hold {fill:.3} of K");
+    assert!(starved <= 0.05, "{starved:.3} of births starved");
+}
