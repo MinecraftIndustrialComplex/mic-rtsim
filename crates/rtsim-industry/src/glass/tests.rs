@@ -3423,8 +3423,20 @@ mod replay_path {
         ticks: u64,
         lat: u64,
     ) -> (i64, i64, i64, i64) {
+        let (used, coal, least, flips, _) = switched_reference_dry(line, sheets0, ticks, lat);
+        (used, coal, least, flips)
+    }
+
+    /// `switched_reference_lat`, and the ticks the consumer stood idle with no sheet to take.
+    fn switched_reference_dry(
+        line: (u64, u64, i64, i64),
+        sheets0: i64,
+        ticks: u64,
+        lat: u64,
+    ) -> (i64, i64, i64, i64, Vec<u64>) {
         let (press, consume, hi, lo) = line;
         let (mut sheets, mut used, mut coal, mut flips) = (sheets0, 0i64, 0i64, 0i64);
+        let mut dry = Vec::new();
         let mut on = sheets0 >= hi;
         let mut belt = std::collections::VecDeque::new();
         let mut least = sheets0;
@@ -3455,6 +3467,9 @@ mod replay_path {
                 sheets -= 1;
                 c = Some(consume);
             }
+            if c.is_none() {
+                dry.push(t);
+            }
             least = least.min(sheets);
             let next = if sheets >= hi {
                 true
@@ -3466,7 +3481,7 @@ mod replay_path {
             flips += i64::from(next != on);
             on = next;
         }
-        (used, coal, least, flips)
+        (used, coal, least, flips, dry)
     }
 
     /// Latency (§4.4): the press's output reaches the store over a 300-tick belt. A rise waits
@@ -4339,9 +4354,14 @@ mod replay_path {
         reads.sort_unstable();
         let line = (press, consume, hi, lo);
         let (seen, st, bps, model, books) = switched_run(line, lat, s0, span, &reads);
-        prop_assert_eq!(model, replay_model::GLASS, "fell back after {} breakpoints", bps);
+        prop_assert_eq!(
+            model,
+            replay_model::GLASS,
+            "fell back after {} breakpoints",
+            bps
+        );
         prop_assert!(books, "books");
-        let (ref_used, ref_coal, _, flips) = switched_reference_lat(
+        let (ref_used, ref_coal, _, flips, dry) = switched_reference_dry(
             (u64::from(press), u64::from(consume), hi, lo),
             s0,
             span,
@@ -4357,7 +4377,13 @@ mod replay_path {
         for (t, g) in seen.iter().chain(std::iter::once(&(span, st.clone()))) {
             let sum = g.get(BRASS) + g.get(SHEET) + g.get(COAL);
             prop_assert!(sum <= total, "at {}: {} above {}", t, sum, total);
-            prop_assert!(sum >= total - slack, "at {}: {} lost more than {}", t, total - sum, slack);
+            prop_assert!(
+                sum >= total - slack,
+                "at {}: {} lost more than {}",
+                t,
+                total - sum,
+                slack
+            );
         }
         // The composition rule: the same run without reads ends the same.
         let (_, st2, bps2, _, _) = switched_run(line, lat, s0, span, &[]);
@@ -4365,34 +4391,65 @@ mod replay_path {
         prop_assert_eq!(bps, bps2);
         // Never above the control: the consumer made at most what Create made (and the item
         // in its cycle, G2-21), and the press pressed at most what was taken plus the room
-        // left to the switch's top.
+        // left to the switch's top. Where the consumer runs dry, the replay may also be ahead
+        // by what Create lost in the dry spells the replay's cycle has not reached yet: Create's
+        // count moves in whole items, so it reaches each threshold up to an item before the
+        // replay's level does, and the replay's cycle can be longer than Create's by an item of
+        // rise and one of drain a period (choice G2-86).
         let used = 100_000 - st.get(BRASS);
         let coal = st.get(COAL);
-        prop_assert!(coal <= ref_coal + 1, "made {} above {}", coal, ref_coal);
+        let (p, c) = (u64::from(press), u64::from(consume));
+        let rise = if c > p { (p * c).div_ceil(c - p) } else { span };
+        let lag = (flips as u64 / 2 + 1) * (rise + c + 2);
+        let behind = dry.iter().filter(|&&t| t + lag > span).count() as u64;
+        let ahead = behind.div_ceil(c) as i64;
+        prop_assert!(
+            coal <= ref_coal + 1 + ahead,
+            "made {} above {} ({} dry ticks in the last {})",
+            coal,
+            ref_coal,
+            behind,
+            lag
+        );
         prop_assert!(
             used <= coal + (hi - s0).max(0) + 2,
-            "pressed {} for {} taken (switch at {}, from {})", used, coal, hi, s0
+            "pressed {} for {} taken (switch at {}, from {})",
+            used,
+            coal,
+            hi,
+            s0
         );
         // And not far below it. A switch's breakpoint costs its regime under a tick (choice
         // G2-12), and the replay's switch flips a tick before Create's at each threshold
         // (G2-20), so it flips more often, by its band over the band less two. With a belt
-        // the replay's cycle is shorter than Create's (it stops at the top, Create's belt
-        // still delivers), so it is held only where the consumer never runs dry.
+        // the replay's cycle is not Create's (it stops at the top while Create's belt still
+        // delivers; Create's count reaches each threshold up to an item early, G2-86), so it is
+        // held only where the consumer never runs dry.
         if lat == 0 {
             let lost_ticks = flips * b / (b - 2).max(1) + 4;
             prop_assert!(
                 coal >= ref_coal - lost_ticks / i64::from(consume) - 2,
-                "made {}, reference {} ({} flips)", coal, ref_coal, flips
+                "made {}, reference {} ({} flips)",
+                coal,
+                ref_coal,
+                flips
             );
             prop_assert!(
                 (used - ref_used).abs()
                     <= ref_used / 100 + (hi - lo) + 2 + lost_ticks / i64::from(press),
-                "pressed {}, reference {}", used, ref_used
+                "pressed {}, reference {}",
+                used,
+                ref_used
             );
-        } else if lo > i64::from(lat) / i64::from(consume) + 3 && s0 > i64::from(lat) / i64::from(consume) + 3 {
+        } else if lo > i64::from(lat) / i64::from(consume) + 3
+            && s0 > i64::from(lat) / i64::from(consume) + 3
+        {
             prop_assert!(
                 coal >= ref_coal - periods / i64::from(consume) - 2,
-                "made {}, reference {} (belt {})", coal, ref_coal, lat
+                "made {}, reference {} (belt {})",
+                coal,
+                ref_coal,
+                lat
             );
         }
         Ok(())
@@ -4421,12 +4478,20 @@ mod replay_path {
         }
     }
 
-    /// The shrunk case of a failure of the property above (seed cc 3c8e8ad0...): "made 5538
-    /// above 5536".
+    /// The shrunk case of a failure of the property above (seed cc 3c8e8ad0), "made 5538 above
+    /// 5536": the consumer runs dry every period on its 70-tick belt, and the replay's cycle
+    /// (9,940 ticks) is longer than Create's (9,850), so the read at 83,544 falls after Create's
+    /// ninth dry spell and before the replay's (choice G2-86).
     #[test]
     fn a_switched_line_that_runs_dry_on_its_belt_stays_under_the_control() {
-        switched_case((14, 11, 44, 43), 0.753_825_214_748_932_2, 83_544, 70, Vec::new())
-            .unwrap_or_else(|e| panic!("{e}"));
+        switched_case(
+            (14, 11, 44, 43),
+            0.753_825_214_748_932_2,
+            83_544,
+            70,
+            Vec::new(),
+        )
+        .unwrap_or_else(|e| panic!("{e}"));
     }
 
     /// The glass box's pages (G2-9, `glass::page`): a district saved and restored in the middle
