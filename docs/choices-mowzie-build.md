@@ -17621,4 +17621,26 @@ the review gave are at 43062c0b.
     (B: a failed write of `mic_rtsim_sites.dat` keeps the marker, and the next save, the file written, deletes it) and
     `SavedDataWriteHoldGameTests.aFailedWriteOfTheSiteLedgerHoldsTheJournalsFileToo` (P3 5: a real `SiteLedger` through
     vanilla's `save(File, ...)`, a directory where its file goes: the journal's file stays W0's until the ledger writes again).
-    Their failures before the fix are in MZB-1407.
+    The first forgets the industry before its reset (`forgetAll`, as the industry tests do at their start) and checks that the
+    reset planned no chunk to adopt again: a reset plans every seeded chunk's re-adoption (UR-1), and the chunks of an earlier
+    test's district that never loads again stayed planned into `aReinstallResetsTheSimAndAdoptsTheStrippedDistrictsAgain`, which
+    ran after it and counts its own three (MZB-1407). Their failures before the fix are in MZB-1407.
+- **MZB-1406** (the viewer fixtures, written again once for this branch's formats; MZB-1039's procedure): MZB-1402's and
+  MZB-1404's RTCF and meta 14, and MZB-1400's 32-byte CAMP_BODIES lines (a journal record, so the journals are new too).
+  `crates/rtsim-view/tests/data/create` is a fresh `create -Psec1fx` round's world at 8da19617, copied to `target/` after its
+  JVM exited (its `rtsim/` with the archive, and `data/mic_rtsim_journal.dat`); `tests/data/core` a fresh core round's at
+  CORECOMMIT (its `rtsim/` without the archive, and the journal); `tests/fixtures.rs`'s header names both. Before, the viewer's
+  `fixtures` and `hashes` tests and rtsim-host's `gametest_worlds_open_in_the_host_with_their_saved_state` failed on the old
+  saves, as a format change makes them ("the conflict's meta page: invalid: meta page version 13, this build reads 14";
+  "conflict: pages dropped").
+- **MZB-1407** (the checks, and P2's tests failing first).
+  - **P2's GameTests failing first:** a core round at 7098aa56 (the tests, not the fix) in a scratch worktree: 191 tests, "4
+    required tests failed": `aReinstallResetCountsTheSiteGapBeforeAnySiteIsSeen` "the reset counted the gap at once (1, then
+    1)", `theReinstallMarkerWaitsForAFailedWriteOfTheSiteLedger` "the site ledger's write failed, so the marker stays on
+    disk", `aFailedWriteOfTheSiteLedgerHoldsTheJournalsFileToo` "SiteLedger is marked for the journal", and
+    `aReinstallResetsTheSimAndAdoptsTheStrippedDistrictsAgain` "A, B and C are to be adopted again: 7", which is not P2's.
+  - **That fourth failure was the new test's**, not a flake: the first core round on the branch (6729227d) failed it alone,
+    with the same text. The new reset test's reset (batch `reinstall_3`, which runs before `reinstall_1`) planned "4 chunks
+    of 1 districts" left by an earlier test, which never load again, so `reinstall_1`'s reset found 3 of its own and 4
+    still planned. 8da19617 makes the new test forget the industry first (MZB-1403).
+  - **Results** (RESULTS).
