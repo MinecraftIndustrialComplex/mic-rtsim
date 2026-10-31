@@ -2244,6 +2244,38 @@ mod tests {
         assert_eq!(back.save(), b);
     }
 
+    /// A placing or a band's end (MZB-853) that names a faction past the table is an error at
+    /// load, as an index that does (the M11 review's P3, MZB-1306): read back, the first use of
+    /// either would panic at `factions[f]`. The same entries naming the faction there load.
+    #[test]
+    fn a_placing_or_a_band_end_past_the_factions_is_an_error() {
+        let (mut w, _) = synth::world(3);
+        let mut c = synth::conflict(3, &w);
+        c.add_faction(&mut w, synth::CAMP, "goblin", synth::CAMP_POS, Tick::ZERO);
+        let n = c.factions.len() as u32;
+        let placing = Placing {
+            op: 0x51,
+            good: 1,
+            amount: 1000,
+            dimension: 0,
+            pos: (0, 64, 0),
+        };
+        let load = |b: &[u8]| Conflict::load(c.tun.clone(), c.cultures.clone(), b);
+        for f in [n, n - 1] {
+            let mut ended = load(&c.save()).unwrap();
+            ended.chief_ended.insert(0x52, f);
+            let mut placed = load(&c.save()).unwrap();
+            placed.placing.push((f, placing));
+            for (what, x) in [("a band's end", ended), ("a placing", placed)] {
+                assert_eq!(
+                    load(&x.save()).is_err(),
+                    f == n,
+                    "{what} naming faction {f} of {n}"
+                );
+            }
+        }
+    }
+
     fn encoded(f: impl FnOnce(&mut Writer)) -> usize {
         let mut w = Writer::with_capacity(256);
         f(&mut w);

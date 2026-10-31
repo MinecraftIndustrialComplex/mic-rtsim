@@ -70,6 +70,21 @@ public final class RtsimAttachments {
             TYPES.register("applied_ops", () -> AttachmentType.builder(() -> new com.minecraftindustrialcomplex.mic_rtsim.journal.DurableOpRing())
                     .serialize(com.minecraftindustrialcomplex.mic_rtsim.journal.DurableOpRings.SERIALIZER).build());
 
+    /**
+     * GameTests only (MZB-1308): the players {@link #TEST_PER_PLAYER} is synced to while this holds, so a body's pairing data hold
+     * a payload for some players and not for others. Never true outside a test's own step.
+     */
+    public static volatile java.util.function.Predicate<net.minecraft.server.level.ServerPlayer> testPerPlayerTo = p -> false;
+
+    /**
+     * {@code mic_rtsim:test_per_player}, on a GameTest server only (null elsewhere): an attachment synced to the players
+     * {@link #testPerPlayerTo} names, the per-player data of a re-pair's test (MZB-1308). Never saved.
+     */
+    public static final Supplier<AttachmentType<Integer>> TEST_PER_PLAYER = Boolean.getBoolean("mic_rtsim.gametest")
+            ? TYPES.register("test_per_player", () -> AttachmentType.builder(() -> 0)
+                    .sync((holder, player) -> testPerPlayerTo.test(player), net.minecraft.network.codec.ByteBufCodecs.VAR_INT).build())
+            : null;
+
     /** The entity's camp tag, or null for a body no camp holds. */
     public static com.minecraftindustrialcomplex.mic_rtsim.conflict.CampMember campMember(Entity entity) {
         com.minecraftindustrialcomplex.mic_rtsim.conflict.CampMember m = entity.getExistingDataOrNull(CAMP_MEMBER);

@@ -5205,4 +5205,542 @@ public final class AloftMowzieGameTests {
                 })
                 .thenSucceed();
     }
+
+    // ---- the M11 review's fixes (MZB-1300 to MZB-1309) ---------------------------------------------------
+
+    /**
+     * A chief line in flight across its puppet's CHIEF_KILLED is stale (the M11 review's P1, MZB-1300). Grove S's Invasion floats its
+     * chief's puppet near the throne, no throne body standing; a player kills it and its CHIEF_KILLED is journaled (the engine's end of
+     * the band books that as the chief's death at its camp and frees the chief's slot, MZB-853 release 3). The chief's HAND_BACK that
+     * the engine's {@code home} sent before it booked the death then comes, in the puppet's animation and again after it: each is answered
+     * STALE, no throne body stands and none is held, and once the animation has ended one Sol Visage lies in the grove, the puppet's.
+     * Grove A's chief generation is known to the session (an ADOPT made a body of it, which then went); its puppet is killed the same
+     * way, and an ADOPT of a stray Umvuthi into the chief's slot at that generation (what the census of a grove that came in while the
+     * band's end held the chief can have in flight) is answered STALE, the stray left untagged. The control, grove C: a live puppet's
+     * HAND_BACK hands back (DONE, one Umvuthi on its throne). Fails on the code before MZB-1300: S's first HAND_BACK is DONE and a
+     * throne Umvuthi of the dead generation stands, a second boss with a second Sol Visage; A's ADOPT is DONE.
+     */
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "aloft_killed_in_flight", skyAccess = true)
+    public static void aChiefLineInFlightAcrossItsPuppetsDeathIsStale(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 6000);
+        String test = "aChiefLineInFlightAcrossItsPuppetsDeathIsStale";
+        Far far = new Far(helper, test);
+        ServerLevel level = far.level;
+        Grove[] g = {groveAt(far, 0, 0), groveAt(far, 1, 0), groveAt(far, 2, 0)}; // S: the HAND_BACK; A: the ADOPT; C: the control
+        long[] agent = {ConflictKit.newAgent(), ConflictKit.newAgent(), ConflictKit.newAgent()};
+        EntityUmvuthi[] puppet = new EntityUmvuthi[3];
+        EntityUmvuthi[] stray = new EntityUmvuthi[2]; // A's first body (adopted, then gone) and the stray its late ADOPT names
+        ServerPlayer[] player = new ServerPlayer[3];
+        int[] bandEpoch = new int[3];
+        long[] op = new long[5];
+
+        MowzieKit.seq(helper)
+                .thenExecute(() -> {
+                    for (Grove x : g)
+                        x.force();
+                })
+                .thenWaitUntil(waits.chunks(far.ready()))
+                .thenExecute(() -> {
+                    for (Grove x : g)
+                        x.lay().declare();
+                    stray[0] = MowzieKit.umvuthi(level, g[1].at(-20, 0));
+                    stray[1] = MowzieKit.umvuthi(level, g[1].at(-20, 15));
+                    for (int i = 0; i < 3; i++)
+                        player[i] = MowzieKit.player(helper, off(g[i], 0, 200), "mowzie-killed-in-flight-" + i);
+                })
+                .thenWaitUntil(waits.logic(censused(g)))
+                .thenExecute(() -> op[0] = adoptChief(g[1], stray[0], 1))
+                .thenWaitUntil(waits.logic(() -> MowzieKit.answered(g[1].faction, op[0], 1)))
+                .thenExecute(() -> {
+                    MowzieKit.allOutcomes("A's first ADOPT", ConflictKit.outcomes(g[1].faction, op[0]), DONE);
+                    stray[0].discard(); // A's chief generation is known to the session, and no throne body stands
+                    for (int i = 0; i < 3; i++)
+                        chiefBand(helper, g[i], agent[i], g[i].spot.x + 8, g[i].spot.z, 90f, List.of(), 1);
+                })
+                .thenWaitUntil(waits.logic(() -> {
+                    for (int i = 0; i < 3; i++) {
+                        puppet[i] = puppet(agent[i]);
+                        check("puppet " + i + " floats", puppet[i].isNoGravity());
+                    }
+                }))
+                .thenExecute(() -> {
+                    for (int i = 0; i < 2; i++) {
+                        bandEpoch[i] = ConflictKit.party(agent[i]).epoch;
+                        puppet[i].setLastHurtByPlayer(player[i]);
+                        MowzieKit.kill(puppet[i], level.damageSources().playerAttack(player[i]));
+                    }
+                })
+                .thenWaitUntil(waits.logic(() -> {
+                    for (int i = 0; i < 2; i++)
+                        check("puppet " + i + "'s CHIEF_KILLED is journaled (" + ConflictKit.about(ConflictRecords.CHIEF_KILLED, agent[i]).size() + ")",
+                                ConflictKit.about(ConflictRecords.CHIEF_KILLED, agent[i]).size() == 1);
+                }))
+                .thenExecute(() -> {
+                    check("S's puppet is in its animation (dying " + puppet[0].isDeadOrDying() + ", removed " + puppet[0].isRemoved() + ")",
+                            puppet[0].isDeadOrDying() && !puppet[0].isRemoved());
+                    op[1] = MowzieKit.reconcile(g[0].faction, epochOf(g[0]), g[0].spot, 3f, List.of(
+                            CampLine.party(CHIEF_SLOT, 1, UMVUTHI, HAND_BACK, CHIEF, agent[0], bandEpoch[0])));
+                    op[2] = adoptChief(g[1], stray[1], 1);
+                })
+                .thenWaitUntil(waits.logic(() -> check("the lines across the deaths are answered",
+                        ConflictKit.outcomes(g[0].faction, op[1]).size() == 1 && ConflictKit.outcomes(g[1].faction, op[2]).size() == 1)))
+                .thenIdle(5)
+                .thenExecute(() -> {
+                    check("S's HAND_BACK in the animation is answered STALE, not " + MowzieKit.outcomeName(answerOf(g[0], op[1])),
+                            answerOf(g[0], op[1]) == STALE);
+                    check("no throne body stands at S (" + thrones(level, g[0]).size() + ")", thrones(level, g[0]).isEmpty());
+                    check("none is held for it", MowzieKit.held(g[0].faction, CHIEF_SLOT, 1).isEmpty());
+                    check("A's late ADOPT is answered STALE, not " + MowzieKit.outcomeName(answerOf(g[1], op[2])), answerOf(g[1], op[2]) == STALE);
+                    check("its stray is left untagged (" + RtsimAttachments.campMember(stray[1]) + ")", RtsimAttachments.campMember(stray[1]) == null);
+                })
+                .thenWaitUntil(waits.logic(() -> check("S's puppet's animation has ended", puppet[0].isRemoved())))
+                .thenExecute(() -> op[3] = MowzieKit.reconcile(g[0].faction, epochOf(g[0]), g[0].spot, 3f, List.of(
+                        CampLine.party(CHIEF_SLOT, 1, UMVUTHI, HAND_BACK, CHIEF, agent[0], bandEpoch[0]))))
+                .thenWaitUntil(waits.logic(() -> check("S's line after the animation is answered", ConflictKit.outcomes(g[0].faction, op[3]).size() == 1)))
+                .thenIdle(20)
+                .thenExecute(() -> {
+                    check("answered STALE, not " + MowzieKit.outcomeName(answerOf(g[0], op[3])), answerOf(g[0], op[3]) == STALE);
+                    check("still no throne body at S (" + thrones(level, g[0]).size() + ")", thrones(level, g[0]).isEmpty());
+                    check("none held", MowzieKit.held(g[0].faction, CHIEF_SLOT, 1).isEmpty());
+                    check("one Sol Visage lies in S's grove, the puppet's (" + visagesNear(level, g[0].spot, 40) + ")", visagesNear(level, g[0].spot, 40) == 1);
+                    // The control: a live puppet is handed back to its throne.
+                    op[4] = MowzieKit.reconcile(g[2].faction, epochOf(g[2]), g[2].spot, 3f, List.of(
+                            CampLine.party(CHIEF_SLOT, 1, UMVUTHI, HAND_BACK, CHIEF, agent[2], ConflictKit.party(agent[2]).epoch)));
+                })
+                .thenWaitUntil(waits.logic(() -> check("the control's line is answered", ConflictKit.outcomes(g[2].faction, op[4]).size() == 1)))
+                .thenExecute(() -> {
+                    check("answered DONE, not " + MowzieKit.outcomeName(answerOf(g[2], op[4])), answerOf(g[2], op[4]) == DONE);
+                    check("one Umvuthi stands on C's throne, tagged as the chief (" + MowzieKit.held(g[2].faction, CHIEF_SLOT, 1).size() + ")",
+                            MowzieKit.held(g[2].faction, CHIEF_SLOT, 1).size() == 1);
+                    check("C's puppet is gone", puppet[2].isRemoved());
+                    record(test, "in flight", "S's HAND_BACK answered STALE in the animation and after, no throne body, one Sol Visage; A's ADOPT"
+                            + " STALE, its stray untagged; C handed back");
+                    stray[1].discard();
+                    recallAll(agent);
+                })
+                .thenIdle(30)
+                .thenExecute(() -> {
+                    drop(player);
+                    far.releaseAll();
+                })
+                .thenSucceed();
+    }
+
+    /**
+     * A throne body and its chief's puppet killed in one tick book one death and drop one Sol Visage (case B; the M11 review's P2,
+     * MZB-1303). Groves T and P each have a throne body (an adopted stray, the chief's generation 1) and an Invasion whose chief's puppet
+     * floats. In one tick a player kills both: at T the throne body first, at P the puppet first. The bridge settles the puppet's death
+     * before the camps settle the throne body's, so the puppet's CHIEF_KILLED goes and the throne body, dying, must be the second body:
+     * past both animations each grove has one death booked (one CHIEF_KILLED, no CAMP_DEATH) and one Sol Visage. Fails on the code before
+     * MZB-1303: the second mark took a live chief body only, so each grove books a CHIEF_KILLED and a CAMP_DEATH and drops two.
+     */
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "aloft_one_tick_deaths", skyAccess = true)
+    public static void aThroneBodyAndItsPuppetKilledInOneTickBookOneDeath(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 6000);
+        String test = "aThroneBodyAndItsPuppetKilledInOneTickBookOneDeath";
+        Far far = new Far(helper, test);
+        ServerLevel level = far.level;
+        Grove[] g = {groveAt(far, 0, 0), groveAt(far, 1, 0)}; // T: the throne body killed first; P: the puppet first
+        long[] agent = {ConflictKit.newAgent(), ConflictKit.newAgent()};
+        EntityUmvuthi[] throne = new EntityUmvuthi[2];
+        EntityUmvuthi[] puppet = new EntityUmvuthi[2];
+        ServerPlayer[] player = new ServerPlayer[2];
+        long[] op = new long[2];
+
+        MowzieKit.seq(helper)
+                .thenExecute(() -> {
+                    for (Grove x : g)
+                        x.force();
+                })
+                .thenWaitUntil(waits.chunks(far.ready()))
+                .thenExecute(() -> {
+                    for (int i = 0; i < 2; i++) {
+                        g[i].lay().declare();
+                        throne[i] = MowzieKit.umvuthi(level, g[i].at(-20, 0));
+                        player[i] = MowzieKit.player(helper, off(g[i], 0, 200), "mowzie-one-tick-" + i);
+                    }
+                })
+                .thenWaitUntil(waits.logic(censused(g)))
+                .thenExecute(() -> {
+                    for (int i = 0; i < 2; i++)
+                        op[i] = adoptChief(g[i], throne[i], 1);
+                })
+                .thenWaitUntil(waits.logic(() -> {
+                    for (int i = 0; i < 2; i++)
+                        MowzieKit.answered(g[i].faction, op[i], 1);
+                }))
+                .thenExecute(() -> {
+                    for (int i = 0; i < 2; i++) {
+                        MowzieKit.allOutcomes("ADOPT " + i, ConflictKit.outcomes(g[i].faction, op[i]), DONE);
+                        chiefBand(helper, g[i], agent[i], g[i].spot.x + 25, g[i].spot.z + 10, 90f, List.of(), 2);
+                    }
+                })
+                .thenWaitUntil(waits.logic(() -> {
+                    for (int i = 0; i < 2; i++) {
+                        puppet[i] = puppet(agent[i]);
+                        check("puppet " + i + " floats", puppet[i].isNoGravity());
+                    }
+                }))
+                .thenExecute(() -> {
+                    for (int i = 0; i < 2; i++) {
+                        check("grove " + i + " has booked no death yet", ConflictKit.campDeaths(g[i].faction).isEmpty()
+                                && ConflictKit.about(ConflictRecords.CHIEF_KILLED, agent[i]).isEmpty());
+                        throne[i].setLastHurtByPlayer(player[i]);
+                        puppet[i].setLastHurtByPlayer(player[i]);
+                    }
+                    // One tick: T's throne body, then its puppet; P's puppet, then its throne body.
+                    MowzieKit.kill(throne[0], level.damageSources().playerAttack(player[0]));
+                    MowzieKit.kill(puppet[0], level.damageSources().playerAttack(player[0]));
+                    MowzieKit.kill(puppet[1], level.damageSources().playerAttack(player[1]));
+                    MowzieKit.kill(throne[1], level.damageSources().playerAttack(player[1]));
+                })
+                .thenWaitUntil(waits.logic(() -> {
+                    for (int i = 0; i < 2; i++)
+                        check("grove " + i + "'s two bodies have ended their animations (throne " + throne[i].isRemoved() + ", puppet "
+                                + puppet[i].isRemoved() + ")", throne[i].isRemoved() && puppet[i].isRemoved());
+                }))
+                .thenIdle(10)
+                .thenExecute(() -> {
+                    String[] name = {"T (the throne body first)", "P (the puppet first)"};
+                    StringBuilder seen = new StringBuilder();
+                    for (int i = 0; i < 2; i++) {
+                        int camp = ConflictKit.campDeaths(g[i].faction).size(), killed = ConflictKit.about(ConflictRecords.CHIEF_KILLED, agent[i]).size();
+                        int visages = visagesNear(level, g[i].spot, 45);
+                        seen.append(name[i]).append(": ").append(camp).append(" CAMP_DEATH, ").append(killed).append(" CHIEF_KILLED, ").append(visages)
+                                .append(" Sol Visage; ");
+                        check(name[i] + ": one death booked (" + camp + " CAMP_DEATH, " + killed + " CHIEF_KILLED)", camp + killed == 1);
+                        check(name[i] + ": the puppet's CHIEF_KILLED, the throne body second (" + killed + ")", killed == 1);
+                        check(name[i] + ": one Sol Visage in the grove (" + visages + ")", visages == 1);
+                    }
+                    check("nothing is dying (" + ConflictKit.bridge().dyingBodies() + ")", ConflictKit.bridge().dyingBodies() == 0);
+                    record(test, "one tick", seen.toString().trim());
+                    recallAll(agent);
+                })
+                .thenIdle(30)
+                .thenExecute(() -> {
+                    drop(player);
+                    far.releaseAll();
+                })
+                .thenSucceed();
+    }
+
+    /**
+     * A dying chief whose chunks are let go in its animation still drops its loot (the M11 review's P2, MZB-1301). A puppet floats over
+     * a lane of forced chunks; a masked player 20 blocks off kills it. 20 ticks into its 115-tick animation the lane's chunks are let
+     * go, as a player's logout, teleport or far respawn lets go of its chunks: with no ticket left vanilla hides a chunk and unloads its
+     * entities in one tick, and the body (a puppet, never saved) went before the end of the tick could end its animation. Now its chunk
+     * is held until it has dropped: once the lane is out of memory and forced again, one Sol Visage lies where it fell, the body ended as
+     * KILLED, {@code deathLootLost} did not rise and nothing is dying. On a second lane the jar's own Umvuthi (a stray, made persistent)
+     * is killed and let go the same way: what it drops after its reload is recorded, not asserted (the jar does not save the kill data its
+     * drop reads, {@code MowzieEntity.killDataCause}). Fails on the code before MZB-1301: no Sol Visage, {@code deathLootLost} 1.
+     */
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "aloft_dying_let_go", skyAccess = true)
+    public static void aDyingChiefWhoseChunksAreLetGoDropsItsLoot(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 4000);
+        String test = "aDyingChiefWhoseChunksAreLetGoDropsItsLoot";
+        Far far = new Far(helper, test);
+        ServerLevel level = far.level;
+        Lane lane = new Lane(far, 0, 2), plain = new Lane(far, 1, 2);
+        long agent = ConflictKit.newAgent();
+        long faction = ConflictKit.newFaction();
+        EntityUmvuthi[] puppet = new EntityUmvuthi[1], control = new EntityUmvuthi[1];
+        ServerPlayer[] player = new ServerPlayer[2];
+        Vec3[] fell = new Vec3[2];
+        long[] was = new long[2]; // deathLootLost, the tick the lanes were let go
+        Entity.RemovalReason[] why = new Entity.RemovalReason[2];
+
+        MowzieKit.seq(helper)
+                .thenExecute(() -> {
+                    lane.force();
+                    plain.force();
+                })
+                .thenWaitUntil(waits.chunks(far.ready()))
+                .thenExecute(() -> {
+                    lane.floor();
+                    plain.floor();
+                    bandAt(helper, faction, agent, lane.x0 + 8, lane.top + 1, lane.z, 0f, List.of(), 1, true);
+                    player[0] = MowzieKit.player(helper, lane.at(28), "mowzie-dying-let-go");
+                    MowzieKit.mask(player[0]);
+                    control[0] = MowzieKit.umvuthi(level, plain.at(8));
+                    control[0].setPersistenceRequired();
+                    player[1] = MowzieKit.player(helper, plain.at(28), "mowzie-dying-let-go-control");
+                    MowzieKit.mask(player[1]);
+                })
+                .thenWaitUntil(waits.logic(() -> {
+                    puppet[0] = puppet(agent);
+                    check("it floats", puppet[0].isNoGravity());
+                }))
+                .thenExecute(() -> {
+                    was[0] = ConflictKit.deathLootLost();
+                    fell[0] = puppet[0].position();
+                    fell[1] = control[0].position();
+                    puppet[0].setLastHurtByPlayer(player[0]);
+                    control[0].setLastHurtByPlayer(player[1]);
+                    MowzieKit.kill(puppet[0], level.damageSources().playerAttack(player[0]));
+                    MowzieKit.kill(control[0], level.damageSources().playerAttack(player[1]));
+                })
+                .thenIdle(20)
+                .thenExecute(() -> {
+                    check("one CHIEF_KILLED (" + ConflictKit.about(ConflictRecords.CHIEF_KILLED, agent).size() + ")",
+                            ConflictKit.about(ConflictRecords.CHIEF_KILLED, agent).size() == 1);
+                    check("its body is in its animation (removed " + puppet[0].isRemoved() + ", dying " + ConflictKit.bridge().dyingBodies() + ")",
+                            !puppet[0].isRemoved() && puppet[0].isDeadOrDying() && ConflictKit.bridge().dyingBodies() == 1);
+                    check("and the control's (removed " + control[0].isRemoved() + ")", !control[0].isRemoved() && control[0].isDeadOrDying());
+                    check("no Sol Visage yet (" + visagesNear(level, fell[0], 8) + " and " + visagesNear(level, fell[1], 8) + ")",
+                            visagesNear(level, fell[0], 8) == 0 && visagesNear(level, fell[1], 8) == 0);
+                    was[1] = level.getGameTime();
+                    far.releaseRect(lane.cx0, lane.cz, lane.cx1, lane.cz);
+                    far.releaseRect(plain.cx0, plain.cz, plain.cx1, plain.cz);
+                    MowzieKit.everyTick(helper, () -> {
+                        if (why[0] == null && puppet[0].isRemoved())
+                            why[0] = puppet[0].getRemovalReason();
+                        if (why[1] == null && control[0].isRemoved())
+                            why[1] = control[0].getRemovalReason();
+                    });
+                })
+                .thenWaitUntil(waits.chunks(() -> {
+                    far.unloaded(lane.cx0, lane.cz).run();
+                    far.unloaded(lane.cx1, lane.cz).run();
+                    far.unloaded(plain.cx0, plain.cz).run();
+                    far.unloaded(plain.cx1, plain.cz).run();
+                    check("both bodies are out of the level", puppet[0].isRemoved() && control[0].isRemoved());
+                }))
+                .thenExecute(() -> {
+                    check("the puppet ended its animation, removed as KILLED (" + why[0] + ")", why[0] == Entity.RemovalReason.KILLED);
+                    check("no loot record was lost (" + was[0] + " to " + ConflictKit.deathLootLost() + ")", ConflictKit.deathLootLost() == was[0]);
+                    check("nothing is dying (" + ConflictKit.bridge().dyingBodies() + ")", ConflictKit.bridge().dyingBodies() == 0);
+                    lane.force();
+                    plain.force();
+                })
+                .thenWaitUntil(waits.chunks(far.ready()))
+                .thenIdle(200) // the control, read back dying, ends its animation from its own ticks
+                .thenExecute(() -> {
+                    int mine = visagesNear(level, fell[0], 8), theirs = visagesNear(level, fell[1], 8);
+                    check("one Sol Visage where the puppet fell, read back with its chunk (" + mine + ")", mine == 1);
+                    check("no loot record was lost (" + was[0] + " to " + ConflictKit.deathLootLost() + ")", ConflictKit.deathLootLost() == was[0]);
+                    check("no Umvuthi floats in the lane (" + level.getEntitiesOfClass(EntityUmvuthi.class, lane.area(), Entity::isNoGravity).size() + ")",
+                            level.getEntitiesOfClass(EntityUmvuthi.class, lane.area(), Entity::isNoGravity).isEmpty());
+                    record(test, "let go", "the lanes were let go 20 ticks into the animation; the puppet ended as " + why[0] + " and its Sol Visage was read back ("
+                            + mine + "); the jar's own Umvuthi, saved dying (" + why[1] + "), left " + theirs + " after its reload");
+                    recallAll(agent);
+                })
+                .thenIdle(30)
+                .thenExecute(() -> {
+                    drop(player);
+                    far.releaseAll();
+                })
+                .thenSucceed();
+    }
+
+    /**
+     * A puppet made under a canopy floats over it, and so does one put back there (the M11 review's P2, MZB-1302). A lane of forced chunks
+     * is roofed with leaves 8 blocks over its floor for 48 blocks; an Invasion stands under them. Its chief's puppet is made over the
+     * leaves (the rule's own height, MOTION_BLOCKING: the leaves' top + 3), its box clear. Then it is moved into the next row of chunks,
+     * which does not tick entities: the placing puts it back at its place, over the leaves again. Fails on the code before MZB-1302: it is
+     * made 2 blocks over the floor (MOTION_BLOCKING_NO_LEAVES plus the lift) under the leaves, where its rise is blocked and the rule lets it
+     * take no step across while its target is above it.
+     */
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "aloft_canopy", skyAccess = true)
+    public static void aPuppetMadeUnderACanopyFloatsOverIt(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 4000);
+        String test = "aPuppetMadeUnderACanopyFloatsOverIt";
+        Far far = new Far(helper, test);
+        ServerLevel level = far.level;
+        Lane lane = new Lane(far, 0, 3);
+        long agent = ConflictKit.newAgent();
+        long faction = ConflictKit.newFaction();
+        EntityUmvuthi[] puppet = new EntityUmvuthi[1];
+        double[] made = new double[2]; // the foot over the floor when made, and when put back
+        long[] strays = new long[1];
+
+        MowzieKit.seq(helper)
+                .thenExecute(lane::force)
+                .thenWaitUntil(waits.chunks(far.ready()))
+                .thenExecute(() -> {
+                    lane.floor();
+                    BlockState leaves = Blocks.OAK_LEAVES.defaultBlockState().setValue(LeavesBlock.PERSISTENT, true);
+                    for (int dx = 0; dx < 48; dx++)
+                        for (int dz = -8; dz <= 7; dz++)
+                            lane.set(dx, 8, dz, leaves);
+                    bandAt(helper, faction, agent, lane.x0 + 28, lane.top + 1, lane.z, 0f, List.of(), 1, true);
+                })
+                .thenWaitUntil(waits.logic(() -> puppet[0] = puppet(agent)))
+                .thenExecute(() -> {
+                    EntityUmvuthi u = puppet[0];
+                    made[0] = u.getY() - lane.top;
+                    check("it is made over the leaves (its foot " + made[0] + " over the floor, the leaves' top 9)", made[0] >= 9.0 - 1.0e-6);
+                    check("its box is clear of blocks", level.noCollision(u));
+                    check("it floats", u.isNoGravity());
+                    strays[0] = ConflictKit.bridge().strays;
+                    u.teleportTo(u.getX(), u.getY(), (lane.cz + 1) * 16 + 8.5);
+                })
+                .thenWaitUntil(waits.logic(() -> check("it is put back in the lane (z " + puppet[0].getZ() + ", strays " + (ConflictKit.bridge().strays - strays[0]) + ")",
+                        Math.abs(puppet[0].getZ() - lane.z) < 4.0 && ConflictKit.bridge().strays > strays[0])))
+                .thenExecute(() -> {
+                    EntityUmvuthi u = puppet[0];
+                    made[1] = u.getY() - lane.top;
+                    check("it is put back over the leaves (its foot " + made[1] + " over the floor)", made[1] >= 9.0 - 1.0e-6);
+                    check("its box is clear of blocks", level.noCollision(u));
+                    record(test, "canopy", "made " + String.format("%.2f", made[0]) + " and put back " + String.format("%.2f", made[1])
+                            + " over the floor, the leaves' top at 9");
+                    recallAll(agent);
+                })
+                .thenIdle(30)
+                .thenExecute(far::releaseAll)
+                .thenSucceed();
+    }
+
+    /**
+     * A hovering puppet holds its height against a push and Levitation (the M11 review's P3, MZB-1305). A puppet whose band carries the
+     * attack flag, its steer's end over a pool, settles there and hovers (its gravity off). It is pushed up (a motion of 1 block a tick)
+     * and given Levitation II for 400 ticks: 100 ticks on it is within 0.3 blocks of the height it hovered at, still settled and aloft,
+     * and 40 ticks after the effect is taken off within 0.06. Fails on the code before MZB-1305: a settled puppet was never stepped or
+     * zeroed, so with no gravity it drifted up.
+     */
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "aloft_hover_push", skyAccess = true)
+    public static void aHoveringPuppetHoldsItsHeight(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 4000);
+        String test = "aHoveringPuppetHoldsItsHeight";
+        Far far = new Far(helper, test);
+        ServerLevel level = far.level;
+        Lane lane = new Lane(far, 0, 3);
+        long agent = ConflictKit.newAgent();
+        long faction = ConflictKit.newFaction();
+        int from = 4, to = 44, at = 30;
+        EntityUmvuthi[] puppet = new EntityUmvuthi[1];
+        double[] y0 = new double[1];
+        double[] drift = new double[2];
+
+        MowzieKit.seq(helper)
+                .thenExecute(lane::force)
+                .thenWaitUntil(waits.chunks(far.ready()))
+                .thenExecute(() -> {
+                    lane.floor();
+                    BlockState water = Blocks.WATER.defaultBlockState(), stone = Blocks.STONE.defaultBlockState();
+                    for (int dx = from; dx <= to; dx++)
+                        for (int dz = -8; dz <= 7; dz++)
+                            for (int dy = -2; dy <= 1; dy++) {
+                                boolean wall = dz == -8 || dz == 7;
+                                lane.set(dx, dy, dz, wall ? stone : dy <= 0 ? water : Blocks.AIR.defaultBlockState());
+                            }
+                    bandAt(helper, faction, agent, lane.x0 + at, lane.top + 1, lane.z, 0f, List.of(), 1, true);
+                })
+                .thenWaitUntil(waits.logic(() -> puppet[0] = puppet(agent)))
+                .thenExecute(() -> ConflictKit.steer(agent, ConflictKit.party(agent).epoch, PACE, lane.x0 + at, lane.z, 0, true))
+                .thenWaitUntil(waits.logic(() -> {
+                    ConflictBridge.Slot sl = chiefSlot(agent);
+                    check("the puppet hovers (settled " + UmvuthiAloft.INSTANCE.settled(sl.travelMemo()) + ", gravity off " + puppet[0].isNoGravity() + ")",
+                            UmvuthiAloft.INSTANCE.settled(sl.travelMemo()) && puppet[0].isNoGravity());
+                }))
+                .thenIdle(10)
+                .thenExecute(() -> {
+                    EntityUmvuthi u = puppet[0];
+                    double x = u.getX() - lane.x0;
+                    check("over the pool (x " + x + ")", x > from + 1 && x < to);
+                    y0[0] = u.getY();
+                    u.setDeltaMovement(0.0, 1.0, 0.0);
+                    u.hurtMarked = true;
+                    u.addEffect(new MobEffectInstance(MobEffects.LEVITATION, 400, 1));
+                })
+                .thenIdle(100)
+                .thenExecute(() -> {
+                    EntityUmvuthi u = puppet[0];
+                    drift[0] = u.getY() - y0[0];
+                    check("100 ticks after the push, with Levitation on, it is back at its height (" + drift[0] + " over it)", Math.abs(drift[0]) <= 0.3);
+                    check("still settled and aloft", UmvuthiAloft.INSTANCE.settled(chiefSlot(agent).travelMemo()) && u.isNoGravity());
+                    u.removeEffect(MobEffects.LEVITATION);
+                })
+                .thenIdle(40)
+                .thenExecute(() -> {
+                    EntityUmvuthi u = puppet[0];
+                    drift[1] = u.getY() - y0[0];
+                    check("40 ticks after the effect went it is at its height (" + drift[1] + " over it)", Math.abs(drift[1]) <= 0.06);
+                    check("never wet", !u.isInWater());
+                    record(test, "hover", String.format("%.3f", drift[0]) + " off its height with Levitation, " + String.format("%.3f", drift[1]) + " after");
+                    recallAll(agent);
+                })
+                .thenIdle(30)
+                .thenExecute(far::releaseAll)
+                .thenSucceed();
+    }
+
+    /**
+     * A re-pair is skipped when any tracker's own pairing data hold something per player (the M11 review's P3, MZB-1308). Two hearers
+     * stand by a puppet, each with the puppet's chunk. The puppet carries the GameTest attachment {@code mic_rtsim:test_per_player},
+     * synced to the players {@code RtsimAttachments.testPerPlayerTo} names. The control: synced to nobody, the re-pair goes
+     * ({@code repairs} rises). Then synced to every player but the level's first: the re-pair is skipped ({@code repairsSkipped} rises,
+     * nothing sent). Fails on the code before MZB-1308: it read the pairing data of the level's first player only, found nothing per player
+     * and sent that bundle to every tracker.
+     */
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "aloft_repair_per_player", skyAccess = true)
+    public static void aRePairIsSkippedWhenAnyTrackerHasPerPlayerData(GameTestHelper helper) {
+        ChunkWait waits = ChunkWait.of(helper, 4000);
+        String test = "aRePairIsSkippedWhenAnyTrackerHasPerPlayerData";
+        Far far = new Far(helper, test);
+        ServerLevel level = far.level;
+        Lane lane = new Lane(far, 0, 4);
+        long agent = ConflictKit.newAgent();
+        long faction = ConflictKit.newFaction();
+        EntityUmvuthi[] puppet = new EntityUmvuthi[1];
+        FakePlayers.Hearer[] hearer = new FakePlayers.Hearer[2];
+        long[] was = new long[2]; // repairs, repairsSkipped
+        hearersOut(helper, hearer);
+        ConflictKit.onEnd(helper, () -> RtsimAttachments.testPerPlayerTo = p -> false);
+
+        MowzieKit.seq(helper)
+                .thenExecute(() -> far.forceRect(lane.cx0, lane.cz - 1, lane.cx1, lane.cz + 1))
+                .thenWaitUntil(waits.chunks(far.ready()))
+                .thenExecute(() -> {
+                    check("the GameTest attachment is registered", RtsimAttachments.TEST_PER_PLAYER != null);
+                    lane.top = MowzieKit.platform(level, lane.x0, lane.x1, (lane.cz - 1) * 16, (lane.cz + 1) * 16 + 15);
+                    bandAt(helper, faction, agent, lane.x0 + 32, lane.top + 1, lane.z, 0f, List.of(), 1, true);
+                    hearer[0] = FakePlayers.watching(level, new Vec3(lane.x0 + 16, lane.top + 1, lane.z + 6), "mowzie-repair-pp-a");
+                    hearer[1] = FakePlayers.watching(level, new Vec3(lane.x0 + 48, lane.top + 1, lane.z - 6), "mowzie-repair-pp-b");
+                    for (FakePlayers.Hearer h : hearer)
+                        MowzieKit.mask(h);
+                    MowzieKit.everyTick(helper, () -> {
+                        for (FakePlayers.Hearer h : hearer)
+                            if (h != null && !h.isRemoved())
+                                FakePlayers.pump(h);
+                    });
+                })
+                .thenWaitUntil(waits.logic(() -> puppet[0] = puppet(agent)))
+                .thenWaitUntil(waits.chunks(() -> {
+                    List<ServerPlayer> near = level.getChunkSource().chunkMap.getPlayers(puppet[0].chunkPosition(), false);
+                    check("both hearers have the puppet's chunk (" + near.size() + " players have it)", near.contains(hearer[0]) && near.contains(hearer[1]));
+                }))
+                .thenExecute(() -> {
+                    EntityUmvuthi u = puppet[0];
+                    u.setData(RtsimAttachments.TEST_PER_PLAYER.get(), 7);
+                    was[0] = ConflictKit.bridge().repairs;
+                    was[1] = ConflictKit.bridge().repairsSkipped;
+                    boolean control = ConflictKit.bridge().rePair(u);
+                    check("the control's re-pair went (" + control + ", repairs +" + (ConflictKit.bridge().repairs - was[0]) + ")",
+                            control && ConflictKit.bridge().repairs == was[0] + 1);
+                    ServerPlayer first = level.players().get(0);
+                    boolean sent;
+                    RtsimAttachments.testPerPlayerTo = p -> p != first;
+                    try {
+                        sent = ConflictKit.bridge().rePair(u);
+                    } finally {
+                        RtsimAttachments.testPerPlayerTo = p -> false;
+                    }
+                    long repairs = ConflictKit.bridge().repairs - was[0], skipped = ConflictKit.bridge().repairsSkipped - was[1];
+                    check("a re-pair with per-player data for a tracker but the level's first player (" + first.getGameProfile().getName()
+                            + ") is skipped (sent " + sent + ", repairs +" + repairs + ", skipped +" + skipped + ")", !sent && repairs == 1 && skipped == 1);
+                    u.removeData(RtsimAttachments.TEST_PER_PLAYER.get());
+                    record(test, "per player", "the control went; with the data synced to all but " + first.getGameProfile().getName() + " the re-pair was skipped");
+                    recallAll(agent);
+                })
+                .thenIdle(30)
+                .thenExecute(() -> {
+                    for (int i = 0; i < hearer.length; i++)
+                        if (hearer[i] != null && !hearer[i].isRemoved()) {
+                            FakePlayers.removeSeen(hearer[i]);
+                            hearer[i] = null;
+                        }
+                    far.releaseAll();
+                })
+                .thenSucceed();
+    }
 }
