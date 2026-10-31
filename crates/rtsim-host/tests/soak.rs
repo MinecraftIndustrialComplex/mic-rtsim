@@ -232,7 +232,7 @@ fn soak(plan: &Plan) -> (Run, Founded) {
         let cs = w.census();
         check_sample(&founded, next, plan, &cs, &mut run.sample_failures);
         for c in &cs {
-            if let Some(k) = KINDS.iter().find(|k| **k == c.kind) {
+            if let Some(&k) = KINDS.iter().find(|k| **k == c.kind) {
                 win.kinds.entry(k).or_default().add(c);
             }
         }
