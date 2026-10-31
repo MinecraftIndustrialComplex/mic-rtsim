@@ -10272,83 +10272,116 @@ mod conflict {
     /// The found tail across a reset (slice S7, EQC212): a pool camp that broke, found again three
     /// days later by a new engine that knows only core's ledger, is broken for the wait that was
     /// left less the days gone, with the pressure aged, and sends its own row at once; a camp with
-    /// warriors home and a pressure comes back with both.
+    /// warriors home and a pressure comes back with both, and is not broken (EQC301).
     #[test]
     fn a_pool_camps_found_tail_restores_its_pressure_and_break() {
         use rtsim_kernel::sites::{SiteKind, state_flags};
-        let (_dir, e, mut j) = pool_camp("pool-sites");
-        e.order(vec![Order::ConflictSlay {
-            faction: CAMP,
-            n: u32::MAX,
-            pressure: 1.8,
-        }])
-        .unwrap();
-        j.idle();
-        j.idle();
-        let (_, p0, broken) = strain_of(&e);
-        assert!(broken && p0 > 2.0, "P {p0}");
-        let row = j.sites.row(SiteKind::Camp, CAMP).expect("a row").clone();
-        let left_at = j.game_time;
-        let saved = j.world_save();
-        e.close(true, Duration::from_secs(5)).unwrap();
-        let mut reset = WorldSave::fresh();
-        reset.dict = saved.dict;
-        reset.sites = saved.sites;
-        reset.sites.gap();
-        let dir = tmpdir("pool-sites-reset");
-        let e = engine(&dir, 256 * 1024);
-        let mut j = Java::open(e.clone(), reset);
-        j.module_mask = MODULES;
-        let gone: u64 = 3 * TICKS_PER_DAY;
-        j.game_time = left_at + gone as i64;
-        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
-        let base = [f64::from(BASE.0) + 0.5, 64.0, f64::from(BASE.1) + 0.5];
-        j.players = vec![(PLAYER, dim, base)];
-        j.conflict_plugin = synth::FakeConflict::new(PLAYER);
-        j.idle();
-        found(&mut j, CAMP_AT);
-        j.idle();
-        j.idle();
-        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
-        let (broken, left, p) = e.with_conflict(|c, _| {
-            let f = c.faction_of_key(CAMP).expect("found again");
-            let b = c.factions[f as usize].strain.as_ref().unwrap().broken;
-            (
-                b.is_some(),
-                b.map_or(0, |b| b.due.0.saturating_sub(c.now().0)),
-                c.pressure_now(f, c.now()),
-            )
-        });
-        assert!(broken, "found broken");
-        let want = row.wait_left - gone;
-        assert!(
-            left.abs_diff(want) <= 400,
-            "the wait left: {left} against {want}"
-        );
-        let aged = p0 * (-3.0f32 / 192.0).exp2();
-        assert!(
-            (p - aged).abs() < 0.01,
-            "aged three days: {p} against {aged}"
-        );
-        let again = j
-            .sites
-            .row(SiteKind::Camp, CAMP)
-            .expect("the new engine's row");
-        assert_eq!(
-            again.flags,
-            state_flags::SHORT | state_flags::EMPTY | state_flags::BROKEN | state_flags::WAITING
-        );
-        assert!(again.wait_left.abs_diff(want) <= 400, "{again:?}");
-        // The camp acts no more than a broken camp does: nothing leaves it in 30 days.
-        let sent = e.with_conflict(|c, _| c.stats.parties.iter().sum::<u64>());
-        j.game_time += 30 * DAY;
-        j.idle();
-        assert_eq!(
-            e.with_conflict(|c, _| c.stats.parties.iter().sum::<u64>()),
-            sent
-        );
-        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
-        e.close(true, Duration::from_secs(5)).unwrap();
+        for broke in [true, false] {
+            let (_dir, e, mut j) = pool_camp(if broke { "pool-sites" } else { "pool-sites-home" });
+            // Broken: all of them, with the pressure as if more had died. Not: 25 of 60, a pressure
+            // that is over nothing.
+            e.order(vec![Order::ConflictSlay {
+                faction: CAMP,
+                n: if broke { u32::MAX } else { 25 },
+                pressure: if broke { 1.8 } else { 0.0 },
+            }])
+            .unwrap();
+            j.idle();
+            j.idle();
+            let (pool0, p0, is_broken) = strain_of(&e);
+            assert_eq!(is_broken, broke, "pool {pool0}, P {p0}");
+            if broke {
+                assert!(p0 > 2.0, "P {p0}");
+            } else {
+                assert_eq!(pool0, 35, "25 of 60 killed");
+                assert!((p0 - 25.0 / 60.0).abs() < 1e-3, "{p0}");
+            }
+            let row = j.sites.row(SiteKind::Camp, CAMP).expect("a row").clone();
+            let left_at = j.game_time;
+            let saved = j.world_save();
+            e.close(true, Duration::from_secs(5)).unwrap();
+            let mut reset = WorldSave::fresh();
+            reset.dict = saved.dict;
+            reset.sites = saved.sites;
+            reset.sites.gap();
+            let dir = tmpdir(if broke { "pool-sites-reset" } else { "pool-sites-home-reset" });
+            let e = engine(&dir, 256 * 1024);
+            let mut j = Java::open(e.clone(), reset);
+            j.module_mask = MODULES;
+            let gone: u64 = 3 * TICKS_PER_DAY;
+            j.game_time = left_at + gone as i64;
+            let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+            let base = [f64::from(BASE.0) + 0.5, 64.0, f64::from(BASE.1) + 0.5];
+            j.players = vec![(PLAYER, dim, base)];
+            j.conflict_plugin = synth::FakeConflict::new(PLAYER);
+            j.idle();
+            found(&mut j, CAMP_AT);
+            j.idle();
+            j.idle();
+            assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+            let (is_broken, left, p, pool) = e.with_conflict(|c, _| {
+                let f = c.faction_of_key(CAMP).expect("found again");
+                let b = c.factions[f as usize].strain.as_ref().unwrap().broken;
+                (
+                    b.is_some(),
+                    b.map_or(0, |b| b.due.0.saturating_sub(c.now().0)),
+                    c.pressure_now(f, c.now()),
+                    c.pool_at(f, c.now()).floor() as u32,
+                )
+            });
+            let aged = p0 * (-3.0f32 / 192.0).exp2();
+            assert!(
+                (p - aged).abs() < 0.01,
+                "broke {broke}: aged three days: {p} against {aged}"
+            );
+            let again = j
+                .sites
+                .row(SiteKind::Camp, CAMP)
+                .expect("the new engine's row");
+            if !broke {
+                // Warriors home and a pressure: the pool is the row's count, regrowing from the
+                // find, and the camp is not broken, with no wait.
+                assert!(!is_broken, "a camp with warriors home is not broken");
+                assert!(
+                    (35..=36).contains(&pool),
+                    "the row's count, regrowing from the find: {pool}"
+                );
+                assert_eq!(row.count, 35, "{row:?}");
+                assert_eq!(
+                    again.flags & (state_flags::BROKEN | state_flags::WAITING),
+                    0,
+                    "{again:?}"
+                );
+                assert_eq!(again.count, pool as u16, "{again:?}");
+                assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+                e.close(true, Duration::from_secs(5)).unwrap();
+                continue;
+            }
+            assert!(is_broken, "found broken");
+            let want = row.wait_left - gone;
+            assert!(
+                left.abs_diff(want) <= 400,
+                "the wait left: {left} against {want}"
+            );
+            assert_eq!(
+                again.flags,
+                state_flags::SHORT
+                    | state_flags::EMPTY
+                    | state_flags::BROKEN
+                    | state_flags::WAITING
+            );
+            assert!(again.wait_left.abs_diff(want) <= 400, "{again:?}");
+            // The camp acts no more than a broken camp does: nothing leaves it in 30 days.
+            let sent = e.with_conflict(|c, _| c.stats.parties.iter().sum::<u64>());
+            j.game_time += 30 * DAY;
+            j.idle();
+            assert_eq!(
+                e.with_conflict(|c, _| c.stats.parties.iter().sum::<u64>()),
+                sent
+            );
+            assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+            e.close(true, Duration::from_secs(5)).unwrap();
+        }
     }
 
     /// The site ledger's hand-over of a camp across a reset (EQUILIBRIUM.md §2.3, slice S3,
