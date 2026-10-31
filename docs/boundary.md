@@ -2636,7 +2636,7 @@ alone.
 - **Degrees**: a cell's year-round °C is the record's celsius as sent (§10.3), else, when it is NaN,
   vanilla's temperature on mic-climate's scale (-0.5 to 2.0 over -20 to +56 °C, X2-8); a dimension
   where a plugin reported seasons adds mic-climate's default season offsets by sub-season, the only
-  season in it (EQC520).
+  season in it (EQC522).
 
 
 ## 11. The world's topology: TOPOLOGY (DECISIONS.md C31; docs/choices-topology.md)
