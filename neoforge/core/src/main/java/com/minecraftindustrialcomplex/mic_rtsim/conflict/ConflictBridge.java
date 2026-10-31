@@ -489,8 +489,11 @@ public final class ConflictBridge implements SessionPlugin {
             return RtsimSession.entitiesTickAt(level, at.set(Mth.floor(placeX(f)), level.getSeaLevel(), Mth.floor(placeZ(f))));
         }
 
-        /** Its place at the mob's level's game time, on the ground where loaded; a held lurk puppet's is its hold point (M8). */
-        Vec3 place(Mob m) {
+        /**
+         * Its place at the mob's level's game time, on the {@code ground} heightmap where loaded; a held lurk puppet's is its hold
+         * point (M8).
+         */
+        Vec3 place(Mob m, Heightmap.Types ground) {
             if (holdAt != null)
                 return holdAt;
             double f = stack.walked(m.level().getGameTime());
@@ -498,7 +501,7 @@ public final class ConflictBridge implements SessionPlugin {
             double y = m.getY();
             int bx = Mth.floor(x), bz = Mth.floor(z);
             if (m.level().hasChunk(bx >> 4, bz >> 4))
-                y = m.level().getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, bx, bz);
+                y = m.level().getHeight(ground, bx, bz);
             return new Vec3(x, y, z);
         }
 
@@ -1605,9 +1608,8 @@ public final class ConflictBridge implements SessionPlugin {
                 double[] q = sl.placeXZ(now);
                 x = q[0];
                 z = q[1];
-                y = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, Mth.floor(x), Mth.floor(z));
-                if (sl.traveller != null)
-                    y += sl.traveller.lift(null); // a floating body is made in the air (MZB-808), not set down to be lifted
+                double lift = sl.traveller == null ? 0.0 : sl.traveller.lift(null); // a floating body is made in the air (MZB-808), not set down to be lifted
+                y = level.getHeight(groundFor(lift), Mth.floor(x), Mth.floor(z)) + lift;
             }
             Mob m;
             List<Mob> extras = new ArrayList<>();
@@ -2267,6 +2269,16 @@ public final class ConflictBridge implements SessionPlugin {
     }
 
     /**
+     * The ground a body is placed on (its spawn, and a displaced body's teleport back): a walker's below the leaves, as ever; a body
+     * that floats {@code lift} over it, over the leaves, the height its {@link Traveller}'s rule reads (MOTION_BLOCKING, MZB-808).
+     * Under a canopy a floating body made below the leaves was pinned there, its rise blocked and no step across while its target
+     * was above it (the M11 review's P2, MZB-1302).
+     */
+    static Heightmap.Types groundFor(double lift) {
+        return lift > 0.0 ? Heightmap.Types.MOTION_BLOCKING : Heightmap.Types.MOTION_BLOCKING_NO_LEAVES;
+    }
+
+    /**
      * A placed stack keeps to the area (MZB-125). A member out of it (not ticking where it stands, or its
      * body gone) whose place still ticks is moved back to its place, or, its body gone, made again at its
      * place after {@value #REQUEUE_COOLDOWN} ticks; the stack goes back to pending (every body out of the
@@ -2292,8 +2304,8 @@ public final class ConflictBridge implements SessionPlugin {
                 return;
             }
             if (present) {
-                Vec3 q = sl.place(e);
                 double lift = sl.traveller == null ? 0.0 : sl.traveller.lift(sl.travelMemo); // a floating body goes back up there
+                Vec3 q = sl.place(e, groundFor(lift));
                 e.stopRiding();
                 e.teleportTo(q.x, q.y + lift, q.z);
                 e.getNavigation().stop();
