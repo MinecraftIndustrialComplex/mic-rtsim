@@ -17576,3 +17576,13 @@ the review gave are at 43062c0b.
     would be most of the test's budget), and within the logic wait's bound one of the two is left, the row names it at home
     with count 1 and nobody missing, no wait, and P the write-off's aged; the dead one's CAMP_DEATH names its UUID. Either
     may win; both outcomes meet the same checks. EQUILIBRIUM.md §2.3's missing members are amended.
+- **MZB-1405** (P3 3, the uninstall's GAP rule at a boss den, a test only): `uninstallLeavesHomeBodies`'s pressure check could
+  not fail on main, since the grove's warriors have no member renewal there (`renewal_bump` returns at once for them; S9
+  changes the grove's renewal), so F5's GAP rule (a home body lost while rtsim was out is no one's loss) had no GameTest at a
+  site where it books anything. **Added:** mowziesmobs `uninstallAtADenMakesAFrostmawKilledMeanwhileNoOnesLoss`, a den whose
+  adopted Frostmaw is killed while the session is stopped (the uninstall: a vanilla death, nothing journaled), then the
+  reinstall after a day's gap: the den's tail carries ROW and GAP, the new engine expects the Frostmaw at home by its UUID
+  (count 1) and spawns nothing for it, the found census and two daily recounts miss it, and it is written off as missing with
+  P unchanged and the cap's 192-day wait (within 40 ticks), where a write-off without the gap is a player's loss at P 1 with
+  a 12-day wait (the Rust test `a_write_off_under_the_ledgers_gap_is_no_ones_loss_and_waits_the_cap` has both). The grove's
+  test is unchanged. No behaviour changed, so no test fails on main for it; EQUILIBRIUM.md's S3 row names it.
