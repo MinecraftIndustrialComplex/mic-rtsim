@@ -974,6 +974,117 @@ impl Every {
         ships.len() as u64
     }
 
+    // ---- every site as the engine holds it -----------------------------------------------------
+
+    /// Every site of the world now (between steps): what the together kill-alls and the long
+    /// run's rule bounds read, site by site.
+    pub fn sites(&self) -> Vec<SiteNow> {
+        let f = &self.founded;
+        let mut out = Vec::new();
+        self.host.e.with_dragons(|d, w| {
+            for v in &f.villages {
+                let row = w
+                    .nodes
+                    .iter()
+                    .position(|n| n.key == v.key)
+                    .and_then(|i| w.village_row(i));
+                out.push(SiteNow {
+                    kind: if v.ribbit {
+                        "village.ribbit"
+                    } else {
+                        "village.human"
+                    },
+                    key: v.key,
+                    members: row.map_or(0, |r| u64::from(r.members)),
+                    k: row.map_or(u64::from(v.beds), |r| u64::from(r.k)),
+                    broken: false,
+                });
+            }
+            for l in d.lairs.iter() {
+                out.push(SiteNow {
+                    kind: "dragon.lair",
+                    key: l.key,
+                    members: l.occupants.len() as u64,
+                    k: 1,
+                    broken: false,
+                });
+            }
+            for id in d.nests.ids() {
+                if let Some(n) = d.nests.get(id) {
+                    out.push(SiteNow {
+                        kind: "oil.nest",
+                        key: id,
+                        members: u64::from(n.worms),
+                        k: u64::from(d.tun.oil.nest.k),
+                        broken: n.state == rtsim_ecology::nest::NestState::Broken,
+                    });
+                }
+            }
+        });
+        self.host.e.with_herds(|h, _| {
+            let now = h.now();
+            let mut by: BTreeMap<(i32, i32), (u64, u64)> =
+                f.ranges.iter().map(|&r| (r, (0, 0))).collect();
+            for (id, x) in h.herds.iter() {
+                if let Some(e) = by.get_mut(&(x.range.1, x.range.2)) {
+                    e.0 += h.count(id, now);
+                    e.1 += x.k;
+                }
+            }
+            for ((rx, rz), (n, k)) in by {
+                out.push(SiteNow {
+                    kind: "herd.range",
+                    key: ((rx as u32 as u64) << 32) | u64::from(rz as u32),
+                    members: n,
+                    k,
+                    broken: false,
+                });
+            }
+        });
+        self.host.e.with_ships(|s, w| {
+            for hv in &s.havens {
+                let key = w.nodes.get(hv.node).map_or(0, |n| n.key);
+                let up = hv
+                    .ships
+                    .iter()
+                    .filter(|&&p| s.ship(p).is_some_and(|x| x.is_active()))
+                    .count();
+                out.push(SiteNow {
+                    kind: "ship.haven",
+                    key,
+                    members: up as u64,
+                    k: hv.ships.len() as u64,
+                    broken: hv.shut.is_some() || hv.broken_at.is_some(),
+                });
+            }
+        });
+        self.host.e.with_conflict(|c, _| {
+            let now = c.now();
+            let kinds = [
+                (&f.camps, "conflict.camp"),
+                (&f.outposts, "conflict.camp"),
+                (&f.dens, "conflict.den"),
+                (&f.groves, "conflict.grove"),
+            ];
+            for (camps, kind) in kinds {
+                for x in camps {
+                    let Some(fi) = c.faction_of_key(x.key) else {
+                        continue;
+                    };
+                    let fa = &c.factions[fi as usize];
+                    out.push(SiteNow {
+                        kind,
+                        key: x.key,
+                        members: c.pool_at(fi, now).max(0.0).floor() as u64 + u64::from(fa.away),
+                        k: u64::from(fa.cap),
+                        broken: fa.strain.as_ref().is_some_and(|s| s.broken.is_some()),
+                    });
+                }
+            }
+        });
+        out
+    }
+
     // ---- the teeth (EQC413) --------------------------------------------------------------------
 
     /// A site's stored pressure, its half-life and the share one member is (1/K, 1/slots).
@@ -1108,6 +1219,305 @@ impl Every {
             let _ = fs::remove_dir_all(d);
         }
         assert!(protocol.is_none(), "{protocol:?}");
+    }
+}
+
+/// One site as the engine holds it ([`Every::sites`]): its census kind, its key (a herd range's
+/// is its region, x in the high half), its members and K, and whether it is broken.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SiteNow {
+    pub kind: &'static str,
+    pub key: u64,
+    pub members: u64,
+    pub k: u64,
+    pub broken: bool,
+}
+
+/// The together kill-alls' wipes (EQC429): every site of one kind, through EQC403's paths.
+pub const WIPES: [&str; 11] = [
+    "herds.world",
+    "dragons",
+    "nests",
+    "villagers",
+    "ribbits",
+    "camps",
+    "outposts",
+    "dens",
+    "groves",
+    "umvuthi",
+    "pirates",
+];
+
+/// The sites a wipe reads (its kind, and for the camps' two rows the camps it kills).
+pub fn wipe_reads(f: &Founded, wipe: &str) -> (&'static str, Vec<u64>) {
+    let keys = |cs: &[Camp]| cs.iter().map(|c| c.key).collect::<Vec<_>>();
+    match wipe {
+        "herds.world" => ("herd.range", Vec::new()),
+        "dragons" => ("dragon.lair", Vec::new()),
+        "nests" => ("oil.nest", Vec::new()),
+        "villagers" => ("village.human", Vec::new()),
+        "ribbits" => ("village.ribbit", Vec::new()),
+        "camps" => ("conflict.camp", keys(&f.camps)),
+        "outposts" => ("conflict.camp", keys(&f.outposts)),
+        "dens" => ("conflict.den", Vec::new()),
+        "groves" => ("conflict.grove", Vec::new()),
+        "umvuthi" => ("conflict.umvuthi", Vec::new()),
+        "pirates" => ("ship.haven", Vec::new()),
+        _ => panic!("no wipe {wipe}"),
+    }
+}
+
+impl Every {
+    /// Wipe `wipe` (one of [`WIPES`]): every site of its kind killed now through the kill paths.
+    /// How many members died.
+    pub fn wipe(&mut self, wipe: &str) -> u64 {
+        let f = self.founded.clone();
+        match wipe {
+            "herds.world" => f
+                .ranges
+                .iter()
+                .map(|&r| self.cull_range(r, u64::MAX))
+                .sum(),
+            "dragons" => f.lairs.iter().map(|l| self.slay_lair(l.0)).sum(),
+            "nests" => self
+                .nests()
+                .into_iter()
+                .map(|n| self.kill_nest(n.0))
+                .sum(),
+            "villagers" | "ribbits" => f
+                .villages
+                .iter()
+                .filter(|v| v.ribbit == (wipe == "ribbits"))
+                .map(|v| u64::from(self.kill_residents(v.key, u32::MAX)))
+                .sum(),
+            "camps" => f.camps.iter().map(|c| self.slay_camp(c.key, true)).sum(),
+            "outposts" => f.outposts.iter().map(|c| self.slay_camp(c.key, true)).sum(),
+            "dens" => f
+                .dens
+                .iter()
+                .map(|c| self.visit_camp(c.key, "conflict.den", false))
+                .sum(),
+            "groves" => f
+                .groves
+                .iter()
+                .map(|c| self.visit_camp(c.key, "conflict.grove", false))
+                .sum(),
+            "umvuthi" => f
+                .groves
+                .iter()
+                .map(|c| self.visit_camp(c.key, "conflict.umvuthi", true))
+                .sum(),
+            "pirates" => f.havens.iter().map(|h| self.sink_haven(h.0)).sum(),
+            _ => panic!("no wipe {wipe}"),
+        }
+    }
+}
+
+/// One together run (EQC429): the every-kind world with the roamer to `shock_day`, then `wipe`
+/// (or nothing, the control) and a peaceful player to `to`; the sites a day.
+#[derive(Clone, Debug)]
+pub struct Together {
+    pub seed: u64,
+    pub wipe: Option<&'static str>,
+    pub shock_day: u64,
+    /// Members killed by the wipe.
+    pub killed: u64,
+    /// The sites at the end of each day from day 1.
+    pub days: Vec<(u64, Vec<SiteNow>)>,
+    pub teeth: Teeth,
+}
+
+impl Together {
+    /// The wiped kind's members and K over its read sites, each day.
+    pub fn read(&self, f: &Founded, wipe: &str) -> Vec<(u64, u64, u64, bool)> {
+        let (kind, keys) = wipe_reads(f, wipe);
+        self.days
+            .iter()
+            .map(|(d, ss)| {
+                let ours: Vec<&SiteNow> = ss
+                    .iter()
+                    .filter(|s| s.kind == kind && (keys.is_empty() || keys.contains(&s.key)))
+                    .collect();
+                let n = ours.iter().map(|s| s.members).sum();
+                let k = ours.iter().map(|s| s.k).sum();
+                // Whole: every site full; a herd range's whole is alive (it has no ceiling).
+                let whole = if kind == "herd.range" {
+                    ours.iter().all(|s| s.members > 0)
+                } else {
+                    ours.iter().all(|s| s.members >= s.k && !s.broken)
+                };
+                (*d, n, k, whole)
+            })
+            .collect()
+    }
+}
+
+/// Runs one together arm on `seed` (TEST mode, so the orders are taken).
+pub fn together(seed: u64, wipe: Option<&'static str>, shock_day: u64, to: u64) -> Together {
+    let tag = format!("together-{}", wipe.unwrap_or("control"));
+    let mut w = Every::open_test(&tag, seed);
+    let mut roamer = Roamer::new(seed);
+    let mut out = Together {
+        seed,
+        wipe,
+        shock_day,
+        killed: 0,
+        days: Vec::new(),
+        teeth: Teeth::default(),
+    };
+    for day in 1..=to {
+        w.run_to(day);
+        if day == shock_day {
+            roamer.kills = false;
+            if let Some(x) = wipe {
+                out.killed = w.wipe(x);
+            }
+        }
+        roamer.day(&mut w, day);
+        out.days.push((day, w.sites()));
+    }
+    out.teeth = w.teeth.clone();
+    w.close();
+    out
+}
+
+/// The census grid of the long run, days (the model's).
+pub const EVERY_DAYS: u64 = 24;
+
+/// The rule bounds (EQC418), read site by site every day of a run: a site past its rule's own
+/// maximum is a broken rule whatever the seed. Each episode is reported once.
+#[derive(Clone, Debug, Default)]
+pub struct Bounds {
+    /// By site: the day it went short (below K; a village below two; a camp broken), the day its
+    /// members last changed, its members then, and whether this episode was reported.
+    sites: BTreeMap<(&'static str, u64), (Option<u64>, u64, u64, bool)>,
+    /// The dragons' gated arrivals when each lair emptied.
+    gated_at_empty: BTreeMap<u64, u64>,
+    pub broken: Vec<String>,
+}
+
+impl Bounds {
+    /// Day `day`'s sites, and the dragons' gated arrivals so far.
+    pub fn look(&mut self, day: u64, sites: &[SiteNow], gated: u64) {
+        let slack = EVERY_DAYS;
+        for s in sites {
+            let short = match s.kind {
+                "village.human" | "village.ribbit" => s.members < 2,
+                "conflict.camp" => s.broken,
+                "herd.range" => s.members == 0,
+                _ => s.members < s.k,
+            };
+            let e = self
+                .sites
+                .entry((s.kind, s.key))
+                .or_insert((None, day, s.members, false));
+            if s.members != e.2 {
+                e.1 = day;
+                e.2 = s.members;
+            }
+            match (short, e.0) {
+                (false, _) => {
+                    e.0 = None;
+                    e.3 = false;
+                    self.gated_at_empty.remove(&s.key);
+                    continue;
+                }
+                (true, None) => {
+                    e.0 = Some(day);
+                    if s.kind == "dragon.lair" {
+                        self.gated_at_empty.insert(s.key, gated);
+                    }
+                }
+                (true, Some(_)) => {}
+            }
+            let since = e.0.unwrap_or(day);
+            let quiet = day - e.1;
+            let why = match s.kind {
+                // Whole within 192 days of its loss (a den's only loss is its Frostmaw's).
+                "conflict.den" if day - since > 192 + slack => Some("not whole 192 days after its loss"),
+                // The next warrior within 96 days of the last arrival or loss.
+                "conflict.grove" if quiet > 96 + slack => Some("no warrior 96 days after the last change"),
+                "village.human" | "village.ribbit" if day - since > 192 + slack => {
+                    Some("no pair 192 days after falling below two")
+                }
+                "conflict.camp" if day - since > 384 + slack => Some("not refounded 384 days after its break"),
+                "oil.nest" if quiet > 96 + slack => Some("no worm 96 days after the last change"),
+                "herd.range" if day.is_multiple_of(EVERY_DAYS) => Some("empty at a census"),
+                "dragon.lair"
+                    if day - since > 192 + slack
+                        && self.gated_at_empty.get(&s.key).is_some_and(|&g| gated == g) =>
+                {
+                    Some("empty past 216 days with no gated arrival")
+                }
+                _ => None,
+            };
+            if let Some(why) = why
+                && !e.3
+            {
+                e.3 = true;
+                self.broken.push(format!(
+                    "day {day}: {} {:#x} ({} of {}): {why}",
+                    s.kind, s.key, s.members, s.k
+                ));
+            }
+        }
+    }
+}
+
+/// One long run (EQC417): the every-kind world on `seed` for `days`, with the roamer or with
+/// nobody, its census every [`EVERY_DAYS`] days, the roamer's teeth and the rule bounds.
+#[derive(Clone, Debug)]
+pub struct LongRun {
+    pub seed: u64,
+    pub roamer: bool,
+    pub censuses: Vec<(u64, Vec<KindCensus>)>,
+    pub teeth: Teeth,
+    pub bounds: Vec<String>,
+    /// Game days a second over the run.
+    pub rate: f64,
+}
+
+/// Runs the long run on `seed` to `days` (TEST mode for the roamer's orders).
+pub fn long_run(seed: u64, roamer: bool, days: u64) -> LongRun {
+    let tag = if roamer { "long-roamer" } else { "long-nobody" };
+    let mut w = Every::open_test(tag, seed);
+    let mut r = Roamer::new(seed);
+    r.kills = roamer;
+    let mut bounds = Bounds::default();
+    let mut censuses = Vec::new();
+    let t0 = std::time::Instant::now();
+    for day in 1..=days {
+        w.run_to(day);
+        if roamer {
+            r.day(&mut w, day);
+        }
+        let gated = w.host.e.with_dragons(|d, _| d.stats.arrivals_gated);
+        bounds.look(day, &w.sites(), gated);
+        if day.is_multiple_of(EVERY_DAYS) {
+            censuses.push((day, w.census()));
+        }
+    }
+    let rate = days as f64 / t0.elapsed().as_secs_f64().max(1e-9);
+    let teeth = w.teeth.clone();
+    w.close();
+    LongRun {
+        seed,
+        roamer,
+        censuses,
+        teeth,
+        bounds: bounds.broken,
+        rate,
+    }
+}
+
+/// A census kind's level: the held share for a kind of K 1 a site (lairs, dens, the Umvuthi,
+/// ports), else members over capacity (EQC435).
+pub fn level(c: &KindCensus) -> f64 {
+    match c.kind {
+        "dragon.lair" | "conflict.den" | "conflict.umvuthi" | "ship.port" => {
+            1.0 - f64::from(c.empty) / f64::from(c.sites.max(1))
+        }
+        _ => c.fill(),
     }
 }
 

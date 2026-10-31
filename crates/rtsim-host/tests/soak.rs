@@ -80,7 +80,7 @@ impl KindWindow {
             self.renewals_at_start = c.renewals;
         }
         self.samples += 1;
-        self.fill += c.fill();
+        self.fill += every::level(c);
         let sites = f64::from(c.sites.max(1));
         self.empty += f64::from(c.empty) / sites;
         self.broken += f64::from(c.broken) / sites;
