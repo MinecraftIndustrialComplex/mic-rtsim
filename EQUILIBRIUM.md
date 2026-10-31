@@ -405,7 +405,8 @@ sees; body; cost. Rates are the model's (§3); the engine's names are given wher
 #### 2.4.1 Dragons (Ice and Fire)
 
 - **Site:** the lair (roost or cave), K = 1 occupant. M1's mated pair stays as built: at most a pair
-  per lair, so dragons are at most two per lair, and lairs are Ice and Fire's structures.
+  per lair, and one young of theirs (or of a lone breeder) until it leaves at 50 to 60 days, so
+  dragons are at most three per lair, and lairs are Ice and Fire's structures.
 - **Losses:** age (400 days, `lifespan_days`); a player's loss (§2.2: his kill, his pet's, a trap's or
   any death no wild mob is credited with; taming or any A10 removal; a roosting body gone missing), each
   `P += 1`. The bridge changes to match: `attackerKind` reads vanilla's kill credit
@@ -413,27 +414,45 @@ sees; body; cost. Rates are the model's (§3); the engine's names are given wher
   `ATTACKER_NONE` (`DragonBridge.java:758-766`, `:1000-1016`); **starve-leave:** a dragon older than 60 days whose lair's fed share (a 30-day
   moving average of how much of its need it catches) falls below 0.35 leaves; it settles in a vacant lair
   in reach whose fed share is at least 0.5, else it flies off the map and leaves the sim.
-- **Renewal:** when the lair stands empty, after `min(192, 20 x 2^P)` days (base 20 is today's
-  `respawn_delay_days`) the lair is ready. A newcomer settles only if the lair's hunting ground would
-  feed it (fed share at least 0.5), else the lair checks again every 24 days. **Source:** a hatchling
-  of dispersal age from a lair within reach (M1, Neighbour) if one exists, else today's 30-day-old
-  newcomer from 3,000 blocks (Frontier), now flying in from the nearest unexplored direction instead
-  of a random one. Near an oil field, an oil gate visitor ready to settle (OILGATE §4.2) is a Frontier
-  source too, and obeys the same wait: it may claim only an empty lair whose wait has ended.
-- **Predation (P12):** a dragon picks among herds with weight `(N - R)^2 / K` (type III: it switches
-  to what is common and leaves what is scarce), where `R = max(8, 0.1 K)` is the herd's **refuge**,
-  the share it cannot reach. `predate` never takes a herd below R. Village livestock and caravans stay
-  on the menu (weight 300 near a village, 30 elsewhere, TUNABLE), so a dragon in an eaten-out valley
-  turns to villages and roads, as P12 wants. Its catch per day is `W / (W + 200)` of its need.
-- **Bounds:** at most one occupant (or one pair) per lair; lairs are found, never made.
-- **Rates:** base 20 days, cap 192, H 96; starve-leave 0.35, arrive-food 0.5, refuge 10% (min 8).
+- **Renewal (the dragon food gate, Ben 2026-10-31; docs/overnight-choices-equilibrium.md EQC530 to
+  EQC546): new dragons come only from a food surplus.** **Births:** a lair's breeder (its oldest
+  mature occupant, stage 4, mate or no mate; a pair is one breeder) clutches every 60 days
+  (`breed_days`), and a clutch hatches one young with chance `(fed - m) / (1 - m)`, where `fed` is the
+  lair's fed share and `m` is maintenance, the starve-leave threshold 0.35: no young at or below
+  maintenance, one every clutch at a full share. The young leaves at 50 days for the nearest empty
+  lair within reach whose wait has ended and whose gate passes, flying from its parents' lair, and
+  if it finds none by 60 days it flies off the map. **Arrival gate:** when the lair stands empty,
+  after `min(192, 20 x 2^P)` days (base 20 is today's `respawn_delay_days`) the lair is ready, and
+  any newcomer settles only if it would catch at least 0.5 of its need there: `W / (W + 200)`,
+  where W sums 30 (roads and stray prey), 150 for each village and `(N - R)^2 / K` for each herd in
+  the nine regions around the lair, **each divided by one more than the other occupied lairs whose
+  nine regions hold it**. A village alone reads 0.47 and opens nothing. Shut, the lair checks again
+  every 24 days. **Source:** a young of dispersal age from a lair within reach (Neighbour) if one
+  exists, else today's 30-day-old newcomer from 3,000 blocks (Frontier), flying in from the nearest
+  unexplored direction; both through the gate, so a newcomer from beyond lands only where it has a
+  surplus. Near an oil field, an oil gate visitor ready to settle (OILGATE §4.2) is a Frontier source
+  too, and obeys the same wait and gate: it may claim only an empty lair whose wait has ended.
+- **Predation (P12):** a dragon picks its prey by utility (EQC27), never taking a herd below its
+  **refuge** `R = max(8, 0.1 K)`, the share it cannot reach (`predate`). Village livestock and
+  caravans stay on the menu, so a dragon in an eaten-out valley turns to villages and roads, as P12
+  wants. The gate's weight `(N - R)^2 / K` is type III: it reads what is common and leaves what is
+  scarce.
+- **Bounds:** at most one breeder (or one pair) and one young per lair; lairs are found, never made.
+- **Rates:** base 20 days, cap 192, H 96; maintenance (starve-leave) 0.35, arrive-food 0.5, a clutch
+  every 60 days, young leave at 50 and go at 60 days, gate weights 30, 150 a village, half 200;
+  refuge 10% (min 8).
 - **What the player sees:** a lair stands empty 20 days after its dragon dies of age (at a lair no
-  player has hit), 40 days after a player's first kill, about 87 days under steady farming; a lair whose valley is eaten out stands empty until the herds come back, and
-  its dragon is seen leaving.
+  player has hit), 40 days after a player's first kill, about 87 days under steady farming; a lair
+  whose ground feeds its dragon well raises a young every 60 days or so, which leaves for an empty
+  lair nearby or flies off; where the herds are eaten down nothing hatches, newcomers stop coming
+  and the lairs wait for the herds, and a dragon that cannot feed is seen leaving. Most of Ice and
+  Fire's lairs stand empty at its real density (§3.6).
 - **Body:** vanilla while roosting at its lair, puppet when it leaves (EQ-2, which reopens P3). Today a
   puppet always.
 - **Cost:** per lair 8 bytes of pressure, a 4-byte fed share updated at each hunt (an event that
-  exists), one wheel entry while empty. The prey weight replaces today's utility term; no new pass.
+  exists), one wheel entry while empty; one clutch entry per dragon every 60 days once mature. The
+  gate reads, for each herd and village of the nine regions, the lair cells within 1,024 blocks of
+  it, only when a wait ends, at each recheck and at each disperser's search; no new pass.
 
 #### 2.4.2 Herds and wild animals
 
@@ -1237,9 +1256,44 @@ plus the alternative food `a` (village livestock and caravans), with catch per d
   R has `w = 0`, so dragons stop hunting it before it gets there; births from R grow it at λ.
 - **Dragons do not starve where villages are:** with `a = 300` the catch is at least 0.6 of need near a
   village, above the arrive-food gate 0.5, so P12's fallback to villages and roads holds them.
+  (Before the dragon food gate. Under it a village's 150 is shared, so a village feeds the dragons
+  around it, not every dragon that comes: see below.)
 
 Type III switching alone (no refuge) stops most extinctions at the engine's appetite but not at 16
 times it (§3.6); the refuge is what makes extinction impossible.
+
+**The dragon food gate (Ben, 2026-10-31; §2.4.1, docs/overnight-choices-equilibrium.md EQC530 on).**
+Each weight is shared among the occupied lairs whose 3 x 3 holds it, and young hatch only from a
+surplus. The steady state in closed form (this repository's own derivation, a mean field: every
+region alike, with one herd of K, `v` villages and `ρ` lairs; `run.py`'s `food_gate_equilibrium`):
+
+- A held lair reads `W = (w + a) / D` and a newcomer `W' = 9 (w + a) / (9 D + 1)`, where D is the
+  dragons a region, `w = (N - R)^2 / K` the herd's weight and `a = 150 v + 30 / 9` the rest. Newcomers
+  come while `W' / (W' + h) >= θ` (h = 200, θ = 0.5), so at the gate's margin
+  **`D* = (w + a) (1 - θ) / (h θ) - 1/9`**; with fewer lairs than that, `D = ρ` and every lair is
+  held. **The dragons a region are set by the food, not by the lairs**, once the lairs are more than
+  the food feeds.
+- A herd loses `C = e w / (W + h)` a day (`e` the dragons' appetite in animals, 0.6), and on the
+  Beverton-Holt map (§3.2) its yearly production is `(K u / c)(S_y f / (1 + u x0) - (1 - S_a))` at
+  `u = N / K`, with `c = 1 + (1 - S_a) / S_y` and `x0 = S_y f / (1 - S_a) - 1`. The steady state is
+  where that equals `96 C`; bisected per species. Where `D*` is large, `W -> h θ / (1 - θ)` and
+  `C -> e (1 - θ) w / h`: the herd's level then depends on neither the villages nor the lairs.
+- Births: an established dragon reads about θ, above maintenance `m` = 0.35, so its lair hatches
+  `(θ - m) / (1 - m)` = 0.23 of its clutches, 0.37 young a dragon-year against 0.24 deaths of age.
+  Births alone would hold the intake at `m + (1 - m) 60 / 400` = 0.45, below θ: **the gate sets the
+  level, births the pace**, and the young beyond what the lairs take emigrate.
+
+| K a region, villages a region, lairs a region | Herds N/K (sheep, cow, horse) | Dragons a region | Lairs held |
+|---|---|---|---|
+| 100, none, 0.5 or 1.6 | 0.65, 0.63, 0.61 | 0.04 to 0.06 | 0.07 to 0.11 (0.5), 0.02 to 0.03 (1.6) |
+| 100, 0.8, 0.5 | 0.56, 0.52, 0.48 | 0.5 (every lair) | 1.0 |
+| 100, 0.8, 1.6 | 0.55, 0.51, 0.47 | 0.57 to 0.60 | 0.36 to 0.38 |
+| 400, none, 0.5 or 1.6 | 0.56, 0.52, 0.49 | 0.21 to 0.32 | 0.42 to 0.65 (0.5), 0.13 to 0.20 (1.6) |
+| 400, 0.8, 0.5 | 0.61, 0.56, 0.51 | 0.5 (every lair) | 1.0 |
+| 400, 0.8, 1.6 | 0.54, 0.50, 0.47 | 0.77 to 0.89 | 0.48 to 0.56 |
+
+The herds hold near half their K at any lair density; what the lairs change is how many stand
+empty.
 
 ### 3.5 The gate
 
