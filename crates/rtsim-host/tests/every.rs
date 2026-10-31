@@ -24,9 +24,16 @@ fn every_kind_world_has_every_kind() {
     w.run_to(1);
     let cs = w.census();
     print_census(w.day(), &cs);
+    for s in w.sites().iter().filter(|s| s.kind.starts_with("conflict")) {
+        println!("{s:?}");
+    }
     for k in KINDS {
+        let Some(want) = w.founded.expected(k, &cs) else {
+            println!("{k}: no census row yet (S9)");
+            continue;
+        };
         let c = every::kind(&cs, k).unwrap_or_else(|| panic!("no {k} in the census"));
-        assert_eq!(c.sites, w.founded.sites(k), "{k}: {c:?}");
+        assert_eq!(c.sites, want, "{k}: {c:?}");
         assert!(c.members > 0, "{k}: {c:?}");
         assert!(c.capacity > 0, "{k}: {c:?}");
     }

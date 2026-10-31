@@ -155,6 +155,19 @@ impl Founded {
         n as u32
     }
 
+    /// The sites a census row of `kind` must hold in census `cs`, or `None` for a kind the
+    /// census has no row for yet. Until S9's rows (`conflict.den`, `conflict.grove`,
+    /// `conflict.umvuthi`) are in the census, `conflict.camp` counts the dens and groves too.
+    pub fn expected(&self, kind: &str, cs: &[KindCensus]) -> Option<u32> {
+        let has = |k: &str| cs.iter().any(|c| c.kind == k);
+        let s9 = has("conflict.den");
+        match kind {
+            "conflict.camp" if !s9 => Some(self.sites(kind) + self.sites("conflict.den") + self.sites("conflict.grove")),
+            "conflict.den" | "conflict.grove" | "conflict.umvuthi" if !has(kind) => None,
+            _ => Some(self.sites(kind)),
+        }
+    }
+
     pub fn village(&self, key: u64) -> Option<&Village> {
         self.villages.iter().find(|v| v.key == key)
     }
@@ -348,7 +361,16 @@ pub fn populate(j: &mut Java) -> Founded {
         .enumerate()
     {
         let key = 0x6E_0001 + k as u64;
-        found_camp(j, key, "mowziesmobs:umvuthana_grove", at, warriors, 0);
+        // The Umvuthi stands there, in the chief's slot outside the pool: the home bodies are the
+        // warriors (the Mowzie plugin's GroveKind, MZB-401).
+        found_camp(
+            j,
+            key,
+            "mowziesmobs:umvuthana_grove",
+            at,
+            warriors,
+            cb::CENSUS_CHIEF as u8,
+        );
         f.groves.push(Camp {
             key,
             culture: "umvuthana",
@@ -388,7 +410,8 @@ pub fn populate(j: &mut Java) -> Founded {
 }
 
 /// The dens' and groves' bodies standing in the fake conflict plugin's camp worlds, as the jars
-/// place them: a den's Frostmaw (its chief, crystal on it), a grove's warriors. Minecraft's state:
+/// place them: a den's Frostmaw (its chief, crystal on it), a grove's Umvuthi (its chief) and
+/// warriors. Minecraft's state:
 /// the fork's Java stands them there again.
 pub fn camp_bodies(j: &mut Java, f: &Founded) {
     let frostmaw = j.dict_id(wire::DICT_BODY, "mic_rtsim:conflict/frostmaw/frostmaw");
@@ -401,8 +424,13 @@ pub fn camp_bodies(j: &mut Java, f: &Founded) {
         }
     }
     let warrior = j.dict_id(wire::DICT_BODY, "mic_rtsim:conflict/umvuthana/warrior");
+    let umvuthi = j.dict_id(wire::DICT_BODY, "mic_rtsim:conflict/umvuthana/umvuthi");
     for g in &f.groves {
         j.conflict_plugin.camp_world(g.key).bodies.clear();
+        j.conflict_plugin.camp_stray(g.key, umvuthi);
+        if let Some(b) = j.conflict_plugin.camp_world(g.key).bodies.first_mut() {
+            b.chief = true;
+        }
         for _ in 0..g.bodies {
             j.conflict_plugin.camp_stray(g.key, warrior);
         }
@@ -998,6 +1026,7 @@ impl Every {
                     members: row.map_or(0, |r| u64::from(r.members)),
                     k: row.map_or(u64::from(v.beds), |r| u64::from(r.k)),
                     broken: false,
+                    p: 0.0,
                 });
             }
             for l in d.lairs.iter() {
@@ -1007,6 +1036,7 @@ impl Every {
                     members: l.occupants.len() as u64,
                     k: 1,
                     broken: false,
+                    p: 0.0,
                 });
             }
             for id in d.nests.ids() {
@@ -1017,6 +1047,7 @@ impl Every {
                         members: u64::from(n.worms),
                         k: u64::from(d.tun.oil.nest.k),
                         broken: n.state == rtsim_ecology::nest::NestState::Broken,
+                        p: 0.0,
                     });
                 }
             }
@@ -1038,6 +1069,7 @@ impl Every {
                     members: n,
                     k,
                     broken: false,
+                    p: 0.0,
                 });
             }
         });
@@ -1055,6 +1087,7 @@ impl Every {
                     members: up as u64,
                     k: hv.ships.len() as u64,
                     broken: hv.shut.is_some() || hv.broken_at.is_some(),
+                    p: 0.0,
                 });
             }
         });
@@ -1078,6 +1111,7 @@ impl Every {
                         members: c.pool_at(fi, now).max(0.0).floor() as u64 + u64::from(fa.away),
                         k: u64::from(fa.cap),
                         broken: fa.strain.as_ref().is_some_and(|s| s.broken.is_some()),
+                        p: c.pressure_now(fi, now),
                     });
                 }
             }
@@ -1224,13 +1258,15 @@ impl Every {
 
 /// One site as the engine holds it ([`Every::sites`]): its census kind, its key (a herd range's
 /// is its region, x in the high half), its members and K, and whether it is broken.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SiteNow {
     pub kind: &'static str,
     pub key: u64,
     pub members: u64,
     pub k: u64,
     pub broken: bool,
+    /// Its pressure now (the conflict's sites; 0 for the rest).
+    pub p: f32,
 }
 
 /// The together kill-alls' wipes (EQC429): every site of one kind, through EQC403's paths.

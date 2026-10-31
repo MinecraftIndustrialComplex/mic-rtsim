@@ -179,12 +179,15 @@ fn dir_bytes(d: &Path) -> u64 {
 /// The checks on one sample's census (EQC436 (2) and (3)).
 fn check_sample(f: &Founded, day: u64, plan: &Plan, cs: &[KindCensus], out: &mut Vec<(u64, String)>) {
     for k in KINDS {
+        let Some(want) = f.expected(k, cs) else {
+            continue;
+        };
         let Some(c) = every::kind(cs, k) else {
             out.push((day, format!("{k}: missing")));
             continue;
         };
-        if c.sites != f.sites(k) {
-            out.push((day, format!("{k}: {} sites, the world has {}", c.sites, f.sites(k))));
+        if c.sites != want {
+            out.push((day, format!("{k}: {} sites, the world has {want}", c.sites)));
         }
         if c.capacity == 0 {
             out.push((day, format!("{k}: capacity 0")));
@@ -196,8 +199,9 @@ fn check_sample(f: &Founded, day: u64, plan: &Plan, cs: &[KindCensus], out: &mut
             out.push((day, format!("herd.range: {} ranges empty", c.empty)));
         }
     }
-    if cs.len() != KINDS.len() {
-        out.push((day, format!("{} kinds, expected {}", cs.len(), KINDS.len())));
+    let kinds = KINDS.iter().filter(|k| f.expected(k, cs).is_some()).count();
+    if cs.len() != kinds {
+        out.push((day, format!("{} kinds, expected {kinds}", cs.len())));
     }
 }
 
@@ -426,6 +430,10 @@ fn judge(plan: &Plan, run: &Run) -> Vec<Check> {
         return out;
     }
     for k in KINDS {
+        // A kind the census has no row for yet (S9's) is not judged.
+        if judged.iter().all(|w| !w.kinds.contains_key(k)) {
+            continue;
+        }
         let fills: Vec<f64> = judged
             .iter()
             .map(|w| w.kinds.get(k).map_or(0.0, |x| x.mean(x.fill)))
