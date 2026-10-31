@@ -2303,6 +2303,11 @@ mod tests {
                     ("den", "none") => assert!(m >= 0.995, "{m}"),
                     ("den", _) => assert!(m >= 0.90, "{m}"),
                     ("grove", "none") => assert!((0.95..=0.995).contains(&m), "{m}"),
+                    // Under a visitor the grove is pressed and a warrior comes back one at a time at the wait the
+                    // pressure sets: measured on the two seeds of the quick run, 0.870 under a roamer (the worst seed
+                    // 0.703) and 0.922 under a wanderer (0.766), after the S9 review's P2 fix; a mean under 0.75 is a
+                    // grove that does not renew.
+                    ("grove", _) => assert!((0.75..=1.0).contains(&m), "{m}"),
                     _ => assert!((0.0..=1.0).contains(&m), "{m}"),
                 }
                 if judged || script == "none" {

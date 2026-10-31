@@ -815,7 +815,6 @@ fn a_groves_lost_pack_lengthens_its_plunder_wait() {
 fn an_umvuthi_lost_on_a_march_marks_the_row_at_once() {
     let mut r = quiet(53, 9);
     seat_chief(&mut r);
-    let chief0 = chief_p(&r);
     let at = r.c.now();
     let p =
         r.c.order_party(&mut r.w, r.key, PartyKind::Invasion, district(), None, at)
@@ -823,6 +822,8 @@ fn an_umvuthi_lost_on_a_march_marks_the_row_at_once() {
     r.flush(at);
     let muster = r.c.parties[p].until;
     r.run(muster + 200);
+    // The pressure ages with the muster: read it after.
+    let chief0 = chief_p(&r);
     // Whatever marked the row so far has been taken (the host takes the rows every tick).
     let _ = r.c.take_site_states();
     assert!(!r.c.camp_site_dirty(r.f));
