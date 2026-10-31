@@ -17645,10 +17645,12 @@ the review gave are at 43062c0b.
     still planned. 8da19617 makes the new test forget the industry first (MZB-1403).
   - **Results.** Cargo: the workspace's tests (`--no-fail-fast`) at e7dca238 passed but for the five that read the fixtures,
     which failed on the old saves (MZB-1406), and pass on the new ones (rtsim-view and rtsim-host at 61bc50ce, every suite);
-    clippy `-D warnings` clean. `:core:test` (in the core rounds): 440 JUnit tests passed. GameTests from cleared worlds:
+    on the branch merged with main 1d7974c0 (S5's review fixes, 2719c453) every suite of the workspace passed (149) and
+    clippy `-D warnings` is clean. `:core:test` (in the core rounds): 440 JUnit tests passed. GameTests from cleared worlds:
     core "All 191 required tests passed" at 4d43c6ff (the first round, at 6729227d, failed the one above); mowziesmobs "All
     113 required tests passed" at 8da19617's code; iceandfire "All 54 required tests passed" and `create -Psec1fx` "All 266
-    required tests passed" at 8da19617; `create -PwithMowzie` CREATEMOWZIE.
+    required tests passed" at 8da19617; `create -PwithMowzie` "All 271 required tests passed" at 61bc50ce (8da19617's code); iceandfire again on the merged
+    head (S5's review fixes are the dragons') ICEMERGED.
   - **A flake:** mowziesmobs's first round at 8da19617's code failed `anAloftUmvuthiSettlesAndRises` alone ("its restriction
     centre is the puppet's block (12.165525060596439 off)", the first summons' centre at its fifth step, M11's), and the rerun
     on the same code passed it with the rest. Nothing on this branch touches a summons' restriction (the chief's slot is
