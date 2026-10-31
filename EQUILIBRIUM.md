@@ -891,8 +891,10 @@ for it). §2.6 lists exactly what MOWZIE.md must change to match.
   reads 54, 73 and 91, since the engine's first wait is read at the first death), a farmed one yields
   5.75, 6.67 and 7.42 warriors a game year (the waits chain; §3.3's 5.8 was the one-at-a-time form),
   and an unattended one loses a raptor pack at every plunder that finds a village with a surplus
-  (the faction's own loss, no pressure) and holds 0.91, 0.94 and 0.95 of its K there (1.00 where a
-  raid finds nothing worth taking). The warriors have their own pressure and the Umvuthi its own
+  (the faction's own loss, no pressure) and, with the raider's plunder mood that Ben chose for it
+  (FB-S9-2, 2026-10-30; MZB-1280), plunders about every 34 days instead of every 12 and holds 0.963,
+  0.974 and 0.979 of its K there (0.91, 0.94 and 0.95 without the mood; 1.00 where a raid finds
+  nothing worth taking). The warriors have their own pressure and the Umvuthi its own
   (`Camp.chief_pressure`): a warrior killed presses the warriors, the Umvuthi killed presses the
   Umvuthi, and a casualty of a war party on the road presses the warriors by kill credit. A warrior
   appears at the grove's edge farthest from any player (never held, §2.2).
@@ -1319,7 +1321,7 @@ roamer explores and kills everything it meets):
 |---|---|---|---|---|
 | Dragons | 24 days (the 20-day respawn) | 48 | 48 [48, 72] | 1.01 |
 | Frostmaw dens (base 6, EQ-4 (b); base 24 gave 72 and 72 [72, 78]) | never | 24 | 24 [24, 24] | 1.00 |
-| Umvuthana groves | never | 34 to 54 (the model, K 5 to 9) | 51 to 88 by K (S9, K 5, 7, 9; the model 54, 73, 91) | 1.00; an unattended grove holds 0.91 to 0.95 of K where its plunders lose their packs |
+| Umvuthana groves | never | 34 to 54 (the model, K 5 to 9) | 51 to 88 by K (S9, K 5, 7, 9; the model 54, 73, 91) | 1.00; an unattended grove holds 0.96 to 0.98 of K where its plunders lose their pack (with its plunder mood, FB-S9-2; 0.91 to 0.95 without)s |
 | Oil nests | never | 48 | 72 [48, 72] | 1.00 |
 | Camps | 48 days (the linear refill) | 48 | 48 [48, 72] | 1.00 |
 | Pirate fleets | never | 48 | 72 [48, 150] | 0.99 |
