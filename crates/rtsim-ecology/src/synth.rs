@@ -567,6 +567,9 @@ pub struct HomeModel {
     pub bodies: BTreeMap<Uuid, HomeBody>,
     /// The lairs that are in, with their census epoch.
     pub in_epoch: BTreeMap<u64, u64>,
+    /// Puppets that were home bodies led past the leash, by agent, with the lair they left: the
+    /// plugin captures one when that lair goes out (its chunk no longer ticks).
+    pub leashed: BTreeMap<u64, u64>,
     next: u64,
     epochs: u64,
 }
@@ -686,8 +689,104 @@ impl FakeIaf {
         );
     }
 
+    /// Ice and Fire's own dragon, generated with the lair's structure (agent 0, no attachment): it
+    /// stands saved in the lair until a census adopts or removes it (EQC313).
+    pub fn worldgen_dragon(&mut self, lair: u64, species: Species, pos: (f64, f64, f64)) -> Uuid {
+        self.home.next += 1;
+        let entity = (0x4700_0000_0000_0000 | self.home.next, 1);
+        self.home.bodies.insert(
+            entity,
+            HomeBody {
+                agent: 0,
+                epoch: 0,
+                lair,
+                species,
+                age_ticks: 100 * 24_000,
+                hunger: 80,
+                health: 300.0,
+                gender: Gender::Female,
+                variant: 0,
+                pos,
+                loaded: false,
+            },
+        );
+        entity
+    }
+
+    /// The lair is counted again while it stays in (the plugin's daily recount): a census under a
+    /// new epoch.
+    pub fn recount(&mut self, lair: u64, watched: bool, at: Tick) {
+        if self.home.in_epoch.remove(&lair).is_some() {
+            self.set_lair_in(lair, watched, at);
+        }
+    }
+
+    /// A loaded home body goes past the leash: DRAGON_LEFT_HOME, and the same entity is a puppet
+    /// (EQC109). With `crash`, the server dies between the swap and its chunk's rewrite: the old
+    /// home body stays saved beside the puppet (EQC130), for a census to reconcile.
+    pub fn leash(&mut self, entity: Uuid, crash: bool, at: Tick) {
+        let Some(b) = self.home.bodies.get(&entity).cloned().filter(|b| b.loaded) else {
+            return;
+        };
+        if crash {
+            self.home.bodies.get_mut(&entity).expect("listed").loaded = false;
+        } else {
+            self.home.bodies.remove(&entity);
+        }
+        let max = crate::species::SpeciesData::of(b.species).max_health_at(b.age_ticks.max(0) as u64);
+        self.bodies.insert(
+            b.agent,
+            Body {
+                agent: b.agent,
+                epoch: b.epoch,
+                species: b.species,
+                health: b.health,
+                max_health: max.max(b.health),
+                hunger: b.hunger,
+                hunger_at: at,
+                age_ticks: b.age_ticks,
+                pos: b.pos,
+                entity,
+                leaving: false,
+            },
+        );
+        self.home.leashed.insert(b.agent, b.lair);
+        self.push(
+            at,
+            Obs::DragonLeftHome(boundary::DragonLeftHome {
+                agent: b.agent,
+                epoch: b.epoch,
+                dimension: 0,
+                entity,
+                pos: b.pos,
+            }),
+        );
+    }
+
+    /// A player kills the puppet of `agent`: DRAGON_DIED with its epoch. The body is gone.
+    pub fn kill_puppet(&mut self, agent: u64, killer: Uuid, at: Tick) {
+        let Some(b) = self.bodies.remove(&agent) else {
+            return;
+        };
+        self.home.leashed.remove(&agent);
+        self.push(
+            at,
+            Obs::Died(boundary::Died {
+                agent,
+                epoch: b.epoch,
+                killer_kind: boundary::AttackerKind::Player,
+                killer,
+                dimension: 0,
+                pos: b.pos,
+                entity: b.entity,
+                lair: 0,
+            }),
+        );
+    }
+
     /// The lair goes out: each loaded body is saved where it stands (DEMATERIALIZED reason 8), then
-    /// the census epoch ends.
+    /// the census epoch ends. A puppet led from it past the leash is captured too: its chunk no
+    /// longer ticks.
     pub fn set_lair_out(&mut self, lair: u64, at: Tick) {
         let Some(epoch) = self.home.in_epoch.remove(&lair) else {
             return;
@@ -720,6 +819,17 @@ impl FakeIaf {
             );
         }
         self.push(at, Obs::LairOut(boundary::LairOut { lair, epoch }));
+        let gone: Vec<u64> = self
+            .home
+            .leashed
+            .iter()
+            .filter(|(_, l)| **l == lair)
+            .map(|(&a, _)| a)
+            .collect();
+        for agent in gone {
+            self.home.leashed.remove(&agent);
+            self.capture(agent, 2, at);
+        }
     }
 
     /// A player (or anything) kills the home body `entity`: DRAGON_DIED, with its epoch while it is
@@ -768,6 +878,27 @@ impl FakeIaf {
             assert_eq!(back, c, "the codec changed a command");
             self.commands.push((at.0, format!("{c:?}")));
             match back {
+                Cmd::Materialize(m)
+                    if self.home.on
+                        && m.flags & boundary::MAT_HOME_BODY != 0
+                        && (self.bodies.contains_key(&m.agent)
+                            || self.home.bodies.values().any(|b| {
+                                b.agent == m.agent
+                                    && (b.loaded || self.home.in_epoch.contains_key(&b.lair))
+                            })) =>
+                {
+                    // A loaded body carries the agent already, a puppet or a home body (EQC116,
+                    // EQC311): ALREADY_EMBODIED.
+                    self.push(
+                        at + 1,
+                        Obs::SpawnRejected(boundary::SpawnRejected {
+                            agent: m.agent,
+                            epoch: m.epoch,
+                            reason: 4,
+                            cmd_seq: self.cmd_seq,
+                        }),
+                    );
+                }
                 Cmd::Materialize(m) if self.home.on && m.flags & boundary::MAT_HOME_BODY != 0 => {
                     self.home.next += 1;
                     let entity = (0x4800_0000_0000_0000 | self.home.next, 1);
@@ -1043,7 +1174,41 @@ impl FakeIaf {
                 Cmd::Discard(dc) => {
                     self.home.bodies.remove(&dc.entity);
                 }
-                Cmd::HandBack(_) => {}
+                Cmd::HandBack(h) => {
+                    // The puppet, still of that epoch, becomes a home body of the lair named, in
+                    // place (EQC110, EQC321).
+                    if let Some(b) = self.bodies.get(&h.agent).filter(|b| b.epoch == h.epoch).cloned()
+                    {
+                        self.bodies.remove(&h.agent);
+                        self.home.leashed.remove(&h.agent);
+                        self.home.bodies.insert(
+                            b.entity,
+                            HomeBody {
+                                agent: b.agent,
+                                epoch: b.epoch,
+                                lair: h.lair,
+                                species: b.species,
+                                age_ticks: b.age_ticks,
+                                hunger: b.hunger,
+                                health: b.health,
+                                gender: Gender::Female,
+                                variant: 0,
+                                pos: b.pos,
+                                loaded: true,
+                            },
+                        );
+                        self.push(
+                            at + 1,
+                            Obs::Materialized(boundary::Materialized {
+                                agent: b.agent,
+                                epoch: b.epoch,
+                                dimension: 0,
+                                entity: b.entity,
+                                home: true,
+                            }),
+                        );
+                    }
+                }
             }
         }
     }

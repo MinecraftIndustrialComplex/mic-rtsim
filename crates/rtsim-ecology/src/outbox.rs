@@ -227,8 +227,13 @@ mod tests {
                 age_ticks: 0,
                 hunger: 0,
                 health: 0.0,
+                oil: 0,
             }),
-            Cmd::HandBack(boundary::HandBack { agent: 1, epoch: 1 }),
+            Cmd::HandBack(boundary::HandBack {
+                agent: 1,
+                epoch: 1,
+                lair: 1,
+            }),
             Cmd::Discard(boundary::Discard {
                 entity: (1, 2),
                 reason: 1,
