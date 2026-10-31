@@ -345,10 +345,11 @@ fn a_failed_house_does_not_raise_k_of_a_village_never_seen() {
     let (mut w, mut nodes) = ribbit_world(13, false);
     let house = first_house(&mut w, 1).op;
     let at = w.now();
+    let guess = w.village_row(REEDHOLM).unwrap().k0;
     let out = apply(&mut w, &mut nodes, &Input::HousePlaced { op: house }, at.0);
     assert!(!out.refused);
     let r = *w.village_row(REEDHOLM).unwrap();
-    assert_eq!(r.k, r.k0 + 1, "a placed house is a bed: {r:?}");
+    assert_eq!(r.k, guess + 1, "a placed house is a bed: {r:?}");
 }
 
 #[test]
