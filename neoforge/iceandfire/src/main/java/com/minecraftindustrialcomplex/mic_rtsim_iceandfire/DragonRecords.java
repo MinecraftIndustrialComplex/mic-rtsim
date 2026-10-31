@@ -290,9 +290,12 @@ public final class DragonRecords {
         public static final int SIM_OWNS = 1, LAIR_FULL = 2, AWAY = 3, SECOND_BODY = 4;
     }
 
-    /** DRAGON_HAND_BACK (aux 0): swap the named puppet's agent tag for the home attachment, in place (EQC110). */
+    /**
+     * DRAGON_HAND_BACK (aux 0): swap the named puppet's agent tag for the home attachment of lair LAIR (the dragon's own,
+     * LAIR_FOUND's key), in place (EQC110, EQC321). Offset 28 is reserved.
+     */
     public static final class HandBack {
-        public static final int AGENT = 16, EPOCH = 24, SIZE = 32;
+        public static final int AGENT = 16, EPOCH = 24, LAIR = 32, SIZE = 40;
     }
 
     /**

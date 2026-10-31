@@ -687,6 +687,7 @@ impl Dragons {
         self.outbox.push(Cmd::HandBack(boundary::HandBack {
             agent: agent_of(d),
             epoch,
+            lair: self.lairs[l as usize].key,
         }));
         self.pending_home.insert(d);
         self.stats.home_hand_backs += 1;

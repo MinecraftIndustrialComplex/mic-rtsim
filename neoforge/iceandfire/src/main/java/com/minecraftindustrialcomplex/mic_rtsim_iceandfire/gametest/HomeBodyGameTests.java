@@ -1133,4 +1133,48 @@ public final class HomeBodyGameTests {
         check("the lair's home chunk is", own == 1);
         helper.succeed();
     }
+
+    /**
+     * EQC321 (finding 12): a puppet settles at its own lair, nearer to a neighbouring lair's home: the hand-back names the
+     * dragon's own lair (the engine's key), not the nearest one.
+     */
+    @GameTest(template = DragonKit.ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "home_hand_back_lair")
+    public static void aHandBackNamesTheDragonsOwnLairNotTheNearest(GameTestHelper helper) {
+        String test = "aHandBackNamesTheDragonsOwnLairNotTheNearest";
+        if (!nativeOnly(helper, test))
+            return;
+        ChunkWait waits = ChunkWait.of(helper, 2400);
+        ServerLevel level = helper.getLevel();
+        Vec3 c = DragonKit.centre(helper);
+        lowerLeash(helper);
+        Runnable unforce = DragonKit.forceAround(helper, 3);
+        long lair = DragonKit.newLair(), neighbour = DragonKit.newLair();
+        DragonBaseEntity[] d = new DragonBaseEntity[1];
+        long[] agent = new long[1];
+        int[] epoch = new int[1];
+        SequenceHolder h = new SequenceHolder();
+        h.s = helper.startSequence()
+                .thenWaitUntil(waits.chunks(() -> check("the ring of chunks is loaded", DragonKit.ready(level, arenaChunk(helper), 3))));
+        occupiedAfter(h, helper, waits, lair, d, agent);
+        leashed(h.s, helper, waits, agent, d, epoch, LURED)
+                .thenExecute(() -> {
+                    // A neighbouring lair whose home is 16 blocks east; the puppet lands 12 blocks east of its own: 4 from the
+                    // neighbour's home, inside its own hand-back radius.
+                    BlockPos nh = BlockPos.containing(c.add(16, 0, 0));
+                    bridge().lairs.declareForTest(level, neighbour, ROOST, BoundingBox.fromCorners(nh.offset(-2, -2, -2), nh.offset(2, 4, 2)), nh,
+                            level.getGameTime());
+                    d[0].moveTo(c.x + 12, c.y, c.z, 0f, 0f);
+                })
+                .thenWaitUntil(waits.engine(() -> check("a second home answer: the puppet is a home body again", homeAnswers(agent[0]).size() >= 2)))
+                .thenExecute(() -> {
+                    HomeBodies.HomeTag tag = d[0].getExistingDataOrNull(MicRtsimIceAndFire.HOME);
+                    record(test, "handed back", "the attachment " + tag + "; its own lair " + Long.toHexString(lair) + ", the neighbour "
+                            + Long.toHexString(neighbour));
+                    check("the home attachment names its own lair: " + tag, tag != null && tag.lair() == lair && tag.agent() == agent[0]);
+                    bridge().homes.testOut(lair, level.getGameTime());
+                    d[0].discard();
+                    unforce.run();
+                })
+                .thenSucceed();
+    }
 }
