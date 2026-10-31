@@ -751,8 +751,19 @@ impl FakeIaf {
             },
         );
         self.home.leashed.insert(b.agent, b.lair);
+        // Java journals an adoption's or a spawn's MATERIALIZED as it makes the home body, so a
+        // leash is never read before it: an answer still queued goes first (EQC326).
+        let after = self
+            .queue
+            .iter()
+            .filter_map(|(t, _, o)| match o {
+                Obs::Materialized(m) if m.agent == b.agent && m.epoch == b.epoch => Some(*t),
+                _ => None,
+            })
+            .max()
+            .map_or(at, |t| t.max(at));
         self.push(
-            at,
+            after,
             Obs::DragonLeftHome(boundary::DragonLeftHome {
                 agent: b.agent,
                 epoch: b.epoch,
