@@ -401,8 +401,8 @@ fn villages_renew_end_to_end() {
 }
 
 /// A pair ordered and never answered (Java down between placing the bodies and saying so), then a
-/// crash before the engine's next save: the engine is rolled back to its pages and, its clock being
-/// the journal's, books the same pair again under the same op ids, so the answers Java gives when it
+/// crash before the engine's next save: the engine is rolled back to its pages, reads the wiped
+/// village again and books the same pair under the same op ids, so the answers Java gives when it
 /// is back settle them, once; an answer for an op the world no longer holds is no answer.
 #[test]
 fn a_settlers_order_survives_a_crash_between_its_order_and_its_result() {
@@ -422,9 +422,10 @@ fn a_settlers_order_survives_a_crash_between_its_order_and_its_result() {
     assert_eq!(ops.len(), 2, "a pair was ordered: {:?}", e.phase1_stats());
     let r = row(&e);
     assert_eq!((r[MEMBERS], r[OWED]), (2, 2), "booked, not answered: {r:?}");
-    // The crash comes before the next save: the engine is back at the pages (the order and the
-    // booking are lost with them) and replays the journal's censuses past them, the village wiped
-    // again; Java's registry is gone with it, and the order comes again.
+    // The crash comes before the next save: the engine is back at the pages (the wiped censuses, the
+    // order and the booking are lost with them: a census is latest state, never in the journal) and
+    // Java's registry is gone with it. Java reads the empty village again, as its census does every
+    // 100 ticks, and the order comes again.
     let saved = j.world_save();
     let _ = j.crash();
     let e = engine(&dir, 256 * 1024);
@@ -435,8 +436,13 @@ fn a_settlers_order_survives_a_crash_between_its_order_and_its_result() {
     let (_, ok, _) = e.phase1_state();
     assert!(ok, "the replay led to the state the journal does");
     let r = row(&e);
-    assert_eq!((r[MEMBERS], r[OWED]), (0, 0), "rolled back to before the order: {r:?}");
-    assert!(r[WAIT_DUE] >= 0, "the wiped census was replayed, so the wait runs again: {r:?}");
+    assert_eq!((r[MEMBERS], r[OWED], r[SEEN]), (6, 0, 1), "rolled back to the pages: {r:?}");
+    assert!(r[WAIT_DUE] < 0, "no wait runs at the pages: {r:?}");
+    for _ in 0..2 {
+        j.village_census(A, 0, 12, true);
+        j.idle();
+    }
+    assert!(row(&e)[WAIT_DUE] >= 0, "the wiped village is read again and the wait runs again: {:?}", row(&e));
     advance(&e, &mut j, 16 * 24_000 + 3_000);
     let again: Vec<u64> = j.p1_of(cmd::SPAWN_RESIDENT).iter().map(|s| wire::u64_at(s, k::OP_ID)).collect();
     assert_eq!(again, ops, "a rolled back engine books the same pair under the same op ids");
