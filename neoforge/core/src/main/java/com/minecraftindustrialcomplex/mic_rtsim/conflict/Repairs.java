@@ -63,8 +63,8 @@ final class Repairs {
     /**
      * The pairing data are read for every player tracking the body (NeoForge's {@code ChunkMap.getPlayersWatching}, the players
      * {@code broadcast} sends to), and the bundle is skipped if any one's holds something per player (the M11 review's P3, MZB-1308:
-     * reading only the level's first player's let through a bundle that a tracker's own pairing would have added to, an attachment
-     * synced to some players only). Each clean bundle is the same vanilla set, so one goes to every tracker.
+     * reading only the level's first player's let through a bundle that a tracker's own pairing would have added to, as an entity
+     * whose {@code sendPairingData} adds data of some players' own does). Each clean bundle is the same vanilla set, so one goes to every tracker.
      */
     static Result send(ServerLevel level, Entity body) {
         List<ServerPlayer> near = level.getChunkSource().chunkMap.getPlayersWatching(body);
