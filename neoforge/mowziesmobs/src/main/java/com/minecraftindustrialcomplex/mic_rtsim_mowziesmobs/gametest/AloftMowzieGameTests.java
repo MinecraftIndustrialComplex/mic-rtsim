@@ -5666,7 +5666,7 @@ public final class AloftMowzieGameTests {
 
     /**
      * A re-pair is skipped when any tracker's own pairing data hold something per player (the M11 review's P3, MZB-1308). Two hearers
-     * stand by a puppet, each with the puppet's chunk. The puppet carries the GameTest attachment {@code mic_rtsim:test_per_player},
+     * stand by a puppet, both tracking it. The puppet carries the GameTest attachment {@code mic_rtsim:test_per_player},
      * synced to the players {@code RtsimAttachments.testPerPlayerTo} names. The control: synced to nobody, the re-pair goes
      * ({@code repairs} rises). Then synced to every player but the level's first: the re-pair is skipped ({@code repairsSkipped} rises,
      * nothing sent). Fails on the code before MZB-1308: it read the pairing data of the level's first player only, found nothing per player
@@ -5706,8 +5706,8 @@ public final class AloftMowzieGameTests {
                 })
                 .thenWaitUntil(waits.logic(() -> puppet[0] = puppet(agent)))
                 .thenWaitUntil(waits.chunks(() -> {
-                    List<ServerPlayer> near = level.getChunkSource().chunkMap.getPlayers(puppet[0].chunkPosition(), false);
-                    check("both hearers have the puppet's chunk (" + near.size() + " players have it)", near.contains(hearer[0]) && near.contains(hearer[1]));
+                    List<ServerPlayer> seen = level.getChunkSource().chunkMap.getPlayersWatching(puppet[0]);
+                    check("both hearers track the puppet (" + seen.size() + " players do)", seen.contains(hearer[0]) && seen.contains(hearer[1]));
                 }))
                 .thenExecute(() -> {
                     EntityUmvuthi u = puppet[0];
