@@ -437,6 +437,21 @@ impl Ecology {
         Self::with_herds_on(seed, h, false, lairs, dtun)
     }
 
+    /// [`Ecology::ranges_with`] with the herds' K capped by the valley's forage
+    /// (`rtsim_ecology::herds::synth::ranges_capped`, EQUILIBRIUM.md §2.4.2).
+    #[cfg(test)]
+    pub fn ranges_capped_with(
+        seed: u64,
+        htun: HerdTunables,
+        rx: std::ops::RangeInclusive<i32>,
+        rz: std::ops::RangeInclusive<i32>,
+        lairs: &[rtsim_ecology::synth::LairSpec],
+        dtun: DragonTunables,
+    ) -> Self {
+        let h = rtsim_ecology::herds::synth::ranges_capped(seed, htun, Tick::ZERO, rx, rz);
+        Self::with_herds_on(seed, h, false, lairs, dtun)
+    }
+
     /// The phase 1 dragon world over the herds `h`, with oil under two nests if `oil`.
     pub fn with_herds(seed: u64, h: Herds, oil: bool) -> Self {
         let lairs = rtsim_ecology::synth::lairs();

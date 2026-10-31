@@ -33,7 +33,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use rtsim_ecology::herds::{HerdId, HerdSpecies, HerdTunables};
 use rtsim_ecology::synth::LairSpec;
 use rtsim_ecology::{DragonId, DragonTunables, Gender, LairKind, Species};
-use rtsim_kernel::clock::Tick;
+use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 use rtsim_kernel::rng::{SlotRng, StreamKey, SystemId};
 use rtsim_knowledge::ActorId;
 use rtsim_travel::legs::LegIndex;
@@ -51,6 +51,9 @@ pub const YEAR: u64 = 96;
 pub struct Grid {
     pub x: RangeInclusive<i32>,
     pub z: RangeInclusive<i32>,
+    /// The herds' K capped by the valley's forage (EQUILIBRIUM.md §2.4.2), as the world model
+    /// founds a range.
+    pub forage_cap: bool,
 }
 
 impl Grid {
@@ -59,6 +62,15 @@ impl Grid {
         Grid {
             x: RANGES_X,
             z: RANGES_Z,
+            forage_cap: false,
+        }
+    }
+
+    /// [`Grid::world`] with the herds' K capped by the valley's forage.
+    pub fn world_capped() -> Grid {
+        Grid {
+            forage_cap: true,
+            ..Grid::world()
         }
     }
 
@@ -67,6 +79,7 @@ impl Grid {
         Grid {
             x: -1..=1,
             z: -1..=1,
+            forage_cap: false,
         }
     }
 
@@ -82,7 +95,11 @@ impl Grid {
         lairs: &[LairSpec],
         dtun: DragonTunables,
     ) -> Ecology {
-        Ecology::ranges_with(seed, tun, self.x.clone(), self.z.clone(), lairs, dtun)
+        if self.forage_cap {
+            Ecology::ranges_capped_with(seed, tun, self.x.clone(), self.z.clone(), lairs, dtun)
+        } else {
+            Ecology::ranges_with(seed, tun, self.x.clone(), self.z.clone(), lairs, dtun)
+        }
     }
 }
 
@@ -411,8 +428,9 @@ pub struct DragonCensus {
     pub by_species: [(u64, u64); HerdSpecies::COUNT],
     /// Herds alive at or below 1.25 times their refuge (`max(8, 0.1 K)`, EQUILIBRIUM.md §3.4).
     pub at_floor: usize,
-    /// Dragons at home in a lair.
+    /// Dragons at home in a lair, and those of them past their dispersal age.
     pub dragons: usize,
+    pub adults: usize,
 }
 
 impl DragonCensus {
@@ -446,6 +464,8 @@ pub struct DragonRun {
     pub eaten: u64,
     pub died: u64,
     pub starved: u64,
+    /// Young dragons that found no lair and left the sim (EQC534).
+    pub emigrated: u64,
 }
 
 /// A ranges world of `seed` run to `to` days, with the roamer if `roamer` (else nobody), a census
@@ -487,6 +507,7 @@ pub fn dragon_run_on(
         eaten: 0,
         died: 0,
         starved: 0,
+        emigrated: 0,
     };
     for day in 0..=to {
         e.run_to(Tick::from_days(day));
@@ -540,12 +561,24 @@ pub fn dragon_run_on(
                 by_species,
                 at_floor,
                 dragons: e.d.lairs.iter().map(|l| l.occupants.len()).sum(),
+                adults: e
+                    .d
+                    .lairs
+                    .iter()
+                    .flat_map(|l| l.occupants.iter())
+                    .filter(|&&o| {
+                        e.d.dragon(o).is_some_and(|x| {
+                            x.age(at) >= e.d.tun.species(x.species).disperse_days * TICKS_PER_DAY
+                        })
+                    })
+                    .count(),
             });
         }
     }
     check(&e);
     out.roamer_kills = ro.map_or(0, |r| r.killed);
     out.stats = e.d.stats;
+    out.emigrated = e.d.emigrated;
     for (_, x) in e.h.herds.iter() {
         out.born += x.ledger.born;
         out.eaten += x.ledger.eaten;
@@ -1860,6 +1893,8 @@ mod tests {
             let fill = mean(&cs, &|c| c.animals as f64 / c.k.max(1) as f64);
             let floor = mean(&cs, &|c| c.at_floor as f64 / c.ranges.max(1) as f64);
             let dragons = mean(&cs, &|c| c.dragons as f64);
+            let adults = mean(&cs, &|c| c.adults as f64);
+            let (ranges, k) = cs.first().map_or((0, 0), |c| (c.ranges, c.k));
             let empty_all = cs.iter().filter(|c| c.held == 0).count();
             let alive_min = cs
                 .iter()
@@ -1883,14 +1918,15 @@ mod tests {
             let st = &r.stats;
             let losses = (r.eaten + r.died + r.starved).max(1) as f64;
             println!(
-                "  seed {:>2}: lairs {lairs} ({:.3}/region) held {held:.3} (all empty at {empty_all} of {} censuses) N/K {fill:.3} [{}] at floor {floor:.3} alive min {alive_min:.2} dragons {dragons:.1}",
+                "  seed {:>2}: lairs {lairs} ({:.3}/region) held {held:.3} (all empty at {empty_all} of {} censuses) N/K {fill:.3} [{}] at floor {floor:.3} alive min {alive_min:.2} dragons {dragons:.1}, adults {adults:.1} ({:.3}/region) ranges {ranges} K {k}",
                 r.seed,
                 lairs as f64 / 56.0,
                 cs.len(),
                 sp.join(", "),
+                adults / 56.0,
             );
             println!(
-                "           eaten {} of {} born ({:.3}), of losses {:.3}; starved away {} migrations {} gated {} newcomers {} heirs {} age {} roamer kills {} hunts {} herd hunts {} village raids {} fruitless {}",
+                "           eaten {} of {} born ({:.3}), of losses {:.3}; starved away {} migrations {} gated {} newcomers {} heirs {} births {} emigrated {} age {} roamer kills {} hunts {} herd hunts {} village raids {} fruitless {}",
                 r.eaten,
                 r.born,
                 r.eaten as f64 / r.born.max(1) as f64,
@@ -1900,6 +1936,8 @@ mod tests {
                 st.arrivals_gated,
                 st.respawns,
                 st.heirs_sent,
+                st.births,
+                r.emigrated,
                 st.deaths_age,
                 r.roamer_kills,
                 st.hunts,
@@ -1934,7 +1972,11 @@ mod tests {
         let years: u64 = env_or("RTSIM_LD_YEARS", "40").parse().expect("years");
         let roamer = env_or("RTSIM_LD_ROAMER", "0") == "1";
         let knobs = env_or("RTSIM_LD_TWEAK", "");
-        let grid = Grid::world();
+        let grid = if env_or("RTSIM_LD_CAP", "0") == "1" {
+            Grid::world_capped()
+        } else {
+            Grid::world()
+        };
         let jobs: Vec<(usize, u64)> = (0..layouts.len())
             .flat_map(|l| seeds.iter().map(move |&s| (l, s)))
             .collect();
