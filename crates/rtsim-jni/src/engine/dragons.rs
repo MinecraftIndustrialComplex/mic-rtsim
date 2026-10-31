@@ -601,6 +601,29 @@ pub(super) fn tribute_start(st: &mut State, village: u64, lair: u64) {
     take_commands(st);
 }
 
+/// DRAGON_SLAY (a test's order, slice S11 EQC406): every occupant of the lair of key `lair` dies
+/// as `player`'s loss at the dragons' own time, through `Dragons::slay` (its lair's pressure rises
+/// by one a dragon, `player_losses` by one). An embodied dragon is the plugin's and is left, as
+/// `slay` leaves it. Refused (logged) when the key is no lair.
+pub(super) fn slay(st: &mut State, lair: u64, player: (u64, u64)) {
+    if !running(st) {
+        return; // U10: switched off, nothing to kill
+    }
+    let Some(l) = st.dragons.engine.lair_of_key(lair) else {
+        super::log_warn(&format!("DRAGON_SLAY refused: {lair:#x} is no lair"));
+        return;
+    };
+    let at = st.dragons.engine.now();
+    let (d, w) = (&mut st.dragons.engine, &mut st.phase1.world);
+    let who = d.player(w, player);
+    let occupants = d.lairs[l as usize].occupants.clone();
+    for x in occupants {
+        d.slay(w, x, Some(who), at);
+    }
+    st.phase1.taint();
+    take_commands(st);
+}
+
 /// NEST_DAY (a test's order, applied at step start): the oil nests watch every `ticks` from now
 /// (0 restores the tunable's day).
 pub(super) fn nest_day(st: &mut State, ticks: u64) {

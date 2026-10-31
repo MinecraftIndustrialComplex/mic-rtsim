@@ -37,6 +37,8 @@
 //! | 29 | TEST: a conflict command (docs/boundary.md §9.4), as if the conflict had decided it: a future conflict plugin's GameTests drive the Java side with it | u32 names, then per name: u32 dictionary kind, u32 Java's id, str name (the body kinds and items the record uses); then the record exactly as `rtsim_conflict::boundary` encodes it (cmdSeq ignored), its body and item ids Java's own (body and item dictionaries), its dimension Java's id (the conflict's frame) and its ticks game time |
 //! | 30 to 39 | 30, 31, 32 and 34 are the works, tribute and nest test orders (see `Order`); the rest are free | |
 //! | 41 | TEST: a player's kills at a pool camp (slice S7, EQC206): the camp of this faction key loses `n` warriors (its pool's whole warriors first, then its war parties' members, `u32::MAX` for all) as a player's loss, and then takes `pressure` more as if that many had also been killed; refused if the key is no camp. Taken when the engine takes the unit, after the replay | u64 faction, u32 n, f32 pressure |
+//! | 43 | TEST: a player's kill of a dragons' lair (slice S11, EQC406): every occupant of the lair of this key dies as the player's loss through `Dragons::slay` (its lair's pressure rises by one a dragon); refused if the key is no lair; an embodied dragon is the plugin's and is left. Taken when the engine takes the unit, after the replay | u64 lair, u64 playerMost, u64 playerLeast |
+//! | 44 | TEST: a player's kill of part of a herd (slice S11, EQC406): the herds of the range (dimension, region x, region z) lose up to `n` latent animals between them, booked as the player's kills through `Herds::cull_n`; animals a player has seen stay. Taken when the engine takes the unit, after the replay | u32 dimension (Java's id: the herds' frame), i32 regionX, i32 regionZ, u32 n, u64 playerMost, u64 playerLeast |
 //! | 40 | TEST: post a report to a phase 1 village's noticeboard (TALK, docs/boundary.md §13), as if the village had witnessed it (a key that is no adopted village but is a conflict camp's faction key posts to the camp's chief's board, else its heir's, slice 4): slice 2b's GameTest `talk_tells_the_village_news` puts news on a board with it; refused if the village is unknown or an actor does not resolve | u64 village, u16 kind (rtsim-knowledge's `ReportKind` id), u8 severity, u8 flags, then who and whom each as u8 class, u64 a, u64 b (the TALK_FACTS ref classes: 0 none, 1 player a b the UUID halves, 2 village and 3 base a Java's id, 4 caravan a its seed, 5 camp a its faction key, 6 and 7 a notable's seed, 8 lair a its key, 9 haven a its node key), then i32 x, i32 z (in the village's frame), u32 ticks ago |
 
 use rtsim_industry::ids::{DistrictId, TrainId};
@@ -84,6 +86,8 @@ pub const OP_NEST_DAY: u16 = 34;
 /// TALK's test order (30 to 39 are left free for the orders other branches take).
 pub const OP_TALK_REPORT: u16 = 40;
 pub const OP_CONFLICT_SLAY: u16 = 41;
+pub const OP_DRAGON_SLAY: u16 = 43;
+pub const OP_HERD_CULL: u16 = 44;
 
 /// One good of a MARKET (docs/boundary.md §4.2), in rtsim-trade's units.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -358,6 +362,22 @@ pub enum Order {
         n: u32,
         pressure: f32,
     },
+    /// TEST: a player's kill of every occupant of the dragons' lair of key `lair` (slice S11,
+    /// EQC406), each through `Dragons::slay` as the player's loss. Applied when the engine takes
+    /// the unit, after the replay.
+    DragonSlay {
+        lair: u64,
+        player: (u64, u64),
+    },
+    /// TEST: a player's kill of up to `n` latent animals of the herds of range (`dimension`,
+    /// `region`) (slice S11, EQC406), through `Herds::cull_n`. `dimension` is Java's id, the
+    /// herds' frame. Applied when the engine takes the unit, after the replay.
+    HerdCull {
+        dimension: u32,
+        region: (i32, i32),
+        n: u32,
+        player: (u64, u64),
+    },
 }
 
 impl Order {
@@ -395,6 +415,8 @@ impl Order {
                 | Order::NestDay(_)
                 | Order::TalkReport(_)
                 | Order::ConflictSlay { .. }
+                | Order::DragonSlay { .. }
+                | Order::HerdCull { .. }
         )
     }
 }
@@ -746,6 +768,16 @@ pub fn decode(bytes: &[u8]) -> Result<Vec<Order>, String> {
                 faction: c.u64()?,
                 n: c.u32()?,
                 pressure: c.f32()?,
+            },
+            OP_DRAGON_SLAY => Order::DragonSlay {
+                lair: c.u64()?,
+                player: (c.u64()?, c.u64()?),
+            },
+            OP_HERD_CULL => Order::HerdCull {
+                dimension: c.u32()?,
+                region: (c.i32()?, c.i32()?),
+                n: c.u32()?,
+                player: (c.u64()?, c.u64()?),
             },
             OP_TALK_REPORT => Order::TalkReport(TalkReportCmd {
                 village: c.u64()?,
@@ -1228,6 +1260,28 @@ impl Encoder {
                 self.f32(*pressure);
                 self.end(at);
             }
+            Order::DragonSlay { lair, player } => {
+                let at = self.begin(OP_DRAGON_SLAY);
+                self.u64(*lair);
+                self.u64(player.0);
+                self.u64(player.1);
+                self.end(at);
+            }
+            Order::HerdCull {
+                dimension,
+                region,
+                n,
+                player,
+            } => {
+                let at = self.begin(OP_HERD_CULL);
+                self.u32(*dimension);
+                self.i32(region.0);
+                self.i32(region.1);
+                self.u32(*n);
+                self.u64(player.0);
+                self.u64(player.1);
+                self.end(at);
+            }
             Order::TalkReport(r) => {
                 let at = self.begin(OP_TALK_REPORT);
                 self.u64(r.village);
@@ -1491,6 +1545,16 @@ mod tests {
                 faction: 0xC0B1_0001,
                 n: u32::MAX,
                 pressure: 1.5,
+            },
+            Order::DragonSlay {
+                lair: 0x0000_0BB8_0000_0BB8,
+                player: (0x1111_2222_3333_4444, 0x5555_6666_7777_8888),
+            },
+            Order::HerdCull {
+                dimension: 3,
+                region: (-3, 4),
+                n: 17,
+                player: (7, 11),
             },
             Order::TalkReport(TalkReportCmd {
                 village: 6,

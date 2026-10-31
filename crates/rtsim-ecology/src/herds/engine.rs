@@ -1687,9 +1687,16 @@ impl Herds {
 
     /// Every latent member of herd `h` dies at `at`, booked as killed (a test and tool hook: the
     /// world wipe of EQUILIBRIUM.md §3.6). Members a player has seen stay. The range empties at
-    /// its next decision.
+    /// its next decision. [`Herds::cull_n`] of all.
     pub fn cull(&mut self, h: HerdId, at: Tick) -> u64 {
-        let (_, n) = self.take_latent(h, day_of(at), u64::MAX, |_| 1);
+        self.cull_n(h, u64::MAX, at)
+    }
+
+    /// Up to `n` latent members of herd `h` die at `at`, killed by a player and booked as
+    /// [`Herds::cull`] books them (a test and tool hook: the long-horizon suite's roamer and test
+    /// order 44, slice S11 EQC406). Members a player has seen stay. Returns how many died.
+    pub fn cull_n(&mut self, h: HerdId, n: u64, at: Tick) -> u64 {
+        let (_, n) = self.take_latent(h, day_of(at), n, |_| 1);
         self.herds.get_mut(h).expect("live").ledger.killed += n;
         n
     }

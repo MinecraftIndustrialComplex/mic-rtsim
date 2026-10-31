@@ -2501,6 +2501,15 @@ footprint (MZB-1015). CHIEF_BODY is written into a chief's body (health, crystal
   f32 pressure`. Applied at unit take after the replay's end: the engine kills `n` of the faction's warriors as a player's
   kill (its pool first, then its war parties; `u32::MAX` kills all), then adds `pressure` to its P. A key that is no faction is refused (logged); the order waits for
   the replay's end like the other test orders that act on the conflict.
+- **Test orders 43 `DRAGON_SLAY` and 44 `HERD_CULL`** (slice S11, EQC406 in `docs/overnight-choices-equilibrium.md`; TEST mode
+  only, refused otherwise as order 41 is; no Java encoder: the long-horizon suite sends them from Rust). 43: `u64 lair, u64
+  playerMost, u64 playerLeast`: every occupant of the lair of that key dies as the player's loss through `Dragons::slay` (the
+  lair's pressure + 1 a dragon, `player_losses` + 1); an embodied dragon is the plugin's and is left; a key that is no lair is
+  refused (logged). 44: `u32 dimension (Java's id, the herds' frame), i32 regionX, i32 regionZ, u32 n, u64 playerMost, u64
+  playerLeast`: the herds of that 512-block range lose up to `n` latent animals between them, booked as a player's kills
+  through `Herds::cull_n` (animals a player has seen stay); a range with no herd changes nothing. Both are taken at unit take
+  after the replay's end, at the module's own clock, as 41 is. No order is an observation, so none is in Java's journal: one
+  taken after the last save is lost by a crash, never applied twice.
 - **The reporter** (core Java, `conflict/Outposts`; no wire change). A vanilla `minecraft:pillager_outpost` start (and
   `illagerinvasion:illager_fort`, if its mod is ever present) in a loaded chunk is reported through `RtsimApi.reportCamp` as a
   camp of the raider culture, with no bodies: key `Obs.villageId(dim, start chunk)`, block (the start chunk's middle x, the

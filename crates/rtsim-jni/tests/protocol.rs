@@ -3136,6 +3136,194 @@ mod dragons {
         e.close(true, Duration::from_secs(5)).unwrap();
     }
 
+    /// A lair with its own dragon, adopted and then captured (abstract), and a flock of 40 sheep
+    /// 2,000 blocks away (out of the dragon's reach for the test's few days): the targets of
+    /// orders 43 and 44. Returns the herd's agent.
+    fn lair_and_flock(e: &Engine, j: &mut Java) -> u64 {
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        j.dragon_obs(&O::LairFound(db::LairFound {
+            lair: LAIR,
+            late: false,
+            placed: false,
+            dimension: dim,
+            species: Species::Fire,
+            kind: LairKind::Roost,
+            min: (HOME.0 - 30, 60, HOME.2 - 30),
+            max: (HOME.0 + 30, 140, HOME.2 + 30),
+            home: HOME,
+            row: Default::default(),
+        }));
+        j.dragon_obs(&lair_dragon((0xD4, 0x4), dim, 100));
+        j.idle();
+        j.idle();
+        let a = adoptions(j)[0];
+        j.dragon_obs(&captured(a.agent, a.epoch, dim, 400.0));
+        e.order(vec![Order::HerdFound {
+            name: "Cull flock".into(),
+            species: "minecraft:sheep".into(),
+            dimension: dim,
+            x: FLOCK.0,
+            z: FLOCK.1,
+            count: 40,
+            seed: 9,
+        }])
+        .unwrap();
+        j.idle();
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        let agents = e.herd_agents();
+        assert_eq!(agents.len(), 1);
+        agents[0]
+    }
+
+    /// Where order 44's flock stands: region (9, 9) of 512 blocks.
+    const FLOCK: (i32, i32) = (5_000, 5_000);
+
+    /// The lair's dragons now (its census members) and its pressure.
+    fn lair_now(e: &Engine) -> (u64, f64) {
+        e.with_dragons(|d, _| {
+            let c = &d.census()[0];
+            assert_eq!(c.kind, "dragon.lair");
+            (c.members, c.p_sum)
+        })
+    }
+
+    /// Order 43 DRAGON_SLAY (TEST, slice S11 EQC406): every occupant of the lair dies as the
+    /// player's loss: the lair's pressure rises by one, `player_losses` by one, the lair stands
+    /// empty. A key that is no lair changes nothing.
+    #[test]
+    fn a_test_order_slays_a_lairs_dragons() {
+        let dir = tmpdir("dragon-slay");
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        j.module_mask = MODULES;
+        lair_and_flock(&e, &mut j);
+        assert_eq!(lair_now(&e), (1, 0.0));
+        assert_eq!(e.dragon_stats().0.player_losses, 0);
+        e.order(vec![Order::DragonSlay {
+            lair: 0xBAD,
+            player: PLAYER,
+        }])
+        .unwrap();
+        j.idle();
+        j.idle();
+        assert_eq!(
+            lair_now(&e),
+            (1, 0.0),
+            "a key that is no lair kills nothing"
+        );
+        e.order(vec![Order::DragonSlay {
+            lair: LAIR,
+            player: PLAYER,
+        }])
+        .unwrap();
+        j.idle();
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        let (members, p) = lair_now(&e);
+        assert_eq!(members, 0, "the lair's dragon is dead");
+        assert!((p - 1.0).abs() < 0.02, "P + 1 for the dragon: {p}");
+        assert_eq!(e.dragon_stats().0.player_losses, 1);
+        assert_eq!(summary(&e).0, 0, "no dragon left in the sim");
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// Orders 43 and 44 are TEST orders: an engine opened without TEST mode refuses them, as it
+    /// refuses order 41.
+    #[test]
+    fn orders_43_and_44_are_refused_outside_test_mode() {
+        let dir = tmpdir("slay-cull-live");
+        let live = engine_with(&dir, 256 * 1024, |c| c.test = false);
+        for o in [
+            Order::DragonSlay {
+                lair: LAIR,
+                player: PLAYER,
+            },
+            Order::HerdCull {
+                dimension: 0,
+                region: (0, 0),
+                n: 1,
+                player: PLAYER,
+            },
+            Order::ConflictSlay {
+                faction: 1,
+                n: 1,
+                pressure: 0.0,
+            },
+        ] {
+            assert!(live.order(vec![o.clone()]).is_err(), "{o:?}");
+        }
+        live.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// Orders 43 and 44 across a crash: an order is no observation, so Java's journal does not hold
+    /// it. Taken after the last save, a crash loses it (the pages predate it and the replay brings
+    /// none of it); taken before the save, the pages hold its kills and the replay adds none. Never
+    /// applied twice (EQC472).
+    #[test]
+    fn orders_43_and_44_replay_once() {
+        let dir = tmpdir("slay-cull-crash");
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        j.module_mask = MODULES;
+        let flock = lair_and_flock(&e, &mut j);
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        let killed = |e: &Engine| e.herd_info(flock).expect("the flock")[2];
+        let orders = vec![
+            Order::DragonSlay {
+                lair: LAIR,
+                player: PLAYER,
+            },
+            Order::HerdCull {
+                dimension: dim,
+                region: (FLOCK.0 / 512, FLOCK.1 / 512),
+                n: 7,
+                player: PLAYER,
+            },
+        ];
+        save_durable(&e, &mut j);
+        e.order(orders.clone()).unwrap();
+        j.idle();
+        j.idle();
+        assert_eq!((lair_now(&e).0, killed(&e)), (0, 7));
+
+        // A crash between the orders and the next save: lost, never replayed.
+        let saved = j.world_save();
+        let _ = j.crash();
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), saved);
+        j.module_mask = MODULES;
+        for _ in 0..3 {
+            j.idle();
+        }
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        assert_eq!(
+            (lair_now(&e).0, killed(&e)),
+            (1, 0),
+            "the pages predate the orders, and the replay brings none of them"
+        );
+
+        // Taken and saved: the pages hold them, once.
+        e.order(orders).unwrap();
+        j.idle();
+        j.idle();
+        assert_eq!((lair_now(&e).0, killed(&e)), (0, 7));
+        save_durable(&e, &mut j);
+        let saved = j.world_save();
+        let _ = j.crash();
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), saved);
+        j.module_mask = MODULES;
+        for _ in 0..3 {
+            j.idle();
+        }
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        assert_eq!((lair_now(&e).0, killed(&e)), (0, 7), "applied once");
+        let p = lair_now(&e).1;
+        assert!((p - 1.0).abs() < 0.05, "the pressure of one kill: {p}");
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
     /// The transfers Java applied, by op id.
     fn transfer_ops(j: &Java) -> BTreeSet<u64> {
         j.commands
@@ -6046,6 +6234,50 @@ mod herds {
             std::thread::sleep(Duration::from_millis(2));
         }
         e.stats.last_save_bytes.load(Acquire)
+    }
+
+    /// Order 44 HERD_CULL (TEST, slice S11 EQC406): the herd of the range loses `n` latent
+    /// animals, booked as a player's kills; asking for more than it has takes every latent one; a
+    /// range with no herd changes nothing.
+    #[test]
+    fn a_test_order_culls_part_of_a_herd() {
+        let dir = tmpdir("herd-cull");
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        j.module_mask = MODULES;
+        let agent = found(&e, &mut j, 40);
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        let region = (AT.0.div_euclid(512), AT.1.div_euclid(512));
+        let (alive, killed, ..) = summary(&e, agent);
+        assert_eq!(killed, 0);
+        assert!(alive > 20, "{alive}");
+        let cull = |n: u32, region: (i32, i32)| Order::HerdCull {
+            dimension: dim,
+            region,
+            n,
+            player: PLAYER,
+        };
+        e.order(vec![cull(10, (region.0 + 3, region.1))]).unwrap();
+        j.idle();
+        j.idle();
+        assert_eq!(summary(&e, agent).1, 0, "another range: nothing");
+        e.order(vec![cull(10, region)]).unwrap();
+        j.idle();
+        j.idle();
+        let (left, killed, ..) = summary(&e, agent);
+        assert_eq!(killed, 10);
+        assert!(left + 10 <= alive, "{left} of {alive}");
+        e.order(vec![cull(1_000, region)]).unwrap();
+        j.idle();
+        j.idle();
+        let (alive, killed, ..) = summary(&e, agent);
+        assert_eq!(alive, 0, "every latent one");
+        assert!(
+            killed >= 10 + left.saturating_sub(1) && killed <= 10 + left,
+            "{killed}"
+        );
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        e.close(true, Duration::from_secs(5)).unwrap();
     }
 
     /// The herds page through the engine's store (docs/choices-paging-followups.md PF12): a

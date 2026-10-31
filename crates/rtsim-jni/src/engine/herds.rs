@@ -636,6 +636,40 @@ pub(super) fn order_found(
     shared::introduce_herds(st);
 }
 
+/// HERD_CULL (a test's order, slice S11 EQC406): the herds of range (`dimension`, `region`) lose up
+/// to `n` latent animals between them at the herds' own time, booked as a player's kills through
+/// `Herds::cull_n`; animals a player has seen stay. The herds keep no player by name, so `player`
+/// is only logged. A range with no herd changes nothing.
+pub(super) fn cull(st: &mut State, dimension: u32, region: (i32, i32), n: u32, player: (u64, u64)) {
+    if !running(st) {
+        return; // U10: switched off, nothing to kill
+    }
+    reset_if_due(st);
+    let at = st.herds.engine.now();
+    let mut left = u64::from(n);
+    let mut killed = 0;
+    for h in st
+        .herds
+        .engine
+        .range_herds((dimension as u16, region.0, region.1))
+    {
+        if left == 0 {
+            break;
+        }
+        let k = st.herds.engine.cull_n(h, left, at);
+        left -= k;
+        killed += k;
+    }
+    if killed == 0 {
+        log_info(&format!(
+            "HERD_CULL: range ({dimension}, {}, {}) had no latent animal for {player:x?}",
+            region.0, region.1
+        ));
+    }
+    st.phase1.taint();
+    take_commands(st);
+}
+
 // ---- commands -----------------------------------------------------------------------------------
 
 /// What Java would have answered a materialization the engine cannot write: the herd must not

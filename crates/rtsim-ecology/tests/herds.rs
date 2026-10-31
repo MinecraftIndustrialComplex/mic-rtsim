@@ -1811,3 +1811,65 @@ fn an_epoch_that_ended_in_the_replayed_window_is_not_taken_again() {
     r.fake = FakeHerds::default();
     assert_eq!(next_epoch(r, f, now + 30), 2);
 }
+
+/// `Herds::cull_n` (slice S11, EQC406): a player's kill of part of a herd's latent animals, the
+/// roamer's quarter and order 44's `n`. Exactly `n` die (or every latent one when fewer), booked
+/// as killed (the ledger's player kills); the herd stays consistent and runs on.
+#[test]
+fn cull_n_takes_n_latent_animals_booked_as_killed() {
+    let mut r = Rig::valley(3);
+    let f = flock(&r);
+    let at = Tick::from_days(20);
+    r.run(at, 2_000, None);
+    let before = r.h.count(f, at);
+    let killed = r.h.herd(f).unwrap().ledger.killed;
+    assert!(before > 8, "{before}");
+    let quarter = before / 4;
+    assert_eq!(r.h.cull_n(f, quarter, at), quarter);
+    assert_eq!(r.h.count(f, at), before - quarter);
+    assert_eq!(r.h.herd(f).unwrap().ledger.killed, killed + quarter);
+    r.h.check(at).expect("invariants after a partial cull");
+    // None asked, none taken.
+    assert_eq!(r.h.cull_n(f, 0, at), 0);
+    assert_eq!(r.h.count(f, at), before - quarter);
+    // More than there are: every latent one, and no more.
+    let left = before - quarter;
+    assert_eq!(r.h.cull_n(f, left + 1_000, at), left);
+    assert_eq!(r.h.count(f, at), 0);
+    assert_eq!(r.h.herd(f).unwrap().ledger.killed, killed + before);
+    r.h.check(at).expect("invariants after the rest");
+    // The herd runs on: its range empties at its next decision, its books balanced.
+    r.run(Tick::from_days(40), 2_000, None);
+    assert_eq!(r.h.count(f, r.h.now()), 0);
+}
+
+/// `cull` is `cull_n` of all (EQC406): the same animals die, booked the same, and the two engines
+/// run on alike.
+#[test]
+fn cull_takes_them_all_as_before() {
+    let at = Tick::from_days(20);
+    let mut a = Rig::valley(4);
+    let mut b = Rig::valley(4);
+    a.run(at, 2_000, None);
+    b.run(at, 2_000, None);
+    let fa = flock(&a);
+    let fb = flock(&b);
+    let n = a.h.count(fa, at);
+    assert!(n > 0);
+    assert_eq!(a.h.cull(fa, at), n);
+    assert_eq!(b.h.cull_n(fb, u64::MAX, at), n);
+    assert_eq!(a.h.herd(fa).unwrap().ledger, b.h.herd(fb).unwrap().ledger);
+    let end = Tick::from_days(400);
+    a.run(end, 2_000, None);
+    b.run(end, 2_000, None);
+    for (id, x) in a.h.herds.iter() {
+        let y = b.h.herd(id).expect("the same herds");
+        assert_eq!(
+            (x.ledger, a.h.count(id, end)),
+            (y.ledger, b.h.count(id, end)),
+            "{}",
+            x.name
+        );
+    }
+    assert_eq!(a.h.stats, b.h.stats);
+}
