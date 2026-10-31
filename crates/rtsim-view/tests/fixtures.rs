@@ -4,7 +4,13 @@
 //! copied without its `rtsim/archive` (the event timeline): `events.rs` needs a real save with no
 //! archive and writes its own archive onto a copy of this one. The create save keeps its archive.
 //!
-//! - `tests/data/core`: neoforge/core's GameTest world, a fresh one, run from the S7 build of
+//! - `tests/data/core`: neoforge/core's GameTest world, a fresh one, run from the M12a review fixes'
+//!   build of `fix/m12a-review` at 4d43c6ff (docs/choices-mowzie-build.md MZB-1400 to MZB-1407; their
+//!   formats on top of S7's: the conflict's pages are RTCF (magic `RTCF`) with meta version 14, a camp's
+//!   heir ending with the pressure it keeps (MZB-1402), its lists ending with its rivals and the stats
+//!   with the fights (MZB-1404); a CAMP_BODIES record's lines are 32 bytes, each ending with the UUID of
+//!   the body it left in its slot (MZB-1400), so the journal is written again too; the site ledger's file
+//!   is unchanged); before that, the S7 build of
 //!   `feat/eq-s7-conflict` at 7f7110eb (Conflict pressure and the outposts, EQUILIBRIUM.md S7, FB-1 (a), FB-5 (b),
 //!   FB-8; docs/overnight-choices-equilibrium.md EQC200 to EQC290; S7's formats on top of S6's: the conflict's
 //!   pages are RTCE (magic `RTCE`) with meta version 13, a faction row ending with its strain (a pool camp's
@@ -125,7 +131,10 @@
 //!   when the server stops: 6638edc's save had one, while both runs of 98d6d34 and main's 7e4042a
 //!   had every herd staying put. So the route layer is not required here; it still has to draw or
 //!   say why.
-//! - `tests/data/create`: neoforge/create's GameTest world, run from the S7 build of
+//! - `tests/data/create`: neoforge/create's GameTest world, run from the M12a review fixes' build of
+//!   `fix/m12a-review` at 8da19617 with `-Psec1fx` (the core save's formats, the M12a review fixes': RTCF
+//!   and meta 14, and CAMP_BODIES lines of 32 bytes, as the core entry says; a fresh world copied to
+//!   `target/` after its JVM exited); before that, the S7 build of
 //!   `feat/eq-s7-conflict` at 7f7110eb with `-Psec1fx` (the core save's formats, S7's: RTCE and meta 13, as the core
 //!   entry says; a fresh world copied to `target/` after its JVM exited); before that, the S6 build of
 //!   `feat/eq-s6-villages` at db46b196 (merged with main c9111cc0) with `-Psec1fx` (the core
