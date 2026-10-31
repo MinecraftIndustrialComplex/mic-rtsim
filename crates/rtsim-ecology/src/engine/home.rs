@@ -58,6 +58,15 @@ impl Dragons {
             .count()
     }
 
+    /// The engine no longer believes `d`'s home body stands: its misses were that body's and go
+    /// with it (EQC320), so a body it is given later starts with none.
+    pub(crate) fn clear_body(&mut self, d: DragonId) {
+        if let Some(x) = self.dragons.get_mut(d) {
+            x.body = None;
+            x.miss = (0, Tick(0));
+        }
+    }
+
     /// A lair came in (EQC112): reconcile its books with the bodies the plugin found.
     pub(crate) fn lair_census(&mut self, w: &mut World, c: &boundary::LairCensus, at: Tick) {
         let Some(l) = self.lair_of_key(c.lair) else {
@@ -161,7 +170,7 @@ impl Dragons {
                     // A third body of a pair (H2): it is not this dragon's to keep.
                     removals.push((c.bodies[i].entity, boundary::DISCARD_LAIR_FULL));
                     if believed == Some(c.bodies[i].entity) {
-                        self.dragons.get_mut(d).expect("live").body = None;
+                        self.clear_body(d);
                     }
                 }
                 Some(i) if matches!(state, State::Roosting) => plans.push(Plan::Adopt(d, i)),
@@ -170,7 +179,7 @@ impl Dragons {
                         plans.push(Plan::Recall(d, i));
                     } else {
                         removals.push((c.bodies[i].entity, boundary::DISCARD_AWAY));
-                        self.dragons.get_mut(d).expect("live").body = None;
+                        self.clear_body(d);
                     }
                 }
                 Some(i) => {
@@ -194,7 +203,7 @@ impl Dragons {
                     }
                     _ if away && believed.is_some() => {
                         // Its old body is gone: the dragon is alive and away, no loss.
-                        self.dragons.get_mut(d).expect("live").body = None;
+                        self.clear_body(d);
                     }
                     _ => {}
                 },
@@ -505,6 +514,7 @@ impl Dragons {
         self.bump(d);
         let x = self.dragons.get_mut(d).expect("live");
         x.body = Some(entity);
+        x.miss = (0, Tick(0));
         if let State::Embodied { epoch, since, .. } = x.state {
             x.state = State::Embodied {
                 epoch,
@@ -597,8 +607,8 @@ impl Dragons {
             return;
         };
         let here = self.canon(h.dimension, h.pos.0, h.pos.2);
+        self.clear_body(d);
         let x = self.dragons.get_mut(d).expect("live");
-        x.body = None;
         x.rest = Some((here, h.pos.1 as i32));
         let l = x.lair;
         self.pending_home.remove(&d);
