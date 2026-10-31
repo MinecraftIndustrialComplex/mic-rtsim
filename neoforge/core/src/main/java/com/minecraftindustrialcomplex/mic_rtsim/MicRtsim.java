@@ -25,6 +25,7 @@ public final class MicRtsim {
 
     public MicRtsim(IEventBus modBus, ModContainer container) {
         com.minecraftindustrialcomplex.mic_rtsim.gametest.TestMachines.register(modBus);
+        com.minecraftindustrialcomplex.mic_rtsim.gametest.TestPairing.register(modBus);
         RtsimConfig.register(container);
         RtsimAttachments.register(modBus);
         BridgeEvents.register(modBus);
