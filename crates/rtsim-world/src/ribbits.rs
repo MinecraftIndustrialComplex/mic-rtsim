@@ -478,6 +478,13 @@ impl World {
             return 0;
         };
         let village = self.nodes[node].key;
+        // A house the bridge placed is room for its residents, in K of a village no census has seen
+        // yet (EQC166); a seen village's K counts them as pending until they exist.
+        let per = u16::try_from(self.cfg.growth_pop_per_house).unwrap_or(1);
+        if let Some(row) = self.villages.get_mut(&node) {
+            row.k0 = row.k0.saturating_add(per);
+        }
+        self.recompute_k(node);
         for k in 0..self.cfg.growth_pop_per_house {
             // The resident's identity: its house and its place in it.
             let rop = identity_op(op, u64::from(k) + 1);

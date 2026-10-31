@@ -44,7 +44,8 @@ pub struct VillageRow {
     pub members: u32,
     /// Capacity: a human village's beds (clamped), a Ribbit village's houses (EQC154, EQC166).
     pub k: u16,
-    /// The adoption guess, kept: a Ribbit village's K until a census has seen it alive.
+    /// The adoption guess, and the residents of the houses the bridge has placed since: a Ribbit
+    /// village's K until a census has seen it alive.
     pub k0: u16,
     /// Bookings Java has not answered, and the tick of the oldest (`u64::MAX`: none).
     pub owed: u16,
@@ -177,21 +178,22 @@ impl World {
         matches!(self.nodes[i].kind, NodeKind::Village(Culture::Ribbit))
     }
 
-    /// A Ribbit village's K (EQC166): its adoption count plus the houses it has booked until a
-    /// complete census has seen it alive, then the largest complete reading plus the residents of
-    /// houses booked and not yet lived in. A human village's K is the census's beds.
+    /// A Ribbit village's K (EQC166): its adoption count plus the houses the bridge has placed
+    /// (`k0` holds both: [`World::house_placed`] adds a house's residents to it) until a complete
+    /// census has seen it alive, then the largest complete reading plus the residents of houses
+    /// booked and not yet lived in. A house the bridge could not place is room for nobody. A human
+    /// village's K is the census's beds.
     pub(crate) fn recompute_k(&mut self, i: usize) {
         if !self.is_ribbit(i) {
             return;
         }
-        let houses = self.growth.get(&i).map_or(0, |g| g.houses);
         let Some(row) = self.villages.get_mut(&i) else {
             return;
         };
         let k = if row.seen {
             u32::from(row.peak) + u32::from(row.pending_houses)
         } else {
-            u32::from(row.k0) + houses
+            u32::from(row.k0)
         };
         row.k = u16::try_from(k).unwrap_or(u16::MAX);
     }
