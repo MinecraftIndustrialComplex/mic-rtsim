@@ -146,11 +146,21 @@ public final class Residents {
         }
     }
 
-    /** The village a resident belongs to: its home (or meeting point) if that is in a village, else where it stands. */
+    /**
+     * The village a resident belongs to: the one it walks to if it is a settler on the road (outside the village's box, and
+     * near another village's perhaps: EQC178, EQC333), else its home (or meeting point) if that is in a village, else where it
+     * stands.
+     */
     public static Village villageOf(VillageRegistry villages, Entity e) {
         Kind k = kind(e);
         if (k == null)
             return null;
+        if (!villages.walkers.isEmpty()) {
+            VillageRegistry.Walker w = villages.walkers.get(e.getUUID());
+            Village walking = w == null ? null : villages.get(w.village);
+            if (walking != null)
+                return walking;
+        }
         BlockPos home = null;
         try {
             home = k.home().apply(e);
