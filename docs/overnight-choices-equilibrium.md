@@ -1796,3 +1796,265 @@ over years 30 to 60 on the 24-day census, unless said:
 | EQC458 | **A census row for ports, `ship.port`**, in `Ships::census`: one site a trade port, K 1, members 1 while open and 0 while closed by a blockade (empty, not broken: it reopens), no P, renewals its reopenings. | S8b's rule 7 is a ten-century claim (PC99) that only the soak carries to 262,980 days. |
 | EQC459 | **Outposts stay inside `conflict.camp`.** A vanilla outpost is a raider camp (FB-5 (b)): the same culture, rule and numbers. The long run and the together kill-alls read outposts by their faction keys where they judge them apart. Fork F13. | A row split by structure would need the faction's structure in the census for no rule that differs. |
 | EQC460 | **The S11 row is unchanged.** Its arithmetic holds (262,980 days at 100 a second is 43.8 minutes, "about 45") and none of its facts is wrong: it conditions the 45 minutes on 100 game days a second, which today's tiny host world reaches only on a quiet laptop (EQC453). What this design corrects is the plan's input, not the row: §3.6 has no band for some kinds (EQC415), which EQC416 supplies. | The task: change the row only for a wrong fact. |
+
+### S11 forks
+
+Each is in the record named. The option taken is the conservative one where I was unsure: the fewest changes to what exists,
+nothing a player meets, and no number that is not sourced or labelled.
+
+| Fork | Options | Taken | Record |
+|---|---|---|---|
+| F1 where every module runs together | the jni engine through the fake Java; a second composition in `rtsim-cli` | the engine | EQC401 |
+| F2 a kill with no record path | TEST orders; a fake dragon plugin in the host's Java; direct calls through `Engine::with_*` | orders 43 and 44 | EQC406 |
+| F3 the roamer's herd kill | a quarter of the herd a kill-day; none (the model's); every animal above the refuge | a quarter | EQC412 |
+| F4 the roamer's village kill | two residents a kill-day; none | two | EQC412 |
+| F5 soak worlds a night | one, rotating over the eight calibrated seeds; one fixed seed; four in parallel | one, rotating | EQC442 |
+| F6 the flat rule | drift both material and significant (Theil-Sen, Mann-Kendall); the range of century means; first half against second | both conditions | EQC438 |
+| F7 the thresholds δ | from the 30-seed spreads and the calibration; fixed numbers | the spreads | EQC420 |
+| F8 the heavy lock | the build only; the whole run | the build only | EQC451 |
+| F9 the soak's length | 262,980 days with a wall cap; a length set from the speed | 262,980 days | EQC453 |
+| F10 kill-all in one place | a table module and the two moved harnesses; a script running `kill_all_` across the workspace; copies of the harnesses | the table | EQC425, EQC427 |
+| F11 together | a wipe a kind, one control a seed; every kind wiped at once | a wipe a kind | EQC429 |
+| F12 the Umvuthi | a census row; read grove by grove in the harness | a row | EQC457 |
+| F13 outposts | inside `conflict.camp`; a row of their own | inside | EQC459 |
+| F14 the nests | drilled by an endless well; asleep | drilled, if the fake Java can found the well | EQC407 |
+| F15 the every-kind world's size | one size, the S4 grid; a smaller world for the soak | one size | EQC402 |
+| F16 the existing 30-seed twins | one-line calls of their rows; deleted; left as they are | calls | EQC430 |
+| F17 the judged centuries | 2 to 27, the 28th printed; 2 to 28 with a short last | 2 to 27 | EQC435 |
+| F18 a soak cut short | INCOMPLETE, start again; resume from its pages | start again | EQC443 |
+| F19 the nightly's source | `git archive` into a fixed folder; a worktree of its own | `git archive` | EQC451 |
+
+### FOR BEN
+
+Everything else in S11 can be undone and is decided here. These two touch Ben's laptop every night, his money, what GitHub
+may do, or this repository's CLAUDE.md. The build writes `tools/nightly/soak.sh` whatever the answers; only `install` and the
+CLAUDE.md line wait for them.
+
+**S11-1 (EQC451, EQC452): Where does the nightly soak run?** There is no CI: the repository is private, with no workflow and no
+runner, and nothing schedules any rtsim job (R15). The soak takes about 2 to 4 hours of two niced cores a night by the
+derivation of EQC453 (39 to 87 minutes for today's smaller world, measured).
+- (a) **A user timer on this laptop (Recommended).** `soak.sh install` writes a systemd user timer, as `pack-gc`'s script does
+  (03:30, no catch-up after a missed night, so it never starts when Ben opens the lid in the morning). Each night it runs only on
+  AC with the battery at 25% or more and no Mowzie GameTest JVM up, builds under the cargo heavy lock, runs outside it at nice
+  19 with idle IO, and writes its report under `~/.local/state/mic-rtsim/nightly/`. Nothing leaves the laptop. The durable home
+  for the timer is Ben's Nix config, as for `pack-gc`. Weekly, the same timer runs the 30-seed set (EQC452).
+- (b) No timer. The same script, run by hand or by a session before landing a change to a renewal rule, a census or a module's
+  state. Costs nothing when nobody runs it; "nightly" becomes "when someone remembers", so a slow leak can land unseen.
+- (c) GitHub Actions hosted runners. The repository is private, so the minutes are billed past the free allowance: a 2 to 4 hour
+  job a night is about 60 to 120 hours a month. The private git dependencies (`mic-native` over ssh) would need a deploy key
+  kept as a GitHub secret.
+- (d) A self-hosted GitHub runner on this laptop. No minutes billed, but a GitHub-held registration lets GitHub start jobs on
+  Ben's laptop, and the job still shares it with his sessions.
+Why it is Ben's: it runs on his machine every night, and (c) and (d) cost money or let GitHub start work on his laptop.
+
+**S11-2 (EQC445, EQC451): How does a red night reach a session?**
+- (a) **A line in this repository's CLAUDE.md (Recommended):** "Before starting work in mic-rtsim, read
+  `~/.local/state/mic-rtsim/nightly/latest`; if it says FAIL, its finding comes first: rerun its seed on the last green commit."
+  Every session reads CLAUDE.md already, and nothing leaves the laptop.
+- (b) A desktop notification (`notify-send`) when a night fails, as well as the report.
+- (c) A GitHub issue on the private repository, opened by the script with `gh` (a token on the laptop; the issue is visible to
+  the repository's members).
+- (d) The report file only: whoever looks finds it.
+Why it is Ben's: (a) edits the repository's CLAUDE.md, which only Ben changes; (b) and (c) are channels to him or off the
+laptop.
+
+### Ids S11 takes
+
+Checked against every local and remote branch (`git grep` over their refs for `EQC4`, the order numbers in each worktree's
+`orders.rs`, and the census names in S9's crates): nothing else uses them.
+
+| Space | Taken by S11 | Used today | Free left nearby |
+|---|---|---|---|
+| Test orders (`orders.rs`; Java's `NativeCodec` leaves numbers it does not use) | 43 `DRAGON_SLAY`, 44 `HERD_CULL` | 1 to 9, 16 to 32, 34, 40, 41, S9's 42 | 33 and 35 to 39 (left for peers), 45 and up (45 for `SHIP_SINK` if UNVERIFIED 7 needs it) |
+| Census kind names | `conflict.umvuthi`, `ship.port` | the nine of R13 | |
+| Record kinds, flags, aux bits, wheel tags, page magics and meta versions, archive kinds, config keys, JNI exports | none | | |
+| RNG systems | `eq.every_roamer` | `eq.roamer`, `eq.camp_visitor`, `eq.mowzie_visitor` | |
+| Environment variables | `RTSIM_SOAK_DAYS`, `RTSIM_SOAK_SEED`, `RTSIM_SOAK_REPORT`, `RTSIM_SOAK_WALL_HOURS` | `RTSIM_HOST_SOAK_DAYS`, `RTSIM_HOST_WORLDS`, `RTSIM_HOST_STRIDE_DAYS`, `RTSIM_EQ_THREADS` | |
+| CLI | `rtsim-cli sim killall` | `sim census`, `sim mowzie` and the rest | |
+| Files and modules | `crates/rtsim-host/src/every.rs`, `crates/rtsim-host/tests/every.rs`, `crates/rtsim-host/tests/soak.rs`, `crates/rtsim-cli/src/sim/killall.rs`, `rtsim_ecology::synth::nests`, `rtsim_ships::synth::equilibrium`, `rtsim_kernel::census::trend`, `tools/nightly/soak.sh` | | |
+| Locks and folders outside the repository | `/tmp/mic-rtsim-soak.lock`, `~/.cache/mic-rtsim-nightly/`, `~/.local/state/mic-rtsim/nightly/` | `/tmp/mic-rtsim-heavy.lock` (taken for the build), `/tmp/mic-rtsim-bridge-heavy.lock` | |
+| EQC ids | EQC400 to EQC469 | S1 to S4 EQC1 to EQC33, S5 EQC100 to EQC149, S6 EQC150 to EQC193, S7 EQC200 to EQC290 | EQC470 to EQC499, kept for the build |
+
+### S11 tests
+
+Test names are the build's. Long runs are `#[ignore]`d with a short always-run cut, run in release under the repository's rule
+(`nice -n 10`, cargo under `/tmp/mic-rtsim-heavy.lock`), and never under the GameTest lock (EQUILIBRIUM.md §4).
+
+#### EQC463: always run, each change with its failing-first test
+
+| Change | Test | Failing first because |
+|---|---|---|
+| The statistic (EQC447) | `rtsim-kernel` `census::trend`: `theil_sen_and_mann_kendall_match_a_worked_example`, `a_flat_noisy_series_is_flat`, `a_slow_drift_is_not_flat`, `a_constant_series_is_flat`, `one_odd_value_does_not_fail`, `too_short_a_series_is_an_error` | the functions do not exist |
+| Orders 43 and 44 (EQC406) | `rtsim-jni/tests/protocol.rs`: `a_test_order_slays_a_lairs_dragons` (P + 1 a dragon, `player_losses` + 1), `a_test_order_culls_part_of_a_herd`, `orders_43_and_44_are_refused_outside_test_mode`, `orders_43_and_44_replay_once` (a crash between the order and the save) | no such orders |
+| `Herds::cull_n` (EQC406) | `rtsim-ecology/tests/herds.rs`: `cull_n_takes_n_latent_animals_booked_as_killed`, `cull_takes_them_all_as_before` | no `cull_n` |
+| The census rows (EQC457, EQC458) | `rtsim-cli` `sim/census.rs`: `census_counts_every_kind` extended (the `mowzie` scenario's three Umvuthi, the `ships` scenario's ports); `the_umvuthi_row_follows_its_chief` (the chief killed: members 0 and P 1; the heir: 1 and a renewal); `a_blockaded_port_reads_empty_and_reopens` (S8b's blockade world) | no rows |
+| The every-kind world (EQC402) | `rtsim-host/tests/every.rs`: `every_kind_world_has_every_kind` (after one game day every expected kind is in the census with the world's site count, members above 0 and capacity above 0; no protocol error) | no builder |
+| The roamer and the long run (EQC411 to EQC418) | `long_horizon_stability_with_kills`: seed 1, four game years, the roamer; for every kind it reached, kills above 0 and booked as a player's (EQC413); nothing extinct, every herd range alive, no site above its K, the rule bounds (EQC418), the engines' own checks green, no protocol error | new |
+| The soak's code (EQC446) | `who_is_alive_soak_short` | new |
+| The table (EQC430) | `the_kill_all_table_names_every_kind` | no table |
+| The moved harnesses (EQC427) | `kill_all_nests` and `kill_all_pirates`, unchanged in meaning, calling `synth` | |
+
+#### EQC464: `#[ignore]`d
+
+- `long_horizon_stability_with_kills_30_seeds` (`rtsim-host/tests/every.rs`): seeds 1 to 30, the roamer and nobody, 60 game
+  years, read over years 30 to 60 against EQC417's table, paired by seed; the rule bounds and the booked kills in every seed.
+- `kill_all_every_kind_30_seeds` (`rtsim-cli` `sim::killall`): every row of EQC426 on seeds 1 to 30.
+- `kill_all_in_one_engine_8_seeds` (`rtsim-host/tests/every.rs`): EQC429.
+- `who_is_alive_soak` (`rtsim-host/tests/soak.rs`): EQC433 to EQC445; run alone with `--exact`.
+- The calibration: `who_is_alive_soak` with `RTSIM_SOAK_SEED` 1 to 8 (`soak.sh calibrate`, four at a time).
+
+#### EQC465: tests that change
+
+None changes meaning. The `_30_seeds` twins of EQ (and S9's for dens and groves) become one-line calls of their rows, with the
+same assertions; `kill_all_nests` and `kill_all_pirates` call the moved code; `census_counts_every_kind` and
+`census_is_flat_with_no_player` see the two new rows (a closed port is empty, not broken, so the flat test's rules hold);
+`a_thousand_days_at_max_keeps_the_state_bounded` and its siblings are untouched; `Herds::cull`'s callers keep its behaviour.
+
+### S11 walkthrough: one nightly soak
+
+The night of 2026-10-31, after S11 is built and calibrated and S11-1 (a) is installed. Every number after 03:41 is what the
+derivations and the measured bands lead one to expect, labelled as such, not a result.
+
+| Wall clock | What happens |
+|---|---|
+| 03:30 | The timer starts `tools/nightly/soak.sh`. AC is 1, the battery 100%, no Mowzie JVM is up, the soak lock is free: it goes on. |
+| 03:30 to 03:41 | `git fetch`, then `git archive origin/main` (say 1a2b3c4d) into `~/.cache/mic-rtsim-nightly/src`. The build waits for the cargo heavy lock (another session's `cargo test` holds it for a few minutes), then builds incrementally at nice 19 with `-j 8`. Day 304 of the year, 304 modulo 8 is 0: seed 1. |
+| 03:41 | The soak starts, alone in its process. Day 0: the every-kind world is founded (56 regions of habitat, 5 lairs with their bodies, 9 villages of which 3 are Ribbit, 6 ports, 2 havens, 3 pool camps, 2 outposts, 3 dens, 3 groves, 2 nests and their wells); a player stands in village 0 for the day; the world is saved and forked, and `Host::open` runs it at max. |
+| Every 10 game days | A census of eleven kinds, the journal, the commands in flight; a save with real fsyncs. |
+| 03:46 (day 9,600, about 4.6 minutes at 35 game days a second, derived) | The first century closes: its line shows the herds near 0.78 of K, the lairs near 0.9 held, the groves near 0.97, about 0.6 renewal events a day (expected values). It is not judged: the world is settling. |
+| Each 4.6 minutes | A century closes: the bytes by table, the heap, the wheels, the renewals; a line in the log. |
+| 05:46 (day 262,980, about 2 hours 5 minutes at 35 a second) | The run ends. The checks: every kind present with its site count on all 26,298 samples, members above 0, every herd range alive (non-vacuity); every judged century in its band (levels); every series' drift and p (flatness). Say the lairs' held share drifts +0.004 over centuries 2 to 27 with p 0.41: flat. Say the conflict module's page table drifts +1.7 MB with p below 10^-6, against a δ of 16 KiB: material and significant, FAIL: S9's grove growth (R12), still there. |
+| 05:47 | The report is written, and `latest` reads `2026-10-31 1a2b3c4d seed 1 FAIL bytes.conflict (+1.7 MB over centuries 2 to 27)`. The script exits 1. |
+| The next session in mic-rtsim | It reads `latest` (S11-2 (a)), reruns seed 1 on the last green commit (the A/B of EQC442): the growth is there too, so it is old, not 1a2b3c4d's; its finding is the plunder raids' memory, diagnosed and fixed with a failing test first, then a green night. |
+
+### S11 cost (EQC467)
+
+Nothing here runs in the game (D1 is untouched): the two census rows are computed only when the census is read, and the two
+orders exist in TEST mode only. The suite's cost is the laptop's. Times marked "derived" come from EQC453's arithmetic and
+must be measured by the build; the rest were measured tonight.
+
+| What | When | Run time | Basis |
+|---|---|---|---|
+| The statistic's tests; the orders' and `cull_n`'s tests; the census rows' tests | every `cargo test` | milliseconds to seconds each | as the existing protocol and census tests |
+| `every_kind_world_has_every_kind`; `the_kill_all_table_names_every_kind` | every `cargo test` | a few seconds each | derived (one game day and the founding) |
+| `long_horizon_stability_with_kills` (seed 1, four years) | every `cargo test` | about 20 to 40 s | derived (384 days at 10 to 20 game days a second, and the founding) |
+| `who_is_alive_soak_short` (1,000 days) | every `cargo test` | about 50 to 100 s | derived |
+| The existing short tests the table reads | every `cargo test` | unchanged: 0.1 to 28.5 s each | measured (the probes) |
+| `who_is_alive_soak` | nightly | about 2 to 4 hours of two niced cores; today's smaller world 39 to 87 minutes | derived (EQC453); measured for today's world |
+| `long_horizon_stability_with_kills_30_seeds` | weekly | 60 runs of 5,760 days: 2.7 to 5.3 hours of engine time, about 27 to 55 minutes on six threads | derived (18 to 35 game days a second) |
+| `kill_all_in_one_engine_8_seeds` | weekly | per seed a control and a herd wipe of 3,360 days each and ten wipes of 984: 16,560 days; 132,480 for eight seeds: 1.1 to 2 hours of engine time, about 11 to 20 minutes on six threads | derived |
+| `kill_all_every_kind_30_seeds` | weekly | about 40 minutes on twelve threads, most of it the two herd wipes (576,000 game days of the 56 ranges at 35 ms a day, 5.6 hours of one core) and the dragons' (149,760 days at 49 ms, 2 hours) | derived from the probes' per-day costs |
+| The calibration (eight soaks) | once, and after a rule change | 16 to 32 hours of engine time; four at a time, one night of 4 to 8 hours | derived |
+| `soak.sh`'s build | nightly | incremental, minutes; a cold build of the host's test binary took 7 minutes 41 seconds at `-j 8` under a load of about 50 | measured |
+| Disk | | a second release target for the nightly, about 1.4 GB (this worktree's release target for the host and the CLI, measured), and 30 nights of reports | measured |
+
+### S11 what it leaves (EQC468)
+
+- **Bands the first run must set**: the herds under a hunting roamer, the villages and Ribbit villages under a killing one (no
+  model or engine band exists, EQC417), the pool camps' unattended level in the census (UNVERIFIED 11).
+- **The model's Umvuthi and base-6 den** come from a scratch run, not the committed results; the build may add its two lines to
+  `run.py` and `model.py` and commit the rerun, or keep citing this record.
+- **No player in the every-kind world**: no interest area, so no puppets, no watched-site deferral, no far view, no home body
+  loaded but by the roamer's camp visits; no player's district, so no raid on one and no FB-2 rule in the long run; no tribute
+  (SINK.md). The GameTests of S3, S5, S6, S7 and S9 cover bodies and Java; S11 adds none.
+- **Ports have no kill-all**: not a population.
+- **One world a night**: seed spread is checked at calibration only, by design (EQC442).
+- **A night the laptop is off, on battery or busy with a Mowzie JVM has no soak**, and it is not made up.
+- **S9's grove growth (R12) is not fixed here**; the soak will report it until it is.
+- **The weak-PC cost of the game** stays `bench scale`'s to measure; the suite's speeds are a test's, the fake Java's half
+  included.
+
+### S11 risks
+
+1. **The every-kind world may run slower than derived.** Then every night is INCOMPLETE at the wall cap. The first probe
+   (EQC470) settles it; the answers are a soak world with fewer herd ranges (with its own calibration, its bands no longer S4's)
+   or a faster herds module. The 262,980 days do not move (F9).
+2. **The first soaks will likely fail "state bytes flat"** on S9's grove growth (R12) if it is still there. That is the suite
+   working, but it blocks a green night until someone fixes a slice that is not S11's.
+3. **Tick counters past day 178,957**: 2^32 ticks is 178,956.97 game days, inside the soak. Any tick kept as a `u32` in an engine's
+   state or on the wire wraps there; the longest engine run so far is 96,000 days (the ships' ten centuries). UNVERIFIED 14.
+4. **The orders bypass the bridge for dragons and herds**: a regression in those kinds' kill credit would not show in S11. The
+   S3 and S5 GameTests are its guard.
+5. **Coupling surprises** in the together kill-alls (a wiped village plundered by camps and groves before its settlers come) are
+   findings that need explaining before a band moves, which can take a build round each.
+6. **Calibration is a night of 4 to 8 hours on eight cores**, again after every renewal rule change; if CONFLICT-LIFE.md's
+   council lands in steps, that recurs.
+7. **The nightly shares the laptop with overnight sessions**: nice 19, idle IO, two cores, and its own build waits for the
+   heavy lock; it can still slow a heavy night a little.
+8. **The model's roamer is a model's**: the every-kind world's geography (villages by spawn, lairs 1,000 to 2,500 blocks out)
+   differs from the model's 12 by 12 grid, so model-derived bands may sit off by the geography, as S4's lairs sat 0.06 below
+   the model's: findings, explained.
+9. **Rotating seeds** can turn a night red after a green one on the same commit, because the seed differs; the report names
+   the seed, the A/B rule settles it, and the calibration margin makes it rare.
+10. **Many ties** (a kind that is full nearly always) shrink Mann-Kendall's variance, so a tiny change can read significant; the
+    materiality condition is the guard (UNVERIFIED 15).
+11. **Merges.** `crates/rtsim-host/src/java.rs` is touched by `fix/s5-review` and `fix/s6-review`; this file by `fix/s7-review`
+    (and `fix/s5-review`'s worktree holds uncommitted edits to it); S9 touches `sim/equilibrium.rs`, `sim/census.rs` and
+    `Conflict::census`. This design only appends to this file, and the build starts after S9 lands.
+
+### UNVERIFIED, for the build to check first
+
+1. The every-kind world's speed in the host: derived 18 to 35 game days a second (EQC453). The first job after the world
+   builder is a 2,000-day probe in the soak's loop.
+2. That HABITAT painted for each of the 56 regions founds one herd a region in the native engine soon after day 0, with the K
+   and species `herds::synth::ranges` gives; if the world model's founding differs, the herd bands need their own calibration.
+3. That the host's `FakeConflict` (`java.rs:239`) answers a den's and a grove's `camp_in`, census, spawns and `camp_kill` when
+   driven from the fake Java as `CampRun` drives it; which FACTION_FOUND fields (home bodies, census, flags) the Mowzie
+   plugin's `declareCamp` writes; and that the bandit's structure id and the outposts' `minecraft:pillager_outpost` map to their
+   cultures through FACTION_FOUND.
+4. That `Policy::Play` answers SPAWN_RESIDENT and PLACE_HOUSE as `census::Villages::answer` does, and that
+   `resident_killed(v, true)` books a Ribbit's death as a villager's.
+5. That an industry district with an infinite `DieselOil` deposit can be founded through `industry_obs` with `mc` None, so
+   `wells()` lists a well by each nest (R19); else F14's fallback.
+6. An engine's pool threads, and that several engines in one test process share nothing but the pools (EQC408).
+7. The counters that show a kill was booked as a player's (EQC413) for herds, villages, dens, groves, the Umvuthi and havens;
+   and that `Obs::Sunk` for a pirate with no body is accepted through the wire, with its agent and epoch readable between steps;
+   else an order 45 `SHIP_SINK`.
+8. The Umvuthi's cowed time, and the counter of heirs who took the mask (EQC428, EQC457).
+9. That five lairs founded with a census body each, under `Policy::Refuse` and with no lair ever loaded, keep S5's home-body
+   books consistent: no owed body spawned, none written off.
+10. Whether S9's grove growth (R12) appears in the every-kind world, in which table, and why.
+11. The pool camps' unattended level in the census (the pool without the members away), which no run has measured.
+12. Wheel-length accessors for the dragons, the herds and conflict (`World::world_wheel_len` and `Ships::pending_by_kind`
+    exist).
+13. That the event archive stays within its budget over 262,980 days (`rtsim-archive`'s own soak is 10,000 days and
+    `#[ignore]`d), and what that budget is.
+14. That no engine keeps a tick as a `u32` in its state or on the wire (2^32 ticks is day 178,957): look first, then let the
+    soak prove it.
+15. That Mann-Kendall's normal approximation is good enough at 26 values with heavy ties; else a p from 10,000 seeded
+    permutations.
+
+### S11 work split
+
+Each step is one commit on `feat/eq-s11` (commit early: an uncommitted agent worktree is removed after an interruption), builds
+and tests under the repository's rule, and stops with its tests green and every existing suite unchanged. Before any build,
+check that `cat /sys/class/power_supply/AC/online` prints 1 and that `ps -eo args | grep -c '[m]odFolders=mic_rtsim_mowziesmobs'`
+prints 0, and make the new worktree's `target/` a btrfs subvolume before the first build.
+
+0. **Base.** Wait for S9 (`feat/eq-s9-mowzie`) to land and cut `feat/eq-s11` from that main. Merge each review-fix branch as it
+   lands (`fix/s5-review` and `fix/s6-review` touch `java.rs`, `fix/s7-review` this file, `fix/m12a-review` the conflict
+   synth).
+1. **The statistic** (`rtsim_kernel::census::trend`) and its six tests (EQC447). Settle UNVERIFIED 15.
+2. **`Herds::cull_n` and orders 43 and 44** (`rtsim-jni/src/orders.rs`, the engine's order handler, `rtsim-ecology` herds), the
+   four protocol tests and two herd tests; `docs/boundary.md`'s list of test orders.
+3. **The census rows** `conflict.umvuthi` and `ship.port` and their tests (EQC457, EQC458). Settle UNVERIFIED 8.
+4. **Move the nest and pirate harnesses** into `synth` (EQC427); the two crates' suites green unchanged in meaning.
+5. **`rtsim_host::every`**: the world builder and its fake-Java helpers, `every_kind_world_has_every_kind`. Settle UNVERIFIED 2,
+   3, 4, 5 and 9 here. Then the **speed probe**: 2,000 days of the every-kind world in the soak's loop; record it (EQC470) and
+   apply risk 1 if it is too slow.
+6. **`sim::killall`**: the table, `camp_wipe_of`, `MowziePresser::KillChief`, `rtsim-cli sim killall`,
+   `kill_all_every_kind_30_seeds`, the twins as calls, `the_kill_all_table_names_every_kind` (which reads step 5's world).
+   Run the 30-seed table once and record it.
+7. **The roamer and the long run**: `every::Roamer`, `long_horizon_stability_with_kills` and its 30-seed twin. Settle
+   UNVERIFIED 6 and 7. Run the twin once; record the engine's bands (EQC471 onward) in place of EQC417's provisional ones,
+   explaining any kind outside them first.
+8. **`kill_all_in_one_engine_8_seeds`**: run it once; record each kind's together result against its alone band.
+9. **`tests/soak.rs`**: `who_is_alive_soak`, `who_is_alive_soak_short`, the report. Settle UNVERIFIED 10 to 14.
+10. **Calibration**: the soak on seeds 1 to 8, four at a time; set every calibration-derived δ and band; record them; any series
+    without margin is a finding to explain (EQC442).
+11. **`tools/nightly/soak.sh`** (`run`, `weekly`, `calibrate`; `install` and the CLAUDE.md line only after S11-1 and S11-2 are
+    answered).
+12. **Documents**: EQUILIBRIUM.md §4's S11 row (built, its records), a §3.6 note where the engine's bands differ from the
+    model's; this file's findings, EQC470 onward.
+13. **Land** as CLAUDE.md says: merge `origin/main`, check for unmerged paths, run `cargo test --workspace` and clippy with
+    `-D warnings`, attach the first runs of the ignored suites to the pull request, and wait for the review.
