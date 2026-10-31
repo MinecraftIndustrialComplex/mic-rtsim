@@ -17508,8 +17508,8 @@ the review gave are at 43062c0b.
   grove's `pressure` is the Umvuthi's (the warriors have no renewal); S9 gives the chief a pressure of its own
   (`chief_pressure`), and the merge applies this to whichever is the Umvuthi's. **Save:** RTC15, `RTCF`, meta 14: a camp's
   heir ends with the kept pressure (an f32, refused when not finite and at least 0, and its day); `tests/strain.rs`'s format
-  check names RTCE as the older format. The viewer fixtures are written again with the next format change of this branch
-  (MZB-1404). Tests (`tests/grove.rs`), both failing on main:
+  check names RTCE as the older format. The viewer fixtures are written again once for this branch's formats (MZB-1406).
+  Tests (`tests/grove.rs`), both failing on main:
   `a_grove_found_empty_keeps_a_handed_over_pressure_above_the_caps` (a row's P 7 against the cap's 5; on main "the row's
   pressure kept: 5") and `a_grove_found_empty_and_adopting_its_umvuthi_restores_the_handed_over_pressure` (a row's P 2, the
   cap's 5 while waiting, then an untagged Umvuthi adopted four days on; on main "the row's pressure, aged: 0 against
@@ -17576,6 +17576,10 @@ the review gave are at 43062c0b.
     would be most of the test's budget), and within the logic wait's bound one of the two is left, the row names it at home
     with count 1 and nobody missing, no wait, and P the write-off's aged; the dead one's CAMP_DEATH names its UUID. Either
     may win; both outcomes meet the same checks. EQUILIBRIUM.md §2.3's missing members are amended.
+  - **Failing first:** the three den tests, written with main's API (the action as 9, no `rivals`) in a scratch worktree at
+    a4717c1f, fail there: the pairing "assertion `left == right` failed: one pairing, left: 0, right: 1"; the replacement's
+    death "assertion `left == right` failed: the returner holds the slot, left: [0, 0, 0, 0, 0], right: [1, 0, 0, 0, 0]";
+    the returner's death "assertion `left == right` failed: books nothing, left: 2, right: 1" (F4's player's loss).
 - **MZB-1405** (P3 3, the uninstall's GAP rule at a boss den, a test only): `uninstallLeavesHomeBodies`'s pressure check could
   not fail on main, since the grove's warriors have no member renewal there (`renewal_bump` returns at once for them; S9
   changes the grove's renewal), so F5's GAP rule (a home body lost while rtsim was out is no one's loss) had no GameTest at a
