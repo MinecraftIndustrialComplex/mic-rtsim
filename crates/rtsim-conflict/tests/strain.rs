@@ -10,7 +10,7 @@ use rtsim_conflict::culture::SignalKind;
 use rtsim_conflict::culture::{
     BANDIT_JSON, Culture, CultureDef, FROSTMAW_JSON, GOBLIN_JSON, RAIDER_JSON, UMVUTHANA_JSON,
 };
-use rtsim_conflict::engine::{BLOCKED, Demand, Party, Signal, Target, body_id};
+use rtsim_conflict::engine::{BLOCKED, Demand, Party, Phase, Signal, Target, body_id};
 use rtsim_conflict::synth::CampRun;
 use rtsim_conflict::{Conflict, ConflictTunables, Cultures, synth};
 use rtsim_ecology::infra::{DistrictSite, Infrastructure, NoInfrastructure, RaidOutcome};
@@ -432,23 +432,113 @@ fn a_mob_kill_adds_nothing() {
 }
 
 /// EQC204, FB-2 (a): a death that credits no one at a player's district (a trap, a turret, a
-/// FakePlayer's kill) is that player's loss; the same death on the road is no one's.
+/// FakePlayer's kill) is that player's loss: a band fighting or waiting there, as a fight at its
+/// walls leaves it. (EQC291: a band still mustering at its camp is not at the district.)
 #[test]
 fn an_unclaimed_death_at_a_players_district_is_his() {
-    for by in [boundary::BY_NONE, boundary::BY_OTHER] {
-        let (mut w, mut c, f) = camp(23, "goblin");
-        let (p, e) = embodied_raid(&mut c, &mut w, f, district(), Tick(21));
-        let o = casualty(&c, p, e, by, 2, next_op());
-        ingest(&mut c, &mut w, &o, Tick(200));
-        let got = pressure(&c, f, Tick(200));
-        assert!((got - 2.0 / 60.0).abs() < 1e-6, "by {by}: {got}");
+    for phase in [Phase::Fighting, Phase::Waiting] {
+        for by in [boundary::BY_NONE, boundary::BY_OTHER] {
+            let (mut w, mut c, f) = camp(23, "goblin");
+            let (p, e) = embodied_raid(&mut c, &mut w, f, district(), Tick(21));
+            c.parties[p].phase = phase;
+            let o = casualty(&c, p, e, by, 2, next_op());
+            ingest(&mut c, &mut w, &o, Tick(200));
+            let got = pressure(&c, f, Tick(200));
+            assert!((got - 2.0 / 60.0).abs() < 1e-6, "{phase:?} by {by}: {got}");
+        }
     }
     // The switch off: it is no one's.
     let (mut w, mut c, f) = camp(23, "goblin");
     c.tun.district_unclaimed_is_players = false;
     let (p, e) = embodied_raid(&mut c, &mut w, f, district(), Tick(21));
+    c.parties[p].phase = Phase::Fighting;
     let o = casualty(&c, p, e, boundary::BY_NONE, 2, next_op());
     ingest(&mut c, &mut w, &o, Tick(200));
+    assert_eq!(pressure(&c, f, Tick(200)), 0.0);
+}
+
+/// A raid of `f` on the refinery, run in steps of 60 ticks until `want` holds of the band (its
+/// phase and its distance from the refinery, blocks), then embodied at a new epoch as a watched
+/// fight leaves it. `NoInfrastructure`: the band raids nothing and walks home.
+fn raid_where(
+    seed: u64,
+    want: impl Fn(Phase, f64) -> bool,
+) -> (World, Conflict, u32, Handle<Party>, u32) {
+    let (mut w, mut c, f) = camp(seed, "goblin");
+    let key = c.factions[f as usize].key;
+    let p = c
+        .order_party(&mut w, key, PartyKind::Raid, district(), None, Tick(21))
+        .expect("a raid");
+    let mut t = Tick(21);
+    loop {
+        t = Tick(t.0 + 60);
+        assert!(t.0 < 10 * DAY, "the band never came to where the test wants it");
+        c.run_until(&mut w, &mut NoInfrastructure, t);
+        assert!(c.parties.contains(p), "the band is gone");
+        let (x, z) = c.party_pos(p, t);
+        let d = f64::from(x - synth::REFINERY_POS.x).hypot(f64::from(z - synth::REFINERY_POS.z));
+        if want(c.parties[p].phase, d) {
+            break;
+        }
+    }
+    let x = &mut c.parties[p];
+    x.epoch += 1;
+    x.embodied = true;
+    x.spawned = x.units.clone();
+    let e = x.epoch;
+    (w, c, f, p, e)
+}
+
+fn out_far(p: Phase, d: f64) -> bool {
+    p == Phase::Out && d > 200.0
+}
+fn home_far(p: Phase, d: f64) -> bool {
+    p == Phase::Home && d > 200.0
+}
+fn out_near(p: Phase, d: f64) -> bool {
+    p == Phase::Out && d < 100.0
+}
+fn home_near(p: Phase, d: f64) -> bool {
+    p == Phase::Home && d < 100.0
+}
+
+/// FB-2 (a), EQC291: a band bound for a player's district that loses a member to a fall, a death
+/// no one dealt, on the road out or walking home is not at the district: no one's loss. Walking
+/// in or just off the district it is his, as it is fighting or waiting there.
+#[test]
+fn an_unclaimed_death_on_the_road_to_a_district_is_no_ones() {
+    type Want = fn(Phase, f64) -> bool;
+    for (what, near, want) in [
+        ("on the road out", false, out_far as Want),
+        ("walking home", false, home_far as Want),
+        ("walking in", true, out_near as Want),
+        ("walking off", true, home_near as Want),
+    ] {
+        for by in [boundary::BY_NONE, boundary::BY_OTHER] {
+            let (mut w, mut c, f, p, e) = raid_where(24, want);
+            let at = c.now();
+            let o = casualty(&c, p, e, by, 2, next_op());
+            ingest(&mut c, &mut w, &o, at);
+            let got = pressure(&c, f, at);
+            if near {
+                assert!((got - 2.0 / 60.0).abs() < 1e-6, "{what}, by {by}: {got}");
+            } else {
+                assert_eq!(got, 0.0, "{what}, by {by}");
+            }
+        }
+    }
+}
+
+/// EQC291: a band still mustering at its camp is not at the district it is bound for.
+#[test]
+fn an_unclaimed_death_while_mustering_is_no_ones() {
+    let (mut w, mut c, f) = camp(23, "goblin");
+    let (p, e) = embodied_raid(&mut c, &mut w, f, district(), Tick(21));
+    assert_eq!(c.parties[p].phase, Phase::Mustering);
+    for by in [boundary::BY_NONE, boundary::BY_OTHER] {
+        let o = casualty(&c, p, e, by, 1, next_op());
+        ingest(&mut c, &mut w, &o, Tick(200));
+    }
     assert_eq!(pressure(&c, f, Tick(200)), 0.0);
 }
 
@@ -522,6 +612,31 @@ fn a_war_chief_killed_by_a_player_adds_one_over_cap() {
     );
     let got = pressure(&c, f, Tick(200));
     assert!((got - 1.0 / 60.0).abs() < 1e-6, "{got}");
+}
+
+/// EQC291: the war chief of a pool camp killed by a machine (a death no one is credited with) is
+/// one member lost, and is the player's at the district as any member's is; on the road it is
+/// no one's; a mob's kill is a predator's at either.
+#[test]
+fn a_war_chief_killed_by_a_machine_at_the_district_is_his() {
+    for by in [boundary::BY_NONE, boundary::BY_OTHER] {
+        let (mut w, mut c, f) = camp(27, "goblin");
+        let (p, _) = embodied_raid(&mut c, &mut w, f, district(), Tick(21));
+        c.parties[p].phase = Phase::Fighting;
+        c.chief_killed_by(&mut w, p, None, by, None, Tick(200));
+        let got = pressure(&c, f, Tick(200));
+        assert!((got - 1.0 / 60.0).abs() < 1e-6, "at the district, by {by}: {got}");
+        // On the road out, far from the district: no one's.
+        let (mut w, mut c, f, p, _) = raid_where(27, out_far);
+        let at = c.now();
+        c.chief_killed_by(&mut w, p, None, by, None, at);
+        assert_eq!(pressure(&c, f, at), 0.0, "on the road, by {by}");
+    }
+    let (mut w, mut c, f) = camp(27, "goblin");
+    let (p, _) = embodied_raid(&mut c, &mut w, f, district(), Tick(21));
+    c.parties[p].phase = Phase::Fighting;
+    c.chief_killed_by(&mut w, p, None, boundary::BY_MOB, None, Tick(200));
+    assert_eq!(pressure(&c, f, Tick(200)), 0.0, "a mob's kill");
 }
 
 /// The den and the grove book what they booked: S9's, not S7's.
