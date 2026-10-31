@@ -1,6 +1,19 @@
-// Diagnosis probe for fix/herd-k-diag (EQC479): not for landing.
-//
-// HERDK_WORLDS=dir1:dir2 cargo test --release -p rtsim-view --test herdk_probe -- --ignored --nocapture
+// SPDX-License-Identifier: AGPL-3.0-or-later
+//! The herd forage probe (docs/overnight-choices-equilibrium.md EQC479, EQC500 to EQC509), every
+//! test `#[ignore]`d: herds founded as the world model founds them, run alone (no predator, no
+//! player) for `HERDK_DAYS` (2,000) days, each range's K, N, starvation and forage yield over its
+//! need printed.
+//!
+//! - `painted_world`: S11's every-kind paint (plains, savanna, forest, sea channels) and
+//!   single-biome variants; `HERDK_ONLY` picks variants by name, `HERDK_NO_CHANNELS` drops the sea,
+//!   `HERDK_SHARE` sets `FoundingTunables::forage_share`.
+//! - `s2_ranges_grid`, `s2_ranges_grid_fenced`: S2's valley grid, open and closed outside its 56
+//!   regions.
+//! - `real_worlds`, `real_world_climates`: saved worlds (`HERDK_WORLDS=dir1:dir2`), their herds and
+//!   their cells' temperatures by biome; `savanna_trace`: one savanna herd, sub-season by
+//!   sub-season.
+//!
+//! `cargo test --release -p rtsim-view --test herdk_probe -- --ignored --nocapture --exact <name>`
 
 use std::collections::BTreeMap;
 use std::path::Path;
