@@ -3472,8 +3472,7 @@ fn a_grove_found_empty_and_adopting_its_umvuthi_restores_the_handed_over_pressur
             .expect("the warriors' renewal")
             .rule
             .half_life_days;
-    let want_w =
-        WARRIORS_P * (-((now.0 - at.0) as f32) / TICKS_PER_DAY as f32 / h).exp2();
+    let want_w = WARRIORS_P * (-((now.0 - at.0) as f32) / TICKS_PER_DAY as f32 / h).exp2();
     let got_w = warriors_pressure_at(&r, now);
     assert!(
         (got_w - want_w).abs() < 1e-3,
