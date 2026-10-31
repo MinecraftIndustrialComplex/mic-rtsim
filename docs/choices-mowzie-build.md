@@ -12102,7 +12102,7 @@ each place was found again on main after M12a, S5, S6 and S7.
     readers of `standingChief` (the chief's memory, case B's merge) keep the live body.
   - The test is `aThroneBodyAndItsPuppetKilledInOneTickBookOneDeath` (batch `aloft_one_tick_deaths`: grove T kills the throne body and
     then the puppet in one step, grove P the other way round). At 72a89a5c it failed with "T (the throne body first): one death booked
-    (1 CAMP_DEATH, 1 CHIEF_KILLED)".
+    (1 CAMP_DEATH, 1 CHIEF_KILLED)", two deaths booked.
 - **MZB-1304** (P3 of the review: no REMOVE after an answer landed on a dead chief slot):
   - `chief_killed_home` makes a Body slot Dead and sends the throne body's REMOVE only with no line in flight; with the chief's
     HAND_BACK in flight the REMOVE waited for the next census, as the answer (NOTHING after a merge, STALE since MZB-1300) books
