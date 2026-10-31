@@ -4322,6 +4322,82 @@ mod replay_path {
         (seen, st, r.replay.breakpoints, r.replay.model, books)
     }
 
+    /// The checks of `switched_lines_conserve_compose_and_stay_under_the_control` on one case.
+    fn switched_case(
+        (press, slow, hi, band): (u32, u32, i64, i64),
+        s0f: f64,
+        span: u64,
+        lat: u32,
+        mut reads: Vec<u64>,
+    ) -> Result<(), TestCaseError> {
+        // The consumer slower than the press (a tenth to four times slower), so the switch
+        // cycles; the band inside the levels.
+        let consume = press * slow / 10;
+        let lo = (hi - band).max(1);
+        let s0 = (hi as f64 * s0f) as i64;
+        reads.retain(|&t| t < span);
+        reads.sort_unstable();
+        let line = (press, consume, hi, lo);
+        let (seen, st, bps, model, books) = switched_run(line, lat, s0, span, &reads);
+        prop_assert_eq!(model, replay_model::GLASS, "fell back after {} breakpoints", bps);
+        prop_assert!(books, "books");
+        let (ref_used, ref_coal, _, flips) = switched_reference_lat(
+            (u64::from(press), u64::from(consume), hi, lo),
+            s0,
+            span,
+            u64::from(lat),
+        );
+        // Conservation: never more than there was; at most a unit per switch flip (a time
+        // shift's rounding, G2-12) and a few in machines less. The latency rule holds nodes
+        // off, so it loses nothing (G2-6).
+        let total = 100_000 + s0;
+        let b = hi - lo;
+        let periods = 2 * span as i64 / ((b - 2).max(1) * i64::from(consume)) + 2;
+        let slack = 4 + if lat == 0 { flips } else { periods };
+        for (t, g) in seen.iter().chain(std::iter::once(&(span, st.clone()))) {
+            let sum = g.get(BRASS) + g.get(SHEET) + g.get(COAL);
+            prop_assert!(sum <= total, "at {}: {} above {}", t, sum, total);
+            prop_assert!(sum >= total - slack, "at {}: {} lost more than {}", t, total - sum, slack);
+        }
+        // The composition rule: the same run without reads ends the same.
+        let (_, st2, bps2, _, _) = switched_run(line, lat, s0, span, &[]);
+        prop_assert_eq!(&st, &st2);
+        prop_assert_eq!(bps, bps2);
+        // Never above the control: the consumer made at most what Create made (and the item
+        // in its cycle, G2-21), and the press pressed at most what was taken plus the room
+        // left to the switch's top.
+        let used = 100_000 - st.get(BRASS);
+        let coal = st.get(COAL);
+        prop_assert!(coal <= ref_coal + 1, "made {} above {}", coal, ref_coal);
+        prop_assert!(
+            used <= coal + (hi - s0).max(0) + 2,
+            "pressed {} for {} taken (switch at {}, from {})", used, coal, hi, s0
+        );
+        // And not far below it. A switch's breakpoint costs its regime under a tick (choice
+        // G2-12), and the replay's switch flips a tick before Create's at each threshold
+        // (G2-20), so it flips more often, by its band over the band less two. With a belt
+        // the replay's cycle is shorter than Create's (it stops at the top, Create's belt
+        // still delivers), so it is held only where the consumer never runs dry.
+        if lat == 0 {
+            let lost_ticks = flips * b / (b - 2).max(1) + 4;
+            prop_assert!(
+                coal >= ref_coal - lost_ticks / i64::from(consume) - 2,
+                "made {}, reference {} ({} flips)", coal, ref_coal, flips
+            );
+            prop_assert!(
+                (used - ref_used).abs()
+                    <= ref_used / 100 + (hi - lo) + 2 + lost_ticks / i64::from(press),
+                "pressed {}, reference {}", used, ref_used
+            );
+        } else if lo > i64::from(lat) / i64::from(consume) + 3 && s0 > i64::from(lat) / i64::from(consume) + 3 {
+            prop_assert!(
+                coal >= ref_coal - periods / i64::from(consume) - 2,
+                "made {}, reference {} (belt {})", coal, ref_coal, lat
+            );
+        }
+        Ok(())
+    }
+
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(24))]
 
@@ -4339,74 +4415,18 @@ mod replay_path {
             s0f in 0.0f64..=1.2,
             span in 20_000u64..=200_000,
             lat in prop_oneof![Just(0u32), 1u32..=400],
-            mut reads in prop::collection::vec(1u64..=200_000, 0..6),
+            reads in prop::collection::vec(1u64..=200_000, 0..6),
         ) {
-            // The consumer slower than the press (a tenth to four times slower), so the switch
-            // cycles; the band inside the levels.
-            let consume = press * slow / 10;
-            let lo = (hi - band).max(1);
-            let s0 = (hi as f64 * s0f) as i64;
-            reads.retain(|&t| t < span);
-            reads.sort_unstable();
-            let line = (press, consume, hi, lo);
-            let (seen, st, bps, model, books) = switched_run(line, lat, s0, span, &reads);
-            prop_assert_eq!(model, replay_model::GLASS, "fell back after {} breakpoints", bps);
-            prop_assert!(books, "books");
-            let (ref_used, ref_coal, _, flips) = switched_reference_lat(
-                (u64::from(press), u64::from(consume), hi, lo),
-                s0,
-                span,
-                u64::from(lat),
-            );
-            // Conservation: never more than there was; at most a unit per switch flip (a time
-            // shift's rounding, G2-12) and a few in machines less. The latency rule holds nodes
-            // off, so it loses nothing (G2-6).
-            let total = 100_000 + s0;
-            let b = hi - lo;
-            let periods = 2 * span as i64 / ((b - 2).max(1) * i64::from(consume)) + 2;
-            let slack = 4 + if lat == 0 { flips } else { periods };
-            for (t, g) in seen.iter().chain(std::iter::once(&(span, st.clone()))) {
-                let sum = g.get(BRASS) + g.get(SHEET) + g.get(COAL);
-                prop_assert!(sum <= total, "at {}: {} above {}", t, sum, total);
-                prop_assert!(sum >= total - slack, "at {}: {} lost more than {}", t, total - sum, slack);
-            }
-            // The composition rule: the same run without reads ends the same.
-            let (_, st2, bps2, _, _) = switched_run(line, lat, s0, span, &[]);
-            prop_assert_eq!(&st, &st2);
-            prop_assert_eq!(bps, bps2);
-            // Never above the control: the consumer made at most what Create made (and the item
-            // in its cycle, G2-21), and the press pressed at most what was taken plus the room
-            // left to the switch's top.
-            let used = 100_000 - st.get(BRASS);
-            let coal = st.get(COAL);
-            prop_assert!(coal <= ref_coal + 1, "made {} above {}", coal, ref_coal);
-            prop_assert!(
-                used <= coal + (hi - s0).max(0) + 2,
-                "pressed {} for {} taken (switch at {}, from {})", used, coal, hi, s0
-            );
-            // And not far below it. A switch's breakpoint costs its regime under a tick (choice
-            // G2-12), and the replay's switch flips a tick before Create's at each threshold
-            // (G2-20), so it flips more often, by its band over the band less two. With a belt
-            // the replay's cycle is shorter than Create's (it stops at the top, Create's belt
-            // still delivers), so it is held only where the consumer never runs dry.
-            if lat == 0 {
-                let lost_ticks = flips * b / (b - 2).max(1) + 4;
-                prop_assert!(
-                    coal >= ref_coal - lost_ticks / i64::from(consume) - 2,
-                    "made {}, reference {} ({} flips)", coal, ref_coal, flips
-                );
-                prop_assert!(
-                    (used - ref_used).abs()
-                        <= ref_used / 100 + (hi - lo) + 2 + lost_ticks / i64::from(press),
-                    "pressed {}, reference {}", used, ref_used
-                );
-            } else if lo > i64::from(lat) / i64::from(consume) + 3 && s0 > i64::from(lat) / i64::from(consume) + 3 {
-                prop_assert!(
-                    coal >= ref_coal - periods / i64::from(consume) - 2,
-                    "made {}, reference {} (belt {})", coal, ref_coal, lat
-                );
-            }
+            switched_case((press, slow, hi, band), s0f, span, lat, reads)?;
         }
+    }
+
+    /// The shrunk case of a failure of the property above (seed cc 3c8e8ad0...): "made 5538
+    /// above 5536".
+    #[test]
+    fn a_switched_line_that_runs_dry_on_its_belt_stays_under_the_control() {
+        switched_case((14, 11, 44, 43), 0.753_825_214_748_932_2, 83_544, 70, Vec::new())
+            .unwrap_or_else(|e| panic!("{e}"));
     }
 
     /// The glass box's pages (G2-9, `glass::page`): a district saved and restored in the middle
