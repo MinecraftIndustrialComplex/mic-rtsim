@@ -12586,14 +12586,14 @@ are superseded by these.
   62.6]** for K 5, 7 and 9 alike (33.3 for K 9), against 13.2 [10.3, 23.3] with villages that have nothing worth taking (grief 0:
   the mood idle, the plain 12 plus the days a pack is away) and against the design's "about every 35 days", which holds. The hold is
   **0.963 [0.947, 0.981] of K 5, 0.974 [0.962, 0.986] of K 7 and 0.979 [0.971, 0.988] of K 9** (design: 0.96 to 0.98, which
-  holds), against 0.91, 0.94 and 0.95 without the mood (MZB-1203's engine rerun), flat by century (first half against second half
-  within 0.003). The peak grief in a run is 1.58 [1.17, 2.10] for K 5 (a pack of two lost in 1.58 caps' worth within the memory's 96
-  days: the factor is held at its 3, so the interval cannot grow past three times the 12 and the pack's loss does not stop the
-  raids), 1.12 for K 7 and 0.91 for K 9. With the 2 seeds of the default test: 31.1 days and 0.965, 0.976, 0.980.
+  holds), against 0.91, 0.94 and 0.95 without the mood (the first S9 build's measurement), flat by century (first half against second half
+  within 0.003). The highest grief a run reaches (a share of the cap lost lately) is 1.58 [1.17, 2.10] for K 5, 1.12 for K 7 and 0.91 for K 9: above
+  1.0 it sits on the block's factor of 3, so the interval cannot grow past three times the plain wait and the losses never stop
+  the raids. With the 2 seeds of the default test: 31.1 days and 0.965, 0.976, 0.980.
 - **MZB-1282** (what the player sees): villages near a grove meet a raptor pack about every 34 game days instead of every 12 (a
   third as often, as the design said), the grove stands closer to full when it is left alone, and a grove that is being farmed is
-  unchanged (the mood bends only the plunder clock; the renewal waits are the pressures'). A grove that loses its Umvuthi is
-  mourned too (`chief_loss_share` 0.1 of the cap), a little: its next plunder is put off by `exp(0.28)` times 1.3.
+  unchanged in its renewal (the mood bends only the plunder clock; the renewal waits are the pressures'). A war chief lost
+  with a band is mourned too (`chief_loss_share` 0.1 of the cap): the next plunder is put off by a factor of `exp(0.28)`, about 1.3.
 - **MZB-1283** (the harness bands, set from MZB-1281, not from the design's guesses): `unattended_groves_over` asserts for the
   rich-village groves a median held share in 0.94 to 0.985 (K 5), 0.955 to 0.99 (K 7) and 0.96 to 0.995 (K 9) and a median plunder
   interval of 26 to 42 days; for the plain villages 0.97 or more as before. The long-horizon grove under no script asserts 0.95 to
@@ -12602,8 +12602,8 @@ are superseded by these.
 - **MZB-1284** (tests that moved): `mood.rs`' two tests name the grove (`the_raider_and_the_grove_have_a_plunder_mood_and_no_other_
   culture_does`, `only_a_raider_or_grove_camp_has_a_mood`: the grove's block equals the raider's) and `grove_renewal.rs`'s
   `a_groves_lost_pack_lengthens_its_plunder_wait` pins one lost pack at `exp(2.8 / 7)`, loot home at `exp(2.8 / 7 - 0.15)` and the clamp
-  at 3 (failing first: with the block out of the JSON it fails at "a grove has a mood"; the other 19 grove tests and the 12 mood
-  tests pass either way). One test elsewhere changed by the mood: `the_censuss_trade_memory_is_unioned_and_a_short_body_is_written_to`
+  at 3 (failing first: with the block out of the JSON it fails at "a grove has a mood" and the other 19 `grove_renewal` tests pass; the
+  red run stopped there, so the mood binary was not run red, where its two renamed tests would fail the same way). One test elsewhere changed by the mood: `the_censuss_trade_memory_is_unioned_and_a_short_body_is_written_to`
   (`tests/grove.rs`, seed 12) used a grove that plunders, and with the mood's different draws a raptor pack was away at the
   heir's due tick, so the heir waited for the band, which is right and not what the test is about: it now uses `quiet_grove` (the
   plunder drive off), the way the neighbouring heir tests do.
