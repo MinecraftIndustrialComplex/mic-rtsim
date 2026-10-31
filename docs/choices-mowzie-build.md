@@ -12018,10 +12018,11 @@ rounds of phase 2 are the check, and what they found is recorded after them.
 
 An Opus review of M11 "Aloft" (landed on main as 13ac4d88) found one P1, three P2 and five P3 points. The fixes are on
 `fix/m11-review`, each its own commit, with the tests in one commit ahead of them (72a89a5c), so that the round at that commit is
-main's code with the new tests: what each test failed with there is in its record. Two tests passed there and were changed after (the
-let-go and the re-pair tests, MZB-1301 and MZB-1308); they ran again in a round of the final code with their two fixes taken out of the
-working tree for its compile (the "red round"): the let-go test passed again there (P2.2 is not fixed, MZB-1301), and what the re-pair
-test did is in MZB-1308. The review's line numbers were at 13ac4d88; each place was found again on main after M12a, S5, S6 and S7.
+main's code with the new tests: what each test failed with there is in its record. Two tests did not fail there as they should (the
+let-go test passed, MZB-1301; the re-pair test's first form failed its own control, MZB-1308) and were changed after; they ran again in
+a round of the final code with their two fixes taken out of the working tree for its compile (the "red round"): the let-go test passed
+again there (P2.2 is not fixed, MZB-1301), and what the re-pair test did is in MZB-1308. The review's line numbers were at 13ac4d88;
+each place was found again on main after M12a, S5, S6 and S7.
 
 - **MZB-1300** (P1 of the review: a chief killed in the moment its band reaches home came back as a second Umvuthi with a second Sol
   Visage):
