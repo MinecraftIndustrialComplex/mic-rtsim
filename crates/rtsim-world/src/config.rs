@@ -106,7 +106,9 @@ pub struct WorldConfig {
     /// renewal row (its true count, K, pressure and settlers' wait), the census moves its count
     /// both ways, settlers come to an emptied one, an unloaded one grows, and a Ribbit village
     /// refills before it builds and books its population when the resident exists. Off, the world
-    /// is main's before S6: no rows, a census only raises, a house books its resident's pop.
+    /// is main's before S6: no rows, so the link drops every census (nothing reads one: a census
+    /// does not even raise the count), and a house books its resident's pop. Production always has
+    /// it on; the switch is for the tests of the world as it was (EQC336).
     pub renewal: bool,
     /// The settlers' wait and the pressure's half-life for human and Ribbit villages (S6, EQC158):
     /// `min(cap, base x 2^P)` days. TUNABLE, PLACEHOLDER: 16, 192, 96.

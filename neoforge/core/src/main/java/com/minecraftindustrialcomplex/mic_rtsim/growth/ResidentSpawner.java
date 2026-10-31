@@ -186,6 +186,7 @@ public final class ResidentSpawner {
             return;
         }
         if (RtsimSession.chunkCarriesOp(chunk, o.op)) {
+            adoptStray(level, village, o, now);
             finish(o, Obs.CommandResult.DUPLICATE_OP, chunk, null, now);
             return;
         }
@@ -197,6 +198,7 @@ public final class ResidentSpawner {
         }
         java.util.UUID id = residentId(o.op);
         if (((com.minecraftindustrialcomplex.mic_rtsim.mixin.ServerLevelAccessor) level).mic_rtsim$entityManager().isLoaded(id)) {
+            adoptStray(level, village, o, now);
             finish(o, Obs.CommandResult.DUPLICATE_OP, chunk, null, now);
             return;
         }
@@ -238,19 +240,38 @@ public final class ResidentSpawner {
         }
         spend.applyAsInt(1);
         spawned++;
-        if (walker && village != null) {
-            VillageRegistry.Walker w = new VillageRegistry.Walker();
-            w.id = id;
-            w.village = village.id;
-            w.dimension = level.dimension();
-            w.sx = o.x;
-            w.sz = o.z;
-            w.spawnedAt = now;
-            w.deadline = now + Walkers.WALK_TIMEOUT_TICKS;
-            villages.walkers.put(id, w);
-            villages.setDirty();
-        }
+        if (walker && village != null)
+            registerWalker(level, village, o, id, now);
         finish(o, Obs.CommandResult.APPLIED, chunk, e, now);
+    }
+
+    /** Enters a settler in the registry's walkers ({@link Walkers}, EQC178). */
+    private void registerWalker(ServerLevel level, Village village, VillageRegistry.ResidentOrder o, java.util.UUID id, long now) {
+        VillageRegistry.Walker w = new VillageRegistry.Walker();
+        w.id = id;
+        w.village = village.id;
+        w.dimension = level.dimension();
+        w.sx = o.x;
+        w.sz = o.z;
+        w.spawnedAt = now;
+        w.deadline = now + Walkers.WALK_TIMEOUT_TICKS;
+        villages.walkers.put(id, w);
+        villages.setDirty();
+    }
+
+    /**
+     * A resent walk-in order the guards answer DUPLICATE_OP is for a settler that already exists, and one saved ahead of the
+     * villages' file (a crash between its chunk's write and the file's) is on no list: it would stand out on the road, counted
+     * by nobody and never walked in. It is entered now, if nothing lists it, and the walkers' pass finds it where it stands, or
+     * waits for its chunk (EQC332). Only a duplicate the spawn guards found: one the journal answers has its walker in the file,
+     * which is written before the journal's.
+     */
+    private void adoptStray(ServerLevel level, Village village, VillageRegistry.ResidentOrder o, long now) {
+        if (village == null || (o.flags & Cmd.SpawnResident.FLAG_WALK_IN) == 0)
+            return;
+        java.util.UUID id = residentId(o.op);
+        if (!villages.walkers.containsKey(id))
+            registerWalker(level, village, o, id, now);
     }
 
     /** How far {@link #standNear} may move a resident from its spawn point, in blocks along x or z. */

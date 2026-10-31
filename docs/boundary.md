@@ -771,9 +771,13 @@ killing).
   box (`api/Arrivals.WATCH_BLOCKS`): it waits (retrying every 40 ticks, dropped as FAILED after 192 days),
   or, with WALK_IN, spawns at the first standable, entity-ticking point on the ray from the meeting
   point toward (x, z) 176, 160, 144, 128, 112 or 96 blocks out that is at least 128 blocks from every
-  player, and walks in (`village/Walkers`: a hop of 24 blocks toward the meeting point every 40 ticks;
+  player (x and z are the village's plain offset, so near a toroidal seam the point lies past it, not
+  at its canonical image: EQC199), is homed at the meeting point (a plugin's rehome hook, EQC330) and
+  walks in (`village/Walkers`: a hop of 24 blocks toward the meeting point every 40 ticks;
   done within 12 blocks; put at the meeting point at once when nobody can see it, and at its deadline of
-  6,000 ticks). Nobody watching: placed beside the meeting point as an AT_VILLAGE body is. A human
+  6,000 ticks; one whose chunk is not loaded stays on the list until it loads, and a death or a discard
+  takes it off, EQC331; a resent order answered DUPLICATE_OP enters a walker nothing lists, EQC332).
+  Nobody watching: placed beside the meeting point as an AT_VILLAGE body is. A human
   body (`minecraft:villager`, the type of the biome, an adult, no profession) never takes more than the
   free beds (a fresh complete census, `NOT_FREE` when there is none; a village whose reach is still
   loading is waited for 600 ticks, then placed without the clamp); a Ribbit's profession is the Ribbits
