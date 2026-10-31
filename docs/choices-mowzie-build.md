@@ -12847,6 +12847,12 @@ committed first and seen failing on the engine without the fix, then passing.
   kinds do not use it, a boss is placed at once with `BossArrival`, and Rule U's removal hold is unchanged. The header of
   `crates/rtsim-view/tests/fixtures.rs` said "FB-3 the built hold" and "FB-2 no plunder mood"; it says the hold was dropped and the grove
   has the raider's plunder mood. The camera-shake reset at `camp.rs:2076` that zeroes a handed-over p2 is M12a's fix and is not touched.
+- **MZB-1293** (the coordinator, 2026-10-31, found landing S9 with S5's and S6's fixes): `aReinstallResetsTheSimAndAdoptsTheStrippedDistrictsAgain`
+  failed with "A, B and C are to be adopted again: 8" in the core round of the merged head, as it had on `fix/s7-review`'s second core
+  round. A reset plans the re-adoption of every seeded chunk (UR-1), and `Districts.forgetAllForTest` forgot the districts but not that
+  plan, so the chunks of an earlier test's district that never loaded again were still to adopt again when this test's reset counted
+  them. `forgetAllForTest` now clears the dimension's plan too, so each reset test counts only its own chunks, whatever ran before it.
+  M12a's MZB-1403 fixed one such earlier test; this fixes the count for all of them.
 
 ### Build notes
 
@@ -18587,4 +18593,6 @@ the review gave are at 43062c0b.
   chunks. **Fix, at the one place:** `forgetAllForTest` also drops the dimension's chunks to adopt again, so a test that forgets
   every district starts with none planned (the reinstall test, and 8da19617's gap test, whose `readoptLeft() == 0` check the
   same leftovers could fail). A test hook only; the reset's own planning is unchanged. Not seen failing first on this code: the
-  failure needs a reset of the round to plan chunks that then never load, which the batch order decides.
+  failure needs a reset of the round to plan chunks that then never load, which the batch order decides. S9 made the same fix on
+  its own branch at the same time (MZB-1293, 02629719, after its merged core round failed the test with 8 too); the merge keeps
+  the one line, S9's comment, and this record's javadoc naming both.

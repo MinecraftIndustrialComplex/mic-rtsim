@@ -2422,8 +2422,8 @@ public final class Districts {
      * GameTests: forgets every district of the level's dimension, the seeds and epochs of their loaded
      * chunks, the dimension's pins, exclusions and merge links, and its chunks still to adopt again
      * after a reinstall reset (UR-1: an earlier test's reset plans the chunks of districts that may
-     * never load again, which a later reset test would count as its own, MZB-1410). The industry
-     * tests run one at a time (one batch each), so each starts from no industry at all.
+     * never load again, which a later reset test would count as its own, MZB-1293, MZB-1410). The
+     * industry tests run one at a time (one batch each), so each starts from no industry at all.
      */
     public void forgetAllForTest(ServerLevel level) {
         ResourceKey<Level> dim = level.dimension();
@@ -2450,6 +2450,8 @@ public final class Districts {
         data.excluded(dim).clear();
         data.mergeLinks(dim).clear();
         data.stationJoins(dim).clear();
+        // A reset before plans its seeded chunks' re-adoption (UR-1); one that never loads again would stay to adopt
+        // again into the next reset test's count (MZB-1293).
         data.readopt.remove(dim);
         byChunk.computeIfAbsent(dim, k -> new Long2ObjectOpenHashMap<>()).clear();
         dirty.remove(dim);
