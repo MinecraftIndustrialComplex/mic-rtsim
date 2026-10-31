@@ -301,11 +301,12 @@ impl Rig {
     }
 
     /// A crash before the next save: the engine comes back from the pages of the last save (the
-    /// test's `save_durable`) and replays Java's journal past them, as it does after a real crash;
-    /// the test's clock (`Phase1Advance`) is not in the journal, so the world is back at the save's
-    /// day and runs the days since again, booking what it booked before under the same op ids.
+    /// test's `save_durable`) and replays what Java's journal holds past them, as it does after a
+    /// real crash. A census is latest state and is not in the journal, and the test's clock
+    /// (`Phase1Advance`) is not either, so the world is back at the save's day and runs the days
+    /// since again, booking what it booked before under the same op ids.
     fn crash(self) -> Rig {
-        let Rig { dir, e, j, real, first, sent, t0, .. } = self;
+        let Rig { dir, j, real, first, sent, t0, .. } = self;
         let saved = j.world_save();
         let _ = j.crash();
         let e = engine(&dir, 256 * 1024);
