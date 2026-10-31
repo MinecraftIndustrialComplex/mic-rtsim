@@ -63,6 +63,8 @@ public final class SiteLedgerGameTests {
     private static final long DAY = 24_000L;
     /** frostmaw.json's renewal: base 6 days, so delay(P = 1) is 12 days; pressure halves in 96 days. */
     private static final long FROSTMAW_W1 = 12 * DAY;
+    /** frostmaw.json's renewal cap: 192 days, the wait of a loss no one caused (MZB-1014, fork F5). */
+    private static final long FROSTMAW_CAP = 192 * DAY;
     private static final double HALF_LIFE_TICKS = 96.0 * DAY;
     /**
      * How far a handed-over wait may be from the old row's less the game ticks between their stamps: the old engine's row is
@@ -470,6 +472,83 @@ public final class SiteLedgerGameTests {
                     check(String.format("P unchanged: Other, not a player's loss (%.4f, then %.4f)", a.p(), b.p()), b.p() <= a.p() + 1e-3);
                     check("the survivors still the grove's", adopted(w[1], g.faction) && adopted(w[2], g.faction));
                     check("still no REMOVE", lines(g.faction, REMOVE, -1) == 0);
+                })
+                .thenSucceed();
+    }
+
+    /**
+     * An uninstall at a boss's den (S3 test 4's den variant, the review's P3 3, MZB-1405): a Frostmaw killed while rtsim was out
+     * is no one's loss after the reinstall (fork F5's GAP rule). The den's Frostmaw, adopted, its row naming it at home. The
+     * session stops (the uninstall); with no rtsim running it is killed (a vanilla death, nothing journaled). The reinstall
+     * after a day's gap: the den's tail carries ROW and GAP, the new engine expects the Frostmaw at home by its UUID (count 1)
+     * and spawns no Frostmaw for it. Its first census and two daily recounts miss it: it is written off as missing with P
+     * unchanged (Other, not a player's loss, where a write-off with no gap is a player's at P 1 and a 12-day wait), and the
+     * den waits the cap's 192 days. The grove's test cannot show this: its warriors have no member renewal.
+     */
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "site_uninstall_den", skyAccess = true)
+    public static void uninstallAtADenMakesAFrostmawKilledMeanwhileNoOnesLoss(GameTestHelper helper) {
+        String test = "uninstallAtADenMakesAFrostmawKilledMeanwhileNoOnesLoss";
+        if (!nativeOnly(helper, test))
+            return;
+        ChunkWait waits = ChunkWait.of(helper, 8000);
+        Far far = new Far(helper, test);
+        ServerLevel level = far.level;
+        MinecraftServer server = level.getServer();
+        ConflictKit.onEnd(helper, () -> SiteTestHooks.cleanUp(server));
+        Den den = new Den(far, far.k, far.z0);
+        EntityFrostmaw[] f = new EntityFrostmaw[1];
+        SiteLedger.Row[] before = new SiteLedger.Row[1], after = new SiteLedger.Row[1];
+        int[] census = new int[1];
+        long[] t = new long[1];
+
+        GameTestSequence s = helper.startSequence().thenExecute(den::force).thenWaitUntil(waits.chunks(far.ready()));
+        s = realDen(s, waits, den, f);
+        s = s.thenExecute(() -> before[0] = row(level, den.faction));
+        s = saved(s, waits);
+        s.thenExecute(() -> {
+                    SiteTestHooks.stop(server);
+                    check("no session runs (the uninstall)", RtsimSession.current() == null);
+                    MowzieKit.kill(f[0], level.damageSources().generic());
+                })
+                .thenIdle(20)
+                .thenExecute(() -> {
+                    check("the Frostmaw killed while rtsim was out is dead", f[0].isRemoved() || !f[0].isAlive());
+                    t[0] = level.getGameTime();
+                    check("the guard reset the sim", SiteTestHooks.gapRestart(server, DAY) != null);
+                    check("a session runs after the reinstall: " + RtsimSession.startFailure(), RtsimSession.current() != null);
+                });
+        s = clockMoved(s, waits, helper, far);
+        s.thenWaitUntil(waits.engine(() -> check("the new engine has the den's FACTION_FOUND", !ConflictKit.factionsFound(den.faction).isEmpty())))
+                .thenExecute(() -> {
+                    int flags = tailFlags(den.faction);
+                    check("its tail carries the row and GAP (flags " + flags + ")", (flags & ROW) != 0 && (flags & GAP) != 0);
+                })
+                .thenWaitUntil(waits.engine(() -> {
+                    SiteLedger.Row r = row(level, den.faction);
+                    check("the new engine expects the Frostmaw at home: " + describe(r), r != null && r.stamp() >= t[0] && r.count() == 1
+                            && r.home().contains(f[0].getUUID()));
+                }))
+                .thenIdle(20)
+                .thenExecute(() -> {
+                    check("no SPAWN for it (" + lines(den.faction, SPAWN, -1) + ")", lines(den.faction, SPAWN, -1) == 0);
+                    census[0] = MowzieKit.censusCount(den.faction);
+                    advance(DAY + DAY / 8);
+                })
+                .thenWaitUntil(waits.engine(() -> check("the daily recount's census", MowzieKit.censusCount(den.faction) > census[0])))
+                .thenExecute(() -> advance(DAY + DAY / 8))
+                .thenWaitUntil(waits.engine(() -> {
+                    SiteLedger.Row r = row(level, den.faction);
+                    check("the dead Frostmaw is written off as missing: " + describe(r), r != null && r.missing().contains(f[0].getUUID())
+                            && r.count() == 0);
+                    after[0] = r;
+                }))
+                .thenExecute(() -> {
+                    SiteLedger.Row a = before[0], b = after[0];
+                    record(test, "rows", "before the uninstall: " + describe(a) + "; after the write-off: " + describe(b));
+                    check(String.format("P unchanged: Other, not a player's loss (%.4f, then %.4f)", a.p(), b.p()), b.p() <= a.p() + 1e-3);
+                    check("the cap's wait (" + b.waitLeft() + " against " + FROSTMAW_CAP + "): " + describe(b),
+                            b.waiting() && Math.abs(b.waitLeft() - FROSTMAW_CAP) <= TOL);
+                    check("still no SPAWN", lines(den.faction, SPAWN, -1) == 0);
                 })
                 .thenSucceed();
     }
