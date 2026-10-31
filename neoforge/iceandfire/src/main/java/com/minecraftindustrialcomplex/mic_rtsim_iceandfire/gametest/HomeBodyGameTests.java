@@ -1028,7 +1028,9 @@ public final class HomeBodyGameTests {
     /**
      * EQC314 (finding 5): DRAGON_DEPART reason 5 (the engine's dragon is gone: dead of age, starved away) to a home body with a
      * player in range: the plugin discards it at once. Kept for the capture (a player near holds it up to 6,000 ticks), a lair
-     * going out in the window saved it with a dead dragon's agent, and the next census adopted it.
+     * going out in the window saved it with a dead dragon's agent, and the next census adopted it. The GameTest server's
+     * simulation distance is 0 (its PlayerList never sets one), so the player is kept on the dragon each tick and the DEPART
+     * targets the dragon's own place: only a player in the body's own chunk has it in range.
      */
     @GameTest(template = DragonKit.ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "home_depart_gone")
     public static void aHomeBodyToldItsDragonIsGoneIsDiscardedAtOnce(GameTestHelper helper) {
@@ -1037,7 +1039,6 @@ public final class HomeBodyGameTests {
             return;
         ChunkWait waits = ChunkWait.of(helper, 2400);
         ServerLevel level = helper.getLevel();
-        Vec3 c = DragonKit.centre(helper);
         Runnable unforce = DragonKit.forceAround(helper, 3);
         long lair = DragonKit.newLair();
         DragonBaseEntity[] d = new DragonBaseEntity[1];
@@ -1048,12 +1049,16 @@ public final class HomeBodyGameTests {
                 .thenWaitUntil(waits.chunks(() -> check("the ring of chunks is loaded", DragonKit.ready(level, arenaChunk(helper), 3))));
         occupiedAfter(h, helper, waits, lair, d, agent);
         h.s.thenExecute(() -> {
-                    near[0] = FakePlayers.add(level, c.add(12, 0, 12), "home-near");
+                    near[0] = FakePlayers.add(level, d[0].position(), "home-near");
                     told[0] = level.getGameTime();
-                    DragonKit.depart(agent[0], homeEpoch(agent[0]), 5, 0, c.add(-400, 40, 0));
+                    DragonKit.depart(agent[0], homeEpoch(agent[0]), 5, 0, d[0].position());
                 })
-                .thenWaitUntil(waits.engine(() -> check("the engine passed the DEPART on and the plugin answered", bridge().body(agent[0]) == null
-                        || level.getGameTime() - told[0] > 200)))
+                .thenWaitUntil(waits.engine(() -> {
+                    if (!d[0].isRemoved())
+                        near[0].moveTo(d[0].getX(), d[0].getY(), d[0].getZ());
+                    check("the engine passed the DEPART on and the plugin answered", bridge().body(agent[0]) == null
+                            || level.getGameTime() - told[0] > 200);
+                }))
                 .thenExecute(() -> {
                     record(test, "after DEPART 5", "removed " + d[0].isRemoved() + ", registered " + (bridge().body(agent[0]) != null) + ", "
                             + (level.getGameTime() - told[0]) + " ticks after the order");
