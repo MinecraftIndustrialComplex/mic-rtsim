@@ -14,7 +14,7 @@ import net.minecraft.world.phys.AABB;
 /**
  * Villagers dragons took from villages nobody watched (TAKE_RESIDENT; docs/overnight-choices-equilibrium.md EQC556,
  * Ben's PP-2 (a)). The engine has already counted the villager out of its village; this removes the body: the
- * nearest adult, unnamed villager within the radius now if the chunk there is loaded, else the first such villager
+ * nearest adult villager no player named or traded with within the radius now if the chunk there is loaded, else the first such villager
  * that joins the level there. Held takes are not saved: a restart forgets them, and the village's next complete
  * census counts the villager again.
  */
@@ -39,9 +39,12 @@ public final class VillagerTakes {
         return held.size();
     }
 
-    /** A villager joining a level: the first within a held take's radius is the one taken (cancel its join). */
+    /**
+     * A villager joining a level: the first loading from disk within a held take's radius is the one taken (cancel its
+     * join). A villager spawned there (a settler, a birth, a cure) is not the one the engine counted out (EQC577).
+     */
     public boolean takesOnJoin(Villager v, boolean fromDisk) {
-        if (held.isEmpty() || !takeable(v))
+        if (!fromDisk || held.isEmpty() || !takeable(v))
             return false;
         for (Iterator<Take> it = held.iterator(); it.hasNext();) {
             Take t = it.next();
@@ -76,7 +79,8 @@ public final class VillagerTakes {
         return true;
     }
 
+    /** An adult no player has named or traded with (EQC577: those are his investment, PP-1's spirit). */
     private static boolean takeable(Villager v) {
-        return v.isAlive() && !v.isBaby() && !v.hasCustomName() && !v.isPassenger();
+        return v.isAlive() && !v.isBaby() && !v.hasCustomName() && !v.isPassenger() && v.getVillagerXp() == 0;
     }
 }
