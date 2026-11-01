@@ -1110,10 +1110,7 @@ impl Dragons {
         // Every point of the nine regions is within this of the lair.
         let reach = 2 * rb * 1415 / 1000;
         let mut weight = self.tun.gate_wild / mouths((lx, lz));
-        for n in self
-            .index
-            .villages_near(t, frame, lx, lz, reach)
-        {
+        for n in self.index.villages_near(t, frame, lx, lz, reach) {
             let p = w.nodes[n as usize].pos;
             let p = (i64::from(p.x), i64::from(p.z));
             if holds((lx, lz), p) {
