@@ -6,8 +6,9 @@
 //! on it.
 //!
 //! - [`populate`] founds it: the 56 herd ranges of S4's grid (HABITAT painted per region, so the
-//!   world model founds a herd a range), the five lairs of `rtsim_ecology::synth::lairs` each with
-//!   one roosting body, nine villages on the host's grid (three of them Ribbit) counted alive by a
+//!   world model founds a herd a range), Ice and Fire's lairs as the jar places them at Ben's
+//!   world's density (`rtsim_ecology::synth::jar`, about 0.5 a region; EQC494, EQC496), each with
+//!   the one roosting body its structure spawns, nine villages on the host's grid (three of them Ribbit) counted alive by a
 //!   complete census, six sea ports and two havens, three pool camps and two outposts, three
 //!   Frostmaw dens and three Umvuthana groves of K 5, 7 and 9, and two oil nests with an endless
 //!   well beside each.
@@ -29,7 +30,6 @@ use std::time::Duration;
 
 use rtsim_conflict::boundary as cb;
 use rtsim_ecology::boundary as db;
-use rtsim_ecology::species::Gender;
 use rtsim_industry::ids::{ChunkPos, DistrictId, Good};
 use rtsim_industry::obs::{
     DepositPluginId, DepositSample, DistrictDecl, Obs as IObs, SweepEnd, Timed,
@@ -179,19 +179,39 @@ fn region_has_sea(rx: i32, rz: i32) -> bool {
     (0..r / 32).any(|i| (0..r / 32).any(|j| is_channel(rx * r + i * 32, rz * r + j * 32)))
 }
 
-/// Region (`rx`, `rz`)'s biome: plains, savanna and forest by `(rx + 3 + 2 (rz + 3)) mod 3`, but
-/// never savanna beside the sea, where a hot biome's herds crowd onto the cooler cells by the
-/// water and graze them out (EQC506): a region with a channel that would be savanna is plains
-/// (EQC483).
+/// Region (`rx`, `rz`)'s biome by `(rx + 3 + 2 (rz + 3)) mod 12` over [`BIOMES`]: five regions in
+/// twelve plains or savanna, which some dragon's structure tag names, and seven forest, which none
+/// does, so the jar's lairs land at Ben's world's density (0.42 of regions eligible, as
+/// [`rtsim_ecology::synth::jar::REAL_LAIRS`]; EQC496). Never savanna beside the sea, where a hot
+/// biome's herds crowd onto the cooler cells by the water and graze them out (EQC506): a region
+/// with a channel that would be savanna is plains (EQC483).
 fn biome_of(rx: i32, rz: i32) -> &'static str {
-    let biomes = ["minecraft:plains", "minecraft:savanna", "minecraft:forest"];
-    let b = biomes[(rx + 3 + 2 * (rz + 3)).rem_euclid(biomes.len() as i32) as usize];
+    let b = BIOMES[(rx + 3 + 2 * (rz + 3)).rem_euclid(BIOMES.len() as i32) as usize];
     if b == "minecraft:savanna" && region_has_sea(rx, rz) {
         "minecraft:plains"
     } else {
         b
     }
 }
+
+/// The twelve-region cycle of [`biome_of`]: three plains, two savanna, seven forest.
+const BIOMES: [&str; 12] = [
+    "minecraft:plains",
+    "minecraft:forest",
+    "minecraft:savanna",
+    "minecraft:forest",
+    "minecraft:forest",
+    "minecraft:plains",
+    "minecraft:forest",
+    "minecraft:savanna",
+    "minecraft:forest",
+    "minecraft:forest",
+    "minecraft:plains",
+    "minecraft:forest",
+];
+
+/// The seed of the jar's placement: fixed, so every engine seed runs the same map (EQC475, EQC496).
+const LAIR_SEED: u64 = 1;
 
 /// Paints region (`rx`, `rz`) as habitat: 64 cells of its biome ([`biome_of`]; land but for
 /// the channels of [`is_channel`]), sent as the core's sampler sends them (latest wins, as the
@@ -232,8 +252,18 @@ pub fn populate(j: &mut Java) -> Founded {
         }
     }
     j.idle();
-    // (2) Lairs, each with one roosting body.
-    for (i, l) in rtsim_ecology::synth::lairs().iter().enumerate() {
+    // (2) Lairs where the jar places them, in the regions whose biome a dragon's tag names, each with
+    // the one roosting body its structure spawns (species, sex and age as the jar draws them).
+    let eligible = |rx: i32, rz: i32| biome_of(rx, rz) != "minecraft:forest";
+    let lairs = rtsim_ecology::synth::jar::jar_lairs(
+        RANGES_X,
+        RANGES_Z,
+        LAIR_SEED,
+        rtsim_ecology::synth::jar::REAL_LAIRS,
+        Some(&eligible),
+    );
+    for (i, l) in lairs.iter().enumerate() {
+        let (_, gender, age_days, fullness) = l.dragons[0];
         let home = (l.x, l.y, l.z);
         j.dragon_obs(&db::Obs::LairFound(db::LairFound {
             lair: l.key,
@@ -257,10 +287,10 @@ pub fn populate(j: &mut Java) -> Founded {
                 agent: 0,
                 species: l.species,
                 flags: db::BODY_HAS_HOME,
-                age_ticks: 110 * 24_000,
-                hunger: 60,
+                age_ticks: (age_days * 24_000) as i32,
+                hunger: fullness,
                 health: 0.0,
-                gender: Gender::Female,
+                gender,
                 variant: 1,
                 pos: (f64::from(home.0), f64::from(home.1), f64::from(home.2)),
             }],
