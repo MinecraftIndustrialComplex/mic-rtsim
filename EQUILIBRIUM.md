@@ -1490,15 +1490,22 @@ and at a plains, savanna and forest world's (1.6).
   1.00. Predation never takes a herd below its refuge (§3.4).
 
 **Predator and prey** (§2.4.11, designed 2026-10-31, docs/overnight-choices-equilibrium.md EQC550 to
-EQC569). Nothing is measured yet beyond §3.4's closed form: pairs leave the dragons a region where
+EQC569). Before the build, nothing was measured beyond §3.4's closed form: pairs leave the dragons a region where
 the gate puts them and can halve the lairs held where most pair; each settlement or oil row adds
 `a / 200` dragons a region at the margin, so an oil field of 800 holds about four fire dragons in its
 nine regions, every lair there at the real density. The model (`run.py --only oil`, a food-limited
 world like S4's, 24 seeds) holds the lairs near oil 0.17 [0.00, 0.38] with no oil row and 0.95
-[0.85, 0.96] at 800, against 0.18 to 0.22 elsewhere; the herds stay at 0.63 to 0.66 of K. When built: S4's lairs-held band is
-re-measured (pairs), its herds' band stays (its world has no outposts, districts or oil); S10 does
-not move; S11's dragon bands come from its own every-kind world, and its outposts and pool camps
-leave their exact 1.00 for a band once a dragon can eat pillagers (EQC566).
+[0.85, 0.96] at 800, against 0.18 to 0.22 elsewhere; the herds stay at 0.63 to 0.66 of K. **Built
+2026-11-01** (EQC570 to EQC576), S4 re-measured with pairs, seeds 1 to 30 at the real density (its
+world has no camps, districts or oil): lairs held 0.146 [0.103, 0.220] with the roamer and 0.139
+[0.103, 0.203] with nobody (0.159 and 0.162 before: a pair is two mouths), herds 0.527 [0.395, 0.605]
+and 0.507 [0.384, 0.578] of K, fewest ranges alive 1.0 [0.982, 1.0]; every steady band holds. The
+kill-all: half the lairs again in 24 days [24, 48], 90% of the control's in 48 [24, 240], the end
+1.0 [0.76, 1.78] of the control's. The median is faster (the control holds fewer lairs) and the tail
+slower: a Frontier dragon goes as a mate to a lone breeder before it refills an empty lair (a reading,
+not measured), so the 95th bound moves from 192 to 240 days. S10 does not move; S11's dragon bands
+come from its own every-kind world, and its outposts and pool camps leave their exact 1.00 for a
+band once a dragon can eat pillagers (EQC566).
 
 **Farming one site** for 60 years: §3.3's table (the model matches the closed forms within 5%).
 
