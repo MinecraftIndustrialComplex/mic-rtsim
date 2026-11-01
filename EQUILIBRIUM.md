@@ -456,18 +456,20 @@ say where that changes the food gate as built; the rest stands.
   caravans stay on the menu, so a dragon in an eaten-out valley turns to villages and roads, as P12
   wants. The gate's weight `(N - R)^2 / K` is type III: it reads what is common and leaves what is
   scarce.
-- **Plunder (EQC556 to EQC560, designed):** a hungry dragon hunts settlements as prey rows: a
-  village's livestock (today) and villagers (PP-2), one member a raid of an outpost or pool camp
-  whose members are in its target tag (pillagers), never the last two, and a player district's
-  stored food and livestock (PP-1), each target rested 8 days after a raid; unwatched abstract,
-  watched Ice and Fire's own AI; told as news (PP-3).
+- **Plunder (EQC556 to EQC560, built; EQC579, EQC580):** a hungry dragon hunts settlements as prey
+  rows: a village's livestock and, rarely, a villager (PP-2, PP-5: one a human village a game year,
+  never at or below half its beds), one member a raid of an outpost or pool camp whose members are
+  in its target tag (pillagers), never the last two, and a player district's stored food and
+  livestock (PP-1), each target rested 8 days after a raid; unwatched abstract, watched Ice and
+  Fire's own AI; told as news (PP-3). A real world's village markets hold no live animals, so
+  there a village is a villager a year, not a supply, and opens no gate (EQC580).
 - **Oil (EQC561, designed):** an oil field is a constant weight for fire dragons (800, shared by
   mouths) that sustains and draws them but breeds none, so the lairs in a field's nine regions are
   held.
 - **Bounds:** at most one pair and one young per lair (as built, one lone breeder or pair); lairs
   are found, never made.
 - **Rates:** base 20 days, cap 192, H 96; maintenance (starve-leave) 0.35, arrive-food 0.5, a clutch
-  every 60 days, young leave at 50 and go at 60 days, gate weights 30, 150 a village, half 200;
+  every 60 days, young leave at 50 and go at 60 days, gate weights 30, 150 a village with live animals, half 200;
   refuge 10% (min 8).
 - **What the player sees:** a lair stands empty 20 days after its dragon dies of age (at a lair no
   player has hit), 40 days after a player's first kill, about 87 days under steady farming; a lair
@@ -1001,7 +1003,7 @@ Threats are what a district faces, and they come from the kinds above.
 Not populations in this sense: caravans and messengers are flows on edges and cannot go extinct while
 a road exists; a base is a pop-0 node. Unchanged.
 
-#### 2.4.11 Predators and prey (Ben, 2026-10-31; designed, not built)
+#### 2.4.11 Predators and prey (Ben, 2026-10-31; built 2026-11-01)
 
 docs/overnight-choices-equilibrium.md EQC550 to EQC569. One model for every creature that eats
 another, so more can join as rows:
@@ -1012,7 +1014,8 @@ another, so more can join as rows:
 - **Functional response:** Holling type II over every prey at once on weights,
   `iota = W / (W + W_half)` with `W = sum a w / mouths`: herds `(N - R)^2 / K` (type III with the
   refuge), settlements `a min(1, F / 400)` on their edible stock, constants for the wild floor and
-  oil. Each weight is shared by the mouths whose nine regions hold it.
+  oil, and a village's 150 only while its market holds live animals (EQC580). Each weight is
+  shared by the mouths whose nine regions hold it.
 - **Numerical response:** births from the surplus above maintenance m (0.35) of the food that can
   breed (conversion 1), `(fed_b - m) / (0.65 x 60)` a pair a day; a dragon under m leaves; age
   and players kill; arrivals and mates only through the shared gate (θ 0.5).
