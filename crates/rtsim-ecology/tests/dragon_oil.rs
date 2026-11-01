@@ -74,7 +74,12 @@ fn oil_holds_a_fire_lair() {
     let mut d = Dragons::new(3, DragonTunables::default(), Tick::ZERO);
     // Fields at chunks (320, 320) and (1,570, 320): blocks 5,120 and 25,120.
     d.ingest(&mut w, &mut NoInfrastructure, &field(320, 320), Tick::ZERO);
-    d.ingest(&mut w, &mut NoInfrastructure, &field(1_570, 320), Tick::ZERO);
+    d.ingest(
+        &mut w,
+        &mut NoInfrastructure,
+        &field(1_570, 320),
+        Tick::ZERO,
+    );
     let fire = lair(&mut d, &mut w, 1, Species::Fire, 5_200, 5_200);
     let ice = lair(&mut d, &mut w, 2, Species::Ice, 25_200, 5_200);
     let mut h = no_herds(3);
@@ -86,21 +91,30 @@ fn oil_holds_a_fire_lair() {
         !d.lairs[fire as usize].occupants.is_empty(),
         "the fire lair at the field stands empty"
     );
-    assert!(d.lairs[ice as usize].occupants.is_empty(), "the ice lair took a newcomer");
+    assert!(
+        d.lairs[ice as usize].occupants.is_empty(),
+        "the ice lair took a newcomer"
+    );
 }
 
-/// A fire dragon at a field catches nothing for 90 days and stays; an ice dragon at another
-/// field, catching as little, starves out.
+/// A fire dragon at a field catches nothing for 90 days and stays (and the oil draws it a mate);
+/// an ice dragon at another field, catching as little, starves out.
 #[test]
 fn oil_keeps_a_fire_dragon() {
     let mut w = world_without_villages(5);
     let mut d = Dragons::new(5, DragonTunables::default(), Tick::ZERO);
     d.ingest(&mut w, &mut NoInfrastructure, &field(320, 320), Tick::ZERO);
-    d.ingest(&mut w, &mut NoInfrastructure, &field(1_570, 320), Tick::ZERO);
+    d.ingest(
+        &mut w,
+        &mut NoInfrastructure,
+        &field(1_570, 320),
+        Tick::ZERO,
+    );
     let fire = lair(&mut d, &mut w, 1, Species::Fire, 5_200, 5_200);
     let ice = lair(&mut d, &mut w, 2, Species::Ice, 25_200, 5_200);
+    let mut holders = Vec::new();
     for (l, species) in [(fire, Species::Fire), (ice, Species::Ice)] {
-        d.add_dragon(
+        holders.push(d.add_dragon(
             &mut w,
             NewDragon {
                 name: "Holder".into(),
@@ -115,7 +129,7 @@ fn oil_keeps_a_fire_dragon() {
                 at: None,
             },
             Tick::ZERO,
-        );
+        ));
     }
     let mut h = no_herds(5);
     run(&mut d, &mut w, &mut h, 90);
@@ -123,9 +137,18 @@ fn oil_keeps_a_fire_dragon() {
         "fed: fire {:.2}, ice {:.2}; starved away {}",
         d.lairs[fire as usize].fed, d.lairs[ice as usize].fed, d.stats.starved_away
     );
-    assert!(d.lairs[fire as usize].fed < 0.35, "the fire dragon caught food");
-    assert_eq!(d.lairs[fire as usize].occupants.len(), 1, "the fire dragon left its field");
-    assert!(d.lairs[ice as usize].occupants.is_empty(), "the ice dragon stayed hungry");
+    assert!(
+        d.lairs[fire as usize].fed < 0.35,
+        "the fire dragon caught food"
+    );
+    assert!(
+        d.lairs[fire as usize].occupants.contains(&holders[0]),
+        "the fire dragon left its field"
+    );
+    assert!(
+        d.lairs[ice as usize].occupants.is_empty(),
+        "the ice dragon stayed hungry"
+    );
 }
 
 /// Oil breeds none: a fire pair at a field whose catch is held under maintenance hatches nothing
