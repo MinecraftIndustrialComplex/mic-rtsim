@@ -1679,7 +1679,9 @@ mod tests {
         print_dragon_refills(std::slice::from_ref(&r));
         assert!(r.killed >= 2, "{r:?}");
         assert!(r.ninety_ctrl.is_some_and(|d| d <= 72), "{r:?}");
-        assert!(r.end_over_ctrl >= 0.9, "{r:?}");
+        // Pairs share a lair's food as two mouths, so a refilled world can end below its control
+        // for a while: the 30-seed end level is 1.0 [0.76, 1.78] (EQC575), seed 1 0.83 (EQC578).
+        assert!(r.end_over_ctrl >= 0.75, "{r:?}");
     }
 
     /// §3.6's dragon kill-all, seeds 1 to 30, on S4's world (EQC539): the roamer for 20 years,

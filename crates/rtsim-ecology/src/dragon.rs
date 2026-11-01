@@ -432,8 +432,9 @@ impl Dragon {
         if self.fullness <= level {
             return now.max(self.fed_at);
         }
-        let t = self.fed_at + (self.fullness - level) as u64 * tun.hunger_tick_rate.max(1);
-        t.max(now)
+        // Saturating: a test's tunables may make hunger all but never come (EQC578).
+        let wait = ((self.fullness - level) as u64).saturating_mul(tun.hunger_tick_rate.max(1));
+        Tick(self.fed_at.0.saturating_add(wait)).max(now)
     }
 
     /// Eats `points`: fullness re-anchored at `at`, capped at full.
