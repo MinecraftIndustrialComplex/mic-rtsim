@@ -1,5 +1,6 @@
 package com.minecraftindustrialcomplex.mic_rtsim.gametest;
 
+import com.mojang.authlib.GameProfile;
 import com.minecraftindustrialcomplex.mic_rtsim.MicRtsim;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs;
 import com.minecraftindustrialcomplex.mic_rtsim.bridge.BridgeEvents;
@@ -20,12 +21,14 @@ import net.minecraft.core.SectionPos;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
+import net.minecraft.gametest.framework.GameTestSequence;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.Mob;
+import net.minecraft.world.entity.MobSpawnType;
 import net.minecraft.world.entity.monster.Pillager;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.GameType;
@@ -35,12 +38,15 @@ import net.minecraft.world.level.levelgen.structure.BoundingBox;
 import net.minecraft.world.level.levelgen.structure.Structure;
 import net.minecraft.world.level.levelgen.structure.StructureStart;
 import net.minecraft.world.phys.Vec3;
+import net.neoforged.neoforge.common.util.FakePlayer;
+import net.neoforged.neoforge.common.util.FakePlayerFactory;
 import net.neoforged.neoforge.event.level.ChunkEvent;
 import net.neoforged.neoforge.gametest.GameTestHolder;
 import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.UUID;
 
 import static com.minecraftindustrialcomplex.mic_rtsim.gametest.ConflictKit.bridge;
 import static com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests.check;
@@ -91,6 +97,18 @@ public final class OutpostGameTests {
         return new Placed(level, cp, chunk, start, key);
     }
 
+    /**
+     * A player standing at the outpost, in its level's list: the finder reports an outpost only when one is within the server's
+     * view distance of it (EQC296), and a test's outpost stands at a far base nobody visits. Removed when the test ends.
+     */
+    private static ServerPlayer viewer(GameTestHelper helper, Placed p, String name) {
+        BlockPos in = p.inside();
+        ServerPlayer v = FakePlayers.add(p.level(), new Vec3(in.getX() + 0.5, in.getY(), in.getZ() + 0.5), name);
+        v.setGameMode(GameType.CREATIVE);
+        ConflictKit.onEnd(helper, () -> FakePlayers.remove(v));
+        return v;
+    }
+
     private static void load(Placed p, boolean isNew) {
         net.neoforged.neoforge.common.NeoForge.EVENT_BUS.post(new ChunkEvent.Load(p.chunk(), isNew));
     }
@@ -114,19 +132,26 @@ public final class OutpostGameTests {
     // ---- 1: found once ---------------------------------------------------------------------------
 
     /**
-     * An outpost is found once when its chunk loads (EQC238): FACTION_FOUND for the start chunk's key, under the structure's id,
-     * not late, with the raider culture's territory back (TERRITORY, 300 blocks); the same chunk loading again changes nothing.
+     * An outpost is found once when its chunk loads (EQC238) with a player near: FACTION_FOUND for the start chunk's key, under the
+     * structure's id, not late, with the raider culture's territory back (TERRITORY, 300 blocks) and the ledger's row for it (K 50,
+     * count 50, P 0); the same chunk loading again changes nothing. A second session (a plain reset: a new engine, the pages gone)
+     * is told of it once more, once (EQC252).
      */
-    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 600, batch = "mic_rtsim_outposts_find")
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "mic_rtsim_outposts_find", skyAccess = true)
     public static void anOutpostIsFoundOnceWhenItsChunkLoads(GameTestHelper helper) {
         String test = "anOutpostIsFoundOnceWhenItsChunkLoads";
         if (!nativeOnly(helper, test))
             return;
+        ChunkWait waits = ChunkWait.of(helper, 8000);
         Placed p = generate(helper);
+        MinecraftServer server = p.level().getServer();
+        ConflictKit.onEnd(helper, () -> SiteTestHooks.cleanUp(server));
+        viewer(helper, p, "outpost_finder");
         long[] before = {Outposts.found};
+        long[] upTo = new long[1];
         load(p, true);
         helper.startSequence()
-                .thenWaitUntil(() -> check("FACTION_FOUND reached the engine", !found(p.faction()).isEmpty()))
+                .thenWaitUntil(waits.engine(() -> check("FACTION_FOUND reached the engine", !found(p.faction()).isEmpty())))
                 .thenExecute(() -> {
                     ScriptedEngine.Received r = found(p.faction()).get(0);
                     check("not late (aux " + r.aux() + ")", (r.aux() & ConflictRecords.FactionFound.FLAG_LATE) == 0);
@@ -136,7 +161,7 @@ public final class OutpostGameTests {
                     load(p, true);
                     load(p, false);
                 })
-                .thenWaitUntil(() -> check("the engine gave the territory back", bridge().territories().get(p.faction()) != null))
+                .thenWaitUntil(waits.engine(() -> check("the engine gave the territory back", bridge().territories().get(p.faction()) != null)))
                 .thenExecute(() -> {
                     var t = bridge().territories().get(p.faction());
                     check("the raiders' radius, 300 (" + t.radius() + ")", t.radius() == 300);
@@ -148,6 +173,74 @@ public final class OutpostGameTests {
                     check("loading again found nothing more (" + (Outposts.found - before[0]) + ")", Outposts.found == before[0] + 1);
                     check("one FACTION_FOUND (" + found(p.faction()).size() + ")", found(p.faction()).size() == 1);
                 })
+                .thenWaitUntil(waits.engine(() -> {
+                    SiteLedger.Row r = row(p.level(), p.faction());
+                    check("the ledger's row: K 50, count 50, P 0 (" + r + ")", r != null && r.k() == 50 && r.count() == 50 && r.p() == 0f);
+                }))
+                .thenExecute(() -> {
+                    upTo[0] = SiteTestHooks.journalEnd();
+                    SiteTestHooks.requestSave();
+                })
+                .thenWaitUntil(waits.engine(() -> check("an engine save covers the journal through " + upTo[0], SiteTestHooks.savedThrough(upTo[0]))))
+                .thenExecute(() -> {
+                    SiteTestHooks.plainReset(server);
+                    check("a session runs after the reset: " + RtsimSession.startFailure(), RtsimSession.current() != null);
+                })
+                .thenWaitUntil(waits.engine(() -> check("the second session was told of the outpost", !found(p.faction()).isEmpty())))
+                .thenIdle(40)
+                .thenExecute(() -> {
+                    check("once in the second session (" + found(p.faction()).size() + ")", found(p.faction()).size() == 1);
+                    check("by the one finder run (" + (Outposts.found - before[0]) + " found)", Outposts.found == before[0] + 1);
+                    record(test, "two sessions", "one FACTION_FOUND in each, the row K 50, count 50, P 0");
+                })
+                .thenSucceed();
+    }
+
+    // ---- 1b: only an outpost a player has explored --------------------------------------------------
+
+    /**
+     * Pre-generation is not exploration (EQC296): a chunk that loads with no player within view distance of it (a forced chunk far
+     * from everyone, as Chunky's chunks load) makes its outpost known and reports nothing; when the chunk loads again with a player
+     * near, the outpost is reported, once.
+     */
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "mic_rtsim_outposts_explored")
+    public static void anOutpostNoPlayerHasSeenIsKnownAndNotReported(GameTestHelper helper) {
+        String test = "anOutpostNoPlayerHasSeenIsKnownAndNotReported";
+        if (!nativeOnly(helper, test))
+            return;
+        ChunkWait waits = ChunkWait.of(helper, 6000);
+        Placed p = generate(helper);
+        ServerLevel level = p.level();
+        boolean forced = ConflictKit.force(level, p.cp().x, p.cp().z, true);
+        ConflictKit.onEnd(helper, () -> {
+            if (forced)
+                ConflictKit.force(level, p.cp().x, p.cp().z, false);
+        });
+        long[] before = {Outposts.found};
+        int view = level.getServer().getPlayerList().getViewDistance();
+        for (ServerPlayer other : level.players())
+            check("no player within view distance of the test's far outpost", Math.max(Math.abs(other.chunkPosition().x - p.cp().x),
+                    Math.abs(other.chunkPosition().z - p.cp().z)) > view + 1);
+        load(p, true);
+        helper.startSequence()
+                .thenIdle(60)
+                .thenExecute(() -> {
+                    check("known (" + (Outposts.found - before[0]) + " found)", Outposts.found == before[0] + 1);
+                    check("not reported with no player near (" + found(p.faction()).size() + " FACTION_FOUND)", found(p.faction()).isEmpty());
+                    check("no territory", bridge().territories().get(p.faction()) == null);
+                    viewer(helper, p, "outpost_explorer");
+                    // The chunk loads again, now with a player near.
+                    load(p, false);
+                })
+                .thenWaitUntil(waits.engine(() -> check("FACTION_FOUND once a player is near", !found(p.faction()).isEmpty())))
+                .thenIdle(20)
+                .thenExecute(() -> {
+                    ScriptedEngine.Received r = found(p.faction()).get(0);
+                    check("one FACTION_FOUND (" + found(p.faction()).size() + ")", found(p.faction()).size() == 1);
+                    check("not late: it was found as a new chunk (aux " + r.aux() + ")", (r.aux() & ConflictRecords.FactionFound.FLAG_LATE) == 0);
+                    check("found once (" + (Outposts.found - before[0]) + ")", Outposts.found == before[0] + 1);
+                    record(test, "explored", "known at the first load, reported at the second with a player near");
+                })
                 .thenSucceed();
     }
 
@@ -155,19 +248,21 @@ public final class OutpostGameTests {
 
     /**
      * An outpost follows the conflict module's switch (EQC243, U-e): found while the module is off, it is known and journals
-     * nothing; the module switched on, FACTION_FOUND goes within a tick.
+     * nothing; the module switched on, FACTION_FOUND goes within a tick; switched off and on again it goes once more (EQC252).
      */
-    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 600, batch = "mic_rtsim_outposts_switch")
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "mic_rtsim_outposts_switch")
     public static void anOutpostFollowsTheConflictSwitch(GameTestHelper helper) {
         String test = "anOutpostFollowsTheConflictSwitch";
         if (!nativeOnly(helper, test))
             return;
+        ChunkWait waits = ChunkWait.of(helper, 6000);
         MinecraftServer server = helper.getLevel().getServer();
         Placed p = generate(helper);
         ConflictKit.onEnd(helper, () -> {
             RtsimConfig.Test.setModule(Module.CONFLICT, null);
             BridgeEvents.moduleSwitchesChanged(server);
         });
+        viewer(helper, p, "outpost_switch");
         RtsimConfig.Test.setModule(Module.CONFLICT, false);
         BridgeEvents.moduleSwitchesChanged(server);
         load(p, true);
@@ -179,8 +274,27 @@ public final class OutpostGameTests {
                     RtsimConfig.Test.setModule(Module.CONFLICT, null);
                     BridgeEvents.moduleSwitchesChanged(server);
                 })
-                .thenWaitUntil(() -> check("FACTION_FOUND once the module is on", !found(p.faction()).isEmpty()))
-                .thenExecute(() -> record(test, "switched on", found(p.faction()).size() + " FACTION_FOUND"))
+                .thenWaitUntil(waits.engine(() -> check("FACTION_FOUND once the module is on", !found(p.faction()).isEmpty())))
+                .thenIdle(40)
+                .thenExecute(() -> {
+                    check("reported once on the first edge (" + found(p.faction()).size() + ")", found(p.faction()).size() == 1);
+                    // The second edge: off, then on again.
+                    RtsimConfig.Test.setModule(Module.CONFLICT, false);
+                    BridgeEvents.moduleSwitchesChanged(server);
+                })
+                .thenIdle(40)
+                .thenExecute(() -> {
+                    check("nothing more while off again (" + found(p.faction()).size() + ")", found(p.faction()).size() == 1);
+                    RtsimConfig.Test.setModule(Module.CONFLICT, null);
+                    BridgeEvents.moduleSwitchesChanged(server);
+                })
+                .thenWaitUntil(waits.engine(() -> check("reported once more on the second edge (" + found(p.faction()).size() + ")",
+                        found(p.faction()).size() == 2)))
+                .thenIdle(40)
+                .thenExecute(() -> {
+                    check("once more, not more (" + found(p.faction()).size() + ")", found(p.faction()).size() == 2);
+                    record(test, "switched", found(p.faction()).size() + " FACTION_FOUND over two edges");
+                })
                 .thenSucceed();
     }
 
@@ -198,6 +312,8 @@ public final class OutpostGameTests {
         Placed off = generate(helper);
         Placed on = generate(helper);
         ConflictKit.onEnd(helper, () -> RtsimConfig.Test.setOutpostsJoinExisting(null));
+        viewer(helper, off, "outpost_existing_off");
+        viewer(helper, on, "outpost_existing_on");
         RtsimConfig.Test.setOutpostsJoinExisting(false);
         load(off, false);
         helper.startSequence()
@@ -214,6 +330,67 @@ public final class OutpostGameTests {
                     check("flagged late (aux " + r.aux() + ")", (r.aux() & ConflictRecords.FactionFound.FLAG_LATE) != 0);
                     record(test, "late", "FACTION_FOUND aux " + r.aux());
                 })
+                .thenSucceed();
+    }
+
+    /**
+     * An outpost that joined as new in an earlier run is reported again with {@code outpostsJoinExisting} off (EQC297): the next run
+     * reads its chunk as an old one (late), which the setting refuses for an outpost the world has not met, but the site ledger
+     * holds the camp, and the engine's camp plunders on, so the bridge needs its kin predicate back. The test is the second run:
+     * the finder forgets what it knew, the reinstall guard resets the engine, nobody stands near, the chunk loads as old, and the
+     * new session is told of the camp by the ledger's row alone.
+     */
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "mic_rtsim_outposts_rerun", skyAccess = true)
+    public static void anOutpostThatJoinedAsNewIsReportedAgainWhenExistingOnesDoNotJoin(GameTestHelper helper) {
+        String test = "anOutpostThatJoinedAsNewIsReportedAgainWhenExistingOnesDoNotJoin";
+        if (!nativeOnly(helper, test))
+            return;
+        ChunkWait waits = ChunkWait.of(helper, 8000);
+        Placed p = generate(helper);
+        MinecraftServer server = p.level().getServer();
+        ConflictKit.onEnd(helper, () -> {
+            RtsimConfig.Test.setOutpostsJoinExisting(null);
+            SiteTestHooks.cleanUp(server);
+        });
+        RtsimConfig.Test.setOutpostsJoinExisting(false);
+        ServerPlayer[] viewer = {viewer(helper, p, "outpost_rerun")};
+        long[] upTo = new long[1], at = new long[1];
+        // The chunk stands through the restart with nobody near (the farmed test's way).
+        boolean forced = ConflictKit.force(p.level(), p.cp().x, p.cp().z, true);
+        ConflictKit.onEnd(helper, () -> {
+            if (forced)
+                ConflictKit.force(p.level(), p.cp().x, p.cp().z, false);
+        });
+        load(p, true);
+        helper.startSequence()
+                .thenWaitUntil(waits.engine(() -> check("the new outpost joined, existing ones not wanted", !found(p.faction()).isEmpty())))
+                .thenWaitUntil(waits.engine(() -> check("the ledger holds the camp: " + row(p.level(), p.faction()), row(p.level(), p.faction()) != null)))
+                .thenExecute(() -> {
+                    upTo[0] = SiteTestHooks.journalEnd();
+                    SiteTestHooks.requestSave();
+                })
+                .thenWaitUntil(waits.engine(() -> check("an engine save covers the journal through " + upTo[0], SiteTestHooks.savedThrough(upTo[0]))))
+                .thenExecute(() -> {
+                    // The next run: nothing known, nobody near, a reinstall's reset engine, the chunk loads as an old one.
+                    FakePlayers.remove(viewer[0]);
+                    Outposts.forgetForTest();
+                    SiteTestHooks.gapRestart(server, 3 * DAY);
+                    check("a session runs after the reinstall: " + RtsimSession.startFailure(), RtsimSession.current() != null);
+                    check("the new engine knows nothing of it", found(p.faction()).isEmpty());
+                })
+                .thenExecute(() -> at[0] = helper.getTick())
+                .thenWaitUntil(() -> check("the tick after the restart", helper.getTick() > at[0]))
+                .thenWaitUntil(waits.chunks(() -> check("the outpost's chunk stands through the restart",
+                        p.level().getChunkSource().getChunkNow(p.cp().x, p.cp().z) != null)))
+                .thenExecute(() -> load(p, false))
+                .thenWaitUntil(waits.engine(() -> check("the camp the ledger holds was reported to the new session although its chunk read as old",
+                        !found(p.faction()).isEmpty())))
+                .thenExecute(() -> {
+                    ScriptedEngine.Received r = found(p.faction()).get(0);
+                    check("flagged late, as the chunk read (aux " + r.aux() + ")", (r.aux() & ConflictRecords.FactionFound.FLAG_LATE) != 0);
+                })
+                .thenWaitUntil(waits.engine(() -> check("the engine gave the territory back", bridge().territories().get(p.faction()) != null)))
+                .thenExecute(() -> record(test, "rerun", "reported by the ledger's row with outpostsJoinExisting off"))
                 .thenSucceed();
     }
 
@@ -237,14 +414,13 @@ public final class OutpostGameTests {
             for (int dz = -1; dz <= 1; dz++)
                 if (ConflictKit.force(level, p.cp().x + dx, p.cp().z + dz, true))
                     forced.add(ChunkPos.asLong(p.cp().x + dx, p.cp().z + dz));
-        ServerPlayer[] player = new ServerPlayer[1];
         long[] mark = new long[1];
         ConflictKit.onEnd(helper, () -> {
             for (long c : forced)
                 ConflictKit.force(level, ChunkPos.getX(c), ChunkPos.getZ(c), false);
-            if (player[0] != null)
-                FakePlayers.remove(player[0]);
         });
+        // The player who explores the outpost (a player near it is what makes it a camp, EQC296) is the one who kills.
+        ServerPlayer[] player = {viewer(helper, p, "outpost_kin")};
         load(p, true);
         helper.startSequence()
                 .thenWaitUntil(waits.chunks(() -> {
@@ -256,8 +432,6 @@ public final class OutpostGameTests {
                 .thenWaitUntil(waits.logic(() -> check("the engine gave the territory back", bridge().territories().get(p.faction()) != null)))
                 .thenExecute(() -> {
                     BlockPos in = p.inside();
-                    player[0] = FakePlayers.add(level, new Vec3(in.getX() + 0.5, in.getY(), in.getZ() + 0.5), "outpost_kin");
-                    player[0].setGameMode(GameType.CREATIVE);
                     mark[0] = bridge().signalsCounted;
                     // A witch inside the box: a raider, but not the camp's kin.
                     kill(level, player[0], EntityType.WITCH.create(level), in);
@@ -265,6 +439,11 @@ public final class OutpostGameTests {
                     // A pillager far off, as a village raid's: outside the box and its margin.
                     kill(level, player[0], EntityType.PILLAGER.create(level), in.offset(200, 0, 0));
                     check("a pillager 200 blocks off is no kin (" + (bridge().signalsCounted - mark[0]) + ")", bridge().signalsCounted == mark[0]);
+                    // A machine's kill (a Create deployer farm, a NeoForge FakePlayer) is a trap's: no killing (EQC243, EQC300).
+                    FakePlayer machine = FakePlayerFactory.get(level, new GameProfile(UUID.randomUUID(), "outpost_machine"));
+                    kill(level, machine, EntityType.PILLAGER.create(level), in);
+                    check("a machine's kill of a pillager in the box is no killing (" + (bridge().signalsCounted - mark[0]) + ")",
+                            bridge().signalsCounted == mark[0]);
                     // Three pillagers and a vindicator inside: kin.
                     for (int i = 0; i < 3; i++)
                         kill(level, player[0], EntityType.PILLAGER.create(level), in);
@@ -292,6 +471,71 @@ public final class OutpostGameTests {
     // ---- 5: a provoked outpost sends its envoy -----------------------------------------------------
 
     /**
+     * The ladder to an outpost's envoy (EQC246), the steps of the sequence after the forced chunks tick: the engine's clock caught up
+     * to game time (a reused world's runs ahead of it by the last run's asks), the territory back, thirty-two pillagers killed by
+     * {@code player}, who stands in the box, then the world's clock moved on 1,200 ticks at an ask, the player reporting, until the
+     * camp's envoy exists and is placed ({@code envoy[0]}).
+     */
+    private static GameTestSequence provoke(GameTestSequence seq, ChunkWait waits, NativeEngine e, Placed p, ServerPlayer player,
+                                            ConflictBridge.Party[] envoy, int[] asks) {
+        ServerLevel level = p.level();
+        long[] mark = new long[1];
+        return seq
+                .thenExecute(() -> {
+                    mark[0] = e.phase1Stats()[NativeEngine.P1_WORLD_TICK];
+                    long gap = mark[0] - level.getGameTime();
+                    if (gap > 0)
+                        e.phase1Advance(gap);
+                })
+                .thenWaitUntil(waits.logic(() -> check("the world's clock moves", e.phase1Stats()[NativeEngine.P1_WORLD_TICK] > mark[0])))
+                .thenWaitUntil(waits.logic(() -> check("the engine gave the territory back", bridge().territories().get(p.faction()) != null)))
+                .thenExecute(() -> {
+                    BlockPos in = p.inside();
+                    for (int i = 0; i < 32; i++)
+                        kill(level, player, EntityType.PILLAGER.create(level), in);
+                })
+                .thenWaitUntil(waits.logic(() -> {
+                    ConflictKit.reportPlayer(player);
+                    for (ConflictBridge.Party q : bridge().parties())
+                        if (q.faction == p.faction() && q.envoy)
+                            return;
+                    check("an envoy within 300 asks of 1200 ticks (asks " + asks[1] + ")", asks[1] < 300);
+                    if (asks[0]++ % 4 == 0) {
+                        e.phase1Advance(1_200);
+                        asks[1]++;
+                    }
+                    check("the envoy comes", false);
+                }))
+                .thenWaitUntil(waits.logic(() -> {
+                    ConflictKit.reportPlayer(player);
+                    for (ConflictBridge.Party q : bridge().parties())
+                        if (q.faction == p.faction() && q.envoy)
+                            envoy[0] = q;
+                    check("the envoy is placed", envoy[0] != null && envoy[0].stacks().get(0).state() == ConflictBridge.StackState.PLACED);
+                }));
+    }
+
+    /** The five by five chunks round the outpost, forced for a test that walks bodies there; released when it ends. */
+    private static void forceAround(GameTestHelper helper, Placed p, List<Long> forced) {
+        ServerLevel level = p.level();
+        for (int dx = -2; dx <= 2; dx++)
+            for (int dz = -2; dz <= 2; dz++)
+                if (ConflictKit.force(level, p.cp().x + dx, p.cp().z + dz, true))
+                    forced.add(ChunkPos.asLong(p.cp().x + dx, p.cp().z + dz));
+        ConflictKit.onEnd(helper, () -> {
+            for (long c : forced)
+                ConflictKit.force(level, ChunkPos.getX(c), ChunkPos.getZ(c), false);
+        });
+    }
+
+    private static void forcedChunksTick(Placed p) {
+        for (int dx = -2; dx <= 2; dx++)
+            for (int dz = -2; dz <= 2; dz++)
+                check("the forced chunks tick entities", RtsimSession.entitiesTickAt(p.level(),
+                        new BlockPos((p.cp().x + dx) * 16 + 8, 64, (p.cp().z + dz) * 16 + 8)));
+    }
+
+    /**
      * A provoked outpost sends its envoy (EQC246): a player who kills thirty-two of its pillagers gets a herald with two
      * pillagers asking emeralds or the killing stopped, as any camp's envoy comes. The world's clock moves on 1,200 ticks to an ask
      * with the player reporting, as the ladder test has it.
@@ -306,65 +550,12 @@ public final class OutpostGameTests {
         }
         ChunkWait waits = ChunkWait.of(helper, 6000);
         Placed p = generate(helper);
-        ServerLevel level = p.level();
-        List<Long> forced = new ArrayList<>();
-        for (int dx = -2; dx <= 2; dx++)
-            for (int dz = -2; dz <= 2; dz++)
-                if (ConflictKit.force(level, p.cp().x + dx, p.cp().z + dz, true))
-                    forced.add(ChunkPos.asLong(p.cp().x + dx, p.cp().z + dz));
-        ServerPlayer[] player = new ServerPlayer[1];
-        long[] mark = new long[2];
+        forceAround(helper, p, new ArrayList<>());
+        ServerPlayer player = viewer(helper, p, "outpost_provoker");
         int[] asks = {0, 0};
         ConflictBridge.Party[] envoy = new ConflictBridge.Party[1];
-        ConflictKit.onEnd(helper, () -> {
-            for (long c : forced)
-                ConflictKit.force(level, ChunkPos.getX(c), ChunkPos.getZ(c), false);
-            if (player[0] != null)
-                FakePlayers.remove(player[0]);
-        });
         load(p, true);
-        helper.startSequence()
-                .thenWaitUntil(waits.chunks(() -> {
-                    for (int dx = -2; dx <= 2; dx++)
-                        for (int dz = -2; dz <= 2; dz++)
-                            check("the forced chunks tick entities", RtsimSession.entitiesTickAt(level,
-                                    new BlockPos((p.cp().x + dx) * 16 + 8, 64, (p.cp().z + dz) * 16 + 8)));
-                }))
-                .thenExecute(() -> {
-                    // A reused world's clock runs ahead of game time by the last run's asks: one ask of the gap catches it up.
-                    mark[0] = e.phase1Stats()[NativeEngine.P1_WORLD_TICK];
-                    long gap = mark[0] - level.getGameTime();
-                    if (gap > 0)
-                        e.phase1Advance(gap);
-                })
-                .thenWaitUntil(waits.logic(() -> check("the world's clock moves", e.phase1Stats()[NativeEngine.P1_WORLD_TICK] > mark[0])))
-                .thenWaitUntil(waits.logic(() -> check("the engine gave the territory back", bridge().territories().get(p.faction()) != null)))
-                .thenExecute(() -> {
-                    BlockPos in = p.inside();
-                    player[0] = FakePlayers.add(level, new Vec3(in.getX() + 0.5, in.getY(), in.getZ() + 0.5), "outpost_provoker");
-                    player[0].setGameMode(GameType.CREATIVE);
-                    for (int i = 0; i < 32; i++)
-                        kill(level, player[0], EntityType.PILLAGER.create(level), in);
-                })
-                .thenWaitUntil(waits.logic(() -> {
-                    ConflictKit.reportPlayer(player[0]);
-                    for (ConflictBridge.Party q : bridge().parties())
-                        if (q.faction == p.faction() && q.envoy)
-                            return;
-                    check("an envoy within 300 asks of 1200 ticks (asks " + asks[1] + ")", asks[1] < 300);
-                    if (asks[0]++ % 4 == 0) {
-                        e.phase1Advance(1_200);
-                        asks[1]++;
-                    }
-                    check("the envoy comes", false);
-                }))
-                .thenWaitUntil(waits.logic(() -> {
-                    ConflictKit.reportPlayer(player[0]);
-                    for (ConflictBridge.Party q : bridge().parties())
-                        if (q.faction == p.faction() && q.envoy)
-                            envoy[0] = q;
-                    check("the envoy is placed", envoy[0] != null && envoy[0].stacks().get(0).state() == ConflictBridge.StackState.PLACED);
-                }))
+        provoke(helper.startSequence().thenWaitUntil(waits.chunks(() -> forcedChunksTick(p))), waits, e, p, player, envoy, asks)
                 .thenExecute(() -> {
                     ConflictBridge.Demand d = envoy[0].demand();
                     check("a demand", d != null);
@@ -403,6 +594,7 @@ public final class OutpostGameTests {
             if (forced)
                 ConflictKit.force(level, p.cp().x, p.cp().z, false);
         });
+        ServerPlayer[] viewer = {viewer(helper, p, "outpost_farmer")};
         load(p, true);
         helper.startSequence()
                 .thenWaitUntil(waits.engine(() -> check("the engine gave the territory back", bridge().territories().get(p.faction()) != null)))
@@ -420,6 +612,8 @@ public final class OutpostGameTests {
                 })
                 .thenWaitUntil(waits.engine(() -> check("an engine save covers the journal through " + upTo[0], SiteTestHooks.savedThrough(upTo[0]))))
                 .thenExecute(() -> {
+                    // Nobody is near when the new session starts: the camp is in the ledger, which is enough for its report (EQC297).
+                    FakePlayers.remove(viewer[0]);
                     SiteTestHooks.gapRestart(server, 250 * DAY);
                     check("a session runs after the reinstall: " + RtsimSession.startFailure(), RtsimSession.current() != null);
                 })
@@ -444,57 +638,90 @@ public final class OutpostGameTests {
                 .thenSucceed();
     }
 
+    /** Whether {@code m} is a body of one of the sim's parties. */
+    private static boolean isPartyBody(Mob m) {
+        for (ConflictBridge.Party q : bridge().parties())
+            for (ConflictBridge.Stack s : q.stacks())
+                if (s.bodies().contains(m))
+                    return true;
+        return false;
+    }
+
     // ---- 7: vanilla's own raiders are left alone --------------------------------------------------
 
     /**
-     * Vanilla's own raiders stay vanilla's (EQC248, FB-7 (a)): the outpost's pillager (its structure spawn override) and a patrol are
-     * nobody's body, whether or not the outpost is a camp: no rtsim tag, no camp-member mark, not removed.
+     * Vanilla's own raiders stay vanilla's (EQC248, FB-7 (a)): a command-spawned patrol (a leader and a member, flagged as
+     * {@code PatrolSpawner} flags them) and a pillager made by the structure's spawn override ({@code MobSpawnType.STRUCTURE}) stand
+     * in the box of an outpost that is a camp with a party out (its envoy, placed beside them), and after 2,000 ticks they are
+     * nobody's body: no rtsim tag, no camp-member mark, not adopted, not removed, still a patrol; and the party's bodies are not
+     * theirs. They are held without AI so that they stay in the forced chunks.
      */
     @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "mic_rtsim_outposts_vanilla")
     public static void aVanillaPatrolAndTheOutpostsOwnPillagersAreLeftAlone(GameTestHelper helper) {
         String test = "aVanillaPatrolAndTheOutpostsOwnPillagersAreLeftAlone";
-        if (!nativeOnly(helper, test))
+        if (!(RtsimTests.engine() instanceof NativeEngine e)) {
+            record(test, "skipped", "the camps are the engine's only on the native engine");
+            helper.succeed();
             return;
+        }
         ChunkWait waits = ChunkWait.of(helper, 6000);
         Placed p = generate(helper);
         ServerLevel level = p.level();
-        List<Long> forced = new ArrayList<>();
-        for (int dx = -1; dx <= 1; dx++)
-            for (int dz = -1; dz <= 1; dz++)
-                if (ConflictKit.force(level, p.cp().x + dx, p.cp().z + dz, true))
-                    forced.add(ChunkPos.asLong(p.cp().x + dx, p.cp().z + dz));
-        Pillager[] pillagers = new Pillager[2];
+        forceAround(helper, p, new ArrayList<>());
+        ServerPlayer player = viewer(helper, p, "outpost_vanilla");
+        Pillager[] vanilla = new Pillager[3]; // the patrol's leader and member, and the spawn override's pillager
+        ConflictBridge.Party[] envoy = new ConflictBridge.Party[1];
+        int[] asks = {0, 0};
+        long[] since = new long[1];
         ConflictKit.onEnd(helper, () -> {
-            for (Pillager x : pillagers)
+            for (Pillager x : vanilla)
                 if (x != null)
                     x.discard();
-            for (long c : forced)
-                ConflictKit.force(level, ChunkPos.getX(c), ChunkPos.getZ(c), false);
         });
         load(p, true);
-        helper.startSequence()
-                .thenWaitUntil(waits.chunks(() -> check("the outpost's chunk ticks entities", RtsimSession.entitiesTickAt(level,
-                        new BlockPos(p.cp().x * 16 + 8, 64, p.cp().z * 16 + 8)))))
+        provoke(helper.startSequence()
+                .thenWaitUntil(waits.chunks(() -> forcedChunksTick(p)))
                 .thenWaitUntil(waits.engine(() -> check("the outpost joined", !found(p.faction()).isEmpty())))
                 .thenExecute(() -> {
                     BlockPos in = p.inside();
-                    for (int i = 0; i < 2; i++) {
-                        pillagers[i] = EntityType.PILLAGER.create(level);
-                        pillagers[i].moveTo(in.getX() + 0.5 + i, in.getY(), in.getZ() + 0.5);
-                        pillagers[i].setPersistenceRequired();
-                        pillagers[i].setNoAi(true);
-                        level.addFreshEntity(pillagers[i]);
+                    for (int i = 0; i < vanilla.length; i++) {
+                        Pillager x = EntityType.PILLAGER.create(level);
+                        BlockPos at = in.offset(i, 0, 3);
+                        x.moveTo(at.getX() + 0.5, at.getY(), at.getZ() + 0.5);
+                        if (i < 2) {
+                            // A patrol, as /summon with PatrolLeader makes one: the leader has a target, the member follows.
+                            x.setPatrolLeader(i == 0);
+                            x.findPatrolTarget();
+                        }
+                        x.setNoAi(true);
+                        x.finalizeSpawn(level, level.getCurrentDifficultyAt(at), i < 2 ? MobSpawnType.PATROL : MobSpawnType.STRUCTURE, null);
+                        level.addFreshEntity(x);
+                        vanilla[i] = x;
                     }
-                })
-                .thenIdle(200)
+                }), waits, e, p, player, envoy, asks)
                 .thenExecute(() -> {
-                    for (Pillager x : pillagers) {
+                    check("a party of the outpost's is out", bridge().parties().stream().anyMatch(q -> q.faction == p.faction()));
+                    for (Pillager x : vanilla)
+                        check("not a party's body", !isPartyBody(x));
+                })
+                // 2,000 ticks with the player reporting where it stands, as a connected one does: a player who goes quiet is gone
+                // after 2,400 ticks, and the party with it.
+                .thenExecute(() -> since[0] = level.getGameTime())
+                .thenWaitUntil(waits.logic(() -> {
+                    ConflictKit.reportPlayer(player);
+                    check("2,000 ticks pass (" + (level.getGameTime() - since[0]) + ")", level.getGameTime() - since[0] >= 2_000);
+                }))
+                .thenExecute(() -> {
+                    for (Pillager x : vanilla) {
                         check("still here, vanilla's", x.isAlive() && !x.isRemoved());
                         check("no rtsim tag", RtsimAttachments.tag(x) == null);
                         check("no camp-member mark", RtsimAttachments.campMember(x) == null);
+                        check("not a party's body", !isPartyBody(x));
                     }
-                    check("no party of the outpost's", bridge().parties().stream().noneMatch(q -> q.faction == p.faction()));
-                    record(test, "left alone", "two pillagers in the box, untagged after 200 ticks");
+                    check("the patrol is still a patrol", vanilla[0].isPatrolLeader() && vanilla[0].hasPatrolTarget());
+                    check("the party is still out (" + bridge().parties().size() + " parties)",
+                            bridge().parties().stream().anyMatch(q -> q.faction == p.faction()));
+                    record(test, "left alone", "a patrol of two and a spawn override's pillager untagged after 2,000 ticks with the envoy out");
                 })
                 .thenSucceed();
     }
@@ -518,6 +745,7 @@ public final class OutpostGameTests {
         ConflictKit.onEnd(helper, () -> SiteTestHooks.cleanUp(server));
         long[] upTo = new long[1];
         int[] starts = new int[1];
+        viewer(helper, p, "outpost_uninstall");
         load(p, true);
         helper.startSequence()
                 .thenWaitUntil(waits.engine(() -> check("the outpost joined", !found(p.faction()).isEmpty())))

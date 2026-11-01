@@ -3,6 +3,7 @@ package com.minecraftindustrialcomplex.mic_rtsim.sites;
 import com.minecraftindustrialcomplex.mic_rtsim.MicRtsim;
 import com.minecraftindustrialcomplex.mic_rtsim.boundary.Cmd;
 import com.minecraftindustrialcomplex.mic_rtsim.bridge.ReinstallGuard;
+import com.minecraftindustrialcomplex.mic_rtsim.journal.JournalDependent;
 import net.minecraft.core.HolderLookup;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.ListTag;
@@ -31,14 +32,16 @@ import java.util.UUID;
  * pressure and the wait left as of the stamp, and the game ticks since. The layouts' one home is {@code
  * rtsim_kernel::sites}; this class mirrors them.
  *
- * <p><b>Gaps</b> (MZB-1003). Only the reinstall guard's reset means rtsim did not run. The first use of the ledger after
- * one ({@link #get}) bumps {@code gaps}; each row keeps the {@code gaps} it was written under, and its tail says GAP while
- * they differ. A plain reset is not a gap: rtsim ran.
+ * <p><b>Gaps</b> (MZB-1003). Only the reinstall guard's reset means rtsim did not run. The reset itself counts it, through
+ * {@link #get}, before the engine opens (MZB-1403: a start that found no site and stopped would else never count it), and
+ * bumps {@code gaps}; each row keeps the {@code gaps} it was written under, and its tail says GAP while they differ. A
+ * plain reset is not a gap: rtsim ran.
  *
  * <p><b>Saves.</b> Vanilla writes the file at its world saves, before the journal's like every overworld SavedData. It is
- * not journal dependent (SEC-1 U-g's {@code JournalDependent}): it holds no op's effect and no dedup, and a crash loses
- * at most the rows since the last autosave, which matter only after a reset (UR-1). No migrations: a file of another
- * version loads empty, and a row that does not parse is dropped and counted.
+ * journal dependent (SEC-1 U-g's {@link JournalDependent}, MZB-1403): a SITE_STATE the journal records as applied is
+ * never sent again, so a failed write of the ledger holds the journal's file until the ledger writes, and the reinstall
+ * guard's marker waits for it, so the gap a reset counted is on disk before the marker that owes it goes. No migrations: a
+ * file of another version loads empty, and a row that does not parse is dropped and counted.
  *
  * <p><b>NBT</b> (MZB-1001): {@code v} (1), {@code gaps}, and {@code rows}, one LongArrayTag a row: 0 key; 1 kind (bits 0 to
  * 7), flags (8 to 15: 1 waiting, 2 broken), K (16 to 31), count (32 to 47), away (48 to 63); 2 P's f32 bits (0 to 31),
@@ -46,7 +49,7 @@ import java.util.UUID;
  * in thousandths, a saturating u16 (48 to 63, MZB-1231; a row written before it reads 0); then 2 (n + l + m) longs, each
  * UUID's most then least: home, left behind, missing.
  */
-public final class SiteLedger extends SavedData {
+public final class SiteLedger extends SavedData implements JournalDependent {
     public static final String FILE = "mic_rtsim_sites";
     public static final int VERSION = 1;
 
@@ -129,7 +132,7 @@ public final class SiteLedger extends SavedData {
 
     /**
      * The world's ledger. The first call after the reinstall guard's reset counts the gap, so every row written before it
-     * reads GAP from then on (MZB-1003).
+     * reads GAP from then on (MZB-1003); the reset makes that call itself (MZB-1403).
      */
     public static SiteLedger get(MinecraftServer server) {
         SiteLedger l = server.overworld().getDataStorage().computeIfAbsent(FACTORY, FILE);
@@ -165,6 +168,12 @@ public final class SiteLedger extends SavedData {
 
     public long refused() {
         return refused;
+    }
+
+    /** A failed write of the file is to be written again at the next world save (U-g4): vanilla cleared the flag. */
+    @Override
+    public void mic_rtsim$remark() {
+        setDirty();
     }
 
     /** Test only: drops a site's row, as a world that never had one. */

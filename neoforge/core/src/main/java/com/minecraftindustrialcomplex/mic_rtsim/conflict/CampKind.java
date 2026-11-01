@@ -123,6 +123,15 @@ public interface CampKind {
     void copy(Mob from, Mob to);
 
     /**
+     * The body holding a slot and a member gone missing that came back to its full camp fight until one dies (FIGHT, MZB-1404):
+     * the kind sets the two on each other and keeps them on it while both stand loaded (a mob's target is not saved; the
+     * engine's census sends the line again). False for a kind whose bodies do not fight: the line is answered stale.
+     */
+    default boolean fight(ServerLevel level, Camps.Site site, Mob holder, Mob rival) {
+        return false;
+    }
+
+    /**
      * Whether this kind plays a reconcile's lines for its chief's slot (a den's Frostmaw, a grove's Umvuthi); a
      * kind that does not answers them stale.
      */

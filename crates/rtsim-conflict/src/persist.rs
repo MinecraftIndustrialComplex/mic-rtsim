@@ -91,7 +91,11 @@ use crate::tunables::ConflictTunables;
 /// deferrals.
 /// RTC15, `RTCF`: a camp ends with its chief's pressure, an f32 and the day it stands at, after its
 /// recount; a grove's `pressure` is now its warriors' (S9, MZB-1211, MZB-1230).
-const MAGIC: u32 = u32::from_le_bytes(*b"RTCF");
+/// RTC16, `RTCG`: RTC15's, and a camp's heir ends with the chief's pressure kept while a camp
+/// found without its chief waits the cap (an f32 and its day, MZB-1402), its left behind is
+/// followed by its rivals (MZB-1404), and the stats end with `camp_fights` (the M12a review; it
+/// took RTCF on a branch beside S9's, and the two land as one format, MZB-1409).
+const MAGIC: u32 = u32::from_le_bytes(*b"RTCG");
 /// The meta page of a paged save ([`Conflict::save_paged`]). 2: the indexes, parties and wheel
 /// are in pages of their own, their headers after the row counts (PF10). 3: the resident state
 /// ends with the Peaceful flag, its start and the last notice's serial. 4: the party pages' rows
@@ -104,9 +108,11 @@ const MAGIC: u32 = u32::from_le_bytes(*b"RTCF");
 /// (M11, MZB-853). 12: a camp's slots carry their bodies' UUIDs, and the camp its missing, its
 /// bodies left behind, its gap and cap flags and its recount (M12a, MZB-1014, MZB-1015). 13: a
 /// faction row ends with its strain, the wheel's tag 12 and the stats end as RTC14's (S7). 14: a
-/// camp ends with its chief's pressure, as RTC15's (S9).
+/// camp ends with its chief's pressure, as RTC15's (S9). 15: a camp's heir carries its kept
+/// pressure, a camp its rivals, and the stats end as RTC16's (M12a review, MZB-1402, MZB-1404,
+/// MZB-1409).
 const META_MAGIC: u32 = u32::from_le_bytes(*b"RTCM");
-const META_VERSION: u16 = 14;
+const META_VERSION: u16 = 15;
 
 /// Every page table the conflict owns when it pages: a meta key in none of them.
 pub const TABLES: [u16; 9] = [
@@ -252,7 +258,7 @@ fn get_pos(r: &mut Reader<'_>) -> codec::Result<Pos> {
 }
 
 /// Why a save does not start with this build's magic: another format of the same family is named
-/// (`RTCE`, this build reads `RTCF`), anything else is not a conflict save.
+/// (`RTCF`, this build reads `RTCG`), anything else is not a conflict save.
 fn magic_error(found: u32) -> String {
     let (f, m) = (found.to_le_bytes(), MAGIC.to_le_bytes());
     if f[..3] == *b"RTC" {
@@ -508,6 +514,9 @@ fn put_camp(w: &mut Writer, c: &Camp) {
     put_opt(w, &c.heir, |w, h| {
         w.u64(h.due.0);
         w.bool(h.found_empty);
+        let (p, at_day) = h.kept.parts();
+        w.f32(p);
+        w.u32(at_day);
     });
     w.var_u64(u64::from(c.heir_stamp));
     put_usize(w, c.traded.len());
@@ -534,7 +543,7 @@ fn put_camp(w: &mut Writer, c: &Camp) {
         w.var_u64(u64::from(e.epoch));
         w.u32(e.generation);
     });
-    for list in [&c.missing, &c.left_behind] {
+    for list in [&c.missing, &c.left_behind, &c.rivals] {
         put_usize(w, list.len());
         for u in list {
             w.u64(u.0);
@@ -651,9 +660,16 @@ fn get_camp(r: &mut Reader<'_>) -> codec::Result<Camp> {
     let arrival = get_u32(r)?;
     let arrival_at = get_opt(r, |r| Ok(Tick(r.u64()?)))?;
     let heir = get_opt(r, |r| {
+        let due = Tick(r.u64()?);
+        let found_empty = r.bool()?;
+        let p = r.f32()?;
+        if !p.is_finite() || p < 0.0 {
+            return bad(format!("camp heir's kept pressure {p}"));
+        }
         Ok(Heir {
-            due: Tick(r.u64()?),
-            found_empty: r.bool()?,
+            due,
+            found_empty,
+            kept: Pressure::from_parts(p, r.u32()?),
         })
     })?;
     let heir_stamp = get_u32(r)?;
@@ -688,7 +704,7 @@ fn get_camp(r: &mut Reader<'_>) -> codec::Result<Camp> {
     if ended.is_some_and(|e| e.agent == 0 || e.generation == 0) {
         return bad("a band's end with no agent or generation".to_string());
     }
-    let mut lists: [Vec<boundary::Uuid>; 2] = Default::default();
+    let mut lists: [Vec<boundary::Uuid>; 3] = Default::default();
     for list in &mut lists {
         let n = r.len_prefix(16)?;
         list.reserve_exact(n);
@@ -696,7 +712,7 @@ fn get_camp(r: &mut Reader<'_>) -> codec::Result<Camp> {
             list.push((r.u64()?, r.u64()?));
         }
     }
-    let [missing, left_behind] = lists;
+    let [missing, left_behind, rivals] = lists;
     let flags = r.u8()?;
     if flags > 3 {
         return bad(format!("camp flags {flags:#x}"));
@@ -733,6 +749,7 @@ fn get_camp(r: &mut Reader<'_>) -> codec::Result<Camp> {
         ended,
         missing,
         left_behind,
+        rivals,
         gap: flags & 1 != 0,
         cap_next: flags & 2 != 0,
         recount,
@@ -1368,6 +1385,7 @@ fn stats_fields(s: &ConflictStats) -> Vec<u64> {
         s.breaks,
         s.refounds,
         s.break_deferrals,
+        s.camp_fights,
     ]);
     v
 }
@@ -1446,6 +1464,7 @@ fn stats_from(v: &[u64]) -> ConflictStats {
     s.breaks = n();
     s.refounds = n();
     s.break_deferrals = n();
+    s.camp_fights = n();
     s
 }
 
@@ -1926,6 +1945,12 @@ impl Conflict {
         {
             return bad("a held pass names a faction past the table".into());
         }
+        // Read back, the first use of either would index `factions` (MZB-1306).
+        if self.placing.iter().any(|(f, _)| *f as usize >= n)
+            || self.chief_ended.values().any(|f| *f as usize >= n)
+        {
+            return bad("a placing or a band's end names a faction past the table".into());
+        }
         if self.sources.rows.len() != self.sources.ids.len() as u64 {
             return bad("source rows and their index disagree".into());
         }
@@ -2256,6 +2281,38 @@ mod tests {
         let back = Conflict::load(c.tun.clone(), c.cultures.clone(), &b).unwrap();
         assert_eq!(back.state_hash(), c.state_hash());
         assert_eq!(back.save(), b);
+    }
+
+    /// A placing or a band's end (MZB-853) that names a faction past the table is an error at
+    /// load, as an index that does (the M11 review's P3, MZB-1306): read back, the first use of
+    /// either would panic at `factions[f]`. The same entries naming the faction there load.
+    #[test]
+    fn a_placing_or_a_band_end_past_the_factions_is_an_error() {
+        let (mut w, _) = synth::world(3);
+        let mut c = synth::conflict(3, &w);
+        c.add_faction(&mut w, synth::CAMP, "goblin", synth::CAMP_POS, Tick::ZERO);
+        let n = c.factions.len() as u32;
+        let placing = Placing {
+            op: 0x51,
+            good: 1,
+            amount: 1000,
+            dimension: 0,
+            pos: (0, 64, 0),
+        };
+        let load = |b: &[u8]| Conflict::load(c.tun.clone(), c.cultures.clone(), b);
+        for f in [n, n - 1] {
+            let mut ended = load(&c.save()).unwrap();
+            ended.chief_ended.insert(0x52, f);
+            let mut placed = load(&c.save()).unwrap();
+            placed.placing.push((f, placing));
+            for (what, x) in [("a band's end", ended), ("a placing", placed)] {
+                assert_eq!(
+                    load(&x.save()).is_err(),
+                    f == n,
+                    "{what} naming faction {f} of {n}"
+                );
+            }
+        }
     }
 
     fn encoded(f: impl FnOnce(&mut Writer)) -> usize {
