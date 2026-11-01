@@ -145,6 +145,13 @@ pub struct DragonTunables {
     /// lair holds its breeder (or pair) and at most one young. TUNABLE, 10 (it is then 60 days
     /// old, stage 3, Ice and Fire's teen).
     pub emigrate_after_days: u64,
+    /// The oil row's weight a field (EQC561), for a species that drinks oil (`uses_oil`): shared
+    /// by the mouths whose nine regions hold the field like a village's weight, it draws
+    /// newcomers and keeps a dragon from starving out, and breeds none (births read the catch).
+    /// At the gate's margin a mouth needs 200, so a field holds `oil_weight / 200` dragons in its
+    /// nine regions on oil alone: 800 holds the 4.5 lairs of the real density's nine regions when
+    /// the food holds one. TUNABLE.
+    pub oil_weight: f64,
     /// Age in days of a dragon the respawn rule brings in. PLACEHOLDER 30 (stage 2: it grows into
     /// the roost).
     pub respawn_age_days: u64,
@@ -232,6 +239,7 @@ impl Default for DragonTunables {
             gate_wild: 30.0,
             gate_half: 200.0,
             emigrate_after_days: 10,
+            oil_weight: 800.0,
             respawn_age_days: 30,
             respawn_from_blocks: 3_000,
             view_radius: 160,
