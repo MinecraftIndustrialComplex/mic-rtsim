@@ -8509,3 +8509,58 @@ impl Viewer for Conflict {
         }
     }
 }
+
+/// Camps as dragons' prey (EQUILIBRIUM.md §2.4.11; docs/overnight-choices-equilibrium.md EQC556,
+/// Ben's PP-4 (a)): the members of a camp of a culture the dragons eat, above its refuge, and a
+/// member lost to one as a loss no player made (the pool shrinks; no pressure, no grievance).
+/// A camp whose bodies a census counts (the Mowzie cultures) is never served: its members are
+/// bodies, not a pool.
+impl rtsim_ecology::trophic::Prey for Conflict {
+    fn camp_prey(
+        &self,
+        cultures: &[String],
+        refuge: u32,
+        at: Tick,
+    ) -> Vec<rtsim_ecology::trophic::CampPrey> {
+        let mut out = Vec::new();
+        for f in 0..self.factions.len() as u32 {
+            let Some(x) = self.factions.get(f) else {
+                continue;
+            };
+            let name = self.cultures.get(x.culture).name();
+            if x.camp.is_some() || !cultures.iter().any(|c| c == name) || !self.camp_active(f) {
+                continue;
+            }
+            let pool = self.pool_at(f, at.max(x.pool_at)).floor().max(0.0) as u32;
+            let takeable = pool.saturating_sub(refuge);
+            if takeable == 0 {
+                continue;
+            }
+            out.push(rtsim_ecology::trophic::CampPrey {
+                key: x.key,
+                actor: x.actor,
+                pos: x.pos,
+                takeable,
+            });
+        }
+        out
+    }
+
+    fn lose_to_predator(
+        &mut self,
+        _w: &mut rtsim_world::World,
+        loss: &rtsim_ecology::trophic::CampLoss,
+    ) {
+        let Some(f) = (0..self.factions.len() as u32)
+            .find(|&f| self.factions.get(f).is_some_and(|x| x.key == loss.key))
+        else {
+            return;
+        };
+        if !self.camp_active(f) {
+            return;
+        }
+        let at = loss.at.max(self.factions[f as usize].pool_at);
+        // No counter here: the conflict's stats are saved, and the dragons count their raids.
+        self.pool_add(f, -1.0, at);
+    }
+}

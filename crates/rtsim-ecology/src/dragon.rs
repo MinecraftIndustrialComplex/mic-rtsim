@@ -273,6 +273,21 @@ pub enum Target {
         x: i32,
         z: i32,
     },
+    /// A camp whose members are its prey (EQC556): one member a raid, through the camp's engine.
+    Camp {
+        camp: u64,
+        frame: u16,
+        x: i32,
+        z: i32,
+    },
+    /// A player district's stores, raided for food alone (EQC556, PP-1 (a)): unwatched, food and
+    /// nothing else; watched, Ice and Fire's own dragon.
+    Larder {
+        district: u64,
+        frame: u16,
+        x: i32,
+        z: i32,
+    },
 }
 
 /// Why a dragon is flying.
