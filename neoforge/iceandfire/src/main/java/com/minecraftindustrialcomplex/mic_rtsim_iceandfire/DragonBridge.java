@@ -234,6 +234,8 @@ public final class DragonBridge implements SessionPlugin {
     public final OilSampler sampler = new OilSampler(this);
     /** PLACE_NEST, NEST_RENEW and NEST_SORTIE: the Death Worm nests under oil fields (OG-9e). */
     public final Nests nests = new Nests(this);
+    /** Villagers dragons took while nobody watched (TAKE_RESIDENT, PP-2 (a)). */
+    public final VillagerTakes villagerTakes = new VillagerTakes();
     /** Home bodies: the lair census, the leash and the hand-back (EQUILIBRIUM.md S5). */
     public final HomeBodies homes = new HomeBodies(this);
 
@@ -478,6 +480,11 @@ public final class DragonBridge implements SessionPlugin {
             case DragonRecords.NEST_RENEW -> {
                 nests.renew(b.getLong(at + DragonRecords.NestRenew.NEST), b.getInt(at + DragonRecords.NestRenew.STAGE), aux,
                         Integer.toUnsignedLong(b.getInt(at + DragonRecords.NestRenew.SERIAL)), now);
+                yield true;
+            }
+            case DragonRecords.TAKE_RESIDENT -> {
+                villagerTakes.take(level(names, b.getInt(at + DragonRecords.TakeResident.DIM)), b.getInt(at + DragonRecords.TakeResident.X),
+                        b.getInt(at + DragonRecords.TakeResident.Z), b.getInt(at + DragonRecords.TakeResident.RADIUS));
                 yield true;
             }
             case DragonRecords.NEST_SORTIE -> {
