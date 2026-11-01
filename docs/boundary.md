@@ -1279,6 +1279,7 @@ The bridge and the industry ranges (`docs/industry-boundary.md` §1) stay as the
 | 0x8508 | NEST_RENEW | count | 16 u64 nest, 24 u32 dimension, 28 u32 stage (1 to 3, the worms' size), 32 u32 serial (the engine's count of this nest's renewals, this one in it, from 1), 36 reserved | 40 | NEST_CENSUS once they spawn |
 | 0x8509 | NEST_SORTIE | count | 16 u64 nest, 24 u32 dimension, 28 i32 x, 32 i32 z (a block of the raided district), 36 u32 timeoutTicks | 40 | |
 | 0x850A | DRAGON_HAND_BACK | 0 | 16 u64 agent, 24 u32 epoch, 28 reserved, 32 u64 lair (the dragon's own lair, LAIR_FOUND's key: the attachment names it, not the nearest lair; EQC321) | 40 | DRAGON_MATERIALIZED (aux 1) |
+| 0x850B | TAKE_RESIDENT | 0 | 16 u64 village (its node key), 24 u32 dimension, 28 i32 x, 32 i32 z (the village's centre), 36 u32 radius | 40 | none: a dragon took a villager while nobody watched (docs/overnight-choices-equilibrium.md EQC556, Ben's PP-2 (a)); the engine has counted it out of the village. The plugin removes the nearest adult, unnamed villager within the radius now if the chunk at (x, z) is loaded, else the first such villager that joins the level there. A held take is not saved: a restart forgets it, and the village's next complete census counts the villager again |
 
 **Tribute** (SINK.md §4.6) needs no command of its own: the coin a village pays a lair goes into the
 lair's reported chest as the core's TRANSFER_TO_CONTAINER (§2.4, 0x8005), one stack of at most 64
