@@ -215,6 +215,13 @@ fn a_district_raid_takes_food_only() {
     assert!(placed >= 1, "watched, the dragon did not come in person");
 }
 
+/// Village `v` counted alive once, full, as a real world counts every village (S6's FB-1 (b)): a
+/// village the engine has never seen does not grow.
+fn counted(w: &mut World, v: usize) {
+    let m = w.village_members(v);
+    w.census_village(v, m, m, true, Tick::ZERO);
+}
+
 /// A village whose market holds no live animals, as every village of a real world (the bridge's
 /// goods have no `cattle`, `sheep` or `pig`): a hungry dragon with nothing else to eat takes a
 /// villager under PP-2 (a) (EQC579), rarely (Ben's PP-5, EQC580): one a village a year, and none
@@ -224,6 +231,7 @@ fn a_district_raid_takes_food_only() {
 fn a_village_with_no_livestock_loses_a_villager_a_year_to_a_hungry_dragon() {
     let mut w = synth::world_without_livestock(11, &[1]);
     let v = w.nodes.iter().position(|n| n.key == 1).expect("the village");
+    counted(&mut w, v);
     let row = *w.village_row(v).expect("a row");
     let half = u32::from(row.k).div_ceil(2);
     let before = w.village_members(v);
@@ -251,10 +259,44 @@ fn a_village_with_no_livestock_loses_a_villager_a_year_to_a_hungry_dragon() {
         "one a village a year: {takes:?}"
     );
     assert_eq!(d.villagers_taken, takes.len() as u64);
-    assert_eq!(w.village_members(v), before - takes.len() as u32);
+    // The village grows back between takes (EQC581): every loss is a take, every gain a growth step.
+    assert!(w.stats.grown > 0, "the village never grew after a take");
+    assert_eq!(
+        w.village_members(v),
+        before - takes.len() as u32 + w.stats.grown as u32
+    );
     // Down to half its beds: none more.
     w.census_village(v, half, u32::from(row.k), true, Tick(300 * TICKS_PER_DAY));
     let n = takes.len();
     run(&mut w, &mut d, 301, 700, &mut takes);
     assert_eq!(takes.len(), n, "taken at half its beds: {takes:?}");
+}
+
+/// A village a dragon took a villager from books its next growth step at once (EQC581): the take
+/// moved its count, which cancels the step booked for the old count, and nothing else would book
+/// one for a village nobody loads, so it never grew again and slid to its floor take by take.
+#[test]
+fn a_village_grows_again_after_a_take() {
+    let mut w = synth::world_without_livestock(11, &[1]);
+    let v = w.nodes.iter().position(|n| n.key == 1).expect("the village");
+    counted(&mut w, v);
+    let mut d = Dragons::new(11, DragonTunables::default(), Tick::ZERO);
+    let l = lair(&mut d, &mut w, 300, 100);
+    hungry_adult(&mut d, &mut w, l);
+    let mut h = Herds::new(11, HerdTunables::default(), Box::new(Uniform), Tick::ZERO);
+    for day in 1..=40 {
+        d.run_until_with_herds(
+            &mut w,
+            &mut NoInfrastructure,
+            &mut h,
+            Tick(day * TICKS_PER_DAY),
+        );
+        if d.villagers_taken > 0 {
+            let row = w.village_row(v).expect("a row");
+            assert!(row.members < u32::from(row.k), "{row:?}");
+            assert_ne!(row.breed_due, u64::MAX, "no growth step after the take: {row:?}");
+            return;
+        }
+    }
+    panic!("no villager taken in 40 days");
 }

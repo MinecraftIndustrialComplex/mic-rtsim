@@ -3280,9 +3280,8 @@ impl Dragons {
         // village's last `village_refuge`, a loss no player made; Java removes the body.
         let full_need =
             (self.tun.full - self.dragons[d].fullness_at(&self.tun, at)).min(sp.appetite);
-        let members = w.village_members(node);
         if self.takes_villager(w, node, f64::from(food), f64::from(full_need), at) {
-            w.set_members(node, members - 1, at);
+            w.member_taken(node, at);
             self.rest(raid_key(RAID_VILLAGER, w.nodes[node].key), at);
             let p = w.nodes[node].pos;
             self.outbox.push(Cmd::TakeResident(boundary::TakeResident {

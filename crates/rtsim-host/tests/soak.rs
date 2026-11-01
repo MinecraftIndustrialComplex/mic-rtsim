@@ -390,11 +390,11 @@ fn fill_delta(kind: &str, capacity: f64) -> f64 {
 }
 
 /// The renewal classes (EQC436 (4)), provisional until the calibration: kinds that renew in every
-/// judged window, and kinds that renew nothing with no player.
-const RENEWING: [&str; 3] = ["dragon.lair", "herd.range", "conflict.grove"];
-const NEVER: [&str; 6] = [
+/// judged window, and kinds that renew nothing with no player. Human villages renew: a dragon takes
+/// a villager a year where one is in reach, and the village grows back (EQC580, EQC581).
+const RENEWING: [&str; 4] = ["dragon.lair", "herd.range", "conflict.grove", "village.human"];
+const NEVER: [&str; 5] = [
     "conflict.den",
-    "village.human",
     "village.ribbit",
     "oil.nest",
     "conflict.camp",

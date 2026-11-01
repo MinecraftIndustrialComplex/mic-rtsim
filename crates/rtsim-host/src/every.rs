@@ -774,9 +774,11 @@ impl Every {
             .unwrap_or_else(|e| panic!("seed {}: tick {t}: {e}", self.seed));
     }
 
-    /// The day's village censuses: residents the engine settled join their villages, villagers
-    /// the dragons ate leave them (EQC498); every village that changed (or fell at the last
-    /// census) is counted complete, and one that fell again at the next hand-over.
+    /// The day's village censuses: residents the engine settled join their villages, and every
+    /// village that changed (or fell at the last census) is counted complete. Villagers the
+    /// dragons ate leave their villages uncounted (EQC498, EQC581): the engine booked the take
+    /// itself, and in the game the body goes at the village's next load, which no census marks
+    /// here.
     fn villages(&mut self) {
         let mut changed: Vec<u64> = std::mem::take(&mut self.second);
         for v in std::mem::take(&mut self.host.j.settled) {
@@ -786,12 +788,8 @@ impl Every {
             }
         }
         for v in std::mem::take(&mut self.host.j.taken) {
-            if let Some(n) = self.residents.get_mut(&v)
-                && *n > 0
-            {
-                *n -= 1;
-                changed.push(v);
-                self.second.push(v);
+            if let Some(n) = self.residents.get_mut(&v) {
+                *n = n.saturating_sub(1);
             }
         }
         changed.sort_unstable();

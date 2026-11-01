@@ -236,6 +236,19 @@ impl World {
         self.market_event(i, at, Cause::Population);
     }
 
+    /// A predator took one of village `i`'s members (a dragon's villager, rtsim-ecology's PP-2
+    /// take): its count falls and it reconsiders, as after any change, so the growth step booked
+    /// for the old count is booked again for the new one (EQC581). A village with none, or no
+    /// row, is left as it is.
+    pub fn member_taken(&mut self, i: usize, at: Tick) {
+        let members = self.village_members(i);
+        if members == 0 || !self.villages.contains_key(&i) {
+            return;
+        }
+        self.set_members(i, members - 1, at);
+        self.reconsider(i, at);
+    }
+
     /// The bridge answered a resident op (EQC162). False when the world holds no such op.
     pub fn resident_result(&mut self, op: u64, placed: bool, at: Tick) -> bool {
         if let Some(&node) = self.houses_pending.get(&op) {
