@@ -11,6 +11,7 @@
 //!   kills what it meets.
 //! - [`grid`]: a bigger world for the bench.
 //! - [`nests`]: the oil nests' harness, with test wells (S10's kill-all; slice S11 EQC427).
+//! - [`jar`]: Ice and Fire's lairs as the pack's jar places them (slice S11 EQC495).
 //!
 //! Every number here is a scenario choice, not a game fact.
 
@@ -33,6 +34,7 @@ use crate::engine::{Dragons, NewDragon};
 use crate::species::{Gender, Species};
 use crate::tunables::DragonTunables;
 
+pub mod jar;
 pub mod nests;
 
 pub const FARMLAND: ResourceId = ResourceId(0);
