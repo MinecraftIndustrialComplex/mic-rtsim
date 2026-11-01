@@ -47,6 +47,8 @@ public final class DragonRecords {
     public static final int NEST_SORTIE = 0x8509;
     /** A puppet settled at its lair becomes a home body, in place (EQC110). */
     public static final int DRAGON_HAND_BACK = 0x850A;
+    /** A dragon took a villager of an unwatched village (EQC556, PP-2 (a)): remove one. */
+    public static final int TAKE_RESIDENT = 0x850B;
 
     public static boolean isDragonCommand(int kind) {
         return kind >= 0x8500 && kind <= 0x85FF;
@@ -336,6 +338,14 @@ public final class DragonRecords {
         public static final int NEST = 16, DIM = 24, X = 28, Z = 32, TIMEOUT_TICKS = 36, SIZE = 40;
     }
 
+    /**
+     * TAKE_RESIDENT: one adult, unnamed villager within {@code radius} blocks of (x, z) is removed, now if loaded,
+     * else the first that joins there ({@link VillagerTakes}).
+     */
+    public static final class TakeResident {
+        public static final int VILLAGE = 16, DIM = 24, X = 28, Z = 32, RADIUS = 36, SIZE = 40;
+    }
+
     /** The smallest valid size of each command kind; a shorter record is skipped as malformed. */
     public static int minSize(int kind) {
         return switch (kind) {
@@ -350,6 +360,7 @@ public final class DragonRecords {
             case PLACE_NEST -> PlaceNest.SIZE;
             case NEST_RENEW -> NestRenew.SIZE;
             case NEST_SORTIE -> NestSortie.SIZE;
+            case TAKE_RESIDENT -> TakeResident.SIZE;
             default -> 16;
         };
     }
