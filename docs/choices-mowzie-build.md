@@ -18598,3 +18598,15 @@ the review gave are at 43062c0b.
   failure needs a reset of the round to plan chunks that then never load, which the batch order decides. S9 made the same fix on
   its own branch at the same time (MZB-1293, 02629719, after its merged core round failed the test with 8 too); the merge keeps
   the one line, S9's comment, and this record's javadoc naming both.
+- **MZB-1411** (the integration's checks and fixtures). Rounds from cleared worlds, queued together: core at d661b04e, 1 of 198
+  failed, `aBigDetectionsLongestTickIsBelowTheOneCallTime` ("the longest spread tick (12920 us) is under the one-call time (11636
+  us)", load near 34), and the rerun from a cleared world at 435785ea (main's S5 two-bodies fix merged, a dragons-engine guard the
+  core tests never reach) passed, "All 198 required tests passed", `:core:test` 446 passed: a flake. `create -Psec1fx` at
+  d661b04e "All 266"; at 435785ea `create -PwithMowzie` "All 271", mowziesmobs "All 126", iceandfire "All 61", ribbits "All 18".
+  The viewer fixtures are written again from the core rerun's world (its `rtsim/` without the archive, and the journal) and the
+  `create -Psec1fx` world (kept aside after its JVM exited, before the next round's server started; `rtsim/` with the archive, and
+  the journal); `tests/fixtures.rs`'s header names both and keeps the history. Before, the five tests that read them failed on
+  the RTCF saves ("meta page version 14, this build reads 15"; "conflict: pages dropped"). Cargo at 0e9883c2: the workspace
+  (`--no-fail-fast`) 2502 passed, 0 failed, 44 ignored (S5's `no_lair_ever_holds_two_bodies_for_one_dragon` among the passed);
+  clippy `-D warnings` clean; every Gradle project (core, create with `-PwithMowzie -Psec1fx`, mowziesmobs, iceandfire, ribbits)
+  compiles.
