@@ -1764,7 +1764,15 @@ mod tests {
             .collect();
         let got = par_map(&jobs, threads(), |&(seed, roamer)| {
             let (grid, lairs) = s4_world(seed);
-            dragon_run_on(&grid, seed, &lairs, s4_tun(), roamer, Shock::None, 60 * YEAR)
+            dragon_run_on(
+                &grid,
+                seed,
+                &lairs,
+                s4_tun(),
+                roamer,
+                Shock::None,
+                60 * YEAR,
+            )
         });
         let roam: Vec<DragonRun> = got.iter().step_by(2).cloned().collect();
         let none: Vec<DragonRun> = got.iter().skip(1).step_by(2).cloned().collect();
@@ -1773,21 +1781,30 @@ mod tests {
         print_dragon_runs("nobody, 60 years", &none, from);
         let mr: Vec<DragonMeans> = roam.iter().map(|r| dragon_means(r, from)).collect();
         let mn: Vec<DragonMeans> = none.iter().map(|r| dragon_means(r, from)).collect();
+        // A range the dragons hold at its refuge of 8 can die out by chance and is refounded
+        // (EQC544): 17 of the 60 runs have one or two ranges empty at some census.
         for (r, m) in roam.iter().zip(&mr).chain(none.iter().zip(&mn)) {
             assert!(m.alive_min >= 0.95, "seed {}: {m:?}", r.seed);
         }
+        // EQC544: held 0.159 [0.116, 0.254] with the roamer and 0.162 [0.111, 0.267] with nobody;
+        // herds 0.508 [0.375, 0.591] and 0.487 [0.342, 0.578].
         let held_r = band(&mr.iter().map(|m| m.held).collect::<Vec<_>>());
         let held_n = band(&mn.iter().map(|m| m.held).collect::<Vec<_>>());
-        assert!((0.1..=0.4).contains(&held_r.0), "roamer {held_r:?}");
-        assert!((0.1..=0.4).contains(&held_n.0), "nobody {held_n:?}");
+        assert!((0.10..=0.25).contains(&held_r.0), "roamer {held_r:?}");
+        assert!((0.10..=0.25).contains(&held_n.0), "nobody {held_n:?}");
+        assert!(
+            held_r.1 >= 0.08 && held_n.1 >= 0.08,
+            "roamer {held_r:?} nobody {held_n:?}"
+        );
         let fill_r = band(&mr.iter().map(|m| m.fill).collect::<Vec<_>>());
         let fill_n = band(&mn.iter().map(|m| m.fill).collect::<Vec<_>>());
         assert!(
-            (fill_r.0 - fill_n.0).abs() <= 0.1,
+            (fill_r.0 - fill_n.0).abs() <= 0.05,
             "roamer {fill_r:?} nobody {fill_n:?}"
         );
-        assert!((0.35..=0.7).contains(&fill_r.0), "roamer {fill_r:?}");
-        assert!((0.35..=0.7).contains(&fill_n.0), "nobody {fill_n:?}");
+        assert!((0.40..=0.60).contains(&fill_r.0), "roamer {fill_r:?}");
+        assert!((0.40..=0.60).contains(&fill_n.0), "nobody {fill_n:?}");
+        assert!(fill_r.1 >= 0.3 && fill_r.2 < 1.0, "roamer {fill_r:?}");
     }
 
     /// One layout of the lair-density diagnosis: the phase 1 world's five lairs, or the jar's.
