@@ -327,6 +327,7 @@ player is told, and an interface every later creature follows.
   blocks first, capped a raid, no fire).
 - (c) No hunger raids on player homes: only today's grudge raids and the watched AI.
 Why it is Ben's: griefing a player's build.
+**Ben (2026-10-31): (a).** Unwatched hunger raids on a player's home take food only: no blocks, no fire, no tamed animals; watched raids are Ice and Fire's own AI.
 
 **PP-2 (EQC556): May a dragon eat villagers?**
 - (a) **Yes, as Ice and Fire's own AI already does when loaded (Recommended).** Unwatched, a raid takes one villager only
@@ -337,6 +338,7 @@ Why it is Ben's: griefing a player's build.
 - (c) Never: also stop Ice and Fire's AI from targeting villagers (the pack's datapack empties `iceandfire:villagers`, which
   also stops them fleeing, or a mixin).
 Why it is Ben's: what the world's villages lose.
+**Ben (2026-10-31): (a).** Villagers, sparingly, as designed.
 
 **PP-3 (EQC559): How loud is a raid?**
 - (a) **News only (Recommended):** the target's holders know at once, everyone else from travellers (CL-9); a watched raid
@@ -344,6 +346,7 @@ Why it is Ben's: what the world's villages lose.
 - (b) (a) plus one action-bar line to a district's owners when it is raided unwatched.
 - (c) A chat line to every player in the dimension.
 Why it is Ben's: what the player is told (CL-9 was his rule for conflict).
+**Ben (2026-10-31): (a).** News only.
 
 **PP-4 (EQC560, EQC562): How do creatures join the model?**
 - (a) **Rows as data in each plugin's jar, read at load like cultures (Recommended),** one trophic table in rtsim-ecology;
@@ -352,6 +355,7 @@ Why it is Ben's: what the player is told (CL-9 was his rule for conflict).
 - (b) Rows in Rust, per engine; a new creature needs a release of rtsim.
 - (c) Rows sent over JNI by each plugin at start.
 Why it is Ben's: a data format and an interface every later creature follows.
+**Ben (2026-10-31): (a).** Rows as data in each plugin's jar, behind a `Prey` trait.
 
 ## S5: dragon home bodies (designed and built 2026-10-29)
 
