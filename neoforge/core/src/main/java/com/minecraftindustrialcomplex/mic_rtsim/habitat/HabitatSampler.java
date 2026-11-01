@@ -50,10 +50,11 @@ import java.util.Map;
  * the {@code MOTION_BLOCKING_NO_LEAVES} top block and what it is (water, ice, another fluid or land), the
  * {@code OCEAN_FLOOR} under water, and the noise biome at the surface. The cell's record carries masks of the
  * 16 points, the most common biome (of all points and of the land points), tag bits, heights, vanilla's
- * temperature and downfall, a climate plugin's degrees and season when one is registered
- * ({@link Climates}), the herd species' share of each biome's {@code CREATURE} spawn weight, and the animals
- * of those species vanilla spawned at chunk generation in the cell. A biome's facts are read once per
- * session and cached.
+ * temperature and downfall, the cell's year-round climate in degrees ({@link #cellCelsius}: a climate
+ * source's, else vanilla's temperature on mic-climate's scale; never the weather of the moment), a climate
+ * plugin's season when one is registered ({@link Climates}), the herd species' share of each biome's
+ * {@code CREATURE} spawn weight, and the animals of those species vanilla spawned at chunk generation in the
+ * cell. A biome's facts are read once per session and cached.
  *
  * <p><b>When.</b> A cell is queued when one of its chunks loads (generated or read from disk) and sampled at
  * the end of a tick under a budget ({@link #cellsPerTick}, {@link #budgetNanos}); one whose chunks are not
@@ -391,6 +392,8 @@ public final class HabitatSampler implements SessionPlugin {
         int tags;
         short min, max, mean, waterMean, floorMean;
         float temperature, downfall;
+        /** The year-round climate, °C ({@link #cellCelsius}). */
+        float celsius;
         int[] shares = new int[CREATURES.size()];
         int fingerprint;
     }
@@ -485,6 +488,7 @@ public final class HabitatSampler implements SessionPlugin {
         c.floorMean = waterN > 0 ? (short) Math.floorDiv(floorSum, waterN) : 0;
         c.temperature = (float) (temp / HabitatRecords.POINTS);
         c.downfall = (float) (down / HabitatRecords.POINTS);
+        c.celsius = cellCelsius(level, cx, cz, c);
         if (landN > 0) {
             for (int i = 0; i < HabitatRecords.POINTS; i++)
                 if (kinds[i] == LAND)
@@ -517,9 +521,12 @@ public final class HabitatSampler implements SessionPlugin {
     }
 
     /**
-     * The fingerprint of a cell's terrain (docs/boundary.md §10.4): FNV-1a 64 over the little-endian bytes of
-     * eight words, folded to 32 bits, as {@code rtsim_space::habitat::fingerprint}. Chunk-generation counts,
-     * degrees and the season are left out: they change without the ground changing.
+     * The fingerprint of a cell's terrain and climate (docs/boundary.md §10.4): FNV-1a 64 over the
+     * little-endian bytes of nine words, folded to 32 bits, as {@code rtsim_space::habitat::fingerprint}.
+     * Chunk-generation counts and the season are left out: they change without the ground changing. The
+     * year-round climate is in (EQC521): it changes only with the ground or with its source, and a cell the
+     * engine holds from before (its weather of the moment, eight words) differs, so it is sent again when it
+     * is next sampled.
      */
     static int fingerprint(Cell c) {
         long shares = 0;
@@ -534,6 +541,7 @@ public final class HabitatSampler implements SessionPlugin {
                 c.floorMean & 0xFFFFL,
                 (Float.floatToRawIntBits(c.temperature) & 0xFFFF_FFFFL) | (long) Float.floatToRawIntBits(c.downfall) << 32,
                 shares,
+                Float.floatToIntBits(c.celsius) & 0xFFFF_FFFFL,
         };
         long h = 0xcbf29ce484222325L;
         for (long w : words)
@@ -553,6 +561,30 @@ public final class HabitatSampler implements SessionPlugin {
         return h;
     }
 
+    /**
+     * A cell's year-round climate, °C (docs/boundary.md §10.3; EQC520): a climate source's year-round
+     * temperature at the cell's centre, a block above its mean surface, when one knows it; else the cell's
+     * vanilla temperature (the mean over its points) on mic-climate's scale. Never a live reading: a cell is
+     * sampled once and kept until its ground changes (X2-3), so the weather of the moment it was sampled in
+     * (Project Atmosphere's, one value for a 2,000-block region) would stand for its climate for good. No
+     * season either: the engine adds its own (rtsim_space's {@code WorldModel::season_offset}).
+     */
+    static float cellCelsius(ServerLevel level, int cx, int cz, Cell c) {
+        BlockPos centre = new BlockPos(cx * HabitatRecords.CELL_BLOCKS + 32, c.mean + 1, cz * HabitatRecords.CELL_BLOCKS + 32);
+        float t = Climates.yearRoundCelsius(level, centre);
+        return Float.isFinite(t) ? t : vanillaCelsius(c.temperature);
+    }
+
+    /**
+     * Vanilla's unitless biome temperature in °C on mic-climate's scale (choice X2-8; Project Atmosphere's
+     * vanilla mapping, mic-climate's {@code BiomeSeasonFallback} without its season): -0.5 to 2.0 stretched over
+     * -20 to +56 °C. Plains (0.8) 19.52 °C, snowy plains (0.0) -4.8 °C, a desert (2.0) 56 °C. The same
+     * arithmetic, in float, as {@code rtsim_space::model::vanilla_celsius}.
+     */
+    static float vanillaCelsius(float t) {
+        return -20f + 30.4f * (Math.max(-0.5f, Math.min(2.0f, t)) + 0.5f);
+    }
+
     /** Writes a cell's HABITAT. False when the buffer had no room (the record was dropped and counted). */
     private boolean write(RtsimSession s, ServerLevel level, int cx, int cz, Cell c, int[] gen, long now) {
         // Ids before direct(): an id is defined before its first use.
@@ -567,8 +599,6 @@ public final class HabitatSampler implements SessionPlugin {
         for (int k = 0; k < CREATURES.size(); k++)
             if (c.shares[k] > 0 || (gen != null && gen[k] > 0))
                 bodies[k] = s.dictId(Obs.DICT_BODY, CREATURES.get(k));
-        BlockPos centre = new BlockPos(cx * HabitatRecords.CELL_BLOCKS + 32, c.mean + 1, cz * HabitatRecords.CELL_BLOCKS + 32);
-        float celsius = Climates.temperature(level, centre);
         if (seasonThisTick == null)
             seasonThisTick = seasonNow(s.server());
         int at = s.boundary().direct(HabitatRecords.HABITAT, HabitatRecords.Habitat.size(n), n, now);
@@ -594,7 +624,7 @@ public final class HabitatSampler implements SessionPlugin {
         b.putShort(at + HabitatRecords.Habitat.FLOOR_MEAN, c.floorMean);
         b.putFloat(at + HabitatRecords.Habitat.TEMPERATURE, c.temperature);
         b.putFloat(at + HabitatRecords.Habitat.DOWNFALL, c.downfall);
-        b.putFloat(at + HabitatRecords.Habitat.CELSIUS, celsius);
+        b.putFloat(at + HabitatRecords.Habitat.CELSIUS, c.celsius);
         b.put(at + HabitatRecords.Habitat.SEASON, (byte) seasonThisTick[0]);
         b.put(at + HabitatRecords.Habitat.SEASON_COUNT, (byte) seasonThisTick[1]);
         int e = at + HabitatRecords.Habitat.CREATURES;
