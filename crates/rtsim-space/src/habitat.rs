@@ -148,9 +148,12 @@ pub struct Habitat {
     pub floor_mean: i16,
     pub temperature: f32,
     pub downfall: f32,
-    /// A climate plugin's °C at the cell's centre when it was sampled; NaN without one.
+    /// The cell's year-round climate, °C, as the bridge sent it (docs/boundary.md §10.3): no
+    /// weather, no time of day, no season; NaN when the record carried none (then the world
+    /// model reads `temperature` on mic-climate's scale, `sampled::base_celsius`).
     pub celsius: f32,
-    /// The plugin's season when sampled (`season` of `season_count`); count 0: no seasons.
+    /// The plugin's season when sampled (`season` of `season_count`); count 0: no seasons. Only
+    /// whether the frame has seasons is read from it (`WorldModel::season_offset`).
     pub season: u8,
     pub season_count: u8,
     /// The bridge's fingerprint of the terrain fields (docs/boundary.md §10.4).

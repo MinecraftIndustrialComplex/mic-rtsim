@@ -2625,7 +2625,7 @@ next to the conflict's.
 | 54, 56 | i16 | waterMean, floorMean: mean water top and `OCEAN_FLOOR` top over the water points (0: none) |
 | 58 | | reserved |
 | 60, 64 | f32 | temperature, downfall: vanilla's biome values (`Biome.getBaseTemperature`, the climate settings' downfall), mean over the points |
-| 68 | f32 | celsius: a climate plugin's degrees at the cell's centre when sampled (`ClimateSource`); NaN without one |
+| 68 | f32 | celsius: the cell's year-round climate, °C, with no weather, no time of day, no rain and no season: a climate source's year-round temperature at the cell's centre, a block above its mean surface (`ClimateSource.yearRoundCelsius`), else the cell's temperature (offset 60) on mic-climate's scale (-20 + 30.4 (t + 0.5), t clamped to -0.5 to 2.0, X2-8). NaN only from a sender that knows no climate (the engine then applies the scale itself). Never a live reading (EQC520) |
 | 72, 73 | u8 | season, seasonCount: the plugin's calendar when sampled (IND_CONDITIONS' shape); 0, 0 without seasons |
 | 74 | | reserved |
 | 80 | | n entries of 8 bytes: u32 body (dictionary 3), u16 share, u16 generated |
@@ -2656,10 +2656,12 @@ chunk's `ChunkEvent.Load` as a new chunk). The engine keeps the highest count it
   with its next chunk. A cell is sampled at most once per load of its chunks.
 - **Sent** only when its **fingerprint** differs from the one the engine holds (HABITAT_KNOWN), or
   when chunk-generation animals were counted in it. The fingerprint is Java's: FNV-1a 64 over the
-  little-endian bytes of eight words (the masks; the two biome names' FNV-1a; the tag bits; the
-  heights; the floor; temperature and downfall; the shares), folded to 32 bits by xoring its halves.
-  Degrees, the season and the counts are left out: they change without the ground changing. The
-  engine stores it and gives it back; it never computes one.
+  little-endian bytes of nine words (the masks; the two biome names' FNV-1a; the tag bits; the
+  heights; the floor; temperature and downfall; the shares; celsius's float bits), folded to 32 bits
+  by xoring its halves. The season and the counts are left out: they change without the ground
+  changing. Celsius is in: a year-round climate changes only with the ground or its source, so a
+  change of source (or of this rule: before EQC521 the fingerprint had eight words) sends each held
+  cell again when it is next sampled. The engine stores it and gives it back; it never computes one.
 - **Not before** the engine's HABITAT_KNOWN list has ended this session. At a session start every
   chunk already loaded counts as a first load.
 
@@ -2688,9 +2690,10 @@ alone.
 - **Unknown ground is avoided** (X2-5): a rectangle with a point nobody sampled is not passable for
   herds and not water for ships; founding waits for it.
 - **Herds**: §5 item 14, X2-9 to X2-16. **Ships**: §5 item 12, X2-17.
-- **Degrees**: a cell's year-round °C is the plugin's reading less the season it was taken in, else
+- **Degrees**: a cell's year-round °C is the record's celsius as sent (§10.3), else, when it is NaN,
   vanilla's temperature on mic-climate's scale (-0.5 to 2.0 over -20 to +56 °C, X2-8); a dimension
-  where a plugin reported seasons adds mic-climate's default season offsets by sub-season.
+  where a plugin reported seasons adds mic-climate's default season offsets by sub-season, the only
+  season in it (EQC522).
 
 
 ## 11. The world's topology: TOPOLOGY (DECISIONS.md C31; docs/choices-topology.md)
