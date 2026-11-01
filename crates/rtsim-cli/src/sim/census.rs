@@ -450,8 +450,8 @@ impl Ecology {
     }
 
     /// [`Ecology::ranges_with`] with the herds' K capped by the valley's forage
-    /// (`rtsim_ecology::herds::synth::ranges_capped`, EQUILIBRIUM.md §2.4.2).
-    #[cfg(test)]
+    /// (`rtsim_ecology::herds::synth::ranges_capped`, EQUILIBRIUM.md §2.4.2). Not test-only: `sim killall`
+    /// runs S4's world (EQC539) from the binary.
     pub fn ranges_capped_with(
         seed: u64,
         htun: HerdTunables,
