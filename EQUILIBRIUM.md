@@ -1399,6 +1399,38 @@ comes back to its control's level; herds take 12 (local) to 14 (world) game year
 they grow by one calving a year (§3.2). Every herd range is alive at the end, 40 years after the
 wipe, in every seed of both herd wipes; today a world wipe leaves none.
 
+**The dragon food gate** (§2.4.1, §3.4; docs/overnight-choices-equilibrium.md EQC539 to EQC544). The
+tables above predate the gate (the model at 0.7 lairs a region, at most two a region; the engine's S4
+checks on five lairs); these runs place Ice and Fire's lairs at the server's density (0.5 a region)
+and at a plains, savanna and forest world's (1.6).
+
+- **The model** (`run.py --only foodgate`, `results/results-foodgate.json`): 24 seeds; its world has 0.25 villages a region and
+  uncapped herds. At 0.5 lairs a region the food feeds nearly every lair and the gate changes little:
+  herds 0.72 [0.65, 0.79] of K with nobody and 0.71 with the roamer (old rules 0.67 and 0.66), lairs
+  held 0.94 and 0.86 (0.95 and 0.88). At 1.6 it binds: herds 0.59 [0.53, 0.63] and 0.57 (old 0.39 and
+  0.35), lairs held 0.65 and 0.58 (0.95 and 0.87), 0.85 dragons a region (1.17 and 1.27). A world-year
+  hatches 17 to 56 young, most of which emigrate, against 1 to 13 Frontier newcomers. Every range lives.
+- **The engine** (S4's world: 56 regions whose herds are capped by their valley's forage, the jar's
+  lairs on them; seeds 1 to 6, years 30 to 60, against main's rules on the same world): at the real
+  density (about 0.45 a region outside the spawn disk) the herds sit at 0.49 of K with nobody and 0.55
+  with the roamer (old rules 0.15 and 0.16, at the refuge), 0.18 of the lairs are held (0.59), 0.06
+  adult dragons a region (0.17), and 134 dragons a world starve out in 60 years (235). At 1.5 a region:
+  herds 0.36 and 0.38 (0.11, the refuge), lairs held 0.08 (0.45), 0.09 adults a region (0.48), 186
+  starve-leaves (1,486). The adults a region are near 0.06 to 0.09 at either density: the food, not
+  the lairs, sets the dragons. Over seeds 1 to 30 at the real density: lairs held 0.159 [0.116,
+  0.254] with the roamer and 0.162 [0.111, 0.267] with nobody, herds 0.508 [0.375, 0.591] and 0.487
+  [0.342, 0.578]. With no dragons the capped herds sit at 0.91 of K.
+- **Kill-all:** at the real density, seeds 1 to 30, half the lairs are held again in 48 days [24, 96],
+  90% of the control's in 72 [24, 192], and the end is 1.02 [0.75, 1.34] of the control's; at 1.5 a
+  region (6 seeds) 90% in 24 [24, 48]. One seed of 30 takes 312 days: a held dragon stays down to
+  maintenance (0.35) but a newcomer needs the gate's 0.5, so the control holds lairs the gate would not
+  refill today, and they wait for the herds (with the gate at maintenance the four slowest seeds take
+  48 to 72 days). The 192-day cap bounds the pressure's wait, not the refill.
+- **Ranges alive:** on capped herds a range the dragons hold near its refuge of 8 animals can die out
+  by chance, under the old rules as under the gate, and is recolonised by dispersers: the fewest
+  ranges alive at any census is 0.96 at worst (two of 56), 1.00 in 43 of 60 runs; with no dragons,
+  1.00. Predation never takes a herd below its refuge (§3.4).
+
 **Farming one site** for 60 years: §3.3's table (the model matches the closed forms within 5%).
 
 **Unattended for ten real years** (262,980 game days, 8 seeds, by game century):
