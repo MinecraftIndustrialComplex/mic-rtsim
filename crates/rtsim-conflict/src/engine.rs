@@ -734,6 +734,9 @@ pub struct ConflictStats {
     pub breaks: u64,
     pub refounds: u64,
     pub break_deferrals: u64,
+    /// FIGHT lines sent: a member gone missing back at its full boss's camp set against the body
+    /// holding its slot (MZB-1404).
+    pub camp_fights: u64,
 }
 
 /// Where goods went, per world good (thousandths).
@@ -1489,7 +1492,10 @@ impl Conflict {
                 }
             }
             bodies.left_behind.extend(camp.left_behind.iter().copied());
+            // A rival is a member gone missing that came back to fight (MZB-1404): after a reset it
+            // is missing again, and fights again at the full camp.
             bodies.missing = camp.missing.clone();
+            bodies.missing.extend(camp.rivals.iter().copied());
         }
         let u16_of = |n: u32| u16::try_from(n).unwrap_or(u16::MAX);
         let mut s = SiteState {
@@ -2072,21 +2078,45 @@ impl Conflict {
     /// cause (a player's kill or take is a player's, a mob's is a predator's), and a death that
     /// credits no one is a player's loss when the band was at a player's district (FB-2 (a), the
     /// `district_unclaimed_is_players` switch: a trap, a turret or a FakePlayer killed it there),
-    /// no one's elsewhere. Not once the band's chief has fallen (S9 review, MZB-1287): a chief-body
-    /// culture's warriors die with their chief (the jar's `EntityUmvuthi.die` countdown, a death by
-    /// no one), so when the chief of a column on the march to a player's district is killed, the
-    /// warriors that go down with it are no one's but the war chief's own loss. A death directly
-    /// credited to a player is still the player's.
-    pub(super) fn pool_cause(&self, p: Handle<Party>, by: u32) -> LossCause {
+    /// no one's elsewhere, on the road included ([`Conflict::at_district`], EQC291). Not once the
+    /// band's chief has fallen (S9 review, MZB-1287): a chief-body culture's warriors die with their
+    /// chief (the jar's `EntityUmvuthi.die` countdown, a death by no one), so when the chief of a
+    /// column on the march to a player's district is killed, the warriors that go down with it are
+    /// no one's but the war chief's own loss. A death directly credited to a player is still the
+    /// player's.
+    pub(super) fn pool_cause(&self, p: Handle<Party>, by: u32, at: Tick) -> LossCause {
         let cause = LossCause::from_credit(by, false);
         if cause == LossCause::Other
             && self.tun.district_unclaimed_is_players
-            && matches!(self.parties[p].target, Target::District(..))
+            && self.at_district(p, at)
             && !self.lost_its_chief(p)
         {
             return LossCause::Player;
         }
         cause
+    }
+
+    /// Whether the band is at the district it is bound for at `at` (EQC291, FB-2 (a): "at a
+    /// player's district"): it is fighting or waiting there (the engine places both at the
+    /// target), or, on the road out or home, within the circle a watched fight is fought in
+    /// (`spawn_edge_blocks` of the target). A band mustering at its camp, or walking the road
+    /// farther out, is not: only a credited kill counts there.
+    pub(super) fn at_district(&self, p: Handle<Party>, at: Tick) -> bool {
+        let x = &self.parties[p];
+        let Target::District(_, pos) = x.target else {
+            return false;
+        };
+        match x.phase {
+            Phase::Fighting | Phase::Waiting => true,
+            // At its camp, whatever the camp's distance from the target.
+            Phase::Mustering => false,
+            Phase::Out | Phase::Home => {
+                pos.frame == x.frame
+                    && self
+                        .inside_now(p, (pos.x, pos.z), self.tun.spawn_edge_blocks, at)
+                        .is_some()
+            }
+        }
     }
 
     /// Whether the band is one a chief leads in its culture and its chief has fallen: the war
@@ -5289,6 +5319,21 @@ impl Conflict {
     fn raid_node(&mut self, w: &mut World, p: Handle<Party>, i: usize, at: Tick) -> i64 {
         let f = self.parties[p].faction;
         let c = self.culture(f).clone();
+        // A rival camp that broke while the band was on its way is nothing to plunder, as the
+        // pick says (EQC209): it finds the camp scattered and takes nothing (EQC294).
+        let n = &w.nodes[i];
+        if matches!(n.kind, NodeKind::Haven(_))
+            && let Some(&o) = self.by_key.get(&n.key)
+            && !self.camp_active(o)
+        {
+            self.note(
+                at,
+                Some(f),
+                "plunder",
+                format!("finds the camp at node {} broken: nothing to take", n.key),
+            );
+            return 0;
+        }
         // Something to take, before any blood is spilled: a raid takes from each line's surplus
         // over its target only. Below its target a line needs imports or a mint to refill, and a
         // quiet economy sends neither, so whole-stock raids drained villages for good (CL-D58).
@@ -6796,11 +6841,16 @@ impl Conflict {
         self.outbox.retain(|c| !matches!(c, Cmd::Notice(_)));
         let per = crate::tables::FACTIONS_PER_PAGE as u32;
         for f in 0..self.factions.len() as u32 {
-            let mut kept: Vec<Cmd> = self
-                .feuds_of(f)
-                .iter()
-                .filter_map(|(_, x)| x.notice.as_deref().map(|n| Cmd::Notice(*n)))
-                .collect();
+            // A broken camp sends nothing (EQC209): its notices went with the break, and one kept
+            // some other way is still not played for a camp that is not there (EQC293).
+            let mut kept: Vec<Cmd> = if self.camp_active(f) {
+                self.feuds_of(f)
+                    .iter()
+                    .filter_map(|(_, x)| x.notice.as_deref().map(|n| Cmd::Notice(*n)))
+                    .collect()
+            } else {
+                Vec::new()
+            };
             // The hunts owed go again too, once the replay has cleared the ones answered (MZB-449).
             let hunts: Vec<Hunt> = self.factions[f as usize].hunts().to_vec();
             kept.extend(hunts.iter().map(|h| self.hunt_cmd(f, h)));
@@ -7725,7 +7775,7 @@ impl Conflict {
         // warriors, S9, MZB-1213): a den's Frostmaw dies as CHIEF_KILLED, never as a casualty.
         let members_press = c.pool_renewal.is_some() || c.renewal.is_some_and(|r| !r.boss);
         if t > 0 && members_press && self.parties[p].kind.is_war() {
-            let cause = self.pool_cause(p, cs.by);
+            let cause = self.pool_cause(p, cs.by, at);
             self.renewal_bump(f, t, cause, at);
         }
         self.party_lost(p, t, at);
@@ -7857,9 +7907,14 @@ impl Conflict {
         // The chief is one member of the camp it leads: a den's Frostmaw, a pool camp's war chief.
         // A grove's Umvuthi is no member (it has a slot of its own, `chief_body`, and its warriors'
         // renewal is no boss's, S9, MZB-1211): it presses its own pressure below, not the warriors'
-        // by `1/K`.
+        // by `1/K`. A pool camp's war chief, killed by a machine at a player's district, is his
+        // loss as any member's is (EQC291, EQC303).
         if self.culture(f).def.chief_body.is_none() {
-            let cause = self.member_cause(f, by);
+            let cause = if self.culture(f).pool_renewal.is_some() {
+                self.pool_cause(p, by, at)
+            } else {
+                self.member_cause(f, by)
+            };
             self.renewal_bump(f, 1, cause, at);
         }
         // The Umvuthi that leads a band is the camp's chief slot, away with it: its fall is that

@@ -2420,8 +2420,10 @@ public final class Districts {
 
     /**
      * GameTests: forgets every district of the level's dimension, the seeds and epochs of their loaded
-     * chunks, and the dimension's pins, exclusions and merge links. The industry tests run one at a
-     * time (one batch each), so each starts from no industry at all.
+     * chunks, the dimension's pins, exclusions and merge links, and its chunks still to adopt again
+     * after a reinstall reset (UR-1: an earlier test's reset plans the chunks of districts that may
+     * never load again, which a later reset test would count as its own, MZB-1293, MZB-1410). The
+     * industry tests run one at a time (one batch each), so each starts from no industry at all.
      */
     public void forgetAllForTest(ServerLevel level) {
         ResourceKey<Level> dim = level.dimension();
