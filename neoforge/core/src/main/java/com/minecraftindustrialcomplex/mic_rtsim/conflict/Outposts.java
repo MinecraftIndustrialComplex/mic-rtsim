@@ -1,9 +1,11 @@
 package com.minecraftindustrialcomplex.mic_rtsim.conflict;
 
 import com.minecraftindustrialcomplex.mic_rtsim.MicRtsim;
+import com.minecraftindustrialcomplex.mic_rtsim.boundary.Obs;
 import com.minecraftindustrialcomplex.mic_rtsim.bridge.RtsimSession;
 import com.minecraftindustrialcomplex.mic_rtsim.config.Module;
 import com.minecraftindustrialcomplex.mic_rtsim.config.RtsimConfig;
+import com.minecraftindustrialcomplex.mic_rtsim.sites.SiteLedger;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Registry;
 import net.minecraft.core.registries.Registries;
@@ -11,6 +13,7 @@ import net.minecraft.resources.ResourceKey;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.tags.EntityTypeTags;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
@@ -20,11 +23,13 @@ import net.minecraft.world.level.chunk.LevelChunk;
 import net.minecraft.world.level.levelgen.structure.BoundingBox;
 import net.minecraft.world.level.levelgen.structure.Structure;
 import net.minecraft.world.level.levelgen.structure.StructureStart;
+import net.neoforged.neoforge.common.util.FakePlayer;
 import net.neoforged.neoforge.event.level.ChunkEvent;
 
 import java.lang.ref.WeakReference;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -45,10 +50,14 @@ import java.util.function.Predicate;
  * of that queue is all that runs per tick (D1). A chunk loaded again later finds the same camp and changes nothing.
  *
  * <p>An outpost is known for the server run ({@link #KNOWN}) and reported to the engine ({@link ConflictBridge#reportCamp},
- * no bodies) when the conflict module is on and {@code outpostsJoin} is set: once at its find, again at each session
- * start (the engine of a new session knows nothing of it) and at the module's switch-on edge (a report made while the
- * module is off journals nothing). An outpost of a chunk that was not new when the finder saw it is flagged late, and is
- * reported only with {@code outpostsJoinExisting} (FB-9 (a)). A player's kill of a raider (the {@code minecraft:raiders}
+ * no bodies) when the conflict module is on, {@code outpostsJoin} is set and a player has explored it (EQC296): at the end
+ * of the tick that drains its load, a player of its level is within the server's view distance of it. A chunk that loads
+ * with no player near (a pre-generation, Chunky's, loads every chunk it makes) is known and not reported; it is looked at
+ * again at each later load of its chunk. A reported outpost is reported again at each session start (the engine of a new
+ * session knows nothing of it) and at the module's switch-on edge (a report made while the module is off journals nothing),
+ * the same rule applying, with one more way in: a camp the site ledger already holds a row for is the engine's, and its
+ * kin predicate comes back whatever is near (EQC297). An outpost of a chunk that was not new when the finder saw it is
+ * flagged late, and is reported only with {@code outpostsJoinExisting} (FB-9 (a)) or when the ledger holds its camp. A player's kill of a raider (the {@code minecraft:raiders}
  * tag but the witch) inside the outpost's box widened by {@code outpostKinMargin} blocks is the camp's killing signal; a
  * raid that comes of a village, a patrol or a vanilla raid event is not the camp's and nothing here reads it.
  *
@@ -81,8 +90,10 @@ public final class Outposts {
     private static final Map<Spot, Known> KNOWN = new LinkedHashMap<>();
     /** The session every known outpost was last reported to; null while the module is off or after a new session. */
     private static RtsimSession reported;
-    /** Known outposts added since the last report. */
-    private static final List<Spot> FRESH = new ArrayList<>();
+    /** The known outposts to look at at the next report: those found since, and those whose chunk loaded again. */
+    private static final LinkedHashSet<Spot> FRESH = new LinkedHashSet<>();
+    /** The outposts reported to {@link #reported} (a later load of one changes nothing). */
+    private static final java.util.HashSet<Spot> REPORTED = new java.util.HashSet<>();
 
     /** Counters (GameTests, logs). */
     public static long found, reports;
@@ -150,6 +161,7 @@ public final class Outposts {
             if (reported != s) {
                 todo = new ArrayList<>(KNOWN.keySet());
                 reported = s;
+                REPORTED.clear();
                 FRESH.clear();
             } else if (!FRESH.isEmpty()) {
                 todo = new ArrayList<>(FRESH);
@@ -159,20 +171,54 @@ public final class Outposts {
             }
         }
         boolean existing = RtsimConfig.outpostsJoinExisting();
+        SiteLedger ledger = SiteLedger.get(s.server());
         for (Spot sp : todo) {
             Known k;
             synchronized (KNOWN) {
+                if (REPORTED.contains(sp))
+                    continue;
                 k = KNOWN.get(sp);
             }
-            if (k == null || (k.late() && !existing))
+            if (k == null)
                 continue;
             ServerLevel level = s.server().getLevel(sp.dimension());
             if (level == null)
                 continue;
+            // A camp the ledger holds is the engine's already: reported whatever is near and whether or not the chunk read as
+            // late (an outpost that joined as new in an earlier run reads late in this one), so that its kin predicate is back.
+            boolean camp = ledger.row(SiteLedger.CAMP, Obs.villageId(s.dimId(sp.dimension()), k.pos().getX() >> 4, k.pos().getZ() >> 4)) != null;
+            if (k.late() && !existing && !camp)
+                continue;
+            // Otherwise a player has to have explored it (EQC296): known and looked at again at its chunk's next load.
+            if (!camp && !explored(level, k.pos()))
+                continue;
             Predicate<Entity> kin = kin(k.kinBox());
-            if (bridge.reportCamp(level, k.structure(), k.pos(), kin, null, k.late(), 0, 0) != 0L)
+            if (bridge.reportCamp(level, k.structure(), k.pos(), kin, null, k.late(), 0, 0) != 0L) {
                 reports++;
+                synchronized (KNOWN) {
+                    REPORTED.add(sp);
+                }
+            }
         }
+    }
+
+    /**
+     * Whether a player has explored the outpost at {@code pos}: one of the level's players, not a machine's {@link FakePlayer},
+     * stands within the server's view distance of its chunk, horizontally (the chunks a player's view loads, plus the ring the
+     * game loads round them). A chunk loaded by anything else, a pre-generator's or a forced chunk's far from every player, is
+     * not an outpost a player has seen.
+     */
+    static boolean explored(ServerLevel level, BlockPos pos) {
+        int view = level.getServer().getPlayerList().getViewDistance() + 1;
+        int cx = pos.getX() >> 4, cz = pos.getZ() >> 4;
+        for (ServerPlayer p : level.players()) {
+            if (p instanceof FakePlayer)
+                continue;
+            ChunkPos at = p.chunkPosition();
+            if (Math.max(Math.abs(at.x - cx), Math.abs(at.z - cz)) <= view)
+                return true;
+        }
+        return false;
     }
 
     /** The queued records into the known outposts (the session is live: the spawn chunks load before it starts). */
@@ -195,10 +241,11 @@ public final class Outposts {
                 BoundingBox kinBox = new BoundingBox(b.minX() - margin, b.minY() - margin, b.minZ() - margin,
                         b.maxX() + margin, b.maxY() + margin, b.maxZ() + margin);
                 synchronized (KNOWN) {
-                    if (KNOWN.putIfAbsent(sp, new Known(f.structure(), pos, kinBox, l.late())) == null) {
-                        FRESH.add(sp);
+                    if (KNOWN.putIfAbsent(sp, new Known(f.structure(), pos, kinBox, l.late())) == null)
                         found++;
-                    }
+                    // Looked at at the next report: found now, or its chunk loaded again (EQC296); a reported one is left alone.
+                    if (!REPORTED.contains(sp))
+                        FRESH.add(sp);
                 }
             }
         }
@@ -219,6 +266,7 @@ public final class Outposts {
         synchronized (KNOWN) {
             KNOWN.clear();
             FRESH.clear();
+            REPORTED.clear();
         }
         reported = null;
         found = reports = 0;
@@ -231,6 +279,7 @@ public final class Outposts {
         synchronized (KNOWN) {
             KNOWN.clear();
             FRESH.clear();
+            REPORTED.clear();
         }
         QUEUE.clear();
         QUEUED.set(0);

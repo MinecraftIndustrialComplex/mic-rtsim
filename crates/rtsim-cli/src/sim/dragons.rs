@@ -666,7 +666,9 @@ pub fn main(o: Options) -> i32 {
     let (autumn, winter) = (share(Season::Autumn), share(Season::Winter));
     check(
         "winter shifts the prey",
-        winter > autumn + 0.2,
+        // Plunder makes villages a prey all year (EQC556), so autumn's share is already high (55%) and
+        // the winter shift is smaller than before it: 14 points on the default run (EQC578).
+        winter > autumn + 0.1,
         format!(
             "villages' share of hunts: autumn {:.0}%, winter {:.0}%",
             autumn * 100.0,

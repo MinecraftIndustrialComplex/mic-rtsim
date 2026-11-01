@@ -387,6 +387,23 @@ public final class DragonKit {
         });
     }
 
+    /** A scripted TAKE_RESIDENT (PP-2 (a)): one villager within {@code radius} of (x, z) is taken. */
+    public static void takeResident(long village, String dimension, int x, int z, int radius) {
+        script(out -> {
+            out.dict(Obs.DICT_BODY, FIRE); // the native order needs one name; the stub sends its DICT once
+            int dim = out.dict(Obs.DICT_DIMENSION, dimension);
+            int at = out.reserve(DragonRecords.TAKE_RESIDENT, DragonRecords.TakeResident.SIZE, 0);
+            if (at < 0)
+                return;
+            ByteBuffer b = out.buffer();
+            b.putLong(at + DragonRecords.TakeResident.VILLAGE, village);
+            b.putInt(at + DragonRecords.TakeResident.DIM, dim);
+            b.putInt(at + DragonRecords.TakeResident.X, x);
+            b.putInt(at + DragonRecords.TakeResident.Z, z);
+            b.putInt(at + DragonRecords.TakeResident.RADIUS, radius);
+        });
+    }
+
     /**
      * A scripted NEST_RENEW: {@code count} worms of size {@code stage} (1 to 3) for nest {@code nest}, numbered as
      * the engine would number the nest's next renewal (one above the last this session applied, RP-14).

@@ -80,6 +80,10 @@ pub(crate) fn gate(c: &Cmd) -> Gate {
         // A body's tag swap, ordered from a puppet's STATE: the puppet is a body of the session
         // that ended, and the engine orders again after the replay (EQC123).
         Cmd::HandBack(_) => verdicts(Q::Drop, R::Drop),
+        // A villager a dragon took (PP-2 (a)): kept while queued, so a take saved before Java
+        // read it still removes its villager; decided again while replaying, it would take a
+        // second, so the replay drops it (the village's count is the engine's and stands).
+        Cmd::TakeResident(_) => verdicts(Q::Keep, R::Drop),
     }
 }
 

@@ -1,0 +1,32 @@
+{
+  "plugin": "iceandfire",
+  "predator": "dragon",
+  "half_saturation": 200.0,
+  "maintenance": 0.35,
+  "arrive": 0.5,
+  "rows": [
+    { "prey": "herd", "shape": "type3_refuge", "attack": 1.0, "conversion": 1.0 },
+    { "prey": "wild", "shape": "constant", "attack": 30.0, "conversion": 1.0 },
+    {
+      "prey": "village",
+      "shape": "constant",
+      "attack": 150.0,
+      "conversion": 1.0,
+      "refuge": 2,
+      "food_each": 25,
+      "rest_days": 8
+    },
+    {
+      "prey": "conflict.camp",
+      "shape": "stock",
+      "attack": 100.0,
+      "conversion": 1.0,
+      "cultures": ["raider"],
+      "refuge": 2,
+      "food_each": 25,
+      "rest_days": 8
+    },
+    { "prey": "district", "shape": "hunt_only", "attack": 0.0, "conversion": 1.0, "rest_days": 8 },
+    { "prey": "oil.field", "shape": "constant", "attack": 800.0, "conversion": 0.0, "species": "uses_oil" }
+  ]
+}

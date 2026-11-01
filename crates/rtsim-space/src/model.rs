@@ -132,23 +132,17 @@ pub trait WorldModel: Send + Sync {
 /// Vanilla's unitless biome temperature in °C, by Project Atmosphere's mapping as mic-climate
 /// 0.2.0 uses it (`BiomeSeasonFallback`: -0.5 to 2.0 stretched over -20 to +56 °C), so the sim
 /// and the pack's climate read one scale (X2-8). Plains (0.8) is 19.52 °C, a desert (2.0) 56 °C,
-/// snowy plains (0.0) -4.8 °C.
+/// snowy plains (0.0) -4.8 °C. The bridge's habitat sampler sends a cell's climate by the same
+/// formula (`HabitatSampler.vanillaCelsius`, EQC520); this one reads records that carry none.
 pub fn vanilla_celsius(t: f32) -> f32 {
     -20.0 + 30.4 * (t.clamp(-0.5, 2.0) + 0.5)
 }
 
 /// mic-climate 0.2.0's default season offsets, °C (`ClimateConfig.defaultSeasonOffset`: spring
-/// -2, summer +4, autumn -1, winter -8), by season of a four-season year. TUNABLE.
+/// -2, summer +4, autumn -1, winter -8), by season of a four-season year: what
+/// [`WorldModel::season_offset`] adds to a cell's year-round climate, the only place a season
+/// enters it (the bridge sends none, docs/boundary.md §10.3). TUNABLE.
 pub const SEASON_OFFSETS: [f32; 4] = [-2.0, 4.0, -1.0, -8.0];
-
-/// The offset of season `season` of `count` (a four-season or twelve-sub-season calendar).
-pub fn season_offset_of(season: u8, count: u8) -> f32 {
-    if count == 0 {
-        return 0.0;
-    }
-    let s = usize::from(season) * 4 / usize::from(count).max(1);
-    SEASON_OFFSETS[s.min(3)]
-}
 
 #[cfg(test)]
 mod tests {
@@ -159,8 +153,5 @@ mod tests {
         assert!((vanilla_celsius(0.8) - 19.52).abs() < 1e-3);
         assert!((vanilla_celsius(2.0) - 56.0).abs() < 1e-3);
         assert!((vanilla_celsius(-0.7) + 20.0).abs() < 1e-3);
-        assert_eq!(season_offset_of(0, 0), 0.0);
-        assert_eq!(season_offset_of(3, 4), -8.0);
-        assert_eq!(season_offset_of(4, 12), 4.0);
     }
 }

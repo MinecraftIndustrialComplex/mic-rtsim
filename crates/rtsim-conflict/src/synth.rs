@@ -1691,12 +1691,30 @@ impl FakeConflict {
             });
             // A MASK names the warrior the plugin took, not the line's own (zero) slot.
             let (slot, generation) = taken.unwrap_or((l.slot, l.generation));
+            // A spawn, a hand-back or an adoption done or with nothing to do names the body standing
+            // with the line's tags, as Java's answer does (MZB-1400).
+            let uuid = match (l.action, outcome) {
+                (
+                    boundary::ACTION_SPAWN | boundary::ACTION_HAND_BACK | boundary::ACTION_ADOPT,
+                    boundary::LINE_DONE | boundary::LINE_NOTHING,
+                ) => self
+                    .camps
+                    .get(&faction)
+                    .and_then(|c| {
+                        c.bodies
+                            .iter()
+                            .find(|b| b.slot == slot && b.generation == generation)
+                    })
+                    .map_or((0, 0), |b| b.uuid),
+                _ => (0, 0),
+            };
             let answer = boundary::LineAnswer {
                 line: *index,
                 slot,
                 generation,
                 action: l.action,
                 outcome,
+                uuid,
             };
             if outcome == boundary::LINE_DONE {
                 // A change leaves its record where it was made; one that changed nothing does not.
@@ -1823,8 +1841,8 @@ impl FakeConflict {
     /// nothing.
     fn apply_line(&mut self, faction: u64, l: &boundary::ReconcileLine) -> u8 {
         use boundary::{
-            ACTION_ADOPT, ACTION_HAND_BACK, ACTION_REMOVE, ACTION_SEAT_HEIR, ACTION_SET_OUT,
-            ACTION_SPAWN, ACTION_TAKE, LINE_DONE, LINE_NOTHING,
+            ACTION_ADOPT, ACTION_FIGHT, ACTION_HAND_BACK, ACTION_REMOVE, ACTION_SEAT_HEIR,
+            ACTION_SET_OUT, ACTION_SPAWN, ACTION_TAKE, LINE_DONE, LINE_NOTHING,
         };
         let uuid = self.camp_uuid();
         let camp = self.camp_world(faction);
@@ -1890,6 +1908,20 @@ impl FakeConflict {
                         LINE_DONE
                     }
                     None => LINE_NOTHING,
+                }
+            }
+            // Java's `Camps.fight` (MZB-1404): the body with the line's tags and the returner its
+            // UUID names are set on each other, done when both stand. The fight is the test's to
+            // end (a death of either, `camp_kill`).
+            ACTION_FIGHT => {
+                let rival = camp
+                    .bodies
+                    .iter()
+                    .any(|b| (b.uuid.0, b.uuid.1) == (l.a, l.b));
+                if held.is_some() && rival {
+                    LINE_DONE
+                } else {
+                    LINE_NOTHING
                 }
             }
             ACTION_TAKE | ACTION_SET_OUT | ACTION_REMOVE => {
@@ -2705,11 +2737,15 @@ impl CampRun {
                 }
             }
             // A member the camp wrote off as missing, back at a full camp, is a stray left
-            // standing with its old tags (MZB-1014, fork F3): no slot's body.
+            // standing with its old tags (MZB-1014, fork F3), or a rival fighting the body that
+            // holds its slot (MZB-1404): no slot's body.
             let standing: std::collections::BTreeSet<(u32, u32)> = world
                 .bodies
                 .iter()
-                .filter(|b| b.generation != 0 && camp.missing.contains(&b.uuid))
+                .filter(|b| {
+                    b.generation != 0
+                        && (camp.missing.contains(&b.uuid) || camp.rivals.contains(&b.uuid))
+                })
                 .map(|b| (b.slot, b.generation))
                 .collect();
             let held: std::collections::BTreeSet<(u32, u32)> = seen

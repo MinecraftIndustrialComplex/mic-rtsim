@@ -26,6 +26,8 @@ RATIOS = {   # census key -> capacity key (None: a count already)
     "herd_animals": "herd_k",
     "herds_alive": "herds_founded",
     "dragons": "lairs",
+    "dragons_oil": "lairs_oil",     # lairs whose 3 x 3 holds an oil region (EQC560)
+    "dragons_dry": "lairs_dry",
     "village_pop": "village_beds",
     "villages_alive": "villages",
     "ribbit_pop": "ribbit_houses",
@@ -87,6 +89,15 @@ def steady(args):
         out["village_sim_over_real"] = band((sim / np.maximum(real, 1)).mean(1))
     ev = series(hist, "events")
     out["events_per_day"] = round(float(ev[:, late].mean() / 24), 3)
+    dr = series(hist, "dragons")[:, late] / np.maximum(series(hist, "known_regions")[:, late], 1)
+    out["dragons_per_region"] = band(dr.mean(1))
+    out["lairs_per_region"] = band((series(hist, "lairs")[:, late]
+                                    / np.maximum(series(hist, "known_regions")[:, late], 1)).mean(1))
+    per = S * years
+    out["food_gate_per_world_year"] = {"births": round(w.births_n / per, 2),
+                                       "young_settled": round(w.settled_n / per, 2),
+                                       "young_emigrated": round(w.emigrated_n / per, 2),
+                                       "frontier": round(w.frontier_n / per, 2)}
     out["herd_N_over_K_by_decade"] = [round(float(np.nanmean(ratio(hist, "herd_animals")[:, (ts >= d * YEAR) & (ts < (d + 10) * YEAR)])), 3)
                                       for d in range(0, years, 10)]
     return out
@@ -174,8 +185,65 @@ def closed_form(base, H, cap, K=1, check=2.0):
     return {"P": round(P, 3), "days_per_kill": round(gap, 1), "per_year": round(YEAR / gap, 2)}
 
 
+def food_gate_equilibrium(p: Params | None = None, K=400.0, villages=0.0, lairs=0.5):
+    """The dragon food gate's mean-field steady state (EQUILIBRIUM.md 3.4; this repository's own
+    derivation, not a published result). Every region alike, each with one herd of K, `villages`
+    villages and `lairs` lairs; D dragons a region; herd weight w = (N - R)^2 / K; a = gate_village
+    x villages + gate_wild / 9, the other weights a region adds:
+
+    - a held lair reads W = (w + a) / D (its share of the nine regions' weights, 9 D lairs
+      sharing each), a newcomer W' = 9 (w + a) / (9 D + 1); newcomers come while
+      W' / (W' + h) >= theta, so at the gate's margin D = (w + a) / H - 1/9, H = h theta / (1 - theta);
+      with fewer lairs than that, D = lairs and every lair is held;
+    - the herd loses C = D e iota w / (w + a) = e w / (W + h) a day (iota = W / (W + h));
+    - its yearly production on the Beverton-Holt map (3.2), with N = c A,
+      c = 1 + (1 - S_a) / S_y and x0 = S_y f / (1 - S_a) - 1, is (K u / c)(S_y f / (1 + u x0) -
+      (1 - S_a)) at u = N / K, and equals 96 C at the steady state: bisected for u.
+    - births: an established dragon reads iota, above maintenance m, so a breeder hatches
+      (iota - m) / (1 - m) a clutch; births alone would hold the intake at m + (1 - m) breed_days /
+      lifespan, below theta, so the gate sets the level and births only the pace.
+    """
+    p = p or Params(mode="proposed")
+    th, h, e, r = p.arrive_food, p.dragon_half, p.dragon_eat, p.refuge_frac
+    H = h * th / (1 - th)
+    a = p.gate_village * villages + p.gate_wild / 9
+    out = {"K": K, "villages": villages, "lairs": lairs,
+           "births_alone_intake": round(p.starve_leave + (1 - p.starve_leave) * p.breed_days / p.lifespan, 4)}
+    for i, name in enumerate(model.SPECIES):
+        s_y, s_a = math.exp(-model.M_YOUNG[i]), math.exp(-model.M_MIX[i])
+        f = model.FERT[i]
+        x0 = s_y * f / (1 - s_a) - 1
+        c = 1 + (1 - s_a) / s_y
+
+        def state(u):
+            w = K * (u - r) ** 2
+            D = min(lairs, max(0.0, (w + a) / H - 1 / 9))
+            W = (w + a) / D if D > 0 else math.inf
+            C = e * w / (W + h) if D > 0 else 0.0
+            return w, D, W, C
+
+        def g(u):
+            prod = K * u / c * (s_y * f / (1 + u * x0) - (1 - s_a))
+            return prod - YEAR * state(u)[3]
+
+        lo, hi = r, 1.0
+        for _ in range(200):
+            mid = 0.5 * (lo + hi)
+            lo, hi = (mid, hi) if g(mid) > 0 else (lo, mid)
+        u = 0.5 * (lo + hi)
+        w, D, W, C = state(u)
+        iota = W / (W + h) if D > 0 else None
+        out[name] = {"N_over_K": round(u, 3), "dragons_per_region": round(D, 3),
+                     "held": round(D / lairs, 3) if lairs else None,
+                     "intake": round(iota, 3) if iota is not None else None,
+                     "eaten_per_year_over_K": round(YEAR * C / K, 4)}
+    return out
+
+
 def closed_forms():
     return {
+        **{f"food gate, K {K:.0f}, {v} villages, {l} lairs a region": food_gate_equilibrium(K=K, villages=v, lairs=l)
+           for K in (100.0, 400.0) for v in (0.0, 0.8) for l in (0.5, 1.6)},
         "lair (base 20, cap 192)": closed_form(20, 96, 192),
         "den (base 24, cap 192)": closed_form(24, 96, 192),
         "den, MOWZIE base 6 with pressure (cap 192)": closed_form(6, 96, 192),
@@ -281,6 +349,26 @@ def main():
         for dd, dt, df in ((0.8, 0.5, 0.02), (0.8, 0.5, 0.1), (0.4, 0.25, 0.02), (0.4, 0.25, 0.1)):
             over = {"disperse_donor": dd, "disperse_thin": dt, "disperse_frac": df}
             jobs.append((killall, ("proposed", "herds_local", S2, Y, 52, min(20, Y // 3), over)))
+    if want("foodgate"):
+        # The dragon food gate (Ben, 2026-10-31; EQC530 on), at Ice and Fire's real lair densities:
+        # 0.5 a region (the server's world) and 1.6 (a plains, savanna and forest world), with the
+        # rule and without, nobody and the roamer, and the dragon kill-all.
+        for gate in (True, False):
+            for rate in (0.5, 1.6):
+                over = {"food_gate": gate, "lair_rate": rate, "lair_slots": 4}
+                for player in ("none", "roamer"):
+                    jobs.append((steady, ("proposed", player, S, Y, 11, over)))
+                jobs.append((killall, ("proposed", "dragons", S2, Y, 21, min(20, Y // 3), over)))
+    if want("oil"):
+        # The oil row (EQC560): lairs whose 3 x 3 holds oil, at the server's lair density, under
+        # the food gate, by the oil row's weight; nobody, and the roamer at the chosen weight. The
+        # world is food-limited as S4's engine world is (EQC539): no villages, and K near 110 a
+        # range (k_per_density 20; the model's own 160 gives 700 to 1,000, which feeds every lair).
+        lean = {"food_gate": True, "lair_rate": 0.5, "lair_slots": 4, "village_rate": 0.0, "k_per_density": 20.0}
+        for ow in (0.0, 200.0, 400.0, 800.0):
+            jobs.append((steady, ("proposed", "none", S, Y, 11, {**lean, "oil_weight": ow})))
+        jobs.append((steady, ("proposed", "roamer", S, Y, 11, {**lean, "oil_weight": 400.0})))
+        jobs.append((steady, ("proposed", "none", S, Y, 11, {**lean, "oil_weight": 400.0, "oil_breeds": True})))
     if want("strategy"):
         for sigma in (6.0, 9.0, 12.0):
             for mode in ("ladder", "gate"):

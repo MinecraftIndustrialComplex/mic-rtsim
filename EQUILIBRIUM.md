@@ -374,9 +374,19 @@ ledger knows each home body's UUID, and a body not found is **missing**:
   site is still short, it is home again and the replacement is cancelled. After the site has refilled it
   is a **stray**: still a vanilla body, member of no site, and its death later adds `1/K` to its old
   site like a player's kill. The ledger keeps at most K missing UUIDs a site, the oldest dropped first.
+- **At a boss's site, a stray back home fights its replacement to the death** (Ben, 2026-10-30: "They fight
+  to the death"; docs/choices-mowzie-build.md MZB-1404). When the census finds it back at its full den, at
+  home with the body that holds its slot, the engine pairs the two (CAMP_RECONCILE's FIGHT line) and the
+  plugin sets them on each other until one dies, again at each census that sees them. The survivor holds
+  the slot: if the replacement dies, the returner is adopted into it (its UUID, no renewal owed, no
+  write-off); if the returner dies, it is a stray's death and books nothing. The fight's death books no
+  pressure, since the lure was charged when the body was written off; a player who strikes the killing
+  blow is credited by the usual rules (the slot's body is a player's kill, the returner a stray's death).
+  So the den has one boss again. A non-boss camp's stray (a grove's warrior) is left standing as above.
 
-So luring a Frostmaw out of its den costs the den what a kill would, killing the stray later costs it
-again, and the den's crystals stay at the farmed yield of §3.3. **A dragon is the exception (EQ-2 (a), FB-1 (a),
+So luring a Frostmaw out of its den costs the den what a kill would, and the den's crystals stay at the
+farmed yield of §3.3; a lured Frostmaw that comes home fights for its den, and only one of the two
+stays. **A dragon is the exception (EQ-2 (a), FB-1 (a),
 Ben, 2026-10-29):** a dragon that goes more than 48 blocks from its lair becomes a puppet there and then, so it is
 never left standing away from home; it stays the lair's occupant, a lure is no loss and no stray exists, and a kill,
 a tame or any other loss while it is away costs the lair as always. A body that wandered off on its own,
@@ -404,8 +414,15 @@ sees; body; cost. Rates are the model's (§3); the engine's names are given wher
 
 #### 2.4.1 Dragons (Ice and Fire)
 
+**Predator and prey (Ben, 2026-10-31; designed, not built; docs/overnight-choices-equilibrium.md
+EQC550 to EQC569, FOR BEN PP-1 to PP-4 open).** Dragons become the first predator of §2.4.11's
+model: they breed only as pairs, a lair with surplus draws a mate, a hungry dragon plunders
+villages, outposts and player homes for food, and oil holds fire dragons near it. The bullets below
+say where that changes the food gate as built; the rest stands.
+
 - **Site:** the lair (roost or cave), K = 1 occupant. M1's mated pair stays as built: at most a pair
-  per lair, so dragons are at most two per lair, and lairs are Ice and Fire's structures.
+  per lair, and one young of theirs until it leaves at 50 to 60 days, so dragons are at most three
+  per lair, and lairs are Ice and Fire's structures.
 - **Losses:** age (400 days, `lifespan_days`); a player's loss (§2.2: his kill, his pet's, a trap's or
   any death no wild mob is credited with; taming or any A10 removal; a roosting body gone missing), each
   `P += 1`. The bridge changes to match: `attackerKind` reads vanilla's kill credit
@@ -413,27 +430,57 @@ sees; body; cost. Rates are the model's (§3); the engine's names are given wher
   `ATTACKER_NONE` (`DragonBridge.java:758-766`, `:1000-1016`); **starve-leave:** a dragon older than 60 days whose lair's fed share (a 30-day
   moving average of how much of its need it catches) falls below 0.35 leaves; it settles in a vacant lair
   in reach whose fed share is at least 0.5, else it flies off the map and leaves the sim.
-- **Renewal:** when the lair stands empty, after `min(192, 20 x 2^P)` days (base 20 is today's
-  `respawn_delay_days`) the lair is ready. A newcomer settles only if the lair's hunting ground would
-  feed it (fed share at least 0.5), else the lair checks again every 24 days. **Source:** a hatchling
-  of dispersal age from a lair within reach (M1, Neighbour) if one exists, else today's 30-day-old
-  newcomer from 3,000 blocks (Frontier), now flying in from the nearest unexplored direction instead
-  of a random one. Near an oil field, an oil gate visitor ready to settle (OILGATE §4.2) is a Frontier
-  source too, and obeys the same wait: it may claim only an empty lair whose wait has ended.
-- **Predation (P12):** a dragon picks among herds with weight `(N - R)^2 / K` (type III: it switches
-  to what is common and leaves what is scarce), where `R = max(8, 0.1 K)` is the herd's **refuge**,
-  the share it cannot reach. `predate` never takes a herd below R. Village livestock and caravans stay
-  on the menu (weight 300 near a village, 30 elsewhere, TUNABLE), so a dragon in an eaten-out valley
-  turns to villages and roads, as P12 wants. Its catch per day is `W / (W + 200)` of its need.
-- **Bounds:** at most one occupant (or one pair) per lair; lairs are found, never made.
-- **Rates:** base 20 days, cap 192, H 96; starve-leave 0.35, arrive-food 0.5, refuge 10% (min 8).
+- **Renewal (the dragon food gate, Ben 2026-10-31; docs/overnight-choices-equilibrium.md EQC530 to
+  EQC546): new dragons come only from a food surplus.** **Births (as designed, EQC555: pairs
+  only; as built, a lone breeder too):** a lair's pair (both mature, stage 4) clutches every 60 days
+  (`breed_days`), and a clutch hatches one young with chance `(fed - m) / (1 - m)`, where `fed` is the
+  lair's fed share and `m` is maintenance, the starve-leave threshold 0.35: no young at or below
+  maintenance, one every clutch at a full share. The young leaves at 50 days for the nearest empty
+  lair within reach whose wait has ended and whose gate passes, flying from its parents' lair, and
+  if it finds none by 60 days it flies off the map. **Mates (EQC555):** a lone mature dragon whose
+  lair would feed one more mouth draws a mate at each clutch timer: a young of the other sex in
+  reach, else a mature Frontier newcomer; a lone breeder in reach takes a Frontier dragon as its mate
+  before an empty lair takes it as a newcomer, and a young looks for a lone breeder first. **Arrival gate:** when the lair stands empty,
+  after `min(192, 20 x 2^P)` days (base 20 is today's `respawn_delay_days`) the lair is ready, and
+  any newcomer settles only if it would catch at least 0.5 of its need there: `W / (W + 200)`,
+  where W sums 30 (roads and stray prey), 150 for each village and `(N - R)^2 / K` for each herd in
+  the nine regions around the lair, **each divided by one more than the other occupied lairs whose
+  nine regions hold it** (as designed, EQC553: than the dragons, a pair counting two). A village alone reads 0.47 and opens nothing. Shut, the lair checks again
+  every 24 days. **Source:** a young of dispersal age from a lair within reach (Neighbour) if one
+  exists, else today's 30-day-old newcomer from 3,000 blocks (Frontier), flying in from the nearest
+  unexplored direction; both through the gate, so a newcomer from beyond lands only where it has a
+  surplus. Near an oil field, an oil gate visitor ready to settle (OILGATE §4.2) is a Frontier source
+  too, and obeys the same wait and gate: it may claim only an empty lair whose wait has ended.
+- **Predation (P12):** a dragon picks its prey by utility (EQC27), never taking a herd below its
+  **refuge** `R = max(8, 0.1 K)`, the share it cannot reach (`predate`). Village livestock and
+  caravans stay on the menu, so a dragon in an eaten-out valley turns to villages and roads, as P12
+  wants. The gate's weight `(N - R)^2 / K` is type III: it reads what is common and leaves what is
+  scarce.
+- **Plunder (EQC556 to EQC560, designed):** a hungry dragon hunts settlements as prey rows: a
+  village's livestock (today) and villagers (PP-2), one member a raid of an outpost or pool camp
+  whose members are in its target tag (pillagers), never the last two, and a player district's
+  stored food and livestock (PP-1), each target rested 8 days after a raid; unwatched abstract,
+  watched Ice and Fire's own AI; told as news (PP-3).
+- **Oil (EQC561, designed):** an oil field is a constant weight for fire dragons (800, shared by
+  mouths) that sustains and draws them but breeds none, so the lairs in a field's nine regions are
+  held.
+- **Bounds:** at most one pair and one young per lair (as built, one lone breeder or pair); lairs
+  are found, never made.
+- **Rates:** base 20 days, cap 192, H 96; maintenance (starve-leave) 0.35, arrive-food 0.5, a clutch
+  every 60 days, young leave at 50 and go at 60 days, gate weights 30, 150 a village, half 200;
+  refuge 10% (min 8).
 - **What the player sees:** a lair stands empty 20 days after its dragon dies of age (at a lair no
-  player has hit), 40 days after a player's first kill, about 87 days under steady farming; a lair whose valley is eaten out stands empty until the herds come back, and
-  its dragon is seen leaving.
+  player has hit), 40 days after a player's first kill, about 87 days under steady farming; a lair
+  whose ground feeds its dragon well raises a young every 60 days or so, which leaves for an empty
+  lair nearby or flies off; where the herds are eaten down nothing hatches, newcomers stop coming
+  and the lairs wait for the herds, and a dragon that cannot feed is seen leaving. Most of Ice and
+  Fire's lairs stand empty at its real density (§3.6).
 - **Body:** vanilla while roosting at its lair, puppet when it leaves (EQ-2, which reopens P3). Today a
   puppet always.
 - **Cost:** per lair 8 bytes of pressure, a 4-byte fed share updated at each hunt (an event that
-  exists), one wheel entry while empty. The prey weight replaces today's utility term; no new pass.
+  exists), one wheel entry while empty; one clutch entry per dragon every 60 days once mature. The
+  gate reads, for each herd and village of the nine regions, the lair cells within 1,024 blocks of
+  it, only when a wait ends, at each recheck and at each disperser's search; no new pass.
 
 #### 2.4.2 Herds and wild animals
 
@@ -954,6 +1001,24 @@ Threats are what a district faces, and they come from the kinds above.
 Not populations in this sense: caravans and messengers are flows on edges and cannot go extinct while
 a road exists; a base is a pop-0 node. Unchanged.
 
+#### 2.4.11 Predators and prey (Ben, 2026-10-31; designed, not built)
+
+docs/overnight-choices-equilibrium.md EQC550 to EQC569. One model for every creature that eats
+another, so more can join as rows:
+
+- **Trophic links:** one row per predator and prey kind, with the prey's weight shape, attack,
+  half saturation, conversion to young, refuge and per-raid caps (the dragon rows are the table
+  after EQC569). Rows are data in each mod's plugin (D3, D4; format PP-4).
+- **Functional response:** Holling type II over every prey at once on weights,
+  `iota = W / (W + W_half)` with `W = sum a w / mouths`: herds `(N - R)^2 / K` (type III with the
+  refuge), settlements `a min(1, F / 400)` on their edible stock, constants for the wild floor and
+  oil. Each weight is shared by the mouths whose nine regions hold it.
+- **Numerical response:** births from the surplus above maintenance m (0.35) of the food that can
+  breed (conversion 1), `(fed_b - m) / (0.65 x 60)` a pair a day; a dragon under m leaves; age
+  and players kill; arrivals and mates only through the shared gate (θ 0.5).
+- **The base of the chain:** the herds' forage-capped K and Beverton-Holt births (§2.4.2, §3.2).
+- **Equilibrium and stability:** §3.4.
+
 ### 2.5 The strategy gate (b)
 
 **Rejected (EQ-5, Ben, 2026-10-21):** "All of these systems feel a bit too formulaic, come up with
@@ -1237,9 +1302,56 @@ plus the alternative food `a` (village livestock and caravans), with catch per d
   R has `w = 0`, so dragons stop hunting it before it gets there; births from R grow it at λ.
 - **Dragons do not starve where villages are:** with `a = 300` the catch is at least 0.6 of need near a
   village, above the arrive-food gate 0.5, so P12's fallback to villages and roads holds them.
+  (Before the dragon food gate. Under it a village's 150 is shared, so a village feeds the dragons
+  around it, not every dragon that comes: see below.)
 
 Type III switching alone (no refuge) stops most extinctions at the engine's appetite but not at 16
 times it (§3.6); the refuge is what makes extinction impossible.
+
+**The dragon food gate (Ben, 2026-10-31; §2.4.1, docs/overnight-choices-equilibrium.md EQC530 on).**
+Each weight is shared among the occupied lairs whose 3 x 3 holds it, and young hatch only from a
+surplus. The steady state in closed form (this repository's own derivation, a mean field: every
+region alike, with one herd of K, `v` villages and `ρ` lairs; `run.py`'s `food_gate_equilibrium`):
+
+- A held lair reads `W = (w + a) / D` and a newcomer `W' = 9 (w + a) / (9 D + 1)`, where D is the
+  dragons a region, `w = (N - R)^2 / K` the herd's weight and `a = 150 v + 30 / 9` the rest. Newcomers
+  come while `W' / (W' + h) >= θ` (h = 200, θ = 0.5), so at the gate's margin
+  **`D* = (w + a) (1 - θ) / (h θ) - 1/9`**; with fewer lairs than that, `D = ρ` and every lair is
+  held. **The dragons a region are set by the food, not by the lairs**, once the lairs are more than
+  the food feeds.
+- A herd loses `C = e w / (W + h)` a day (`e` the dragons' appetite in animals, 0.6), and on the
+  Beverton-Holt map (§3.2) its yearly production is `(K u / c)(S_y f / (1 + u x0) - (1 - S_a))` at
+  `u = N / K`, with `c = 1 + (1 - S_a) / S_y` and `x0 = S_y f / (1 - S_a) - 1`. The steady state is
+  where that equals `96 C`; bisected per species. Where `D*` is large, `W -> h θ / (1 - θ)` and
+  `C -> e (1 - θ) w / h`: the herd's level then depends on neither the villages nor the lairs.
+- Births: an established dragon reads about θ, above maintenance `m` = 0.35, so its lair hatches
+  `(θ - m) / (1 - m)` = 0.23 of its clutches, 0.37 young a dragon-year against 0.24 deaths of age.
+  Births alone would hold the intake at `m + (1 - m) 60 / 400` = 0.45, below θ: **the gate sets the
+  level, births the pace**, and the young beyond what the lairs take emigrate.
+
+| K a region, villages a region, lairs a region | Herds N/K (sheep, cow, horse) | Dragons a region | Lairs held |
+|---|---|---|---|
+| 100, none, 0.5 or 1.6 | 0.65, 0.63, 0.61 | 0.04 to 0.06 | 0.07 to 0.11 (0.5), 0.02 to 0.03 (1.6) |
+| 100, 0.8, 0.5 | 0.56, 0.52, 0.48 | 0.5 (every lair) | 1.0 |
+| 100, 0.8, 1.6 | 0.55, 0.51, 0.47 | 0.57 to 0.60 | 0.36 to 0.38 |
+| 400, none, 0.5 or 1.6 | 0.56, 0.52, 0.49 | 0.21 to 0.32 | 0.42 to 0.65 (0.5), 0.13 to 0.20 (1.6) |
+| 400, 0.8, 0.5 | 0.61, 0.56, 0.51 | 0.5 (every lair) | 1.0 |
+| 400, 0.8, 1.6 | 0.54, 0.50, 0.47 | 0.77 to 0.89 | 0.48 to 0.56 |
+
+The herds hold near half their K at any lair density; what the lairs change is how many stand
+empty.
+
+**Predator and prey (designed, §2.4.11; own derivations).** With settlements `a_s` and oil `a_o` in
+every region's weight, `D* = (w + a + a_s + a_o) / H - 1/9`: each row adds `a / 200` dragons a
+region at the gate's margin and takes `a / W_tot` of the catch off the herds. Pairs do not move D*
+(mates and newcomers face the same gate); a pair replaces itself where the food it can breed from
+reaches `m + 2 (1 - m) 60 / 400 = 0.545` of need, which established dragons pass wherever D is at
+most 0.56 a region. **Stability:** at the equilibrium the Jacobian's determinant is positive, so it
+is stable exactly when `d ln g / dN < d ln iota / dN` (g the herds' growth, the logistic standing in
+for Beverton-Holt). It holds for any intake once `N* >= K/2`; below that, type III with the refuge
+holds it while the established intake is under 0.81 (R = 0.1 K), where plain type II loses it from
+0.61. The closed form's intakes are 0.53 to 0.81 with herds at 0.47 to 0.68 of K. The yearly calving
+and the 30-day moving average are lags this leaves out; the 30-seed runs show no cycle.
 
 ### 3.5 The gate
 
@@ -1345,6 +1457,56 @@ comes back to its control's level; herds take 12 (local) to 14 (world) game year
 they grow by one calving a year (§3.2). Every herd range is alive at the end, 40 years after the
 wipe, in every seed of both herd wipes; today a world wipe leaves none.
 
+**The dragon food gate** (§2.4.1, §3.4; docs/overnight-choices-equilibrium.md EQC539 to EQC544). The
+tables above predate the gate (the model at 0.7 lairs a region, at most two a region; the engine's S4
+checks on five lairs); these runs place Ice and Fire's lairs at the server's density (0.5 a region)
+and at a plains, savanna and forest world's (1.6).
+
+- **The model** (`run.py --only foodgate`, `results/results-foodgate.json`): 24 seeds; its world has 0.25 villages a region and
+  uncapped herds. At 0.5 lairs a region the food feeds nearly every lair and the gate changes little:
+  herds 0.72 [0.65, 0.79] of K with nobody and 0.71 with the roamer (old rules 0.67 and 0.66), lairs
+  held 0.94 and 0.86 (0.95 and 0.88). At 1.6 it binds: herds 0.59 [0.53, 0.63] and 0.57 (old 0.39 and
+  0.35), lairs held 0.65 and 0.58 (0.95 and 0.87), 0.85 dragons a region (1.17 and 1.27). A world-year
+  hatches 17 to 56 young, most of which emigrate, against 1 to 13 Frontier newcomers. Every range lives.
+- **The engine** (S4's world: 56 regions whose herds are capped by their valley's forage, the jar's
+  lairs on them; seeds 1 to 6, years 30 to 60, against main's rules on the same world): at the real
+  density (about 0.45 a region outside the spawn disk) the herds sit at 0.49 of K with nobody and 0.55
+  with the roamer (old rules 0.15 and 0.16, at the refuge), 0.18 of the lairs are held (0.59), 0.06
+  adult dragons a region (0.17), and 134 dragons a world starve out in 60 years (235). At 1.5 a region:
+  herds 0.36 and 0.38 (0.11, the refuge), lairs held 0.08 (0.45), 0.09 adults a region (0.48), 186
+  starve-leaves (1,486). The adults a region are near 0.06 to 0.09 at either density: the food, not
+  the lairs, sets the dragons. Over seeds 1 to 30 at the real density: lairs held 0.159 [0.116,
+  0.254] with the roamer and 0.162 [0.111, 0.267] with nobody, herds 0.508 [0.375, 0.591] and 0.487
+  [0.342, 0.578]. With no dragons the capped herds sit at 0.91 of K.
+- **Kill-all:** at the real density, seeds 1 to 30, half the lairs are held again in 48 days [24, 96],
+  90% of the control's in 72 [24, 192], and the end is 1.02 [0.75, 1.34] of the control's; at 1.5 a
+  region (6 seeds) 90% in 24 [24, 48]. One seed of 30 takes 312 days: a held dragon stays down to
+  maintenance (0.35) but a newcomer needs the gate's 0.5, so the control holds lairs the gate would not
+  refill today, and they wait for the herds (with the gate at maintenance the four slowest seeds take
+  48 to 72 days). The 192-day cap bounds the pressure's wait, not the refill.
+- **Ranges alive:** on capped herds a range the dragons hold near its refuge of 8 animals can die out
+  by chance, under the old rules as under the gate, and is recolonised by dispersers: the fewest
+  ranges alive at any census is 0.96 at worst (two of 56), 1.00 in 43 of 60 runs; with no dragons,
+  1.00. Predation never takes a herd below its refuge (§3.4).
+
+**Predator and prey** (§2.4.11, designed 2026-10-31, docs/overnight-choices-equilibrium.md EQC550 to
+EQC569). Before the build, nothing was measured beyond §3.4's closed form: pairs leave the dragons a region where
+the gate puts them and can halve the lairs held where most pair; each settlement or oil row adds
+`a / 200` dragons a region at the margin, so an oil field of 800 holds about four fire dragons in its
+nine regions, every lair there at the real density. The model (`run.py --only oil`, a food-limited
+world like S4's, 24 seeds) holds the lairs near oil 0.17 [0.00, 0.38] with no oil row and 0.95
+[0.85, 0.96] at 800, against 0.18 to 0.22 elsewhere; the herds stay at 0.63 to 0.66 of K. **Built
+2026-11-01** (EQC570 to EQC576), S4 re-measured with pairs, seeds 1 to 30 at the real density (its
+world has no camps, districts or oil): lairs held 0.146 [0.103, 0.220] with the roamer and 0.139
+[0.103, 0.203] with nobody (0.159 and 0.162 before: a pair is two mouths), herds 0.527 [0.395, 0.605]
+and 0.507 [0.384, 0.578] of K, fewest ranges alive 1.0 [0.982, 1.0]; every steady band holds. The
+kill-all: half the lairs again in 24 days [24, 48], 90% of the control's in 48 [24, 240], the end
+1.0 [0.76, 1.78] of the control's. The median is faster (the control holds fewer lairs) and the tail
+slower: a Frontier dragon goes as a mate to a lone breeder before it refills an empty lair (a reading,
+not measured), so the 95th bound moves from 192 to 240 days. S10 does not move; S11's dragon bands
+come from its own every-kind world, and its outposts and pool camps leave their exact 1.00 for a
+band once a dragon can eat pillagers (EQC566).
+
 **Farming one site** for 60 years: §3.3's table (the model matches the closed forms within 5%).
 
 **Unattended for ten real years** (262,980 game days, 8 seeds, by game century):
@@ -1419,7 +1581,7 @@ GameTest lock.
 | S0 | `rtsim-kernel::renewal` (§2.2). **Built 2026-10-22** (`crates/rtsim-kernel/src/renewal.rs`, commit ea4fd88e) | `pressure_halves_each_half_life`, `delay_is_capped`, `farmed_steady_state_matches_closed_form` (simulate kill-on-arrival for 60 years against `RenewalRule::farmed`, within 5%) | nothing |
 | S1 | `rtsim-cli sim census`: one line per kind every N days (sites, members, capacity, short, broken, mean P, renewals) for every module the scenario runs; the same hook in the host soak. **Built 2026-10-22** (`crates/rtsim-kernel/src/census.rs`, `crates/rtsim-cli/src/sim/census.rs`, `Engine::census`; docs/overnight-choices-equilibrium.md EQC1 to EQC8, which add an `empty` column) | `census_counts_every_kind`, `census_is_flat_with_no_player` (`crates/rtsim-cli/src/sim/census.rs`) | S0 |
 | S2 | Herds: density term, refuge in `predate`, spring dispersal, frontier founding, tombstone removal. **Built 2026-10-22** (`crates/rtsim-ecology/src/herds/engine.rs`, `herds/synth.rs`'s ranges grid; docs/overnight-choices-equilibrium.md EQC9 to EQC21, and its S2 findings: both wipes and the forage sweep inside the model's bands on seeds 1 to 30) | `herds_settle_without_forage_tuning` (forage headroom 1 to 4 gives one band), `predation_never_takes_a_herd_below_refuge`, `kill_all_herds` (world wipe: half back within 25 years, all ranges alive by 40), `local_wipe_refills_from_neighbours`, the property tests extended (founding is a booked source) (`crates/rtsim-cli/src/sim/equilibrium.rs`, the 30-seed versions `#[ignore]`d; `crates/rtsim-ecology/tests/herds.rs`: `founding_and_dispersal_are_booked_sources`, `a_restored_ranges_engine_continues_exactly`) | S0, S1 |
-| S3 | Site ledger (world game time, relative hand-over) and SITE_FOUND carrying it; kill credit in every bridge; missing members and strays; the no-unload census | GameTests `resetKeepsAFarmedSiteFarmed`, `siteFoundEmptyWithoutLedgerWaitsTheCap`, `reinstallKeepsPressure` (the engine's clock restarts, the wait does not shorten), `uninstallLeavesHomeBodies`, `petKillRaisesPressure`, `trapKillAtABossSiteIsAPlayerLoss`, `tameIsAPlayerLoss`, `aLuredBodyIsAPlayerLossAndAStraysDeathCounts`, `aForceLoadedSiteRefillsWhenUnwatched` | S0 |
+| S3 | Site ledger (world game time, relative hand-over) and SITE_FOUND carrying it; kill credit in every bridge; missing members and strays; the no-unload census | GameTests `resetKeepsAFarmedSiteFarmed`, `siteFoundEmptyWithoutLedgerWaitsTheCap`, `reinstallKeepsPressure` (the engine's clock restarts, the wait does not shorten), `uninstallLeavesHomeBodies`, `uninstallAtADenMakesAFrostmawKilledMeanwhileNoOnesLoss`, `petKillRaisesPressure`, `trapKillAtABossSiteIsAPlayerLoss`, `tameIsAPlayerLoss`, `aLuredBodyIsAPlayerLossAndFightsItsReplacementOnItsReturn`, `aForceLoadedSiteRefillsWhenUnwatched` | S0 |
 | S4 | Dragons: lair pressure, fed share, starve-leave, arrival gate, newcomer direction, oil visitors only into due lairs. **Built 2026-10-22, but for the GameTest** (`crates/rtsim-ecology/src/engine.rs`, `dragon.rs`, `oil.rs`, `tunables.rs`, `persist.rs`; docs/overnight-choices-equilibrium.md EQC22 to EQC33, and its S4 findings: lairs held about 0.06 below the model's, the kill-all's 90% at 72 days at the median; S3 is not built, so a late-found lair starts at P 0 and `resetDoesNotMintADragon` waits for S3, EQC31) | `kill_all_dragons` (90% back within 72 days), `farmed_lair_yields_closed_form` (60 years, at most 1.2 a year), `starving_dragon_leaves_and_returns_when_fed`, `visitor_claims_only_a_due_lair`, `long_horizon_dragons_and_herds_with_kills` (60 years, roamer script, the §3.6 bands); GameTest `resetDoesNotMintADragon` (`crates/rtsim-ecology/tests/lair_renewal.rs`; `oil.rs`; `crates/rtsim-cli/src/sim/equilibrium.rs`, the 30-seed versions `#[ignore]`d) | S2, S3 |
 | S5 | Dragon home bodies (EQ-2 a): vanilla while roosting, puppet away, lair census. **Built 2026-10-29** (`crates/rtsim-ecology/src/engine/home.rs`, `boundary.rs`, `persist.rs` (pages RTDA and RTNA), `crates/rtsim-jni`, core's `sites/ChunkWatch`, the plugin's `HomeBodies`; `docs/boundary.md` §6.9, `docs/replay-gate.md` §4.5; docs/overnight-choices-equilibrium.md EQC100 to EQC149, with the UNVERIFIED facts settled in EQC146). A lured dragon is a puppet and no loss (Ben's FB-1 (a)), so the fourth test is `aDragonLuredFromItsLairIsAwayNotMissing`, with `aVanishedHomeBodyIsMissingNotDead` for the body that vanishes | Rust `tests/home_bodies.rs` (29), `tests/home_bodies_long.rs` (S4's bands with bodies on, H1 and H2 over random histories); GameTests `roostingDragonIsSavedByVanilla`, `awayDragonIsAPuppetAndTheCensusReconciles`, `uninstallKeepsRoostingDragons`, `aDragonLuredFromItsLairIsAwayNotMissing`, `aVanishedHomeBodyIsMissingNotDead`, and seven more in `HomeBodyGameTests` | S4 (EQ-2 a, decided) |
 | S6 | Villages and Ribbits (EQ-1 a): census both ways, settlers, unloaded growth, Ribbit refill before build, pop on spawn. **Built 2026-10-29** (`crates/rtsim-world/src/villages.rs`, `ribbits.rs`, `config.rs` (pages RTW5), `crates/rtsim-jni` (the census filter, RTP1 version 6), core's `village/Census`, `village/Walkers`, `api/Arrivals`, `growth/ResidentSpawner`, the Ribbits plugin's profession chooser; `docs/boundary.md`; docs/overnight-choices-equilibrium.md EQC150 to EQC193). Ben's FB-1 (b): a village the engine has not seen alive is never settled; FB-2: every bed in the box counts, capped at 32; FB-4: a refilled Ribbit is a merchant when the village has none, else a profession by the order's hash; FB-3 (the coordinator): an additive registry `walkers` list and core's `Arrivals` | Rust `rtsim-world/tests/{villages,settlers,village_growth}.rs`, `rtsim-jni/tests/villages.rs` (`village_pop_follows_census_down`, `census_flapping_never_reaches_the_world`, `villages_renew_end_to_end`), `kill_all_villagers` (settlers in 32 days, 90% within 600: the median 525), `kill_all_ribbits` (90% within 300: 122), `census_counts_villages_by_k`, `sim_quiet_stays_quiet_with_settlers` (rewritten: the renewal stops); GameTests `VillageRenewalGameTests` (ten, among them `settlersWalkInFromTheExploredEdge`, `noArrivalIntoAWatchedVillage`) and `RibbitRenewalGameTests` (three) | S1 (EQ-1 a, decided) |

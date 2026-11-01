@@ -313,16 +313,18 @@ fn a_grudge_raid_looks_for_districts_in_the_homes_dimension() {
     assert_eq!(d.stats.district_raids, 1);
 }
 
-/// A home in another dimension is out of reach, however close its coordinates.
+/// A home in another dimension is out of reach, however close its coordinates. (The hungry
+/// dragon still looks for districts' stores in its own frame, 3, since the hunger raids, EQC556.)
 #[test]
 fn a_home_in_another_dimension_is_not_raided() {
     let mut infra = Sites::default();
     let (d, _) = grudge(3, 4, &mut infra);
     assert!(
-        infra.frames.is_empty(),
+        !infra.frames.contains(&4),
         "no raid on a home in another dimension: {:?}",
         infra.frames
     );
+    assert!(infra.raided.is_empty());
     assert_eq!(d.stats.district_raids, 0);
 }
 

@@ -1279,6 +1279,7 @@ The bridge and the industry ranges (`docs/industry-boundary.md` §1) stay as the
 | 0x8508 | NEST_RENEW | count | 16 u64 nest, 24 u32 dimension, 28 u32 stage (1 to 3, the worms' size), 32 u32 serial (the engine's count of this nest's renewals, this one in it, from 1), 36 reserved | 40 | NEST_CENSUS once they spawn |
 | 0x8509 | NEST_SORTIE | count | 16 u64 nest, 24 u32 dimension, 28 i32 x, 32 i32 z (a block of the raided district), 36 u32 timeoutTicks | 40 | |
 | 0x850A | DRAGON_HAND_BACK | 0 | 16 u64 agent, 24 u32 epoch, 28 reserved, 32 u64 lair (the dragon's own lair, LAIR_FOUND's key: the attachment names it, not the nearest lair; EQC321) | 40 | DRAGON_MATERIALIZED (aux 1) |
+| 0x850B | TAKE_RESIDENT | 0 | 16 u64 village (its node key), 24 u32 dimension, 28 i32 x, 32 i32 z (the village's centre), 36 u32 radius | 40 | none: a dragon took a villager while nobody watched (docs/overnight-choices-equilibrium.md EQC556, Ben's PP-2 (a)); the engine has counted it out of the village. The plugin removes the nearest adult, unnamed villager within the radius now if the chunk at (x, z) is loaded, else the first such villager that joins the level there. A held take is not saved: a restart forgets it, and the village's next complete census counts the villager again |
 
 **Tribute** (SINK.md §4.6) needs no command of its own: the coin a village pays a lair goes into the
 lair's reported chest as the core's TRANSFER_TO_CONTAINER (§2.4, 0x8005), one stack of at most 64
@@ -1962,7 +1963,7 @@ are untouched.
 | 0x080F | CAMP_CENSUS | bodies n | 24 u64 faction, 32 u64 epoch (new), 40 u32 flags (1 chief present, 2 crystal held, 4 the throne spot is given), 44 f32 the chief's health, 48 f64 throneX, 56 throneY, 64 throneZ, 72 f32 direction, 76 u32 traded t, 80 u32 traded slot, 84 u32 traded generation (the body whose trade memory follows), 88 n × (u32 body, u32 flags: 1 stray, 2 loaded elsewhere, 4 the chief, 8 the crystal is on this body (a chief body only); u32 slot, u32 generation, u64 uuidMost, u64 uuidLeast), then t × (u64 playerMost, u64 playerLeast) | 88 + 32n + 16t |
 | 0x0810 | TRADED | 0 | 24 u64 faction, 32 u64 playerMost, 40 u64 playerLeast, 48 u32 gold nuggets that changed hands, 52 reserved, 56 u64 opId | 64 |
 | 0x0811 | NOTICE_SHOWN | the notice's serial (FACTION_NOTICE's 60) | 24 u64 faction, 32 u64 playerMost, 40 u64 playerLeast (the notice's; (0, 0) the settlers) | 48 |
-| 0x0812 | CAMP_BODIES | lines n | 24 u64 faction, 32 u64 epoch, 40 u64 opId (the CAMP_RECONCILE's), 48 n × (u32 line (its index in the reconcile, from 0), u32 slot, u32 generation, u8 action (the answered line's, `ACTION_*`), u8 outcome: 1 done, 2 nothing to do, 3 stale, u16 reserved) | 48 + 16n |
+| 0x0812 | CAMP_BODIES | lines n | 24 u64 faction, 32 u64 epoch, 40 u64 opId (the CAMP_RECONCILE's), 48 n × (u32 line (its index in the reconcile, from 0), u32 slot, u32 generation, u8 action (the answered line's, `ACTION_*`), u8 outcome: 1 done, 2 nothing to do, 3 stale, u16 reserved, u64 u64 the UUID of the body the line left in its slot: for a spawn, a hand-back or an adoption done or with nothing to do, the body standing with the line's slot and generation (made, handed back, adopted, or already there), else 0, MZB-1400) | 48 + 32n |
 | 0x0813 | CAMP_OUT | 0 | 24 u64 faction, 32 u64 epoch (the one that ended) | 40 |
 | 0x0814 | CHIEF_PAID | items n | 24 u64 faction, 32 u32 slot, 36 u32 generation, 40 u32 flags (1 a stray, 2 a puppet (the chief slot, generation 0)), 44 reserved, 48 u64 playerMost, 56 u64 playerLeast, 64 u64 opId, 72 n × (u32 item, i32 count, u64 reserved) | 72 + 16n |
 | 0x0815 | DIFFICULTY | 0 | 24 u32 difficulty (§9.2), 28 reserved | 32 |
@@ -2146,7 +2147,7 @@ refuses a count above the cap (`CodecError::TooMany`) and a record cut short of 
 | 0x8805 | BAND_RECALL | reason: 1 bored, 2 routed, 3 done, 4 passing out of view, 5 the player left, 6 settled (the demand was settled, or the world became Peaceful) | 16 u64 agent, 24 u32 epoch, 28 u32 timeoutTicks, 32 f64 towardX, 40 f64 towardZ | 48 | BAND_DEMATERIALIZED |
 | 0x8806 | DEMAND_SETTLED | 1 paid, 2 signal cut, 3 expired, 4 refused, 5 withdrawn | 16 u64 faction, 24 u64 agent (the envoy, 0 none), 32 u64 playerMost, 40 u64 playerLeast, 48 u32 signal, 52 reserved | 56 | |
 | 0x8807 | AMBUSH_SPOT | flags: 1 removed (the lurk ended) | 16 u64 agent, 24 u32 epoch, 28 u32 dimension, 32 u64 faction, 40 f64 trackX, 48 trackY, 56 trackZ (the sampled track point), 64 f64 spotX, 72 spotY, 80 spotZ (where the body stands; y is the track's and Java finds the floor), 88 f32 reach (blocks from the track point), 92 reserved | 96 | TRAIN_PASSED |
-| 0x8808 | CAMP_RECONCILE | lines n | 16 u64 faction, 24 u64 epoch, 32 u64 opId (the engine's, §9.2), 40 f64 throneX, 48 throneY, 56 throneZ, 64 f32 direction, 68 u32 flags (1 the throne spot is given; 2 RECOUNT, MZB-1015: the camp takes a census at the end of the tick, as a body read from disk outside its footprint asks; sent with no lines, at an arrival and a day after a census that missed a member body, so no CAMP_BODIES answers it), 72 n × (u32 slot, u32 generation, u32 body (dictionary 3; 0 none), u8 action: 1 spawn, 2 adopt a stray, 3 take, 4 set out, 5 hand back, 6 remove, 7 seat the heir, 8 mask (take a warrior at home for the heir: slot 0, generation 0, Java takes the one farthest from every player, and its CAMP_BODIES line names the slot and generation it took; always sent with a 7 in the same reconcile, MZB-408); u8 flags: 1 the chief, 2 crystal held; u16 reserved, u64 a, u64 b: a stray's UUID (adopt, remove a stray), a party's agent and epoch (set out, hand back), else 0) | 72 + 32n | CAMP_BODIES |
+| 0x8808 | CAMP_RECONCILE | lines n | 16 u64 faction, 24 u64 epoch, 32 u64 opId (the engine's, §9.2), 40 f64 throneX, 48 throneY, 56 throneZ, 64 f32 direction, 68 u32 flags (1 the throne spot is given; 2 RECOUNT, MZB-1015: the camp takes a census at the end of the tick, as a body read from disk outside its footprint asks; sent with no lines, at an arrival and a day after a census that missed a member body, so no CAMP_BODIES answers it), 72 n × (u32 slot, u32 generation, u32 body (dictionary 3; 0 none), u8 action: 1 spawn, 2 adopt a stray, 3 take, 4 set out, 5 hand back, 6 remove, 7 seat the heir, 8 mask (take a warrior at home for the heir: slot 0, generation 0, Java takes the one farthest from every player, and its CAMP_BODIES line names the slot and generation it took; always sent with a 7 in the same reconcile, MZB-408), 9 fight (the body holding the slot, by its tags, and the member gone missing that came back to its full boss's camp, by the UUID in a and b, are set on each other until one dies; answered done when both stand and the kind set the fight, nothing when either is not there, stale for a kind with no fight, and booked as nothing; sent again at each census that sees the two, MZB-1404); u8 flags: 1 the chief, 2 crystal held; u16 reserved, u64 a, u64 b: a stray's UUID (adopt, remove a stray, the returner of a fight), a party's agent and epoch (set out, hand back), else 0) | 72 + 32n | CAMP_BODIES |
 | 0x8809 | TRAIN_ROBBED | 0 | 16 u64 faction, 24 u64 train | 32 | |
 | 0x880A | CHIEF_BODY | traded t | 16 u64 faction, 24 u64 agent (0 at home; the party's away, just ahead of its BAND_MATERIALIZE with the chief's stack), 32 u64 epoch (the party's, or the camp's at home), 40 f32 health, 44 u32 flags (1 crystal held), 48 t × (u64 playerMost, u64 playerLeast) | 48 + 16t | |
 | 0x880B | BAND_MARCH | waypoints w | 16 u64 agent, 24 u32 revision, 28 u32 dimension, 32 u64 faction, 40 u32 culture (dictionary 5; 0 none), 44 u8 kind (BAND_MATERIALIZE's purposes, 1 envoy to 6 plunder), 45 u8 phase (1 mustering, 2 out, 3 waiting, 4 fighting, 5 home), 46 u8 flags (1 the chief leads, 2 ended, 4 joint), 47 reserved, 48 u64 partner (the joint attack's other contingent), 56 i64 musterEndTick, 64 u32 unit kinds k, 68 reserved, 72 k × (u32 body, u32 count), then w × (i32 x, i32 z, i64 tick) | 72 + 8k + 16w | |
@@ -2537,10 +2538,13 @@ footprint (MZB-1015). CHIEF_BODY is written into a chief's body (health, crystal
   `illagerinvasion:illager_fort`, if its mod is ever present) in a loaded chunk is reported through `RtsimApi.reportCamp` as a
   camp of the raider culture, with no bodies: key `Obs.villageId(dim, start chunk)`, block (the start chunk's middle x, the
   start's minimum y, the middle z), FACTION_FOUND flagged LATE when the chunk was not new and `outpostsJoinExisting` is true
-  (otherwise a late outpost is not reported). The camp's `kin` predicate: a mob of the `minecraft:raiders` tag but the witch,
-  not a sim puppet, inside the start's box widened by `outpostKinMargin` (24) blocks. Reported once per session and again at
-  the conflict module's switch-on edge; nothing is reported while the module or `outpostsJoin` is off. Config keys
-  `outpostsJoin`, `outpostsJoinExisting`, `outpostKinMargin` in the `[conflict]` group.
+  (otherwise a late outpost is not reported, unless the site ledger already holds its camp, EQC297). It is reported only when a
+  player of its level stands within the server's view distance of it when its load is drained (EQC296): a chunk a pre-generator
+  loaded is known and looked at again at its next load. The camp's `kin` predicate: a mob of the `minecraft:raiders` tag but the
+  witch, not a sim puppet, inside the start's box widened by `outpostKinMargin` (24) blocks; a player's kill counts, a machine's
+  (a NeoForge `FakePlayer`) does not (EQC300). Reported once per session and again at the conflict module's switch-on edge;
+  nothing is reported while the module or `outpostsJoin` is off. Config keys `outpostsJoin`, `outpostsJoinExisting`,
+  `outpostKinMargin` in the `[conflict]` group.
 
 ### 9.8 The Frostmaw den and the Umvuthana grove on the shared renewal rule (EQUILIBRIUM.md slice S9; records MZB-1200 to MZB-1271 in `docs/choices-mowzie-build.md`)
 
@@ -2552,7 +2556,10 @@ footprint (MZB-1015). CHIEF_BODY is written into a chief's body (health, crystal
   that holds n, l and m; an older row reads 0.
 - **Pages.** The conflict's pages are `RTCF` (magic `RTCF`, was `RTCE`) with meta version 14: a camp ends with its chief's
   pressure (an f32 and the day it stands at) after its recount, and the stats carry `grove_arrivals` after `arrivals`. An older
-  page is refused by name ("conflict save format RTCE, this build reads RTCF").
+  page is refused by name ("conflict save format RTCE, this build reads RTCF"). Merged with the M12a review fixes, which had
+  taken `RTCF` and meta 14 on a branch of their own, the pages are `RTCG` (magic `RTCG`) with meta version 15 (MZB-1409): S9's,
+  and a camp's heir ends with the chief's pressure it keeps (MZB-1402), its lists end with its rivals and the stats with
+  `camp_fights` (MZB-1404); "conflict save format RTCF, this build reads RTCG".
 - **The grove's warriors are arrivals** (MZB-1210 to MZB-1216): umvuthana.json has `renewal` 6, 96, 96 (no boss kind),
   `recruits_per_day` 0 and `found_cap` 5, so the engine books one `Ev::Arrival` while the grove is short, RECOUNT to a grove
   that is in, and the census's SPAWN at the grove's edge; the grove has no `Ev::Refill`. A casualty of a war party on the road
@@ -2627,7 +2634,7 @@ next to the conflict's.
 | 54, 56 | i16 | waterMean, floorMean: mean water top and `OCEAN_FLOOR` top over the water points (0: none) |
 | 58 | | reserved |
 | 60, 64 | f32 | temperature, downfall: vanilla's biome values (`Biome.getBaseTemperature`, the climate settings' downfall), mean over the points |
-| 68 | f32 | celsius: a climate plugin's degrees at the cell's centre when sampled (`ClimateSource`); NaN without one |
+| 68 | f32 | celsius: the cell's year-round climate, °C, with no weather, no time of day, no rain and no season: a climate source's year-round temperature at the cell's centre, a block above its mean surface (`ClimateSource.yearRoundCelsius`), else the cell's temperature (offset 60) on mic-climate's scale (-20 + 30.4 (t + 0.5), t clamped to -0.5 to 2.0, X2-8). NaN only from a sender that knows no climate (the engine then applies the scale itself). Never a live reading (EQC520) |
 | 72, 73 | u8 | season, seasonCount: the plugin's calendar when sampled (IND_CONDITIONS' shape); 0, 0 without seasons |
 | 74 | | reserved |
 | 80 | | n entries of 8 bytes: u32 body (dictionary 3), u16 share, u16 generated |
@@ -2658,10 +2665,12 @@ chunk's `ChunkEvent.Load` as a new chunk). The engine keeps the highest count it
   with its next chunk. A cell is sampled at most once per load of its chunks.
 - **Sent** only when its **fingerprint** differs from the one the engine holds (HABITAT_KNOWN), or
   when chunk-generation animals were counted in it. The fingerprint is Java's: FNV-1a 64 over the
-  little-endian bytes of eight words (the masks; the two biome names' FNV-1a; the tag bits; the
-  heights; the floor; temperature and downfall; the shares), folded to 32 bits by xoring its halves.
-  Degrees, the season and the counts are left out: they change without the ground changing. The
-  engine stores it and gives it back; it never computes one.
+  little-endian bytes of nine words (the masks; the two biome names' FNV-1a; the tag bits; the
+  heights; the floor; temperature and downfall; the shares; celsius's float bits), folded to 32 bits
+  by xoring its halves. The season and the counts are left out: they change without the ground
+  changing. Celsius is in: a year-round climate changes only with the ground or its source, so a
+  change of source (or of this rule: before EQC521 the fingerprint had eight words) sends each held
+  cell again when it is next sampled. The engine stores it and gives it back; it never computes one.
 - **Not before** the engine's HABITAT_KNOWN list has ended this session. At a session start every
   chunk already loaded counts as a first load.
 
@@ -2690,9 +2699,10 @@ alone.
 - **Unknown ground is avoided** (X2-5): a rectangle with a point nobody sampled is not passable for
   herds and not water for ships; founding waits for it.
 - **Herds**: §5 item 14, X2-9 to X2-16. **Ships**: §5 item 12, X2-17.
-- **Degrees**: a cell's year-round °C is the plugin's reading less the season it was taken in, else
+- **Degrees**: a cell's year-round °C is the record's celsius as sent (§10.3), else, when it is NaN,
   vanilla's temperature on mic-climate's scale (-0.5 to 2.0 over -20 to +56 °C, X2-8); a dimension
-  where a plugin reported seasons adds mic-climate's default season offsets by sub-season.
+  where a plugin reported seasons adds mic-climate's default season offsets by sub-season, the only
+  season in it (EQC522).
 
 
 ## 11. The world's topology: TOPOLOGY (DECISIONS.md C31; docs/choices-topology.md)

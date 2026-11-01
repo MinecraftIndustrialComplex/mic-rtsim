@@ -459,14 +459,16 @@ pub(super) fn snapshot(st: &mut State, save_failures: u64) -> Vec<(PageKey, Vec<
 // ---- inspection ---------------------------------------------------------------------------------
 
 /// [`super::Engine::habitat_info`]'s fields, in order.
-pub const HABITAT_INFO: usize = 16;
+pub const HABITAT_INFO: usize = 17;
 
 impl super::Engine {
     /// The world model at block (x, z) of Java's dimension `dim` ([`HABITAT_INFO`] values): 1
     /// when the cell is known, its known, water, ice and land masks, its mean surface y, its
     /// fingerprint, the cells and regions known, the agent of the herd founded for the region (0
     /// none), the region's marks, the HABITAT records taken, the herds founded, the
-    /// HABITAT_KNOWN records written, and the region's herd's position (x, z) now.
+    /// HABITAT_KNOWN records written, the region's herd's position (x, z) now, and the cell's
+    /// year-round °C as the world model reads it (`sampled::base_celsius`; f32 bits, NaN when
+    /// unknown).
     pub fn habitat_info(&self, dim: u32, x: i32, z: i32) -> [i64; HABITAT_INFO] {
         let st = super::lock(&self.state);
         let w = st.worldmodel.world.read();
@@ -484,6 +486,7 @@ impl super::Engine {
             )
         });
         let mut out = [0i64; HABITAT_INFO];
+        out[16] = i64::from(f32::NAN.to_bits());
         if let Some(h) = w.habitat_at(frame, x, z) {
             out[0] = 1;
             out[1] = i64::from(h.known);
@@ -492,6 +495,7 @@ impl super::Engine {
             out[4] = i64::from(h.land());
             out[5] = i64::from(h.surface_mean);
             out[6] = i64::from(h.fingerprint);
+            out[16] = i64::from(rtsim_space::sampled::base_celsius(&h).to_bits());
         }
         out[7] = cells;
         out[8] = regions;

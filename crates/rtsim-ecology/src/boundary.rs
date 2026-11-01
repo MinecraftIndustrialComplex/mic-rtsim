@@ -71,6 +71,8 @@ pub const NEST_RENEW: u16 = 0x8508;
 pub const NEST_SORTIE: u16 = 0x8509;
 /// A puppet settled at its lair becomes a home body, in place (EQC110).
 pub const DRAGON_HAND_BACK: u16 = 0x850A;
+/// A dragon took a villager of an unwatched village (EQC556, Ben's PP-2 (a)): Java removes one.
+pub const TAKE_RESIDENT: u16 = 0x850B;
 
 pub type Uuid = (u64, u64);
 
@@ -719,6 +721,19 @@ pub struct NestRenew {
     pub serial: u32,
 }
 
+/// A dragon ate one villager of village `village` while nobody watched (EQC556, Ben's PP-2 (a)):
+/// Java removes one adult villager within `radius` blocks of (x, z), now if the chunk there is
+/// loaded, else the first that joins the level there (not saved: a restart forgets it, and the
+/// village's next complete census counts the villager again).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TakeResident {
+    pub village: u64,
+    pub dimension: u32,
+    pub x: i32,
+    pub z: i32,
+    pub radius: u32,
+}
+
 /// Up to `count` of oil nest `nest`'s worms go up under the column (x, z) of a watched district it
 /// raids, fight there, and go home after `timeout_ticks`. A worm stops under an armoured floor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -743,6 +758,7 @@ pub enum Cmd {
     OilSurvey(OilSurvey),
     PlaceNest(PlaceNest),
     NestRenew(NestRenew),
+    TakeResident(TakeResident),
     NestSortie(NestSortie),
     HandBack(HandBack),
 }
@@ -759,6 +775,7 @@ impl Cmd {
             Cmd::OilSurvey(_) => OIL_SURVEY,
             Cmd::PlaceNest(_) => PLACE_NEST,
             Cmd::NestRenew(_) => NEST_RENEW,
+            Cmd::TakeResident(_) => TAKE_RESIDENT,
             Cmd::NestSortie(_) => NEST_SORTIE,
             Cmd::HandBack(_) => DRAGON_HAND_BACK,
         }
@@ -776,6 +793,7 @@ impl Cmd {
             Cmd::OilSurvey(_) => "OIL_SURVEY",
             Cmd::PlaceNest(_) => "PLACE_NEST",
             Cmd::NestRenew(_) => "NEST_RENEW",
+            Cmd::TakeResident(_) => "TAKE_RESIDENT",
             Cmd::NestSortie(_) => "NEST_SORTIE",
             Cmd::HandBack(_) => "DRAGON_HAND_BACK",
         }
@@ -793,7 +811,8 @@ impl Cmd {
             | Cmd::OilSurvey(_)
             | Cmd::PlaceNest(_)
             | Cmd::NestRenew(_)
-            | Cmd::NestSortie(_) => None,
+            | Cmd::NestSortie(_)
+            | Cmd::TakeResident(_) => None,
         }
     }
 
@@ -805,7 +824,11 @@ impl Cmd {
             Cmd::Adopt(_) => 80,
             Cmd::Discard(_) | Cmd::OilSurvey(_) => 32,
             Cmd::PlaceLair(_) => 48,
-            Cmd::PlaceNest(_) | Cmd::NestRenew(_) | Cmd::NestSortie(_) | Cmd::HandBack(_) => 40,
+            Cmd::PlaceNest(_)
+            | Cmd::NestRenew(_)
+            | Cmd::NestSortie(_)
+            | Cmd::HandBack(_)
+            | Cmd::TakeResident(_) => 40,
         }
     }
 
@@ -818,6 +841,7 @@ impl Cmd {
             Cmd::OilSurvey(s) => Some((16, s.dimension)),
             Cmd::PlaceNest(p) => Some((24, p.dimension)),
             Cmd::NestRenew(n) => Some((24, n.dimension)),
+            Cmd::TakeResident(t) => Some((24, t.dimension)),
             Cmd::NestSortie(n) => Some((24, n.dimension)),
             _ => None,
         }
@@ -1555,6 +1579,14 @@ pub fn encode_cmd(seq: u64, c: &Cmd, dict: &SpeciesDict, buf: &mut Vec<u8>) {
             w.u64(32, h.lair);
             w.finish(DRAGON_HAND_BACK, 0, 40);
         }
+        Cmd::TakeResident(t) => {
+            w.u64(16, t.village);
+            w.u32(24, t.dimension);
+            w.i32(28, t.x);
+            w.i32(32, t.z);
+            w.u32(36, t.radius);
+            w.finish(TAKE_RESIDENT, 0, 40);
+        }
     }
 }
 
@@ -1643,6 +1675,13 @@ pub fn decode_cmd(b: &[u8], dict: &SpeciesDict) -> Result<(usize, u64, Cmd), Cod
             cx: r.i32(28)?,
             cz: r.i32(32)?,
             depth: r.u32(36)?,
+        }),
+        TAKE_RESIDENT => Cmd::TakeResident(TakeResident {
+            village: r.u64(16)?,
+            dimension: r.u32(24)?,
+            x: r.i32(28)?,
+            z: r.i32(32)?,
+            radius: r.u32(36)?,
         }),
         NEST_RENEW => Cmd::NestRenew(NestRenew {
             nest: r.u64(16)?,
@@ -1992,6 +2031,13 @@ mod tests {
                 x: -40,
                 z: 1_250,
                 timeout_ticks: 1_200,
+            }),
+            Cmd::TakeResident(TakeResident {
+                village: 0x0000_0001_0000_0008,
+                dimension: 1,
+                x: 100,
+                z: -1_200,
+                radius: 48,
             }),
         ]
     }

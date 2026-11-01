@@ -7,7 +7,7 @@
 
 use rtsim_conflict::boundary::{self, Obs};
 use rtsim_conflict::culture::{Cultures, PartyKind};
-use rtsim_conflict::engine::{CHIEF_SLOT, Party, SlotState, Target, body_id};
+use rtsim_conflict::engine::{CHIEF_SLOT, Party, Phase, SlotState, Target, body_id};
 use rtsim_conflict::synth::{self, CampRun};
 use rtsim_ecology::infra::NoInfrastructure;
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
@@ -364,6 +364,8 @@ fn a_mobs_kill_on_a_march_does_not() {
 
 /// MZB-1213 (F8, S7's FB-2 (a)): a death that credits no one is no one's loss on the road, a player's
 /// at a district (a trap, a turret, a FakePlayer killed it there), and the switch turns that off.
+/// "At" is S7's review's (EQC291): fighting or waiting there, or on the road within the edge of a
+/// watched fight; a band still mustering at the grove, bound for the district, is not (EQC303).
 #[test]
 fn an_unclaimed_march_death_does_not_and_one_at_a_players_district_does() {
     for by in [boundary::BY_NONE, boundary::BY_OTHER] {
@@ -377,14 +379,34 @@ fn an_unclaimed_march_death_does_not_and_one_at_a_players_district_does() {
         let mut r = quiet(39, 9);
         come_in(&mut r);
         let (p, e) = embodied_party(&mut r, PartyKind::Raid, district());
+        assert_eq!(r.c.parties[p].phase, Phase::Mustering);
         let o = casualty(&r, p, e, by, 2, next_op());
         ingest(&mut r, &o);
-        near(members_p(&r), 2.0 / 9.0, "at a player's district");
+        near(
+            members_p(&r),
+            0.0,
+            "bound for a player's district, still at the grove",
+        );
+
+        for phase in [Phase::Fighting, Phase::Waiting] {
+            let mut r = quiet(39, 9);
+            come_in(&mut r);
+            let (p, e) = embodied_party(&mut r, PartyKind::Raid, district());
+            r.c.parties[p].phase = phase;
+            let o = casualty(&r, p, e, by, 2, next_op());
+            ingest(&mut r, &o);
+            near(
+                members_p(&r),
+                2.0 / 9.0,
+                &format!("at a player's district, {phase:?}"),
+            );
+        }
 
         let mut r = quiet(39, 9);
         r.c.tun.district_unclaimed_is_players = false;
         come_in(&mut r);
         let (p, e) = embodied_party(&mut r, PartyKind::Raid, district());
+        r.c.parties[p].phase = Phase::Waiting;
         let o = casualty(&r, p, e, by, 2, next_op());
         ingest(&mut r, &o);
         near(members_p(&r), 0.0, "the switch is off");
@@ -456,9 +478,12 @@ fn an_umvuthi_killed_on_a_march_presses_only_its_own() {
     let muster = r.c.parties[p].until;
     r.run(muster + 200);
     let (members0, chief0) = (members_p(&r), chief_p(&r));
-    // The column is out on the road, embodied, when its Umvuthi falls.
+    // The column has come to the district and waits there, embodied, when its Umvuthi falls: the
+    // place where S7's rule makes an unclaimed death the player's (EQC291), so only MZB-1287's gate
+    // keeps the warriors that die with it no one's (EQC303). The rout walks it home from there.
     let epoch = {
         let x = &mut r.c.parties[p];
+        x.phase = Phase::Waiting;
         x.epoch += 1;
         x.embodied = true;
         x.spawned = x.units.clone();
@@ -505,8 +530,10 @@ fn a_band_that_still_has_its_chief_keeps_the_district_rule() {
     assert!(r.c.parties[p].chief, "the chief leads");
     let muster = r.c.parties[p].until;
     r.run(muster + 200);
+    // At the district (EQC291: waiting there; EQC303).
     let epoch = {
         let x = &mut r.c.parties[p];
+        x.phase = Phase::Waiting;
         x.epoch += 1;
         x.embodied = true;
         x.spawned = x.units.clone();

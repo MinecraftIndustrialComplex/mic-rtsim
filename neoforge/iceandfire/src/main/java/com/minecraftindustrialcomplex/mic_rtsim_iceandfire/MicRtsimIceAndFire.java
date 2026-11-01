@@ -111,6 +111,15 @@ public final class MicRtsimIceAndFire {
     private static void onJoin(EntityJoinLevelEvent event) {
         if (event.getLevel().isClientSide())
             return;
+        if (event.getEntity() instanceof net.minecraft.world.entity.npc.Villager v
+                && DragonBridge.INSTANCE.villagerTakes.takesOnJoin(v, event.loadedFromDisk())) {
+            // A villager a dragon took while its village was unloaded (TAKE_RESIDENT, PP-2 (a)): it never joins.
+            event.setCanceled(true);
+            v.ejectPassengers();
+            v.stopRiding();
+            v.discard();
+            return;
+        }
         if (event.getEntity() instanceof DeathWormEntity w) {
             if (DragonBridge.INSTANCE.nests.staleCopy(w)) {
                 // A copy of a nest worm its nest spawned again, or that died (RP-242): it never joins. Passengers and a

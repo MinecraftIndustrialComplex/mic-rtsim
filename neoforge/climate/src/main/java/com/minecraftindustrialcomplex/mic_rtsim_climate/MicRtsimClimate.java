@@ -17,6 +17,6 @@ public final class MicRtsimClimate {
     public MicRtsimClimate(IEventBus modBus, ModContainer container) {
         ClimatePlugin climate = new ClimatePlugin();
         IndustryApi.register(climate);
-        RtsimApi.registerClimate(climate); // the habitat sampler's climate too (choice X2-7)
+        RtsimApi.registerClimate(climate); // the habitat sampler's season too (choice X2-7; EQC520: no degrees)
     }
 }

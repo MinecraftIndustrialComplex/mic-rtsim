@@ -621,6 +621,8 @@ pub struct FakeIaf {
     pub nest_no_room: bool,
     /// NEST_SORTIE commands received.
     pub sorties: u32,
+    /// TAKE_RESIDENT commands received (a villager a dragon took, PP-2 (a)).
+    pub villagers_taken: u32,
     /// The home bodies (EQUILIBRIUM.md S5).
     pub home: HomeModel,
 }
@@ -649,6 +651,7 @@ impl FakeIaf {
             renewals_repeated: 0,
             nest_no_room: false,
             sorties: 0,
+            villagers_taken: 0,
             home: HomeModel::default(),
         }
     }
@@ -1185,6 +1188,7 @@ impl FakeIaf {
                     }
                 }
                 Cmd::NestSortie(_) => self.sorties += 1,
+                Cmd::TakeResident(_) => self.villagers_taken += 1,
                 Cmd::Discard(dc) => {
                     self.home.bodies.remove(&dc.entity);
                 }

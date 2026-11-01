@@ -17,7 +17,7 @@ use rtsim_industry::district::Presence;
 use rtsim_industry::engine::Engine;
 use rtsim_industry::ids::{DistrictId, Good, GoodClass, GoodVec, TrainId};
 use rtsim_industry::obs::DepositPluginId;
-use rtsim_industry::threat::{Threat, ThreatTarget};
+use rtsim_industry::threat::{Loads, Threat, ThreatTarget};
 use rtsim_kernel::clock::Tick;
 use rtsim_settle::Pos;
 use rtsim_space::topology::SharedTopologies;
@@ -145,6 +145,22 @@ pub trait Infrastructure {
     /// What a dragon senses of `district` (OG-8). Nothing by default.
     fn signals(&mut self, _district: DistrictId, _fuels: &[String]) -> DistrictSignals {
         DistrictSignals::default()
+    }
+    /// The fullness points the stores of `district` are worth to a hungry dragon (EQC556, PP-1
+    /// (a)): `food` turns an item name and a count into points (0 for what it does not eat).
+    /// Nothing by default.
+    fn edible_food(&mut self, _district: DistrictId, _food: &dyn Fn(&str, i64) -> i64) -> i64 {
+        0
+    }
+    /// A hunger raid (PP-1 (a)): the survivors take only goods `edible` names, up to `room`
+    /// units, and break no block. None by default.
+    fn raid_eating(
+        &mut self,
+        _t: &Threat,
+        _edible: &dyn Fn(&str) -> bool,
+        _room: i64,
+    ) -> Option<RaidOutcome> {
+        None
     }
     /// Every oil well that drills (OG-9e), by district id. None by default.
     fn wells(&mut self) -> Vec<Well> {
@@ -446,6 +462,47 @@ impl Infrastructure for IndustryLink<'_> {
     fn raid_in_sight(&mut self, t: &Threat, fuels: &[String], room: i64) -> Option<RaidOutcome> {
         let goods = self.fuel_goods(fuels);
         self.raid_with(t, &goods, room, true)
+    }
+
+    fn edible_food(&mut self, district: DistrictId, food: &dyn Fn(&str, i64) -> i64) -> i64 {
+        let stock = match self.engine.sim_stock(district) {
+            Some(s) => s,
+            None => self
+                .engine
+                .district(district)
+                .map_or_else(GoodVec::new, |d| d.effective_stock()),
+        };
+        let names = self.engine.goods();
+        stock
+            .iter()
+            .filter_map(|(g, n)| {
+                let i = names.get(&g)?;
+                (i.class == GoodClass::Item && n > 0).then(|| food(&i.name, n))
+            })
+            .sum()
+    }
+
+    fn raid_eating(
+        &mut self,
+        t: &Threat,
+        edible: &dyn Fn(&str) -> bool,
+        room: i64,
+    ) -> Option<RaidOutcome> {
+        let goods: Vec<Good> = self
+            .engine
+            .goods()
+            .iter()
+            .filter(|(_, i)| i.class == GoodClass::Item && edible(&i.name))
+            .map(|(g, _)| *g)
+            .collect();
+        // Nothing carried off but what it eats (taken as a drink is, below the theft cap), and no
+        // block broken: the threat's own loads are zero.
+        let mut t = *t;
+        t.loads = Some(Loads {
+            carry: 0,
+            blocks: 0,
+        });
+        self.raid_with(&t, &goods, room, false)
     }
 
     fn signals(&mut self, district: DistrictId, fuels: &[String]) -> DistrictSignals {

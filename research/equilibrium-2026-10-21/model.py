@@ -84,6 +84,20 @@ class Params:
     starve_leave: float = 0.35          # TUNABLE: fed share below which a dragon abandons its lair
     arrive_food: float = 0.5            # TUNABLE: food share a lair needs before a newcomer settles
     fed_tau: float = 30.0
+    # ---- the dragon food gate (Ben, 2026-10-31; docs/overnight-choices-equilibrium.md EQC530 on)
+    food_gate: bool = False             # TUNABLE (rule): young only from a surplus, food shared
+    lair_slots: int = 2                 # lairs a region holds at most
+    gate_village: float = 150.0         # TUNABLE: a village's weight, shared (alt_village unshared)
+    oil_weight: float = 0.0             # the oil row (EQC560): a weight per oil region (the nest
+                                        # regions), shared as a village's is; it never depletes
+    oil_breeds: bool = False            # the oil row's conversion: False, oil sustains a dragon
+                                        # (the fed share starve-leave reads) but breeds none
+    gate_wild: float = 30.0             # TUNABLE: roads and stray prey, shared (alt_wild unshared)
+    breed_days: float = 60.0            # engine: a lair's breeder clutches every 60 days
+    mature_age: float = 75.0            # Ice and Fire's isMature: stage 4
+    disperse_age: float = 50.0          # engine: a young looks for a lair at 50 days
+    emigrate_age: float = 60.0          # engine: disperse_days + emigrate_after_days
+    young_reach: int = 12               # regions a young searches (grudge_range, 6,000 blocks)
     # ---- pressure, shared by every site
     pressure: bool = True
     H: float = 96.0                     # TUNABLE: pressure half-life, days
@@ -247,16 +261,22 @@ class World:
         self.herd_events = 0
         self.extinctions = 0
         far = cheb(CY, CX)[None] >= 2           # nothing hostile within ~1,000 blocks of spawn
-        # dragons: up to two lairs per region
-        nl = np.minimum(rng.poisson(p.lair_rate, size=shp), 2) * far
-        self.lair_ex = np.stack([nl >= 1, nl >= 2], axis=-1)
+        # dragons: up to `lair_slots` lairs per region (two before the food gate's runs)
+        L = p.lair_slots
+        nl = np.minimum(rng.poisson(p.lair_rate, size=shp), L) * far
+        self.lair_ex = np.stack([nl >= k + 1 for k in range(L)], axis=-1)
         self.lair_occ = self.lair_ex.copy()
-        self.lair_age = rng.integers(30, p.lifespan, size=shp + (2,))
-        self.lair_due = np.full(shp + (2,), INF)
-        self.lair_P = Pressure(shp + (2,), p)
-        self.lair_fed = np.ones(shp + (2,))
-        self.lair_kills = np.zeros(shp + (2,))
+        self.lair_age = rng.integers(30, p.lifespan, size=shp + (L,))
+        self.lair_due = np.full(shp + (L,), INF)
+        self.lair_P = Pressure(shp + (L,), p)
+        self.lair_fed = np.ones(shp + (L,))
+        self.lair_fed_b = np.ones(shp + (L,))   # the fed share births read (EQC560: food only)
+        self.lair_kills = np.zeros(shp + (L,))
         self.lair_events = 0
+        # the food gate's young: per seed, (y, x, ready day, last day) of each waiting young
+        self.young = [[] for _ in range(S)]
+        self.iota_new = np.ones(shp)
+        self.births_n = self.settled_n = self.emigrated_n = self.frontier_n = 0
         # other sites
         def draw(rate, mask=None):
             m = rng.random(shp) < rate
@@ -411,6 +431,8 @@ class World:
     def hunt(self, dt):
         """Dragons eat from herds in the 3 x 3 regions around their lair and from village stock."""
         p = self.p
+        if p.food_gate:
+            return self.hunt_shared(dt)
         N = self.Y + self.A
         if p.proposed:
             avail = np.maximum(N - self.R, 0).astype(float)
@@ -431,6 +453,40 @@ class World:
         self.A = self.A - np.minimum(kills - ky, self.A)
         a = min(1.0, dt / p.fed_tau)
         self.lair_fed += (iota[..., None] - self.lair_fed) * a * self.lair_occ
+        return iota
+
+    def hunt_shared(self, dt):
+        """The food gate (EQC533): each herd's and village's weight shared among the occupied
+        lairs whose 3 x 3 holds it. A lair's dragon catches W / (W + half) of its need, W its share
+        of every weight in its 3 x 3; the newcomer's share (`iota_new`) counts itself too."""
+        p = self.p
+        N = self.Y + self.A
+        avail = np.maximum(N - self.R, 0).astype(float)
+        w = avail * avail / np.maximum(self.K, 1)
+        vill = (self.v_ex & (self.v_pop > 0)).astype(float)
+        occ = self.lair_occ.sum(-1).astype(float)
+        n = sum(shift(occ, dy, dx) for dy, dx in DIR9)     # occupied lairs whose 3 x 3 holds it
+        oil = p.oil_weight * self.nests.exists.astype(float)
+        item = w + p.gate_village * vill + oil
+        W = sum(shift(item / np.maximum(n, 1), dy, dx) for dy, dx in DIR9) + p.gate_wild / np.maximum(n, 1)
+        Wn = sum(shift(item / (n + 1), dy, dx) for dy, dx in DIR9) + p.gate_wild / (n + 1)
+        iota = W / (W + p.dragon_half)
+        if p.oil_weight > 0 and not p.oil_breeds:
+            Wo = sum(shift(oil / np.maximum(n, 1), dy, dx) for dy, dx in DIR9)
+            food_share = 1.0 - Wo / np.maximum(W, 1e-9)
+        else:
+            food_share = 1.0
+        self.iota_new = Wn / (Wn + p.dragon_half)
+        c = occ * p.dragon_eat * dt * iota / np.maximum(W, 1e-9)
+        demand = (w / np.maximum(n, 1)) * sum(shift(c, dy, dx) for dy, dx in DIR9)
+        kills = np.minimum(self.rng.poisson(demand), avail.astype(np.int64))
+        ky = self.rng.binomial(kills, np.where(N > 0, self.Y / np.maximum(N, 1), 0))
+        self.Y = self.Y - np.minimum(ky, self.Y)
+        self.A = self.A - np.minimum(kills - ky, self.A)
+        a = min(1.0, dt / p.fed_tau)
+        self.lair_fed += (iota[..., None] - self.lair_fed) * a * self.lair_occ
+        ib = iota * food_share
+        self.lair_fed_b += (ib[..., None] - self.lair_fed_b) * a * self.lair_occ
         return iota
 
     def mark_extinct(self):
@@ -457,6 +513,11 @@ class World:
         self.lair_occ = occ & ~go
         self.lair_due = np.where(go, t + delay, self.lair_due)
         ready = self.lair_ex & ~self.lair_occ & (self.lair_due <= t) & self.known[..., None]
+        if p.food_gate:
+            ready = self.food_gate_births_and_young(t, dt, ready)
+            iota = self.iota_new
+            # one newcomer a region a step, so the next reads the gate with it counted
+            ready &= np.cumsum(ready, axis=-1) == 1
         if p.proposed:
             fed_ok = (iota >= p.arrive_food)[..., None]
             wait = ready & ~fed_ok
@@ -465,8 +526,58 @@ class World:
         self.lair_occ = self.lair_occ | ready
         self.lair_age = np.where(ready, p.arrive_age, self.lair_age)
         self.lair_fed = np.where(ready, 1.0, self.lair_fed)
+        self.lair_fed_b = np.where(ready, 1.0, self.lair_fed_b)
         self.lair_due = np.where(ready, INF, self.lair_due)
         self.lair_events += int(ready.sum())
+        if p.food_gate:
+            self.frontier_n += int(ready.sum())
+
+    def food_gate_births_and_young(self, t, dt, ready):
+        """EQC531, EQC532, EQC534: each occupied lair's breeder (mature) hatches young at
+        (fed - maintenance) / (1 - maintenance) a clutch, one clutch in `breed_days`; each young
+        claims the nearest due empty lair within `young_reach` whose gate passes, at most one a
+        region a step, else leaves at `emigrate_age`. Returns the due lairs still empty."""
+        p, rng = self.p, self.rng
+        m = p.starve_leave
+        chance = np.clip((self.lair_fed_b - m) / (1 - m), 0, 1)
+        breeders = self.lair_occ & (self.lair_age >= p.mature_age)
+        born = rng.poisson(np.where(breeders, chance * dt / p.breed_days, 0.0))
+        if born.any():
+            for s, y, x, _k in zip(*np.nonzero(born)):
+                for _ in range(int(born[s, y, x, _k])):
+                    self.young[s].append((int(y), int(x), t + p.disperse_age, t + p.emigrate_age))
+            self.births_n += int(born.sum())
+        ok = self.iota_new >= p.arrive_food
+        for s in range(self.S):
+            if not self.young[s]:
+                continue
+            free = ready[s] & ok[s][..., None]
+            keep = []
+            for (y, x, due, last) in self.young[s]:
+                if due > t:
+                    keep.append((y, x, due, last))
+                    continue
+                d = np.maximum(np.abs(YY - y), np.abs(XX - x))
+                cand = free.any(-1) & (d <= p.young_reach)
+                if cand.any():
+                    dd = np.where(cand, d, 10 ** 6)
+                    ty, tx = np.unravel_index(int(np.argmin(dd)), dd.shape)
+                    k = int(np.argmax(free[ty, tx]))
+                    self.lair_occ[s, ty, tx, k] = True
+                    self.lair_age[s, ty, tx, k] = p.disperse_age
+                    self.lair_fed[s, ty, tx, k] = 1.0
+                    self.lair_fed_b[s, ty, tx, k] = 1.0
+                    self.lair_due[s, ty, tx, k] = INF
+                    free[ty, tx, :] = False        # one a region a step: the next reads it held
+                    ready[s, ty, tx, k] = False
+                    self.settled_n += 1
+                    self.lair_events += 1
+                elif t >= last:
+                    self.emigrated_n += 1
+                else:
+                    keep.append((y, x, due, last))
+            self.young[s] = keep
+        return ready
 
     def kill_dragons(self, mask, t):
         p = self.p
@@ -668,6 +779,11 @@ class World:
             "herd_top_share": top,
             "dragons": (self.lair_occ & kn[..., None]).sum((1, 2, 3)),
             "lairs": (self.lair_ex & kn[..., None]).sum((1, 2, 3)),
+            "dragons_oil": (self.lair_occ & (kn & near(self.nests.exists, 1))[..., None]).sum((1, 2, 3)),
+            "lairs_oil": (self.lair_ex & (kn & near(self.nests.exists, 1))[..., None]).sum((1, 2, 3)),
+            "dragons_dry": (self.lair_occ & (kn & ~near(self.nests.exists, 1))[..., None]).sum((1, 2, 3)),
+            "lairs_dry": (self.lair_ex & (kn & ~near(self.nests.exists, 1))[..., None]).sum((1, 2, 3)),
+            "known_regions": kn.sum((1, 2)),
             "village_pop": np.where(kn, self.v_pop, 0).sum((1, 2)),
             "village_beds": np.where(kn & self.v_ex, self.v_K, 0).sum((1, 2)),
             "villages_alive": (kn & self.v_ex & (self.v_pop >= 2)).sum((1, 2)),
@@ -753,7 +869,7 @@ class Player:
         if self.kind == "roamer":
             h = self.here()
             u = lambda q: h & (r.random((S, G, G)) < q)
-            w.kill_dragons(u(0.5)[..., None] & np.ones(2, bool), t)
+            w.kill_dragons(u(0.5)[..., None] & np.ones(w.lair_ex.shape[-1], bool), t)
             w.dens.lose(u(0.5), np.ones((S, G, G), np.int64), t, True)
             w.groves.lose(u(0.3), w.groves.n, t, True)
             w.chiefs.lose(u(0.3), np.ones((S, G, G), np.int64), t, True)
@@ -762,13 +878,13 @@ class Player:
             w.sink_ships(u(0.3), t)
         elif self.kind == "homebody":
             guard = cheb(*self.home) <= 2
-            hit = (r.random((S, G, G, 2)) < 0.01 * dt) & guard[None, ..., None]
+            hit = (r.random((S, G, G, w.lair_ex.shape[-1])) < 0.01 * dt) & guard[None, ..., None]
             w.kill_dragons(hit, t)
         elif self.kind == "farmer" and int(t) % 2 == 0:
             m = np.zeros((S, G, G), bool)
             m[:, self.home[0], self.home[1]] = True
             if self.farm == "lair":
-                w.kill_dragons(m[..., None] & np.ones(2, bool), t)
+                w.kill_dragons(m[..., None] & np.ones(w.lair_ex.shape[-1], bool), t)
             elif self.farm == "den":
                 w.dens.lose(m, np.ones((S, G, G), np.int64), t, True)
             elif self.farm == "grove":
@@ -782,9 +898,9 @@ def force_farm_site(w: World, farm, home):
     y, x = home
     if farm == "lair":
         w.lair_ex[:, y, x, 0] = True
-        w.lair_ex[:, y, x, 1] = False
+        w.lair_ex[:, y, x, 1:] = False
         w.lair_occ[:, y, x, 0] = True
-        w.lair_occ[:, y, x, 1] = False
+        w.lair_occ[:, y, x, 1:] = False
         w.lair_age[:, y, x, 0] = 30
     elif farm == "den":
         w.dens.exists[:, y, x] = True

@@ -55,6 +55,8 @@ public final class UmvuthiAloft implements Traveller {
         final int[] tops = new int[COLUMNS];
         /** The foot's height the rule gives, and with the stuck rule's raise. */
         double base, target;
+        /** The foot's height it hovers at, over a fluid (MZB-1305). */
+        double hoverY;
         long lookedAt = NEVER, trailAt = NEVER, playerTargetAt = NEVER;
         /** It stays where it is (down on the ground, or hovering over a fluid), until it rises. */
         boolean settled;
@@ -96,8 +98,11 @@ public final class UmvuthiAloft implements Traveller {
             s.playerTargetAt = now;
         boolean attack = way.attack() && !way.recalled();
         if (s.settled) {
-            if (!AloftRules.rises(attack, player, now, s.playerTargetAt))
+            if (!AloftRules.rises(attack, player, now, s.playerTargetAt)) {
+                if (!s.grounded)
+                    hover(u, s); // its gravity is off: nothing else stops a push or Levitation that lands on it (MZB-1305)
                 return;
+            }
             rise(u, s);
         }
         double tdx = way.targetX() - u.getX(), tdz = way.targetZ() - u.getZ();
@@ -111,6 +116,7 @@ public final class UmvuthiAloft implements Traveller {
             case HOVER -> {
                 hold(u);
                 s.settled = true;
+                s.hoverY = u.getY();
                 return;
             }
             case AIR -> {
@@ -267,6 +273,21 @@ public final class UmvuthiAloft implements Traveller {
         u.setDeltaMovement(Vec3.ZERO);
         u.resetFallDistance();
         u.move(MoverType.SELF, new Vec3(hx, vy, hz));
+        u.setDeltaMovement(Vec3.ZERO);
+        u.restrictTo(u.blockPosition(), -1);
+    }
+
+    /**
+     * A hovering body's tick (MZB-1305): what moved it since the last (a push, Levitation) is zeroed, and it steps back toward the
+     * height it hovers at, at the rule's pace and with collision. Its gravity is off, so without this a push or an effect that lifts it
+     * would carry it off for good.
+     */
+    private static void hover(EntityUmvuthi u, Aloft s) {
+        u.setDeltaMovement(Vec3.ZERO);
+        u.resetFallDistance();
+        double vy = AloftRules.verticalStep(u.getY(), s.hoverY);
+        if (vy != 0.0)
+            u.move(MoverType.SELF, new Vec3(0.0, vy, 0.0));
         u.setDeltaMovement(Vec3.ZERO);
         u.restrictTo(u.blockPosition(), -1);
     }

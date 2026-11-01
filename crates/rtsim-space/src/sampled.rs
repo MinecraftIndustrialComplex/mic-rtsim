@@ -15,9 +15,7 @@ use crate::habitat::{
     self, ALL_POINTS, CELL_BLOCKS, CELL_CHUNKS, Creature, Habitat, HabitatRecord, POINTS,
     REGION_BLOCKS, REGION_CELLS, tag,
 };
-use crate::model::{
-    Area, Creatures, SEASON_OFFSETS, WorldModel, season_offset_of, vanilla_celsius,
-};
+use crate::model::{Area, Creatures, SEASON_OFFSETS, WorldModel, vanilla_celsius};
 
 /// A region of one frame: (frame, region x, region z).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -210,11 +208,12 @@ pub fn vegetation(tags: u32, downfall: f32) -> f32 {
     base * factor
 }
 
-/// The year-round °C of a cell: a plugin's reading less the season it was taken in, else
-/// vanilla's biome temperature on mic-climate's scale (X2-8).
+/// The year-round °C of a cell: the climate the bridge sent (docs/boundary.md §10.3: no
+/// weather, no time of day, no season), else vanilla's biome temperature on mic-climate's scale
+/// (X2-8). The season is [`WorldModel::season_offset`]'s, added once by whoever reads it.
 pub fn base_celsius(h: &Habitat) -> f32 {
     if h.celsius.is_finite() {
-        h.celsius - season_offset_of(h.season, h.season_count)
+        h.celsius
     } else {
         vanilla_celsius(h.temperature)
     }

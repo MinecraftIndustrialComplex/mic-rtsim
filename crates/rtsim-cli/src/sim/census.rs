@@ -423,21 +423,66 @@ impl Ecology {
         rx: std::ops::RangeInclusive<i32>,
         rz: std::ops::RangeInclusive<i32>,
     ) -> Self {
+        let lairs = rtsim_ecology::synth::lairs();
+        Self::ranges_with(seed, htun, rx, rz, &lairs, Self::dragon_tunables())
+    }
+
+    /// The dragons' tunables the scenarios use (the default calendar).
+    pub fn dragon_tunables() -> DragonTunables {
+        DragonTunables {
+            calendar: Calendar::default(),
+            ..DragonTunables::default()
+        }
+    }
+
+    /// [`Ecology::ranges_in`] under `lairs` instead of the phase 1 world's five, with the dragons'
+    /// tunables `dtun` (the lair-density diagnosis, `sim::equilibrium`'s [`super::equilibrium::jar_lairs`]).
+    pub fn ranges_with(
+        seed: u64,
+        htun: HerdTunables,
+        rx: std::ops::RangeInclusive<i32>,
+        rz: std::ops::RangeInclusive<i32>,
+        lairs: &[rtsim_ecology::synth::LairSpec],
+        dtun: DragonTunables,
+    ) -> Self {
         let h = rtsim_ecology::herds::synth::ranges(seed, htun, Tick::ZERO, rx, rz);
-        Self::with_herds(seed, h, false)
+        Self::with_herds_on(seed, h, false, lairs, dtun)
+    }
+
+    /// [`Ecology::ranges_with`] with the herds' K capped by the valley's forage
+    /// (`rtsim_ecology::herds::synth::ranges_capped`, EQUILIBRIUM.md §2.4.2).
+    #[cfg(test)]
+    pub fn ranges_capped_with(
+        seed: u64,
+        htun: HerdTunables,
+        rx: std::ops::RangeInclusive<i32>,
+        rz: std::ops::RangeInclusive<i32>,
+        lairs: &[rtsim_ecology::synth::LairSpec],
+        dtun: DragonTunables,
+    ) -> Self {
+        let h = rtsim_ecology::herds::synth::ranges_capped(seed, htun, Tick::ZERO, rx, rz);
+        Self::with_herds_on(seed, h, false, lairs, dtun)
     }
 
     /// The phase 1 dragon world over the herds `h`, with oil under two nests if `oil`.
     pub fn with_herds(seed: u64, h: Herds, oil: bool) -> Self {
+        let lairs = rtsim_ecology::synth::lairs();
+        Self::with_herds_on(seed, h, oil, &lairs, Self::dragon_tunables())
+    }
+
+    /// [`Ecology::with_herds`] under `lairs`, with the dragons' tunables `tun`.
+    pub fn with_herds_on(
+        seed: u64,
+        h: Herds,
+        oil: bool,
+        lairs: &[rtsim_ecology::synth::LairSpec],
+        tun: DragonTunables,
+    ) -> Self {
         use rtsim_ecology::boundary::{self, Obs, OilChunkRec, OilChunks};
         use rtsim_ecology::synth;
         let (mut w, _) = synth::world(seed);
-        let tun = DragonTunables {
-            calendar: Calendar::default(),
-            ..DragonTunables::default()
-        };
         let mut d = Dragons::new(seed, tun, Tick::ZERO);
-        synth::populate(&mut w, &mut d, &synth::lairs(), Tick::ZERO);
+        synth::populate(&mut w, &mut d, lairs, Tick::ZERO);
         let mut e = Ecology {
             w,
             d,

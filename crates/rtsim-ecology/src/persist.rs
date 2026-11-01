@@ -43,8 +43,8 @@ use crate::boundary::{self, SpeciesDict};
 use crate::dragon::{Dragon, FlightLeg, Lair, LairKind, Lairs, Purpose, State, Target};
 use crate::engine::{
     Chest, DRAGON_TABLE, DRAGONS_PER_PAGE, DragonStats, Dragons, Ev, LAIR_CELL_TABLE,
-    LAIR_KEY_TABLE, Placing, PlayerView, ROAD_CELL_TABLE, TributeRow, VILLAGE_CELL_TABLE,
-    WHEEL_TABLE,
+    LAIR_KEY_TABLE, Placing, PlayerView, RAID_REST_TABLE, ROAD_CELL_TABLE, TributeRow,
+    VILLAGE_CELL_TABLE, WHEEL_TABLE,
 };
 use crate::homes::{Entry, Homes, PlayerHome};
 use crate::index::PreyIndex;
@@ -65,13 +65,15 @@ use crate::tunables::{DragonTunables, PreyKind};
 ///
 /// "RTD9" was the format before the home bodies (EQUILIBRIUM.md S5, EQC135): each dragon's `body`
 /// and `miss`, each lair's `gap`, `left_behind`, `missing`, `expect` and `miss`.
-/// It is the tenth format, written "RTDA" to keep the magic four bytes.
-const MAGIC: u32 = u32::from_le_bytes(*b"RTDA");
+/// "RTDA" was the format before the settlements' rests after a raid (EQC557, after the nests).
+/// It is the eleventh format, written "RTDB".
+const MAGIC: u32 = u32::from_le_bytes(*b"RTDB");
 /// The meta page of a paged save ("RTDM" before PF9, "RTN2" before tribute, "RTN3" before the oil
 /// gate, "RTN4" before the fields' daily watch, "RTN5" before the oil nests, "RTN6" before the
 /// lairs' renewal rule, "RTN7" before the nests' renewal serial, "RTN8" before the site ledger's
-/// hand-over, "RTN9" before the home bodies' counters; the tenth, "RTNA").
-const META_MAGIC: u32 = u32::from_le_bytes(*b"RTNA");
+/// hand-over, "RTN9" before the home bodies' counters, "RTNA" before the settlements' rests' table
+/// (0x441A); the eleventh, "RTNB").
+const META_MAGIC: u32 = u32::from_le_bytes(*b"RTNB");
 
 fn bad<T>(what: String) -> codec::Result<T> {
     Err(CodecError::Invalid(what))
@@ -240,6 +242,25 @@ fn put_target(w: &mut Writer, t: &Target) {
             w.var_i64(i64::from(x));
             w.var_i64(i64::from(z));
         }
+        Target::Camp { camp, frame, x, z } => {
+            w.u8(5);
+            w.u64(camp);
+            w.u16(frame);
+            w.var_i64(i64::from(x));
+            w.var_i64(i64::from(z));
+        }
+        Target::Larder {
+            district,
+            frame,
+            x,
+            z,
+        } => {
+            w.u8(6);
+            w.u64(district);
+            w.u16(frame);
+            w.var_i64(i64::from(x));
+            w.var_i64(i64::from(z));
+        }
     }
 }
 
@@ -267,6 +288,18 @@ fn get_target(r: &mut Reader<'_>) -> codec::Result<Target> {
             z: i32_of(r.var_i64()?)?,
         },
         4 => Target::District {
+            district: r.u64()?,
+            frame: r.u16()?,
+            x: i32_of(r.var_i64()?)?,
+            z: i32_of(r.var_i64()?)?,
+        },
+        5 => Target::Camp {
+            camp: r.u64()?,
+            frame: r.u16()?,
+            x: i32_of(r.var_i64()?)?,
+            z: i32_of(r.var_i64()?)?,
+        },
+        6 => Target::Larder {
             district: r.u64()?,
             frame: r.u16()?,
             x: i32_of(r.var_i64()?)?,
@@ -952,6 +985,16 @@ fn put_cells(w: &mut Writer, m: &Cells<u32>) {
     }
 }
 
+/// A settlement's rest key (the engine's `raid_key`): its high half, then its low.
+fn put_rest_key(k: &u128, w: &mut Writer) {
+    w.u64((*k >> 64) as u64);
+    w.u64(*k as u64);
+}
+
+fn get_rest_key(r: &mut Reader<'_>) -> codec::Result<u128> {
+    Ok((u128::from(r.u64()?) << 64) | u128::from(r.u64()?))
+}
+
 fn get_cells(r: &mut Reader<'_>) -> codec::Result<Cells<u32>> {
     let mut m = BTreeMap::new();
     for _ in 0..r.len_prefix(5)? {
@@ -1242,6 +1285,8 @@ pub struct DragonsTickets {
     /// The oil index's regions and fields.
     oil: [MapTicket; 2],
     nests: MapTicket,
+    /// The settlements' rests after a raid (EQC557).
+    rests: MapTicket,
     dragons: SaveTicket,
     lairs: SaveTicket,
 }
@@ -1256,11 +1301,12 @@ impl DragonsTickets {
             + self.cells.iter().map(MapTicket::pages).sum::<usize>()
             + self.oil.iter().map(MapTicket::pages).sum::<usize>()
             + self.nests.pages()
+            + self.rests.pages()
     }
 }
 
 /// Every page table the dragons own when they page: a meta key in none of them.
-pub const TABLES: [u16; 10] = [
+pub const TABLES: [u16; 11] = [
     DRAGON_TABLE,
     Lairs::TABLE,
     WHEEL_TABLE,
@@ -1271,6 +1317,7 @@ pub const TABLES: [u16; 10] = [
     OIL_REGION_TABLE,
     OIL_FIELD_TABLE,
     NEST_TABLE,
+    RAID_REST_TABLE,
 ];
 
 /// The row tables' paging counters, for the bench.
@@ -1613,6 +1660,11 @@ impl Dragons {
             put_cell(&mut w, c);
             put_nest(n, &mut w);
         }
+        w.var_u64(self.raided.len() as u64);
+        for (k, t) in self.raided.iter() {
+            put_rest_key(k, &mut w);
+            w.u64(t.0);
+        }
         self.dragons.encode_all(&mut w);
         self.lairs.rows().encode_all(&mut w);
         w.into_bytes()
@@ -1652,6 +1704,12 @@ impl Dragons {
             nests.insert(c, get_nest(r)?);
         }
         d.nests.rows = nests.into();
+        let mut raided = BTreeMap::new();
+        for _ in 0..r.len_prefix(24)? {
+            let k = get_rest_key(r)?;
+            raided.insert(k, Tick(r.u64()?));
+        }
+        d.raided = raided.into();
         d.dragons = PagedArena::decode_all(DRAGON_TABLE, DRAGONS_PER_PAGE, r)?;
         let lairs = PagedRows::decode_all(Lairs::TABLE, Lairs::PER_PAGE, r)?;
         // Keys in strictly rising order, the last `len - 1`: exactly `0..len`.
@@ -1748,6 +1806,11 @@ impl Dragons {
             |c, w| put_cell(w, c),
             put_nest,
         );
+        let rests = self
+            .raided
+            .save_paged(batch, RAID_REST_TABLE, &mut w, put_rest_key, |t, w| {
+                w.u64(t.0)
+            });
         batch.put(meta_key, w.as_bytes());
         DragonsTickets {
             wheel,
@@ -1755,6 +1818,7 @@ impl Dragons {
             cells,
             oil,
             nests,
+            rests,
             dragons: self.dragons.rows_mut().save_dirty(batch),
             lairs: self.lairs.rows_mut().save_dirty(batch),
         }
@@ -1772,6 +1836,7 @@ impl Dragons {
         self.oil.regions.saved(r);
         self.oil.fields.saved(f);
         self.nests.rows.saved(t.nests);
+        self.raided.saved(t.rests);
         self.dragons.rows_mut().saved(t.dragons);
         self.lairs.rows_mut().saved(t.lairs);
     }
@@ -1789,6 +1854,7 @@ impl Dragons {
         self.oil.regions.save_failed(r);
         self.oil.fields.save_failed(f);
         self.nests.rows.save_failed(t.nests);
+        self.raided.save_failed(t.rests);
         self.dragons.rows_mut().save_failed(t.dragons);
         self.lairs.rows_mut().save_failed(t.lairs);
     }
@@ -1834,6 +1900,10 @@ impl Dragons {
         .map_err(format_err)?;
         d.nests.rows =
             PagedMap::open_paged(r, NEST_TABLE, src, get_cell, get_nest).map_err(format_err)?;
+        d.raided = PagedMap::open_paged(r, RAID_REST_TABLE, src, get_rest_key, |r| {
+            Ok(Tick(r.u64()?))
+        })
+        .map_err(format_err)?;
         if !r.is_empty() {
             return Err(PageError::Format(format!(
                 "{} trailing bytes in the dragons' meta page",

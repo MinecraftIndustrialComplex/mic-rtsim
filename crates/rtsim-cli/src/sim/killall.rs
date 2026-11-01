@@ -160,29 +160,42 @@ fn herds_local_judge(rs: &[KindRefill]) -> Result<(), String> {
     })
 }
 
+/// S4's world as main's `kill_all_dragons_30_seeds` runs it since the food gate (EQC539): the
+/// jar's lairs at the real density, the herds' K capped by forage.
 fn dragons(row: &Row, seed: u64) -> KindRefill {
-    let r = eq::dragon_kill_all(&Grid::world(), seed, 20 * YEAR, 6 * YEAR);
-    let cap = 192 + eq::EVERY;
+    let (grid, lairs) = eq::s4_world(seed);
+    let tun = (Ecology::herd_tunables(), Ecology::dragon_tunables());
+    let r = eq::dragon_kill_all_on(&grid, seed, &lairs, tun, 20 * YEAR, 6 * YEAR);
     KindRefill {
         killed: r.killed,
         pre: r.pre,
         half: days(r.half),
         ninety_ctrl: days(r.ninety_ctrl),
         end_over_ctrl: r.end_over_ctrl,
-        checks: need(r.killed > 0, || format!("nothing killed: {r:?}"))
-            .and(need(r.ninety_ctrl.is_some_and(|d| d <= cap), || {
-                format!("not 90% of the control within {cap} days: {r:?}")
-            })),
+        checks: need(r.killed > 0, || format!("nothing killed: {r:?}")).and(need(
+            r.ninety_ctrl.is_some(),
+            || format!("not 90% of the control within the run: {r:?}"),
+        )),
         ..KindRefill::new(row, seed)
     }
 }
 
 fn dragons_judge(rs: &[KindRefill]) -> Result<(), String> {
     let ninety = median(rs, |r| r.ninety_ctrl);
+    let ninety_95 = band(
+        &rs.iter()
+            .map(|r| r.ninety_ctrl.unwrap_or(f64::INFINITY))
+            .collect::<Vec<_>>(),
+    )
+    .2;
     let end = median(rs, |r| Some(r.end_over_ctrl));
+    let cap = (240 + eq::EVERY) as f64;
     need(ninety <= 72.0, || {
         format!("median days to 90% of the control {ninety}")
     })
+    .and(need(ninety_95 <= cap, || {
+        format!("95th days to 90% of the control {ninety_95}, over {cap}")
+    }))
     .and(need((0.9..=1.1).contains(&end), || {
         format!("median end over the control {end}")
     }))
@@ -485,11 +498,13 @@ fn herds_together(r: &KindRefill) -> Result<(), String> {
     }))
 }
 
+/// With pairs a Frontier dragon goes as a mate before it refills an empty lair (EQC576): the
+/// alone row's 95th, 240 days, is each together seed's bound.
 fn dragons_together(r: &KindRefill) -> Result<(), String> {
     within(
         "90% of the control",
         r.ninety_ctrl,
-        (192 + eq::EVERY) as f64,
+        (240 + eq::EVERY) as f64,
     )
 }
 
@@ -568,9 +583,10 @@ pub const ROWS: &[Row] = &[
         name: "dragons",
         kind: "dragon.lair",
         test: "kill_all_dragons_30_seeds",
-        band: "median 90% of the control within 72 days, each seed within 216; end over the \
-               control median 0.9 to 1.1",
-        record: "EQC32; S4",
+        band: "S4's world at the real lair density: median 90% of the control within 72 days, \
+               95th within 240, every seed back within the run; end over the control median 0.9 \
+               to 1.1",
+        record: "EQC32; S4; EQC539, EQC576",
         run: dragons,
         judge: dragons_judge,
         together: Some(dragons_together),

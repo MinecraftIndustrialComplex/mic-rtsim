@@ -706,6 +706,21 @@ pub(super) fn run_engine(st: &mut State, t: Tick) {
         return;
     }
     let t = t.max(shared::floor(st, st.dragons.engine.now()));
+    // Camps are prey too (EQC556, PP-4 (a)): the conflict serves what the dragons may take, and
+    // books what they took after the run.
+    let conflict = super::conflict::running(st);
+    let camps = if conflict {
+        let tun = &st.dragons.engine.tun;
+        rtsim_ecology::trophic::Prey::camp_prey(
+            &st.conflict.engine,
+            &tun.camp_cultures,
+            tun.camp_refuge,
+            st.dragons.engine.now(),
+        )
+    } else {
+        Vec::new()
+    };
+    st.dragons.engine.set_camps(camps);
     if super::herds::running(st) && t >= st.herds.engine.now() {
         // The herds are prey (PLAN.md §10.2): their events run in the dragons' time order, and
         // hungry dragons weigh and hunt them (`Dragons::run_until_with_herds`, Y7).
@@ -727,6 +742,16 @@ pub(super) fn run_engine(st: &mut State, t: Tick) {
         super::herds::take_commands(st);
     } else {
         with_infra(st, |d, w, infra| d.run_until(w, infra, t));
+    }
+    let losses = st.dragons.engine.take_camp_losses();
+    if conflict {
+        for l in &losses {
+            rtsim_ecology::trophic::Prey::lose_to_predator(
+                &mut st.conflict.engine,
+                &mut st.phase1.world,
+                l,
+            );
+        }
     }
     st.phase1.taint();
     take_commands(st);
