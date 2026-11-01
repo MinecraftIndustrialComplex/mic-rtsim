@@ -1690,6 +1690,10 @@ mod tests {
     /// the refill (EQC543): a held dragon stays down to maintenance (0.35) but a newcomer needs the
     /// shared gate's 0.5, so the control can hold lairs the gate would not refill today, and those
     /// wait for the herds to grow back (seed 28: 312 days; 48 with the gate at maintenance).
+    /// With pairs (EQC576) the 95th is 240 days: a Frontier dragon goes as a mate to a lone
+    /// breeder in reach before it refills an empty lair, which then waits 24 days more, so the
+    /// last lairs to refill wait behind the first ones' mates (measured 48 [24, 240], before
+    /// pairs 72 [24, 192]).
     #[test]
     #[ignore]
     fn kill_all_dragons_30_seeds() {
@@ -1704,7 +1708,7 @@ mod tests {
         }
         let ninety = band(&rs.iter().map(|r| days(r.ninety_ctrl)).collect::<Vec<_>>());
         assert!(ninety.0 <= 72.0, "{ninety:?}");
-        assert!(ninety.2 <= (192 + EVERY) as f64, "{ninety:?}");
+        assert!(ninety.2 <= (240 + EVERY) as f64, "{ninety:?}");
         let end = band(&rs.iter().map(|r| r.end_over_ctrl).collect::<Vec<_>>());
         assert!((0.9..=1.1).contains(&end.0), "{end:?}");
     }
