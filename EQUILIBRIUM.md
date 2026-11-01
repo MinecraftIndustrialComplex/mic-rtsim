@@ -1489,6 +1489,16 @@ and at a plains, savanna and forest world's (1.6).
   ranges alive at any census is 0.96 at worst (two of 56), 1.00 in 43 of 60 runs; with no dragons,
   1.00. Predation never takes a herd below its refuge (§3.4).
 
+**Predator and prey** (§2.4.11, designed 2026-10-31, docs/overnight-choices-equilibrium.md EQC550 to
+EQC569). Nothing is measured yet beyond §3.4's closed form: pairs leave the dragons a region where
+the gate puts them and can halve the lairs held where most pair; each settlement or oil row adds
+`a / 200` dragons a region at the margin, so an oil field of 800 holds about four fire dragons in its
+nine regions, every lair there at the real density. The model's `run.py --only oil` (a food-limited
+world like S4's, oil weights 0 to 800) is ready and not yet run. When built: S4's lairs-held band is
+re-measured (pairs), its herds' band stays (its world has no outposts, districts or oil); S10 does
+not move; S11's dragon bands come from its own every-kind world, and its outposts and pool camps
+leave their exact 1.00 for a band once a dragon can eat pillagers (EQC566).
+
 **Farming one site** for 60 years: §3.3's table (the model matches the closed forms within 5%).
 
 **Unattended for ten real years** (262,980 game days, 8 seeds, by game century):
