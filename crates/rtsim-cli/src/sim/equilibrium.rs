@@ -10,9 +10,12 @@
 //!   over the year before the wipe, days to 90% of the control at the same census, the last
 //!   year over the control's, and whether every range holds a herd.
 //!
-//! - **Dragons** ([`dragon_run`], slice S4): the same worlds' five lairs under the model's roamer
+//! - **Dragons** ([`dragon_run_on`], slice S4): the same worlds under the model's roamer
 //!   ([`Roamer`]: it wanders the known regions and kills the dragons of the lair it stands by),
 //!   read on lairs held and the herds; a kill-all at some day against the same seed's control.
+//!   Since the dragon food gate ([`s4_world`], docs/overnight-choices-equilibrium.md EQC539) the
+//!   herds' K is capped by the valley's forage and the lairs are the jar's at the real density
+//!   ([`jar_lairs`], [`REAL_LAIRS`]), not the phase 1 world's five.
 //!
 //! - **Dens and groves** ([`mowzie_run`], slice S9): one Frostmaw den or Umvuthana grove played
 //!   against the emulated plugin by a scripted player ([`MowziePresser`]: none, a kill-all, a
@@ -468,22 +471,9 @@ pub struct DragonRun {
     pub emigrated: u64,
 }
 
-/// A ranges world of `seed` run to `to` days, with the roamer if `roamer` (else nobody), a census
-/// every [`EVERY`] days and `shock`.
-pub fn dragon_run(grid: &Grid, seed: u64, roamer: bool, shock: Shock, to: u64) -> DragonRun {
-    let tun = (Ecology::herd_tunables(), Ecology::dragon_tunables());
-    dragon_run_on(
-        grid,
-        seed,
-        &rtsim_ecology::synth::lairs(),
-        tun,
-        roamer,
-        shock,
-        to,
-    )
-}
-
-/// [`dragon_run`] under `lairs`, with the herds' and the dragons' tunables `tun`.
+/// A ranges world of `seed` under `lairs` run to `to` days, with the herds' and the dragons'
+/// tunables `tun`, the roamer if `roamer` (else nobody), a census every [`EVERY`] days and
+/// `shock`.
 pub fn dragon_run_on(
     grid: &Grid,
     seed: u64,
@@ -597,6 +587,23 @@ pub fn dragon_run_on(
 pub struct LairLayout {
     pub region_share: f64,
     pub cell_share: f64,
+}
+
+/// The server's world's lair density (the dragon food gate, docs/overnight-choices-equilibrium.md
+/// EQC539): a region holds a biome some dragon's tag names with chance 0.42, and in it a candidate
+/// chunk's with chance 0.51, which gives the 0.5 lairs a region of the 2026-10-21 snapshot (0.48
+/// to 0.53 outside the spawn disk, 30% of its regions holding one, 1.8 where any).
+pub const REAL_LAIRS: LairLayout = LairLayout {
+    region_share: 0.42,
+    cell_share: 0.51,
+};
+
+/// S4's world since the dragon food gate (EQC539): the ranges grid with the herds' K capped by
+/// the valley's forage, and the jar's lairs at the real density.
+pub fn s4_world(seed: u64) -> (Grid, Vec<LairSpec>) {
+    let grid = Grid::world_capped();
+    let lairs = jar_lairs(&grid, seed, REAL_LAIRS);
+    (grid, lairs)
 }
 
 /// Ice and Fire's lairs as the pack's jar places them (`iceandfire-2.1-beta.1`, read with CFR,
@@ -719,15 +726,8 @@ pub struct DragonRefill {
     pub end_over_ctrl: f64,
 }
 
-/// Runs a ranges world of `seed` with the roamer to `shock_day + after_days` twice: every dragon
-/// killed at `shock_day`, and the control.
-pub fn dragon_kill_all(grid: &Grid, seed: u64, shock_day: u64, after_days: u64) -> DragonRefill {
-    let tun = (Ecology::herd_tunables(), Ecology::dragon_tunables());
-    let lairs = rtsim_ecology::synth::lairs();
-    dragon_kill_all_on(grid, seed, &lairs, tun, shock_day, after_days)
-}
-
-/// [`dragon_kill_all`] under `lairs`, with the herds' and the dragons' tunables `tun`.
+/// Runs a ranges world of `seed` under `lairs` and the tunables `tun` with the roamer to
+/// `shock_day + after_days` twice: every dragon killed at `shock_day`, and the control.
 pub fn dragon_kill_all_on(
     grid: &Grid,
     seed: u64,
@@ -1661,31 +1661,40 @@ mod tests {
         }
     }
 
-    /// Every dragon killed in the second year, then a peaceful player: the lairs wait out the
-    /// pressure the kill raised (40 days) and newcomers fill them, back to 90% of the same seed's
-    /// control within 72 days (§3.6's kill-all row: 48 [48, 72]).
+    /// The herds' and the dragons' tunables S4's checks run.
+    fn s4_tun() -> (HerdTunables, DragonTunables) {
+        (Ecology::herd_tunables(), Ecology::dragon_tunables())
+    }
+
+    /// Every dragon killed in the fifth year, then a peaceful player, on S4's world (EQC539: the
+    /// real lair density, the herds' K capped): the lairs wait out the pressure the kill raised
+    /// (40 days) and newcomers fill those the shared gate lets them, back to 90% of the same
+    /// seed's control within 72 days (§3.6's kill-all row: 48 [48, 72]). Not in the second year,
+    /// as before the gate: every one of the jar's lairs starts with its dragon, which needs no
+    /// gate, and the control is still losing them to age and hunger then (EQC544).
     #[test]
     fn kill_all_dragons() {
-        let r = dragon_kill_all(&Grid::world(), 1, YEAR, 2 * YEAR);
+        let (grid, lairs) = s4_world(1);
+        let r = dragon_kill_all_on(&grid, 1, &lairs, s4_tun(), 4 * YEAR, 2 * YEAR);
         print_dragon_refills(std::slice::from_ref(&r));
-        assert!(r.killed >= 4, "{r:?}");
+        assert!(r.killed >= 2, "{r:?}");
         assert!(r.ninety_ctrl.is_some_and(|d| d <= 72), "{r:?}");
         assert!(r.end_over_ctrl >= 0.9, "{r:?}");
     }
 
-    /// §3.6's dragon kill-all, seeds 1 to 30: the roamer for 20 years, every dragon killed, a
-    /// peaceful player for 6 more; 90% of the control's lairs held within 72 days at the median,
-    /// every seed back within the rule's cap (192 days, read on the 24-day census), and the end
-    /// level the control's (the model: 50% at 48, 90% at 48 [48, 72], end over the control
-    /// 1.01). Five lairs make 90% of the control every lair the control holds, so one lair the
-    /// roamer pressed hard before the shock (P near 2.9 after it: a wait near 144 days) holds a
-    /// seed back; the model averages over many lairs (docs/overnight-choices-equilibrium.md,
-    /// the S4 findings).
+    /// §3.6's dragon kill-all, seeds 1 to 30, on S4's world (EQC539): the roamer for 20 years,
+    /// every dragon killed, a peaceful player for 6 more; 90% of the control's lairs held within
+    /// 72 days at the median, every seed back within the rule's cap (192 days, read on the 24-day
+    /// census), and the end level the control's (the model: 50% at 48, 90% at 48 [48, 72], end
+    /// over the control 1.01). The lairs the control holds are few (the food sets them, EQC530),
+    /// so one lair the roamer pressed hard before the shock (P near 2.9: a wait near 144 days) can
+    /// hold a seed back.
     #[test]
     #[ignore]
     fn kill_all_dragons_30_seeds() {
         let rs = par_map(&seeds(), threads(), |&seed| {
-            dragon_kill_all(&Grid::world(), seed, 20 * YEAR, 6 * YEAR)
+            let (grid, lairs) = s4_world(seed);
+            dragon_kill_all_on(&grid, seed, &lairs, s4_tun(), 20 * YEAR, 6 * YEAR)
         });
         print_dragon_refills(&rs);
         let cap = 192 + EVERY;
@@ -1726,23 +1735,26 @@ mod tests {
         }
     }
 
-    /// The roamer for four years over the whole grid: it kills dragons (each its player's loss),
-    /// the lairs it empties come back, every herd range stays alive, and most lairs are held.
+    /// The roamer for four years over S4's world (EQC539): it kills dragons (each its player's
+    /// loss), every herd range stays alive, and the lairs held are what the food feeds, a few of
+    /// the jar's many (EQC530), not most of them.
     #[test]
     fn long_horizon_dragons_and_herds_with_kills() {
-        let r = dragon_run(&Grid::world(), 1, true, Shock::None, 4 * YEAR);
+        let (grid, lairs) = s4_world(1);
+        let r = dragon_run_on(&grid, 1, &lairs, s4_tun(), true, Shock::None, 4 * YEAR);
         print_dragon_runs("roamer, 4 years", std::slice::from_ref(&r), 2 * YEAR);
         let m = dragon_means(&r, 2 * YEAR);
         assert!(r.roamer_kills > 0, "{r:?}");
         assert_eq!(r.stats.player_losses, r.roamer_kills, "{:?}", r.stats);
         assert_eq!(m.alive_min, 1.0, "{m:?}");
-        assert!(m.held >= 0.6, "{m:?}");
+        assert!((0.1..=0.6).contains(&m.held), "{m:?}");
     }
 
     /// §3.6's steady state with the roamer, seeds 1 to 30, 60 years, read over the last 30
-    /// against the same seeds with nobody: every herd range alive at every census, the lairs
-    /// held near the model's (roamer 0.89, nobody 0.95), the roamer's below nobody's, and the
-    /// herds where the engine's own no-player band has them (the roamer kills no herd).
+    /// against the same seeds with nobody, on S4's world (EQC539, EQC544): herd ranges alive at
+    /// every census but for a census or two while one refounds, the lairs held what the food
+    /// feeds (the model at 0.5 lairs a region: EQC541), and the herds near half their K with the
+    /// roamer as with nobody (it kills no herd, and under the gate its kills do not move the food).
     #[test]
     #[ignore]
     fn long_horizon_dragons_and_herds_with_kills_30_seeds() {
@@ -1751,7 +1763,8 @@ mod tests {
             .flat_map(|s| [(s, true), (s, false)])
             .collect();
         let got = par_map(&jobs, threads(), |&(seed, roamer)| {
-            dragon_run(&Grid::world(), seed, roamer, Shock::None, 60 * YEAR)
+            let (grid, lairs) = s4_world(seed);
+            dragon_run_on(&grid, seed, &lairs, s4_tun(), roamer, Shock::None, 60 * YEAR)
         });
         let roam: Vec<DragonRun> = got.iter().step_by(2).cloned().collect();
         let none: Vec<DragonRun> = got.iter().skip(1).step_by(2).cloned().collect();
@@ -1761,21 +1774,20 @@ mod tests {
         let mr: Vec<DragonMeans> = roam.iter().map(|r| dragon_means(r, from)).collect();
         let mn: Vec<DragonMeans> = none.iter().map(|r| dragon_means(r, from)).collect();
         for (r, m) in roam.iter().zip(&mr).chain(none.iter().zip(&mn)) {
-            assert_eq!(m.alive_min, 1.0, "seed {}: {m:?}", r.seed);
+            assert!(m.alive_min >= 0.95, "seed {}: {m:?}", r.seed);
         }
         let held_r = band(&mr.iter().map(|m| m.held).collect::<Vec<_>>());
         let held_n = band(&mn.iter().map(|m| m.held).collect::<Vec<_>>());
-        assert!((0.80..=0.97).contains(&held_r.0), "roamer {held_r:?}");
-        assert!(held_r.1 >= 0.7, "roamer {held_r:?}");
-        assert!((0.88..=1.0).contains(&held_n.0), "nobody {held_n:?}");
-        assert!(held_r.0 < held_n.0, "roamer {held_r:?} nobody {held_n:?}");
+        assert!((0.1..=0.4).contains(&held_r.0), "roamer {held_r:?}");
+        assert!((0.1..=0.4).contains(&held_n.0), "nobody {held_n:?}");
         let fill_r = band(&mr.iter().map(|m| m.fill).collect::<Vec<_>>());
         let fill_n = band(&mn.iter().map(|m| m.fill).collect::<Vec<_>>());
         assert!(
-            (fill_r.0 - fill_n.0).abs() <= 0.05,
+            (fill_r.0 - fill_n.0).abs() <= 0.1,
             "roamer {fill_r:?} nobody {fill_n:?}"
         );
-        assert!(fill_r.1 >= 0.5 && fill_r.2 < 1.0, "roamer {fill_r:?}");
+        assert!((0.35..=0.7).contains(&fill_r.0), "roamer {fill_r:?}");
+        assert!((0.35..=0.7).contains(&fill_n.0), "nobody {fill_n:?}");
     }
 
     /// One layout of the lair-density diagnosis: the phase 1 world's five lairs, or the jar's.
