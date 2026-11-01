@@ -3803,7 +3803,13 @@ impl Dragons {
                 if let Some(d) = self.embodied(m.agent, m.epoch) {
                     self.by_entity.insert(m.entity, d);
                     if m.home {
-                        self.home_answered(d, m.entity);
+                        // Booked only while the dragon awaits it: after the body's leash of this
+                        // epoch (DRAGON_LEFT_HOME read first) it names what is a puppet now, and
+                        // a home body booked for it would keep the copy a crash left on disk
+                        // beside the puppet (EQC326).
+                        if self.pending_home.contains(&d) {
+                            self.home_answered(d, m.entity);
+                        }
                     } else {
                         // A puppet: the plugin made no home body of it (a third occupant).
                         self.pending_home.remove(&d);

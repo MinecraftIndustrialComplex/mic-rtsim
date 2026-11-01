@@ -212,75 +212,125 @@ proptest! {
         ops in prop::collection::vec((0u8..9, 0u8..5), 30..70),
         seed in 1u64..40,
     ) {
-        let mut s = Sim::new(seed, true);
-        let mut day = 0u64;
-        for (op, arg) in ops {
-            let key = s.keys[usize::from(arg)];
-            let at = Tick(day * TICKS_PER_DAY + 7);
-            match op {
-                0 | 1 | 7 => {
-                    day += if op == 7 { 5 } else { 1 };
-                    s.run_to(Tick(day * TICKS_PER_DAY + 7));
-                }
-                2 => s.iaf.set_lair_in(key, arg % 2 == 0, at),
-                3 => s.iaf.set_lair_out(key, at),
-                4 => s.kill_lair(usize::from(arg), at),
-                5 => {
-                    // A body gone without a word: another mod, an admin, a corrupted chunk.
-                    if let Some(e) = s.iaf.home.bodies.iter().find(|(_, b)| b.lair == key).map(|(&e, _)| e) {
-                        s.iaf.home.bodies.remove(&e);
-                    }
-                }
-                6 => {
-                    let l = s.d.lair_of_key(key).expect("the lair");
-                    let other = s.d.lair_of_key(s.keys[(usize::from(arg) + 1) % 5]).expect("the lair");
-                    if let Some(&x) = s.d.lairs[l as usize].occupants.first() {
-                        s.d.relocate(&mut s.w, x, other, at);
-                    }
-                }
-                _ => {
-                    // The leash: a loaded body goes past it and is a puppet, the same entity; with
-                    // an odd argument the server dies before the chunk is rewritten, and the old
-                    // home body stays saved beside the puppet (EQC130).
-                    let found = s.iaf.home.bodies.iter().find(|(_, b)| b.lair == key && b.loaded).map(|(&e, _)| e);
-                    if let Some(e) = found {
-                        s.iaf.leash(e, arg % 2 == 1, at);
-                    }
+        history(&ops, seed)?;
+    }
+}
+
+/// EQC326: the property's shrunk case (seed 31). A census adopts lair 3's generated dragon as a
+/// stray into the empty lair, and in the same tick, before the plugin's answer, the body is led past
+/// the leash with a crash. The late answer booked the puppet as the dragon's home body, and the
+/// recount kept the old copy on disk beside the puppet.
+#[test]
+fn a_leash_before_the_adoptions_answer_leaves_no_home_body_beside_the_puppet() {
+    let mut ops = vec![(0u8, 0u8); 11];
+    ops.extend([(2, 0); 6]);
+    ops.extend([
+        (0, 0),
+        (2, 0),
+        (0, 0),
+        (0, 0),
+        (0, 0),
+        (0, 0),
+        (2, 0),
+        (6, 4),
+        (6, 3),
+        (2, 3),
+        (6, 0),
+        (6, 2),
+        (8, 3),
+    ]);
+    if let Err(e) = history(&ops, 31) {
+        panic!("{e}");
+    }
+}
+
+/// One history of the property: `ops` as `(op, argument)` pairs, then every lair counted again.
+fn history(ops: &[(u8, u8)], seed: u64) -> Result<(), TestCaseError> {
+    let mut s = Sim::new(seed, true);
+    let mut day = 0u64;
+    for &(op, arg) in ops {
+        let key = s.keys[usize::from(arg)];
+        let at = Tick(day * TICKS_PER_DAY + 7);
+        match op {
+            0 | 1 | 7 => {
+                day += if op == 7 { 5 } else { 1 };
+                s.run_to(Tick(day * TICKS_PER_DAY + 7));
+            }
+            2 => s.iaf.set_lair_in(key, arg % 2 == 0, at),
+            3 => s.iaf.set_lair_out(key, at),
+            4 => s.kill_lair(usize::from(arg), at),
+            5 => {
+                // A body gone without a word: another mod, an admin, a corrupted chunk.
+                if let Some(e) = s
+                    .iaf
+                    .home
+                    .bodies
+                    .iter()
+                    .find(|(_, b)| b.lair == key)
+                    .map(|(&e, _)| e)
+                {
+                    s.iaf.home.bodies.remove(&e);
                 }
             }
-            s.pump(at);
-            s.d.check(&s.w, None).map_err(|e| TestCaseError::fail(format!("after op {op}/{arg}: {e}")))?;
+            6 => {
+                let l = s.d.lair_of_key(key).expect("the lair");
+                let other =
+                    s.d.lair_of_key(s.keys[(usize::from(arg) + 1) % 5])
+                        .expect("the lair");
+                if let Some(&x) = s.d.lairs[l as usize].occupants.first() {
+                    s.d.relocate(&mut s.w, x, other, at);
+                }
+            }
+            _ => {
+                // The leash: a loaded body goes past it and is a puppet, the same entity; with
+                // an odd argument the server dies before the chunk is rewritten, and the old
+                // home body stays saved beside the puppet (EQC130).
+                let found = s
+                    .iaf
+                    .home
+                    .bodies
+                    .iter()
+                    .find(|(_, b)| b.lair == key && b.loaded)
+                    .map(|(&e, _)| e);
+                if let Some(e) = found {
+                    s.iaf.leash(e, arg % 2 == 1, at);
+                }
+            }
         }
-        // Every lair counted once with a player near (a recount where it is in), puppets standing:
-        // no dragon has two bodies, a home body beside its puppet least of all (H1, EQC311).
-        let t = Tick((day + 1) * TICKS_PER_DAY + 3);
+        s.pump(at);
+        s.d.check(&s.w, None)
+            .map_err(|e| TestCaseError::fail(format!("after op {op}/{arg}: {e}")))?;
+    }
+    // Every lair counted once with a player near (a recount where it is in), puppets standing:
+    // no dragon has two bodies, a home body beside its puppet least of all (H1, EQC311).
+    let t = Tick((day + 1) * TICKS_PER_DAY + 3);
+    for key in s.keys.clone() {
+        if s.iaf.home.in_epoch.contains_key(&key) {
+            s.iaf.recount(key, true, t);
+        } else {
+            s.iaf.set_lair_in(key, true, t);
+        }
+    }
+    s.pump(t);
+    s.d.check(&s.w, None).map_err(TestCaseError::fail)?;
+    bodies_per_agent(&s.iaf).map_err(TestCaseError::fail)?;
+    // Everything is counted again, twice.
+    for round in 0..2 {
+        let t = Tick((day + 1 + round) * TICKS_PER_DAY + 9);
         for key in s.keys.clone() {
-            if s.iaf.home.in_epoch.contains_key(&key) {
-                s.iaf.recount(key, true, t);
-            } else {
-                s.iaf.set_lair_in(key, true, t);
-            }
+            s.iaf.set_lair_out(key, t);
         }
         s.pump(t);
-        s.d.check(&s.w, None).map_err(TestCaseError::fail)?;
-        bodies_per_agent(&s.iaf).map_err(TestCaseError::fail)?;
-        // Everything is counted again, twice.
-        for round in 0..2 {
-            let t = Tick((day + 1 + round) * TICKS_PER_DAY + 9);
-            for key in s.keys.clone() {
-                s.iaf.set_lair_out(key, t);
-            }
-            s.pump(t);
-            s.run_to(t + 5);
-            for key in s.keys.clone() {
-                s.iaf.set_lair_in(key, false, t + 6);
-            }
-            s.pump(t + 6);
-            s.run_to(t + 600);
-            s.d.check(&s.w, None).map_err(TestCaseError::fail)?;
+        s.run_to(t + 5);
+        for key in s.keys.clone() {
+            s.iaf.set_lair_in(key, false, t + 6);
         }
-        bodies_per_agent(&s.iaf).map_err(TestCaseError::fail)?;
+        s.pump(t + 6);
+        s.run_to(t + 600);
+        s.d.check(&s.w, None).map_err(TestCaseError::fail)?;
     }
+    bodies_per_agent(&s.iaf).map_err(TestCaseError::fail)?;
+    Ok(())
 }
 
 /// One body per dragon (H1), puppets counted with home bodies, and at most two home bodies per
