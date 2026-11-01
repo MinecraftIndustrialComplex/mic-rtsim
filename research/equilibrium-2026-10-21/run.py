@@ -26,6 +26,8 @@ RATIOS = {   # census key -> capacity key (None: a count already)
     "herd_animals": "herd_k",
     "herds_alive": "herds_founded",
     "dragons": "lairs",
+    "dragons_oil": "lairs_oil",     # lairs whose 3 x 3 holds an oil region (EQC560)
+    "dragons_dry": "lairs_dry",
     "village_pop": "village_beds",
     "villages_alive": "villages",
     "ribbit_pop": "ribbit_houses",
@@ -357,6 +359,16 @@ def main():
                 for player in ("none", "roamer"):
                     jobs.append((steady, ("proposed", player, S, Y, 11, over)))
                 jobs.append((killall, ("proposed", "dragons", S2, Y, 21, min(20, Y // 3), over)))
+    if want("oil"):
+        # The oil row (EQC560): lairs whose 3 x 3 holds oil, at the server's lair density, under
+        # the food gate, by the oil row's weight; nobody, and the roamer at the chosen weight. The
+        # world is food-limited as S4's engine world is (EQC539): no villages, and K near 110 a
+        # range (k_per_density 20; the model's own 160 gives 700 to 1,000, which feeds every lair).
+        lean = {"food_gate": True, "lair_rate": 0.5, "lair_slots": 4, "village_rate": 0.0, "k_per_density": 20.0}
+        for ow in (0.0, 200.0, 400.0, 800.0):
+            jobs.append((steady, ("proposed", "none", S, Y, 11, {**lean, "oil_weight": ow})))
+        jobs.append((steady, ("proposed", "roamer", S, Y, 11, {**lean, "oil_weight": 400.0})))
+        jobs.append((steady, ("proposed", "none", S, Y, 11, {**lean, "oil_weight": 400.0, "oil_breeds": True})))
     if want("strategy"):
         for sigma in (6.0, 9.0, 12.0):
             for mode in ("ladder", "gate"):

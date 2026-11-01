@@ -414,9 +414,15 @@ sees; body; cost. Rates are the model's (§3); the engine's names are given wher
 
 #### 2.4.1 Dragons (Ice and Fire)
 
+**Predator and prey (Ben, 2026-10-31; designed, not built; docs/overnight-choices-equilibrium.md
+EQC550 to EQC569, FOR BEN PP-1 to PP-4 open).** Dragons become the first predator of §2.4.11's
+model: they breed only as pairs, a lair with surplus draws a mate, a hungry dragon plunders
+villages, outposts and player homes for food, and oil holds fire dragons near it. The bullets below
+say where that changes the food gate as built; the rest stands.
+
 - **Site:** the lair (roost or cave), K = 1 occupant. M1's mated pair stays as built: at most a pair
-  per lair, and one young of theirs (or of a lone breeder) until it leaves at 50 to 60 days, so
-  dragons are at most three per lair, and lairs are Ice and Fire's structures.
+  per lair, and one young of theirs until it leaves at 50 to 60 days, so dragons are at most three
+  per lair, and lairs are Ice and Fire's structures.
 - **Losses:** age (400 days, `lifespan_days`); a player's loss (§2.2: his kill, his pet's, a trap's or
   any death no wild mob is credited with; taming or any A10 removal; a roosting body gone missing), each
   `P += 1`. The bridge changes to match: `attackerKind` reads vanilla's kill credit
@@ -425,18 +431,21 @@ sees; body; cost. Rates are the model's (§3); the engine's names are given wher
   moving average of how much of its need it catches) falls below 0.35 leaves; it settles in a vacant lair
   in reach whose fed share is at least 0.5, else it flies off the map and leaves the sim.
 - **Renewal (the dragon food gate, Ben 2026-10-31; docs/overnight-choices-equilibrium.md EQC530 to
-  EQC546): new dragons come only from a food surplus.** **Births:** a lair's breeder (its oldest
-  mature occupant, stage 4, mate or no mate; a pair is one breeder) clutches every 60 days
+  EQC546): new dragons come only from a food surplus.** **Births (as designed, EQC555: pairs
+  only; as built, a lone breeder too):** a lair's pair (both mature, stage 4) clutches every 60 days
   (`breed_days`), and a clutch hatches one young with chance `(fed - m) / (1 - m)`, where `fed` is the
   lair's fed share and `m` is maintenance, the starve-leave threshold 0.35: no young at or below
   maintenance, one every clutch at a full share. The young leaves at 50 days for the nearest empty
   lair within reach whose wait has ended and whose gate passes, flying from its parents' lair, and
-  if it finds none by 60 days it flies off the map. **Arrival gate:** when the lair stands empty,
+  if it finds none by 60 days it flies off the map. **Mates (EQC555):** a lone mature dragon whose
+  lair would feed one more mouth draws a mate at each clutch timer: a young of the other sex in
+  reach, else a mature Frontier newcomer; a lone breeder in reach takes a Frontier dragon as its mate
+  before an empty lair takes it as a newcomer, and a young looks for a lone breeder first. **Arrival gate:** when the lair stands empty,
   after `min(192, 20 x 2^P)` days (base 20 is today's `respawn_delay_days`) the lair is ready, and
   any newcomer settles only if it would catch at least 0.5 of its need there: `W / (W + 200)`,
   where W sums 30 (roads and stray prey), 150 for each village and `(N - R)^2 / K` for each herd in
   the nine regions around the lair, **each divided by one more than the other occupied lairs whose
-  nine regions hold it**. A village alone reads 0.47 and opens nothing. Shut, the lair checks again
+  nine regions hold it** (as designed, EQC553: than the dragons, a pair counting two). A village alone reads 0.47 and opens nothing. Shut, the lair checks again
   every 24 days. **Source:** a young of dispersal age from a lair within reach (Neighbour) if one
   exists, else today's 30-day-old newcomer from 3,000 blocks (Frontier), flying in from the nearest
   unexplored direction; both through the gate, so a newcomer from beyond lands only where it has a
@@ -447,7 +456,16 @@ sees; body; cost. Rates are the model's (§3); the engine's names are given wher
   caravans stay on the menu, so a dragon in an eaten-out valley turns to villages and roads, as P12
   wants. The gate's weight `(N - R)^2 / K` is type III: it reads what is common and leaves what is
   scarce.
-- **Bounds:** at most one breeder (or one pair) and one young per lair; lairs are found, never made.
+- **Plunder (EQC556 to EQC560, designed):** a hungry dragon hunts settlements as prey rows: a
+  village's livestock (today) and villagers (PP-2), one member a raid of an outpost or pool camp
+  whose members are in its target tag (pillagers), never the last two, and a player district's
+  stored food and livestock (PP-1), each target rested 8 days after a raid; unwatched abstract,
+  watched Ice and Fire's own AI; told as news (PP-3).
+- **Oil (EQC561, designed):** an oil field is a constant weight for fire dragons (800, shared by
+  mouths) that sustains and draws them but breeds none, so the lairs in a field's nine regions are
+  held.
+- **Bounds:** at most one pair and one young per lair (as built, one lone breeder or pair); lairs
+  are found, never made.
 - **Rates:** base 20 days, cap 192, H 96; maintenance (starve-leave) 0.35, arrive-food 0.5, a clutch
   every 60 days, young leave at 50 and go at 60 days, gate weights 30, 150 a village, half 200;
   refuge 10% (min 8).
@@ -983,6 +1001,24 @@ Threats are what a district faces, and they come from the kinds above.
 Not populations in this sense: caravans and messengers are flows on edges and cannot go extinct while
 a road exists; a base is a pop-0 node. Unchanged.
 
+#### 2.4.11 Predators and prey (Ben, 2026-10-31; designed, not built)
+
+docs/overnight-choices-equilibrium.md EQC550 to EQC569. One model for every creature that eats
+another, so more can join as rows:
+
+- **Trophic links:** one row per predator and prey kind, with the prey's weight shape, attack,
+  half saturation, conversion to young, refuge and per-raid caps (the dragon rows are the table
+  after EQC569). Rows are data in each mod's plugin (D3, D4; format PP-4).
+- **Functional response:** Holling type II over every prey at once on weights,
+  `iota = W / (W + W_half)` with `W = sum a w / mouths`: herds `(N - R)^2 / K` (type III with the
+  refuge), settlements `a min(1, F / 400)` on their edible stock, constants for the wild floor and
+  oil. Each weight is shared by the mouths whose nine regions hold it.
+- **Numerical response:** births from the surplus above maintenance m (0.35) of the food that can
+  breed (conversion 1), `(fed_b - m) / (0.65 x 60)` a pair a day; a dragon under m leaves; age
+  and players kill; arrivals and mates only through the shared gate (θ 0.5).
+- **The base of the chain:** the herds' forage-capped K and Beverton-Holt births (§2.4.2, §3.2).
+- **Equilibrium and stability:** §3.4.
+
 ### 2.5 The strategy gate (b)
 
 **Rejected (EQ-5, Ben, 2026-10-21):** "All of these systems feel a bit too formulaic, come up with
@@ -1304,6 +1340,18 @@ region alike, with one herd of K, `v` villages and `ρ` lairs; `run.py`'s `food_
 
 The herds hold near half their K at any lair density; what the lairs change is how many stand
 empty.
+
+**Predator and prey (designed, §2.4.11; own derivations).** With settlements `a_s` and oil `a_o` in
+every region's weight, `D* = (w + a + a_s + a_o) / H - 1/9`: each row adds `a / 200` dragons a
+region at the gate's margin and takes `a / W_tot` of the catch off the herds. Pairs do not move D*
+(mates and newcomers face the same gate); a pair replaces itself where the food it can breed from
+reaches `m + 2 (1 - m) 60 / 400 = 0.545` of need, which established dragons pass wherever D is at
+most 0.56 a region. **Stability:** at the equilibrium the Jacobian's determinant is positive, so it
+is stable exactly when `d ln g / dN < d ln iota / dN` (g the herds' growth, the logistic standing in
+for Beverton-Holt). It holds for any intake once `N* >= K/2`; below that, type III with the refuge
+holds it while the established intake is under 0.81 (R = 0.1 K), where plain type II loses it from
+0.61. The closed form's intakes are 0.53 to 0.81 with herds at 0.47 to 0.68 of K. The yearly calving
+and the 30-day moving average are lags this leaves out; the 30-seed runs show no cycle.
 
 ### 3.5 The gate
 
