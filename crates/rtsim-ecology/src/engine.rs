@@ -1079,9 +1079,27 @@ impl Dragons {
     /// the mate gate at a held lair (EQC555). With no herds lent (an engine run without them) the
     /// gate is open: 1.
     pub fn ground_share(&self, w: &World, l: LairId, at: Tick) -> f64 {
-        let Some(hd) = &self.wild else {
+        if self.wild.is_none() {
             return 1.0;
-        };
+        }
+        let (food, oil) = self.ground_weights(w, l, at, 1.0);
+        let weight = food + oil;
+        weight / (weight + self.tun.gate_half)
+    }
+
+    /// What the oil row (EQC561) gives a dragon of lair `l` that is already there: its share of
+    /// the oil weights of its nine regions (its lair's dragons and their neighbours' as mouths,
+    /// no newcomer), read as a share of need, `W / (W + half)`. Zero for a species that does not
+    /// drink oil, or with no field near. Starve-leave reads it: oil sustains (EQC552).
+    pub fn oil_share(&self, w: &World, l: LairId, at: Tick) -> f64 {
+        let (_, oil) = self.ground_weights(w, l, at, 0.0);
+        oil / (oil + self.tun.gate_half)
+    }
+
+    /// The weights the gate reads at lair `l` (EQC533, EQC553, EQC561): the food rows (the wild
+    /// floor, villages, herds when lent) and the oil row, each divided by its mouths, `newcomer`
+    /// being the dragons to come (1 for the gate, 0 for those already there).
+    fn ground_weights(&self, w: &World, l: LairId, at: Tick, newcomer: f64) -> (f64, f64) {
         let lair = &self.lairs[l as usize];
         let rb = rtsim_travel::legs::REGION_BLOCKS;
         let frame = lair.pos.frame;
@@ -1098,7 +1116,7 @@ impl Dragons {
         // The newcomer, and the dragons of every lair, occupied or claimed, whose nine regions
         // hold `p` (EQC553: mouths, not lairs).
         let mouths = |p: (i64, i64)| {
-            let mut n = 1.0;
+            let mut n = newcomer;
             for (rx, rz) in self.regions_near(frame, Rect::around(p.0, p.1, 2 * rb)) {
                 let Some(ls) = self.lair_cells.get(&(frame, rx, rz)) else {
                     continue;
@@ -1117,24 +1135,50 @@ impl Dragons {
         };
         // Every point of the nine regions is within this of the lair.
         let reach = 2 * rb * 1415 / 1000;
-        let mut weight = self.tun.gate_wild / mouths((lx, lz));
+        let mut weight = self.tun.gate_wild / mouths((lx, lz)).max(1.0);
         for n in self.index.villages_near(t, frame, lx, lz, reach) {
             let p = w.nodes[n as usize].pos;
             let p = (i64::from(p.x), i64::from(p.z));
             if holds((lx, lz), p) {
-                weight += self.tun.gate_village / mouths(p);
+                weight += self.tun.gate_village / mouths(p).max(1.0);
             }
         }
-        for o in hd.prey_near(frame, lx, lz, reach, at, 0) {
-            let p = (i64::from(o.pos.0), i64::from(o.pos.1));
-            if !holds((lx, lz), p) {
-                continue;
+        if let Some(hd) = &self.wild {
+            for o in hd.prey_near(frame, lx, lz, reach, at, 0) {
+                let p = (i64::from(o.pos.0), i64::from(o.pos.1));
+                if !holds((lx, lz), p) {
+                    continue;
+                }
+                let k = hd.herd(o.herd).map_or(1, |h| h.k.max(1));
+                let n = o.available as f64;
+                weight += n * n / k as f64 / mouths(p).max(1.0);
             }
-            let k = hd.herd(o.herd).map_or(1, |h| h.k.max(1));
-            let n = o.available as f64;
-            weight += n * n / k as f64 / mouths(p);
         }
-        weight / (weight + self.tun.gate_half)
+        // The oil row (EQC561): each field with a chunk in the nine regions, once, at its first
+        // such chunk, for a species that drinks oil. The oil index's regions are 32 chunks, the
+        // lair cells' 512 blocks: one grid.
+        let mut oil = 0.0;
+        if self.tun.species(lair.species).uses_oil && self.tun.oil_weight > 0.0 {
+            let mut seen: Vec<u32> = Vec::new();
+            for (rx, rz) in self.regions_near(frame, Rect::around(lx, lz, rb)) {
+                let Some(v) = self.oil.regions.get(&(frame, rx, rz)) else {
+                    continue;
+                };
+                for c in v.iter() {
+                    let f = self.oil.find(c.field);
+                    if seen.contains(&f) {
+                        continue;
+                    }
+                    let (ix, iz) = (i64::from(c.idx) / 32, i64::from(c.idx) % 32);
+                    let p = ((rx * 32 + ix) * 16 + 8, (rz * 32 + iz) * 16 + 8);
+                    if holds((lx, lz), p) {
+                        seen.push(f);
+                        oil += self.tun.oil_weight / mouths(p).max(1.0);
+                    }
+                }
+            }
+        }
+        (weight, oil)
     }
 
     /// [`Dragons::ground_share`] with `herds` lent for the call, as a run lends them: what the
@@ -1171,6 +1215,7 @@ impl Dragons {
             || x.visitor.is_some()
             || x.age(at) <= self.tun.starve_leave_age_days * TICKS_PER_DAY
             || self.lairs[l as usize].fed >= self.tun.starve_leave
+            || self.oil_share(w, l, at) >= f64::from(self.tun.starve_leave)
         {
             return false;
         }
