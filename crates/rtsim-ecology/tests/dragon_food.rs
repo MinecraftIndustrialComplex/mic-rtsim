@@ -107,26 +107,19 @@ fn no_birth_without_surplus() {
 }
 
 /// Births rise with the surplus above maintenance: at a full fed share every clutch hatches one
-/// (today's pair rate, one in `breed_days`), half way between maintenance and full about half do,
-/// and a lone adult breeds as a pair does (the lair is the breeding unit).
+/// (one in `breed_days`), half way between maintenance and full about half do. A pair is one
+/// breeder (EQC555: only pairs breed; `dragon_pairs.rs` has the lone dragon).
 #[test]
 fn births_scale_with_surplus() {
     let m = DragonTunables::default().starve_leave;
     let half = m + (1.0 - m) / 2.0;
-    // 30 lairs, 240 days: each adult (110 days old, mature) has its first clutch at day 60, then
+    // 30 pairs, 240 days: each pair (110 days old, mature) has its first clutch at day 60, then
     // at 120, 180 and 240: four clutches a lair, 120 in all.
-    let full = clutches(7, 30, false, 1.0, 240);
-    let mid = clutches(7, 30, false, half, 240);
-    let low = clutches(7, 30, false, m + 0.05, 240);
-    let paired_full = clutches(7, 30, true, 1.0, 240);
-    eprintln!(
-        "births in 120 clutches: full {full}, half {mid}, just above {low}; paired full {paired_full}"
-    );
+    let full = clutches(7, 30, true, 1.0, 240);
+    let mid = clutches(7, 30, true, half, 240);
+    let low = clutches(7, 30, true, m + 0.05, 240);
+    eprintln!("births in 120 clutches: full {full}, half {mid}, just above {low}");
     assert_eq!(full, 120, "every clutch hatches at a full fed share");
-    assert_eq!(
-        paired_full, 120,
-        "a pair is one breeder: one young a clutch"
-    );
     assert!((40..=80).contains(&mid), "{mid} of 120 at half the surplus");
     assert!(
         low < mid && low <= 25,

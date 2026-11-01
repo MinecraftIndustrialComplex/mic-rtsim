@@ -518,6 +518,9 @@ pub struct Dragons {
     /// Young dragons that found no lair they could live in and left the sim (EQC534). A
     /// diagnostic: not saved.
     pub emigrated: u64,
+    /// Mates drawn since the engine started (EQC555): a young or a Frontier dragon sent to a
+    /// lone breeder. Not saved, as `emigrated`.
+    pub mates_drawn: u64,
 }
 
 /// How a lair new to the engine starts its wait ([`Dragons::found_lair`], MZB-1012).
@@ -684,6 +687,7 @@ impl Dragons {
             pending_home: BTreeSet::new(),
             home_hold: BTreeMap::new(),
             emigrated: 0,
+            mates_drawn: 0,
         }
         .with_oil_flags()
     }
@@ -1069,9 +1073,11 @@ impl Dragons {
     /// and §3.4, the dragon food gate EQC533): `W / (W + half)` over the lair's hunting ground,
     /// the nine regions around it (the model's 3 x 3, §1's "the herds in the nine regions around
     /// the lair"). W sums `gate_wild`, `gate_village` for each village there and `(N - R)^2 / K`
-    /// for each herd there, each divided by one more than the other occupied (or claimed) lairs
-    /// whose nine regions hold it: the newcomer's share of what every lair on the same ground
-    /// hunts. With no herds lent (an engine run without them) the gate is open: 1.
+    /// for each herd there, each divided by the mouths whose nine regions hold it (EQC553): the
+    /// newcomer, and every dragon, adult or young, of each occupied lair there (a claimed lair
+    /// with nobody home yet counts its claimant), this lair's own included, so the same call is
+    /// the mate gate at a held lair (EQC555). With no herds lent (an engine run without them) the
+    /// gate is open: 1.
     pub fn ground_share(&self, w: &World, l: LairId, at: Tick) -> f64 {
         let Some(hd) = &self.wild else {
             return 1.0;
@@ -1089,7 +1095,8 @@ impl Dragons {
             let (px, pz) = rtsim_travel::legs::LegIndex::region_of(p.0, p.1);
             (px - fx).abs() <= 1 && (pz - fz).abs() <= 1
         };
-        // The newcomer and the other lairs, occupied or claimed, whose nine regions hold `p`.
+        // The newcomer, and the dragons of every lair, occupied or claimed, whose nine regions
+        // hold `p` (EQC553: mouths, not lairs).
         let mouths = |p: (i64, i64)| {
             let mut n = 1.0;
             for (rx, rz) in self.regions_near(frame, Rect::around(p.0, p.1, 2 * rb)) {
@@ -1097,12 +1104,12 @@ impl Dragons {
                     continue;
                 };
                 for &i in ls {
-                    if i == l || self.vacant.contains(&i) {
+                    if self.vacant.contains(&i) {
                         continue;
                     }
-                    let o = self.lairs[i as usize].pos;
-                    if holds((i64::from(o.x), i64::from(o.z)), p) {
-                        n += 1.0;
+                    let o = &self.lairs[i as usize];
+                    if holds((i64::from(o.pos.x), i64::from(o.pos.z)), p) {
+                        n += o.occupants.len().max(1) as f64;
                     }
                 }
             }
@@ -1298,16 +1305,45 @@ impl Dragons {
         ((f - m) / (1.0 - m)).min(1.0)
     }
 
-    /// Lair `l`'s breeder at `at` (EQC532): its oldest mature occupant (Ice and Fire's
-    /// `isMature`, stage 4), the lower id on a tie. A pair, or a parent with its young, is one
-    /// breeder.
+    /// Lair `l`'s breeder at `at` (EQC555: pairs only): its oldest mature occupant (Ice and
+    /// Fire's `isMature`, stage 4) whose mate is a mature occupant too, the lower id on a tie. A
+    /// lone dragon is no breeder: it draws a mate instead ([`Dragons::lone_of`]).
     pub fn breeder_of(&self, l: LairId, at: Tick) -> Option<DragonId> {
+        let occupants = &self.lairs[l as usize].occupants;
+        self.oldest_mature(l, at, |x| {
+            x.mate.is_some_and(|m| {
+                occupants.contains(&m)
+                    && self
+                        .dragons
+                        .get(m)
+                        .is_some_and(|y| y.stage(self.tun.species(y.species), at).is_mature())
+            })
+        })
+    }
+
+    /// Lair `l`'s lone breeder at `at` (EQC555): its oldest mature occupant, when the lair holds
+    /// no pair and that dragon has no mate there. It draws a mate at its clutch timer.
+    pub fn lone_of(&self, l: LairId, at: Tick) -> Option<DragonId> {
+        if self.breeder_of(l, at).is_some() {
+            return None;
+        }
+        let occupants = &self.lairs[l as usize].occupants;
+        self.oldest_mature(l, at, |x| x.mate.is_none_or(|m| !occupants.contains(&m)))
+    }
+
+    /// The oldest mature occupant of `l` that `keep` accepts, the lower id on a tie.
+    fn oldest_mature(
+        &self,
+        l: LairId,
+        at: Tick,
+        keep: impl Fn(&Dragon) -> bool,
+    ) -> Option<DragonId> {
         let mut best: Option<(u64, DragonId)> = None;
         for &o in &self.lairs[l as usize].occupants {
             let Some(x) = self.dragons.get(o) else {
                 continue;
             };
-            if !x.stage(self.tun.species(x.species), at).is_mature() {
+            if !x.stage(self.tun.species(x.species), at).is_mature() || !keep(x) {
                 continue;
             }
             let age = x.age(at);
@@ -4686,9 +4722,10 @@ impl Dragons {
 
     // ---- population -----------------------------------------------------------------------------
 
-    /// A clutch timer (EQC531, EQC532): the lair's breeder hatches a young one with
-    /// [`Dragons::clutch_chance`] of its lair's fed share, mate or no mate; anyone else waits for
-    /// the next. Every dragon keeps one timer, every `breed_days` once mature.
+    /// A clutch timer (EQC531, EQC555): the lair's breeder, a pair, hatches a young one with
+    /// [`Dragons::clutch_chance`] of its lair's fed share; a lone breeder draws a mate if its lair
+    /// would feed one more ([`Dragons::draw_mate`]); anyone else waits for the next. Every dragon
+    /// keeps one timer, every `breed_days` once mature.
     fn breed(&mut self, w: &mut World, d: DragonId, at: Tick) {
         let Some(x) = self.dragons.get(d) else {
             return;
@@ -4706,6 +4743,9 @@ impl Dragons {
             return;
         };
         if self.breeder_of(l, at) != Some(d) {
+            if self.lone_of(l, at) == Some(d) {
+                self.draw_mate(w, d, l, at);
+            }
             return;
         }
         let chance = self.clutch_chance(self.lairs[l as usize].fed);
@@ -4762,6 +4802,174 @@ impl Dragons {
         );
     }
 
+    /// Lone breeder `d` of lair `l` draws a mate (EQC555) if the lair would feed one more mouth
+    /// (the shared gate at `l`, its own dragons counted): a young of its species and the other
+    /// sex in reach, else a mature Frontier dragon of the other sex. It flies in to claim `l`,
+    /// and the claim pairs them.
+    fn draw_mate(&mut self, w: &mut World, d: DragonId, l: LairId, at: Tick) {
+        if self.ground_share(w, l, at) < f64::from(self.tun.arrive_food) {
+            return;
+        }
+        let gender = self.dragons[d].gender;
+        if let Some(y) = self.young_in_reach(l, at, Some((gender, d))) {
+            let name = self.lairs[l as usize].name.clone();
+            self.note(
+                at,
+                "mate",
+                Some(y),
+                format!("leaves its parents to be a mate at {name}"),
+            );
+            self.leave_lair(w, y, at);
+            self.mates_drawn += 1;
+            self.fly(w, y, Purpose::Claim(l), at);
+            return;
+        }
+        self.mates_drawn += 1;
+        self.frontier_mate(w, l, gender, at);
+    }
+
+    /// A Frontier dragon comes as a mate for the lone breeder of lair `l`, whose sex is `of`
+    /// (EQC555): the other sex, mature (`stage_days[2]` to `stage_days[2]` + 49 days old, a cave
+    /// dragon's age), flying in from the nearest unexplored direction.
+    fn frontier_mate(&mut self, w: &mut World, l: LairId, of: Gender, at: Tick) {
+        let lair = &self.lairs[l as usize];
+        let sp = self.tun.species(lair.species);
+        let mature = sp.stage_days[2];
+        let mut rng = StreamKey::new(self.seed, SYS_BREED, lair.key ^ 0x4D41_5445).slot(at.0);
+        let age = (mature + rng.below(50)) * TICKS_PER_DAY;
+        let gender = match of {
+            Gender::Female => Gender::Male,
+            Gender::Male => Gender::Female,
+        };
+        let name = format!("{} mate", lair.name);
+        self.frontier_dragon(w, l, gender, age, name, &mut rng, at);
+    }
+
+    /// A dragon of lair `l`'s species flies in from `respawn_from_blocks` away on the bearing of
+    /// the nearest unexplored direction (EQC28) to claim `l` (§2.4.1's Frontier source).
+    #[allow(clippy::too_many_arguments)]
+    fn frontier_dragon(
+        &mut self,
+        w: &mut World,
+        l: LairId,
+        gender: Gender,
+        age_ticks: u64,
+        name: String,
+        rng: &mut rtsim_kernel::rng::SlotRng,
+        at: Tick,
+    ) -> DragonId {
+        self.stats.respawns += 1;
+        let lair = &self.lairs[l as usize];
+        let species = lair.species;
+        let random = rng.next_f64() * std::f64::consts::TAU;
+        let angle = self.frontier_angle(w, l).unwrap_or(random);
+        let lair = &self.lairs[l as usize];
+        let r = f64::from(self.tun.respawn_from_blocks);
+        let (fx, fz) = self.topo(lair.pos.frame).canonical_i32(
+            lair.pos.x + (r * angle.cos()) as i32,
+            lair.pos.z + (r * angle.sin()) as i32,
+        );
+        let from = Pos::new(lair.pos.frame, fx, fz);
+        let variant = rng.below(4) as u8;
+        let cruise = self.tun.species(species).cruise_y;
+        let d = self.add_dragon(
+            w,
+            NewDragon {
+                name,
+                species,
+                gender,
+                variant,
+                age_ticks,
+                lair: None,
+                fullness: 50,
+                health: None,
+                seed: None,
+                at: Some((from, cruise)),
+            },
+            at,
+        );
+        let lair = &self.lairs[l as usize];
+        let (name, lair_key) = (lair.name.clone(), lair.key);
+        let mate = !lair.occupants.is_empty();
+        self.tape
+            .event(
+                kinds::DRAGONS_ARRIVE,
+                spot(at, from),
+                did(d),
+                u128::from(lair_key),
+                i64::from(mate),
+            )
+            .text(|| {
+                if mate {
+                    format!("a dragon flies in to be a mate at {name}")
+                } else {
+                    format!("a young dragon flies in to claim {name}")
+                }
+            });
+        self.note(
+            at,
+            if mate { "mate" } else { "respawn" },
+            Some(d),
+            if mate {
+                format!("{name} would feed one more: a mate flies in")
+            } else {
+                format!("{name} stood empty: a young dragon flies in to claim it")
+            },
+        );
+        self.fly(w, d, Purpose::Claim(l), at);
+        d
+    }
+
+    /// A lair in reach of `from` whose lone breeder could take a mate now (EQC555: mates before
+    /// more lone dragons): of `species`, and of the other sex than `sex` when given, its mate
+    /// gate passing; the nearest first. Reads the lair rows in reach only.
+    fn lone_in_reach(
+        &self,
+        w: &World,
+        from: Pos,
+        species: Species,
+        sex: Option<Gender>,
+        skip: Option<LairId>,
+        at: Tick,
+    ) -> Option<LairId> {
+        let sp = self.tun.species(species);
+        let r = i64::from(sp.grudge_range);
+        let (lx, lz) = (i64::from(from.x), i64::from(from.z));
+        let frame = from.frame;
+        let t = self.topo(frame);
+        let mut cands: Vec<(f64, LairId)> = Vec::new();
+        for (rx, rz) in self.regions_near(frame, Rect::around(lx, lz, r)) {
+            let Some(ls) = self.lair_cells.get(&(frame, rx, rz)) else {
+                continue;
+            };
+            for &i in ls {
+                if Some(i) == skip || self.vacant.contains(&i) {
+                    continue;
+                }
+                let o = &self.lairs[i as usize];
+                if o.species != species {
+                    continue;
+                }
+                let Some(b) = self.lone_of(i, at) else {
+                    continue;
+                };
+                if sex.is_some_and(|g| self.dragons[b].gender == g) {
+                    continue;
+                }
+                let dd = flight::dist(t, (lx, lz), (i64::from(o.pos.x), i64::from(o.pos.z)));
+                if dd <= r as f64 {
+                    cands.push((dd, i));
+                }
+            }
+        }
+        cands.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+        let arrive = f64::from(self.tun.arrive_food);
+        cands
+            .into_iter()
+            .map(|(_, i)| i)
+            .find(|&i| self.ground_share(w, i, at) >= arrive)
+    }
+
     fn disperse(&mut self, w: &mut World, d: DragonId, at: Tick) {
         let Some(x) = self.dragons.get(d) else {
             return;
@@ -4770,6 +4978,29 @@ impl Dragons {
             if x.parent.is_some() {
                 self.schedule(at + 2 * TICKS_PER_DAY, Ev::Disperse { d });
             }
+            return;
+        }
+        // A lone breeder of the other sex in reach first, as its mate (EQC555).
+        let (here, species, sex, home) = {
+            let x = &self.dragons[d];
+            let home = x.lair;
+            let pos = home.map_or_else(
+                || x.position(&self.topo, &self.lairs, at).0,
+                |l| self.lairs[l as usize].pos,
+            );
+            (pos, x.species, x.gender, home)
+        };
+        if let Some(l) = self.lone_in_reach(w, here, species, Some(sex), home, at) {
+            let name = self.lairs[l as usize].name.clone();
+            self.note(
+                at,
+                "mate",
+                Some(d),
+                format!("leaves its parents to be a mate at {name}"),
+            );
+            self.leave_lair(w, d, at);
+            self.mates_drawn += 1;
+            self.fly(w, d, Purpose::Claim(l), at);
             return;
         }
         match self.vacant_lair(w, d, at) {
@@ -4852,71 +5083,52 @@ impl Dragons {
             self.fly(w, h, Purpose::Claim(l), at);
             return;
         }
+        // Mates before more lone dragons (EQC555): a lone breeder of this species in reach whose
+        // lair would feed one more takes the Frontier dragon as its mate, and this lair waits on.
+        let (pos, species) = (self.lairs[l as usize].pos, self.lairs[l as usize].species);
+        if let Some(b) = self.lone_in_reach(w, pos, species, None, Some(l), at) {
+            let lone = self.lone_of(b, at).expect("lone");
+            let gender = self.dragons[lone].gender;
+            self.mates_drawn += 1;
+            self.frontier_mate(w, b, gender, at);
+            let lair = &mut self.lairs[l as usize];
+            lair.plan += 1;
+            let plan = lair.plan;
+            let again = at + self.tun.arrive_recheck_days * TICKS_PER_DAY;
+            self.schedule(again, Ev::Respawn { lair: l, plan });
+            return;
+        }
         let lair = &self.lairs[l as usize];
-        self.stats.respawns += 1;
-        let species = lair.species;
         let mut rng = StreamKey::new(self.seed, SYS_BREED, lair.key).slot(at.0);
-        let random = rng.next_f64() * std::f64::consts::TAU;
-        let angle = self.frontier_angle(w, l).unwrap_or(random);
-        let lair = &self.lairs[l as usize];
-        let r = f64::from(self.tun.respawn_from_blocks);
-        let (fx, fz) = self.topo(lair.pos.frame).canonical_i32(
-            lair.pos.x + (r * angle.cos()) as i32,
-            lair.pos.z + (r * angle.sin()) as i32,
-        );
-        let from = Pos::new(lair.pos.frame, fx, fz);
         let gender = if rng.below(2) == 0 {
             Gender::Female
         } else {
             Gender::Male
         };
-        let variant = rng.below(4) as u8;
-        let cruise = self.tun.species(species).cruise_y;
         let name = format!("{} newcomer", lair.name);
-        let d = self.add_dragon(
-            w,
-            NewDragon {
-                name,
-                species,
-                gender,
-                variant,
-                age_ticks: self.tun.respawn_age_days * TICKS_PER_DAY,
-                lair: None,
-                fullness: 50,
-                health: None,
-                seed: None,
-                at: Some((from, cruise)),
-            },
-            at,
-        );
+        let age = self.tun.respawn_age_days * TICKS_PER_DAY;
         let lair = &mut self.lairs[l as usize];
         lair.plan += 1;
         lair.vacant_since = None;
-        let name = lair.name.clone();
-        let lair_key = lair.key;
         self.track_lair(l);
-        self.tape
-            .event(
-                kinds::DRAGONS_ARRIVE,
-                spot(at, from),
-                did(d),
-                u128::from(lair_key),
-                0,
-            )
-            .text(|| format!("a young dragon flies in to claim {name}"));
-        self.note(
-            at,
-            "respawn",
-            Some(d),
-            format!("{name} stood empty: a young dragon flies in to claim it"),
-        );
-        self.fly(w, d, Purpose::Claim(l), at);
+        self.frontier_dragon(w, l, gender, age, name, &mut rng, at);
     }
 
     /// A hatchling of dispersal age that could take lair `l` (§2.4.1's Neighbour source): of its
     /// species, roosting at home with a parent at a lair within the species' `grudge_range` (the
     /// reach a disperser searches), the nearest first. Reads only the rows of lairs in reach.
     fn heir_for(&self, l: LairId, at: Tick) -> Option<DragonId> {
+        self.young_in_reach(l, at, None)
+    }
+
+    /// [`Dragons::heir_for`]'s search; with `mate_of` (the lone breeder's sex and id), only a
+    /// young of the other sex that is not that breeder's own (EQC555).
+    fn young_in_reach(
+        &self,
+        l: LairId,
+        at: Tick,
+        mate_of: Option<(Gender, DragonId)>,
+    ) -> Option<DragonId> {
         let lair = &self.lairs[l as usize];
         let sp = self.tun.species(lair.species);
         let r = i64::from(sp.grudge_range);
@@ -4953,6 +5165,11 @@ impl Dragons {
                         || x.is_embodied()
                         || !matches!(x.state, State::Roosting)
                         || x.age(at) < grown
+                        || mate_of.is_some_and(|(g, b)| {
+                            x.gender == g
+                                || x.parent == Some(b)
+                                || self.dragons.get(b).and_then(|y| y.mate) == x.parent
+                        })
                     {
                         continue;
                     }
