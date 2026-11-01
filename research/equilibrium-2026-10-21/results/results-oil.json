@@ -1,0 +1,1975 @@
+{
+ "steady": [
+  {
+   "mode": "proposed",
+   "player": "none",
+   "years": 60,
+   "seconds": 29.1,
+   "over": {
+    "food_gate": true,
+    "lair_rate": 0.5,
+    "lair_slots": 4,
+    "village_rate": 0.0,
+    "k_per_density": 20.0,
+    "oil_weight": 0.0
+   },
+   "herd_animals": {
+    "mean": [
+     0.605,
+     0.638,
+     0.731
+    ],
+    "min": [
+     0.547,
+     0.586,
+     0.677
+    ],
+    "max": [
+     0.654,
+     0.698,
+     0.786
+    ]
+   },
+   "herds_alive": {
+    "mean": [
+     1.0,
+     1.0,
+     1.0
+    ],
+    "min": [
+     1.0,
+     1.0,
+     1.0
+    ],
+    "max": [
+     1.0,
+     1.0,
+     1.0
+    ]
+   },
+   "dragons": {
+    "mean": [
+     0.091,
+     0.216,
+     0.31
+    ],
+    "min": [
+     0.0,
+     0.077,
+     0.172
+    ],
+    "max": [
+     0.158,
+     0.308,
+     0.4
+    ]
+   },
+   "dragons_oil": {
+    "mean": [
+     0.0,
+     0.173,
+     0.375
+    ],
+    "min": [
+     0.0,
+     0.0,
+     0.143
+    ],
+    "max": [
+     0.0,
+     0.333,
+     0.667
+    ]
+   },
+   "dragons_dry": {
+    "mean": [
+     0.106,
+     0.219,
+     0.418
+    ],
+    "min": [
+     0.0,
+     0.077,
+     0.207
+    ],
+    "max": [
+     0.168,
+     0.326,
+     0.547
+    ]
+   },
+   "ribbit_pop": {
+    "mean": [
+     1.0,
+     1.0,
+     1.0
+    ],
+    "min": [
+     1.0,
+     1.0,
+     1.0
+    ],
+    "max": [
+     1.0,
+     1.0,
+     1.0
+    ]
+   },
+   "frostmaws": {
+    "mean": [
+     1.0,
+     1.0,
+     1.0
+    ],
+    "min": [
+     1.0,
+     1.0,
+     1.0
+    ],
+    "max": [
+     1.0,
+     1.0,
+     1.0
+    ]
+   },
+   "umvuthana": {
+    "mean": [
+     1.0,
+     1.0,
+     1.0
+    ],
+    "min": [
+     1.0,
+     1.0,
+     1.0
+    ],
+    "max": [
+     1.0,
+     1.0,
+     1.0
+    ]
+   },
+   "worms": {
+    "mean": [
+     1.0,
+     1.0,
+     1.0
+    ],
+    "min": [
+     1.0,
+     1.0,
+     1.0
+    ],
+    "max": [
+     1.0,
+     1.0,
+     1.0
+    ]
+   },
+   "camp_pool": {
+    "mean": [
+     1.0,
+     1.0,
+     1.0
+    ],
+    "min": [
+     1.0,
+     1.0,
+     1.0
+    ],
+    "max": [
+     1.0,
+     1.0,
+     1.0
+    ]
+   },
+   "camps_live": {
+    "mean": [
+     1.0,
+     1.0,
+     1.0
+    ],
+    "min": [
+     1.0,
+     1.0,
+     1.0
+    ],
+    "max": [
+     1.0,
+     1.0,
+     1.0
+    ]
+   },
+   "pirate_ships": {
+    "mean": [
+     0.858,
+     0.925,
+     0.983
+    ],
+    "min": [
+     0.0,
+     0.5,
+     0.8
+    ],
+    "max": [
+     1.0,
+     1.0,
+     1.0
+    ]
+   },
+   "pirate_ships_hunting": {
+    "mean": [
+     0.809,
+     0.904,
+     0.955
+    ],
+    "min": [
+     0.0,
+     0.375,
+     0.542
+    ],
+    "max": [
+     1.0,
+     1.0,
+     1.0
+    ]
+   },
+   "herd_extinctions_per_world": 0.0,
+   "camp_feud_raids_per_world_year": 0.0,
+   "herd_top_share": [
+    0.056,
+    0.079,
+    0.113
+   ],
+   "events_per_day": 0.452,
+   "dragons_per_region": [
+    0.041,
+    0.085,
+    0.128
+   ],
+   "lairs_per_region": [
+    0.306,
+    0.429,
+    0.568
+   ],
+   "food_gate_per_world_year": {
+    "births": 1.75,
+    "young_settled": 0.17,
+    "young_emigrated": 1.56,
+    "frontier": 1.0
+   },
+   "herd_N_over_K_by_decade": [
+    0.709,
+    0.652,
+    0.645,
+    0.646,
+    0.646,
+    0.648
+   ]
+  },
+  {
+   "mode": "proposed",
+   "player": "none",
+   "years": 60,
+   "seconds": 29.6,
+   "over": {
+    "food_gate": true,
+    "lair_rate": 0.5,
+    "lair_slots": 4,
+    "village_rate": 0.0,
+    "k_per_density": 20.0,
+    "oil_weight": 800.0
+   },
+   "herd_animals": {
+    "mean": [
+     0.607,
+     0.656,
+     0.728
+    ],
+    "min": [
+     0.547,
+     0.597,
+     0.67
+    ],
+    "max": [
+     0.659,
+     0.719,
+     0.782
+    ]
+   },
+   "herds_alive": {
+    "mean": [
+     1.0,
+     1.0,
+     1.0
+    ],
+    "min": [
+     1.0,
+     1.0,
+     1.0
+    ],
+    "max": [
+     1.0,
+     1.0,
+     1.0
+    ]
+   },
+   "dragons": {
+    "mean": [
+     0.151,
+     0.4,
+     0.603
+    ],
+    "min": [
+     0.04,
+     0.244,
+     0.424
+    ],
+    "max": [
+     0.228,
+     0.496,
+     0.667
+    ]
+   },
+   "dragons_oil": {
+    "mean": [
+     0.853,
+     0.947,
+     0.956
+    ],
+    "min": [
+     0.333,
+     0.6,
+     0.692
+    ],
+    "max": [
+     1.0,
+     1.0,
+     1.0
+    ]
+   },
+   "dragons_dry": {
+    "mean": [
+     0.081,
+     0.195,
+     0.371
+    ],
+    "min": [
+     0.0,
+     0.044,
+     0.245
+    ],
+    "max": [
+     0.159,
+     0.3,
+     0.561
+    ]
+   },
+   "ribbit_pop": {
+    "mean": [
+     1.0,
+     1.0,
+     1.0
+    ],
+    "min": [
+     1.0,
+     1.0,
+     1.0
+    ],
+    "max": [
+     1.0,
+     1.0,
+     1.0
+    ]
+   },
+   "frostmaws": {
+    "mean": [
+     1.0,
+     1.0,
+     1.0
+    ],
+    "min": [
+     1.0,
+     1.0,
+     1.0
+    ],
+    "max": [
+     1.0,
+     1.0,
+     1.0
+    ]
+   },
+   "umvuthana": {
+    "mean": [
+     1.0,
+     1.0,
+     1.0
+    ],
+    "min": [
+     1.0,
+     1.0,
+     1.0
+    ],
+    "max": [
+     1.0,
+     1.0,
+     1.0
+    ]
+   },
+   "worms": {
+    "mean": [
+     1.0,
+     1.0,
+     1.0
+    ],
+    "min": [
+     1.0,
+     1.0,
+     1.0
+    ],
+    "max": [
+     1.0,
+     1.0,
+     1.0
+    ]
+   },
+   "camp_pool": {
+    "mean": [
+     1.0,
+     1.0,
+     1.0
+    ],
+    "min": [
+     1.0,
+     1.0,
+     1.0
+    ],
+    "max": [
+     1.0,
+     1.0,
+     1.0
+    ]
+   },
+   "camps_live": {
+    "mean": [
+     1.0,
+     1.0,
+     1.0
+    ],
+    "min": [
+     1.0,
+     1.0,
+     1.0
+    ],
+    "max": [
+     1.0,
+     1.0,
+     1.0
+    ]
+   },
+   "pirate_ships": {
+    "mean": [
+     0.883,
+     0.938,
+     0.973
+    ],
+    "min": [
+     0.0,
+     0.5,
+     0.8
+    ],
+    "max": [
+     1.0,
+     1.0,
+     1.0
+    ]
+   },
+   "pirate_ships_hunting": {
+    "mean": [
+     0.825,
+     0.922,
+     0.949
+    ],
+    "min": [
+     0.0,
+     0.5,
+     0.667
+    ],
+    "max": [
+     1.0,
+     1.0,
+     1.0
+    ]
+   },
+   "herd_extinctions_per_world": 0.0,
+   "camp_feud_raids_per_world_year": 0.0,
+   "herd_top_share": [
+    0.057,
+    0.083,
+    0.11
+   ],
+   "events_per_day": 0.46,
+   "dragons_per_region": [
+    0.067,
+    0.147,
+    0.254
+   ],
+   "lairs_per_region": [
+    0.306,
+    0.429,
+    0.568
+   ],
+   "food_gate_per_world_year": {
+    "births": 1.23,
+    "young_settled": 0.19,
+    "young_emigrated": 1.03,
+    "frontier": 1.88
+   },
+   "herd_N_over_K_by_decade": [
+    0.717,
+    0.657,
+    0.655,
+    0.657,
+    0.655,
+    0.655
+   ]
+  },
+  {
+   "mode": "proposed",
+   "player": "none",
+   "years": 60,
+   "seconds": 29.8,
+   "over": {
+    "food_gate": true,
+    "lair_rate": 0.5,
+    "lair_slots": 4,
+    "village_rate": 0.0,
+    "k_per_density": 20.0,
+    "oil_weight": 400.0
+   },
+   "herd_animals": {
+    "mean": [
+     0.587,
+     0.645,
+     0.717
+    ],
+    "min": [
+     0.529,
+     0.591,
+     0.669
+    ],
+    "max": [
+     0.642,
+     0.706,
+     0.772
+    ]
+   },
+   "herds_alive": {
+    "mean": [
+     1.0,
+     1.0,
+     1.0
+    ],
+    "min": [
+     1.0,
+     1.0,
+     1.0
+    ],
+    "max": [
+     1.0,
+     1.0,
+     1.0
+    ]
+   },
+   "dragons": {
+    "mean": [
+     0.149,
+     0.392,
+     0.536
+    ],
+    "min": [
+     0.047,
+     0.237,
+     0.377
+    ],
+    "max": [
+     0.228,
+     0.467,
+     0.667
+    ]
+   },
+   "dragons_oil": {
+    "mean": [
+     0.657,
+     0.932,
+     0.952
+    ],
+    "min": [
+     0.0,
+     0.5,
+     0.667
+    ],
+    "max": [
+     0.75,
+     1.0,
+     1.0
+    ]
+   },
+   "dragons_dry": {
+    "mean": [
+     0.083,
+     0.193,
+     0.367
+    ],
+    "min": [
+     0.0,
+     0.056,
+     0.234
+    ],
+    "max": [
+     0.168,
+     0.275,
+     0.5
+    ]
+   },
+   "ribbit_pop": {
+    "mean": [
+     1.0,
+     1.0,
+     1.0
+    ],
+    "min": [
+     1.0,
+     1.0,
+     1.0
+    ],
+    "max": [
+     1.0,
+     1.0,
+     1.0
+    ]
+   },
+   "frostmaws": {
+    "mean": [
+     1.0,
+     1.0,
+     1.0
+    ],
+    "min": [
+     1.0,
+     1.0,
+     1.0
+    ],
+    "max": [
+     1.0,
+     1.0,
+     1.0
+    ]
+   },
+   "umvuthana": {
+    "mean": [
+     1.0,
+     1.0,
+     1.0
+    ],
+    "min": [
+     1.0,
+     1.0,
+     1.0
+    ],
+    "max": [
+     1.0,
+     1.0,
+     1.0
+    ]
+   },
+   "worms": {
+    "mean": [
+     1.0,
+     1.0,
+     1.0
+    ],
+    "min": [
+     1.0,
+     1.0,
+     1.0
+    ],
+    "max": [
+     1.0,
+     1.0,
+     1.0
+    ]
+   },
+   "camp_pool": {
+    "mean": [
+     1.0,
+     1.0,
+     1.0
+    ],
+    "min": [
+     1.0,
+     1.0,
+     1.0
+    ],
+    "max": [
+     1.0,
+     1.0,
+     1.0
+    ]
+   },
+   "camps_live": {
+    "mean": [
+     1.0,
+     1.0,
+     1.0
+    ],
+    "min": [
+     1.0,
+     1.0,
+     1.0
+    ],
+    "max": [
+     1.0,
+     1.0,
+     1.0
+    ]
+   },
+   "pirate_ships": {
+    "mean": [
+     0.855,
+     0.942,
+     0.967
+    ],
+    "min": [
+     0.133,
+     0.5,
+     0.733
+    ],
+    "max": [
+     1.0,
+     1.0,
+     1.0
+    ]
+   },
+   "pirate_ships_hunting": {
+    "mean": [
+     0.803,
+     0.91,
+     0.957
+    ],
+    "min": [
+     0.0,
+     0.5,
+     0.542
+    ],
+    "max": [
+     1.0,
+     1.0,
+     1.0
+    ]
+   },
+   "herd_extinctions_per_world": 0.0,
+   "camp_feud_raids_per_world_year": 0.0,
+   "herd_top_share": [
+    0.06,
+    0.081,
+    0.109
+   ],
+   "events_per_day": 0.459,
+   "dragons_per_region": [
+    0.066,
+    0.143,
+    0.227
+   ],
+   "lairs_per_region": [
+    0.306,
+    0.429,
+    0.568
+   ],
+   "food_gate_per_world_year": {
+    "births": 1.25,
+    "young_settled": 0.2,
+    "young_emigrated": 1.04,
+    "frontier": 1.75
+   },
+   "herd_N_over_K_by_decade": [
+    0.711,
+    0.649,
+    0.64,
+    0.644,
+    0.644,
+    0.645
+   ]
+  },
+  {
+   "mode": "proposed",
+   "player": "none",
+   "years": 60,
+   "seconds": 29.9,
+   "over": {
+    "food_gate": true,
+    "lair_rate": 0.5,
+    "lair_slots": 4,
+    "village_rate": 0.0,
+    "k_per_density": 20.0,
+    "oil_weight": 400.0,
+    "oil_breeds": true
+   },
+   "herd_animals": {
+    "mean": [
+     0.598,
+     0.643,
+     0.717
+    ],
+    "min": [
+     0.538,
+     0.577,
+     0.669
+    ],
+    "max": [
+     0.657,
+     0.712,
+     0.771
+    ]
+   },
+   "herds_alive": {
+    "mean": [
+     1.0,
+     1.0,
+     1.0
+    ],
+    "min": [
+     1.0,
+     1.0,
+     1.0
+    ],
+    "max": [
+     1.0,
+     1.0,
+     1.0
+    ]
+   },
+   "dragons": {
+    "mean": [
+     0.15,
+     0.391,
+     0.538
+    ],
+    "min": [
+     0.047,
+     0.243,
+     0.374
+    ],
+    "max": [
+     0.234,
+     0.467,
+     0.667
+    ]
+   },
+   "dragons_oil": {
+    "mean": [
+     0.663,
+     0.933,
+     0.952
+    ],
+    "min": [
+     0.0,
+     0.5,
+     0.667
+    ],
+    "max": [
+     0.8,
+     1.0,
+     1.0
+    ]
+   },
+   "dragons_dry": {
+    "mean": [
+     0.087,
+     0.204,
+     0.378
+    ],
+    "min": [
+     0.0,
+     0.051,
+     0.141
+    ],
+    "max": [
+     0.175,
+     0.286,
+     0.539
+    ]
+   },
+   "ribbit_pop": {
+    "mean": [
+     1.0,
+     1.0,
+     1.0
+    ],
+    "min": [
+     1.0,
+     1.0,
+     1.0
+    ],
+    "max": [
+     1.0,
+     1.0,
+     1.0
+    ]
+   },
+   "frostmaws": {
+    "mean": [
+     1.0,
+     1.0,
+     1.0
+    ],
+    "min": [
+     1.0,
+     1.0,
+     1.0
+    ],
+    "max": [
+     1.0,
+     1.0,
+     1.0
+    ]
+   },
+   "umvuthana": {
+    "mean": [
+     1.0,
+     1.0,
+     1.0
+    ],
+    "min": [
+     1.0,
+     1.0,
+     1.0
+    ],
+    "max": [
+     1.0,
+     1.0,
+     1.0
+    ]
+   },
+   "worms": {
+    "mean": [
+     1.0,
+     1.0,
+     1.0
+    ],
+    "min": [
+     1.0,
+     1.0,
+     1.0
+    ],
+    "max": [
+     1.0,
+     1.0,
+     1.0
+    ]
+   },
+   "camp_pool": {
+    "mean": [
+     1.0,
+     1.0,
+     1.0
+    ],
+    "min": [
+     1.0,
+     1.0,
+     1.0
+    ],
+    "max": [
+     1.0,
+     1.0,
+     1.0
+    ]
+   },
+   "camps_live": {
+    "mean": [
+     1.0,
+     1.0,
+     1.0
+    ],
+    "min": [
+     1.0,
+     1.0,
+     1.0
+    ],
+    "max": [
+     1.0,
+     1.0,
+     1.0
+    ]
+   },
+   "pirate_ships": {
+    "mean": [
+     0.892,
+     0.944,
+     0.978
+    ],
+    "min": [
+     0.2,
+     0.5,
+     0.8
+    ],
+    "max": [
+     1.0,
+     1.0,
+     1.0
+    ]
+   },
+   "pirate_ships_hunting": {
+    "mean": [
+     0.869,
+     0.927,
+     0.951
+    ],
+    "min": [
+     0.0,
+     0.5,
+     0.667
+    ],
+    "max": [
+     1.0,
+     1.0,
+     1.0
+    ]
+   },
+   "herd_extinctions_per_world": 0.0,
+   "camp_feud_raids_per_world_year": 0.0,
+   "herd_top_share": [
+    0.055,
+    0.084,
+    0.105
+   ],
+   "events_per_day": 0.458,
+   "dragons_per_region": [
+    0.065,
+    0.145,
+    0.219
+   ],
+   "lairs_per_region": [
+    0.306,
+    0.429,
+    0.568
+   ],
+   "food_gate_per_world_year": {
+    "births": 3.75,
+    "young_settled": 0.6,
+    "young_emigrated": 3.1,
+    "frontier": 1.36
+   },
+   "herd_N_over_K_by_decade": [
+    0.713,
+    0.655,
+    0.643,
+    0.646,
+    0.644,
+    0.643
+   ]
+  },
+  {
+   "mode": "proposed",
+   "player": "none",
+   "years": 60,
+   "seconds": 29.9,
+   "over": {
+    "food_gate": true,
+    "lair_rate": 0.5,
+    "lair_slots": 4,
+    "village_rate": 0.0,
+    "k_per_density": 20.0,
+    "oil_weight": 200.0
+   },
+   "herd_animals": {
+    "mean": [
+     0.588,
+     0.631,
+     0.718
+    ],
+    "min": [
+     0.532,
+     0.579,
+     0.657
+    ],
+    "max": [
+     0.641,
+     0.691,
+     0.769
+    ]
+   },
+   "herds_alive": {
+    "mean": [
+     1.0,
+     1.0,
+     1.0
+    ],
+    "min": [
+     1.0,
+     1.0,
+     1.0
+    ],
+    "max": [
+     1.0,
+     1.0,
+     1.0
+    ]
+   },
+   "dragons": {
+    "mean": [
+     0.148,
+     0.317,
+     0.468
+    ],
+    "min": [
+     0.036,
+     0.164,
+     0.292
+    ],
+    "max": [
+     0.228,
+     0.395,
+     0.652
+    ]
+   },
+   "dragons_oil": {
+    "mean": [
+     0.479,
+     0.704,
+     0.942
+    ],
+    "min": [
+     0.0,
+     0.273,
+     0.5
+    ],
+    "max": [
+     0.5,
+     0.8,
+     1.0
+    ]
+   },
+   "dragons_dry": {
+    "mean": [
+     0.082,
+     0.184,
+     0.394
+    ],
+    "min": [
+     0.0,
+     0.042,
+     0.234
+    ],
+    "max": [
+     0.159,
+     0.275,
+     0.547
+    ]
+   },
+   "ribbit_pop": {
+    "mean": [
+     1.0,
+     1.0,
+     1.0
+    ],
+    "min": [
+     1.0,
+     1.0,
+     1.0
+    ],
+    "max": [
+     1.0,
+     1.0,
+     1.0
+    ]
+   },
+   "frostmaws": {
+    "mean": [
+     1.0,
+     1.0,
+     1.0
+    ],
+    "min": [
+     1.0,
+     1.0,
+     1.0
+    ],
+    "max": [
+     1.0,
+     1.0,
+     1.0
+    ]
+   },
+   "umvuthana": {
+    "mean": [
+     1.0,
+     1.0,
+     1.0
+    ],
+    "min": [
+     1.0,
+     1.0,
+     1.0
+    ],
+    "max": [
+     1.0,
+     1.0,
+     1.0
+    ]
+   },
+   "worms": {
+    "mean": [
+     1.0,
+     1.0,
+     1.0
+    ],
+    "min": [
+     1.0,
+     1.0,
+     1.0
+    ],
+    "max": [
+     1.0,
+     1.0,
+     1.0
+    ]
+   },
+   "camp_pool": {
+    "mean": [
+     1.0,
+     1.0,
+     1.0
+    ],
+    "min": [
+     1.0,
+     1.0,
+     1.0
+    ],
+    "max": [
+     1.0,
+     1.0,
+     1.0
+    ]
+   },
+   "camps_live": {
+    "mean": [
+     1.0,
+     1.0,
+     1.0
+    ],
+    "min": [
+     1.0,
+     1.0,
+     1.0
+    ],
+    "max": [
+     1.0,
+     1.0,
+     1.0
+    ]
+   },
+   "pirate_ships": {
+    "mean": [
+     0.859,
+     0.94,
+     0.977
+    ],
+    "min": [
+     0.0,
+     0.5,
+     0.8
+    ],
+    "max": [
+     1.0,
+     1.0,
+     1.0
+    ]
+   },
+   "pirate_ships_hunting": {
+    "mean": [
+     0.857,
+     0.915,
+     0.956
+    ],
+    "min": [
+     0.0,
+     0.5,
+     0.5
+    ],
+    "max": [
+     1.0,
+     1.0,
+     1.0
+    ]
+   },
+   "herd_extinctions_per_world": 0.0,
+   "camp_feud_raids_per_world_year": 0.0,
+   "herd_top_share": [
+    0.058,
+    0.082,
+    0.109
+   ],
+   "events_per_day": 0.457,
+   "dragons_per_region": [
+    0.066,
+    0.129,
+    0.171
+   ],
+   "lairs_per_region": [
+    0.306,
+    0.429,
+    0.568
+   ],
+   "food_gate_per_world_year": {
+    "births": 1.33,
+    "young_settled": 0.17,
+    "young_emigrated": 1.15,
+    "frontier": 1.52
+   },
+   "herd_N_over_K_by_decade": [
+    0.707,
+    0.643,
+    0.636,
+    0.636,
+    0.638,
+    0.639
+   ]
+  },
+  {
+   "mode": "proposed",
+   "player": "roamer",
+   "years": 60,
+   "seconds": 36.1,
+   "over": {
+    "food_gate": true,
+    "lair_rate": 0.5,
+    "lair_slots": 4,
+    "village_rate": 0.0,
+    "k_per_density": 20.0,
+    "oil_weight": 400.0
+   },
+   "herd_animals": {
+    "mean": [
+     0.591,
+     0.608,
+     0.65
+    ],
+    "min": [
+     0.542,
+     0.559,
+     0.601
+    ],
+    "max": [
+     0.637,
+     0.657,
+     0.699
+    ]
+   },
+   "herds_alive": {
+    "mean": [
+     1.0,
+     1.0,
+     1.0
+    ],
+    "min": [
+     1.0,
+     1.0,
+     1.0
+    ],
+    "max": [
+     1.0,
+     1.0,
+     1.0
+    ]
+   },
+   "dragons": {
+    "mean": [
+     0.235,
+     0.298,
+     0.433
+    ],
+    "min": [
+     0.161,
+     0.213,
+     0.337
+    ],
+    "max": [
+     0.315,
+     0.371,
+     0.514
+    ]
+   },
+   "dragons_oil": {
+    "mean": [
+     0.539,
+     0.668,
+     0.838
+    ],
+    "min": [
+     0.312,
+     0.382,
+     0.571
+    ],
+    "max": [
+     0.651,
+     0.818,
+     1.0
+    ]
+   },
+   "dragons_dry": {
+    "mean": [
+     0.133,
+     0.166,
+     0.284
+    ],
+    "min": [
+     0.044,
+     0.09,
+     0.167
+    ],
+    "max": [
+     0.198,
+     0.235,
+     0.37
+    ]
+   },
+   "ribbit_pop": {
+    "mean": [
+     1.0,
+     1.0,
+     1.0
+    ],
+    "min": [
+     1.0,
+     1.0,
+     1.0
+    ],
+    "max": [
+     1.0,
+     1.0,
+     1.0
+    ]
+   },
+   "frostmaws": {
+    "mean": [
+     0.881,
+     0.922,
+     0.956
+    ],
+    "min": [
+     0.554,
+     0.692,
+     0.778
+    ],
+    "max": [
+     1.0,
+     1.0,
+     1.0
+    ]
+   },
+   "umvuthana": {
+    "mean": [
+     0.929,
+     0.937,
+     0.949
+    ],
+    "min": [
+     0.629,
+     0.733,
+     0.781
+    ],
+    "max": [
+     1.0,
+     1.0,
+     1.0
+    ]
+   },
+   "worms": {
+    "mean": [
+     0.915,
+     0.943,
+     0.974
+    ],
+    "min": [
+     0.5,
+     0.667,
+     0.747
+    ],
+    "max": [
+     1.0,
+     1.0,
+     1.0
+    ]
+   },
+   "camp_pool": {
+    "mean": [
+     0.958,
+     0.971,
+     0.986
+    ],
+    "min": [
+     0.764,
+     0.826,
+     0.875
+    ],
+    "max": [
+     1.0,
+     1.0,
+     1.0
+    ]
+   },
+   "camps_live": {
+    "mean": [
+     1.0,
+     1.0,
+     1.0
+    ],
+    "min": [
+     1.0,
+     1.0,
+     1.0
+    ],
+    "max": [
+     1.0,
+     1.0,
+     1.0
+    ]
+   },
+   "pirate_ships": {
+    "mean": [
+     0.859,
+     0.909,
+     0.948
+    ],
+    "min": [
+     0.25,
+     0.5,
+     0.685
+    ],
+    "max": [
+     1.0,
+     1.0,
+     1.0
+    ]
+   },
+   "pirate_ships_hunting": {
+    "mean": [
+     0.825,
+     0.861,
+     0.914
+    ],
+    "min": [
+     0.0,
+     0.375,
+     0.5
+    ],
+    "max": [
+     1.0,
+     1.0,
+     1.0
+    ]
+   },
+   "herd_extinctions_per_world": 0.0,
+   "camp_feud_raids_per_world_year": 0.33,
+   "herd_top_share": [
+    0.027,
+    0.031,
+    0.043
+   ],
+   "events_per_day": 1.483,
+   "dragons_per_region": [
+    0.106,
+    0.142,
+    0.199
+   ],
+   "lairs_per_region": [
+    0.381,
+    0.465,
+    0.539
+   ],
+   "food_gate_per_world_year": {
+    "births": 3.18,
+    "young_settled": 1.5,
+    "young_emigrated": 1.66,
+    "frontier": 6.94
+   },
+   "herd_N_over_K_by_decade": [
+    0.716,
+    0.628,
+    0.618,
+    0.614,
+    0.614,
+    0.614
+   ]
+  }
+ ],
+ "closed_form": {
+  "food gate, K 100, 0.0 villages, 0.5 lairs a region": {
+   "K": 100.0,
+   "villages": 0.0,
+   "lairs": 0.5,
+   "births_alone_intake": 0.4475,
+   "sheep": {
+    "N_over_K": 0.647,
+    "dragons_per_region": 0.055,
+    "held": 0.11,
+    "intake": 0.751,
+    "eaten_per_year_over_K": 0.0215
+   },
+   "cow": {
+    "N_over_K": 0.627,
+    "dragons_per_region": 0.044,
+    "held": 0.089,
+    "intake": 0.778,
+    "eaten_per_year_over_K": 0.0178
+   },
+   "pig": {
+    "N_over_K": 0.679,
+    "dragons_per_region": 0.073,
+    "held": 0.146,
+    "intake": 0.716,
+    "eaten_per_year_over_K": 0.0274
+   },
+   "horse": {
+    "N_over_K": 0.609,
+    "dragons_per_region": 0.035,
+    "held": 0.07,
+    "intake": 0.807,
+    "eaten_per_year_over_K": 0.0144
+   },
+   "goat": {
+    "N_over_K": 0.656,
+    "dragons_per_region": 0.06,
+    "held": 0.121,
+    "intake": 0.74,
+    "eaten_per_year_over_K": 0.0232
+   }
+  },
+  "food gate, K 100, 0.0 villages, 1.6 lairs a region": {
+   "K": 100.0,
+   "villages": 0.0,
+   "lairs": 1.6,
+   "births_alone_intake": 0.4475,
+   "sheep": {
+    "N_over_K": 0.647,
+    "dragons_per_region": 0.055,
+    "held": 0.034,
+    "intake": 0.751,
+    "eaten_per_year_over_K": 0.0215
+   },
+   "cow": {
+    "N_over_K": 0.627,
+    "dragons_per_region": 0.044,
+    "held": 0.028,
+    "intake": 0.778,
+    "eaten_per_year_over_K": 0.0178
+   },
+   "pig": {
+    "N_over_K": 0.679,
+    "dragons_per_region": 0.073,
+    "held": 0.046,
+    "intake": 0.716,
+    "eaten_per_year_over_K": 0.0274
+   },
+   "horse": {
+    "N_over_K": 0.609,
+    "dragons_per_region": 0.035,
+    "held": 0.022,
+    "intake": 0.807,
+    "eaten_per_year_over_K": 0.0144
+   },
+   "goat": {
+    "N_over_K": 0.656,
+    "dragons_per_region": 0.06,
+    "held": 0.038,
+    "intake": 0.74,
+    "eaten_per_year_over_K": 0.0232
+   }
+  },
+  "food gate, K 100, 0.8 villages, 0.5 lairs a region": {
+   "K": 100.0,
+   "villages": 0.8,
+   "lairs": 0.5,
+   "births_alone_intake": 0.4475,
+   "sheep": {
+    "N_over_K": 0.564,
+    "dragons_per_region": 0.5,
+    "held": 1.0,
+    "intake": 0.592,
+    "eaten_per_year_over_K": 0.0253
+   },
+   "cow": {
+    "N_over_K": 0.523,
+    "dragons_per_region": 0.5,
+    "held": 1.0,
+    "intake": 0.585,
+    "eaten_per_year_over_K": 0.0214
+   },
+   "pig": {
+    "N_over_K": 0.623,
+    "dragons_per_region": 0.5,
+    "held": 1.0,
+    "intake": 0.601,
+    "eaten_per_year_over_K": 0.0315
+   },
+   "horse": {
+    "N_over_K": 0.482,
+    "dragons_per_region": 0.5,
+    "held": 1.0,
+    "intake": 0.58,
+    "eaten_per_year_over_K": 0.0176
+   },
+   "goat": {
+    "N_over_K": 0.582,
+    "dragons_per_region": 0.5,
+    "held": 1.0,
+    "intake": 0.595,
+    "eaten_per_year_over_K": 0.0272
+   }
+  },
+  "food gate, K 100, 0.8 villages, 1.6 lairs a region": {
+   "K": 100.0,
+   "villages": 0.8,
+   "lairs": 1.6,
+   "births_alone_intake": 0.4475,
+   "sheep": {
+    "N_over_K": 0.545,
+    "dragons_per_region": 0.604,
+    "held": 0.378,
+    "intake": 0.542,
+    "eaten_per_year_over_K": 0.0261
+   },
+   "cow": {
+    "N_over_K": 0.507,
+    "dragons_per_region": 0.588,
+    "held": 0.368,
+    "intake": 0.543,
+    "eaten_per_year_over_K": 0.0218
+   },
+   "pig": {
+    "N_over_K": 0.6,
+    "dragons_per_region": 0.631,
+    "held": 0.394,
+    "intake": 0.54,
+    "eaten_per_year_over_K": 0.0331
+   },
+   "horse": {
+    "N_over_K": 0.469,
+    "dragons_per_region": 0.574,
+    "held": 0.359,
+    "intake": 0.544,
+    "eaten_per_year_over_K": 0.0179
+   },
+   "goat": {
+    "N_over_K": 0.562,
+    "dragons_per_region": 0.612,
+    "held": 0.383,
+    "intake": 0.542,
+    "eaten_per_year_over_K": 0.0282
+   }
+  },
+  "food gate, K 400, 0.0 villages, 0.5 lairs a region": {
+   "K": 400.0,
+   "villages": 0.0,
+   "lairs": 0.5,
+   "births_alone_intake": 0.4475,
+   "sheep": {
+    "N_over_K": 0.557,
+    "dragons_per_region": 0.322,
+    "held": 0.645,
+    "intake": 0.573,
+    "eaten_per_year_over_K": 0.0256
+   },
+   "cow": {
+    "N_over_K": 0.524,
+    "dragons_per_region": 0.264,
+    "held": 0.529,
+    "intake": 0.587,
+    "eaten_per_year_over_K": 0.0214
+   },
+   "pig": {
+    "N_over_K": 0.607,
+    "dragons_per_region": 0.419,
+    "held": 0.839,
+    "intake": 0.559,
+    "eaten_per_year_over_K": 0.0327
+   },
+   "horse": {
+    "N_over_K": 0.491,
+    "dragons_per_region": 0.211,
+    "held": 0.423,
+    "intake": 0.604,
+    "eaten_per_year_over_K": 0.0174
+   },
+   "goat": {
+    "N_over_K": 0.572,
+    "dragons_per_region": 0.351,
+    "held": 0.703,
+    "intake": 0.568,
+    "eaten_per_year_over_K": 0.0277
+   }
+  },
+  "food gate, K 400, 0.0 villages, 1.6 lairs a region": {
+   "K": 400.0,
+   "villages": 0.0,
+   "lairs": 1.6,
+   "births_alone_intake": 0.4475,
+   "sheep": {
+    "N_over_K": 0.557,
+    "dragons_per_region": 0.322,
+    "held": 0.202,
+    "intake": 0.573,
+    "eaten_per_year_over_K": 0.0256
+   },
+   "cow": {
+    "N_over_K": 0.524,
+    "dragons_per_region": 0.264,
+    "held": 0.165,
+    "intake": 0.587,
+    "eaten_per_year_over_K": 0.0214
+   },
+   "pig": {
+    "N_over_K": 0.607,
+    "dragons_per_region": 0.419,
+    "held": 0.262,
+    "intake": 0.559,
+    "eaten_per_year_over_K": 0.0327
+   },
+   "horse": {
+    "N_over_K": 0.491,
+    "dragons_per_region": 0.211,
+    "held": 0.132,
+    "intake": 0.604,
+    "eaten_per_year_over_K": 0.0174
+   },
+   "goat": {
+    "N_over_K": 0.572,
+    "dragons_per_region": 0.351,
+    "held": 0.22,
+    "intake": 0.568,
+    "eaten_per_year_over_K": 0.0277
+   }
+  },
+  "food gate, K 400, 0.8 villages, 0.5 lairs a region": {
+   "K": 400.0,
+   "villages": 0.8,
+   "lairs": 0.5,
+   "births_alone_intake": 0.4475,
+   "sheep": {
+    "N_over_K": 0.613,
+    "dragons_per_region": 0.5,
+    "held": 1.0,
+    "intake": 0.696,
+    "eaten_per_year_over_K": 0.0231
+   },
+   "cow": {
+    "N_over_K": 0.564,
+    "dragons_per_region": 0.5,
+    "held": 1.0,
+    "intake": 0.677,
+    "eaten_per_year_over_K": 0.0201
+   },
+   "pig": {
+    "N_over_K": 0.681,
+    "dragons_per_region": 0.5,
+    "held": 1.0,
+    "intake": 0.721,
+    "eaten_per_year_over_K": 0.0271
+   },
+   "horse": {
+    "N_over_K": 0.514,
+    "dragons_per_region": 0.5,
+    "held": 1.0,
+    "intake": 0.657,
+    "eaten_per_year_over_K": 0.0169
+   },
+   "goat": {
+    "N_over_K": 0.635,
+    "dragons_per_region": 0.5,
+    "held": 1.0,
+    "intake": 0.704,
+    "eaten_per_year_over_K": 0.0244
+   }
+  },
+  "food gate, K 400, 0.8 villages, 1.6 lairs a region": {
+   "K": 400.0,
+   "villages": 0.8,
+   "lairs": 1.6,
+   "births_alone_intake": 0.4475,
+   "sheep": {
+    "N_over_K": 0.54,
+    "dragons_per_region": 0.893,
+    "held": 0.558,
+    "intake": 0.529,
+    "eaten_per_year_over_K": 0.0263
+   },
+   "cow": {
+    "N_over_K": 0.503,
+    "dragons_per_region": 0.831,
+    "held": 0.519,
+    "intake": 0.531,
+    "eaten_per_year_over_K": 0.0219
+   },
+   "pig": {
+    "N_over_K": 0.595,
+    "dragons_per_region": 0.996,
+    "held": 0.623,
+    "intake": 0.526,
+    "eaten_per_year_over_K": 0.0335
+   },
+   "horse": {
+    "N_over_K": 0.465,
+    "dragons_per_region": 0.773,
+    "held": 0.483,
+    "intake": 0.534,
+    "eaten_per_year_over_K": 0.0179
+   },
+   "goat": {
+    "N_over_K": 0.557,
+    "dragons_per_region": 0.924,
+    "held": 0.578,
+    "intake": 0.528,
+    "eaten_per_year_over_K": 0.0284
+   }
+  },
+  "lair (base 20, cap 192)": {
+   "P": 2.115,
+   "days_per_kill": 88.7,
+   "per_year": 1.08
+  },
+  "den (base 24, cap 192)": {
+   "P": 1.985,
+   "days_per_kill": 97.0,
+   "per_year": 0.99
+  },
+  "den, MOWZIE base 6 with pressure (cap 192)": {
+   "P": 3.109,
+   "days_per_kill": 53.8,
+   "per_year": 1.79
+  },
+  "den, MOWZIE draft (6 days flat)": {
+   "per_year": 12.0
+  },
+  "grove member, K=7 (base 6, cap 96)": {
+   "P": 1.272,
+   "days_per_kill": 16.5,
+   "per_year": 5.82
+  },
+  "village settlers, K=12, pairs (base 16, cap 192)": {
+   "P": 0.84,
+   "days_per_kill": 30.6,
+   "per_year": 3.13
+  },
+  "den, H=48": {
+   "P": 1.546,
+   "days_per_kill": 72.1,
+   "per_year": 1.33
+  },
+  "den, H=192": {
+   "P": 2.522,
+   "days_per_kill": 139.9,
+   "per_year": 0.69
+  }
+ }
+}
