@@ -19,7 +19,6 @@ import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.MobSpawnType;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.Level;
-import net.minecraft.world.level.levelgen.structure.BoundingBox;
 import net.minecraft.world.phys.AABB;
 
 import java.nio.ByteBuffer;
@@ -28,6 +27,8 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 
 /**
@@ -68,6 +69,12 @@ public final class HomeBodies {
     private final Map<Long, Long> epochs = new HashMap<>();
     private final Map<Long, Long> censusAt = new HashMap<>();
     private final ConcurrentLinkedQueue<ChunkNote> chunkEvents = new ConcurrentLinkedQueue<>();
+    /**
+     * The chunks a known lair's home lies in, by dimension: only their loads and unloads are queued (EQC319), so a chunk event
+     * of anywhere else, in any dimension, with or without a session or the ecology module, costs no memory. Read off the
+     * server thread.
+     */
+    private final Map<ResourceKey<Level>, Set<Long>> homeChunks = new ConcurrentHashMap<>();
     private long epochSeq;
     private long lastLeash;
     private boolean wasOn = true;
@@ -83,6 +90,7 @@ public final class HomeBodies {
         watch = null;
         active.clear();
         byHomeChunk.clear();
+        homeChunks.clear();
         epochs.clear();
         censusAt.clear();
         chunkEvents.clear();
@@ -103,7 +111,7 @@ public final class HomeBodies {
 
                 @Override
                 public void out(ChunkWatch.Area area, long now) {
-                    leave((Lairs.Lair) area.tag, now);
+                    leave((Lairs.Lair) area.tag, now, false);
                 }
             }, DragonConfig.censusGap());
         }
@@ -118,6 +126,7 @@ public final class HomeBodies {
         List<Lairs.Lair> l = byHomeChunk.computeIfAbsent(lair.level().dimension(), k -> new HashMap<>()).computeIfAbsent(chunk, k -> new ArrayList<>(1));
         if (!l.contains(lair))
             l.add(lair);
+        homeChunks.computeIfAbsent(lair.level().dimension(), k -> ConcurrentHashMap.newKeySet()).add(chunk);
         if (lair.level().hasChunk(lair.home().getX() >> 4, lair.home().getZ() >> 4))
             activate(lair);
     }
@@ -131,13 +140,31 @@ public final class HomeBodies {
         a.tag = lair;
     }
 
-    /** ChunkEvent.Load or Unload, possibly off the server thread: applied at the end of the tick. */
-    void chunkLoaded(ServerLevel level, long chunk) {
-        chunkEvents.add(new ChunkNote(true, level.dimension(), chunk));
+    /** ChunkEvent.Load or Unload, possibly off the server thread: a known lair's home chunk is applied at the end of the tick. */
+    public void chunkLoaded(ServerLevel level, long chunk) {
+        if (isHomeChunk(level, chunk))
+            chunkEvents.add(new ChunkNote(true, level.dimension(), chunk));
     }
 
-    void chunkUnloaded(ServerLevel level, long chunk) {
-        chunkEvents.add(new ChunkNote(false, level.dimension(), chunk));
+    public void chunkUnloaded(ServerLevel level, long chunk) {
+        if (isHomeChunk(level, chunk))
+            chunkEvents.add(new ChunkNote(false, level.dimension(), chunk));
+    }
+
+    private boolean isHomeChunk(ServerLevel level, long chunk) {
+        Set<Long> c = homeChunks.get(level.dimension());
+        return c != null && c.contains(chunk);
+    }
+
+    /** The session ended: no home chunk is followed and nothing queued waits for a session that may not come (EQC319). */
+    void forgetChunks() {
+        homeChunks.clear();
+        chunkEvents.clear();
+    }
+
+    /** The chunk events queued and not yet applied (GameTests). */
+    public int queuedChunkEvents() {
+        return chunkEvents.size();
     }
 
     /** ChunkTicketLevelUpdatedEvent: an early hint only (C2ME does not post it); the poll is the authority. */
@@ -245,19 +272,34 @@ public final class HomeBodies {
         return epoch;
     }
 
-    /** The lair went out: each loaded home body of it is released (reason 8), then LAIR_OUT. */
-    void leave(Lairs.Lair lair, long now) {
+    /**
+     * The lair went out: each loaded home body of it whose chunk no longer entity-ticks is released (reason 8), then LAIR_OUT.
+     * A body whose chunk still ticks (vanilla ticks entities within the simulation distance, so with view and simulation
+     * distance 10 a home chunk 10 chunks out still ticks while the footprint's far edge is out) stays registered and leashed,
+     * and {@link DragonBridge}'s pass releases it when its chunk stops ticking (EQC312): released while it ticks, it would
+     * wander off unleashed or stand beside a puppet of its dragon. {@code all} (the GameTests' {@link #testOut}: the whole
+     * footprint unloaded) releases every one.
+     */
+    void leave(Lairs.Lair lair, long now, boolean all) {
         Long epoch = epochs.remove(lair.id());
         if (epoch == null)
             return;
         RtsimSession s = bridge.session();
-        for (DragonBridge.Puppet p : bridge.homePuppetsOf(lair.id()))
+        for (DragonBridge.Puppet p : bridge.homePuppetsOf(lair.id())) {
+            if (!all && ticking(p.entity))
+                continue;
             bridge.capture(p, DragonRecords.Dematerialized.HOME_SAVED, now);
+        }
         ByteBuffer r = s.boundary().beginJournaled(DragonRecords.LAIR_OUT, DragonRecords.LairOut.SIZE, 0, now);
         r.putLong(DragonRecords.LairOut.LAIR, lair.id());
         r.putLong(DragonRecords.LairOut.EPOCH, epoch);
         s.boundary().commit(r);
         outs++;
+    }
+
+    /** Whether a body stands in a chunk that entity-ticks. */
+    static boolean ticking(Entity e) {
+        return e != null && !e.isRemoved() && e.level() instanceof ServerLevel level && RtsimSession.entitiesTickAt(level, e.blockPosition());
     }
 
     /**
@@ -269,15 +311,15 @@ public final class HomeBodies {
         if (lair == null)
             throw new IllegalStateException("no lair " + lairId);
         if (epochs.containsKey(lairId))
-            leave(lair, now);
+            leave(lair, now, true);
         return enter(lair, now, Boolean.FALSE.equals(watched), Boolean.TRUE.equals(watched));
     }
 
-    /** GameTests: the lair goes out now. */
+    /** GameTests: the lair goes out now, as its whole footprint unloading would: every home body of it is released. */
     public void testOut(long lairId, long now) {
         Lairs.Lair lair = bridge.lairs.known(lairId);
         if (lair != null)
-            leave(lair, now);
+            leave(lair, now, true);
     }
 
     /** The epoch of the lair's stay in, or 0 (GameTests). */
@@ -292,7 +334,7 @@ public final class HomeBodies {
 
     // ---- the census's bodies ---------------------------------------------------------------------
 
-    /** The dragons standing in a lair's footprint that the census lists: its home bodies and its box's untagged structure dragons. */
+    /** The dragons standing in a lair's footprint that the census lists: its home bodies and the untagged structure dragons there. */
     List<DragonBaseEntity> standing(Lairs.Lair lair) {
         ServerLevel level = lair.level();
         double r = DragonConfig.lairFootprint();
@@ -308,18 +350,31 @@ public final class HomeBodies {
                     out.add(d);
                 continue;
             }
-            if (inBox(lair, d) && structureSpawn(d))
+            // A structure dragon anywhere in the footprint (EQC313): Ice and Fire's own wanders up to 40 blocks from home. One
+            // within two lairs' footprints is the nearer lair's, so two censuses never list (and adopt) one body.
+            if (structureSpawn(d) && bridge.lairs.nearestKnown(level, d.position(), r) == lair)
                 out.add(d);
         }
         out.sort(Comparator.comparingDouble((DragonBaseEntity d) -> d.distanceToSqr(h.getX() + 0.5, h.getY(), h.getZ() + 0.5)));
         return out.size() > DragonRecords.LairCensus.MAX_BODIES ? new ArrayList<>(out.subList(0, DragonRecords.LairCensus.MAX_BODIES)) : out;
     }
 
-    /** Whether a dragon stands in the lair's box, with some room above and below (its box is 4 tall for a roost). */
-    static boolean inBox(Lairs.Lair lair, Entity e) {
-        BoundingBox b = lair.box();
-        return e.getX() >= b.minX() && e.getX() <= b.maxX() + 1 && e.getZ() >= b.minZ() && e.getZ() <= b.maxZ() + 1
-                && e.getY() >= b.minY() - 8 && e.getY() <= b.maxY() + 24;
+    /**
+     * Whether a loaded dragon within the footprint radius of (x, z) carries the home attachment of {@code agent}: a home body of
+     * the dragon stands already, registered or not (a stale one a census has not reconciled yet), so a spawn would be its
+     * second body (EQC116, EQC311).
+     */
+    boolean carrying(ServerLevel level, long agent, double x, double z) {
+        double r = DragonConfig.lairFootprint();
+        AABB box = new AABB(x - r, level.getMinBuildHeight(), z - r, x + r, level.getMaxBuildHeight(), z + r);
+        for (DragonBaseEntity d : level.getEntitiesOfClass(DragonBaseEntity.class, box)) {
+            if (d.isRemoved() || IafDragons.dead(d))
+                continue;
+            HomeTag tag = d.getExistingDataOrNull(MicRtsimIceAndFire.HOME);
+            if (tag != null && tag.agent() == agent)
+                return true;
+        }
+        return false;
     }
 
     /** A dragon a structure placed (or one with no spawn type recorded, as every one read from disk): the lair's own. */
@@ -440,24 +495,29 @@ public final class HomeBodies {
         s.boundary().commit(r);
         e.removeData(MicRtsimIceAndFire.HOME);
         e.setData(RtsimAttachments.AGENT, new AgentTag(p.agent, p.epoch));
+        if (e instanceof DragonBaseEntity d)
+            d.setAgingDisabled(true); // a puppet's age is the engine's, as an adopted one's
         p.home = false;
         p.lair = 0L;
         leashed++;
     }
 
-    /** DRAGON_HAND_BACK: a settled puppet at its lair becomes a home body, in place (EQC110). */
-    void handBack(long agent, int epoch, long now) {
+    /**
+     * DRAGON_HAND_BACK: a settled puppet at its lair becomes a home body of the lair the engine names, in place (EQC110,
+     * EQC321: the nearest lair may be another). A home body ages as Ice and Fire's own does (EQC316).
+     */
+    void handBack(long agent, int epoch, long lairKey, long now) {
         DragonBridge.Puppet p = bridge.puppetOf(agent);
         if (p == null || p.epoch != epoch || p.home || !(p.entity instanceof DragonBaseEntity d) || d.isRemoved()
                 || IafDragons.dead(d) || d.isTame() || !(d.level() instanceof ServerLevel level))
             return;
-        Lairs.Lair lair = bridge.lairs.nearestKnown(level, d.position(), 64.0);
-        if (lair == null)
+        Lairs.Lair lair = bridge.lairs.known(lairKey);
+        if (lair == null || lair.level() != level)
             return;
         d.removeData(RtsimAttachments.AGENT);
         d.setData(MicRtsimIceAndFire.HOME, new HomeTag(lair.id(), agent));
         d.setPersistenceRequired();
-        d.setAgingDisabled(true);
+        d.setAgingDisabled(false);
         p.home = true;
         p.lair = lair.id();
         p.mode = DragonBridge.Mode.IDLE;

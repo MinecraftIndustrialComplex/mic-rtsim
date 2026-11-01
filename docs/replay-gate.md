@@ -167,11 +167,21 @@ checked against what landed and amended where main differs from what they assume
   `chief_ends_lost`) and the later CAMP_DEATH finds no end and books nothing: (0, 0, true, false).
   The crash replay of both sessions reaches the CAMP_DEATH with the end still holding and books the
   death: (1, 1, true, false). One end and one heir on both paths, never two, so nothing is
-  duplicated; only the fall and the player loss differ. The test
-  `a_stale_hand_back_then_a_camp_death_across_a_replay_books_one_end` (rtsim-jni `protocol.rs`)
-  asserts both as they are. Making them agree needs a hook at the replay's generation switches that
-  runs each module's session-end work there; the slice that adds such hooks picks this case up and
-  changes that test's last stage to (0, 0, true, false).
+  duplicated, but the two paths book a different loss (corrected after the M11 review, MZB-1307).
+  Live the chief is lost to no one (`LossCause::Other`) at the first restart's replay end; the crash
+  replay books `chief_death` with the player's cause at the CAMP_DEATH's tick. So these differ, not
+  only the fall and the player loss: the camp's pressure (a player's loss steps it) and
+  `renewal_losses`; the heir's due tick (the wait the pressure sets, counted from a different tick,
+  and on the replay held back to the end of the cowing); and everything the fall at the camp does
+  (`chief_killed_at_camp`): `chiefs_killed`, the mourning, the Killing report and the chief's death
+  in knowledge, the succession, `cowed_until`, the killer's `step_down`, and the `plan_feud` of every
+  feud actor. It cannot be removed cheaply: booking the same cause on both paths means the live path
+  knowing at the restart that a CAMP_DEATH will come, or the replay running `chief_ends_lost` where
+  the earlier session ended, which is the hook below. A known residual, as the coordinator accepted
+  it. The test `a_stale_hand_back_then_a_camp_death_across_a_replay_books_one_end` (rtsim-jni
+  `protocol.rs`) asserts both as they are. Making them agree needs a hook at the replay's generation
+  switches that runs each module's session-end work there; the slice that adds such hooks picks this
+  case up and changes that test's last stage to (0, 0, true, false).
 - **On main: the replay clock agrees.** While replaying the clock runs no further than the replay
   clock (§3.6), which each replayed record raises to its GAME_TIME. A copy is dispatched as its inner
   record, whose GAME_TIME is the original's (Java journals a REASSERT with the inner record's time),

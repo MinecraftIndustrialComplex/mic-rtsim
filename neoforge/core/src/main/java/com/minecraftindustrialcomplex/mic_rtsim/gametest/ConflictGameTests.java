@@ -37,6 +37,7 @@ import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.EquipmentSlot;
 import net.minecraft.world.entity.Mob;
 import net.minecraft.world.entity.animal.IronGolem;
+import net.minecraft.world.entity.animal.SnowGolem;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.monster.Endermite;
 import net.minecraft.world.entity.monster.Skeleton;
@@ -617,6 +618,52 @@ public final class ConflictGameTests {
     }
 
     // ---- test 14: the envoy ----------------------------------------------------------------------
+
+    /**
+     * A golem a player built is no wild mob (EQC299, FB-2 (a): at a player's district every death no wild mob dealt is his): a band
+     * member killed by an iron golem a player made, or by a snow golem, is journaled as a removal by something else (BAND_CASUALTIES
+     * kind 3, the engine's trap), not as a mob's kill (kind 2); a wild iron golem's kill and a zombie's stay a mob's.
+     */
+    @GameTest(template = RtsimTests.TEMPLATE, timeoutTicks = 1500, batch = "conflict_golem_kills", skyAccess = true)
+    public static void aPlayersGolemsKillOfABandMemberIsNoWildMobs(GameTestHelper helper) {
+        String test = "aPlayersGolemsKillOfABandMemberIsNoWildMobs";
+        ServerLevel level = helper.getLevel();
+        Vec3 c = RtsimTests.centre(helper);
+        long agent = ConflictKit.newAgent();
+        ConflictKit.Band band = ConflictKit.band(agent, ConflictKit.newFaction(), RtsimTests.dimension(helper));
+        band.arcX = c.x + 2.0;
+        band.arcZ = c.z;
+        band.targetX = c.x + 100;
+        band.targetY = c.y;
+        band.targetZ = c.z;
+        band.flags = ConflictRecords.Materialize.FLAG_HOSTILE;
+        ConflictKit.materialize(band, List.of(new ConflictKit.StackSpec(WARRIOR, 4, false)));
+        helper.startSequence()
+                .thenWaitUntil(() -> check("four warriors placed (" + bridge().bodies(agent).size() + ")", bridge().bodies(agent).size() == 4))
+                .thenExecute(() -> {
+                    List<Mob> bodies = new ArrayList<>(bridge().bodies(agent));
+                    for (Mob m : bodies)
+                        m.setNoAi(true);
+                    IronGolem built = EntityType.IRON_GOLEM.create(level);
+                    built.setPlayerCreated(true);
+                    SnowGolem snow = EntityType.SNOW_GOLEM.create(level);
+                    IronGolem wild = EntityType.IRON_GOLEM.create(level);
+                    Zombie zombie = EntityType.ZOMBIE.create(level);
+                    bodies.get(0).hurt(level.damageSources().mobAttack(built), 1000f);
+                    bodies.get(1).hurt(level.damageSources().mobAttack(snow), 1000f);
+                    bodies.get(2).hurt(level.damageSources().mobAttack(wild), 1000f);
+                    bodies.get(3).hurt(level.damageSources().mobAttack(zombie), 1000f);
+                })
+                .thenWaitUntil(() -> check("four casualties", about(ConflictRecords.BAND_CASUALTIES, agent).size() == 4))
+                .thenExecute(() -> {
+                    List<ScriptedEngine.Received> cs = about(ConflictRecords.BAND_CASUALTIES, agent);
+                    int other = count(cs, ConflictRecords.BY_OTHER), mob = count(cs, ConflictRecords.BY_MOB);
+                    check("a player's golem and a snow golem are a machine's kill, not a mob's (other " + other + ", mob " + mob + ")",
+                            other == 2 && mob == 2);
+                    record(test, "credit", "two removals by something else (the player's golems), two mob kills (a wild golem, a zombie)");
+                })
+                .thenSucceed();
+    }
 
     /**
      * Test 14 (MOWZIE.md §8, §4.5): an envoy party is one group, its envoy named "<Culture> Envoy" and no

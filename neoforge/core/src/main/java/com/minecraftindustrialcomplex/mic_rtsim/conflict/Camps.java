@@ -317,6 +317,15 @@ public final class Camps {
     private final Set<Retired> retired = new HashSet<>();
 
     private record Retired(long faction, int generation) {}
+    /**
+     * The traveller chiefs the bridge journaled CHIEF_KILLED for this session, by their band's agent and epoch (the M11 review's P1,
+     * MZB-1300): the engine books that death (the band's end, MZB-853 release 3, or the chief's death away) and frees or kills the
+     * chief's slot, so a HAND_BACK of that band in flight is answered stale. Memory only, as {@link #retired}; one entry for each
+     * chief puppet killed in a session, emptied at a session's start.
+     */
+    private final Set<KilledAway> killedAway = new HashSet<>();
+
+    private record KilledAway(long agent, int epoch) {}
     private final List<Held> held = new ArrayList<>();
     /** The held lines {@link #playHeld} has still to look at this tick (a seat in place answers the old body's lines stale). */
     private final ArrayDeque<Held> draining = new ArrayDeque<>();
@@ -334,7 +343,7 @@ public final class Camps {
     /** CHIEF_STATE records written, and reports queued (a later one for the same faction replaces the first; MZB-287). */
     public long chiefStates, chiefStatesQueued;
     /** The Umvuthana's (M9): removals held, pairs held, heirs seated, warriors masked, second bodies met, CHIEF_BODY records taken and written. */
-    public long heldRemovals, heldPairs, heirs, masks, secondBodies, chiefBodies, chiefBodiesWritten, chiefPaid, traded;
+    public long heldRemovals, heldPairs, heirs, masks, secondBodies, chiefBodies, chiefBodiesWritten, chiefPaid, traded, arrivedBodies;
     /**
      * M11's (MZB-819 to MZB-825): chief HAND_BACKs held while the puppet floats home, the ones played at the timeout where the
      * puppet stood, merges into a standing throne body (case B), held chief TAKEs answered stale by a puppet near the throne,
@@ -344,6 +353,8 @@ public final class Camps {
     public long heldHandBacks, chiefHandBacksLate, chiefMerges, staleTakes, homeDeaths, puppetPaid, puppetsSecond, chiefBodiesAway;
     /** Untagged strays' deaths journaled, so a member written off as missing whose tag was stripped still counts (MZB-1014). */
     public long strayDeaths;
+    /** FIGHT lines played: a returner and the body holding its slot set on each other by their kind (MZB-1404). */
+    public long fights;
     /**
      * MZB-1015: the engine's RECOUNT reconciles taken (a camp that is in counts again), and the recounts a tagged body
      * hidden with its chunk outside its camp's footprint asked for.
@@ -393,13 +404,14 @@ public final class Camps {
         setOuts.clear();
         dying.clear();
         retired.clear();
+        killedAway.clear();
         chiefStatesPending.clear();
         off = false;
         censuses = outs = reconciles = lines = staleLines = spawned = adopted = taken = removed = handedOff = handedBack = 0;
         deaths = carried = markers = heldSpawns = recounts = strayWatches = strays = 0;
-        heldRemovals = heldPairs = heirs = masks = secondBodies = chiefBodies = chiefBodiesWritten = chiefPaid = traded = 0;
+        heldRemovals = heldPairs = heirs = masks = secondBodies = chiefBodies = chiefBodiesWritten = chiefPaid = traded = arrivedBodies = 0;
         heldHandBacks = chiefHandBacksLate = chiefMerges = staleTakes = homeDeaths = puppetPaid = puppetsSecond = chiefBodiesAway = 0;
-        strayDeaths = engineRecounts = leaveRecounts = 0;
+        strayDeaths = engineRecounts = leaveRecounts = fights = 0;
         unseen.clear();
         polls = pollChanges = 0;
         chiefStates = chiefStatesQueued = 0;
@@ -432,6 +444,7 @@ public final class Camps {
         attention.clear();
         second.clear();
         retired.clear();
+        killedAway.clear();
         held.clear();
         draining.clear();
         setOuts.clear();
@@ -1267,6 +1280,7 @@ public final class Camps {
                 yield 0;
             }
             case ConflictRecords.CampReconcile.HAND_BACK -> handBack(level, c, epoch, op, ln, homecoming, now);
+            case ConflictRecords.CampReconcile.FIGHT -> fight(level, c, ln);
             default -> ConflictRecords.CampBodies.STALE; // the heir's pair is played whole by heirPair
         };
     }
@@ -1327,6 +1341,12 @@ public final class Camps {
         }
         if (!level.addFreshEntity(m))
             return null; // the join event indexed it and kept it home
+        try {
+            c.kind.arrived(level, c, m);
+            arrivedBodies++;
+        } catch (RuntimeException ex) {
+            MicRtsim.LOGGER.error("[mic_rtsim] the arrival effect of camp body {} failed", ln.body(), ex);
+        }
         if (writes) {
             chiefBodiesWritten++;
             c.memory = null;
@@ -1334,8 +1354,31 @@ public final class Camps {
         return m;
     }
 
+    /**
+     * FIGHT (MZB-1404, fork F3 as Ben changed it): the body holding the line's slot, by its tags, and the member gone missing
+     * that came back to the full camp, by the UUID the line names, are set on each other by the kind, until one dies. Nothing
+     * when either is not here (dead, unloaded, another camp's, a puppet); stale for a kind with no fight. Answered at once,
+     * with no holder: the engine books nothing for it.
+     */
+    private int fight(ServerLevel level, Site c, Line ln) {
+        Entity holder = tagged(c.faction, ln.slot(), ln.generation());
+        Entity rival = byUuid(level, c, ln.a(), ln.b());
+        if (!(holder instanceof Mob h) || !h.isAlive() || !(rival instanceof Mob r) || !r.isAlive() || r == h || r.isRemoved()
+                || r.level() != h.level() || !c.kind.isBody(r) || RtsimAttachments.isTagged(r))
+            return ConflictRecords.CampBodies.NOTHING;
+        CampMember was = RtsimAttachments.campMember(r);
+        if (was != null && was.faction() != c.faction)
+            return ConflictRecords.CampBodies.NOTHING;
+        if (!c.kind.fight(level, c, h, r))
+            return ConflictRecords.CampBodies.STALE;
+        fights++;
+        return ConflictRecords.CampBodies.DONE;
+    }
+
     /** ADOPT: the stray named by UUID becomes the slot's body where it stands. */
     private int adopt(ServerLevel level, Site c, long epoch, long op, Line ln, long now) {
+        if (retiredChief(c, ln))
+            return ConflictRecords.CampBodies.STALE; // a chief generation the engine has dead: the stray stays the jar's (MZB-1300)
         Entity e = byUuid(level, c, ln.a(), ln.b());
         if (!(e instanceof Mob mob) || !e.isAlive() || !c.kind.isBody(e) || RtsimAttachments.isTagged(e))
             return ConflictRecords.CampBodies.NOTHING;
@@ -1498,10 +1541,10 @@ public final class Camps {
      */
     private int handBack(ServerLevel level, Site c, long epoch, long op, Line ln, Map<Long, ConflictBridge.Party> homecoming, long now) {
         ConflictBridge.Party p = bridge.party(ln.a());
-        if (retiredChief(c, ln) || p != null && p.epoch == (int) ln.b() && bridge.secondPuppet(p, ln.body())) {
-            // The engine has this chief dead (a CAMP_DEATH of its generation went out), though its line was in flight: nothing is
-            // handed back, whatever the puppet is doing (floating, in its death animation or gone), or a throne body of a retired
-            // generation would stand until the next census took it (MZB-891).
+        if (retiredChief(c, ln) || killedAway(c, ln) || p != null && p.epoch == (int) ln.b() && bridge.secondPuppet(p, ln.body())) {
+            // The engine has this chief dead (a CAMP_DEATH of its generation went out, or its puppet's CHIEF_KILLED), though its line
+            // was in flight: nothing is handed back, whatever the puppet is doing (floating, in its death animation or gone), or a
+            // throne body of a retired generation would stand, a second Umvuthi with a second Sol Visage (MZB-891, MZB-1300).
             return ConflictRecords.CampBodies.STALE;
         }
         if (p != null && p.epoch == (int) ln.b()) {
@@ -1777,10 +1820,10 @@ public final class Camps {
     private void playHeldHandBack(ServerLevel level, Site c, Held h, long now) {
         ConflictBridge.Party p = bridge.party(h.line().a());
         boolean current = p != null && p.epoch == (int) h.line().b();
-        if (retiredChief(c, h.line()) || current && bridge.secondPuppet(p, h.line().body())) {
+        if (retiredChief(c, h.line()) || killedAway(c, h.line()) || current && bridge.secondPuppet(p, h.line().body())) {
             // The throne body was killed while the puppet floated home (MZB-825): the engine has the chief dead, so nothing is handed
-            // back. The puppet is nobody's, and its band's recall takes it. The same when the puppet is dying or gone (MZB-891): its
-            // line is not a spawn of a retired generation.
+            // back. The puppet is nobody's, and its band's recall takes it. The same when the puppet is dying or gone (MZB-891), and
+            // when its CHIEF_KILLED went out (MZB-1300): its line is not a spawn of a retired generation.
             answerStale(h, now);
             return;
         }
@@ -2035,6 +2078,31 @@ public final class Camps {
         return !retired.isEmpty() && ln.slot() == ConflictRecords.CampReconcile.CHIEF_SLOT && retired.contains(new Retired(c.faction, ln.generation()));
     }
 
+    /**
+     * Whether a chief HAND_BACK names a band whose chief puppet the bridge journaled CHIEF_KILLED for (MZB-1300). One that does
+     * also retires the line's generation here, so a later line of that chief slot and generation is stale as well.
+     */
+    private boolean killedAway(Site c, Line ln) {
+        if (killedAway.isEmpty() || (ln.flags() & ConflictRecords.CampReconcile.LINE_CHIEF) == 0
+                || !killedAway.contains(new KilledAway(ln.a(), (int) ln.b())))
+            return false;
+        retired.add(new Retired(c.faction, ln.generation()));
+        return true;
+    }
+
+    /**
+     * The bridge journaled CHIEF_KILLED for a traveller chief of {@code faction}'s band {@code agent} at {@code epoch}
+     * (MZB-1300): its HAND_BACK in flight is stale from now on, and so is any line of the chief's slot at the generation this
+     * session knows for the camp's chief (an ADOPT its census sent while the band's end held the chief). The engine keeps no other
+     * chief generation while that chief lives in its books, so the one known is the chief's or an older, retired one.
+     */
+    void chiefKilledAway(long faction, long agent, int epoch) {
+        killedAway.add(new KilledAway(agent, epoch));
+        Site c = sites.get(faction);
+        if (c != null && c.chiefGeneration != 0)
+            retired.add(new Retired(faction, c.chiefGeneration));
+    }
+
     /** A held hand-back's puppet no longer homes (its line went stale): the band's recall takes it as any member's. */
     private void releaseHome(Line ln) {
         ConflictBridge.Party p = bridge.party(ln.a());
@@ -2060,7 +2128,7 @@ public final class Camps {
         // What the holder carried from disk is journaled before the new record, so it reaches the engine first (MZB-239).
         if (holder != null)
             bridge.session().ensureReasserted(holder);
-        ByteBuffer r = bodiesRecord(c.faction, epoch, op, List.of(ln), List.of(outcome), now);
+        ByteBuffer r = bodiesRecord(c.faction, epoch, op, List.of(ln), List.of(outcome), holder, now);
         if (outcome == ConflictRecords.CampBodies.STALE)
             staleLines++;
         if (holder != null) {
@@ -2073,15 +2141,37 @@ public final class Camps {
     }
 
     private void answerAll(long faction, long epoch, long op, List<Line> ls, List<Integer> outcomes, long now) {
-        bodiesRecord(faction, epoch, op, ls, outcomes, now);
+        bodiesRecord(faction, epoch, op, ls, outcomes, null, now);
         for (int o : outcomes)
             if (o == ConflictRecords.CampBodies.STALE)
                 staleLines++;
     }
 
-    private ByteBuffer bodiesRecord(long faction, long epoch, long op, List<Line> ls, List<Integer> outcomes, long now) {
+    /**
+     * The body a line left in its slot, for its answer (MZB-1400): a SPAWN, HAND_BACK or ADOPT done names the body it made or
+     * adopted (its holder, else the one tagged with the line's slot and generation), and one with nothing to do the body that
+     * stands with those tags; any other line, or none standing, names none. The engine knows a member body by its UUID in the
+     * site ledger's row, and a body made here is a new entity.
+     */
+    private UUID leftInSlot(long faction, Line ln, int outcome, Entity holder) {
+        int a = ln.action();
+        if (a != ConflictRecords.CampReconcile.SPAWN && a != ConflictRecords.CampReconcile.HAND_BACK && a != ConflictRecords.CampReconcile.ADOPT)
+            return null;
+        if (outcome != ConflictRecords.CampBodies.DONE && outcome != ConflictRecords.CampBodies.NOTHING)
+            return null;
+        if (outcome == ConflictRecords.CampBodies.DONE && holder != null && !holder.isRemoved())
+            return holder.getUUID();
+        Entity e = tagged(faction, ln.slot(), ln.generation());
+        return e == null ? null : e.getUUID();
+    }
+
+    private ByteBuffer bodiesRecord(long faction, long epoch, long op, List<Line> ls, List<Integer> outcomes, Entity holder, long now) {
         RtsimSession s = bridge.session();
         int n = ls.size();
+        // Before beginJournaled: the lookups journal nothing, but the record's bytes are written in one go.
+        UUID[] bodies = new UUID[n];
+        for (int i = 0; i < n; i++)
+            bodies[i] = leftInSlot(faction, ls.get(i), outcomes.get(i), holder);
         ByteBuffer r = s.boundary().beginJournaled(ConflictRecords.CAMP_BODIES, ConflictRecords.CampBodies.size(n), n, now);
         r.putLong(ConflictRecords.CampBodies.FACTION, faction);
         r.putLong(ConflictRecords.CampBodies.EPOCH, epoch);
@@ -2094,6 +2184,9 @@ public final class Camps {
             r.putInt(o + ConflictRecords.CampBodies.L_GENERATION, ln.generation());
             r.put(o + ConflictRecords.CampBodies.L_ACTION, (byte) ln.action());
             r.put(o + ConflictRecords.CampBodies.L_OUTCOME, (byte) outcomes.get(i).intValue());
+            UUID u = bodies[i];
+            r.putLong(o + ConflictRecords.CampBodies.L_UUID_MOST, u == null ? 0 : u.getMostSignificantBits());
+            r.putLong(o + ConflictRecords.CampBodies.L_UUID_LEAST, u == null ? 0 : u.getLeastSignificantBits());
         }
         s.boundary().commit(r);
         return r;
@@ -2283,7 +2376,7 @@ public final class Camps {
      */
     void chiefDiedAway(long faction) {
         Site c = sites.get(faction);
-        Mob standing = c == null ? null : standingChief(c);
+        Mob standing = c == null ? null : chiefBody(c, false);
         if (standing != null && second.add(standing))
             secondBodies++;
     }
@@ -2414,12 +2507,22 @@ public final class Camps {
 
     /** The camp's live chief body of its slot that is no second body, or null. */
     private Mob standingChief(Site c) {
+        return chiefBody(c, true);
+    }
+
+    /**
+     * The camp's chief body of its slot that is no second body, or null: a live one with {@code alive}, else one not removed, alive
+     * or in its death animation with its CAMP_DEATH not journaled yet (a journaled body is untagged, so not here). The second mark of
+     * a puppet's death takes the latter (the M11 review's P2, MZB-1303): a throne body killed in the same tick is dying, and
+     * {@link #death} then journals nothing for it and its drops are cancelled.
+     */
+    private Mob chiefBody(Site c, boolean alive) {
         Set<Entity> s = live(c.faction);
         if (s == null)
             return null;
         for (Entity e : s) {
             CampMember m = RtsimAttachments.campMember(e);
-            if (e instanceof Mob mob && m != null && m.slot() == ConflictRecords.CampReconcile.CHIEF_SLOT && e.isAlive()
+            if (e instanceof Mob mob && m != null && m.slot() == ConflictRecords.CampReconcile.CHIEF_SLOT && (alive ? e.isAlive() : !e.isRemoved())
                     && !RtsimAttachments.isTagged(e) && e.level().dimension().equals(c.dimension) && !secondBody(e))
                 return mob;
         }

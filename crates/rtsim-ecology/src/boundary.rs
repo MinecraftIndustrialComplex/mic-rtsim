@@ -96,6 +96,9 @@ pub const MAT_HOME_BODY: u32 = 32;
 /// synced from the engine's age, hunger and health (EQC108, EQC129).
 pub const ADOPT_HAS_HOME: u32 = 1;
 pub const ADOPT_HOME_BODY: u32 = 2;
+/// The body carries an oil reserve (`Adopt::oil`), as `MAT_OIL` gives a spawned one (OG-4, OG-13,
+/// EQC317): a census-adopted fire dragon's fire is gated as a spawned one's is.
+pub const ADOPT_OIL: u32 = 4;
 
 /// DRAGON_MATERIALIZED aux: the body the answer names is a home body (a spawn, an adoption or a
 /// hand-back; EQC122).
@@ -109,6 +112,9 @@ pub const CENSUS_BODIES_MAX: usize = 16;
 pub const BODY_SLEEPING: u32 = 1;
 pub const BODY_FLYING: u32 = 2;
 pub const BODY_HAS_HOME: u32 = 4;
+
+/// DRAGON_SPAWN_REJECTED reason 1 (docs/boundary.md §2.3): the position was not entity-ticking.
+pub const REJECT_NOT_TICKING: u32 = 1;
 
 /// DRAGON_DISCARD reasons (1 and 2 are the untagged path's: the sim owns the population, the lair
 /// already has its dragon): the dragon whose body stands is away (EQC115), and a second body of
@@ -638,6 +644,8 @@ pub struct Adopt {
     pub age_ticks: i32,
     pub hunger: i32,
     pub health: f32,
+    /// With [`ADOPT_OIL`], its oil reserve, 0 to the capacity; 0 otherwise.
+    pub oil: i32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -649,11 +657,14 @@ pub struct Discard {
 }
 
 /// A puppet settled at its lair, the lair in: the plugin swaps its agent tag for the home
-/// attachment, in place, and answers MATERIALIZED with [`MATERIALIZED_HOME`] (EQC110).
+/// attachment, in place, and answers MATERIALIZED with [`MATERIALIZED_HOME`] (EQC110). `lair` is
+/// the key of the dragon's own lair (LAIR_FOUND's), which the attachment names (EQC321): the
+/// nearest lair to where the puppet stands may be another one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HandBack {
     pub agent: u64,
     pub epoch: u32,
+    pub lair: u64,
 }
 
 /// Place a lair structure near an oil field (`/place structure`'s code path, every biome allowed):
@@ -792,9 +803,9 @@ impl Cmd {
             Cmd::Materialize(_) => 136,
             Cmd::Steer(_) | Cmd::Depart(_) => 56,
             Cmd::Adopt(_) => 80,
-            Cmd::Discard(_) | Cmd::OilSurvey(_) | Cmd::HandBack(_) => 32,
+            Cmd::Discard(_) | Cmd::OilSurvey(_) => 32,
             Cmd::PlaceLair(_) => 48,
-            Cmd::PlaceNest(_) | Cmd::NestRenew(_) | Cmd::NestSortie(_) => 40,
+            Cmd::PlaceNest(_) | Cmd::NestRenew(_) | Cmd::NestSortie(_) | Cmd::HandBack(_) => 40,
         }
     }
 
@@ -1492,6 +1503,7 @@ pub fn encode_cmd(seq: u64, c: &Cmd, dict: &SpeciesDict, buf: &mut Vec<u8>) {
             w.i32(64, a.age_ticks);
             w.i32(68, a.hunger);
             w.f32(72, a.health);
+            w.i32(76, a.oil);
             w.finish(DRAGON_ADOPT, 0, 80);
         }
         Cmd::Discard(d) => {
@@ -1540,7 +1552,8 @@ pub fn encode_cmd(seq: u64, c: &Cmd, dict: &SpeciesDict, buf: &mut Vec<u8>) {
         Cmd::HandBack(h) => {
             w.u64(16, h.agent);
             w.u32(24, h.epoch);
-            w.finish(DRAGON_HAND_BACK, 0, 32);
+            w.u64(32, h.lair);
+            w.finish(DRAGON_HAND_BACK, 0, 40);
         }
     }
 }
@@ -1598,6 +1611,7 @@ pub fn decode_cmd(b: &[u8], dict: &SpeciesDict) -> Result<(usize, u64, Cmd), Cod
             age_ticks: r.i32(64)?,
             hunger: r.i32(68)?,
             health: r.f32(72)?,
+            oil: r.i32(76)?,
         }),
         DRAGON_DISCARD => Cmd::Discard(Discard {
             entity: r.uuid(16)?,
@@ -1648,6 +1662,7 @@ pub fn decode_cmd(b: &[u8], dict: &SpeciesDict) -> Result<(usize, u64, Cmd), Cod
         DRAGON_HAND_BACK => Cmd::HandBack(HandBack {
             agent: r.u64(16)?,
             epoch: r.u32(24)?,
+            lair: r.u64(32)?,
         }),
         k => return Err(CodecError::Unknown(k)),
     };
@@ -1771,6 +1786,7 @@ mod tests {
                     k: 1,
                     count: 0,
                     p: 1.5,
+                    p2: 0.75,
                     away: 0,
                     wait_left: 480_000,
                     elapsed: 1_234,
@@ -1841,6 +1857,7 @@ mod tests {
                     k: 2,
                     count: 1,
                     p: 0.25,
+                    p2: 0.0,
                     away: 0,
                     wait_left: 12_000,
                     elapsed: 0,
@@ -1923,13 +1940,18 @@ mod tests {
                 entity: (8, 9),
                 agent: 10,
                 epoch: 1,
-                flags: ADOPT_HAS_HOME | ADOPT_HOME_BODY,
+                flags: ADOPT_HAS_HOME | ADOPT_HOME_BODY | ADOPT_OIL,
                 home: (1, 64, -1),
                 age_ticks: 1_850_000,
                 hunger: 37,
                 health: 288.5,
+                oil: 61,
             }),
-            Cmd::HandBack(HandBack { agent: 10, epoch: 6 }),
+            Cmd::HandBack(HandBack {
+                agent: 10,
+                epoch: 6,
+                lair: 0x5EED_0001,
+            }),
             Cmd::Discard(Discard {
                 entity: (8, 9),
                 reason: 1,

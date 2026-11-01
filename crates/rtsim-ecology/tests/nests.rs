@@ -998,6 +998,7 @@ fn nest_row(p: f32, count: u16, wait_milli: Option<u64>) -> FoundRow {
         k: 2,
         count,
         p,
+        p2: 0.0,
         away: 0,
         wait_left: wait_milli.unwrap_or(0),
         elapsed: 30 * DAY,
@@ -1160,4 +1161,13 @@ fn a_restart_that_loses_the_nests_marks_changes_no_decision() {
     b.ingest(again);
     assert_eq!(b.d.take_site_states(), a.d.take_site_states());
     assert_eq!(b.d.state_hash(), a.d.state_hash());
+}
+
+/// MZB-1401 (P3 6): a nest's row whose worm wait is past anything an engine sends (a corrupt ledger
+/// row) waits the cap's 96,000 thousandths of a drilling day at most.
+#[test]
+fn a_nest_rows_wait_past_the_cap_is_held_to_the_cap() {
+    let (r, id) = found_with(36, nest_row(1.0, 1, Some(u64::MAX - 7)));
+    let n = *r.d.nests.get(id).unwrap();
+    assert_eq!(n.wait_milli, Some(96_000), "the cap");
 }

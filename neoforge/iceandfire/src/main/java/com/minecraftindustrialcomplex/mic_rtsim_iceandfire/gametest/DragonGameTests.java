@@ -387,6 +387,11 @@ public final class DragonGameTests {
                     DragonKit.adopt(next[0].getUUID(), agent, 2, null);
                 })
                 .thenWaitUntil(() -> check("the new body adopted at epoch 2", RtsimApi.isPuppet(next[0]) && bridge().agentOf(next[0]) == agent))
+                // The engine's received log fills on its own thread after the tick's records are handed over, so a read in the
+                // tick the plugin acted can miss them: wait for them (within the test's 600 ticks), then check them (EQC324).
+                .thenWaitUntil(() -> check("the engine received the release and the adoption (DEMATERIALIZED "
+                        + about(DragonRecords.DRAGON_DEMATERIALIZED, agent).size() + ", MATERIALIZED " + about(DragonRecords.DRAGON_MATERIALIZED, agent).size() + ")",
+                        !about(DragonRecords.DRAGON_DEMATERIALIZED, agent).isEmpty() && about(DragonRecords.DRAGON_MATERIALIZED, agent).size() >= 2))
                 .thenExecute(() -> {
                     check("at epoch 2 (" + RtsimAttachments.tag(next[0]).epoch() + ")", RtsimAttachments.tag(next[0]).epoch() == 2);
                     check("the older puppet released", old[0].isRemoved());
@@ -412,6 +417,8 @@ public final class DragonGameTests {
                     DragonKit.adopt(theirs[0].getUUID(), agent, 3, null);
                 })
                 .thenWaitUntil(() -> check("three rejections (" + (bridge().rejected - before[1]) + ")", bridge().rejected == before[1] + 3))
+                .thenWaitUntil(() -> check("the engine received the rejections (" + about(DragonRecords.DRAGON_SPAWN_REJECTED, agent).size() + ")",
+                        about(DragonRecords.DRAGON_SPAWN_REJECTED, agent).size() >= 3))
                 .thenExecute(() -> {
                     List<ScriptedEngine.Received> r = about(DragonRecords.DRAGON_SPAWN_REJECTED, agent);
                     check("three SPAWN_REJECTED for the agent (" + r.size() + ")", r.size() == 3);
@@ -470,6 +477,9 @@ public final class DragonGameTests {
                     DragonKit.adopt(gone[0], agent, 2, null);
                 })
                 .thenWaitUntil(() -> check("the adopt answered (" + (bridge().rejected - before[1]) + " rejected)", bridge().rejected == before[1] + 1))
+                .thenWaitUntil(() -> check("the engine received the release and the rejection (DEMATERIALIZED "
+                        + about(DragonRecords.DRAGON_DEMATERIALIZED, agent).size() + ", SPAWN_REJECTED " + about(DragonRecords.DRAGON_SPAWN_REJECTED, agent).size() + ")",
+                        !about(DragonRecords.DRAGON_DEMATERIALIZED, agent).isEmpty() && !about(DragonRecords.DRAGON_SPAWN_REJECTED, agent).isEmpty()))
                 .thenExecute(() -> {
                     check("the older puppet released", old[0].isRemoved());
                     check("counted as superseded (" + (bridge().superseded - before[0]) + ")", bridge().superseded == before[0] + 1);

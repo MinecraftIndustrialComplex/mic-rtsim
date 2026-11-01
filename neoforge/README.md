@@ -252,14 +252,46 @@ with test order 41 (`RtsimTests.slayCamp`) and reset or restarted after a gap.
 |---|---|
 | `aPoolCampKeepsItsPressureAndItsBreakAcrossAReset` | a farmed and broken goblin camp: after a plain reset the new engine's row has the same P and the wait less the ticks between the two rows' stamps |
 | `aBrokenPoolCampSendsNoParty` | a broken camp (grievance 32 kills deep) sends no party in thirty game days; a day short of its refound 32 more kills change nothing; the refounded camp has a quarter of its cap and a party comes again |
-| `anOutpostIsFoundOnceWhenItsChunkLoads` | `ChunkEvent.Load` on a chunk with the outpost start: one FACTION_FOUND for the start chunk's key under the structure's id, not late, territory 300; loading again finds nothing more |
-| `anOutpostFollowsTheConflictSwitch` | found while the conflict module is off: known, nothing journaled; switched on, FACTION_FOUND within a tick |
+| `anOutpostIsFoundOnceWhenItsChunkLoads` | `ChunkEvent.Load` on a chunk with the outpost start and a player near: one FACTION_FOUND for the start chunk's key under the structure's id, not late, territory 300, the ledger row K 50, count 50, P 0; loading again finds nothing more; a second session (a plain reset) is told once |
+| `anOutpostNoPlayerHasSeenIsKnownAndNotReported` | a forced chunk loaded far from every player (a pre-generation's load): the outpost is known and not reported; loaded again with a player within view distance, it is reported once (EQC296) |
+| `anOutpostFollowsTheConflictSwitch` | found while the conflict module is off: known, nothing journaled; switched on, FACTION_FOUND within a tick; off and on again, once more |
 | `existingWorldsOutpostsJoinLate` | a chunk that was not new: nothing with `outpostsJoinExisting` off, FACTION_FOUND flagged LATE with it on |
-| `clearingAnOutpostIsGrievanceAndAVillageRaidIsNot` | a player's kills of three pillagers and a vindicator in the box count as the camp's killing signal; a witch there and a pillager 200 blocks off do not |
+| `anOutpostThatJoinedAsNewIsReportedAgainWhenExistingOnesDoNotJoin` | the next run reads the chunk as old with `outpostsJoinExisting` off and nobody near: the new session is told of the camp because the site ledger holds it (EQC297) |
+| `clearingAnOutpostIsGrievanceAndAVillageRaidIsNot` | a player's kills of three pillagers and a vindicator in the box count as the camp's killing signal; a witch there, a pillager 200 blocks off and a NeoForge `FakePlayer`'s kill do not |
 | `aProvokedOutpostSendsItsEnvoy` | 32 kills in the box and the ladder sends a herald and two pillagers (after 36 asks of 1,200 ticks) with a demand of emeralds |
 | `aFarmedOutpostBreaksAndTheNewBandRefounds` | P 2.0 and a wipe: the row reads empty, broken, waiting 192 days; a reinstall after 250 days resets the engine, the finder reports the outpost to the new session itself and the camp is refounded at once with its pressure aged |
-| `aVanillaPatrolAndTheOutpostsOwnPillagersAreLeftAlone` | two pillagers standing in a found outpost's box stay untagged and unremoved, no party of the camp's exists |
+| `aVanillaPatrolAndTheOutpostsOwnPillagersAreLeftAlone` | a patrol (leader and member) and a spawn-override pillager standing in a found outpost's box, its envoy out, stay untagged, unadopted and unremoved after 2,000 ticks |
 | `uninstallLeavesTheOutpostAsVanilla` | stopped after a farm and a save: the chunk keeps the one structure start, no mob in the box carries a mark; a reinstall after a gap starts a session |
+
+The Frostmaw dens and the Umvuthana groves on the shared rule (EQUILIBRIUM.md S9, MZB-1265; `SiteLedgerGameTests` (S3's, extended) and
+`GroveRenewalGameTests` in the `mic_rtsim_mowziesmobs` namespace, native engine only, each in its own batch on a far base; the dens
+and groves are declared under the jar's structure names). The names EQUILIBRIUM.md §4 gives S9, and where each is:
+
+| Test | What it shows |
+|---|---|
+| `resetDoesNotMintAFrostmaw` | S3's `resetKeepsAFarmedSiteFarmed` (a plain reset keeps the den farmed: no Frostmaw before the row's wait) and `reinstallKeepsPressure` (a reinstall after a gap does not shorten the wait). The Frostmaw killed away (order 42) is left to the Rust tests: a puppet on the road needs the far view's bodies |
+| `aLuredFrostmawIsAPlayerLoss`, `aStrayFrostmawsDeathRaisesItsDensPressure` | both are S3's `aLuredBodyIsAPlayerLossAndAStraysDeathCounts` (first half: written off as a player's loss; second half: the stray's death adds 1 on the aged pressure) |
+| `aPetOrTrapKillAtADenIsAPlayerLoss` | the trap is S3's `trapKillAtABossSiteIsAPlayerLoss` (lava, a FakePlayer); the pet is `aPetsKillAtADenIsAPlayerLoss`: a wolf tamed by an online player kills the Frostmaw, CAMP_DEATH aux PLAYER, P 1, 12 days |
+| `anUmvuthiHeirTakesAWarrior` | `anUmvuthiHeirTakesAWarrior`: a grove found with no Umvuthi waits the cap's 192 days; the pair is answered, an Umvuthi stands, the row is short by one with P 0 and 6 days left, and a warrior is SPAWNed when they end (the scripted half is `anUmvuthiHeirTakesTheFarthestFreeWarrior`) |
+| `aKilledWarriorIsReplacedAfterTheWait` | a player kills one of three warriors: P 1/K, a wait of 6 x 2^(1/K) days, no SPAWN half way, one past it (RECOUNT first), three warriors again |
+| `aKilledUmvuthiLeavesTheWarriorsPressureAlone` | the Umvuthi killed: the row's p2 is 1 and its p is 0, whatever the jar's `die` did to the warriors near it |
+| `aResetKeepsAGrovesTwoPressures` | a warrior and then the Umvuthi killed: the row has p 1/K and p2 1; after a plain reset the found tail carries both, the warriors' P is aged by the ticks between the stamps, the grove found without its Umvuthi is at the cap (p2 5), and the warriors' wait runs on |
+| `aResetHandsAnAliveUmvuthisPressureOver` | an heir seated after the cap's wait (p2 1.25 in the row); after a plain reset the Umvuthi stands, the found tail carries p2 and the new engine's is the row's aged, not the cap's 5 again |
+| `uninstallLeavesHomeBodies` (extended) | its dead warrior's row is now WAITING with the cap's wait (96 days), not only P unchanged |
+| `aGroveWarriorKilledOnAMarchRaisesItsPressure` | not a GameTest: a puppet on the road needs the far view's bodies; the Rust tests (`tests/grove_renewal.rs`, `a_credited_march_casualty_presses_the_grove` and its neighbours) and test order 42 (`RtsimTests.sendParty`) carry it |
+
+A boss that is due is placed in front of a player who stays, and arrives with an effect (EQUILIBRIUM.md S9, FB-S9-3, MZB-1272 to
+MZB-1279; `BossArrivalGameTests`, the scripted engine, each in its own batch on a far base; `FakePlayers.overhearing` is a player in the
+level's list that keeps every packet it is sent, one 6 blocks off and one 150 blocks off; every packet is also encoded and decoded by
+vanilla's codecs):
+
+| Test | What it shows |
+|---|---|
+| `aDueFrostmawIsPlacedAtOnceBesideAPlayerWithItsArrival` | the Frostmaw's SPAWN with a player 6 blocks from the den is DONE within 200 ticks (it was held up to 6,000), nothing held, a sleeping Frostmaw with its crystal at the spot; the near player is sent the jar's 30 roar-ring clouds, its snowflakes, vanilla's snow, cloud and ice shards (30 to 100 particle packets), the jar's frozen crash, landing thump and roar, and one camera shake stands there; the player 150 blocks off is sent nothing |
+| `aDueUmvuthiIsSeatedAtOnceBesideAPlayerWithItsArrival` | the Umvuthi's SPAWN likewise: 24 of the jar's orbs, 20 flames, 5 smoke columns, ash, the belly drum and the roar, one camera shake; then a warrior's SPAWN with the same player beside the grove is placed with no particle and no sound |
+| `anUmvuthiHeirIsSeatedAtOnceBesideAPlayerWithItsArrival` | an adopted warrior and the pair (MASK, SEAT_HEIR) with a player 6 blocks from the throne: played at once, no held pair, the heir tagged generation 2, and the same effect |
+| `aHoldingKindsChiefSpawnWaitsForThePlayerToLeaveOrSixThousandTicks` (was `aChiefSpawnWaits...`) | the core's hold machinery (HOLD_MAX, held counters) on `MowzieKit.HoldingKind`, which keeps the pre-S9 rule; the real kinds hold nothing |
+| `aRefilledPoolIsSpawnedAtTheNextCensus`, `aForceLoadedSiteRefillsWhenUnwatched` (changed) | the den's SPAWN placed at once with a player 40 blocks off (it was held) |
 
 The industry GameTests (`mic_rtsim_create` namespace; Create 6.0.10's own jar; always the stub engine,
 which scripts the engine's industry commands; each in its own batch):

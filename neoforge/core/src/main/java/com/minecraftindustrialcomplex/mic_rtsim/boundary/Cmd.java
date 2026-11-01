@@ -134,7 +134,9 @@ public final class Cmd {
         public static final int L = 44;         // u16, left-behind UUIDs
         public static final int M = 46;         // u16, missing UUIDs
         public static final int WAIT_LEFT = 48; // u64, kind units (ticks; nests: thousandths of a drilling day), 0 unless WAITING
-        public static final int UUIDS = 56;     // (n + l + m) x (u64 most, u64 least): home, left behind, missing
+        public static final int P2 = 56;        // f32, a camp with a chief of its own: the chief's pressure now (MZB-1231); 0 for every other site
+        // 60: u32 reserved
+        public static final int UUIDS = 64;     // (n + l + m) x (u64 most, u64 least): home, left behind, missing
 
         public static final int FLAG_SHORT = 1, FLAG_EMPTY = 2, FLAG_BROKEN = 4, FLAG_WAITING = 8;
 

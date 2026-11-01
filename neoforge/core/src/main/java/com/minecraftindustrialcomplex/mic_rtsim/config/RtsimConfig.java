@@ -74,10 +74,13 @@ public final class RtsimConfig {
                 .push("conflict");
         OUTPOSTS_JOIN = b.comment("Vanilla pillager outposts (and Illager Invasion's forts) are raider camps of the conflict:",
                         "a pool camp of 50 warriors whose war parties march as pillagers, vindicators and ravagers.",
-                        "Off, no outpost is reported and the conflict knows no raiders; the outposts stay vanilla's.")
+                        "Off, no new outpost joins and the outposts found while it is off stay vanilla's. Camps that are already",
+                        "in the conflict's pages keep their clock and go on raiding (nothing retires them), and are not reported",
+                        "again to a new session while this is off.")
                 .define("outpostsJoin", true);
         OUTPOSTS_JOIN_EXISTING = b.comment("An outpost found in a chunk that was already generated when rtsim first saw it joins too",
-                        "(a world that began without the mod). Off, only outposts that generate while rtsim runs join.")
+                        "(a world that began without the mod). Off, only outposts that generate while rtsim runs join (a camp",
+                        "that joined earlier is still reported again to each session).")
                 .define("outpostsJoinExisting", true);
         OUTPOST_KIN_MARGIN = b.comment("Blocks round an outpost's structure box within which a player's kill of a raider",
                         "(any of the minecraft:raiders tag but the witch) is a killing of the camp's kin (PLACEHOLDER).")

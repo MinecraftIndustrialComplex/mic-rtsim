@@ -92,6 +92,9 @@ pub const BODY_RADIUS: u32 = 16;
 /// How long the plugin may take to fly a departing dragon out of view before it despawns it
 /// anyway, ticks. PLACEHOLDER 2,400.
 pub const DEPART_TIMEOUT: u32 = 2_400;
+/// A home spawn refused because the roost's chunk was not entity-ticking is not asked again for
+/// this long (EQC318): the next sighting after it asks again. PLACEHOLDER 600 (half a minute).
+pub const NOT_TICKING_HOLD: u64 = 600;
 
 /// A hunt over a road or a village starts this far into its range: thousandths of a road kept
 /// clear of the villages at its ends. PLACEHOLDER.
@@ -784,6 +787,7 @@ impl Dragons {
             kind: SiteKind::Lair,
             flags,
             p: lair.pressure.now(day_num(at), h),
+            p2: 0.0,
             k: 2,
             count: u16::try_from(lair.occupants.len()).unwrap_or(u16::MAX),
             away: u16::try_from(held.iter().filter(|b| b.is_none()).count()).unwrap_or(u16::MAX),
@@ -993,8 +997,9 @@ impl Dragons {
                 lair.left_behind = row.bodies.left_behind.clone();
                 lair.missing = row.bodies.missing.clone();
                 if row.waiting() {
-                    // The wait it had, less the game time since (due at once when it ran out).
-                    self.start_wait_for(id, row.wait_now_ticks(), at);
+                    // The wait it had, less the game time since (due at once when it ran out), and
+                    // never past the cap: a longer one is a corrupt row's (MZB-1401).
+                    self.start_wait_for(id, row.wait_now_ticks().min(rule.cap_ticks()), at);
                 } else if row.count > 0 {
                     // F12: its dragons were the old engine's puppets, lost with it, a loss no
                     // player made whose history is gone: the cap, the pressure kept.
@@ -3413,6 +3418,11 @@ impl Dragons {
     /// the departure forward). The plugin captures it when it is out of view.
     fn depart(&mut self, d: DragonId, reason: u32, at: Tick) {
         let x = &self.dragons[d];
+        // A home body is never flown off: Ice and Fire's AI is the dragon while it is loaded, and
+        // vanilla saves it (EQC117, EQC315).
+        if x.body.is_some() {
+            return;
+        }
         let State::Embodied {
             epoch,
             purpose,
@@ -3733,7 +3743,13 @@ impl Dragons {
                 if let Some(d) = self.embodied(m.agent, m.epoch) {
                     self.by_entity.insert(m.entity, d);
                     if m.home {
-                        self.home_answered(d, m.entity);
+                        // Booked only while the dragon awaits it: after the body's leash of this
+                        // epoch (DRAGON_LEFT_HOME read first) it names what is a puppet now, and
+                        // a home body booked for it would keep the copy a crash left on disk
+                        // beside the puppet (EQC326).
+                        if self.pending_home.contains(&d) {
+                            self.home_answered(d, m.entity);
+                        }
                     } else {
                         // A puppet: the plugin made no home body of it (a third occupant).
                         self.pending_home.remove(&d);
@@ -3746,9 +3762,18 @@ impl Dragons {
             }
             Obs::SpawnRejected(r) => {
                 if let Some(d) = self.embodied(r.agent, r.epoch) {
-                    // A refused home spawn is not asked again for a day (EQC116).
+                    // A refused home spawn is not asked again for a day (EQC116), unless the
+                    // roost's chunk was not entity-ticking: a simulation distance under the view
+                    // distance, which the player's next approach may change (EQC318). That one
+                    // holds a moment, so the roost the dragon settles at again does not ask at
+                    // once (a record a step) and the next sighting asks again.
                     if self.pending_home.remove(&d) {
-                        self.home_hold.insert(d, at + TICKS_PER_DAY);
+                        let hold = if r.reason == boundary::REJECT_NOT_TICKING {
+                            NOT_TICKING_HOLD
+                        } else {
+                            TICKS_PER_DAY
+                        };
+                        self.home_hold.insert(d, at + hold);
                     }
                     self.resume(w, d, at, false);
                 }
@@ -4970,6 +4995,7 @@ impl Dragons {
             age_ticks: 0,
             hunger: 0,
             health: 0.0,
+            oil: 0,
         }));
         self.by_entity.insert(u.entity, d);
         self.adopted.insert(u.entity, d);
@@ -5022,6 +5048,7 @@ impl Dragons {
             age_ticks: 0,
             hunger: 0,
             health: 0.0,
+            oil: 0,
         }));
         self.by_entity.insert(u.entity, d);
     }

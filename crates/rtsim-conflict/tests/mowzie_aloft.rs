@@ -20,7 +20,11 @@ use rtsim_settle::Pos;
 
 /// A grove that never plunders, so the only parties are the ones a test orders.
 fn quiet_grove(seed: u64) -> CampRun {
-    let mut cultures = Cultures::builtin();
+    quiet_grove_on(seed, Cultures::builtin())
+}
+
+/// [`quiet_grove`] on the given cultures (the built-in ones, or the grove refilling by rate).
+fn quiet_grove_on(seed: u64, mut cultures: Cultures) -> CampRun {
     for k in &mut cultures.list {
         k.def.plunder_mean_days = None;
     }
@@ -88,7 +92,11 @@ fn pay_at_home(r: &mut CampRun, generation: u32) {
 /// An Invasion led by the seated Umvuthi, paid once at home, ordered now on the refinery and out on
 /// the road past its muster: the party.
 fn led_invasion_out(seed: u64) -> (CampRun, Handle<Party>) {
-    let mut r = quiet_grove(seed);
+    led_invasion_out_on(seed, Cultures::builtin())
+}
+
+fn led_invasion_out_on(seed: u64, cultures: Cultures) -> (CampRun, Handle<Party>) {
+    let mut r = quiet_grove_on(seed, cultures);
     let generation = seat_chief(&mut r);
     pay_at_home(&mut r, generation);
     let at = r.c.now();
@@ -730,6 +738,7 @@ fn the_chief_is_handed_back_at_home() {
                 generation,
                 action: boundary::ACTION_TAKE,
                 outcome: boundary::LINE_STALE,
+                uuid: (0, 0),
             }],
         }),
         at,
@@ -969,10 +978,14 @@ fn a_payment_to_the_puppet_is_remembered() {
 #[test]
 fn a_chief_killed_away_after_the_pool_grew_dies_in_its_own_slot() {
     for (left, seed) in [(true, 112), (false, 116)] {
+        // The grove refills by rate here (S9, MZB-1260): the test is about a pool that grew while
+        // the band was out and the ledger had not followed. A grove on the shared renewal rule
+        // grows by one owed warrior a wait (6 days or more), so in two days it grows by none; the
+        // ledger's following a gain is the rate's path, which `rate_grove_cultures` keeps.
         let (mut r, p) = if left {
-            left_invasion_out(seed)
+            left_invasion_out_on(seed, synth::rate_grove_cultures())
         } else {
-            led_invasion_out(seed)
+            led_invasion_out_on(seed, synth::rate_grove_cultures())
         };
         let (_, generation) = chief(&r).expect("a chief");
         let warriors = |r: &CampRun| -> Vec<(u32, u32, SlotState)> {
@@ -1081,6 +1094,7 @@ fn a_camp_death_after_home_books_once() {
                 generation,
                 action: boundary::ACTION_HAND_BACK,
                 outcome: boundary::LINE_STALE,
+                uuid: (0, 0),
             }],
         });
         let death = chief_death(&r, generation);
@@ -1165,7 +1179,11 @@ fn hold_despawn(r: &mut CampRun, agent: u64) -> Obs {
 /// A4 case 2's band: the grove goes out before the muster's end, so the chief's slot is Left, its
 /// throne body standing, and stays out. On the road.
 fn left_invasion_out(seed: u64) -> (CampRun, Handle<Party>) {
-    let mut r = quiet_grove(seed);
+    left_invasion_out_on(seed, Cultures::builtin())
+}
+
+fn left_invasion_out_on(seed: u64, cultures: Cultures) -> (CampRun, Handle<Party>) {
+    let mut r = quiet_grove_on(seed, cultures);
     let generation = seat_chief(&mut r);
     pay_at_home(&mut r, generation);
     let at = r.c.now();
@@ -1350,6 +1368,7 @@ fn a_hand_back_answered_releases_the_end() {
                 generation,
                 action: boundary::ACTION_HAND_BACK,
                 outcome,
+                uuid: (0, 0),
             }],
         });
         let at = r.c.now();
@@ -1598,6 +1617,7 @@ fn left_home_in(seed: u64) -> (CampRun, Handle<Party>, Tick) {
                 generation,
                 action: boundary::ACTION_TAKE,
                 outcome: boundary::LINE_STALE,
+                uuid: (0, 0),
             }],
         }),
         at,
@@ -1624,6 +1644,7 @@ fn chief_answer(
             generation: l.generation,
             action: l.action,
             outcome,
+            uuid: (0, 0),
         }],
     })
 }
@@ -1633,8 +1654,10 @@ fn chief_answer(
 /// hand-back's answer after it (DONE or NOTHING) finds no end to release and books nothing more.
 /// (1) The slot Owed (Gone at home): freed at the death, the answer's generation retired. (2) The
 /// slot Body (Left at home, its throne body standing): dead at the death, its line still in
-/// flight so no REMOVE yet; the answer NOTHING clears the line, and the next census removes the
-/// throne body and frees the slot. Without release 3 the death books nothing and the chief lives.
+/// flight so no REMOVE yet; the answer, NOTHING (a merge) or STALE (Java's answer since the M11
+/// review's P1), clears the line and sends the throne body's REMOVE at once (the review's P3,
+/// MZB-1304; before it the REMOVE waited for the next census), and the slot is freed once the
+/// held lines play. Without release 3 the death books nothing and the chief lives.
 #[test]
 fn a_puppet_killed_while_its_hand_back_is_in_flight_dies_once() {
     for (seed, outcome) in [(103, boundary::LINE_DONE), (104, boundary::LINE_NOTHING)] {
@@ -1683,63 +1706,86 @@ fn a_puppet_killed_while_its_hand_back_is_in_flight_dies_once() {
     }
 
     // 2. Body.
-    let (mut r, p, home) = left_home_in(105);
-    let agent = Party::agent(p);
-    let generation = chief(&r).expect("a chief").1;
-    let epoch = r.c.parties[p].epoch;
-    let cmds = r.decide(home + 1);
-    let (rec, index, l, _) = chief_line(&cmds).expect("a chief line");
-    assert_eq!(l.action, boundary::ACTION_HAND_BACK, "in flight");
-    assert_eq!(chief(&r), Some((SlotState::Body, generation)));
-    let before = death_books(&r);
-    let at = r.c.now();
-    r.c.ingest(
-        &mut r.w,
-        &mut NoInfrastructure,
-        &puppet_killed(agent, epoch, 0x8537),
-        at,
-    );
-    assert_eq!(
-        death_books(&r),
-        (before.0 + 1, before.1 + 1, true, 0),
-        "once"
-    );
-    assert_end(&r, None);
-    assert_eq!(chief(&r), Some((SlotState::Dead, generation)), "dead");
-    assert!(
-        chief_line(&r.decide(at + 1)).is_none(),
-        "no REMOVE over a line in flight"
-    );
-    let answer = chief_answer(&r, &rec, index, &l, boundary::LINE_NOTHING);
-    let at = r.c.now();
-    r.c.ingest(&mut r.w, &mut NoInfrastructure, &answer, at);
-    let s = r.c.camp(r.f).and_then(|c| c.chief()).expect("a chief");
-    assert_eq!((s.state, s.line), (SlotState::Dead, None), "dead, no line");
-    assert_eq!(
-        death_books(&r),
-        (before.0 + 1, before.1 + 1, true, 0),
-        "nothing more"
-    );
-    r.c.ingest(
-        &mut r.w,
-        &mut NoInfrastructure,
-        &despawned(agent, epoch),
-        at,
-    );
-    // The next census removes the throne body, the player gone from the throne.
-    let at = r.c.now();
-    r.plugin.hold_chief(r.key, false, false, at);
-    r.camp_out();
-    come_in(&mut r);
-    let to = r.c.now() + 50;
-    r.run(to);
-    assert_eq!(chief(&r), None, "freed by the census's REMOVE");
-    assert!(
-        r.plugin.camp_held(r.key, CHIEF_SLOT, generation).is_empty(),
-        "no throne body"
-    );
-    assert_eq!(death_books(&r).0, before.0 + 1);
-    ok(&mut r);
+    for (seed, outcome) in [(105, boundary::LINE_NOTHING), (106, boundary::LINE_STALE)] {
+        let (mut r, p, home) = left_home_in(seed);
+        let agent = Party::agent(p);
+        let generation = chief(&r).expect("a chief").1;
+        let epoch = r.c.parties[p].epoch;
+        let cmds = r.decide(home + 1);
+        let (rec, index, l, _) = chief_line(&cmds).expect("a chief line");
+        assert_eq!(l.action, boundary::ACTION_HAND_BACK, "in flight");
+        assert_eq!(chief(&r), Some((SlotState::Body, generation)));
+        let before = death_books(&r);
+        let at = r.c.now();
+        r.c.ingest(
+            &mut r.w,
+            &mut NoInfrastructure,
+            &puppet_killed(agent, epoch, 0x8537),
+            at,
+        );
+        assert_eq!(
+            death_books(&r),
+            (before.0 + 1, before.1 + 1, true, 0),
+            "outcome {outcome}: once"
+        );
+        assert_end(&r, None);
+        assert_eq!(chief(&r), Some((SlotState::Dead, generation)), "dead");
+        assert!(
+            chief_line(&r.decide(at + 1)).is_none(),
+            "outcome {outcome}: no REMOVE over a line in flight"
+        );
+        let answer = chief_answer(&r, &rec, index, &l, outcome);
+        let mark = r.cmds.len();
+        let at = r.c.now();
+        r.c.ingest(&mut r.w, &mut NoInfrastructure, &answer, at);
+        r.flush(at);
+        let s = r.c.camp(r.f).and_then(|c| c.chief()).expect("a chief");
+        assert_eq!(s.state, SlotState::Dead, "outcome {outcome}: dead");
+        let removal = chief_line(&since(&r, mark));
+        assert!(
+            removal.as_ref().is_some_and(
+                |x| (x.2.action, x.2.generation) == (boundary::ACTION_REMOVE, generation)
+            ),
+            "outcome {outcome}: the answer sends the throne body's REMOVE at once, not at the next \
+             census (line in flight {:?}, sent {:?})",
+            s.line,
+            removal.map(|x| x.2)
+        );
+        assert_eq!(
+            death_books(&r),
+            (before.0 + 1, before.1 + 1, true, 0),
+            "outcome {outcome}: nothing more"
+        );
+        r.c.ingest(
+            &mut r.w,
+            &mut NoInfrastructure,
+            &despawned(agent, epoch),
+            at,
+        );
+        // The player at the throne goes: the held lines play and the slot is freed. The census's
+        // TAKE that `left_home_in` answered STALE is still held by the plugin and plays first,
+        // taking the throne body, so the REMOVE finds none: NOTHING, which frees a dead slot as
+        // DONE does.
+        let (rec, index, _, _) = removal.expect("the REMOVE");
+        let at = r.c.now();
+        r.plugin.hold_chief(r.key, false, false, at);
+        let got = answered(&mut r, rec.op, index);
+        assert!(
+            got == boundary::LINE_DONE || got == boundary::LINE_NOTHING,
+            "outcome {outcome}: the REMOVE is answered ({got})"
+        );
+        assert_eq!(
+            chief(&r),
+            None,
+            "outcome {outcome}: freed by the REMOVE's answer"
+        );
+        assert!(
+            r.plugin.camp_held(r.key, CHIEF_SLOT, generation).is_empty(),
+            "outcome {outcome}: no throne body"
+        );
+        assert_eq!(death_books(&r).0, before.0 + 1);
+        ok(&mut r);
+    }
 }
 
 /// The journal after a led band's home, for the crash tests: a scenario, the records the last

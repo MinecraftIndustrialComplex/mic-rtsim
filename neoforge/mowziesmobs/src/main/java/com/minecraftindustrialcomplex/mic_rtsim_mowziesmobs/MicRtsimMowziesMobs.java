@@ -73,6 +73,9 @@ public final class MicRtsimMowziesMobs {
         bus.addListener(LivingDamageEvent.Post.class, FightWatch::onDamage);
         bus.addListener(ChunkEvent.Load.class, MowzieCamps::onChunkLoad);
         bus.addListener(ServerTickEvent.Post.class, e -> MowzieCamps.drain());
+        // Two Frostmaws of one den set on each other by the engine's FIGHT are kept on it (MZB-1404)
+        bus.addListener(ServerTickEvent.Post.class, e -> FrostmawFights.tick(e.getServer()));
         bus.addListener(ServerStoppedEvent.class, e -> MowzieCamps.clear());
+        bus.addListener(ServerStoppedEvent.class, e -> FrostmawFights.clear());
     }
 }

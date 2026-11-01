@@ -693,8 +693,9 @@ public final class UmvuthiGameTests {
     }
 
     /**
-     * A chief's SPAWN waits for the player to leave or for {@link Camps#HOLD_MAX} ticks (§7 test 29, the second
-     * clause; MZB-433). Two scripted groves with no body, a throne at 6 blocks and direction 3, a chief SPAWN each and
+     * The core's hold of a chief's SPAWN waits for the player to leave or for {@link Camps#HOLD_MAX} ticks (§7 test 29, the
+     * second clause; MZB-433), on the kind that still holds ({@link HoldingKind}: the real kinds stopped holding a boss's
+     * return at S9, FB-S9-3, and {@code BossArrivalGameTests} play it in view). Two scripted groves with no body, a throne at 6 blocks and direction 3, a chief SPAWN each and
      * a player 100 blocks off in z: both lines are held (two more held spawns, no body, no answer). C's player steps
      * to 170 blocks: C's line is DONE with a tagged Umvuthi at the throne facing 3 and the held-spawn counter
      * unchanged. D's player stays: D is still unanswered 5,900 ticks after the hold began, and answered within a few
@@ -703,9 +704,9 @@ public final class UmvuthiGameTests {
      * ticks between the reconcile and the hold (MZB-920).
      */
     @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "umvuthi_hold_spawn", skyAccess = true)
-    public static void aChiefSpawnWaitsForThePlayerToLeaveOrSixThousandTicks(GameTestHelper helper) {
+    public static void aHoldingKindsChiefSpawnWaitsForThePlayerToLeaveOrSixThousandTicks(GameTestHelper helper) {
         ChunkWait waits = ChunkWait.of(helper, 7500);
-        String test = "aChiefSpawnWaitsForThePlayerToLeaveOrSixThousandTicks";
+        String test = "aHoldingKindsChiefSpawnWaitsForThePlayerToLeaveOrSixThousandTicks";
         Far far = new Far(helper, test);
         ServerLevel level = far.level;
         Grove[] g = {groveAt(far, 0, 0), groveAt(far, 1, 0)}; // C, D
@@ -724,7 +725,7 @@ public final class UmvuthiGameTests {
                 .thenWaitUntil(waits.chunks(far.ready()))
                 .thenExecute(() -> {
                     for (int i = 0; i < 2; i++) {
-                        g[i].lay().declare();
+                        g[i].lay().declare(MowzieKit.TEST_GROVE, HoldingKind.INSTANCE);
                         p[i] = MowzieKit.player(helper, off(g[i], 6, 100), "mowzie-stay-" + i);
                     }
                     MowzieKit.everyTick(helper, () -> {
@@ -784,7 +785,8 @@ public final class UmvuthiGameTests {
     }
 
     /**
-     * An epoch's end answers every held line stale (§7 test 29, the third clause; MZB-433). A scripted grove with an
+     * An epoch's end answers every held line stale (§7 test 29, the third clause; MZB-433), on {@link HoldingKind} (a chief
+     * SPAWN is held only by a kind that holds one, S9, FB-S9-3). A scripted grove with an
      * adopted Umvuthi (generation 1) and a player 100 blocks off in z, and one reconcile with a throne carrying a TAKE
      * of the chief and a chief SPAWN of generation 2: both held (two more held lines). The grove's chunks are
      * released: the camp goes out (CAMP_OUT), both lines are answered STALE and the held lines are back to the start.
@@ -808,7 +810,7 @@ public final class UmvuthiGameTests {
                 .thenExecute(g::force)
                 .thenWaitUntil(waits.chunks(far.ready()))
                 .thenExecute(() -> {
-                    g.lay().declare();
+                    g.lay().declare(MowzieKit.TEST_GROVE, HoldingKind.INSTANCE);
                     u[0] = MowzieKit.umvuthi(level, g.at(0, 0));
                     id[0] = u[0].getUUID();
                     MowzieKit.player(helper, off(g, 0, 100), "mowzie-near");
