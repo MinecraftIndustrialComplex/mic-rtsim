@@ -50,7 +50,7 @@ use rtsim_kernel::sites::{FoundRow, SiteKind, SiteState, state_flags};
 use rtsim_knowledge::{
     ActorId, ActorKind, HolderKind, Place, Report, ReportKind, SEVERITY_UNIT, Trait,
 };
-use rtsim_settle::Pos;
+use rtsim_settle::{Culture, NodeKind, Pos};
 use rtsim_space::topology::{Rect, SharedTopologies, Topology};
 use rtsim_trade::{GoodId, GoodKind};
 use rtsim_travel::legs::{Meeting, Path, Stamp};
@@ -2599,9 +2599,17 @@ impl Dragons {
                 continue;
             }
             let fear = self.village_risk(w, node as usize) as f64 * bend;
-            let food = self
+            // What a raid would yield (EQC579): its livestock, and a villager when that is short
+            // of half the need. A real world's markets hold no live animals, so there a village
+            // offers its villagers alone.
+            let livestock = self
                 .village_food(w, node as usize, sp.village_share_milli)
                 .min(need);
+            let food = if self.takes_villager(w, node as usize, livestock, need) {
+                (livestock + f64::from(self.tun.villager_food)).min(need)
+            } else {
+                livestock
+            };
             if food <= 0.0 {
                 continue;
             }
@@ -2723,6 +2731,16 @@ impl Dragons {
     }
 
     /// Expected fullness from a raid on a village's livestock.
+    /// Whether a raid on village `node` that finds `livestock` against `need` also takes a villager
+    /// (EQC556, Ben's PP-2 (a); EQC579): livestock short of half the need, a human village (Java
+    /// removes a villager and nothing else) above its `village_refuge`.
+    fn takes_villager(&self, w: &World, node: usize, livestock: f64, need: f64) -> bool {
+        livestock * 2.0 < need
+            && matches!(w.nodes[node].kind, NodeKind::Village(Culture::Human))
+            && w.village_members(node) > self.tun.village_refuge
+            && w.village_row(node).is_some()
+    }
+
     fn village_food(&self, w: &World, node: usize, share_milli: i64) -> f64 {
         if !w.nodes[node].kind.is_storehouse() {
             return 0.0;
@@ -3241,10 +3259,7 @@ impl Dragons {
         let full_need =
             (self.tun.full - self.dragons[d].fullness_at(&self.tun, at)).min(sp.appetite);
         let members = w.village_members(node);
-        if food * 2 < full_need
-            && members > self.tun.village_refuge
-            && w.village_row(node).is_some()
-        {
+        if self.takes_villager(w, node, f64::from(food), f64::from(full_need)) {
             w.set_members(node, members - 1, at);
             let p = w.nodes[node].pos;
             self.outbox.push(Cmd::TakeResident(boundary::TakeResident {

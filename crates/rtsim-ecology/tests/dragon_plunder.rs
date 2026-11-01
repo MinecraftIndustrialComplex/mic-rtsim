@@ -214,3 +214,49 @@ fn a_district_raid_takes_food_only() {
     );
     assert!(placed >= 1, "watched, the dragon did not come in person");
 }
+
+/// A village whose market holds no live animals, as every village of a real world (the bridge's
+/// goods have no `cattle`, `sheep` or `pig`): a hungry dragon with nothing else to eat raids it for
+/// villagers under PP-2 (a), one a raid, eight days apart, never its last two (EQC579). Its offer
+/// was its livestock alone, so it was never raided while the arrival gate counted it as food.
+#[test]
+fn a_village_with_no_livestock_loses_villagers_to_a_hungry_dragon() {
+    let (g, ids) = synth::goods();
+    let book = synth::recipes(&ids);
+    let nodes = synth::nodes()
+        .into_iter()
+        .filter(|n| n.key == 1)
+        .collect();
+    let mut w = World::build(WorldConfig::new(11), g, book, nodes);
+    let v = w.nodes.iter().position(|n| n.key == 1).expect("the village");
+    assert!(w.village_row(v).is_some());
+    let before = w.village_members(v);
+    assert!(before > 4, "{before}");
+    let mut d = Dragons::new(11, DragonTunables::default(), Tick::ZERO);
+    let l = lair(&mut d, &mut w, 300, 100);
+    hungry_adult(&mut d, &mut w, l);
+    let mut h = Herds::new(11, HerdTunables::default(), Box::new(Uniform), Tick::ZERO);
+    let mut takes = Vec::new();
+    for day in 1..=40 {
+        d.run_until_with_herds(
+            &mut w,
+            &mut NoInfrastructure,
+            &mut h,
+            Tick(day * TICKS_PER_DAY),
+        );
+        for c in d.take_commands() {
+            if let rtsim_ecology::boundary::Cmd::TakeResident(t) = c {
+                assert_eq!(t.village, 1);
+                takes.push(day);
+            }
+        }
+    }
+    assert!(!takes.is_empty(), "no villager taken");
+    assert!(
+        takes.windows(2).all(|p| p[1] - p[0] >= 8),
+        "a village rests 8 days: {takes:?}"
+    );
+    assert_eq!(d.villagers_taken, takes.len() as u64);
+    assert_eq!(w.village_members(v), before - takes.len() as u32);
+    assert!(w.village_members(v) >= 2);
+}

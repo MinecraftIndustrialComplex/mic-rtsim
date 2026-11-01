@@ -263,6 +263,9 @@ pub struct Java {
     /// Under [`Policy::Every`]: the villages (keys) of SPAWN_RESIDENT orders answered applied since
     /// the last take, one entry a resident: the suite's villages count them.
     pub settled: Vec<u64>,
+    /// Under [`Policy::Every`]: the villages (keys) of TAKE_RESIDENT orders since the last take,
+    /// one entry a villager a dragon ate.
+    pub taken: Vec<u64>,
 }
 
 /// Writes `mask` and the game time into the MODULE_SWITCH journaled at `seq`: the session's own
@@ -463,6 +466,7 @@ impl Java {
             undecoded: 0,
             nest_worms: BTreeMap::new(),
             settled: Vec::new(),
+            taken: Vec::new(),
         };
         // The session's first record names its generation, as BoundarySession's constructor does.
         let g = j.nonce;
@@ -1299,8 +1303,14 @@ impl Java {
                         db::Cmd::PlaceLair(_) | db::Cmd::OilSurvey(_) | db::Cmd::PlaceNest(_) => {}
                         // A nest's worms and sorties need its chamber, which never formed.
                         db::Cmd::NestRenew(_) | db::Cmd::NestSortie(_) => {}
-                        // A villager taken (PP-2 (a)): this world has no villager to remove.
-                        db::Cmd::TakeResident(_) => {}
+                        // A villager taken (PP-2 (a)): under [`Policy::Every`] the suite's
+                        // villages lose one, as VillagerTakes removes one at the village's next
+                        // load (EQC498); elsewhere this world has no villager to remove.
+                        db::Cmd::TakeResident(t) => {
+                            if self.policy == Policy::Every {
+                                self.taken.push(t.village);
+                            }
+                        }
                         db::Cmd::Steer(_) => {}
                     },
                     Err(_) => self.undecoded += 1,
