@@ -161,6 +161,11 @@ pub struct DragonTunables {
     /// take (EQC556, PP-2 (a)).
     pub villager_food: i32,
     pub village_refuge: u32,
+    /// Villagers are a rare take (Ben's PP-5, EQC580): a village keeps this share of its beds
+    /// (above `village_refuge`), and gives no villager for `villager_rest_days` after one. TUNABLE,
+    /// 0.5 and 96 (one a game year).
+    pub village_refuge_share: f32,
+    pub villager_rest_days: u64,
     /// The blocks around a village's centre Java looks in for the villager a dragon took.
     pub village_take_radius: u32,
     /// A camp's members a dragon never takes: its last ones (EQC556).
@@ -275,6 +280,8 @@ impl Default for DragonTunables {
             camp_attack: camp.as_ref().map_or(0.0, |c| c.attack),
             villager_food: rows.row("village").map_or(25, |r| r.food_each),
             village_refuge: rows.row("village").map_or(2, |r| r.refuge),
+            village_refuge_share: rows.row("village").map_or(0.5, |r| r.refuge_share),
+            villager_rest_days: rows.row("village").map_or(96, |r| r.take_rest_days),
             village_take_radius: 48,
             camp_risk: 5.0,
             larder_risk: 20.0,

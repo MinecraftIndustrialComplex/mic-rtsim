@@ -234,3 +234,47 @@ fn a_village_alone_opens_nothing() {
     assert_eq!(d.stats.arrivals_gated, 3);
     assert!(d.lairs[l as usize].occupants.is_empty());
 }
+
+/// A village whose market holds no live animals, as every village of a real world, adds nothing
+/// to the gate: its villagers are a rare take (one a year, Ben's PP-5), not a supply (EQC580). The
+/// lair beside the scenario's village 8, in a world with no live animals among its goods, reads
+/// the wild floor alone; with them (the scenario's own goods) the village counts.
+#[test]
+fn a_village_with_no_live_animals_adds_nothing_to_the_gate() {
+    let (stocked, _) = synth::world(5);
+    let mut w = synth::world_without_livestock(5, &[8]);
+    let mut d = Dragons::new(5, DragonTunables::default(), Tick::ZERO);
+    let l = d.add_lair(
+        &mut w,
+        1,
+        "Village Roost",
+        Species::Fire,
+        LairKind::Roost,
+        Pos::new(0, 300, -1_300),
+        100,
+        Tick::ZERO,
+    );
+    let mut h = Herds::new(5, HerdTunables::default(), Box::new(Uniform), Tick::ZERO);
+    let share = d.ground_share_with(&w, &mut h, l, Tick::ZERO);
+    let wild = d.tun.gate_wild;
+    let floor = wild / (wild + d.tun.gate_half);
+    assert!(
+        (share - floor).abs() < 1e-9,
+        "the lair reads {share:.3}, the wild floor alone {floor:.3}"
+    );
+    let mut w = stocked;
+    let mut d = Dragons::new(5, DragonTunables::default(), Tick::ZERO);
+    let l = d.add_lair(
+        &mut w,
+        1,
+        "Village Roost",
+        Species::Fire,
+        LairKind::Roost,
+        Pos::new(0, 300, -1_300),
+        100,
+        Tick::ZERO,
+    );
+    let with = d.ground_share_with(&w, &mut h, l, Tick::ZERO);
+    let village = (wild + d.tun.gate_village) / (wild + d.tun.gate_village + d.tun.gate_half);
+    assert!((with - village).abs() < 1e-9, "{with:.3} against {village:.3}");
+}

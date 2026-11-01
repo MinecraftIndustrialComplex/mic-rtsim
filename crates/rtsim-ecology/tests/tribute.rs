@@ -285,11 +285,18 @@ fn a_paying_village_gives_its_lairs_dragons_nothing_to_hunt() {
     }
     // Another lair's dragon weighs what it weighed: the tribute buys only its own lair's peace.
     assert_eq!(villages_weighed(&d, &w, frostmaw, t0), theirs);
-    // At the season's change it pays again, and is left alone for another season.
+    // At the season's change it pays again, and is left alone for another season by the lair it
+    // pays: Frostmaw may have raided it meanwhile, which makes it Frostmaw's lair's tributary (a
+    // village with little livestock offers a villager, EQC579).
     let next = d.tun.calendar.next_change(t0);
     d.run_until(&mut w, &mut NoInfrastructure, next);
-    assert_eq!(d.tribute_row(i).and_then(|r| r.paid_at), Some(next));
-    assert_eq!(village_utility(&d, &w, cinderjaw, i, next), None);
+    let row = d.tribute_row(i).expect("a tributary");
+    assert_eq!(row.paid_at, Some(next));
+    let payee = [cinderjaw, frostmaw]
+        .into_iter()
+        .find(|&x| d.dragons[x].lair == Some(row.lair))
+        .expect("one of the two lairs");
+    assert_eq!(village_utility(&d, &w, payee, i, next), None);
 }
 
 #[test]

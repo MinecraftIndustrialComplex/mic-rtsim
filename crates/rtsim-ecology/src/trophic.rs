@@ -90,6 +90,13 @@ pub struct TrophicRow {
     /// Days a settlement rests after a raid (EQC557).
     #[serde(default)]
     pub rest_days: u64,
+    /// For villages: the share of its beds a village keeps whatever is taken, above `refuge`
+    /// (Ben's PP-5, EQC580).
+    #[serde(default)]
+    pub refuge_share: f32,
+    /// For villages: days a village gives no member after one was taken (PP-5, EQC580).
+    #[serde(default)]
+    pub take_rest_days: u64,
     /// Which of the predator's species eat from it: `uses_oil` for the species that drink oil;
     /// every species when absent.
     #[serde(default)]
@@ -156,6 +163,11 @@ mod tests {
             ),
             (camp.attack, &camp.cultures, camp.refuge, camp.food_each)
         );
-        assert_eq!(t.raid_rest_days, rows.row("village").unwrap().rest_days);
+        let village = rows.row("village").unwrap();
+        assert_eq!(t.raid_rest_days, village.rest_days);
+        assert_eq!(
+            (t.villager_food, t.village_refuge, t.village_refuge_share, t.villager_rest_days),
+            (village.food_each, village.refuge, village.refuge_share, village.take_rest_days)
+        );
     }
 }

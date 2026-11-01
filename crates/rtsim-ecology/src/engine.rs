@@ -86,6 +86,8 @@ const SYS_BREED: SystemId = SystemId::named("ecology.breed");
 const RAID_VILLAGE: u128 = 1;
 const RAID_CAMP: u128 = 2;
 const RAID_LARDER: u128 = 3;
+/// A village that gave a villager (Ben's PP-5, EQC580): its own, longer rest.
+const RAID_VILLAGER: u128 = 4;
 
 /// A settlement's key in the rest table: its kind above, its own key below.
 fn raid_key(kind: u128, key: u64) -> u128 {
@@ -1175,10 +1177,14 @@ impl Dragons {
         // Every point of the nine regions is within this of the lair.
         let reach = 2 * rb * 1415 / 1000;
         let mut weight = self.tun.gate_wild / mouths((lx, lz)).max(1.0);
+        // A village counts by its livestock: one whose market holds no live animals, as every
+        // village of a real world, feeds no dragon steadily (its villagers are a rare take,
+        // PP-5, EQC580), so it opens no gate.
+        let share = self.tun.species(lair.species).village_share_milli;
         for n in self.index.villages_near(t, frame, lx, lz, reach) {
             let p = w.nodes[n as usize].pos;
             let p = (i64::from(p.x), i64::from(p.z));
-            if holds((lx, lz), p) {
+            if holds((lx, lz), p) && self.village_food(w, n as usize, share) > 0.0 {
                 weight += self.tun.gate_village / mouths(p).max(1.0);
             }
         }
@@ -1388,11 +1394,10 @@ impl Dragons {
     /// The settlement `key` ([`raid_key`]) was raided at `at` and rests (EQC557); rests over by
     /// then are dropped.
     fn rest(&mut self, key: u128, at: Tick) {
-        let span = self.tun.raid_rest_days * TICKS_PER_DAY;
         let over: Vec<u128> = self
             .raided
             .iter()
-            .filter(|(_, t)| at >= **t + span)
+            .filter(|(k, t)| at >= **t + self.rest_span(**k))
             .map(|(k, _)| *k)
             .collect();
         for k in over {
@@ -1405,7 +1410,18 @@ impl Dragons {
     fn rested(&self, key: u128, at: Tick) -> bool {
         self.raided
             .get(&key)
-            .is_some_and(|&t| at < t + self.tun.raid_rest_days * TICKS_PER_DAY)
+            .is_some_and(|&t| at < t + self.rest_span(key))
+    }
+
+    /// How long the settlement `key` ([`raid_key`]) rests, in ticks: a village that gave a
+    /// villager `villager_rest_days` (PP-5, EQC580), any other raid `raid_rest_days`.
+    fn rest_span(&self, key: u128) -> u64 {
+        let days = if key >> 64 == RAID_VILLAGER {
+            self.tun.villager_rest_days
+        } else {
+            self.tun.raid_rest_days
+        };
+        days * TICKS_PER_DAY
     }
 
     /// The districts' stores a hungry `d` could raid now (EQC556): the districts within its
@@ -2605,7 +2621,7 @@ impl Dragons {
             let livestock = self
                 .village_food(w, node as usize, sp.village_share_milli)
                 .min(need);
-            let food = if self.takes_villager(w, node as usize, livestock, need) {
+            let food = if self.takes_villager(w, node as usize, livestock, need, at) {
                 (livestock + f64::from(self.tun.villager_food)).min(need)
             } else {
                 livestock
@@ -2731,14 +2747,20 @@ impl Dragons {
     }
 
     /// Expected fullness from a raid on a village's livestock.
-    /// Whether a raid on village `node` that finds `livestock` against `need` also takes a villager
-    /// (EQC556, Ben's PP-2 (a); EQC579): livestock short of half the need, a human village (Java
-    /// removes a villager and nothing else) above its `village_refuge`.
-    fn takes_villager(&self, w: &World, node: usize, livestock: f64, need: f64) -> bool {
+    /// Whether a raid on village `node` at `at` that finds `livestock` against `need` also takes a
+    /// villager (EQC556, Ben's PP-2 (a); EQC579): livestock short of half the need, a human village
+    /// (Java removes a villager and nothing else), and rarely (Ben's PP-5, EQC580): above both its
+    /// `village_refuge` and `village_refuge_share` of its beds, and none `villager_rest_days`
+    /// after the last.
+    fn takes_villager(&self, w: &World, node: usize, livestock: f64, need: f64, at: Tick) -> bool {
+        let Some(row) = w.village_row(node) else {
+            return false;
+        };
+        let share = (f32::from(row.k) * self.tun.village_refuge_share).ceil() as u32;
         livestock * 2.0 < need
             && matches!(w.nodes[node].kind, NodeKind::Village(Culture::Human))
-            && w.village_members(node) > self.tun.village_refuge
-            && w.village_row(node).is_some()
+            && w.village_members(node) > self.tun.village_refuge.max(share)
+            && !self.rested(raid_key(RAID_VILLAGER, w.nodes[node].key), at)
     }
 
     fn village_food(&self, w: &World, node: usize, share_milli: i64) -> f64 {
@@ -3259,8 +3281,9 @@ impl Dragons {
         let full_need =
             (self.tun.full - self.dragons[d].fullness_at(&self.tun, at)).min(sp.appetite);
         let members = w.village_members(node);
-        if self.takes_villager(w, node, f64::from(food), f64::from(full_need)) {
+        if self.takes_villager(w, node, f64::from(food), f64::from(full_need), at) {
             w.set_members(node, members - 1, at);
+            self.rest(raid_key(RAID_VILLAGER, w.nodes[node].key), at);
             let p = w.nodes[node].pos;
             self.outbox.push(Cmd::TakeResident(boundary::TakeResident {
                 village: w.nodes[node].key,

@@ -13,8 +13,10 @@
       "attack": 150.0,
       "conversion": 1.0,
       "refuge": 2,
+      "refuge_share": 0.5,
       "food_each": 25,
-      "rest_days": 8
+      "rest_days": 8,
+      "take_rest_days": 96
     },
     {
       "prey": "conflict.camp",

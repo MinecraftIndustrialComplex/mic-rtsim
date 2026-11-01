@@ -184,6 +184,52 @@ pub fn world(seed: u64) -> (World, DragonGoods) {
     (w, ids)
 }
 
+/// The scenario's nodes `keys` (every one when empty) in a world whose goods are a real world's
+/// kind: item ids, none of them a live animal, so no market holds the herd goods the prey table
+/// names and a village's only prey is its villagers (EQC579, EQC580).
+pub fn world_without_livestock(seed: u64, keys: &[u64]) -> World {
+    let mut g = Goods::new();
+    let item = |name: &str, need: Amount| GoodDef {
+        name: name.into(),
+        kind: GoodKind::Item,
+        need_per_pop_day: need,
+        stack: 64,
+    };
+    let wheat = g.add(item("minecraft:wheat", 0));
+    let bread = g.add(item("minecraft:bread", 300));
+    g.add(GoodDef {
+        name: "minecraft:emerald".into(),
+        kind: GoodKind::Currency(Culture::Human),
+        need_per_pop_day: 0,
+        stack: 64,
+    });
+    let book = RecipeBook {
+        recipes: vec![
+            Recipe {
+                name: "farm wheat".into(),
+                output: wheat,
+                yield_per_batch: 10 * MILLI,
+                inputs: vec![(wheat, MILLI)],
+                labour: 1.0,
+                resource: Some(FARMLAND),
+            },
+            Recipe {
+                name: "bake bread".into(),
+                output: bread,
+                yield_per_batch: MILLI,
+                inputs: vec![(wheat, 3 * MILLI)],
+                labour: 0.1,
+                resource: None,
+            },
+        ],
+    };
+    let nodes = nodes()
+        .into_iter()
+        .filter(|n| keys.is_empty() || keys.contains(&n.key))
+        .collect();
+    World::build(WorldConfig::new(seed), g, book, nodes)
+}
+
 /// A lair of the scenario and who lives in it.
 pub struct LairSpec {
     pub key: u64,
