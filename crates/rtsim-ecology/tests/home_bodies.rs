@@ -1172,6 +1172,49 @@ fn a_watched_census_removes_an_old_body_of_a_dragon_that_is_a_puppet() {
     assert_eq!(s.d.lairs[s.l as usize].occupants, vec![x], "no second dragon");
 }
 
+/// EQC326: the body's leash (DRAGON_LEFT_HOME of the adoption's epoch) reaches the engine before
+/// the plugin's answer to the census's adoption. The body is a puppet by then: the late answer
+/// books no home body, and the copy a crash left on disk, listed by the next census, is removed.
+#[test]
+fn a_home_answer_after_the_leash_books_no_body() {
+    let mut s = scene(44);
+    let x = s.dragon("Lured", Gender::Female);
+    s.census(1, false, &[body(0x5C, agent_of(x), 700.5)], 100);
+    let a = adopts(&s.cmds());
+    assert_eq!(a.len(), 1, "the census adopts its body");
+    let (agent, epoch) = (a[0].agent, a[0].epoch);
+    s.ingest(
+        Obs::DragonLeftHome(boundary::DragonLeftHome {
+            agent,
+            epoch,
+            dimension: 0,
+            entity: uuid(0x5C),
+            pos: (760.0, 100.0, 1500.0),
+        }),
+        100,
+    );
+    s.answer(agent, epoch, uuid(0x5C), 101);
+    let dx = s.d.dragon(x).unwrap();
+    assert_eq!(
+        dx.body, None,
+        "the late answer names the puppet: no home body"
+    );
+    assert!(matches!(dx.state, State::Embodied { epoch: e, .. } if e == epoch));
+    s.d.check(&s.w, None).unwrap();
+    s.cmds();
+    s.census(2, true, &[body(0x5C, agent, 701.5)], 300);
+    let cmds = s.cmds();
+    let gone = discards(&cmds);
+    assert_eq!(gone.len(), 1, "the old copy goes: {cmds:?}");
+    assert_eq!(gone[0].entity, uuid(0x5C));
+    assert!(adopts(&cmds).is_empty(), "{cmds:?}");
+    assert_eq!(
+        s.d.lairs[s.l as usize].occupants,
+        vec![x],
+        "no second dragon"
+    );
+}
+
 /// EQC313 (finding 4): a lair that got a newcomer while it was seen only from afar, and Ice and
 /// Fire's own generated dragon found by its first census: the generated dragon is removed (the
 /// untagged path's rule), not adopted as a second occupant.
