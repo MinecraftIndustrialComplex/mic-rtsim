@@ -684,11 +684,16 @@ impl Every {
     /// Runs the host until it has handed over game day `day` (from the fork's start), answering
     /// the villages' residents as it goes: each day's new residents are counted, and a village
     /// whose count changed gets a complete census.
+    ///
+    /// A run hands over the last step at its target and leaves Java's clock a stride past it, so
+    /// the target is never behind the clock: a run whose target is behind returns at once and
+    /// hands nothing over (EQC493).
     pub fn run_to(&mut self, day: u64) {
         while self.day() < day {
             let next = self.day() + 1;
+            let at = (self.host.start_time + next as i64 * DAY).max(self.host.j.game_time);
             let o = Options {
-                until: Some(Until::At(self.host.start_time + next as i64 * DAY)),
+                until: Some(Until::At(at)),
                 ..self.opts.clone()
             };
             self.host
@@ -713,9 +718,16 @@ impl Every {
     }
 
     /// Runs the host to game time `t` (from the fork's start), within a day: a camp visit's ticks.
+    ///
+    /// One tick a step: a visit takes the ticks it says, not the soak's stride of 2,400 a step,
+    /// which made each visit cost a tenth of a day or more and let a day's visits run past the
+    /// next day (EQC493).
     fn run_ticks_to(&mut self, t: i64) {
         let o = Options {
-            until: Some(Until::At(self.host.start_time + t)),
+            until: Some(Until::At(
+                (self.host.start_time + t).max(self.host.j.game_time),
+            )),
+            stride: Some(1),
             ..self.opts.clone()
         };
         self.host

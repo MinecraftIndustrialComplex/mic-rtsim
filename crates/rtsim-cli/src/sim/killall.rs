@@ -83,6 +83,9 @@ pub struct Row {
     /// so they hold for the alone run and the together one alike. `None`: the row has no wipe in
     /// the every-kind world.
     pub together: Option<SeedCheck>,
+    /// Whether [`Row::judge`] holds together too: the medians do; the groves' one day for one K
+    /// holds only where every seed's grove starts at P 0, as alone (EQC492).
+    pub judge_together: bool,
 }
 
 /// A row's checks on one seed's [`KindRefill`].
@@ -548,6 +551,7 @@ pub const ROWS: &[Row] = &[
         run: herds_world,
         judge: no_judge,
         together: Some(herds_together),
+        judge_together: true,
     },
     Row {
         name: "herds.local",
@@ -558,6 +562,7 @@ pub const ROWS: &[Row] = &[
         run: herds_local,
         judge: herds_local_judge,
         together: None,
+        judge_together: true,
     },
     Row {
         name: "dragons",
@@ -569,6 +574,7 @@ pub const ROWS: &[Row] = &[
         run: dragons,
         judge: dragons_judge,
         together: Some(dragons_together),
+        judge_together: true,
     },
     Row {
         name: "nests",
@@ -580,6 +586,7 @@ pub const ROWS: &[Row] = &[
         run: nests,
         judge: no_judge,
         together: Some(nests_together),
+        judge_together: true,
     },
     Row {
         name: "villagers",
@@ -590,6 +597,7 @@ pub const ROWS: &[Row] = &[
         run: villagers,
         judge: villagers_judge,
         together: Some(any_seed),
+        judge_together: true,
     },
     Row {
         name: "ribbits",
@@ -600,6 +608,7 @@ pub const ROWS: &[Row] = &[
         run: ribbits,
         judge: ribbits_judge,
         together: Some(any_seed),
+        judge_together: true,
     },
     Row {
         name: "camps",
@@ -610,6 +619,7 @@ pub const ROWS: &[Row] = &[
         run: camps,
         judge: camps_judge,
         together: Some(camps_together),
+        judge_together: true,
     },
     Row {
         name: "outposts",
@@ -620,6 +630,7 @@ pub const ROWS: &[Row] = &[
         run: outposts,
         judge: camps_judge,
         together: Some(camps_together),
+        judge_together: true,
     },
     Row {
         name: "dens",
@@ -631,6 +642,7 @@ pub const ROWS: &[Row] = &[
         run: dens,
         judge: no_judge,
         together: Some(dens_together),
+        judge_together: true,
     },
     Row {
         name: "groves.k5",
@@ -641,6 +653,7 @@ pub const ROWS: &[Row] = &[
         run: groves_k5,
         judge: groves_judge,
         together: Some(groves_together),
+        judge_together: false,
     },
     Row {
         name: "groves.k7",
@@ -651,6 +664,7 @@ pub const ROWS: &[Row] = &[
         run: groves_k7,
         judge: groves_judge,
         together: Some(groves_together),
+        judge_together: false,
     },
     Row {
         name: "groves.k9",
@@ -661,6 +675,7 @@ pub const ROWS: &[Row] = &[
         run: groves_k9,
         judge: groves_judge,
         together: Some(groves_together),
+        judge_together: false,
     },
     Row {
         name: "umvuthi",
@@ -672,6 +687,7 @@ pub const ROWS: &[Row] = &[
         run: umvuthi,
         judge: no_judge,
         together: Some(umvuthi_together),
+        judge_together: true,
     },
     Row {
         name: "pirates",
@@ -682,6 +698,7 @@ pub const ROWS: &[Row] = &[
         run: pirates,
         judge: no_judge,
         together: Some(pirates_together),
+        judge_together: true,
     },
 ];
 
@@ -707,6 +724,22 @@ pub fn verdict(row: &Row, rs: &[KindRefill]) -> Result<(), String> {
         })
         .collect();
     need(bad.is_empty(), || bad.join("; ")).and((row.judge)(rs))
+}
+
+/// The row's verdict on its together seeds: every seed's checks, then the judge's where it holds
+/// together ([`Row::judge_together`]).
+pub fn verdict_together(row: &Row, rs: &[KindRefill]) -> Result<(), String> {
+    if row.judge_together {
+        verdict(row, rs)
+    } else {
+        verdict(
+            &Row {
+                judge: no_judge,
+                ..*row
+            },
+            rs,
+        )
+    }
 }
 
 /// The header of [`line`], in its widths.
@@ -999,7 +1032,11 @@ pub fn cli(rest: &[&str]) -> ExitCode {
         rows.into_iter().map(|r| (r, run_row(r, &seeds))).collect()
     };
     for (row, rs) in results {
-        let v = verdict(row, &rs);
+        let v = if together {
+            verdict_together(row, &rs)
+        } else {
+            verdict(row, &rs)
+        };
         failed |= v.is_err();
         println!("{}", line(row, &rs, &v));
         if verbose {
@@ -1097,7 +1134,7 @@ mod tests {
         println!("{}", header());
         let mut failed = Vec::new();
         for (row, rs) in rows.iter().zip(&got) {
-            let v = verdict(row, rs);
+            let v = verdict_together(row, rs);
             println!("{}", line(row, rs, &v));
             print_seeds(rs);
             if v.is_err() {
