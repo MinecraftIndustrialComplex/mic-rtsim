@@ -99,8 +99,13 @@ public final class DragonConfig {
         return loaded() ? SAMPLES_PER_TICK.get() : DEFAULT_SAMPLES_PER_TICK;
     }
 
+    /**
+     * The leash, at most {@link #lairFootprint}: a home body further from its lair than the footprint is outside every census
+     * of it, so a leash beyond the footprint would let a body stand home-tagged where no census lists it (EQC322).
+     */
     public static int homeLeash() {
-        return Test.homeLeash != null ? Test.homeLeash : loaded() ? HOME_LEASH.get() : 48;
+        int leash = Test.homeLeash != null ? Test.homeLeash : loaded() ? HOME_LEASH.get() : 48;
+        return Math.min(leash, lairFootprint());
     }
 
     public static int lairFootprint() {

@@ -339,7 +339,7 @@ start at 16.
 | 0x8003 | DESPAWN_GROUP | 0 | 16 u64 agent, 24 u32 epoch, 28 u32 reason | 32 | DEMATERIALIZED |
 | 0x8004 | STEER_GROUP | 0 | 16 u64 agent, 24 u32 epoch, 28 f32 speed, 32 f64 x, 40 f64 y, 48 f64 z | 56 | |
 | 0x8005 | TRANSFER_TO_CONTAINER | 0 | 16 u64 opId, 24 u32 dimension, 28 u32 item, 32 i32 x, 36 i32 y, 40 i32 z, 44 i32 count | 48 | COMMAND_RESULT |
-| 0x8006 | SITE_STATE | 0 | 16 u64 key (the module's site key), 24 u32 kind (1 camp, 2 lair, 3 nest), 28 u32 flags (1 short, 2 empty, 4 broken, 8 waiting), 32 f32 P now, 36 u16 K, 38 u16 count (members at home), 40 u16 away (members out), 42 u16 n, 44 u16 l, 46 u16 m, 48 u64 wait left now (kind units: game ticks, nests thousandths of a drilling day; 0 unless waiting), 56 (n + l + m) x (u64 most, u64 least): home, then left behind, then missing | 56 + 16(n + l + m) | |
+| 0x8006 | SITE_STATE | 0 | 16 u64 key (the module's site key), 24 u32 kind (1 camp, 2 lair, 3 nest), 28 u32 flags (1 short, 2 empty, 4 broken, 8 waiting), 32 f32 P now (a camp's members'), 36 u16 K, 38 u16 count (members at home), 40 u16 away (members out), 42 u16 n, 44 u16 l, 46 u16 m, 48 u64 wait left now (kind units: game ticks, nests thousandths of a drilling day; 0 unless waiting), 56 f32 P2 now (a camp with a chief of its own, a grove's Umvuthi: the chief's pressure; 0 for every other site; slice S9, MZB-1231), 60 u32 reserved, 64 (n + l + m) x (u64 most, u64 least): home, then left behind, then missing | 64 + 16(n + l + m) | |
 | 0x8010 to 0x8015 | phase 1 | | §4.2 | | |
 
 **SPAWN_GROUP member block** (24 bytes, then its items): 0 u32 member index, 4 u32 itemCount, 8 f32
@@ -383,11 +383,11 @@ and NEST_FOUND at 48 (§6.3). Always 40 bytes, plus 16 a UUID (`SiteLedger.write
 |---|---|
 | +0 | u32 flags: 1 ROW (a row follows), 2 GAP (the reinstall guard reset the sim since the row was written), 4 WAITING (the wait left is set), 8 EXISTED (no row, but the plugin knows the site stood before this engine life; nests only, since lairs and camps have LATE) |
 | +4 | u16 K, +6 u16 count |
-| +8 | f32 P as of the stamp |
+| +8 | f32 P as of the stamp (a camp's members') |
 | +12 | u16 away, +14 u16 n |
 | +16 | u64 wait left as of the stamp (kind units) |
 | +24 | u64 elapsed: game ticks since the stamp, 0 when the world's clock is below it |
-| +32 | u16 l, +34 u16 m, +36 u32 reserved |
+| +32 | u16 l, +34 u16 m, +36 f32 P2 as of the stamp (a grove's Umvuthi's pressure; 0 for every other site and in a tail written before S9, MZB-1231) |
 | +40 | (n + l + m) x (u64 most, u64 least): home, left behind, missing |
 
 - Without a row it is 40 zero bytes, EXISTED aside. The engine decodes it to the record's end: the
@@ -771,9 +771,13 @@ killing).
   box (`api/Arrivals.WATCH_BLOCKS`): it waits (retrying every 40 ticks, dropped as FAILED after 192 days),
   or, with WALK_IN, spawns at the first standable, entity-ticking point on the ray from the meeting
   point toward (x, z) 176, 160, 144, 128, 112 or 96 blocks out that is at least 128 blocks from every
-  player, and walks in (`village/Walkers`: a hop of 24 blocks toward the meeting point every 40 ticks;
+  player (x and z are the village's plain offset, so near a toroidal seam the point lies past it, not
+  at its canonical image: EQC199), is homed at the meeting point (a plugin's rehome hook, EQC330) and
+  walks in (`village/Walkers`: a hop of 24 blocks toward the meeting point every 40 ticks;
   done within 12 blocks; put at the meeting point at once when nobody can see it, and at its deadline of
-  6,000 ticks). Nobody watching: placed beside the meeting point as an AT_VILLAGE body is. A human
+  6,000 ticks; one whose chunk is not loaded stays on the list until it loads, and a death or a discard
+  takes it off, EQC331; a resent order answered DUPLICATE_OP enters a walker nothing lists, EQC332).
+  Nobody watching: placed beside the meeting point as an AT_VILLAGE body is. A human
   body (`minecraft:villager`, the type of the biome, an adult, no profession) never takes more than the
   free beds (a fresh complete census, `NOT_FREE` when there is none; a village whose reach is still
   loading is waited for 600 ticks, then placed without the clamp); a Ribbit's profession is the Ribbits
@@ -1267,14 +1271,14 @@ The bridge and the industry ranges (`docs/industry-boundary.md` §1) stay as the
 | 0x8500 | DRAGON_MATERIALIZE | flags: 1 clamp above the surface, 2 has a home, 4 sleeping, 8 hostile, 16 oil (the body carries a reserve), 32 home body (§6.9) | 16 u64 agent, 24 u32 epoch, 28 u32 species (dictionary 3), 32 u32 dimension, 36 i32 ageTicks, 40 f64 x, 48 f64 y, 56 f64 z, 64 i32 hunger, 68 u32 gender, 72 u32 variant, 76 f32 health (0 full), 80 i32 homeX, 84 homeY, 88 homeZ, 92 i32 oil (0 to the capacity; 0 without flag 16), 96 f64 targetX, 104 targetY, 112 targetZ, 120 u64 targetPlayerMost, 128 u64 targetPlayerLeast | 136 | DRAGON_MATERIALIZED or DRAGON_SPAWN_REJECTED |
 | 0x8501 | DRAGON_STEER | flags: 1 settle at the target | 16 u64 agent, 24 u32 epoch, 28 reserved, 32 f64 x, 40 f64 y, 48 f64 z | 56 | |
 | 0x8502 | DRAGON_DEPART | reason: 1 bored, 2 hungry, 3 wounded, 4 passing through, 5 recalled | 16 u64 agent, 24 u32 epoch, 28 u32 timeoutTicks, 32 f64 x, 40 f64 y, 48 f64 z | 56 | DRAGON_DEMATERIALIZED |
-| 0x8503 | DRAGON_ADOPT | 0 | 16 u64 entityMost, 24 u64 entityLeast, 32 u64 agent, 40 u32 epoch, 44 u32 flags (1 has a home, 2 home body), 48 i32 homeX, 52 homeY, 56 homeZ, 60 reserved, 64 i32 ageTicks, 68 i32 hunger, 72 f32 health (flag 2: the body is synced to them; health 0 leaves it), 76 reserved | 80 | DRAGON_MATERIALIZED or DRAGON_SPAWN_REJECTED |
+| 0x8503 | DRAGON_ADOPT | 0 | 16 u64 entityMost, 24 u64 entityLeast, 32 u64 agent, 40 u32 epoch, 44 u32 flags (1 has a home, 2 home body, 4 oil reserve), 48 i32 homeX, 52 homeY, 56 homeZ, 60 reserved, 64 i32 ageTicks, 68 i32 hunger, 72 f32 health (flag 2: the body is synced to them; health 0 leaves it), 76 i32 oil (flag 4: the body's oil reserve, as MATERIALIZE's flag 16; EQC317) | 80 | DRAGON_MATERIALIZED or DRAGON_SPAWN_REJECTED |
 | 0x8504 | DRAGON_DISCARD | reason: 1 the sim owns the population, 2 its lair has its dragon (a third body), 3 its dragon is away, 4 a second body of one dragon | 16 u64 entityMost, 24 u64 entityLeast | 32 | COMMAND_RESULT |
 | 0x8505 | PLACE_LAIR | 0 | 16 u64 field (the engine's id, for logs), 24 u32 dimension, 28 u32 structure (dictionary 4), 32 i32 x, 36 i32 z, 40 u32 radius, 44 reserved | 48 | LAIR_FOUND (flags 1 LATE and 2 PLACED) when placed; nothing when no site is found |
 | 0x8506 | OIL_SURVEY | 0 | 16 u32 dimension, 20 i32 x, 24 i32 z, 28 u32 radius | 32 | OIL_CHUNKS (source 2), as many as it takes; nothing when it finds none |
 | 0x8507 | PLACE_NEST | 0 | 16 u64 nest, 24 u32 dimension, 28 i32 chunkX, 32 i32 chunkZ, 36 u32 depth (the chamber's floor this many blocks below the surface) | 40 | NEST_FOUND, at once if the chunk is loaded, else on its next load |
 | 0x8508 | NEST_RENEW | count | 16 u64 nest, 24 u32 dimension, 28 u32 stage (1 to 3, the worms' size), 32 u32 serial (the engine's count of this nest's renewals, this one in it, from 1), 36 reserved | 40 | NEST_CENSUS once they spawn |
 | 0x8509 | NEST_SORTIE | count | 16 u64 nest, 24 u32 dimension, 28 i32 x, 32 i32 z (a block of the raided district), 36 u32 timeoutTicks | 40 | |
-| 0x850A | DRAGON_HAND_BACK | 0 | 16 u64 agent, 24 u32 epoch, 28 reserved | 32 | DRAGON_MATERIALIZED (aux 1) |
+| 0x850A | DRAGON_HAND_BACK | 0 | 16 u64 agent, 24 u32 epoch, 28 reserved, 32 u64 lair (the dragon's own lair, LAIR_FOUND's key: the attachment names it, not the nearest lair; EQC321) | 40 | DRAGON_MATERIALIZED (aux 1) |
 
 **Tribute** (SINK.md §4.6) needs no command of its own: the coin a village pays a lair goes into the
 lair's reported chest as the core's TRANSFER_TO_CONTAINER (§2.4, 0x8005), one stack of at most 64
@@ -1497,33 +1501,52 @@ gender, 48 u32 variant, 56 f64 x, 64 f64 y, 72 f64 z.
   at ticket level FULL or lower with its entities visible to the level's queries (core's `ChunkWatch`: a
   poll every 20 ticks is the authority, the ticket event a hint, 200 ticks of gap after going out; the
   camps' rules, MZB-290, MZB-249, MZB-660). When it comes in the plugin sends LAIR_CENSUS, journaled, with
-  a new epoch: the home bodies of the lair standing in the footprint and the untagged structure dragons in
-  its box (at most 16); WATCHED when a non-spectator player is within the larger of `watchBlocks` (128) and
-  view distance times 16. It is sent again each game day while the lair stays in. When the lair goes out the
-  plugin releases each loaded home body with DRAGON_DEMATERIALIZED reason 8 (the entity stays and vanilla
-  saves it) and sends LAIR_OUT with the epoch. Only lairs whose home chunk is loaded are followed.
+  a new epoch: the home bodies of the lair standing in the footprint and the untagged structure dragons
+  anywhere in the footprint (Ice and Fire's own wanders 40 blocks from home; EQC313), at most 16; WATCHED
+  when a non-spectator player is within the larger of `watchBlocks` (128) and view distance times 16. It is
+  sent again each game day while the lair stays in. When the lair goes out the plugin releases each loaded
+  home body whose chunk no longer entity-ticks with DRAGON_DEMATERIALIZED reason 8 (the entity stays and
+  vanilla saves it) and sends LAIR_OUT with the epoch; a body whose chunk still ticks (entities tick to the
+  simulation distance, which can reach past the footprint's far edge) stays registered and leashed and is
+  released with reason 8 when its chunk stops ticking (EQC312). Only lairs whose home chunk is loaded are
+  followed, and only their home chunks' loads and unloads are queued (EQC319). An untagged structure
+  dragon in a known lair's box, in the box its own home lies in, or within the footprint of a known lair is
+  not reported as DRAGON_UNTAGGED: it is the lair census's (EQC313).
 - **What the engine answers.** In this order, so a removed body and a spawned one never stand together:
   DRAGON_DISCARD for removals (reason 2 a third body of a pair, 3 the dragon is away and the lair is
   unwatched, 4 a second body of one dragon), DRAGON_ADOPT (flags 1 and 2, with age, hunger and health) for
   each body it keeps, DRAGON_MATERIALIZE (flag 32, sleeping, at the lair) for an owed dragon when the lair is
   unwatched. A watched lair spawns nothing and recalls an away dragon whose body stands (its trip ends, the
-  body is adopted); a body a player is within `watchBlocks` of is never removed. A body the census does not
-  list for a dragon that holds one is a miss; three misses at least two game days apart write the dragon
-  off as missing: a player's loss, unless the lair's row said a gap, then Other and the cap wait; its UUID
-  goes to the row's `missing`. A stray adopted below two bodies becomes an occupant (the lair branch of
-  DRAGON_UNTAGGED is gone); a UUID the ledger's row names (`expect`, after a reset) is adopted the same way.
+  body is adopted) instead of removing it; every other removal is sent watched or not (a second body of one
+  dragon, a third of a pair, a left-behind body, a stray: H1 and H2 outrank the rule that nothing vanishes
+  in view; EQC311, EQC323). Bodies are matched by UUID first: the body a dragon of the lair believes, then
+  the lair's left-behind, expected and missing lists; the agent on a body names its dragon only for a
+  dragon of this lair owed a body, of the body's species, since an agent is not unique across engine lives
+  (EQC310). A body the census does not list for a dragon that holds one is a miss; three misses at least
+  two game days apart write the dragon off as missing: a player's loss, unless the lair's row said a gap,
+  then Other and the cap wait; its UUID goes to the row's `missing`. A stray becomes an occupant only into
+  a lair the census found empty (up to two), or when its UUID is the lair's own (`expect` after a reset,
+  or `missing`) while the lair holds fewer than two; any other is removed (reason 2), as the untagged path
+  did before S5 (EQC313). The lair branch of DRAGON_UNTAGGED is gone.
 - **Plugin application.** ADOPT flag 2 sets the home attachment `{lair, agent}` instead of the agent tag,
-  keeps the entity persistent, turns aging off and syncs age, hunger and health through the setters then
-  `refreshDirtyAttributes` (a live dragon is never rewritten through its NBT: Ice and Fire's save removes its
-  multipart parts); MATERIALIZE flag 32 builds the body the same way; both answer DRAGON_MATERIALIZED aux 1,
-  which is when the engine books the body. A home body is kept by the pass while its lair is in (not
-  ticking is not a capture) and reports DRAGON_STATE, DRAGON_HURT and DRAGON_DIED like a puppet.
+  keeps the entity persistent, leaves aging on (a home body ages as Ice and Fire's own does, after an
+  uninstall too; each adoption sets the age again from the engine's; EQC316) and syncs age, hunger and
+  health through the setters then `refreshDirtyAttributes` (a live dragon is never rewritten through its
+  NBT: Ice and Fire's save removes its multipart parts); flag 4 gives it the oil reserve (EQC317).
+  MATERIALIZE flag 32 builds the body the same way, and is refused ALREADY_EMBODIED when a loaded dragon
+  within the footprint of the spawn carries the home attachment of the agent, registered or not (EQC311);
+  both answer DRAGON_MATERIALIZED aux 1, which is when the engine books the body. A home body is kept by
+  the pass while its lair is in (not ticking is not a capture) and reports DRAGON_STATE, DRAGON_HURT,
+  DRAGON_DIED and DRAGON_BREATHS like a puppet; DRAGON_DEPART reason 5 (its dragon is gone from the sim)
+  discards it at once, never waiting for a capture a lair's out could turn into a save (EQC314).
 - **The leash.** Every `leashScan` (20) ticks the plugin checks each loaded home body's distance from its
   lair's home through the seams: past `homeLeash` (48) blocks horizontally, or in another dimension, it
   journals DRAGON_LEFT_HOME and in the same tick removes the attachment and sets the agent tag at the same
   epoch. The engine clears `body`; the dragon stays Embodied, the lair's occupant, and nothing is lost
-  (EQ-2 (a), FB-1 (a)). A puppet that has settled within `hand_back_blocks` (24) of a lair that is in is
-  handed back: DRAGON_HAND_BACK, the swap the other way, answered DRAGON_MATERIALIZED aux 1.
+  (EQ-2 (a), FB-1 (a)). The leash is at most `lairFootprint` whatever is configured (EQC322). A puppet that
+  has settled within `hand_back_blocks` (24) of a lair that is in is handed back: DRAGON_HAND_BACK naming
+  the dragon's own lair, the swap the other way, answered DRAGON_MATERIALIZED aux 1. The engine then drops
+  whatever the puppet had booked: no departure, purpose home (EQC315).
 - **Deaths and removals.** DRAGON_DIED names the body's entity and lair. A home body released with its lair
   (the engine holds it as saved) that dies while loaded is reported by its attachment: agent from it, epoch
   0, entity and lair named; the engine honours it by the UUID (EQC131). A home body that leaves its level
@@ -1939,7 +1962,7 @@ are untouched.
 | 0x080F | CAMP_CENSUS | bodies n | 24 u64 faction, 32 u64 epoch (new), 40 u32 flags (1 chief present, 2 crystal held, 4 the throne spot is given), 44 f32 the chief's health, 48 f64 throneX, 56 throneY, 64 throneZ, 72 f32 direction, 76 u32 traded t, 80 u32 traded slot, 84 u32 traded generation (the body whose trade memory follows), 88 n × (u32 body, u32 flags: 1 stray, 2 loaded elsewhere, 4 the chief, 8 the crystal is on this body (a chief body only); u32 slot, u32 generation, u64 uuidMost, u64 uuidLeast), then t × (u64 playerMost, u64 playerLeast) | 88 + 32n + 16t |
 | 0x0810 | TRADED | 0 | 24 u64 faction, 32 u64 playerMost, 40 u64 playerLeast, 48 u32 gold nuggets that changed hands, 52 reserved, 56 u64 opId | 64 |
 | 0x0811 | NOTICE_SHOWN | the notice's serial (FACTION_NOTICE's 60) | 24 u64 faction, 32 u64 playerMost, 40 u64 playerLeast (the notice's; (0, 0) the settlers) | 48 |
-| 0x0812 | CAMP_BODIES | lines n | 24 u64 faction, 32 u64 epoch, 40 u64 opId (the CAMP_RECONCILE's), 48 n × (u32 line (its index in the reconcile, from 0), u32 slot, u32 generation, u8 action (the answered line's, `ACTION_*`), u8 outcome: 1 done, 2 nothing to do, 3 stale, u16 reserved) | 48 + 16n |
+| 0x0812 | CAMP_BODIES | lines n | 24 u64 faction, 32 u64 epoch, 40 u64 opId (the CAMP_RECONCILE's), 48 n × (u32 line (its index in the reconcile, from 0), u32 slot, u32 generation, u8 action (the answered line's, `ACTION_*`), u8 outcome: 1 done, 2 nothing to do, 3 stale, u16 reserved, u64 u64 the UUID of the body the line left in its slot: for a spawn, a hand-back or an adoption done or with nothing to do, the body standing with the line's slot and generation (made, handed back, adopted, or already there), else 0, MZB-1400) | 48 + 32n |
 | 0x0813 | CAMP_OUT | 0 | 24 u64 faction, 32 u64 epoch (the one that ended) | 40 |
 | 0x0814 | CHIEF_PAID | items n | 24 u64 faction, 32 u32 slot, 36 u32 generation, 40 u32 flags (1 a stray, 2 a puppet (the chief slot, generation 0)), 44 reserved, 48 u64 playerMost, 56 u64 playerLeast, 64 u64 opId, 72 n × (u32 item, i32 count, u64 reserved) | 72 + 16n |
 | 0x0815 | DIFFICULTY | 0 | 24 u32 difficulty (§9.2), 28 reserved | 32 |
@@ -2123,7 +2146,7 @@ refuses a count above the cap (`CodecError::TooMany`) and a record cut short of 
 | 0x8805 | BAND_RECALL | reason: 1 bored, 2 routed, 3 done, 4 passing out of view, 5 the player left, 6 settled (the demand was settled, or the world became Peaceful) | 16 u64 agent, 24 u32 epoch, 28 u32 timeoutTicks, 32 f64 towardX, 40 f64 towardZ | 48 | BAND_DEMATERIALIZED |
 | 0x8806 | DEMAND_SETTLED | 1 paid, 2 signal cut, 3 expired, 4 refused, 5 withdrawn | 16 u64 faction, 24 u64 agent (the envoy, 0 none), 32 u64 playerMost, 40 u64 playerLeast, 48 u32 signal, 52 reserved | 56 | |
 | 0x8807 | AMBUSH_SPOT | flags: 1 removed (the lurk ended) | 16 u64 agent, 24 u32 epoch, 28 u32 dimension, 32 u64 faction, 40 f64 trackX, 48 trackY, 56 trackZ (the sampled track point), 64 f64 spotX, 72 spotY, 80 spotZ (where the body stands; y is the track's and Java finds the floor), 88 f32 reach (blocks from the track point), 92 reserved | 96 | TRAIN_PASSED |
-| 0x8808 | CAMP_RECONCILE | lines n | 16 u64 faction, 24 u64 epoch, 32 u64 opId (the engine's, §9.2), 40 f64 throneX, 48 throneY, 56 throneZ, 64 f32 direction, 68 u32 flags (1 the throne spot is given; 2 RECOUNT, MZB-1015: the camp takes a census at the end of the tick, as a body read from disk outside its footprint asks; sent with no lines, at an arrival and a day after a census that missed a member body, so no CAMP_BODIES answers it), 72 n × (u32 slot, u32 generation, u32 body (dictionary 3; 0 none), u8 action: 1 spawn, 2 adopt a stray, 3 take, 4 set out, 5 hand back, 6 remove, 7 seat the heir, 8 mask (take a warrior at home for the heir: slot 0, generation 0, Java takes the one farthest from every player, and its CAMP_BODIES line names the slot and generation it took; always sent with a 7 in the same reconcile, MZB-408); u8 flags: 1 the chief, 2 crystal held; u16 reserved, u64 a, u64 b: a stray's UUID (adopt, remove a stray), a party's agent and epoch (set out, hand back), else 0) | 72 + 32n | CAMP_BODIES |
+| 0x8808 | CAMP_RECONCILE | lines n | 16 u64 faction, 24 u64 epoch, 32 u64 opId (the engine's, §9.2), 40 f64 throneX, 48 throneY, 56 throneZ, 64 f32 direction, 68 u32 flags (1 the throne spot is given; 2 RECOUNT, MZB-1015: the camp takes a census at the end of the tick, as a body read from disk outside its footprint asks; sent with no lines, at an arrival and a day after a census that missed a member body, so no CAMP_BODIES answers it), 72 n × (u32 slot, u32 generation, u32 body (dictionary 3; 0 none), u8 action: 1 spawn, 2 adopt a stray, 3 take, 4 set out, 5 hand back, 6 remove, 7 seat the heir, 8 mask (take a warrior at home for the heir: slot 0, generation 0, Java takes the one farthest from every player, and its CAMP_BODIES line names the slot and generation it took; always sent with a 7 in the same reconcile, MZB-408), 9 fight (the body holding the slot, by its tags, and the member gone missing that came back to its full boss's camp, by the UUID in a and b, are set on each other until one dies; answered done when both stand and the kind set the fight, nothing when either is not there, stale for a kind with no fight, and booked as nothing; sent again at each census that sees the two, MZB-1404); u8 flags: 1 the chief, 2 crystal held; u16 reserved, u64 a, u64 b: a stray's UUID (adopt, remove a stray, the returner of a fight), a party's agent and epoch (set out, hand back), else 0) | 72 + 32n | CAMP_BODIES |
 | 0x8809 | TRAIN_ROBBED | 0 | 16 u64 faction, 24 u64 train | 32 | |
 | 0x880A | CHIEF_BODY | traded t | 16 u64 faction, 24 u64 agent (0 at home; the party's away, just ahead of its BAND_MATERIALIZE with the chief's stack), 32 u64 epoch (the party's, or the camp's at home), 40 f32 health, 44 u32 flags (1 crystal held), 48 t × (u64 playerMost, u64 playerLeast) | 48 + 16t | |
 | 0x880B | BAND_MARCH | waypoints w | 16 u64 agent, 24 u32 revision, 28 u32 dimension, 32 u64 faction, 40 u32 culture (dictionary 5; 0 none), 44 u8 kind (BAND_MATERIALIZE's purposes, 1 envoy to 6 plunder), 45 u8 phase (1 mustering, 2 out, 3 waiting, 4 fighting, 5 home), 46 u8 flags (1 the chief leads, 2 ended, 4 joint), 47 reserved, 48 u64 partner (the joint attack's other contingent), 56 i64 musterEndTick, 64 u32 unit kinds k, 68 reserved, 72 k × (u32 body, u32 count), then w × (i32 x, i32 z, i64 tick) | 72 + 8k + 16w | |
@@ -2492,7 +2515,7 @@ footprint (MZB-1015). CHIEF_BODY is written into a chief's body (health, crystal
 - **Pages.** The conflict's pages are `RTCE` (magic `RTCE`, was `RTCD`) with meta version 13: a faction row ends with an
   optional strain (`put_opt`: pressure, `broken` as since and due ticks, the stamp, the check tick), the wheel's events may
   be tag 12 `Ev::Strain` (a break check or a refound), and the stats end with `breaks`, `refounds` and `break_deferrals`. An
-  older page is refused by name ("conflict save format RTCD, this build reads RTCE").
+  older page is refused by name ("conflict save format RTCD, this build reads RTCE"). (Since S9, §9.8: `RTCF` and meta 14.)
   The faction row also ends with the plunder mood (FB-8, EQC287), an option after the strain: the camp's grief and spoils, each an
   f32 and the day it was last bumped; `Some` only for a culture with a `plunder_mood` block (the raider).
 - **Archive kinds** `conflict.broken` and `conflict.refounded`, appended after the fifteen existing `conflict.*` kinds (kind
@@ -2505,10 +2528,43 @@ footprint (MZB-1015). CHIEF_BODY is written into a chief's body (health, crystal
   `illagerinvasion:illager_fort`, if its mod is ever present) in a loaded chunk is reported through `RtsimApi.reportCamp` as a
   camp of the raider culture, with no bodies: key `Obs.villageId(dim, start chunk)`, block (the start chunk's middle x, the
   start's minimum y, the middle z), FACTION_FOUND flagged LATE when the chunk was not new and `outpostsJoinExisting` is true
-  (otherwise a late outpost is not reported). The camp's `kin` predicate: a mob of the `minecraft:raiders` tag but the witch,
-  not a sim puppet, inside the start's box widened by `outpostKinMargin` (24) blocks. Reported once per session and again at
-  the conflict module's switch-on edge; nothing is reported while the module or `outpostsJoin` is off. Config keys
-  `outpostsJoin`, `outpostsJoinExisting`, `outpostKinMargin` in the `[conflict]` group.
+  (otherwise a late outpost is not reported, unless the site ledger already holds its camp, EQC297). It is reported only when a
+  player of its level stands within the server's view distance of it when its load is drained (EQC296): a chunk a pre-generator
+  loaded is known and looked at again at its next load. The camp's `kin` predicate: a mob of the `minecraft:raiders` tag but the
+  witch, not a sim puppet, inside the start's box widened by `outpostKinMargin` (24) blocks; a player's kill counts, a machine's
+  (a NeoForge `FakePlayer`) does not (EQC300). Reported once per session and again at the conflict module's switch-on edge;
+  nothing is reported while the module or `outpostsJoin` is off. Config keys `outpostsJoin`, `outpostsJoinExisting`,
+  `outpostKinMargin` in the `[conflict]` group.
+
+### 9.8 The Frostmaw den and the Umvuthana grove on the shared renewal rule (EQUILIBRIUM.md slice S9; records MZB-1200 to MZB-1271 in `docs/choices-mowzie-build.md`)
+
+**No new record kind, flag, wheel tag or archive kind.** What changes on the wire:
+
+- **SITE_STATE grows eight bytes and the found tail uses its reserved word** (§2.4, §2.5; MZB-1231): `p2`, the second
+  pressure (SITE_STATE +56, the tail +36), is a grove's Umvuthi's pressure; `p` is its warriors'. Every other site sends 0.
+  The Java ledger row keeps its six longs and packs `p2` in thousandths (a saturating u16) into bits 48 to 63 of the long
+  that holds n, l and m; an older row reads 0.
+- **Pages.** The conflict's pages are `RTCF` (magic `RTCF`, was `RTCE`) with meta version 14: a camp ends with its chief's
+  pressure (an f32 and the day it stands at) after its recount, and the stats carry `grove_arrivals` after `arrivals`. An older
+  page is refused by name ("conflict save format RTCE, this build reads RTCF"). Merged with the M12a review fixes, which had
+  taken `RTCF` and meta 14 on a branch of their own, the pages are `RTCG` (magic `RTCG`) with meta version 15 (MZB-1409): S9's,
+  and a camp's heir ends with the chief's pressure it keeps (MZB-1402), its lists end with its rivals and the stats with
+  `camp_fights` (MZB-1404); "conflict save format RTCF, this build reads RTCG".
+- **The grove's warriors are arrivals** (MZB-1210 to MZB-1216): umvuthana.json has `renewal` 6, 96, 96 (no boss kind),
+  `recruits_per_day` 0 and `found_cap` 5, so the engine books one `Ev::Arrival` while the grove is short, RECOUNT to a grove
+  that is in, and the census's SPAWN at the grove's edge; the grove has no `Ev::Refill`. A casualty of a war party on the road
+  (BAND_CASUALTIES) presses the grove by kill credit, S7's district rule for the unclaimed (MZB-1213), except once the band's
+  Umvuthi has fallen: the warriors that go down with it are no one's loss unless a death names a player (MZB-1287).
+- **Test order 42, `CONFLICT_SEND`** (TEST mode only; `NativeCodec.CONFLICT_SEND`, `RtsimTests.sendParty`): `u64 faction, u8
+  party kind (an index into the engine's party kinds: 0 envoy, 1 scouts, 2 raid, 3 invasion, 4 siege, 5 plunder), u8 reserved,
+  u16 frame, i32 x, i32 z`. Applied at unit take after the replay's end: the camp musters a party of that kind toward the block
+  as if its feud had decided. A key that is no camp, or a camp that cannot field the party, is refused (logged).
+- **The bosses' hold** (core `Camps`, MZB-280, changed by FB-S9-3, MZB-1272 to MZB-1279): the hold stays in the core as machinery
+  (`CampKind.holdSpawn`: a SPAWN waits while a player is within the kind's range, at most `Camps.HOLD_MAX` = 6,000 ticks, and
+  a census in progress still holds every SPAWN), but the Mowzie kinds do not use it: a Frostmaw's SPAWN and an Umvuthi's SPAWN or
+  heir (SEAT_HEIR) are placed when due even with a player beside the spot, and arrive with an effect (`CampKind.arrived`,
+  `BossArrival`, sent to players within 64 blocks). A grove's warriors are never held and get no effect (MZB-1220, MZB-1277).
+  Rule U's removal hold (a boss in a fight or with a player beside it is never taken away) is unchanged.
 
 ## 10. The world model: HABITAT (PLAN.md §5.1, SCALE.md §2, §4; the core's habitat sampler)
 

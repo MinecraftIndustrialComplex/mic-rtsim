@@ -10269,86 +10269,191 @@ mod conflict {
         e.close(true, Duration::from_secs(5)).unwrap();
     }
 
-    /// The found tail across a reset (slice S7, EQC212): a pool camp that broke, found again three
-    /// days later by a new engine that knows only core's ledger, is broken for the wait that was
-    /// left less the days gone, with the pressure aged, and sends its own row at once; a camp with
-    /// warriors home and a pressure comes back with both.
+    /// Order 42 (TEST, slice S9, MZB-1233): the camp musters a party of the named kind toward a block at the
+    /// conflict's own time, as if its feud had decided. A key that is no camp and a kind that does not exist are
+    /// refused (logged) and change nothing, and the protocol stays clean.
     #[test]
-    fn a_pool_camps_found_tail_restores_its_pressure_and_break() {
-        use rtsim_kernel::sites::{SiteKind, state_flags};
-        let (_dir, e, mut j) = pool_camp("pool-sites");
-        e.order(vec![Order::ConflictSlay {
+    fn a_test_order_sends_a_camps_party() {
+        let (_dir, e, mut j) = pool_camp("pool-send");
+        let parties = |e: &Engine| {
+            e.with_conflict(|c, _| {
+                c.parties
+                    .iter()
+                    .map(|(_, p)| (p.kind, p.target))
+                    .collect::<Vec<_>>()
+            })
+        };
+        assert!(parties(&e).is_empty());
+        let raid = PartyKind::ALL
+            .iter()
+            .position(|k| *k == PartyKind::Raid)
+            .expect("a raid") as u8;
+        // Refused: no such camp, and no such kind.
+        e.order(vec![Order::ConflictSend {
+            faction: 0xBAD,
+            kind: raid,
+            frame: 0,
+            x: 400,
+            z: 400,
+        }])
+        .unwrap();
+        e.order(vec![Order::ConflictSend {
             faction: CAMP,
-            n: u32::MAX,
-            pressure: 1.8,
+            kind: 99,
+            frame: 0,
+            x: 400,
+            z: 400,
         }])
         .unwrap();
         j.idle();
         j.idle();
-        let (_, p0, broken) = strain_of(&e);
-        assert!(broken && p0 > 2.0, "P {p0}");
-        let row = j.sites.row(SiteKind::Camp, CAMP).expect("a row").clone();
-        let left_at = j.game_time;
-        let saved = j.world_save();
-        e.close(true, Duration::from_secs(5)).unwrap();
-        let mut reset = WorldSave::fresh();
-        reset.dict = saved.dict;
-        reset.sites = saved.sites;
-        reset.sites.gap();
-        let dir = tmpdir("pool-sites-reset");
-        let e = engine(&dir, 256 * 1024);
-        let mut j = Java::open(e.clone(), reset);
-        j.module_mask = MODULES;
-        let gone: u64 = 3 * TICKS_PER_DAY;
-        j.game_time = left_at + gone as i64;
-        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
-        let base = [f64::from(BASE.0) + 0.5, 64.0, f64::from(BASE.1) + 0.5];
-        j.players = vec![(PLAYER, dim, base)];
-        j.conflict_plugin = synth::FakeConflict::new(PLAYER);
-        j.idle();
-        found(&mut j, CAMP_AT);
+        assert!(parties(&e).is_empty(), "{:?}", parties(&e));
+        // Sent: one raid party toward the block, taken from the camp's warriors.
+        let before = strain_of(&e).0;
+        e.order(vec![Order::ConflictSend {
+            faction: CAMP,
+            kind: raid,
+            frame: 0,
+            x: 400,
+            z: 400,
+        }])
+        .unwrap();
         j.idle();
         j.idle();
-        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
-        let (broken, left, p) = e.with_conflict(|c, _| {
-            let f = c.faction_of_key(CAMP).expect("found again");
-            let b = c.factions[f as usize].strain.as_ref().unwrap().broken;
-            (
-                b.is_some(),
-                b.map_or(0, |b| b.due.0.saturating_sub(c.now().0)),
-                c.pressure_now(f, c.now()),
-            )
-        });
-        assert!(broken, "found broken");
-        let want = row.wait_left - gone;
+        let sent = parties(&e);
+        assert_eq!(sent.len(), 1, "{sent:?}");
+        assert_eq!(sent[0].0, PartyKind::Raid);
         assert!(
-            left.abs_diff(want) <= 400,
-            "the wait left: {left} against {want}"
+            matches!(sent[0].1, Target::Pos(p) if p.x == 400 && p.z == 400),
+            "{:?}",
+            sent[0].1
         );
-        let aged = p0 * (-3.0f32 / 192.0).exp2();
-        assert!(
-            (p - aged).abs() < 0.01,
-            "aged three days: {p} against {aged}"
-        );
-        let again = j
-            .sites
-            .row(SiteKind::Camp, CAMP)
-            .expect("the new engine's row");
-        assert_eq!(
-            again.flags,
-            state_flags::SHORT | state_flags::EMPTY | state_flags::BROKEN | state_flags::WAITING
-        );
-        assert!(again.wait_left.abs_diff(want) <= 400, "{again:?}");
-        // The camp acts no more than a broken camp does: nothing leaves it in 30 days.
-        let sent = e.with_conflict(|c, _| c.stats.parties.iter().sum::<u64>());
-        j.game_time += 30 * DAY;
-        j.idle();
-        assert_eq!(
-            e.with_conflict(|c, _| c.stats.parties.iter().sum::<u64>()),
-            sent
-        );
+        assert!(strain_of(&e).0 < before, "the party's warriors left the pool");
         assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
         e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// The found tail across a reset (slice S7, EQC212): a pool camp that broke, found again three
+    /// days later by a new engine that knows only core's ledger, is broken for the wait that was
+    /// left less the days gone, with the pressure aged, and sends its own row at once; a camp with
+    /// warriors home and a pressure comes back with both, and is not broken (EQC301).
+    #[test]
+    fn a_pool_camps_found_tail_restores_its_pressure_and_break() {
+        use rtsim_kernel::sites::{SiteKind, state_flags};
+        for broke in [true, false] {
+            let (_dir, e, mut j) = pool_camp(if broke {
+                "pool-sites"
+            } else {
+                "pool-sites-home"
+            });
+            // Broken: all of them, with the pressure as if more had died. Not: 25 of 60, a pressure
+            // that is over nothing.
+            e.order(vec![Order::ConflictSlay {
+                faction: CAMP,
+                n: if broke { u32::MAX } else { 25 },
+                pressure: if broke { 1.8 } else { 0.0 },
+            }])
+            .unwrap();
+            j.idle();
+            j.idle();
+            let (pool0, p0, is_broken) = strain_of(&e);
+            assert_eq!(is_broken, broke, "pool {pool0}, P {p0}");
+            if broke {
+                assert!(p0 > 2.0, "P {p0}");
+            } else {
+                assert_eq!(pool0, 35, "25 of 60 killed");
+                assert!((p0 - 25.0 / 60.0).abs() < 1e-3, "{p0}");
+            }
+            let row = j.sites.row(SiteKind::Camp, CAMP).expect("a row").clone();
+            let left_at = j.game_time;
+            let saved = j.world_save();
+            e.close(true, Duration::from_secs(5)).unwrap();
+            let mut reset = WorldSave::fresh();
+            reset.dict = saved.dict;
+            reset.sites = saved.sites;
+            reset.sites.gap();
+            let dir = tmpdir(if broke {
+                "pool-sites-reset"
+            } else {
+                "pool-sites-home-reset"
+            });
+            let e = engine(&dir, 256 * 1024);
+            let mut j = Java::open(e.clone(), reset);
+            j.module_mask = MODULES;
+            let gone: u64 = 3 * TICKS_PER_DAY;
+            j.game_time = left_at + gone as i64;
+            let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+            let base = [f64::from(BASE.0) + 0.5, 64.0, f64::from(BASE.1) + 0.5];
+            j.players = vec![(PLAYER, dim, base)];
+            j.conflict_plugin = synth::FakeConflict::new(PLAYER);
+            j.idle();
+            found(&mut j, CAMP_AT);
+            j.idle();
+            j.idle();
+            assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+            let (is_broken, left, p, pool) = e.with_conflict(|c, _| {
+                let f = c.faction_of_key(CAMP).expect("found again");
+                let b = c.factions[f as usize].strain.as_ref().unwrap().broken;
+                (
+                    b.is_some(),
+                    b.map_or(0, |b| b.due.0.saturating_sub(c.now().0)),
+                    c.pressure_now(f, c.now()),
+                    c.pool_at(f, c.now()).floor() as u32,
+                )
+            });
+            let aged = p0 * (-3.0f32 / 192.0).exp2();
+            assert!(
+                (p - aged).abs() < 0.01,
+                "broke {broke}: aged three days: {p} against {aged}"
+            );
+            let again = j
+                .sites
+                .row(SiteKind::Camp, CAMP)
+                .expect("the new engine's row");
+            if !broke {
+                // Warriors home and a pressure: the pool is the row's count, regrowing from the
+                // find, and the camp is not broken, with no wait.
+                assert!(!is_broken, "a camp with warriors home is not broken");
+                assert!(
+                    (35..=36).contains(&pool),
+                    "the row's count, regrowing from the find: {pool}"
+                );
+                assert_eq!(row.count, 35, "{row:?}");
+                assert_eq!(
+                    again.flags & (state_flags::BROKEN | state_flags::WAITING),
+                    0,
+                    "{again:?}"
+                );
+                assert_eq!(again.count, pool as u16, "{again:?}");
+                assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+                e.close(true, Duration::from_secs(5)).unwrap();
+                continue;
+            }
+            assert!(is_broken, "found broken");
+            let want = row.wait_left - gone;
+            assert!(
+                left.abs_diff(want) <= 400,
+                "the wait left: {left} against {want}"
+            );
+            assert_eq!(
+                again.flags,
+                state_flags::SHORT
+                    | state_flags::EMPTY
+                    | state_flags::BROKEN
+                    | state_flags::WAITING
+            );
+            assert!(again.wait_left.abs_diff(want) <= 400, "{again:?}");
+            // The camp acts no more than a broken camp does: nothing leaves it in 30 days.
+            let sent = e.with_conflict(|c, _| c.stats.parties.iter().sum::<u64>());
+            j.game_time += 30 * DAY;
+            j.idle();
+            assert_eq!(
+                e.with_conflict(|c, _| c.stats.parties.iter().sum::<u64>()),
+                sent
+            );
+            assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+            e.close(true, Duration::from_secs(5)).unwrap();
+        }
     }
 
     /// The site ledger's hand-over of a camp across a reset (EQUILIBRIUM.md §2.3, slice S3,
@@ -10479,6 +10584,137 @@ mod conflict {
                 .all(|l| l.action != cb::ACTION_SPAWN),
             "no spawn before the arrival"
         );
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        e.close(true, Duration::from_secs(5)).unwrap();
+    }
+
+    /// The site ledger's hand-over of a grove's two pressures across a reset (slice S9, MZB-1231):
+    /// a player's kills of two warriors and of the Umvuthi each send the grove's row (SITE_STATE:
+    /// `p` the warriors' 2/7, `p2` the Umvuthi's 1); core's ledger keeps it through the reinstall
+    /// guard's reset, and the new engine, meeting the grove again three days later with its Umvuthi
+    /// standing, has both pressures aged by the days gone, the warriors' wait running on, and
+    /// sends its own row with both.
+    #[test]
+    fn a_reset_hands_a_groves_two_pressures_to_the_new_engine() {
+        use rtsim_kernel::sites::{SiteKind, state_flags};
+        let (_dir, e, mut j) = grove("grove-sites", 7);
+        let umvuthi = j.dict_id(wire::DICT_BODY, "mic_rtsim:conflict/umvuthana/umvuthi");
+        {
+            let b = j.conflict_plugin.camp_world(CAMP).bodies.first_mut().unwrap();
+            b.body = umvuthi;
+            b.chief = true;
+        }
+        camp_in(&mut j);
+        camp_until(&mut j, "the adoption and the spawn answered", |_| {
+            let s = slots(&e);
+            s[1] == 0 && s[0] == 8
+        });
+        j.idle();
+        let row = j.sites.row(SiteKind::Camp, CAMP).expect("the census's row").clone();
+        assert_eq!((row.k, row.count, row.flags), (7, 7, 0), "{row:?}");
+        assert_eq!((row.p, row.p2), (0.0, 0.0), "{row:?}");
+        // Two warriors and the Umvuthi killed by a player.
+        let at = Tick(j.game_time.max(0) as u64);
+        let (warriors, chief): (Vec<_>, Vec<_>) = j
+            .conflict_plugin
+            .camp_world(CAMP)
+            .bodies
+            .iter()
+            .filter(|b| b.generation != 0)
+            .map(|b| (b.uuid, b.chief || b.slot == rtsim_conflict::engine::CHIEF_SLOT))
+            .partition(|(_, is_chief)| !is_chief);
+        for (u, _) in warriors.iter().take(2) {
+            assert!(j.conflict_plugin.camp_kill(CAMP, *u, cb::BY_PLAYER, at));
+        }
+        assert!(j.conflict_plugin.camp_kill(CAMP, chief[0].0, cb::BY_PLAYER, at));
+        j.conflict_flush();
+        j.idle();
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        let row = j.sites.row(SiteKind::Camp, CAMP).expect("the grove's row").clone();
+        assert_eq!(row.count, 5, "{row:?}");
+        assert!((row.p - 2.0 / 7.0).abs() < 1e-3, "the warriors': {row:?}");
+        assert!((row.p2 - 1.0).abs() < 1e-3, "the Umvuthi's: {row:?}");
+        assert_eq!(row.flags, state_flags::SHORT | state_flags::WAITING, "{row:?}");
+
+        // The reinstall guard's reset: a new engine that knows nothing, the world's ledger kept; the
+        // grove it finds has five warriors and an Umvuthi on its throne (the heir came meanwhile).
+        let left_at = j.game_time;
+        let saved = j.world_save();
+        e.close(true, Duration::from_secs(5)).unwrap();
+        let mut reset = WorldSave::fresh();
+        reset.dict = saved.dict;
+        reset.sites = saved.sites;
+        reset.sites.gap();
+        let dir = tmpdir("grove-sites-reset");
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), reset);
+        j.module_mask = MODULES;
+        let gone: u64 = 3 * TICKS_PER_DAY;
+        j.game_time = left_at + gone as i64;
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        let base = [f64::from(BASE.0) + 0.5, 64.0, f64::from(BASE.1) + 0.5];
+        j.players = vec![(PLAYER, dim, base)];
+        j.conflict_plugin = synth::FakeConflict::new(PLAYER);
+        j.idle();
+        let structure = j.dict_id(wire::DICT_STRUCTURE, "mowziesmobs:umvuthana_grove");
+        let warrior = j.dict_id(wire::DICT_BODY, WARRIOR);
+        let umvuthi = j.dict_id(wire::DICT_BODY, "mic_rtsim:conflict/umvuthana/umvuthi");
+        for _ in 0..5 {
+            j.conflict_plugin.camp_stray(CAMP, warrior);
+        }
+        j.conflict_plugin.camp_stray(CAMP, umvuthi);
+        {
+            let b = j.conflict_plugin.camp_world(CAMP).bodies.last_mut().unwrap();
+            b.chief = true;
+        }
+        j.conflict_obs(&O::FactionFound(cb::FactionFound {
+            faction: CAMP,
+            flags: 0,
+            dimension: dim,
+            structure,
+            pos: (CAMP_AT.0, 64, CAMP_AT.1),
+            home_bodies: 6,
+            census: cb::CENSUS_CHIEF as u8,
+            row: Default::default(),
+        }));
+        j.idle();
+        j.idle();
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        let (members, chief_p, left, waiting) = e.with_conflict(|c, _| {
+            let f = c.faction_of_key(CAMP).expect("found again");
+            let camp = c.camp(f).unwrap();
+            let day = (c.now().0 / TICKS_PER_DAY) as u32;
+            (
+                camp.pressure.now(day, 96.0),
+                camp.chief_pressure.now(day, 96.0),
+                camp.arrival_at.map(|t| t.0 - c.now().0),
+                camp.heir.is_some(),
+            )
+        });
+        let aged = (-3.0f32 / 96.0).exp2();
+        assert!(
+            (members - 2.0 / 7.0 * aged).abs() < 0.01,
+            "the warriors' aged three days: {members} against {}",
+            2.0 / 7.0 * aged
+        );
+        assert!(
+            (chief_p - aged).abs() < 0.01,
+            "the Umvuthi's aged three days: {chief_p} against {aged}"
+        );
+        assert!(!waiting, "the Umvuthi stands: no heir is waited for");
+        let want = row.wait_left - gone;
+        assert!(
+            left.expect("the warriors' wait runs on").abs_diff(want) <= 400,
+            "the wait left: {left:?} against {want}"
+        );
+        let again = j
+            .sites
+            .row(SiteKind::Camp, CAMP)
+            .expect("the new engine's row");
+        assert!((again.p - 2.0 / 7.0 * aged).abs() < 0.01, "{again:?}");
+        assert!((again.p2 - aged).abs() < 0.01, "{again:?}");
+        assert_eq!(again.flags, state_flags::SHORT | state_flags::WAITING);
         assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
         e.close(true, Duration::from_secs(5)).unwrap();
     }
@@ -17084,6 +17320,7 @@ mod conflict {
                 generation,
                 action: cb::ACTION_HAND_BACK,
                 outcome: cb::LINE_STALE,
+                uuid: (0, 0),
             }],
         });
         let dead = (falls + 1, losses + 1, true, false);
@@ -17212,6 +17449,218 @@ mod worldmodel {
     fn info(e: &Engine, j: &mut Java, x: i32, z: i32) -> [i64; HABITAT_INFO] {
         let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
         e.habitat_info(dim, x, z)
+    }
+
+    /// Region (rx, rz), all plains.
+    fn plains(p: &mut Painter, rx: i32, rz: i32) -> Vec<HabitatRecord> {
+        let mut out = Vec::new();
+        for cz in rz * 8..(rz + 1) * 8 {
+            for cx in rx * 8..(rx + 1) * 8 {
+                out.push(p.record(0, cx, cz, &|_, _| land("minecraft:plains"), &[]));
+            }
+        }
+        out
+    }
+
+    /// The K the founding rule gives `species` on region (rx, rz) of these cells (a world of
+    /// their own, as the engine's).
+    fn capacity_on(
+        p: &Painter,
+        recs: &[HabitatRecord],
+        rx: i32,
+        rz: i32,
+        species: rtsim_ecology::herds::HerdSpecies,
+    ) -> u64 {
+        use rtsim_ecology::herds::habitat::{FoundingTunables, HabitatClimate, range_capacity};
+        use rtsim_space::{RegionKey, SampledWorld, WorldHandle};
+        let mut w = SampledWorld::new();
+        for r in recs {
+            p.feed(&mut w, r);
+        }
+        let w = WorldHandle::new(Box::new(w));
+        let c = HabitatClimate::new(w.clone());
+        let k = RegionKey { frame: 0, rx, rz };
+        range_capacity(&**w.read(), &c, k, species, &FoundingTunables::default())
+    }
+
+    /// EQC511: a range its own herd left empty and another species' dispersers recolonised takes
+    /// the K its ground gives that species, not the one it had.
+    #[test]
+    fn a_range_recolonised_by_another_species_takes_that_species_k() {
+        let dir = tmpdir("worldmodel-recolonised");
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        j.module_mask = MODULES;
+        j.run_until("the engine's list", known_end);
+        let mut p = Painter::default();
+        let mut recs = Vec::new();
+        for rx in 0..4 {
+            recs.extend(plains(&mut p, rx, 0));
+        }
+        send(&mut j, &p, &recs);
+        j.run_until("four herds founded", |j| {
+            (0..4).all(|rx| info(&e, j, rx * 512 + 256, 256)[9] != 0)
+        });
+        let agents: Vec<u64> = (0..4)
+            .map(|rx| info(&e, &mut j, rx * 512 + 256, 256)[9] as u64)
+            .collect();
+        let species_of = |e: &Engine, agent: u64| {
+            let id = rtsim_ecology::herds::herd::herd_of(agent).unwrap();
+            e.with_herds(|h, _| h.herd(id).map(|x| (x.species, x.k)).unwrap())
+        };
+        let species: Vec<_> = agents.iter().map(|&a| species_of(&e, a).0).collect();
+        // A middle range with a neighbour of another species.
+        let rx = (1..3)
+            .find(|&i| species[i - 1] != species[i] || species[i + 1] != species[i])
+            .expect("the draws give two neighbours of different species");
+        let (old, k_old) = species_of(&e, agents[rx]);
+        assert!(e.cull_herd(agents[rx]) > 0, "the range is wiped");
+        // Years pass until its neighbours' dispersers or the frontier fill it again.
+        let day = 24_000i64;
+        let mut now = None;
+        for _ in 0..12 * 8 {
+            j.game_time += 8 * day;
+            j.idle();
+            j.idle();
+            let (s, _) = species_of(&e, agents[rx]);
+            let alive = e.herd_info(agents[rx]).map_or(0, |i| i[1]);
+            if alive > 0 && s != old {
+                now = Some(s);
+                break;
+            }
+        }
+        let now =
+            now.unwrap_or_else(|| panic!("range {rx} of {old:?} is recolonised by {species:?}"));
+        j.idle();
+        j.idle();
+        let (_, k_now) = species_of(&e, agents[rx]);
+        let expect = capacity_on(&p, &recs, rx as i32, 0, now);
+        eprintln!(
+            "world model: range {rx} of {old:?} at K {k_old}, recolonised by {now:?}: K {k_now}"
+        );
+        assert_eq!(
+            k_now, expect,
+            "{now:?} on the range of {old:?} (K {k_old}) takes their own K"
+        );
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+    }
+
+    /// EQC512: regions sampled while the herds were switched off are judged after a restart, as
+    /// they would have been in the same session: what waits to be judged is in no page.
+    #[test]
+    fn regions_sampled_while_the_herds_were_off_are_judged_after_a_restart() {
+        let dir = tmpdir("worldmodel-pending");
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        j.module_mask = MODULES & !MODULE_HERDS;
+        j.run_until("the engine's list", known_end);
+        let mut p = Painter::default();
+        let recs = region(&mut p, 0);
+        send(&mut j, &p, &recs);
+        j.idle();
+        assert_eq!(
+            info(&e, &mut j, 300, 300)[9],
+            0,
+            "no herd while the herds are off"
+        );
+        save(&e, &mut j);
+        let saved = j.world_save();
+        let _ = j.crash();
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), saved);
+        j.module_mask = MODULES;
+        j.run_until("a herd founded after the restart", |j| {
+            info(&e, j, 300, 300)[9] != 0
+        });
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+    }
+
+    /// EQC516: a herd a test order founded in a region is no world-model range: sampling the
+    /// region decides it (no second herd) and leaves the herd's K as ordered.
+    #[test]
+    fn a_test_orders_herd_keeps_its_k_when_its_region_is_sampled() {
+        let dir = tmpdir("worldmodel-ordered");
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        j.module_mask = MODULES;
+        j.run_until("the engine's list", known_end);
+        let dim = j.dict_id(wire::DICT_DIMENSION, OVERWORLD);
+        e.order(vec![Order::HerdFound {
+            name: "Ordered flock".into(),
+            species: "minecraft:sheep".into(),
+            dimension: dim,
+            x: 300,
+            z: 300,
+            count: 1_000,
+            seed: 5,
+        }])
+        .unwrap();
+        j.idle();
+        j.idle();
+        let agents = e.herd_agents();
+        assert_eq!(agents.len(), 1, "the ordered herd");
+        let id = rtsim_ecology::herds::herd::herd_of(agents[0]).unwrap();
+        let k_of = |e: &Engine| e.with_herds(|h, _| h.herd(id).unwrap().k);
+        assert_eq!(k_of(&e), 1_000);
+        let mut p = Painter::default();
+        let recs = region(&mut p, 0);
+        send(&mut j, &p, &recs);
+        j.run_until("the region decided", |j| info(&e, j, 300, 300)[10] == 1);
+        j.idle();
+        assert_eq!(e.herd_agents(), agents, "no second herd");
+        assert_eq!(k_of(&e), 1_000, "the ordered herd keeps its K");
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+    }
+
+    /// EQC504: a range founded while a quarter of its region was known gets K from those cells;
+    /// when the rest of the region is sampled, the world model re-caps K to the whole region's.
+    #[test]
+    fn a_ranges_k_follows_its_ground_as_more_of_it_is_known() {
+        use rtsim_ecology::herds::habitat::{FoundingTunables, HabitatClimate, range_capacity};
+        use rtsim_space::{RegionKey, SampledWorld, WorldHandle};
+        let dir = tmpdir("worldmodel-recap");
+        let e = engine(&dir, 256 * 1024);
+        let mut j = Java::open(e.clone(), WorldSave::fresh());
+        j.module_mask = MODULES;
+        j.run_until("the engine's list", known_end);
+        let mut p = Painter::default();
+        let all = region(&mut p, 0);
+        // First the north-west quarter: habitat cells 0..4 x 0..4, four whole forage cells.
+        let (first, rest): (Vec<_>, Vec<_>) = all
+            .iter()
+            .cloned()
+            .partition(|r| r.cell.0 < 4 && r.cell.1 < 4);
+        send(&mut j, &p, &first);
+        j.run_until("a herd founded", |j| info(&e, j, 100, 100)[9] != 0);
+        let agent = info(&e, &mut j, 100, 100)[9] as u64;
+        let id = rtsim_ecology::herds::herd::herd_of(agent).unwrap();
+        let k_of = |e: &Engine| e.with_herds(|h, _| h.herd(id).unwrap().k);
+        let species = e.with_herds(|h, _| h.herd(id).unwrap().species);
+        let k0 = k_of(&e);
+        // What the engine's own rule gives on each ground (the same cells in a world of its own).
+        let capacity = |recs: &[HabitatRecord]| {
+            let mut w = SampledWorld::new();
+            for r in recs {
+                p.feed(&mut w, r);
+            }
+            let w = WorldHandle::new(Box::new(w));
+            let c = HabitatClimate::new(w.clone());
+            let k = RegionKey {
+                frame: 0,
+                rx: 0,
+                rz: 0,
+            };
+            range_capacity(&**w.read(), &c, k, species, &FoundingTunables::default())
+        };
+        assert_eq!(k0, capacity(&first), "founded on the quarter known");
+        send(&mut j, &p, &rest);
+        j.run_until("the range re-capped", |_| k_of(&e) != k0);
+        let k1 = k_of(&e);
+        assert_eq!(k1, capacity(&all), "re-capped to the whole region");
+        assert!(k1 > k0, "{species:?}: K {k0} to {k1}");
+        assert_eq!(e.herd_agents(), vec![agent], "the same herd, no second one");
+        assert!(e.protocol_error().is_none(), "{:?}", e.protocol_error());
+        eprintln!("world model: {species:?} range re-capped from K {k0} to {k1}");
     }
 
     #[test]

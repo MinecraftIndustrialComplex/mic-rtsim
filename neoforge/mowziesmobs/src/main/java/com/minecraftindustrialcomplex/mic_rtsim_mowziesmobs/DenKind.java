@@ -38,9 +38,6 @@ public final class DenKind implements CampKind {
     public static final double FOOTPRINT_RADIUS = RESTRICT + FOOTPRINT_SLACK;
     /** A loose Frostmaw this near a den with a free slot is the den's stray (MZB-232). */
     public static final double STRAY_RADIUS = 64.0;
-    /** A Frostmaw's spawn waits while a player is this near its spot: its tracking range (§4.9, test 5). */
-    public static final double HOLD_RANGE = 160.0;
-
     private DenKind() {}
 
     @Override
@@ -127,9 +124,20 @@ public final class DenKind implements CampKind {
         return site.spot;
     }
 
+    /**
+     * Never (S9, FB-S9-3; Ben, 2026-10-30): a Frostmaw that is due is placed with a player beside the den or watching it, and
+     * arrives with {@link BossArrival#frostmaw}. It was held while a player stood within 160 blocks, at most 6,000 ticks.
+     */
     @Override
     public boolean holdSpawn(ServerLevel level, Camps.Site site, String body, int lineFlags) {
-        return Camps.playerNear(level, site.spot, HOLD_RANGE);
+        return false;
+    }
+
+    /** The Frostmaw's return: the jar's roar ring, ice and snow, its roar and a camera shake, sent from the server. */
+    @Override
+    public void arrived(ServerLevel level, Camps.Site site, Mob body) {
+        if (body instanceof EntityFrostmaw)
+            BossArrival.frostmaw(level, body.position());
     }
 
     /** The jar never restricts a Frostmaw, and a restriction is not saved: restricted at each join (§4.9). */
@@ -142,6 +150,18 @@ public final class DenKind implements CampKind {
     @Override
     public Holder<SoundEvent> sound() {
         return MMSounds.ENTITY_FROSTMAW_ROAR;
+    }
+
+    /**
+     * A Frostmaw written off as missing that came back to its full den, and the den's Frostmaw: they fight until one dies
+     * (FIGHT, MZB-1404; {@link FrostmawFights}).
+     */
+    @Override
+    public boolean fight(ServerLevel level, Camps.Site site, Mob holder, Mob rival) {
+        if (!(holder instanceof EntityFrostmaw a) || !(rival instanceof EntityFrostmaw b))
+            return false;
+        FrostmawFights.start(a, b);
+        return true;
     }
 
     @Override

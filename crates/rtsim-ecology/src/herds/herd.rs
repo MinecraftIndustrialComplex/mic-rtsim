@@ -256,8 +256,9 @@ pub struct Herd {
     pub seed: u64,
     pub frame: u16,
     /// The range's K (EQUILIBRIUM.md §2.4.2): its carrying capacity, the count it was first
-    /// founded with. Births are density-dependent toward it; the refuge, dispersal and frontier
-    /// founding are shares of it.
+    /// founded with, re-capped by the world model whenever its region's ground changes (EQC504).
+    /// Births are density-dependent toward it; the refuge, dispersal and frontier founding are
+    /// shares of it.
     pub k: u64,
     /// The range: the region (frame, region x, region z) of [`Herd::home`]. One herd row per
     /// range, alive or empty, for good (an extinct herd's row is reused).

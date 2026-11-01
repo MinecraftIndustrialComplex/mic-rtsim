@@ -16,6 +16,7 @@ import com.minecraftindustrialcomplex.mic_rtsim.gametest.FakePlayers;
 import com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests;
 import com.minecraftindustrialcomplex.mic_rtsim.sites.SiteLedger;
 import com.minecraftindustrialcomplex.mic_rtsim_mowziesmobs.DenKind;
+import com.minecraftindustrialcomplex.mic_rtsim_mowziesmobs.FrostmawFights;
 import com.minecraftindustrialcomplex.mic_rtsim_mowziesmobs.GroveKind;
 import com.minecraftindustrialcomplex.mic_rtsim_mowziesmobs.MicRtsimMowziesMobs;
 import com.minecraftindustrialcomplex.mic_rtsim_mowziesmobs.gametest.MowzieKit.Den;
@@ -58,24 +59,26 @@ import static com.minecraftindustrialcomplex.mic_rtsim.gametest.RtsimTests.recor
 public final class SiteLedgerGameTests {
     private SiteLedgerGameTests() {}
 
-    private static final String ARENA = RtsimTests.TEMPLATE;
-    private static final long DAY = 24_000L;
+    static final String ARENA = RtsimTests.TEMPLATE;
+    static final long DAY = 24_000L;
     /** frostmaw.json's renewal: base 6 days, so delay(P = 1) is 12 days; pressure halves in 96 days. */
-    private static final long FROSTMAW_W1 = 12 * DAY;
-    private static final double HALF_LIFE_TICKS = 96.0 * DAY;
+    static final long FROSTMAW_W1 = 12 * DAY;
+    /** frostmaw.json's renewal cap: 192 days, the wait of a loss no one caused (MZB-1014, fork F5). */
+    private static final long FROSTMAW_CAP = 192 * DAY;
+    static final double HALF_LIFE_TICKS = 96.0 * DAY;
     /**
      * How far a handed-over wait may be from the old row's less the game ticks between their stamps: the old engine's row is
      * stamped the step after the kill, the new one's the step after the found.
      */
-    private static final long TOL = 40;
-    private static final int SPAWN = ConflictRecords.CampReconcile.SPAWN, REMOVE = ConflictRecords.CampReconcile.REMOVE;
-    private static final int DONE = ConflictRecords.CampBodies.DONE;
-    private static final int ROW = SiteLedger.Tail.FLAG_ROW, GAP = SiteLedger.Tail.FLAG_GAP, WAITING = SiteLedger.Tail.FLAG_WAITING;
+    static final long TOL = 40;
+    static final int SPAWN = ConflictRecords.CampReconcile.SPAWN, REMOVE = ConflictRecords.CampReconcile.REMOVE;
+    static final int DONE = ConflictRecords.CampBodies.DONE;
+    static final int ROW = SiteLedger.Tail.FLAG_ROW, GAP = SiteLedger.Tail.FLAG_GAP, WAITING = SiteLedger.Tail.FLAG_WAITING;
 
     // ---- helpers --------------------------------------------------------------------------------
 
     /** True on the native engine; else the test succeeds now, recorded as skipped (the stub runs no camp). */
-    private static boolean nativeOnly(GameTestHelper helper, String test) {
+    static boolean nativeOnly(GameTestHelper helper, String test) {
         if (RtsimTests.engine() instanceof NativeEngine)
             return true;
         record(test, "skipped", "the camps are the engine's only on the native engine");
@@ -84,7 +87,7 @@ public final class SiteLedgerGameTests {
     }
 
     /** Declares the den under the jar's den structure (the frostmaw culture claims it, so the engine runs the den). */
-    private static void declareReal(Den d) {
+    static void declareReal(Den d) {
         ServerLevel level = d.far.level;
         int x = d.cx * 16 + 8, z = d.cz * 16 + 8;
         int y = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, x, z);
@@ -95,11 +98,11 @@ public final class SiteLedgerGameTests {
         d.spot = s;
     }
 
-    private static SiteLedger.Row row(ServerLevel level, long faction) {
+    static SiteLedger.Row row(ServerLevel level, long faction) {
         return SiteTestHooks.row(level.getServer(), SiteLedger.CAMP, faction);
     }
 
-    private static String describe(SiteLedger.Row r) {
+    static String describe(SiteLedger.Row r) {
         if (r == null)
             return "no row";
         return String.format("K %d, count %d, away %d, P %.4f, %s, wait left %d, stamp %d, home %s, left %s, missing %s", r.k(),
@@ -108,12 +111,12 @@ public final class SiteLedgerGameTests {
     }
 
     /** P as of a stamp, aged {@code ticks} by the camps' half-life. */
-    private static double aged(float p, long ticks) {
+    static double aged(float p, long ticks) {
         return p * Math.pow(2.0, -ticks / HALF_LIFE_TICKS);
     }
 
     /** CAMP_BODIES lines of the camp answering {@code action}, with {@code outcome} (any when negative), this engine. */
-    private static int lines(long faction, int action, int outcome) {
+    static int lines(long faction, int action, int outcome) {
         int n = 0;
         for (ScriptedEngine.Received r : ConflictKit.campBodies(faction)) {
             ByteBuffer b = r.view();
@@ -128,26 +131,26 @@ public final class SiteLedgerGameTests {
     }
 
     /** The engine's world runs {@code ticks} ahead of game time from now on (P1_ADVANCE; the camps' clock is that world's). */
-    private static void advance(long ticks) {
+    static void advance(long ticks) {
         ((NativeEngine) RtsimTests.engine()).phase1Advance(ticks);
     }
 
-    private static boolean adopted(Entity e, long faction) {
+    static boolean adopted(Entity e, long faction) {
         CampMember m = MowzieKit.tag(e);
         return m != null && m.faction() == faction;
     }
 
-    private static ScriptedEngine.Received last(List<ScriptedEngine.Received> l) {
+    static ScriptedEngine.Received last(List<ScriptedEngine.Received> l) {
         return l.get(l.size() - 1);
     }
 
     /** The tail flags of the camp's first FACTION_FOUND to this engine. */
-    private static int tailFlags(long faction) {
+    static int tailFlags(long faction) {
         return ConflictKit.factionsFound(faction).get(0).view().getInt(ConflictRecords.FactionFound.TAIL + SiteLedger.Tail.FLAGS);
     }
 
     /** Steps: the den declared under the real structure with a sleeping Frostmaw at it, the engine's adoption, its row. */
-    private static GameTestSequence realDen(GameTestSequence s, ChunkWait waits, Den den, EntityFrostmaw[] f) {
+    static GameTestSequence realDen(GameTestSequence s, ChunkWait waits, Den den, EntityFrostmaw[] f) {
         ServerLevel level = den.far.level;
         return s.thenExecute(() -> {
                     den.lay();
@@ -166,7 +169,7 @@ public final class SiteLedgerGameTests {
      * Steps: a player kills the den's Frostmaw and goes at once (DenKind holds a SPAWN while a player is within 160 blocks);
      * CAMP_DEATH is a player's, and the row is waiting at P 1 the 12 days of delay(P = 1). The row goes into {@code farmed}.
      */
-    private static GameTestSequence farm(GameTestSequence s, ChunkWait waits, GameTestHelper helper, Den den, EntityFrostmaw[] f,
+    static GameTestSequence farm(GameTestSequence s, ChunkWait waits, GameTestHelper helper, Den den, EntityFrostmaw[] f,
                                          SiteLedger.Row[] farmed, String name) {
         ServerLevel level = den.far.level;
         ServerPlayer[] p = new ServerPlayer[1];
@@ -195,7 +198,7 @@ public final class SiteLedgerGameTests {
     }
 
     /** Steps: an engine save asked for and acknowledged through everything journaled so far (the reset's premise, RG13). */
-    private static GameTestSequence saved(GameTestSequence s, ChunkWait waits) {
+    static GameTestSequence saved(GameTestSequence s, ChunkWait waits) {
         long[] upTo = new long[1];
         return s.thenExecute(() -> {
                     upTo[0] = SiteTestHooks.journalEnd();
@@ -212,7 +215,7 @@ public final class SiteLedgerGameTests {
      * restart's: wait for it, then a chunk wait (the den's chunks are forced and stand through the restart, so it passes at once)
      * marks the tick again.
      */
-    private static GameTestSequence clockMoved(GameTestSequence s, ChunkWait waits, GameTestHelper helper, Far far) {
+    static GameTestSequence clockMoved(GameTestSequence s, ChunkWait waits, GameTestHelper helper, Far far) {
         long[] at = new long[1];
         return s.thenExecute(() -> at[0] = helper.getTick())
                 .thenWaitUntil(() -> check("the tick after the restart", helper.getTick() > at[0]))
@@ -467,8 +470,90 @@ public final class SiteLedgerGameTests {
                     record(test, "rows", "before the uninstall: " + describe(a) + "; after the write-off: " + describe(b) + "; recounts "
                             + MowzieKit.camps().engineRecounts);
                     check(String.format("P unchanged: Other, not a player's loss (%.4f, then %.4f)", a.p(), b.p()), b.p() <= a.p() + 1e-3);
+                    // S9 (MZB-1210, MZB-1265): the warriors come back by the renewal rule now, and a body no census finds
+                    // after a gap is no one's loss, so the next warrior waits the cap: 96 days (frostmaw.json's 192 is the den's).
+                    check("the row is waiting for the dead warrior's replacement: " + describe(b), b.waiting() && b.count() == 2);
+                    check("the wait is the cap's 96 days, from the write-off (" + b.waitLeft() + ")",
+                            b.waitLeft() > 95 * DAY && b.waitLeft() <= 96 * DAY);
                     check("the survivors still the grove's", adopted(w[1], g.faction) && adopted(w[2], g.faction));
                     check("still no REMOVE", lines(g.faction, REMOVE, -1) == 0);
+                })
+                .thenSucceed();
+    }
+
+    /**
+     * An uninstall at a boss's den (S3 test 4's den variant, the review's P3 3, MZB-1405): a Frostmaw killed while rtsim was out
+     * is no one's loss after the reinstall (fork F5's GAP rule). The den's Frostmaw, adopted, its row naming it at home. The
+     * session stops (the uninstall); with no rtsim running it is killed (a vanilla death, nothing journaled). The reinstall
+     * after a day's gap: the den's tail carries ROW and GAP, the new engine expects the Frostmaw at home by its UUID (count 1)
+     * and spawns no Frostmaw for it. Its first census and two daily recounts miss it: it is written off as missing with P
+     * unchanged (Other, not a player's loss, where a write-off with no gap is a player's at P 1 and a 12-day wait), and the
+     * den waits the cap's 192 days. The grove's test cannot show this: its warriors have no member renewal.
+     */
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "site_uninstall_den", skyAccess = true)
+    public static void uninstallAtADenMakesAFrostmawKilledMeanwhileNoOnesLoss(GameTestHelper helper) {
+        String test = "uninstallAtADenMakesAFrostmawKilledMeanwhileNoOnesLoss";
+        if (!nativeOnly(helper, test))
+            return;
+        ChunkWait waits = ChunkWait.of(helper, 8000);
+        Far far = new Far(helper, test);
+        ServerLevel level = far.level;
+        MinecraftServer server = level.getServer();
+        ConflictKit.onEnd(helper, () -> SiteTestHooks.cleanUp(server));
+        Den den = new Den(far, far.k, far.z0);
+        EntityFrostmaw[] f = new EntityFrostmaw[1];
+        SiteLedger.Row[] before = new SiteLedger.Row[1], after = new SiteLedger.Row[1];
+        int[] census = new int[1];
+        long[] t = new long[1];
+
+        GameTestSequence s = helper.startSequence().thenExecute(den::force).thenWaitUntil(waits.chunks(far.ready()));
+        s = realDen(s, waits, den, f);
+        s = s.thenExecute(() -> before[0] = row(level, den.faction));
+        s = saved(s, waits);
+        s.thenExecute(() -> {
+                    SiteTestHooks.stop(server);
+                    check("no session runs (the uninstall)", RtsimSession.current() == null);
+                    MowzieKit.kill(f[0], level.damageSources().generic());
+                })
+                .thenIdle(20)
+                .thenExecute(() -> {
+                    check("the Frostmaw killed while rtsim was out is dead", f[0].isRemoved() || !f[0].isAlive());
+                    t[0] = level.getGameTime();
+                    check("the guard reset the sim", SiteTestHooks.gapRestart(server, DAY) != null);
+                    check("a session runs after the reinstall: " + RtsimSession.startFailure(), RtsimSession.current() != null);
+                });
+        s = clockMoved(s, waits, helper, far);
+        s.thenWaitUntil(waits.engine(() -> check("the new engine has the den's FACTION_FOUND", !ConflictKit.factionsFound(den.faction).isEmpty())))
+                .thenExecute(() -> {
+                    int flags = tailFlags(den.faction);
+                    check("its tail carries the row and GAP (flags " + flags + ")", (flags & ROW) != 0 && (flags & GAP) != 0);
+                })
+                .thenWaitUntil(waits.engine(() -> {
+                    SiteLedger.Row r = row(level, den.faction);
+                    check("the new engine expects the Frostmaw at home: " + describe(r), r != null && r.stamp() >= t[0] && r.count() == 1
+                            && r.home().contains(f[0].getUUID()));
+                }))
+                .thenIdle(20)
+                .thenExecute(() -> {
+                    check("no SPAWN for it (" + lines(den.faction, SPAWN, -1) + ")", lines(den.faction, SPAWN, -1) == 0);
+                    census[0] = MowzieKit.censusCount(den.faction);
+                    advance(DAY + DAY / 8);
+                })
+                .thenWaitUntil(waits.engine(() -> check("the daily recount's census", MowzieKit.censusCount(den.faction) > census[0])))
+                .thenExecute(() -> advance(DAY + DAY / 8))
+                .thenWaitUntil(waits.engine(() -> {
+                    SiteLedger.Row r = row(level, den.faction);
+                    check("the dead Frostmaw is written off as missing: " + describe(r), r != null && r.missing().contains(f[0].getUUID())
+                            && r.count() == 0);
+                    after[0] = r;
+                }))
+                .thenExecute(() -> {
+                    SiteLedger.Row a = before[0], b = after[0];
+                    record(test, "rows", "before the uninstall: " + describe(a) + "; after the write-off: " + describe(b));
+                    check(String.format("P unchanged: Other, not a player's loss (%.4f, then %.4f)", a.p(), b.p()), b.p() <= a.p() + 1e-3);
+                    check("the cap's wait (" + b.waitLeft() + " against " + FROSTMAW_CAP + "): " + describe(b),
+                            b.waiting() && Math.abs(b.waitLeft() - FROSTMAW_CAP) <= TOL);
+                    check("still no SPAWN", lines(den.faction, SPAWN, -1) == 0);
                 })
                 .thenSucceed();
     }
@@ -523,19 +608,79 @@ public final class SiteLedgerGameTests {
                 .thenSucceed();
     }
 
-    // ---- 8: a lured body --------------------------------------------------------------------------
+    // ---- 7: a pet's kill (S9) ---------------------------------------------------------------------
 
     /**
-     * A lured body is a player's loss and its later death counts (S3 test 8). A den's Frostmaw, adopted, is taken 400 blocks
-     * off into a chunk that is then released: its hide asks for a census (MZB-1015), which misses it, and the engine's daily
-     * recounts miss it twice more over two days: it is written off as a player's loss (P 1), its UUID missing. Past the
-     * wait a new Frostmaw spawns at the den. The far chunk forced again, the lured Frostmaw loads with its old tags: it is
-     * not removed and is still missing. A player kills it: its CAMP_DEATH carries its UUID and its old slot and generation
-     * (with the tags kept, not the stray flag, MZB-1014), P rises by 1 on the aged value, and missing is empty.
+     * A pet's kill at a den is a player's loss (S9, MZB-1265; EQUILIBRIUM.md S9's name: `aPetOrTrapKillAtADenIsAPlayerLoss`,
+     * the trap half being {@link #trapKillAtABossSiteIsAPlayerLoss}). A den's Frostmaw, adopted; a wolf tamed by a player who is
+     * online lowers it to 1 health and kills it: CAMP_DEATH aux PLAYER, credited to the owner, and the row is waiting at
+     * P 1 for the 12 days of delay(P = 1).
+     */
+    @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "site_pet_kill", skyAccess = true)
+    public static void aPetsKillAtADenIsAPlayerLoss(GameTestHelper helper) {
+        String test = "aPetsKillAtADenIsAPlayerLoss";
+        if (!nativeOnly(helper, test))
+            return;
+        ChunkWait waits = ChunkWait.of(helper, 4000);
+        Far far = new Far(helper, test);
+        ServerLevel level = far.level;
+        Den den = new Den(far, far.k, far.z0);
+        EntityFrostmaw[] f = new EntityFrostmaw[1];
+        ServerPlayer[] owner = new ServerPlayer[1];
+        net.minecraft.world.entity.animal.Wolf[] wolf = new net.minecraft.world.entity.animal.Wolf[1];
+        int[] deaths = new int[1];
+
+        GameTestSequence s = helper.startSequence().thenExecute(den::force).thenWaitUntil(waits.chunks(far.ready()));
+        s = realDen(s, waits, den, f);
+        s.thenExecute(() -> {
+                    deaths[0] = ConflictKit.campDeaths(den.faction).size();
+                    owner[0] = MowzieKit.player(helper, den.at(6, 0), "site-pet-owner");
+                    Vec3 at = den.at(3, 1);
+                    wolf[0] = net.minecraft.world.entity.EntityType.WOLF.create(level);
+                    wolf[0].moveTo(at.x, at.y, at.z);
+                    wolf[0].tame(owner[0]);
+                    check("the wolf is added", level.addFreshEntity(wolf[0]));
+                    f[0].setHealth(1f);
+                    MowzieKit.kill(f[0], level.damageSources().mobAttack(wolf[0]));
+                    FakePlayers.remove(owner[0]);
+                })
+                .thenWaitUntil(waits.engine(() -> check("the Frostmaw's CAMP_DEATH", ConflictKit.campDeaths(den.faction).size() > deaths[0])))
+                .thenExecute(() -> {
+                    ScriptedEngine.Received d = last(ConflictKit.campDeaths(den.faction));
+                    check("a player's kill: the owner's pet (aux " + d.aux() + ")", d.aux() == ConflictRecords.BY_PLAYER);
+                    check("credited to the owner", owner[0].getUUID().equals(ConflictKit.uuidAt(d, ConflictRecords.CampDeath.KILLER_MOST)));
+                })
+                .thenWaitUntil(waits.engine(() -> {
+                    SiteLedger.Row r = row(level, den.faction);
+                    check("the den's row is waiting at P 1: " + describe(r),
+                            r != null && r.count() == 0 && r.waiting() && Math.abs(r.p() - 1f) < 1e-3);
+                    check("the wait is delay(P = 1), 12 days: " + describe(r),
+                            r.waitLeft() <= FROSTMAW_W1 && r.waitLeft() >= FROSTMAW_W1 - 400);
+                    record(test, "row", describe(r));
+                }))
+                .thenSucceed();
+    }
+
+    // ---- 8: a lured body --------------------------------------------------------------------------
+
+    /** Both Frostmaws' health for their fight (MZB-1404): the jar's 250 would make a fight of a few thousand ticks. */
+    private static final float FIGHT_HEALTH = 30f;
+
+    /**
+     * A lured body is a player's loss, and back at its full den it fights its replacement to the death (S3 test 8; fork F3 as
+     * Ben changed it, 2026-10-30, MZB-1404). A den's Frostmaw, adopted, is taken 400 blocks off into a chunk that is then
+     * released: its hide asks for a census (MZB-1015), which misses it, and the engine's daily recounts miss it twice more
+     * over two days: it is written off as a player's loss (P 1), its UUID missing. Past the wait a new Frostmaw spawns at the
+     * den. The far chunk forced again, the lured Frostmaw loads with its old tags 400 blocks off: it is not removed and is
+     * still missing (no fight from there). It walks home (moved into the den, its AI on again) and the den counts: the census
+     * sets the two on each other (FIGHT). Both have {@link #FIGHT_HEALTH} so the fight is short. Within the fight's bound one
+     * Frostmaw is left of the two, whichever it is; the row names it at home, count 1, with nobody missing, no wait (no
+     * renewal owed) and the pressure the write-off left, aged (the fight's death books nothing). Its CAMP_DEATH names the
+     * dead one's UUID.
      */
     @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "site_lured_body", skyAccess = true)
-    public static void aLuredBodyIsAPlayerLossAndAStraysDeathCounts(GameTestHelper helper) {
-        String test = "aLuredBodyIsAPlayerLossAndAStraysDeathCounts";
+    public static void aLuredBodyIsAPlayerLossAndFightsItsReplacementOnItsReturn(GameTestHelper helper) {
+        String test = "aLuredBodyIsAPlayerLossAndFightsItsReplacementOnItsReturn";
         if (!nativeOnly(helper, test))
             return;
         ChunkWait waits = ChunkWait.of(helper, 8000);
@@ -545,10 +690,9 @@ public final class SiteLedgerGameTests {
         int lx = den.cx + 25, lz = den.cz;
         EntityFrostmaw[] f = new EntityFrostmaw[1];
         UUID[] id = new UUID[1];
-        CampMember[] tag = new CampMember[1];
         Entity[] lured = new Entity[1];
         SiteLedger.Row[] off = new SiteLedger.Row[1];
-        ServerPlayer[] killer = new ServerPlayer[1];
+        EntityFrostmaw[] replacement = new EntityFrostmaw[1], survivor = new EntityFrostmaw[1];
         int[] census = new int[1], deaths = new int[1];
 
         GameTestSequence s = helper.startSequence()
@@ -560,7 +704,6 @@ public final class SiteLedgerGameTests {
         s = realDen(s, waits, den, f);
         s.thenExecute(() -> {
                     id[0] = f[0].getUUID();
-                    tag[0] = MowzieKit.tag(f[0]);
                     census[0] = MowzieKit.censusCount(den.faction);
                     int x = lx * 16 + 8, z = lz * 16 + 8;
                     f[0].setNoAi(true);
@@ -592,6 +735,7 @@ public final class SiteLedgerGameTests {
                 .thenExecute(() -> {
                     List<Entity> h = MowzieKit.held(den.faction);
                     check("a new Frostmaw at the den (" + h.size() + ")", h.size() == 1 && !h.get(0).getUUID().equals(id[0]));
+                    replacement[0] = (EntityFrostmaw) h.get(0);
                     census[0] = MowzieKit.censusCount(den.faction);
                     far.force(lx, lz);
                 })
@@ -606,32 +750,53 @@ public final class SiteLedgerGameTests {
                     check("the lured Frostmaw is not removed", !lured[0].isRemoved() && lured[0].isAlive());
                     check("no REMOVE (" + lines(den.faction, REMOVE, -1) + ")", lines(den.faction, REMOVE, -1) == 0);
                     SiteLedger.Row r = row(level, den.faction);
-                    check("still missing: " + describe(r), r != null && r.missing().contains(id[0]));
-                    off[0] = r;
+                    check("still missing, 400 blocks off: " + describe(r), r != null && r.missing().contains(id[0]));
+                    check("no fight from there (" + MowzieKit.camps().fights + ")", MowzieKit.camps().fights == 0);
+                    // It walks home: into the den, its AI on again (the lure turned it off).
+                    EntityFrostmaw back = (EntityFrostmaw) lured[0];
+                    Vec3 home = den.at(6, 0);
+                    back.setNoAi(false);
+                    back.teleportTo(home.x, home.y, home.z);
+                    back.setHealth(FIGHT_HEALTH);
+                    replacement[0].setHealth(FIGHT_HEALTH);
                     deaths[0] = ConflictKit.campDeaths(den.faction).size();
-                    killer[0] = MowzieKit.player(helper, lured[0].position().add(4, 0, 0), "site-lure-killer");
-                    MowzieKit.kill((EntityFrostmaw) lured[0], level.damageSources().playerAttack(killer[0]));
-                    FakePlayers.remove(killer[0]);
+                    MowzieKit.camps().forceRecount(den.faction);
                 })
-                .thenWaitUntil(waits.engine(() -> check("its CAMP_DEATH", ConflictKit.campDeaths(den.faction).size() > deaths[0])))
-                .thenExecute(() -> {
-                    ScriptedEngine.Received d = last(ConflictKit.campDeaths(den.faction));
-                    ByteBuffer v = d.view();
-                    check("its UUID", id[0].equals(ConflictKit.uuidAt(d, ConflictRecords.CampDeath.BODY_MOST)));
-                    check("a player's kill, credited to the player", d.aux() == ConflictRecords.BY_PLAYER
-                            && killer[0].getUUID().equals(ConflictKit.uuidAt(d, ConflictRecords.CampDeath.KILLER_MOST)));
-                    check("its old slot and generation (" + v.getInt(ConflictRecords.CampDeath.SLOT) + ", "
-                                    + v.getInt(ConflictRecords.CampDeath.GENERATION) + ")",
-                            v.getInt(ConflictRecords.CampDeath.SLOT) == tag[0].slot() && v.getInt(ConflictRecords.CampDeath.GENERATION) == tag[0].generation());
-                    check("no stray flag: its tags were kept", (v.getInt(ConflictRecords.CampDeath.FLAGS) & ConflictRecords.CampDeath.FLAG_STRAY) == 0);
-                })
+                .thenWaitUntil(waits.engine(() -> check("the den's census set the two on each other (FIGHT " + MowzieKit.camps().fights + ")",
+                        MowzieKit.camps().fights >= 1)))
+                .thenWaitUntil(waits.engine(() -> {
+                    boolean a = replacement[0].isAlive(), b = lured[0].isAlive();
+                    check("one Frostmaw is left of the two (the replacement " + (a ? "stands" : "fell") + ", the returner "
+                            + (b ? "stands" : "fell") + "; health " + replacement[0].getHealth() + ", " + ((EntityFrostmaw) lured[0]).getHealth()
+                            + "; targets " + replacement[0].getTarget() + ", " + ((EntityFrostmaw) lured[0]).getTarget() + ")", a != b);
+                }))
+                .thenExecute(() -> survivor[0] = replacement[0].isAlive() ? replacement[0] : (EntityFrostmaw) lured[0])
                 .thenWaitUntil(waits.engine(() -> {
                     SiteLedger.Row r = row(level, den.faction);
-                    check("missing is empty: " + describe(r), r != null && r.missing().isEmpty() && r.stamp() > off[0].stamp());
-                    check(String.format("P rose by 1 on the aged value (%.4f, then %.4f)", off[0].p(), r.p()),
-                            r.p() <= off[0].p() + 1f + 1e-3 && r.p() >= aged(off[0].p(), 16 * DAY) + 1f - 1e-3);
-                    record(test, "the stray's death", "before: " + describe(off[0]) + "; after: " + describe(r));
+                    check("the row names the survivor at home, count 1, nobody missing: " + describe(r), r != null && r.count() == 1
+                            && r.home().equals(List.of(survivor[0].getUUID())) && r.missing().isEmpty());
                 }))
+                .thenIdle(20)
+                .thenExecute(() -> {
+                    SiteLedger.Row r = row(level, den.faction);
+                    SiteLedger.Row w = off[0];
+                    check("no renewal owed: " + describe(r), !r.waiting());
+                    // The engine's clock ran on by the wait's advance (P1_ADVANCE), which the stamps (game time) do not show; a
+                    // day more for the engine's whole days.
+                    long ran = w.waitLeft() + DAY / 4 + (r.stamp() - w.stamp()) + DAY;
+                    check(String.format("P is the write-off's, aged: no loss booked for the fight (%.4f, then %.4f)", w.p(), r.p()),
+                            r.p() <= w.p() + 1e-3 && r.p() >= aged(w.p(), ran) - 1e-3);
+                    List<EntityFrostmaw> standing = level.getEntitiesOfClass(EntityFrostmaw.class, den.area().inflate(32), Entity::isAlive);
+                    check("exactly one Frostmaw at the den (" + standing.size() + ")", standing.size() == 1 && standing.get(0) == survivor[0]);
+                    check("the den's own (" + MowzieKit.held(den.faction).size() + ")", adopted(survivor[0], den.faction));
+                    EntityFrostmaw dead = survivor[0] == replacement[0] ? (EntityFrostmaw) lured[0] : replacement[0];
+                    ScriptedEngine.Received d = last(ConflictKit.campDeaths(den.faction));
+                    check("the dead one's CAMP_DEATH names it", ConflictKit.campDeaths(den.faction).size() > deaths[0]
+                            && dead.getUUID().equals(ConflictKit.uuidAt(d, ConflictRecords.CampDeath.BODY_MOST)));
+                    record(test, "the fight", (survivor[0] == replacement[0] ? "the replacement" : "the returner") + " survived; its kill aux "
+                            + d.aux() + "; before: " + describe(w) + "; after: " + describe(r) + "; FrostmawFights started "
+                            + FrostmawFights.started + ", set again " + FrostmawFights.reasserted + ", over " + FrostmawFights.ended);
+                })
                 .thenSucceed();
     }
 
@@ -641,7 +806,8 @@ public final class SiteLedgerGameTests {
      * A force-loaded site refills when unwatched (S3 test 9). Two dens forced the whole test, their Frostmaws adopted and
      * killed by a player who goes. A watcher stands 40 blocks from den B. The engine's world runs past both waits with no
      * unload: den A's arrival asks for a RECOUNT, its census follows with no CAMP_OUT, and a SPAWN places a tagged Frostmaw.
-     * Den B's SPAWN is held while the watcher stands within 160 blocks (DenKind) and placed once the watcher goes.
+     * Den B's SPAWN is placed at once with the watcher standing 40 blocks off, not held for him (S9, FB-S9-3, Ben, 2026-10-30:
+     * a due boss is placed in view; DenKind held it while a player stood within 160 blocks) and nothing is held.
      */
     @GameTest(template = ARENA, timeoutTicks = ChunkWait.NO_TICK_TIMEOUT, batch = "site_force_loaded", skyAccess = true)
     public static void aForceLoadedSiteRefillsWhenUnwatched(GameTestHelper helper) {
@@ -685,19 +851,15 @@ public final class SiteLedgerGameTests {
                     List<Entity> h = MowzieKit.held(a.faction);
                     check("a tagged Frostmaw at den A (" + h.size() + ")", h.size() == 1 && h.get(0) instanceof EntityFrostmaw);
                 })
-                .thenWaitUntil(waits.engine(() -> check("den B's SPAWN is held while the watcher stands near ("
-                        + (MowzieKit.camps().heldSpawns - before[3]) + " held)", MowzieKit.camps().heldSpawns > before[3])))
-                .thenIdle(40)
-                .thenExecute(() -> {
-                    check("no SPAWN placed at den B yet", lines(b.faction, SPAWN, -1) == 0 && MowzieKit.held(b.faction).isEmpty());
-                    FakePlayers.remove(watcher[0]);
-                })
-                .thenWaitUntil(waits.engine(() -> check("den B's SPAWN is DONE once the watcher went", lines(b.faction, SPAWN, DONE) >= 1)))
+                .thenWaitUntil(waits.engine(() -> check("den B's SPAWN is DONE with the watcher standing near", lines(b.faction, SPAWN, DONE) >= 1)))
                 .thenExecute(() -> {
                     List<Entity> h = MowzieKit.held(b.faction);
                     check("a tagged Frostmaw at den B (" + h.size() + ")", h.size() == 1 && h.get(0) instanceof EntityFrostmaw);
+                    check("none of the SPAWNs was held (" + (MowzieKit.camps().heldSpawns - before[3]) + ")", MowzieKit.camps().heldSpawns == before[3]);
+                    check("the watcher is still within 160 blocks of den B", watcher[0].distanceToSqr(b.spot) < 160 * 160);
+                    FakePlayers.remove(watcher[0]);
                     record(test, "refilled", "den A at the wait's end with no unload (" + (MowzieKit.camps().engineRecounts - before[0])
-                            + " RECOUNTs); den B held " + (MowzieKit.camps().heldSpawns - before[3]) + " times, then placed");
+                            + " RECOUNTs); den B placed at once with the watcher near (" + (MowzieKit.camps().heldSpawns - before[3]) + " held)");
                 })
                 .thenSucceed();
     }

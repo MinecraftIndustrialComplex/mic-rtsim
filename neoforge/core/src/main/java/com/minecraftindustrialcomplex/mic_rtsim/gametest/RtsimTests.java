@@ -128,6 +128,17 @@ public final class RtsimTests {
         e.conflictSlay(faction, n, pressure);
     }
 
+    /**
+     * A camp sends a party by order (slice S9, MZB-1233): the camp of {@code faction} musters a party of {@code kind}
+     * (0 envoy, 1 scouts, 2 raid, 3 invasion, 4 siege, 5 plunder) toward the block ({@code x}, {@code z}) of the
+     * overworld. The native engine only; the stub keeps no camps.
+     */
+    public static void sendParty(long faction, int kind, int x, int z) {
+        if (!(engine() instanceof NativeEngine e))
+            throw new GameTestAssertException("a camp's party is the native engine's: " + engine().describe());
+        e.conflictSend(faction, kind, 0, x, z);
+    }
+
     /** The arena's middle, standing on the floor, in absolute coordinates. */
     public static Vec3 centre(GameTestHelper helper) {
         // Relative y 1 is the arena's floor (the structure sits one block above the test's structure

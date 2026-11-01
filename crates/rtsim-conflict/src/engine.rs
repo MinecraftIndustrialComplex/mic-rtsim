@@ -691,6 +691,9 @@ pub struct ConflictStats {
     /// Members a renewal culture's wait brought to its camp, and members lost in a way that
     /// bumps its pressure (EQUILIBRIUM.md §2.2, M6).
     pub arrivals: u64,
+    /// The arrivals that were a grove's warriors (a culture with a chief body, S9, MZB-1219): the
+    /// census splits the dens' from the groves'.
+    pub grove_arrivals: u64,
     pub renewal_losses: u64,
     /// The grove's tribute stacks put in its chest (MZB-423), the hunts a raid left owed (MZB-424)
     /// and the animals they killed (HUNT_APPLIED's `killed`).
@@ -731,6 +734,9 @@ pub struct ConflictStats {
     pub breaks: u64,
     pub refounds: u64,
     pub break_deferrals: u64,
+    /// FIGHT lines sent: a member gone missing back at its full boss's camp set against the body
+    /// holding its slot (MZB-1404).
+    pub camp_fights: u64,
 }
 
 /// Where goods went, per world good (thousandths).
@@ -1365,19 +1371,38 @@ impl Conflict {
     /// whole warriors in its pool, P the pressure it is under (a pool camp's strain, a body
     /// camp's ledger), broken the pool camps that have broken, and the renewals the arrivals of
     /// the body camps' members and the pool camps' refoundings.
+    ///
+    /// Three kinds, always in this order (S9, MZB-1219): `conflict.camp` (the camps whose members
+    /// are a number or a pool: the pool-renewal cultures), `conflict.den` (a culture whose renewal
+    /// is a boss's: the Frostmaw's) and `conflict.grove` (a culture with a chief body: the
+    /// Umvuthana). A den's member is its Frostmaw, a grove's its warriors; `empty` is a den with no
+    /// Frostmaw or a grove with no warrior, P the members' pressure, the renewals the kind's own.
     pub fn census(&self) -> Vec<rtsim_kernel::census::KindCensus> {
-        let mut c = rtsim_kernel::census::KindCensus::new("conflict.camp");
+        use rtsim_kernel::census::KindCensus;
+        let mut camp = KindCensus::new("conflict.camp");
+        let mut den = KindCensus::new("conflict.den");
+        let mut grove = KindCensus::new("conflict.grove");
         for f in 0..self.factions.len() as u32 {
+            let c = self.culture(f);
+            let kind = if c.def.chief_body.is_some() {
+                &mut grove
+            } else if c.renewal.is_some_and(|r| r.boss) {
+                &mut den
+            } else {
+                &mut camp
+            };
             let pool = self.pool_at(f, self.now).max(0.0).floor() as u64;
-            c.site(
+            kind.site(
                 pool,
                 u64::from(self.factions[f as usize].cap),
                 !self.camp_active(f),
                 self.pressure_now(f, self.now),
             );
         }
-        c.renewals = self.stats.arrivals + self.stats.refounds;
-        vec![c]
+        camp.renewals = self.stats.refounds;
+        den.renewals = self.stats.arrivals.saturating_sub(self.stats.grove_arrivals);
+        grove.renewals = self.stats.grove_arrivals;
+        vec![camp, den, grove]
     }
 
     /// The camps' rows for core's site ledger (EQUILIBRIUM.md §2.3, S3, MZB-1014): one
@@ -1418,10 +1443,6 @@ impl Conflict {
         }
         let x = &self.factions[f as usize];
         let c = self.culture(f);
-        let half_life = c
-            .renewal
-            .or(c.chief_renewal)
-            .map_or(0.0, |r| r.rule.half_life_days);
         let day = (at.0 / TICKS_PER_DAY) as u32;
         let count = self.pool_at(f, at).max(0.0).floor() as u32;
         let mut flags = 0;
@@ -1432,6 +1453,7 @@ impl Conflict {
             flags |= state_flags::EMPTY;
         }
         let mut p = 0.0;
+        let mut p2 = 0.0;
         let mut wait_left = 0;
         let mut bodies = Bodies::default();
         // A pool camp: the pressure it is under, and while it is broken the wait to its
@@ -1445,7 +1467,13 @@ impl Conflict {
             }
         }
         if let Some(camp) = x.camp.as_deref() {
-            p = camp.pressure.now(day, half_life);
+            // The members' pressure in `p`, a chief's own in `p2` (MZB-1231).
+            if let Some(r) = c.renewal {
+                p = camp.pressure.now(day, r.rule.half_life_days);
+            }
+            if let Some(r) = c.chief_renewal {
+                p2 = camp.chief_pressure.now(day, r.rule.half_life_days);
+            }
             if c.renewal.is_some()
                 && let Some(t) = camp.arrival_at
             {
@@ -1464,7 +1492,10 @@ impl Conflict {
                 }
             }
             bodies.left_behind.extend(camp.left_behind.iter().copied());
+            // A rival is a member gone missing that came back to fight (MZB-1404): after a reset it
+            // is missing again, and fights again at the full camp.
             bodies.missing = camp.missing.clone();
+            bodies.missing.extend(camp.rivals.iter().copied());
         }
         let u16_of = |n: u32| u16::try_from(n).unwrap_or(u16::MAX);
         let mut s = SiteState {
@@ -1472,6 +1503,7 @@ impl Conflict {
             kind: SiteKind::Camp,
             flags,
             p,
+            p2,
             k: u16_of(x.cap),
             count: u16_of(count),
             away: u16_of(x.away),
@@ -2003,9 +2035,11 @@ impl Conflict {
         if let (Some(pr), Some(s)) = (&c.pool_renewal, &self.factions[f as usize].strain) {
             return s.pressure.now(day, pr.def.half_life_days);
         }
-        let hl = c.renewal.or(c.chief_renewal).map(|r| r.rule.half_life_days);
-        match (self.camp(f), hl) {
-            (Some(camp), Some(hl)) => camp.pressure.now(day, hl),
+        // The members' pressure; a culture with only a chief's rule (a grove on the old rate, in
+        // the tests) reads the chief's.
+        match (self.camp(f), c.renewal, c.chief_renewal) {
+            (Some(camp), Some(r), _) => camp.pressure.now(day, r.rule.half_life_days),
+            (Some(camp), None, Some(r)) => camp.chief_pressure.now(day, r.rule.half_life_days),
             _ => 0.0,
         }
     }
@@ -2044,16 +2078,55 @@ impl Conflict {
     /// cause (a player's kill or take is a player's, a mob's is a predator's), and a death that
     /// credits no one is a player's loss when the band was at a player's district (FB-2 (a), the
     /// `district_unclaimed_is_players` switch: a trap, a turret or a FakePlayer killed it there),
-    /// no one's elsewhere.
-    pub(super) fn pool_cause(&self, p: Handle<Party>, by: u32) -> LossCause {
+    /// no one's elsewhere, on the road included ([`Conflict::at_district`], EQC291). Not once the
+    /// band's chief has fallen (S9 review, MZB-1287): a chief-body culture's warriors die with their
+    /// chief (the jar's `EntityUmvuthi.die` countdown, a death by no one), so when the chief of a
+    /// column on the march to a player's district is killed, the warriors that go down with it are
+    /// no one's but the war chief's own loss. A death directly credited to a player is still the
+    /// player's.
+    pub(super) fn pool_cause(&self, p: Handle<Party>, by: u32, at: Tick) -> LossCause {
         let cause = LossCause::from_credit(by, false);
         if cause == LossCause::Other
             && self.tun.district_unclaimed_is_players
-            && matches!(self.parties[p].target, Target::District(..))
+            && self.at_district(p, at)
+            && !self.lost_its_chief(p)
         {
             return LossCause::Player;
         }
         cause
+    }
+
+    /// Whether the band is at the district it is bound for at `at` (EQC291, FB-2 (a): "at a
+    /// player's district"): it is fighting or waiting there (the engine places both at the
+    /// target), or, on the road out or home, within the circle a watched fight is fought in
+    /// (`spawn_edge_blocks` of the target). A band mustering at its camp, or walking the road
+    /// farther out, is not: only a credited kill counts there.
+    pub(super) fn at_district(&self, p: Handle<Party>, at: Tick) -> bool {
+        let x = &self.parties[p];
+        let Target::District(_, pos) = x.target else {
+            return false;
+        };
+        match x.phase {
+            Phase::Fighting | Phase::Waiting => true,
+            // At its camp, whatever the camp's distance from the target.
+            Phase::Mustering => false,
+            Phase::Out | Phase::Home => {
+                pos.frame == x.frame
+                    && self
+                        .inside_now(p, (pos.x, pos.z), self.tun.spawn_edge_blocks, at)
+                        .is_some()
+            }
+        }
+    }
+
+    /// Whether the band is one a chief leads in its culture and its chief has fallen: the war
+    /// chief's body is dead on the march ([`Party::chief`] clears on `chief_killed_by` and on
+    /// succession). A band the chief never leads (a raid of a culture whose chief stays home) never
+    /// had one to lose.
+    fn lost_its_chief(&self, p: Handle<Party>) -> bool {
+        let x = &self.parties[p];
+        let c = self.culture(x.faction);
+        chief_own_stack(c) && c.leads(x.kind) && !x.chief
     }
 
     /// Test hook (EQC206): a player kills `n` of the faction's warriors at `at`, the pool's whole
@@ -5246,6 +5319,21 @@ impl Conflict {
     fn raid_node(&mut self, w: &mut World, p: Handle<Party>, i: usize, at: Tick) -> i64 {
         let f = self.parties[p].faction;
         let c = self.culture(f).clone();
+        // A rival camp that broke while the band was on its way is nothing to plunder, as the
+        // pick says (EQC209): it finds the camp scattered and takes nothing (EQC294).
+        let n = &w.nodes[i];
+        if matches!(n.kind, NodeKind::Haven(_))
+            && let Some(&o) = self.by_key.get(&n.key)
+            && !self.camp_active(o)
+        {
+            self.note(
+                at,
+                Some(f),
+                "plunder",
+                format!("finds the camp at node {} broken: nothing to take", n.key),
+            );
+            return 0;
+        }
         // Something to take, before any blood is spilled: a raid takes from each line's surplus
         // over its target only. Below its target a line needs imports or a mint to refill, and a
         // quiet economy sends neither, so whole-stock raids drained villages for good (CL-D58).
@@ -6753,11 +6841,16 @@ impl Conflict {
         self.outbox.retain(|c| !matches!(c, Cmd::Notice(_)));
         let per = crate::tables::FACTIONS_PER_PAGE as u32;
         for f in 0..self.factions.len() as u32 {
-            let mut kept: Vec<Cmd> = self
-                .feuds_of(f)
-                .iter()
-                .filter_map(|(_, x)| x.notice.as_deref().map(|n| Cmd::Notice(*n)))
-                .collect();
+            // A broken camp sends nothing (EQC209): its notices went with the break, and one kept
+            // some other way is still not played for a camp that is not there (EQC293).
+            let mut kept: Vec<Cmd> = if self.camp_active(f) {
+                self.feuds_of(f)
+                    .iter()
+                    .filter_map(|(_, x)| x.notice.as_deref().map(|n| Cmd::Notice(*n)))
+                    .collect()
+            } else {
+                Vec::new()
+            };
             // The hunts owed go again too, once the replay has cleared the ones answered (MZB-449).
             let hunts: Vec<Hunt> = self.factions[f as usize].hunts().to_vec();
             kept.extend(hunts.iter().map(|h| self.hunt_cmd(f, h)));
@@ -7678,8 +7771,11 @@ impl Conflict {
         // A pool camp feels what a player kills (EQC205): its members away are its warriors, and
         // nothing booked their loss before. The pressure goes before `party_lost`, whose `unblock`
         // plans the wait from it, as `lose_units` has it. A body camp books what it booked (S9's).
-        if t > 0 && c.pool_renewal.is_some() && self.parties[p].kind.is_war() {
-            let cause = self.pool_cause(p, cs.by);
+        // A body camp's members feel it the same way when their renewal is no boss's (a grove's
+        // warriors, S9, MZB-1213): a den's Frostmaw dies as CHIEF_KILLED, never as a casualty.
+        let members_press = c.pool_renewal.is_some() || c.renewal.is_some_and(|r| !r.boss);
+        if t > 0 && members_press && self.parties[p].kind.is_war() {
+            let cause = self.pool_cause(p, cs.by, at);
             self.renewal_bump(f, t, cause, at);
         }
         self.party_lost(p, t, at);
@@ -7808,17 +7904,28 @@ impl Conflict {
         let (x, z) = self.party_pos(p, at);
         let fall = At::new(at.0, u32::from(self.parties[p].frame), x, z);
         let cowed = self.chief_falls(w, f, killer, fall, "the band routs", at);
-        let cause = self.renewal_cause(f, by);
-        self.renewal_bump(f, 1, cause, at);
+        // The chief is one member of the camp it leads: a den's Frostmaw, a pool camp's war chief.
+        // A grove's Umvuthi is no member (it has a slot of its own, `chief_body`, and its warriors'
+        // renewal is no boss's, S9, MZB-1211): it presses its own pressure below, not the warriors'
+        // by `1/K`. A pool camp's war chief, killed by a machine at a player's district, is his
+        // loss as any member's is (EQC291, EQC303).
+        if self.culture(f).def.chief_body.is_none() {
+            let cause = if self.culture(f).pool_renewal.is_some() {
+                self.pool_cause(p, by, at)
+            } else {
+                self.member_cause(f, by)
+            };
+            self.renewal_bump(f, 1, cause, at);
+        }
         // The Umvuthi that leads a band is the camp's chief slot, away with it: its fall is that
         // slot's death away (MZB-412), which steps the chief's pressure and sets the heir after
-        // the cowing `chief_falls` just booked. The member renewal's bump above is a boss
-        // culture's (a den has no chief slot), so the two never both run.
+        // the cowing `chief_falls` just booked.
         if self
             .camp(f)
             .and_then(|c| c.chief())
             .is_some_and(|s| s.state.away() && s.party == p)
         {
+            let cause = self.chief_cause(f, by);
             self.chief_died_away(f, cause, at);
         }
         // After the pressure, as `lose_units` has it: the wait `party_lost` plans reads it.

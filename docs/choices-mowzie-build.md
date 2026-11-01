@@ -295,7 +295,8 @@ MZB-720 to 749 are M10b's and M10c's.
   1,000,000; goblin's smog, logging, mining, killing and building weights, no radiation. Units
   `warrior`, `raptor` (a pack, 2.6) and `envoy`, all ground melee with carry and breaks 0, bodies
   `mic_rtsim:conflict/umvuthana/<unit>`. Parties as MOWZIE.md §4.5, siege empty. `pool_cap` 9, the
-  top of a grove's 5 to 9 until ledger 7 counts each grove; recruits 2 a day. Hates `human`;
+  top of a grove's 5 to 9 until ledger 7 counts each grove; recruits 2 a day (S9, MZB-1210: now
+  `renewal` 6, 96, 96 and none a day). Hates `human`;
   plunders every 12 days within 1,500 blocks with one raptor pack, whose take is eaten
   (`loot_destroyed`, MZ-8) and is nothing until raptors carry. Tribute in `gold_nugget` at a
   fallback of 9 an emerald; no repeat; source `boss`, as ledger 9 says and as the Frostmaw. Boss
@@ -2089,7 +2090,8 @@ The tests:
 - **MZB-252** (the Frostmaw's numbers): `frostmaw.json` gets
   `"renewal": {"base_days": 6.0, "cap_days": 192.0, "half_life_days": 96.0, "boss": true}` and
   `recruits_per_day` 0.0 (EQ-4 (b), MOWZIE.md "The body"). `umvuthana.json` is unchanged: the grove's
-  renewal is M9's.
+  renewal is M9's. *Amended (S9, MZB-1210): the grove's warriors have a `renewal` of their own now, 6, 96, 96,
+  no boss kind; the Umvuthi's `chief_renewal` below is the heir's.*
 - **MZB-253** (the boss flag, not the camp source): an unclaimed death bumps a culture's pressure only when
   its renewal says `boss`. `CampSource::Boss` cannot carry this, because both Mowzie cultures have it and
   the grove's warriors are not bosses (EQUILIBRIUM.md §2.2: "an unclaimed death of a boss kind").
@@ -5690,7 +5692,8 @@ M9b takes MZB-600 to 624 (M9c takes 625 to 649); the M9b build choices are under
   `{ base_days: 6, cap_days: 192, half_life_days: 96, boss: true }` (MZ-14 (a)). The wait is
   `min(cap, base × 2^P)` days, with P decaying at the half-life, as in M6's den renewal.
   - It reuses M6's `RenewalDef` type and resolution, but as a field of its own: M6 validates its `renewal`
-    to need `recruits_per_day == 0` (a culture of one), and the grove recruits 2 a day.
+    to need `recruits_per_day == 0` (a culture of one), and the grove recruits 2 a day. *Amended (S9,
+    MZB-1210): it recruits no more; the warriors come back one at a time by the shared rule.*
   - Nothing is ordered while no warrior is home (Body with no line). The heir then waits, and the camp is
     looked at again at each census.
 - **MZB-408** (the heir takes a warrior): when the heir is due, one CAMP_RECONCILE carries two lines.
@@ -6727,7 +6730,8 @@ Two fixes for M6:
 - **Trade-memory keys.** The jar keys trade memory on the game profile id. A fake player's profile id is
   what counts, not its entity UUID.
 - **M6's renewal.** M6's `renewal` validation needs `recruits_per_day == 0`, so the grove needs its own
-  `chief_renewal` field.
+  `chief_renewal` field. (S9 gave the grove's warriors a `renewal` as well, MZB-1210; the two stand side by
+  side, with a pressure each, MZB-1211.)
 - **Wheel tags.** M6's Arrival takes wheel tag 8; CampHeir is 9.
 - **Peaceful.** M6's wording is false for raptors: they discard themselves.
 - **Ids in M6's range.** M5 took MZB-290 to 292 from M6's range.
@@ -12014,9 +12018,908 @@ rounds of phase 2 are the check, and what they found is recorded after them.
   in sight), caused by the follower standing 20 blocks out, where the jar's raptor pulls a targetless follower back to 3
   blocks; the follower now stands 16 blocks out. Whether that also explains this cut on the beat is not known.
 
+### M11 review fixes (MZB-1300 to MZB-1309)
+
+An Opus review of M11 "Aloft" (landed on main as 13ac4d88) found one P1, three P2 and five P3 points. The fixes are on
+`fix/m11-review`, each its own commit, with the tests in one commit ahead of them (72a89a5c), so that the round at that commit is
+main's code with the new tests: what each test failed with there is in its record. Two tests did not fail there as they should (the
+let-go test passed, MZB-1301; the re-pair test's first form failed its own control, MZB-1308) and were changed after; they ran again in
+a round of the final code with their two fixes taken out of the working tree for its compile (the "red round"): the let-go test passed
+again there (P2.2 is not fixed, MZB-1301), and what the re-pair test did is in MZB-1308. The review's line numbers were at 13ac4d88;
+each place was found again on main after M12a, S5, S6 and S7.
+
+- **MZB-1300** (P1 of the review: a chief killed in the moment its band reaches home came back as a second Umvuthi with a second Sol
+  Visage):
+  - The path: the grove is in, the chief's slot Gone, and the engine's `home` sends the chief's HAND_BACK. A player kills the puppet in
+    the tick or two before Java plays that line (MZB-466's window): no line is held, so `journalLoss` journals CHIEF_KILLED, and the
+    engine's end of the band books it as the chief's death at its camp and frees the Owed slot (`chief_killed_home`, MZB-853 release
+    3). The HAND_BACK then comes: `retiredChief` was false (only a CAMP_DEATH added to `Camps.retired`), and `secondPuppet`, `puppetOf`
+    and `dyingChief` found nothing (the slot was forgotten at the settle), so `handBack` fell through to `spawnLine`, which stood a
+    throne Umvuthi of the dead generation (`makeBody` even set `chiefGeneration` to it). The engine ignored its DONE (no slot holds
+    that generation), so a persistent boss with full loot stood until the next census or the heir's seat. The code comment that said
+    such a boss "comes back at the next census" was MZB-824's, before MZB-853 booked the death.
+  - The fix, commit e45f78fb (Camps, ConflictBridge): when the bridge journals CHIEF_KILLED for a traveller chief it tells Camps
+    (`chiefKilledAway(faction, agent, epoch)`), which keeps the band's (agent, epoch) for the session in `killedAway` (memory only, as
+    `retired`; emptied at a session's start and at the server's stop). `handBack`, and `playHeldHandBack` before its spawn branch,
+    answer a LINE_CHIEF HAND_BACK naming such a band STALE, and the match also adds the line's generation to `retired`. The comment and
+    the javadoc of `chiefDeathsAfterEnd` say what happens now.
+  - The ADOPT: an ADOPT names a stray by UUID, not the band, so it is matched by generation. `adopt` answers a chief-slot ADOPT of a
+    generation in `retired` STALE, and `chiefKilledAway` adds the camp's chief generation as this session knows it
+    (`Site.chiefGeneration`, set by a chief SPAWN, ADOPT or hand-back) to `retired`. Why that is safe: while a chief lives in the
+    engine's books no other chief generation is made, so a known generation is the killed chief's or an older, retired one. What it
+    does not cover: a session that never made, adopted or handed back that chief (after a restart `chiefGeneration` is 0), whose ADOPT
+    in flight still tags the stray with the dead generation. Smaller than the HAND_BACK's case: the stray stood already (an ADOPT makes
+    no body), it is only tagged, and the next census removes it as a body of a retired generation.
+  - The test is `aChiefLineInFlightAcrossItsPuppetsDeathIsStale` (batch `aloft_killed_in_flight`; grove S the HAND_BACK in the
+    animation and after it, grove A the ADOPT, grove C the control). At 72a89a5c it failed with "S's HAND_BACK in the animation is
+    answered STALE, not DONE".
+- **MZB-1301** (P2 of the review: a dying chief's loot was lost when its chunk unloaded within one tick; not fixed, the path does not
+  happen):
+  - The review's path: a player kills the puppet and logs out, teleports or dies and respawns far within the 115-tick animation (or a
+    forced chunk is let go); with no ticket left vanilla hides the chunk and unloads its entities in one level tick, before the
+    bridge's end of the tick, and `tickDying` finds the body removed UNLOADED_TO_CHUNK and counts `deathLootLost`.
+  - Why it does not happen, read from the 1.21.1 source: `PersistentEntitySectionManager.processChunkUnload` unloads only what
+    `storeChunkSections` stores, and that filters the chunk's entities on `shouldBeSaved`, which `EntitySaveMixin` answers false for a
+    puppet. A hidden chunk's puppet is never removed by the unload: it stays in the level, ticking no more, and MZB-817's early end
+    (`endDying`, the chunk no longer ticks entities) ends its animation at the end of that tick and drops the Sol Visage. An item made
+    in a hidden chunk is not lost either: `getAllChunksToSave` takes every chunk with an entity section, so `autoSave` and `saveAll`
+    (the stop) load the chunk's stored entities and save it with them, and a load of the chunk shows it again. Only a puppet riding a
+    saved entity goes with the unload (`getPassengersAndSelf` of the saved one); no Aloft body rides.
+  - The review's first remedy (untag the body on the Dying list so the vanilla save keeps it mid-animation) would not have worked, read
+    from the 1.8.2 jar with javap: `MowzieEntity.tickDeath` drops its loot at the animation's end only when its `killDataCause` (the
+    `DamageSource` `die` stored) is set, and `addAdditionalSaveData` saves only the ability cooldowns, so a body read back dying ends
+    its animation and drops nothing. The review's premise that plain Mowzie "would save the dying body and drop on reload" is wrong for
+    the same reason: the test's control, the jar's own Umvuthi killed and let go the same way, saved dying (`UNLOADED_TO_CHUNK`), left
+    no Sol Visage after its reload (0 in the round at 72a89a5c, 0 in the red round).
+  - A fix was made and taken out again: commit 405cd6f0 held a dying entry's chunk with a region ticket (`DYING_TICKET`, distance 1:
+    the chunk at block ticking, the ring round it at FULL, which can load the ring) until its drops. Reverted in ac8697fd: no test
+    showed a loss without it.
+  - The test stays, as a regression test: `aDyingChiefWhoseChunksAreLetGoDropsItsLoot` (batch `aloft_dying_let_go`), the lane's chunks
+    let go 20 ticks into the animation, waited out of memory, forced again; one Sol Visage read back where the puppet fell, the body
+    ended as KILLED, `deathLootLost` unchanged. It passed on main's code twice: at 72a89a5c, with the chunks let go inside a GameTest
+    step (after the levels had ticked), and in the red round of the final code without the ticket, with the chunks let go between two
+    ticks in a server task (`server.tell`, a `TickTask`, a401f109), as a logout, teleport or far respawn is handled: "the lanes were
+    let go between ticks 20 into the animation (at 597097); the puppet ended as KILLED and its Sol Visage was read back (1)".
+- **MZB-1302** (P2 of the review: a puppet made or put back under leaves was pinned):
+  - The path: the bridge placed a floating body at `MOTION_BLOCKING_NO_LEAVES` plus its lift (the spawn in `tryPlace` and the put-back
+    in `checkPlaced`), while its height rule reads `MOTION_BLOCKING` (`UmvuthiAloft.top`, MZB-808), and `AloftRules.mayStepAcross`
+    takes no step across while the body is more than a block below its target. Under a canopy the body was made under the leaves, its
+    rise blocked by them, and it stayed pressed there until the stuck machine moved it (about 40 s).
+  - The fix, commits 1e906089 and a93e767a (ConflictBridge; at 1e906089 alone the core does not compile, as the follow goal still
+    called the one-argument `place`, which a93e767a puts back): `groundFor(lift)`, `MOTION_BLOCKING` for a body that floats (its lift
+    above 0) and `MOTION_BLOCKING_NO_LEAVES` for every other, at both places; `Slot.place` takes the heightmap (the follow goal's
+    walker keeps the ground under the leaves). A grounded (settled) puppet's lift is 0, so it is put back on the ground as before. The
+    other remedy (a step across after a blocked rise) is not taken: it would move a body inside the leaves' layer, and the spawn is
+    where the two heights disagreed. Left as it was: a puppet made where its camp body stood (a SET_OUT's hand-off) under leaves, and
+    one that settled under leaves and rises, still meet the leaves (the stuck machine takes them, as before).
+  - The test is `aPuppetMadeUnderACanopyFloatsOverIt` (batch `aloft_canopy`: leaves 8 over the floor, the puppet made under them and
+    then moved into a chunk that does not tick entities, so that the placing puts it back). At 72a89a5c it failed with "it is made over
+    the leaves (its foot 3.1000000000000014 over the floor, the leaves' top 9)".
+- **MZB-1303** (P2 of the review: in case B, the throne body and the puppet killed in one tick gave two Sol Visages):
+  - The path: both deaths are pending at the end of the tick, and the bridge settles its own (`settleDeaths`) before `reconciler.tick`
+    settles the camps'. The puppet's CHIEF_KILLED calls `Camps.chiefDiedAway`, which marks the standing chief body second, but
+    `standingChief` asks `isAlive()`, and the throne body was dying; then the camps journal its CAMP_DEATH, whose `markPuppetsSecond`
+    sees only live slots. Two deaths booked, two Sol Visages dropped.
+  - The fix, commit 813e4174 (Camps): the second mark takes `chiefBody(c, false)`, any chief-slot body of the camp that is not removed,
+    alive or dying, and not second already (a body whose CAMP_DEATH went out is untagged, so it is not found: its loot stays). `death`
+    already asks `secondBody`, so the dying throne body journals nothing and `ConflictEvents.onDrops` cancels its drops. The other
+    readers of `standingChief` (the chief's memory, case B's merge) keep the live body.
+  - The test is `aThroneBodyAndItsPuppetKilledInOneTickBookOneDeath` (batch `aloft_one_tick_deaths`: grove T kills the throne body and
+    then the puppet in one step, grove P the other way round). At 72a89a5c it failed with "T (the throne body first): one death booked
+    (1 CAMP_DEATH, 1 CHIEF_KILLED)", two deaths booked.
+- **MZB-1304** (P3 of the review: no REMOVE after an answer landed on a dead chief slot):
+  - `chief_killed_home` makes a Body slot Dead and sends the throne body's REMOVE only with no line in flight; with the chief's
+    HAND_BACK in flight the REMOVE waited for the next census, as the answer (NOTHING after a merge, STALE since MZB-1300) books
+    nothing on a dead slot.
+  - The fix, commit cdb280f9 (`camp_bodies`): a dead slot's own line answered with its body maybe still standing (any answer but a
+    REMOVE's own, and but one that frees the slot) sends that body's REMOVE at a camp that is in, as a census would. It is the census's
+    rule for a dead slot (a body found is removed), for every dead slot.
+  - The test is `a_puppet_killed_while_its_hand_back_is_in_flight_dies_once`'s case 2, now for NOTHING and STALE: the answer sends the
+    REMOVE at once (it used to assert the census's REMOVE), and the slot is freed once the held lines play. At 72a89a5c it failed with
+    "outcome 2: the answer sends the throne body's REMOVE at once, not at the next census (line in flight None, sent None)". Its first
+    form also asked the REMOVE's answer to be DONE, which failed at cdb280f9 (`left: 2`, NOTHING): the census's TAKE that the scenario
+    (`left_home_in`) answers STALE itself is still held by the emulated plugin and plays first when the player at the throne goes,
+    taking the throne body, so the REMOVE finds none. NOTHING frees a dead slot as DONE does, and the test takes either (9a847a7f).
+- **MZB-1305** (P3 of the review: a hovering puppet was never stepped or zeroed again):
+  - The path: `UmvuthiAloft.step` returned at once for a settled body until it rose, and a body that settled over a fluid (HOVER) keeps
+    its gravity off, so a push or Levitation that landed on it carried it off for good.
+  - The fix, commit 7ece7147 (UmvuthiAloft): the height it hovers at is kept (`hoverY`), and each tick a hovering body's motion is
+    zeroed and it steps back toward that height at the rule's pace (`verticalStep`, with collision). A grounded body is the jar's, as
+    before.
+  - The test is `aHoveringPuppetHoldsItsHeight` (batch `aloft_hover_push`: a push of 1 block a tick and Levitation II). At 72a89a5c it
+    failed with "100 ticks after the push, with Levitation on, it is back at its height (13.283608758783508 over it)".
+- **MZB-1306** (P3 of the review: two indexes read back with no range check): `chief_ended` (MZB-853) and `placing` were read back with
+  any faction, and `check_indexes` covered neither, so a bad entry loaded and panicked at its first use (`factions[f]`). Commit
+  e6cd8c4d (persist.rs): `check_indexes` refuses a placing or a band's end past the table, on both the blob load and the paged one. The
+  test is `a_placing_or_a_band_end_past_the_factions_is_an_error` (persist.rs's unit tests). At 72a89a5c it failed with "a band's end
+  naming faction 1 of 1" (`left: false`, the load was not an error).
+- **MZB-1307** (P3 of the review: `docs/replay-gate.md` understated the residual at a replayed generation switch): live the chief is
+  lost to no one at the first restart's replay end, while the crash replay books `chief_death` with the player's cause, so the
+  pressure, `renewal_losses`, the heir's due tick and everything the fall at the camp does differ too, not only the fall and the player
+  loss. Corrected in commit 9062d2cf. Not removed: booking one cause on both paths needs the live path to know at the restart that a
+  CAMP_DEATH will come, or the replay to run `chief_ends_lost` where the earlier session ended, which is the hook the entry already
+  names. A known residual; no code changed, so no test.
+- **MZB-1308** (P3 of the review: `Repairs.send` read the per-player data of the level's first player only): the bundle built for that
+  player was checked and then broadcast to every tracker, so a tracker whose own pairing would hold something per player was sent a
+  fresh copy without it. Commit c59cb49a (Repairs): the pairing is built for every player tracking the body
+  (`ChunkMap.getPlayersWatching`, the players `broadcast` sends to) and the re-pair is skipped if any one's holds anything but the
+  vanilla set and the complex spawn payload; with no tracker it is NOBODY. What can hold data of a player's own is an entity's own
+  `sendPairingData` override: NeoForge 21.1's synced attachments cannot (`AttachmentSync.syncInitialAttachments` ignores `sendToPlayer`
+  and adds the same payload to every pairing, so a synced attachment makes every bundle skip, for the first player too). The Umvuthi
+  the GameTests re-pair has none (its bundle is the vanilla set and the complex spawn payload, MZB-959); the fix guards a body of a mod
+  that has one.
+  - The test is `aRePairIsSkippedWhenAnyTrackerHasPerPlayerData` (batch `aloft_repair_per_player`), on `mic_rtsim:test_pairing`, a
+    zombie type the core registers on a GameTest server only (`gametest/TestPairing`), whose `sendPairingData` adds a payload for the
+    players `TestPairing.to` names (every player but the level's first, for the one call; nobody for the control). Its first form, an
+    attachment synced to some players (72a89a5c), failed its control on main's code too, "the control's re-pair went (false, repairs
+    +0)", for the reason above; the type replaced it (6f428530). With MZB-1308 taken out (the red round) it failed with "a re-pair with
+    per-player data for every player but the level's first (mowzie-repair-pp-a) is skipped (sent true, repairs +2, skipped +0)".
+- **MZB-1309** (the checks):
+  - `cargo test --workspace` on the Rust fixes (cdb280f9, e6cd8c4d): 2416 passed, 3 failed, 32 ignored. One failure was this branch's
+    own test expectation (`a_puppet_killed_while_its_hand_back_is_in_flight_dies_once`, MZB-1304, corrected in 9a847a7f; then
+    `mowzie_aloft` 17 of 17). Two passed on a rerun of the same code, so flakes: `rtsim-cli --test view`
+    `at_100000_districts_a_full_world_request_keeps_the_budget_and_the_sidecar_its_cap` (a district card still with its note "Its
+    machines are read from the world as the card is opened: 0 of its 2 chunks so far", under a load average near 70), and `rtsim-host
+    --test tap` `a_leased_run_with_a_page_hammering_it_keeps_lockstep_with_an_unleased_one` ("pages that differ (generations (save,
+    obs): leased (11, 258), unleased (12, 258))"). `cargo clippy --workspace --all-targets -- -D warnings` is clean at 9a847a7f, and
+    rustfmt passes on every Rust file the branch changes.
+  - The core did not compile at 1e906089 alone (MZB-1302); a Java compile of core, mowziesmobs and create found it before any round.
+  - Rounds from cleared worlds: `create -PwithMowzie` at c41dbfe9, "All 271 required tests passed"; `core` at c41dbfe9, `:core:test`
+    440 passed and "All 188 required tests passed"; the red round (`mowziesmobs` at c41dbfe9 with the two fixes taken out), "2 required
+    tests failed": the re-pair test, as it should (MZB-1308), and
+    `anUmvuthanaEnvoyPartyIgnoresGolemsAndPlayersUntilStruckAndTakesPayment` with "party A placed", a timeout one second into the test
+    (its 2400 ticks ran unthrottled, "chunks ready after 0.0 s (75 ticks)" just before), which passed in the next round; `mowziesmobs`
+    at ce3a4bd1, "All 118 required tests passed". The envoy test's pass was not on the same code, but neither fix taken out touches an
+    envoy's placing: counted a flake. After the revert of MZB-1301 the core and `create -PwithMowzie` rounds ran again on ff8016e8
+    (ce3a4bd1's code), from cleared worlds: `core`, `:core:test` 440 passed and "All 188 required tests passed"; `create -PwithMowzie`,
+    "All 271 required tests passed" (its first ticket's runner was ended by a SIGTERM from outside while it waited in the queue, exit
+    143, before it took the lock; it was queued again).
+- **MZB-1310** (the merge with S9 and the S7 and M12a review fixes, `integrate/conflict-fixes`): this branch merged without a
+  conflict. Where its `camp_bodies` change (MZB-1304, a REMOVE after a dead slot's own line is answered) meets M12a's in the same
+  function was checked and left as it is: M12a's FIGHT line (MZB-1404) marks the holder's slot as its line in flight, but a
+  holder is a body at home, whose death frees its slot (`Camp::free`), so a FIGHT answered after it finds no slot and books
+  nothing; MZB-1304's REMOVE needs a `Dead` slot, which only a death away leaves. M12a's UUID on an answer (MZB-1400) is read
+  only for an owed or gone slot, never a dead one. No code change.
+
 ## M12 S9
 
-(none yet)
+EQUILIBRIUM.md's slice S9 (§2.4.7, §2.6 items 1 to 14, §4's S9 row, §3.3's grove row): the Frostmaw den and the
+Umvuthana grove on the shared renewal rule. **This section was a design and is now built (steps 1 to 9 and the fixtures,
+"Build notes" below); the records keep their design text where the build did not change it.** Branch `feat/eq-s9-mowzie` at a4717c1f (main 9389b4e5 plus slice S7, which is in review and lands next).
+Ids MZB-1200 to MZB-1299. The model behind the numbers is `research/equilibrium-s9-mowzie/mowzie.py` (stdlib Python,
+`python3 -I mowzie.py`, under a second), the S7 `camps.py` kind: the engine's own rules, day-stepped, scripted players.
+Measured besides the model: the Rust suites of `rtsim-conflict`, `rtsim-cli` (`sim mowzie`) and `rtsim-jni` were run once with
+the one data change of MZB-1210 in a scratch edit (MZB-1264, MZB-1268, MZB-1269), reverted before the commit. No GameTest was
+run.
+
+**The shape in ten lines.**
+1. The den is already on the rule (M6, S3): S9 changes no den code. It adds the row's tests, a `conflict.den` census line
+   and the document corrections.
+2. The grove's warriors move from a recruiting rate (2 a day, no pressure) to arrivals: umvuthana.json gets
+   `recruits_per_day` 0 and `renewal {6, 96, 96, no boss}`, so each missing warrior comes back after `min(96, 6 x 2^P)`
+   days, one at a time, through the den's own `plan_arrival` and `camp_arrival` path (MZB-1210).
+3. The grove has two pressures and two cause rules: the warriors' (`Camp.pressure`, `1/K` a warrior, no boss kind) and
+   the Umvuthi's (new `Camp.chief_pressure`, 1 a chief, a boss kind). Today they share one field (MZB-1211).
+4. Marches: BAND_CASUALTIES of a grove's war party book pressure, by kill credit, with S7's district rule for the
+   unclaimed; S7's finding that "the grove's warriors killed on a march book no pressure" is closed (MZB-1213).
+5. S7's break and refound do not apply to a den or a grove (MZB-1217); a grove found with no warrior and no ledger row gets
+   K 5 and the cap wait (MZB-1216).
+6. The ledger row carries the second pressure (SITE_STATE 56 to 64 bytes, the found tail's reserved word, 16 spare bits
+   of the Java row); the conflict pages go RTCE to RTCF, meta 14; no record kind, flag, wheel tag or archive kind is
+   added; one test order, 42 (MZB-1230 to MZB-1233).
+7. The crystal (1.79 a game year farmed) and the Sol Visage (1.80) are unchanged, and the model confirms both.
+8. Two planned numbers do not hold at the engine's rates (MZB-1203): a grove with no player holds 0.85 to 0.92 of its
+   warriors, not 1.00 (its own plunder loses a raptor pack every 12 days, which the old 2 a day hid), and a farmed grove
+   yields 6.6 warriors a game year, not 5.8.
+9. Four FOR BEN items below.
+10. Tests: the row's three harness tests and five GameTests (two exist already under S3's names, one is extended, two
+    are new), the grove's own, all failing-first where behaviour changes, and the long-horizon bands (MZB-1260 to MZB-1268).
+
+### For Ben
+
+Four choices are Ben's; each has a recommendation first and is also a fork record (MZB-1250 to MZB-1253). The rest is
+decided here, can be undone, and is listed under the forks.
+
+**FOR BEN (FB-S9-1). How fast does a grove's warriors come back?** EQUILIBRIUM.md §2.4.7 sets `min(96, 6 x 2^P)` days a
+warrior, one at a time. Today a grove refills at 2 a day with no pressure (a wiped grove of 7 is whole in 3.5 days, however
+often it is wiped). Measured at the engine's rules for a grove of 7 (K 5 to 9 in brackets), `mowzie.py`:
+
+| Pace | Wiped, all back in (days) | Farmed, warriors per game year | Held with no player (its plunder included) |
+|---|---|---|---|
+| Today: 2 a day, no pressure | 3.5 | unlimited (192) | 0.99 |
+| **(a) base 6, cap 96, as §2.4.7 writes it** | **73 (54 to 91)** | **6.6 (5.7 to 7.5)** | **0.89 (0.85 to 0.92)** |
+| (b) base 3 | 39 (28 to 49) | 9.3 (7.7 to 10.6) | 0.96 (0.94 to 0.97) |
+| (c) base 12 | 134 (101 to 165) | 4.5 (4.0 to 5.0) | 0.50 |
+
+**Decided by Ben, 2026-10-30: (a), base 6, as built.** Recommended **(a)**. A cleared grove is quiet for 73 game days (a game day is 20 real minutes, so about a real day)
+instead of 3.5 days; a farmed one yields about 2 masks a game year (a mask drops from one warrior in three); the crystal and
+the Sol Visage are untouched. It is §2.4.7 as Ben approved it, §1.1's "back in about a game year" is 0.76 of one, and (b)
+only buys the held share back, which FB-S9-2 does better. What the player sees change: MOWZIE.md §0's "a grove you have
+thinned fills back up over a few days" becomes "over a season". If Ben takes (b), the data change is one number.
+
+**FOR BEN (FB-S9-2). Should the grove plunder on its losses (S7's FB-10 (c), left to S9)?** The raider's `plunder_mood`
+block (EQC285 to EQC290) lengthens a camp's plunder wait after it loses members and shortens it after loot comes home. It is
+one JSON block, no code.
+(a) **No (recommended):** the grove keeps its 12-day plunder clock and, with the pack lost at every defended village, holds
+0.89 of K unattended. CONFLICT-LIFE.md's council takes the cadence over (EQC289), and S9 should not decide how often villages
+meet a grove ahead of it.
+(b) Yes: umvuthana.json gets the raider's block: a plunder every 35 days instead of 12 when every pack is lost, and the grove
+holds 0.96 to 0.98. Villages near a grove meet raptors a third as often.
+Why it is Ben's: how often villages and players meet a camp (FB-10's reason).
+**Decided by Ben, 2026-10-30: YES, (b), against the recommendation.** Built as MZB-1280 to MZB-1284 (the raider's block in umvuthana.json,
+no new code; the measured plunder interval and hold are there).
+
+**FOR BEN (FB-S9-3). Does a boss appear in front of a player who stays?** EQUILIBRIUM.md §2.2 says an arrival is never
+placed into a site with a player within 128 blocks and is retried a game day later; MOWZIE.md ("The body") and MZB-280 built
+the Frostmaw's and the Umvuthi's spawn to wait while a player is within 160 blocks (their tracking range) for at most 6,000
+ticks (5 real minutes), then place it. A grove's warriors are never held (MZB-1220). M12a left the choice to S9 (MZB-1029).
+(a) **Keep what is built (recommended):** finite wait, so no site is empty for ever because a player lives beside it (§2.1
+(a) 2, "no absorbing zero"); the den sleeps inside an ice ruin and the player has had the wait to leave.
+(b) §2.2 as written: never in front of a player, retried until he is gone: a den beside an AFK base never refills, a farmer
+standing at the den never sees the Frostmaw come.
+(c) As (a) with a longer limit, 2 game days.
+Why it is Ben's: whether a boss can be seen to appear, and a loot supply floor for a player who lives at a camp. §2.2, §2.6
+item 8 and the kernel's `Arrival::OnLoad` doc are corrected at the build whichever is taken.
+**Decided by Ben, 2026-10-30, in his words: "Just spawn anyway, bonus points if you have some cool effects."** None of (a) to (c): a
+returning boss is placed when due even with a player near or watching, with no hold (no 160 blocks, no 6,000 ticks) and an effect
+built of the game's and the jar's own things. Built as MZB-1272 to MZB-1279.
+
+**FOR BEN (FB-S9-4). The second pressure in the world-save ledger.** The Umvuthi's pressure is lost at a reset unless the
+site ledger row carries it: a reset would then give a farmed Umvuthi a 12-day heir wait instead of up to 52, a small mint of
+a boss kind (§2.3's rule: a reset must not shorten a wait).
+(a) **Carry it (recommended):** SITE_STATE grows 8 bytes, the found tail uses its reserved word, the Java row packs it in 16
+spare bits of an existing long (no change to the file's version or row length).
+(b) Do not carry it: no format change, and the reset leak above.
+(c) A second site kind for the chief, with its own row and found tail: also carries the heir's wait (MZB-1032 left it out),
+but changes FACTION_FOUND's size and the ledger's kinds.
+Why it is Ben's: a format in the world save and what a reset can mint (EQ-3's reason).
+**Decided by Ben, 2026-10-30: yes, (a), carry it, as built.**
+
+**Told, not asked.** The conflict pages RTCE to RTCF (the engine's own save, no migration); one new test order, 42; the census
+splits `conflict.camp` into `conflict.camp`, `conflict.den` and `conflict.grove`; a grove found empty with no row is K 5;
+neither break nor refound applies; no news, no archive kind (FB-4). Each can be undone.
+
+### Base and reads
+
+- **MZB-1200** (the base): `feat/eq-s9-mowzie` branches from `feat/eq-s7-conflict` at a4717c1f: main 9389b4e5 (S0, S1 to S6,
+  S8, S8b, S10, M1 to M11 and M12a) plus S7 (`Faction.strain`, `pool_cause`, the `casualties()` bump for pool camps, conflict
+  pages RTCE and meta 13, wheel tag 12, test order 41, archive kinds `conflict.broken` and `conflict.refounded`). S9 waits for
+  S0 (`rtsim-kernel::renewal`, built), S3 (the ledger and kill credit, M12a, built) and MOWZIE (M1 to M11, built). S7 is in
+  review: the build merges the landed main first and reads again the code points S7 and S9 share, named here as at
+  a4717c1f: `casualties()` (engine.rs:7588), `renewal_bump` and `renewal_cause` (engine/camp.rs:1047, 1036),
+  `pool_cause` (engine.rs:2048), `Conflict::census` (engine.rs:1368), `camp_site_state` (engine.rs:1415), persist.rs's page
+  magic, `synth.rs`, boundary.md §9.7.
+- **MZB-1201** (what was read): EQUILIBRIUM.md §1, §2.2 and the kernel interface, §2.3, §2.4.5, §2.4.7, §2.6, §3.3, §3.6, §4's
+  S9 row and §5; MOWZIE.md §4.2, §4.5, §4.9, §4.10 and its census and recruits text; this file's M6 (MZB-250 to MZB-299), M9
+  (heir, MZB-405 to MZB-412), M12a (MZB-1000 to MZB-1047, MZB-1016's notes) and S7's records EQC200 to EQC290 in
+  docs/overnight-choices-equilibrium.md (R3, R4, EQC205, EQC222, FB-10) with S5's home-body records for what the camps
+  already have; the engine (`culture.rs`, `engine.rs`, `engine/camp.rs`, `engine/strain.rs`, `persist.rs`, `tunables.rs`,
+  `synth.rs`), `data/cultures/frostmaw.json` and `umvuthana.json`; the mowziesmobs plugin (`DenKind`, `GroveKind`,
+  `SiteLedgerGameTests`) and core's `Camps` (`HOLD_MAX`, `spawnLine`, `playHeld`), `SiteLedger`; `sim mowzie` runs 6 and 12;
+  `rtsim-cli`'s `sim::equilibrium` and `sim::census`; docs/boundary.md §2.5, §9.1.
+- **MZB-1202** (what is built and what is left): EQUILIBRIUM.md §2.6, item by item, against the code at a4717c1f.
+
+  | §2.6 item | State | Left for S9 |
+  |---|---|---|
+  | 1, the den's Frostmaw: `min(192, 6 x 2^P)`, P per den, `+1` per Frostmaw lost to a player (at home, away, missing, a stray's death) | **built** (frostmaw.json `renewal` 6, 192, 96, boss; MZB-251 to MZB-259, MZB-295, MZB-1014) | nothing in the engine |
+  | 2, the grove's warriors one at a time, `min(96, 6 x 2^P)`, `P += killed/K`, march losses too | **not built**: umvuthana.json has `recruits_per_day` 2 and no `renewal`; a march's casualties book nothing (EQC205, R4) | MZB-1210 to MZB-1214 |
+  | 3, the Umvuthi as an heir: the later of the cowed time and `min(192, 6 x 2^P_chief)`, one warrior taken | **built** (`chief_renewal`, MASK and SEAT_HEIR, MZB-405 to MZB-412), but P_chief is the grove's one `Camp.pressure` | split it (MZB-1211) |
+  | 4, the six-day refill texts | docs | the corrections (MZB-1234) |
+  | 5, MZ-4 and EQ-4; a steal is no loss | **built** (MZB-252, MZB-276) | nothing |
+  | 6, a site found empty waits the cap | **built** for a den (MZB-257, `Pressure::at_cap`, the ledger row) | the grove's K when found empty (MZB-1216) |
+  | 7, FACTION_FOUND carries the row; world game time | **built** (MZB-1002, MZB-1004, MZB-1014) | the second pressure (MZB-1231) |
+  | 8, arrivals: not into a watched site; a never-unloaded camp counts first | **built, differently from the text**: RECOUNT then SPAWN (MZB-1015); hold 160 blocks and 6,000 ticks (MZB-280); warriors never held | FB-S9-3; correct the text |
+  | 9, kill credit and loss cause on every report | **built** (MZB-1006 to MZB-1010, MZB-1020) | nothing |
+  | 10, predator and prey | nothing to add | nothing |
+  | 11, missing and strays; a census never ends a party | **built** (MZB-1014, MZB-1015, MZB-1030) | nothing; the grove's warriors now press through it (MZB-1212) |
+  | 12, tests | `sim mowzie` run 6 farms the den 60 game years inside 5% of 1.79 and run 12 the heir; S3's six Mowzie GameTests; `anUmvuthiHeirTakesTheFarthestFreeWarrior` | the row's three harness tests and five GameTests by name (MZB-1262, MZB-1265) |
+  | 13, 14, the needs list and the tunables row | docs | the corrections (MZB-1234) |
+
+- **MZB-1203** (what the model measured, and what does not hold): `mowzie.py` runs the engine's rules (a site short books one
+  wait, `min(cap, base x 2^P)` with P read at its start, a running wait is never pushed out, arrivals chain) with scripted
+  players. Day-granular P in the engine moves these by under 1%.
+  1. **A grove with no player holds 0.85 to 0.92 of its warriors, not 1.00** (§3.6's table; K 5, 7, 9: 0.852, 0.893, 0.916;
+     K 5 to 9 alike 0.89). The reason is the engine's, not the model's: a grove plunders every 12 days (umvuthana.json
+     `plunder_mean_days`), sends one raptor pack, and `raid_node` loses the whole pack against any village of pop 6 or more
+     (`village_defence_per_pop` 0.25: a pack of 2.6 against 1.5 leaves a survivor share of 0.42, which rounds to none; the
+     `observed` floor only raises it after watched fights). The loss is the faction's (cause `Faction`, no pressure, as it must
+     be), but the grove stays short until the chain refills it: a warrior every 6 days against a loss every 12 is a queue at
+     utilisation 0.5. Today's 2 a day hid it (0.99). It is stable, not a drift: 60 game years, 40 seeds, 5th to 95th percentile
+     within 0.02 of the mean. With no village within the 1,500-block plunder reach the grove holds 1.00. Base 3 gives 0.94 to
+     0.97; the raider's plunder mood 0.96 to 0.98 and a plunder every 35 days. A saturated base (12) halves the grove (0.50).
+  2. **A farmed grove yields 6.6 warriors a game year (K 7), not 5.8** (§3.3's table, the model of §3.1 had 6.05). The table's
+     form is the one-at-a-time form; a farmer who kills what is there leaves the grove short by several, so the waits chain
+     (the same as S10 found for nests): visits every 2, 8, 24 days give 6.68, 6.62, 6.52; K 5 gives 5.7 and K 9 7.5. The test
+     compares with the kernel's rule replayed over the same kill days, within 5%, not with 5.8.
+  3. **Kill-all holds**: a wiped grove is whole in 54, 73, 91 days for K 5, 7, 9 (50% at 34, 44, 54), inside §3.6's 96 on its
+     24-day grid.
+  4. **The crystal and the Sol Visage hold**: a den farmed one kill 2 days after each arrival yields 1.79 a game year (1.81 at 0
+     days, 1.72 at 7), and an Umvuthi killed 2 days after each seating 1.80 (closed form 1.79), with the heir taking a warrior.
+  5. **One pressure for the grove would work for the Sol Visage and wreck the rest**: the yield stays 1.80 either way, but the
+     grove holds 0.10 of K (against 0.58 with a pressure each) while its Umvuthi is farmed, and a warrior farmer at P 1.3 to 1.4
+     would stretch the next heir's wait from 12 to 29 to 32 days. That is why the pressures are two (MZB-1211). Seen on the engine: with the data change alone, `sim mowzie` run 11's
+     check "the heir is due at 12 days" reads 30.6 days, the warriors' losses of that run having raised the one field the heir
+     reads.
+
+### The changes
+
+- **MZB-1210** (the grove's warriors are arrivals, a data change): umvuthana.json: `"recruits_per_day": 0.0` and
+  `"renewal": {"base_days": 6.0, "cap_days": 96.0, "half_life_days": 96.0, "boss": false}`; `pool_cap` 9 stays the ceiling of
+  K, `chief_renewal` (6, 192, 96, boss) stays. `Culture::resolve` takes it as written (a renewal needs `camp_bodies` and a
+  rate of 0; the refusal of a renewal with a `chief_body` is for `boss: true` only, `culture.rs:836`, pinned by
+  `each_chief_field_error_is_its_own`). From there it is the den's path, unchanged: `plan_arrival` books one `Ev::Arrival` while the faction is
+  short (`floor(pool) + away < cap`) with `min(cap, base x 2^P)` read at the wait's start, a running wait is never pushed out,
+  `camp_arrival` adds one owed slot and sends RECOUNT to a camp that is in, `unblock` plans the next wait, so a grove short by n
+  gets n waits one after the other. `plan_refill` books nothing (rate 0; `pool_ready` is BLOCKED until an arrival or a return
+  re-plans a waiting feud, as the den's is), so a thinned grove fields smaller and later parties, which is the point (S7:
+  "fields smaller, later parties"). The grove's `Ev::Refill` events end; its arrivals are `stats.arrivals`.
+- **MZB-1211** (two pressures, two cause rules): `Camp` gains `chief_pressure: Pressure` (8 bytes, a culture with
+  `chief_renewal`); `Camp.pressure` is the members' (a den's Frostmaw, a grove's warriors) and the census's P. Code points,
+  all in `engine/camp.rs` unless named: `camp_found` line 720 (members, stays), `camp_restore` 761 (members from the row's
+  `p`, the chief's from `p2`, MZB-1231), `found_empty_heir` 800 (the chief's, at the cap), the adoption of an untagged
+  Umvuthi at a camp found empty 2052 (resets the chief's pressure, "the cap's pressure was only a stand-in", not the
+  members'), `chief_lost` 3017 and 3020 (the chief's bump and the heir's wait read the chief's), `pressure_now`
+  (engine.rs:2000) and `camp_site_state` (engine.rs:1415) read the members'. `renewal_cause(f, by)` reads
+  `c.renewal.or(c.chief_renewal)` for the boss flag: it splits into `member_cause` (`renewal.boss`) and `chief_cause`
+  (`chief_renewal.boss`); `camp_death`'s warrior arm, `stray_death`, `casualties()` and the census's write-off use the first,
+  `chief_death`, `chief_lost` and `chief_killed_by`'s chief arm the second. **`chief_killed_by` (engine.rs:7812) calls
+  `renewal_bump(f, 1, cause)` unconditionally** ("a den has no chief slot, so the two never both run"); with a grove `renewal`
+  it would press the warriors by `1/K` for every Umvuthi killed on a march, so it is guarded by `renewal.boss` (the chief that
+  is the band's one unit). Both half-lives are 96, so no arithmetic differs from the den's.
+- **MZB-1212** (which losses press a grove): a row that presses adds `n/K` to the warriors' pressure for the `n` members lost,
+  except the Umvuthi's, which adds 1 to its own.
+
+  | Loss | Report | Cause | Presses |
+  |---|---|---|---|
+  | a warrior killed at the grove by a player, his pet or trap-with-a-hit (a hit in the last 100 ticks), or carried off (Carry On) | CAMP_DEATH by PLAYER or TAKEN | Player | yes |
+  | the same by lava, a turret, a FakePlayer or any death no one is credited with | CAMP_DEATH by NONE or OTHER | Other | no: not a boss kind (MZB-253); no mask drops without a player's kill |
+  | by a mob (a golem, a zombie) | by MOB | Predator | no |
+  | a member of a war party killed on the road by a player | BAND_CASUALTIES by PLAYER | Player | **yes, new** (MZB-1213) |
+  | the same, no one credited, on the road | BAND_CASUALTIES by NONE or OTHER | Other | no |
+  | the same, no one credited, with the party's target a player's district | `pool_cause` (S7's FB-2 (a)) | Player | **yes, new** |
+  | the abstract fight at a player's district | `lose_units` with cause Player | Player | yes (booked at once the grove has a `renewal`) |
+  | a raid on a village or a rival camp, a plunder's pack lost | `lose_units` with cause Faction | Faction | no (the world must not learn to empty itself) |
+  | the warriors that die with the Umvuthi (the jar's `die`, within 30 blocks) | by NONE per body | Other | no (F4) |
+  | a member written off as missing (no gap), and its later death as a stray | the census, `stray_death` | Player | yes; with GAP it is Other and the next wait is the cap's |
+  | a warrior taken to be the Umvuthi (MASK) | not a loss | none | no: the grove is short by one, the warriors' wait starts |
+  | an envoy or a scout killed | draws on no pool | none | no |
+  | the Umvuthi killed, at home or away, by the boss rule | CAMP_DEATH or CHIEF_KILLED | `chief_cause` | **`chief_pressure += 1`**, not the warriors' |
+
+- **MZB-1213** (marches): `casualties()` (engine.rs:7588) gains the bump for a body culture with a member `renewal` that is no
+  boss's, beside S7's for pool camps: `if t > 0 && kind.is_war() && (pool_renewal || renewal && !renewal.boss) { cause =
+  pool_cause(p, cs.by); renewal_bump(f, t, cause, at) }`, **before** `party_lost` (whose `unblock` plans the wait from P, as
+  `lose_units` has it). It runs once per counted op (`casualty_ops` returns first for a copy and a repeat), so a reassert, a
+  replay and a copy book it once (`a_replayed_casualty_bumps_a_grove_once`, the shape of S7's). No double count with
+  `camp_death`: a `Left` slot that dies at the camp is a CAMP_DEATH (bumps), a `Gone` slot's puppet is a BAND_CASUALTIES
+  (bumps), and a `Dead` slot's leftover body is removed or dies as a CAMP_DEATH of a `Dead` state, which books nothing
+  (`camp_death`'s `state != Dead`, EQC222's warning). The den takes nothing here: a Frostmaw's death is CHIEF_KILLED alone,
+  never BAND_CASUALTIES (MZB-295). The Umvuthi's column that dies with it books the Umvuthi (`chief_cause`) and no warrior.
+  Worked: a grove of 9 sends an Invasion (6 warriors, 2 raptor packs, the Umvuthi) and a player meets it on the road. He kills
+  four warriors and a pack: five BAND_CASUALTIES by PLAYER, P = 5/9 = 0.56, so the next warrior is due in 8.8 days (the grove
+  holds 4 of its 9, one at home and three away, so it is short by 5). He then kills the Umvuthi: CHIEF_KILLED, `chief_pressure`
+  1, the heir due 12 days after the cowed time, the warriors' P untouched; the warriors still with it die with it (BY_NONE) and
+  press nothing; what is left of the band walks home.
+- **MZB-1214** (the waits: when they start and what moves them): a wait starts when the grove becomes short with none running:
+  a loss, a write-off, the heir's MASK, a reset's members away (the cap's wait, `cap_next`, as built). P is read at the wait's
+  start (whole days); the arrival adds one owed slot and, still short, the next wait reads the decayed P. Members away keep
+  the grove not short; a member lost on the march makes it short at the casualty record's tick; survivors coming home
+  re-fill only the room (`pool_return`). A thin grove fields what it has (a war party goes with at least half its make-up).
+  Worked, K 7, three warriors killed at home on day 0 by a player: as built the first wait is read when it starts, at the
+  first death (P 1/7, 6.6 days), the second 8.0 days after the first, the rest read the pressure that stands at the end of the
+  one before (the design's 8.1, 16.0, 23.8 read all three kills at once, which the kernel's rule does not: a running wait is
+  never pushed out); a farmed grove settles at P 1.4 and a warrior every 14 days.
+- **MZB-1215** (what is minted, and when): the **den** as built: a Frostmaw asleep with its crystal, `min(192, 6 x 2^P)` days
+  after the loss (6 after a death no player caused, 12 after a first player's kill, near 52 farmed); the books gain the owed
+  slot when the wait ends; a den that is in counts (RECOUNT) and its census's SPAWN waits while a player is within 160 blocks
+  of the spot, at most 6,000 ticks (Peaceful: stale, ordered again at the next census); a den that is out has the body at its
+  next census, which is its next load; nothing is placed into an unloaded chunk. The **grove's warriors**: one owed slot a
+  wait end, the same RECOUNT and census, SPAWN at the grove's edge (20 blocks from the fire pit, on the side away from the
+  nearest player within 256 blocks, 20 tries) and never held; a grove that is out has it at its next census. The **Umvuthi**
+  as built: the heir is due at the later of the cowed time and `min(192, 6 x 2^P_chief)`, takes the farthest free warrior
+  (MASK) and is seated at the throne spot (held like the Frostmaw's while a player is within 160 blocks, at most 6,000 ticks);
+  the warrior's slot is freed with no loss, so each Sol Visage costs the grove one warrior and 6 days of the warriors' wait at
+  P 0. Peaceful stops every placement and keeps the books.
+- **MZB-1216** (K of a grove): a grove found with warriors takes K from the census as built (`cap` = count, at most
+  `pool_cap` 9; 5 to 9 as the jar places them); with a row, the row's K. A grove found **with no warrior and no row** had
+  `cap = max(count, 1) = 1` for ever, which under the old rate meant one warrior in half a day and, under the new rule, a
+  one-warrior grove after 96 days. It gets `found_cap` (a `CultureDef` field, 5, the jar's minimum so that the least is
+  minted), the warriors' pressure `at_cap` (the first warrior after 96 days, then 120, 139, 156, 171 for K 5) and the
+  chief's as built. A grove found short (some of its warriors killed before the first census) keeps K at its count, as
+  MOWZIE.md §4.5 says: a reset with no row shrinks it for good and mints nothing (F6).
+- **MZB-1217** (S7's break and refound do not apply, and what S9 does take from S7): `Faction.strain` exists only for a
+  `pool_renewal` culture, which `Culture::resolve` refuses with `camp_bodies` or `renewal` (EQC202), and S9 keeps that.
+  Reasons: (1) a den's empty state is its refound, a migrant after `6 x 2^P` days with the chief notable already succeeded;
+  a break would swap it for `48 x 2^P` days up to 384 and a new band with no grudges, against EQ-4 (b)'s 12 days and MOWZIE's
+  "the heir carries its predecessor's grudge"; (2) a grove has the per-warrior cap of 96 days (no absorbing zero) and its
+  bodies, throne and Umvuthi are the jar's saved entities, so there is nothing to scatter; (3) the break needs "idle", which
+  reads parties. `camp_active(f)` stays true for both. From S7 the grove takes `pool_cause` (the district rule), the
+  `casualties()` bump, the "as before" switch test (a culture with its `renewal` removed and its rate restored is today's
+  grove, `synth::rate_grove_cultures`, MZB-1260), and the census style; `reband` and `slay` are not used.
+- **MZB-1218** (the ledger row, and what a reset does):
+  K the cap; count the whole warriors at home (bodies and owed); away; P the warriors' pressure now; **`p2` the Umvuthi's**
+  (MZB-1231); WAITING with the wait left while an arrival is booked (the grove now, as the den); the bodies home, left
+  behind and missing as S3 has them (the chief's slot is not in the row). The Umvuthi's heir wait is not in the row (MZB-1032,
+  F13), so a grove found without its Umvuthi waits the cap, a wait that can only be longer.
+
+  | Event | Result |
+  |---|---|
+  | a plain reset, row present | the warriors' P and arrival wait handed over aged by the elapsed ticks; the chief's P from `p2`; warriors found by UUID; nothing minted early |
+  | a reinstall (GAP) | as above; a home body no census finds is Other and the next wait is the cap's (96 days); members away are lost with the old engine, the next wait is the cap's |
+  | no row, warriors standing | K their count, P 0 (nothing says it was farmed) |
+  | no row, none standing | K 5, P at the cap, first warrior after 96 days |
+  | no row, a den found empty | as built, 192 days |
+  | an uninstall (no rtsim) | the saved warriors stand; one killed meanwhile is written off at the first census after, Other with the cap's wait (S3's `uninstallLeavesHomeBodies`, extended in MZB-1265, asserts it) |
+
+- **MZB-1219** (the census): `Conflict::census` returns three kinds: `conflict.camp` (the pool-renewal cultures, unchanged),
+  `conflict.den` (a culture with `renewal.boss`) and `conflict.grove` (a culture with a `chief_body`), K the cap, members the
+  whole warriors at home, P the members' pressure, `empty` a den with no Frostmaw or a grove with no warrior, `renewals` the
+  arrivals. `KindCensus.kind` is `&'static str`, so the three names are fixed by the culture's flags. `sim census` gains the
+  `mowzie` scenario (`Kind::Mowzie`: dens and groves on `CampRun`'s emulated plugin, nobody watching), which joins
+  `Kind::ALL`, so `census_is_flat_with_no_player` holds the groves to their quarter-of-K floor. The existing `conflict.camp`
+  tests read pool camps only. This is the interface S11's soak reads.
+- **MZB-1220** (the watched rule and the hold, as built): `DenKind.holdSpawn` (a player within `HOLD_RANGE` 160 of the spot) and
+  `GroveKind.holdSpawn` for the Umvuthi (160 of the throne, and the MASK that goes with it), both ended by
+  `Camps.HOLD_MAX` 6,000; a warrior is never held (`GroveKind.holdSpawn` returns false for it). Core evaluates the hold each
+  tick in `playHeld` over the few held lines, which is cheaper than the wheel entry §2.2 asks for and has no daily retry.
+  This **differs from EQUILIBRIUM.md §2.2's "Never" bullet and §2.6 item 8** (128 blocks, retried a game day later, no limit),
+  MZB-280 having recorded why (the Frostmaw is tracked from 160 blocks; "a player who lives beside a camp still gets its boss
+  back"). Taken: keep it (FB-S9-3). The text is corrected at the build (§2.2, §2.6 item 8, §5.2's watched row, the kernel's
+  `Arrival::OnLoad` doc), and M12a's F10 note ("hold-max against a daily retry is left to S9") is answered here.
+- **MZB-1221** (the den: no engine change): the Frostmaw's rule is final. The robbed Frostmaw stays a member (a steal is no
+  loss), a lure is a player's loss through the 3-miss write-off (MZB-1014), a stray's death adds `1/K`, a unclaimed death at a
+  boss kind is a player's, an A10 removal is a player's. S9 adds only the harness tests, the census line and documents.
+- **MZB-1222** (the tunables): the grove's `renewal` 6, 96, 96 non-boss; the Umvuthi's `chief_renewal` 6, 192, 96 boss (both
+  as MOWZIE.md §4.10); `found_cap` 5; the den's `renewal` 6, 192, 96 boss; `district_unclaimed_is_players` (S7's switch) now
+  also governs the grove's marches; the holds `HOLD_RANGE` 160 and `HOLD_MAX` 6,000 (Java constants, as built). No new
+  engine tunable. The grove's half-life is 96, not S7's 192: that figure was chosen so that a pool camp's pressure could reach
+  the break, and there is no break here (MZB-1217).
+- **MZB-1223** (cost, D1): one more `Pressure` (8 bytes) on a chief camp's ledger; a grove's wheel holds at most one
+  `Ev::Arrival` while short, where it had an `Ev::Refill` per warrior; each arrival sends one RECOUNT to a grove that is in; a
+  loss is O(1); the row is marked as before. Nothing grows with time.
+- **MZB-1224** (replay, journal, crash): no record is added, so `outbox.rs` and docs/replay-gate.md are unchanged. The march
+  bump rides a journaled BAND_CASUALTIES counted once per op (MZB-1213). The wheel and pages are functions of state, so a
+  restored engine continues exactly (`a_restart_changes_no_decision` for a grove, in `tests/camp.rs`). A saved RTCE wheel with
+  a grove's `Ev::Refill` is not read (no compatibility before a release).
+- **MZB-1225** (uninstall and reset, UR-1): S9 places no body and writes nothing into the world. An uninstall leaves the saved
+  warriors, the Umvuthi and the Frostmaw as the jar had them; a reinstall's census books a dead one Other with the cap's wait
+  (S3). A reset with the ledger keeps both pressures and the running wait; a reset without the file starts a grove at K 5 and
+  the cap wait only when it finds no warrior, and a den at the cap wait (S3).
+
+### Protocol and formats
+
+- **MZB-1230** (the conflict pages): RTCE to **RTCF** (`RTC15`), meta 13 to **14**. `put_camp` ends with `chief_pressure` (an
+  f32 and a u32 day) after `recount_at`; a grove's `pressure` now means the warriors' (before it meant the Umvuthi's); the state
+  hash covers it. No migration. The viewer fixtures (`crates/rtsim-view/tests/data/core`, `create`) are regenerated as
+  MZB-1039 did. If CONFLICT-LIFE.md's council lands first it takes RTCF and S9 takes the next letter (EQC226 (d)).
+- **MZB-1231** (the ledger row carries the Umvuthi's pressure, FB-S9-4): `rtsim_kernel::sites`: `SiteState` gains `p2: f32`
+  (SITE_STATE 0x8006 grows from `56 + 16(n+l+m)` to `64 + 16(n+l+m)`: `+56 f32 p2`, `+60 u32 reserved`, the UUIDs from `+64`);
+  `FoundRow` reads `p2` from the tail's reserved word at `+36` (the tail stays 40 bytes plus 16 a UUID); the decoders keep
+  refusing a size that does not match the counts. Core's `SiteLedger.Row` gains `p2`; the NBT row keeps its six longs and
+  packs `p2` in thousandths (a saturating u16) into bits 48 to 63 of long [5] (n, l, m use bits 0 to 47), so `v` stays 1 and
+  an old row reads 0. The engine sends `p2` for a culture with `chief_renewal` and 0 for every other site; lairs and nests
+  ignore it. `Pressure::handed_over(p2, elapsed, day, 96)` restores it. `docs/boundary.md` §2.5, the SITE_STATE table row and
+  §9 change; rtsim-host's `FakeLedger` and the fake Java's tail writer follow.
+- **MZB-1232** (ids checked free, and none taken): S9 adds **no record kind, flag, wheel tag, archive kind or dictionary
+  kind**. Checked on this head and on every local and remote ref (218): conflict journaled observations take 0x0800 to
+  0x0817 and latest-wins 0x0090 and 0x0091 (none added), commands 0x8800 to 0x880C (none added); core's SITE_STATE 0x8006 keeps
+  its id and grows (MZB-1231); U-e's 0x0132, the dragons' 0x0510 to 0x0512 and 0x850A, M10's 0x880B stay; the conflict wheel's
+  tags are 0 to 12 (12 is S7's `Ev::Strain`); S6's input tags 22 and 23 and wheel tags 6 and 7 are other modules'; the archive
+  keeps S7's `conflict.broken` and `conflict.refounded` and the existing `conflict.heir`; no ref defines a conflict record kind
+  above 0x0817 or 0x880C, has page magic above RTCE or a conflict wheel tag above 12. The one thing taken is test order 42 (MZB-1233): orders 41 (S7), 40 (TALK) and 34 (nests) are
+  used, 33 and 35 to 39 are left free for peers, and no ref uses 42 or above.
+- **MZB-1233** (test order 42, `CONFLICT_SEND`, TEST mode only): `u64 faction, u8 party kind (PartyKind index), u8 pad, u16 pad,
+  i32 x, i32 z`. The engine calls `send_party(w, f, None, kind, Target::Pos(pos), at)` for the faction's key, as if its feud
+  had decided, and refuses (logged) a key that is no camp. `rtsim-jni/src/orders.rs` (`OP_CONFLICT_SEND` 42 and its table
+  row), `NativeCodec.CONFLICT_SEND`, `NativeEngine`, `RtsimTests.sendParty`. Why: a GameTest cannot make the real engine send a
+  party (MZB-1016, MZB-1045), so a Frostmaw killed away from its unloaded den and a grove warrior killed on a march could not be
+  tested end to end. S7's order 41 needs no change.
+- **MZB-1234** (documents the build changes): `docs/boundary.md` §2.5 (SITE_STATE size, the tail's `p2`), §9.3 (FACTION_FOUND's
+  tail), §9.6 (the engine side), §9.7 (the grove and den sections), the order table in `orders.rs`; EQUILIBRIUM.md §2.2 (the
+  watched rule), §2.4.7 (the grove's numbers: 73 days, 6.6 a year, the held share), §2.6 items 2, 3 and 8, §3.3's grove row,
+  §3.6's grove rows, §4's S9 row (built) and §5.2; MOWZIE.md §0 ("a few days"), §4.5, §4.10 (the recruits row and the table),
+  §4.14 (the tunables row), §7's sim runs 5, 6, 10, 11 and 12 and the "Loot supply" paragraph; the kernel's `Arrival::OnLoad` doc
+  (`rtsim-kernel/src/renewal.rs`); `neoforge/README.md` (the new GameTests); this file's M9 text where it says the grove
+  recruits.
+- **MZB-1235** (culture data): `CultureDef.found_cap: Option<u32>` (a culture with `renewal` and `camp_bodies`; at least 1 and
+  at most `pool_cap`; refused otherwise); umvuthana.json as MZB-1210 and `"found_cap": 5`. frostmaw.json is unchanged.
+
+### The Java side
+
+- **MZB-1240** (core): production: `sites/SiteLedger` carries `p2` (MZB-1231: the `Tail` offset, the `Row` record, `apply`,
+  `writeTail`, `save` and `parse`; a `:core:test` for the round trip and for an old row reading 0). Nothing else: `Camps`,
+  `ConflictBridge`, `KillCredit` and the bridges already send the credit BAND_CASUALTIES needs (S7's EQC221 corrected the stale
+  comments). Tests: `NativeCodec` order 42 and its `NativeCodecTest` pin; `RtsimTests.sendParty`.
+- **MZB-1241** (mowziesmobs plugin): **no production change.** `DenKind` and `GroveKind` are as built: the hold constants
+  (MZB-1220), the grove's edge placement (`EDGE` 20, `SEEN_RANGE` 256, 20 tries), `slots`, `holdSpawn`, `holdRemoval`. The
+  culture data lives in rtsim-conflict, not in the plugin. New GameTests only (MZB-1265).
+- **MZB-1242** (the emulated plugin): `synth::FakeConflict` already answers a RECOUNT and a SPAWN for a grove; it gains
+  nothing but `rate_grove_cultures` beside `rate_den_cultures`; rtsim-host's fake Java writes the tail's `p2` from its ledger.
+
+### Forks
+
+Each fork lists its options and the one taken; where unsure the conservative one (the one that mints least and changes least
+of what is built) is taken.
+
+- **MZB-1250** (F1, **FOR BEN (FB-S9-1)**, the grove's pace): (a) `min(96, 6 x 2^P)` a warrior, as §2.4.7; (b) base 3; (c) base
+  12; (d) keep the rate and add pressure to it, as S7's pool camps (refused by `Culture::resolve` for a body camp, and a rate
+  cannot owe a body one at a time); (e) a second, shorter base for losses no player caused (the kernel has one base). **Taken
+  (a)**, the numbers of FB-S9-1.
+- **MZB-1251** (F2, **FOR BEN (FB-S9-2)**, the grove's plunder clock): (a) unchanged; (b) the raider's `plunder_mood`. The build took (a);
+  **Ben decided (b), 2026-10-30** (MZB-1280).
+- **MZB-1252** (F3, **FOR BEN (FB-S9-3)**, a boss in front of a player): (a) keep the hold, 160 blocks and 6,000 ticks; (b)
+  §2.2 as written; (c) a longer limit. The build took (a); **Ben decided otherwise, 2026-10-30: spawn anyway, with an effect**
+  (MZB-1272).
+- **MZB-1253** (F4, **FOR BEN (FB-S9-4)**, the Umvuthi's pressure in the ledger): (a) carry `p2`; (b) do not; (c) a second site
+  kind. **Taken (a)**, and **Ben decided (a), 2026-10-30.**
+- **MZB-1254** (F5, one pressure or two): (a) two, the Umvuthi's own; (b) one shared. **Taken (a)**: with one the grove sits at
+  0.10 of K while its Umvuthi is farmed and a warrior farmer slows the heir 2.4 times (MZB-1203, item 5).
+- **MZB-1255** (F6, K of a grove found short or empty): (a) K the count found, 5 when none and no row; (b) K 1 as built; (c) K
+  7, the median; (d) K 9, the ceiling. **Taken (a)**: the jar's minimum mints least, and a grove found short stays short for
+  good, as MOWZIE.md §4.5 has it.
+- **MZB-1256** (F7, the Umvuthi's column that dies with it): (a) no loss to the warriors (BY_NONE, Other); (b) the killer's loss,
+  `n/K` each. **Taken (a)**: the jar's `die` is a rule of the Umvuthi, the warriors drop no mask without a hit, and (b) would
+  put a K 7 grove at P 1 for one kill; the Sol Visage is paid for by `chief_pressure`.
+- **MZB-1257** (F8, the unclaimed death of a warrior): (a) Other away from a player's district, Player at one (S7's FB-2 (a));
+  (b) the boss rule everywhere (a trap's kill presses); (c) credited only. **Taken (a)**: one rule for every pool and the same
+  watched and unwatched fight. Accepted: a FakePlayer farm at a grove presses nothing (cause Other) and gets a mask from one
+  warrior in three, limited by the 6-day wait to 16 warriors a game year, and masks are no boss loot.
+- **MZB-1258** (F9, a grove warrior's arrival in front of a player): (a) as built, never held, at the far edge; (b) held like the
+  Frostmaw; (c) a WalkIn from beyond sight (a spawn 130 blocks out that walks in, a new rule and a path). **Taken (a)**: a
+  warrior arrives every 6 days or more, the edge is inside its 25-block restriction, and §2.2 allows a WalkIn for a kind that
+  walks.
+- **MZB-1259** (F10, the census): (a) three kinds; (b) one kind and a culture column; (c) per culture name. **Taken (a)**: the
+  names are the S11 soak's interface and a kind needs no new field. (F11, tests of the old rate: (a) a `rate_grove_cultures`
+  helper for the engine tests that need a rate, as `rate_den_cultures` is for the den, MZB-286; (b) rewrite each. **Taken (a)**,
+  rewriting the ones that assert the old behaviour.) (F12, the marches' test: (a) test order 42 and real-engine GameTests; (b)
+  Rust tests only. **Taken (a)**: the uninstall test already lost its party for want of it.)
+
+### Tests
+
+- **MZB-1260** (Rust, `rtsim-conflict`, failing-first): the first step of the build is the data change; `cargo test -p
+  rtsim-conflict` then lists what asserts the old rate, each rewritten to the new rule or moved to
+  `synth::rate_grove_cultures()` (the grove's analogue of `rate_den_cultures`, MZB-286). The inventory is in MZB-1268. New, each
+  written and shown failing before its code: `the_groves_warriors_come_back_one_at_a_time` (today the pool refills at 2 a day),
+  `a_players_kill_of_a_warrior_presses_the_members_and_not_the_chief`, `the_umvuthis_pressure_is_its_own` (killing the Umvuthi
+  leaves the warriors' P and a warrior's kill leaves the chief's, and the heir's wait is 12 days either way),
+  `an_umvuthi_killed_on_a_march_presses_only_its_own` (the `chief_killed_by` guard), `a_credited_march_casualty_presses_the_grove`,
+  `a_mobs_kill_on_a_march_does_not`, `an_unclaimed_march_death_does_not_and_one_at_a_players_district_does`,
+  `a_replayed_casualty_bumps_a_grove_once`, `the_umvuthis_collateral_deaths_press_nothing`, `an_envoy_or_a_scout_presses_nothing`,
+  `the_heirs_warrior_is_no_loss_and_is_replaced_by_the_rule`, `a_grove_found_empty_has_k_five_and_waits_the_cap` and its
+  adoption twin (an untagged Umvuthi seen resets only the chief's pressure), `a_known_grove_found_again_changes_nothing`,
+  `the_row_restores_both_pressures_aged`, `a_restart_changes_no_decision_for_a_grove`, the culture tests (`found_cap` accepted
+  and refused, the grove's `renewal` parses, `pool_renewal` still refused for a body camp), and the `check()` invariants.
+- **MZB-1261** (Rust, ledger and protocol): `rtsim-kernel` `sites`: `SiteState` and `FoundRow` round trips with `p2`, a size
+  that does not match refused; `rtsim-jni` `protocol.rs`: `a_reset_hands_a_groves_two_pressures_to_the_new_engine`
+  (a warrior and the Umvuthi killed by a player, the fake ledger keeps both through a reset with GAP, the new engine waits
+  what was left with both pressures aged), `site_states_coalesce_and_take_fresh_sequences` still holds; rtsim-host's host test.
+- **MZB-1262** (harness, `rtsim-cli/src/sim/equilibrium.rs`, the row's tests): a `mowzie_run` harness on `CampRun`'s emulated
+  plugin (a world of dens and groves, seeds, scripted players: none, kill-all, a farmer, a wanderer). **`kill_all_dens`**: every
+  den killed by a player on a day; each Frostmaw is back (members at K, crystal) in 12.0 days, every seed within 13 (the wait at
+  P 1), at 24 days the census line `conflict.den` shows full. **`kill_all_groves`**: every grove (K 5 to 9) wiped: 90% back in a
+  median of 73 days [54, 91], every seed within 100, all back at the same day for K under 10. **`farmed_den_yields_closed_form`**:
+  60 game years, a kill 2 days after each arrival, 1.79 a game year within 5% (run 6 does it for one den; this does it for
+  twelve and reads the census). **`farmed_grove_yields_the_chained_rate`**: K 5, 7, 9 farmed by a visitor every 2 days for 60
+  years: within 5% of the chain the test replays from the kernel's own `Pressure` and `RenewalRule` over the same kill days
+  (5.7, 6.7, 7.5 a game year), not of §3.3's 5.8. **`unattended_groves_hold_their_band`**: 60 years, no player, villages of pop 6
+  and over in reach: the held share 0.80 to 0.97 (K 5 to 9 alike 0.89), flat by century, no drift; and
+  `a_grove_with_no_village_in_reach_holds_everything`. Each has a 30-seed `#[ignore]`d version (`_30_seeds`).
+- **MZB-1263** (`sim census`): `census_counts_every_kind` and `census_is_flat_with_no_player` take the `mowzie` scenario;
+  `the_mowzie_scenario_shows_a_players_pressure` (a den and a grove killed: P 1.00 and `1/K`, `empty` 1, then the arrivals).
+- **MZB-1264** (`sim mowzie`): with the data change alone, the one test `the_built_runs_pass_every_check` (27 s in debug) fails
+  four checks, and runs 1 to 4, 7 to 9, 12 and 13 pass: run 5 ("the grove in and out ... the pool refills to its cap"), run 6
+  ("an emptied grove refills to its cap of 9 at 2 a day": full after none), run 10 ("a grove's refill is spawned at its next
+  census") and run 11 ("the heir is due at 12 days": 30.6, the shared pressure, MZB-1203 item 5). Each is rewritten to the new
+  rule at the build (run 6's grove part gains the warriors' farmed rate; run 11's check passes once the pressures are two, which
+  is its failing-first test; run 12 keeps the Sol Visage at 1.80). Exit 0 is the gate.
+- **MZB-1265** (GameTests; the row's five by name, with what already covers them; the real-engine tests skip, recorded, on the
+  stub):
+
+  | Row name | State | S9 |
+  |---|---|---|
+  | `resetDoesNotMintAFrostmaw` | S3's `resetKeepsAFarmedSiteFarmed` covers a Frostmaw killed at home | **new, three cases**: (A) killed away (order 42 sends the raid, a fake player kills the puppet on the road, the den is out, its saved body stands): after a plain reset the first census removes the left-behind body by UUID and no SPAWN comes before the row's wait; (B) the ledger row forgotten (`SiteLedger.forget`) and the den found empty and LATE: no Frostmaw for 192 days (`siteFoundEmptyWithoutLedgerWaitsTheCap`'s den twin); (C) a reinstall (GAP) after a kill: the wait does not shorten |
+  | `aLuredFrostmawIsAPlayerLoss` | S3's `aLuredBodyIsAPlayerLossAndAStraysDeathCounts` first half | none; the README maps the name |
+  | `aStrayFrostmawsDeathRaisesItsDensPressure` | the same test's second half | none; mapped |
+  | `aPetOrTrapKillAtADenIsAPlayerLoss` | S3's `trapKillAtABossSiteIsAPlayerLoss` has the trap (lava, a FakePlayer); no den test has a pet | **new** `aPetsKillAtADenIsAPlayerLoss`: a wolf tamed by an online fake player lowers the Frostmaw to 1 health and kills it: CAMP_DEATH by PLAYER with the owner, P 1, the row waiting 12 days |
+  | `anUmvuthiHeirTakesAWarrior` | `anUmvuthiHeirTakesTheFarthestFreeWarrior` (scripted engine) | **extended on the real engine**: after the pair the grove's row is short by one with P unchanged, its wait is `6 x 2^P` days, and a warrior SPAWNs at the edge when it ends |
+
+  New for the grove: `aKilledWarriorIsReplacedAfterTheWait` (a player kills one of three adopted warriors: the row is waiting at
+  `P = 1/3` and 7.6 days, half-way no SPAWN, past it a RECOUNT and one SPAWN at the far edge, P aged),
+  `aGroveWarriorKilledOnAMarchRaisesItsPressure` (order 42 sends a raid; a fake player kills a warrior puppet: BAND_CASUALTIES
+  by PLAYER, P `1/K`, a wait booked),
+  `aResetKeepsAGrovesTwoPressures` (a warrior and the Umvuthi killed, a plain reset: both pressures aged, both waits as handed
+  over), `aKilledUmvuthiLeavesTheWarriorsPressureAlone`; and S3's `uninstallLeavesHomeBodies` **extended**: its dead warrior's
+  row is WAITING with the cap's wait (96 days), not only P unchanged. Core: `SiteLedgerTest` for `p2`. Each GameTest batch is
+  its own, on a far base, as S3's are.
+- **MZB-1266** (the long-horizon bands, S11's inputs): `long_horizon_mowzie_with_kills` (60 game years, the roamer script, the
+  wanderer and the farmer on separate worlds): dens held 0.93 to 1.00 (roamer 0.93, none 1.00), groves held 0.80 to 0.97 with no
+  player and villages in reach (0.89 on average), 1.00 with none in reach, and the roamer's band set from the first 30-seed
+  run (the model's 0.94 had no plunder loss, MZB-1203); the renewal events per day flat by century (arrivals only: a grove's
+  are bounded by K per wait); no den or grove broken (there is no break); state bytes flat. The bands are replaced by the
+  engine's own from the 30-seed runs, as §4 says.
+- **MZB-1267** (how they run): `cargo test --release` under `nice -n 10`, the harness ones in the workspace, the 30-seed ones
+  with `--ignored`, never under the GameTest lock; the GameTests per `neoforge/gametest.sh` for `mowziesmobs` and `core`, each
+  from a cleared world (MZB-1047's rule); the viewer fixtures regenerated and `rtsim-view` and `rtsim-host` run on them.
+- **MZB-1268** (what the data change breaks, measured at the design): umvuthana.json edited as MZB-1210 in this worktree and
+  `cargo test -p rtsim-conflict --no-fail-fast` run (debug, 2026-10-30; the edit was reverted before the commit): **587 of 596
+  pass and nine fail**, each asserting the old rate or the old shape of the grove's definition. In `culture.rs`:
+  `the_groves_chief_fields_parse_and_resolve` (it asserts the grove has no member renewal), `each_chief_field_error_is_its_own`
+  (its "a renewal beside a chief_body needs a rate of 0" case now finds the rate already 0) and
+  `the_frostmaws_renewal_parses_and_resolves` ("the others keep the rate" names umvuthana). In `tests/camp.rs`:
+  `a_refill_while_the_camp_is_out_is_spawned_at_the_next_census` ("five and two a day": 5, not 7),
+  `a_member_lost_on_a_walk_off_books_once_in_the_camp` ("refilled to the cap"), `a_draw_leaves_the_owed_slots_for_last`,
+  `the_audit_names_a_pool_the_slots_at_home_fall_short_of` and `a_lost_set_out_answer_costs_the_ghosts_it_made_and_holders_make_none`
+  (a pool refilled to 9). In `tests/mowzie_aloft.rs`: `a_chief_killed_away_after_the_pool_grew_dies_in_its_own_slot` ("the
+  ledger followed a gain"). The other 587, among them `grove.rs` (66), `mowzie_records.rs` (129), `strain.rs` (44),
+  `cultures.rs` (24) and `mowzie_march.rs` (24), pass unchanged. The six tests that need a rate (five in `camp.rs`, one in
+  `mowzie_aloft.rs`) move to `rate_grove_cultures`, and the three culture tests are rewritten to the new shape.
+- **MZB-1269** (the same edit on the other crates): `cargo test -p rtsim-jni --no-fail-fast` (504 tests, the protocol suite's 80
+  among them) passes unchanged, so no fake-Java test there reads the grove's rate; the `sim mowzie` result is MZB-1264's.
+  `rtsim-cli`'s other tests (the long-horizon harness, `sim census`), `rtsim-host` and the rest of the workspace were not run: the
+  gap is stated, not assumed, and lane A's first step runs `cargo test --workspace` with the data change before any code.
+
+### What it leaves
+
+- **MZB-1270** (not done on purpose): (1) the grove's plunder cadence is CONFLICT-LIFE.md's; S9 only measures what it costs the
+  grove (MZB-1203) and offers the mood block as FB-S9-2; (2) a FakePlayer farm at a grove presses nothing (F8); (3) the
+  Frostmaw migrant "from the range's unexplored side" (EQUILIBRIUM.md §2.4.7) is a story: it is placed at the den, EQUILIBRIUM.md's
+  own OnLoad kind, and no WalkIn is built for a boss (it would need a march record for a party that never set out, and the
+  den sleeps inside a ruin); (4) the Umvuthi's heir wait is not in the ledger row (F13, MZB-1032); (5) a grove found short keeps its smaller K for good, and a
+  reset without the ledger file shrinks it; (6) no news, no timeline kind for a refill (FB-4); (7) K above 9 (summons the census
+  adopts are removed above the cap, as built); (8) the cranes and followers a grove summons are uncounted, as built;
+  (9) the masks: one warrior in three drops one, unchanged; (10) a grove's raids on villages (cause Faction) never press, so a
+  grove that loses a pack every plunder stays at 0.89, by design.
+- **MZB-1271** (risks): (1) the data change touches many conflict tests and the Mowzie sim runs (MZB-1268); (2) SITE_STATE grows
+  and is shared by lairs, nests and camps, so the three codecs and the Java ledger move together; (3) `chief_killed_by`'s guard
+  and the cause split are small edits in the file S7 also edited, and a merge with S7's review fixes must re-read them;
+  (4) the 128-against-160 text conflict is a documentation risk until the text is corrected; (5) a world made before S9 with a
+  saved RTCE page is not read (no compatibility before a release); (6) `Pressure::at_cap` for a grove found empty uses the
+  warriors' rule, 96 days to the first warrior, a long first wait for a world whose groves were cleared before the mod: the
+  conservative reading of "found empty".
+
+### Ben's answers (2026-10-30)
+
+Ben answered the four FOR BEN items on 2026-10-30. **FB-S9-1: (a), base 6, as built. FB-S9-4: yes, the Umvuthi's pressure in the
+ledger row, as built. FB-S9-2: YES, the grove plunders on its losses (the raider's block), against the recommendation, built as
+MZB-1280 to MZB-1284. FB-S9-3, in Ben's words: "Just spawn anyway, bonus points if you have some cool effects."** (none of (a) to
+(c)), built as MZB-1272 to MZB-1279. The records above that say "Taken (a)" for MZB-1251 and MZB-1252 are the build's first reading and
+are superseded by these.
+
+- **MZB-1272** (FB-S9-3, decided by Ben, 2026-10-30: the hold is dropped for a boss's return): a Frostmaw at its den and an Umvuthi on
+  its throne (a SPAWN, or an heir seated by the pair) are placed when due, with a player beside the spot or watching: `DenKind` and
+  `GroveKind` answer `holdSpawn` false (no 160-block wait, no 6,000-tick limit; `DenKind.HOLD_RANGE` is gone, `GroveKind.HOLD_RANGE`
+  stays for Rule U's removal hold, which is unchanged: a boss in a fight or with a player beside it is still never taken away). The core's
+  `CampKind.holdSpawn`, `Camps.HOLD_MAX` and the held counters stay: a kind may still hold, a census in progress still holds every
+  SPAWN (`c.recount`, MZB-660), and the machinery stays under test on `MowzieKit.HoldingKind`, which keeps the pre-S9 grove rule.
+  §2.2's "nothing pops in front of the player" now says "but a boss", in EQUILIBRIUM.md §1.1, §2.2, §2.6 item 8 and the
+  assumptions table, and MOWZIE.md §4.5, §4.6, §4.9, §7 test 5 and the plain-view row say the same.
+- **MZB-1273** (the hook): `CampKind.arrived(level, site, body)`, a default that does nothing, is called by `Camps.makeBody` once
+  `level.addFreshEntity` took the body of a SPAWN or a SEAT_HEIR (so also an heir seated in place of the old chief's body, MZB-410),
+  inside a `try` (an exception is logged and the line goes on), and counted in `Camps.arrivedBodies`. It is not called for an ADOPT, a
+  HAND_BACK or a puppet: nothing is made there. It must journal nothing and change nothing of the body.
+- **MZB-1274** (the Frostmaw's arrival, `BossArrival.frostmaw`; everything is the game's or the jar's, D3): at the den's spot, one burst in
+  the tick of the arrival: (1) 60 `BLOCK` particles of packed ice, the ground breaking; (2) the jar's roar ring, `ParticleCloud.Data`
+  (0.75, 0.75, 1.0; scale 40 and 35; 22 ticks; GROW), two rings of 15 flying out at 0.9 and 0.65 blocks a tick a block up, as
+  `EntityFrostmaw.doRoarEffects` spawns them; (3) the jar's `ParticleSnowFlake.Data(40, false)` (30) and vanilla's `SNOWFLAKE` (90) and
+  `CLOUD` (20) drifting up round it; (4) three sounds, `MMSounds.ENTITY_FROSTMAW_FROZEN_CRASH` (volume 3), `ENTITY_FROSTMAW_LAND`
+  (2, pitch 0.8) and `ENTITY_FROSTMAW_ROAR` (4, the volume of the jar's own wake-up roar); (5) `EntityCameraShake.cameraShake` of 45 blocks,
+  magnitude 0.03, 20 ticks and 20 of fade (the jar's roar shake is 60 and 20). The Frostmaw stays asleep, as the den keeps it.
+- **MZB-1275** (the Umvuthi's arrival, `BossArrival.umvuthi`): at the throne, one burst: (1) 24 of the jar's `ParticleOrb.Data.create`
+  orbs (mode 1, flying to the Umvuthi at speed 6) from a sphere of 3.5 blocks, as its attack gathers them (`EntityUmvuthi`: 7 from 2); (2)
+  a ring of 20 `FLAME` along the ground at 0.22 blocks a tick, five `CAMPFIRE_SIGNAL_SMOKE` columns rising from the fire pit's place and 60
+  `ASH` falling round it (vanilla's); (3) `MMSounds.ENTITY_UMVUTHI_BELLY`, the belly drum (volume 3), and `ENTITY_UMVUTHI_ROAR` (3); (4) a
+  light camera shake, 28 blocks, magnitude 0.015, 10 ticks and 20 of fade.
+- **MZB-1276** (what is not used, and why): the jar's animations and abilities. The Frostmaw's `ACTIVATE_ANIMATION` (118 ticks, wake-up
+  sound, a roar and a 45-block shake at tick 52, boss music) is what the jar plays when a target is within 8 blocks: it sets `active`, after
+  which the jar's goals (swipes, ice breath, ice balls) and its boss music run against whoever is near, so an arrival that played it would
+  start a fight with the player who stays, which "just spawn anyway" does not ask for (unverified on a client: the jar's target goals
+  were not read, only that `active` is what its tick needs for a fight); the arrival replays the animation's own effects (the roar ring, the
+  roar, the shake) from the server and leaves the Frostmaw asleep. The Umvuthi's abilities (`SpawnFollowersAbility`, the sun flare, the
+  supernova) summon cranes and fire the sun: a gameplay effect and uncounted bodies. The jar's own particles that are `AdvancedParticleType`
+  (SUN, RING, LEAF and the rest) are sent with no components, so they would show as hard static discs; they are left out.
+- **MZB-1277** (the warriors, decided by the build, recommended): a grove's warriors keep spawning out of sight, as built (MZB-1220),
+  and get no effect. Reason: they come one at a time every six days or more (a grove farmed to the cap, one every 96); a burst for
+  each would be noise a player learns to ignore and it would put the boss's return, the rare event, beside a routine one; and the
+  place they come to, the grove's edge on the side away from the nearest player, is already chosen to be unseen. The hook sees
+  them (the kind answers nothing for a warrior) and `aDueUmvuthiIsSeatedAtOnceBesideAPlayerWithItsArrival` pins it.
+- **MZB-1278** (reach and cost): the burst is sent only when a non-spectator player is within 64 blocks (nothing is built otherwise, and no
+  camera shake entity); particles by `ServerLevel.sendParticles`, so to players within 32 blocks, the roar and drum as sound packets to
+  every player of the level in earshot (vanilla's rule, 16 blocks a volume above 1: 64 at volume 4), over `level.players()` since vanilla's
+  `playSound` broadcasts over the server's whole list; a camera shake entity lives 40 ticks. A player gets 34 (Frostmaw) or 50 (Umvuthi)
+  particle packets and 3 or 2 sound packets, once, per arrival; a boss's return is a rare event (a den once a few game days at the
+  fastest, EQUILIBRIUM.md §2.4.7).
+- **MZB-1279** (tests, and what is unverified): `BossArrivalGameTests`: a Frostmaw SPAWN, an Umvuthi SPAWN and an Umvuthi heir's pair, each
+  with a hearer 6 blocks off that keeps every packet (`FakePlayers.overhearing`) and one 150 blocks off that is sent nothing: DONE within
+  200 ticks with nothing held, the body where it belongs, the arrival counted once, the particle types and counts, the sounds, one
+  camera shake, 30 to 100 particle packets (one burst), every packet through vanilla's wire codecs (so a jar type whose codec does not
+  work fails here and not on a client), and a warrior's SPAWN quiet. The hold's own tests moved to `HoldingKind`
+  (`aHoldingKindsChiefSpawnWaitsForThePlayerToLeaveOrSixThousandTicks`, `anEpochsEndAnswersEveryHeldLineStale`, the heir test's G1);
+  `aRefilledPoolIsSpawnedAtTheNextCensus` and `aForceLoadedSiteRefillsWhenUnwatched` now place the den's Frostmaw at once;
+  `aHeldFrostmawIsPlacedAfterHoldMaxWithAPlayerStillNear` and `aHeldSpawnIsAnsweredStaleWhenTheDenGoesOut` are removed (their
+  machinery is the grove's). Unverified: how the burst looks and sounds on a client (the GameTests are headless: no client in this
+  session draws or hears a packet); the numbers (counts, speeds, volumes) are the jar's own, copied, and are PLACEHOLDERS for Ben's eye.
+
+- **MZB-1280** (FB-S9-2, decided by Ben, 2026-10-30: yes, against the recommendation): `umvuthana.json` carries the raider's
+  `plunder_mood` block unchanged (half-life 96 days, `loss_gain` 2.8, `spoils_gain` 0.15, `chief_loss_share` 0.1, factor 0.5 to 3)
+  beside its `plunder_mean_days` 12. No code: the engine's `mood.rs` (EQC285 to EQC290) feeds it already, from `party_lost`
+  (`grieve_members`: a lost member is `1/cap` of grief, whoever killed it, which is a lost raptor pack at a defended village) and
+  `chief_falls`, and a plunder that brings loot home is `gloat`. The grove's mood is saved in its faction row as the raider's is
+  (RTCF carries it already; no format change, so no fixture refresh). A grove's temperament still bends the wait.
+- **MZB-1281** (measured, `unattended_groves_hold_their_band_30_seeds`: 30 seeds, 60 game years, villages with a livestock surplus,
+  nobody within reach, median [5th, 95th] over seeds of the mean over the last 59 years): the plunder interval is **33.7 days [23.7,
+  62.6]** for K 5, 7 and 9 alike (33.3 for K 9), against 13.2 [10.3, 23.3] with villages that have nothing worth taking (grief 0:
+  the mood idle, the plain 12 plus the days a pack is away) and against the design's "about every 35 days", which holds. The hold is
+  **0.963 [0.947, 0.981] of K 5, 0.974 [0.962, 0.986] of K 7 and 0.979 [0.971, 0.988] of K 9** (design: 0.96 to 0.98, which
+  holds), against 0.91, 0.94 and 0.95 without the mood (the first S9 build's measurement), flat by century (first half against second half
+  within 0.003). The highest grief a run reaches (a share of the cap lost lately) is 1.58 [1.17, 2.10] for K 5, 1.12 for K 7 and 0.91 for K 9: above
+  1.0 it sits on the block's factor of 3, so the interval cannot grow past three times the plain wait and the losses never stop
+  the raids. With the 2 seeds of the default test: 31.1 days and 0.965, 0.976, 0.980.
+- **MZB-1282** (what the player sees): villages near a grove meet a raptor pack about every 34 game days instead of every 12 (a
+  third as often, as the design said), the grove stands closer to full when it is left alone, and a grove that is being farmed is
+  unchanged in its renewal (the mood bends only the plunder clock; the renewal waits are the pressures'). A war chief lost
+  with a band is mourned too (`chief_loss_share` 0.1 of the cap): the next plunder is put off by a factor of `exp(0.28)`, about 1.3.
+- **MZB-1283** (the harness bands, set from MZB-1281, not from the design's guesses): `unattended_groves_over` asserts for the
+  rich-village groves a median held share in 0.94 to 0.985 (K 5), 0.955 to 0.99 (K 7) and 0.96 to 0.995 (K 9) and a median plunder
+  interval of 26 to 42 days; for the plain villages 0.97 or more as before. The long-horizon grove under no script asserts 0.95 to
+  0.995. `MowzieRun` gained `plunders` (the faction's draw count) and `grief_peak`. The quiet cultures that switch the grove's
+  plunder off also drop its mood (a mood with no `plunder_mean_days` is refused).
+- **MZB-1284** (tests that moved): `mood.rs`' two tests name the grove (`the_raider_and_the_grove_have_a_plunder_mood_and_no_other_
+  culture_does`, `only_a_raider_or_grove_camp_has_a_mood`: the grove's block equals the raider's) and `grove_renewal.rs`'s
+  `a_groves_lost_pack_lengthens_its_plunder_wait` pins one lost pack at `exp(2.8 / 7)`, loot home at `exp(2.8 / 7 - 0.15)` and the clamp
+  at 3 (failing first: with the block out of the JSON it fails at "a grove has a mood" and the other 19 `grove_renewal` tests pass; the
+  red run stopped there, so the mood binary was not run red, where its two renamed tests would fail the same way). One test elsewhere changed by the mood: `the_censuss_trade_memory_is_unioned_and_a_short_body_is_written_to`
+  (`tests/grove.rs`, seed 12) used a grove that plunders, and with the mood's different draws a raptor pack was away at the
+  heir's due tick, so the heir waited for the band, which is right and not what the test is about: it now uses `quiet_grove` (the
+  plunder drive off), the way the neighbouring heir tests do.
+
+- **MZB-1285** (a grove's saved state does not grow; the coordinator's check for S11's 262,980-day soak): the first build's
+  `long_horizon_mowzie_with_kills` allowed the rich-village grove's save 12 bytes a game day and said, in a comment, that it grew by
+  about 7 "found in this run, not diagnosed". Diagnosed with a per-section size of the conflict save (a temporary
+  function, removed): **the growth was the outbox, the engine's queue of commands to the plugin.** `unattended_grove` only ran the
+  engine and never took its commands, and the engine queues a march record (BAND_MARCH) for each raid it sends and keeps every command
+  until the host takes it (`Conflict::take_commands`, which the bridge calls every tick). Over 12 game years of the rich-village grove the
+  outbox section went 583 to 3,253 bytes (about 35 bytes a raid, 350 a year at a plunder every 34 days) and every other section
+  was flat: factions 528 to 534, stats 76 to 77, java_dict 893, the rest 1 to 48. Taking the commands every day, the whole save is
+  1,613 bytes (K 7) at year 1 and at year 12, 1,577 to 1,613 between. So the growth was the harness's, not state of a grove, a
+  wheel entry or a ledger row: no list in a grove's row, no wheel event and no row per event grows. Fixed in the harness
+  (`unattended_grove` takes the commands every day, as a host does; `unattended_grove_with(.., drain: false)` is the old
+  behaviour) and the long-horizon test's raid allowance is gone (4,096 bytes of room for every run, doubling the quarter-run's size).
+  New test `a_groves_save_does_not_grow_with_the_years` (rtsim-cli): K 5, 7 and 9, seed 1, 60 game years in rich-village
+  surroundings (149 to 153 plunders), the save at the end of each year is at most 4,096 bytes (measured 1,479 to 1,591 at K 5, 1,577
+  to 1,723 at K 7, 1,669 to 1,813 at K 9), within 256 bytes of the smallest from year 2, and the last year's is within 256 of the first's; and
+  the same K 7 grove undrained for 30 years is more than 500 bytes larger at year 30 than at year 5 (it pins the cause). A host
+  that does not take commands grows without bound by design of the contract: S11's soak must take them like the bridge.
+  The only state that moves with the years is the stats counters (varints, a byte more per factor of 128 in a count) and the
+  faction row's few floats; the bound is reached at once and not approached.
+- **MZB-1286** (no tick stored as 32 bits in S9; 2^32 ticks is game day 178,957): everything S9 adds to a save is a float
+  pressure and a **game day** as `u32` (`Camp.chief_pressure` in the conflict pages: `put f32, u32 at_day`; the same for the
+  warriors' pressure before S9; 4.29 billion days is 11.7 million game years), a `u64` count in the stats (`grove_arrivals`, a
+  varint), the ledger's second pressure (`SITE_STATE` +56 an `f32`, the found tail +36 an `f32`; the Java row's p2 is 16 bits of
+  thousandths, a pressure and not a time). The handed-over ages come as `elapsed: u64` ticks (the found tail's, S3's) and the Java
+  stamps and waits are `long`. In the plugin `BossArrival` stores no time and the tests read `ServerLevel.getGameTime()` into
+  `long`. Checked by reading the diff since a4717c1f for every `u32`, `i32`, `int` and cast near a tick, stamp, due or wait.
+
+**S9 review fixes (an Opus review before landing; branch `fix/s9-review`, MZB-1287 to MZB-1292).** Each behaviour fix has its test
+committed first and seen failing on the engine without the fix, then passing.
+
+- **MZB-1287** (P2, the Umvuthi's column that dies with it books the warriors as the player's; coordinator's choice, undoable): the jar's
+  `EntityUmvuthi.die` sets a countdown on the devoted Umvuthana, and they die by `indirectMagic(self, null)`, a BAND_CASUALTIES with `by`
+  NONE. MZB-1256 took "no loss to the warriors", but `pool_cause` (S7's district rule: an unclaimed death at a player's district is the
+  player's) made them the player's whenever the column's target was a district, i.e. on exactly the march MZB-1256 describes. Fix:
+  `pool_cause` does not take the district rule once the band has lost its chief (`lost_its_chief(p)`: the culture's chief is a body of
+  its own, leads this kind of party, and `Party.chief` is clear, which `chief_killed_by` and `succeed` do). The casualties are then Other
+  unless a record credits a player, whose are still his. No saved field and no format change. A raid, which the grove's chief never leads,
+  and an invasion with its Umvuthi alive keep the district rule (`a_band_that_still_has_its_chief_keeps_the_district_rule`). **Failing
+  first** (`an_umvuthi_killed_on_a_march_presses_only_its_own`, the engine without the fix): "they fell with the Umvuthi: no one's loss, at a
+  district too: 0.22222222 against 0" (two of nine warriors booked as the player's); with the fix it also asserts the one warrior a player
+  hit afterwards is his (+1/9, one renewal loss). Updated: EQUILIBRIUM.md S9's row, `docs/boundary.md` §2 grove line.
+- **MZB-1288** (P3.2, a chief lost away did not mark the ledger row): `chief_lost` stepped `chief_pressure` and booked the heir but never
+  called `site_touch(f)`; only other events marked the row, so a reset before any of them handed the old p2 over (an heir wait too short
+  by the loss). Now it marks the row at once. **Failing first** (`an_umvuthi_lost_on_a_march_marks_the_row_at_once`, the rows taken, the
+  Umvuthi killed on a march, the engine without the fix): "the row is behind" (`camp_site_dirty` false after the loss); with the fix the
+  row that goes out carries the new p2. (The test first compared with a pressure read before the muster, which had aged by 0.009: its
+  baseline is read after.)
+- **MZB-1289** (P3.3, nothing round-tripped p2 through the ledger's NBT; the test's javadoc said the GameTests did): `SiteRowPacking` now
+  owns the row's whole long array (`encode`, `decode`), which `SiteLedger.save` and its loader call, so `SiteLedgerTest` (no Minecraft on
+  its classpath) round-trips a row: p2 survives (1.25), a pressure of no worth saves 0, a huge one saturates at the u16 of thousandths,
+  and a wrong length, a short array and an unknown kind do not parse. The javadoc says what is left to the GameTests (the SavedData's own
+  tag, a SITE_STATE applied, the found tail). This is a refactor with a test, not a behaviour fix: no failing-first text.
+- **MZB-1290** (P3.4 and P3.5, the grove GameTests): (a) `aKilledWarriorIsReplacedAfterTheWait` asked `engineRecounts >= 1`, which the
+  grove's adoption could already have made true: it takes the count before the wait ends and asks that the arrival raised it. (b)
+  `aResetKeepsAGrovesTwoPressures` asked `b.p2() >= aged(a.p2(), elapsed) - 1e-3`, true by construction (`found_empty_heir` sets the cap
+  over whatever was handed, and the Umvuthi in that test is dead at the reset): it asks the cap's value, log2(192 / 6) = 5, and above the
+  row's aged. (c) New `aResetHandsAnAliveUmvuthisPressureOver`: a grove found with no Umvuthi, past the cap's wait (192 days) the heir is
+  seated and the row's p2 is 5 aged twice, about 1.25; after a plain reset the Umvuthi stands, the tail carries p2 and the new engine's
+  is the row's aged, not the cap's 5 again. **Not run here**: GameTests need the mowziesmobs round (queued after the merge into
+  `mic-rtsim-s9`); the three are unverified until it returns. README table updated.
+- **MZB-1291** (P3.4 and P3.5, the Rust tests): `a_credited_march_casualty_presses_the_grove` compared `chief_p` with itself and ended on
+  an always-true disjunction; it now takes the Umvuthi's pressure before and asserts it unchanged, and asserts the wait the casualties
+  planned is 6 x 2^(2/9) = 7.0 days (not the 6 of P 0, the order of the bump and `party_lost`) and is not pushed out by a later
+  casualty. `the_body_cultures_book_what_they_booked` (strain.rs) restated other tests and is deleted. `a_known_grove_found_again_changes_nothing`
+  handed over pressures of 0; it now has two warriors killed by a player, an Umvuthi seated by the cap's wait, both pressures
+  above their bounds, a running wait that ends where it did (within 200 ticks), and no SPAWN. The census scenario asserts that a den's
+  arrival stays out of the grove's renewals and the reverse (`conflict.grove` renewals 0 and `grove_arrivals` 0 at a den; `conflict.den`
+  renewals 0 and `arrivals == grove_arrivals` at a grove). New: `an_unclaimed_umvuthi_death_is_a_players_loss_and_a_mobs_is_not` (the
+  Umvuthi is a boss kind: BY_NONE and BY_OTHER press its own p2 by one and the warriors' not at all, BY_MOB presses nothing; the heir
+  waits 6 x 2^P days in each) and, in rtsim-jni's `protocol.rs`, `a_test_order_sends_a_camps_party` (order 42: an unknown key and an
+  unknown kind change nothing and the protocol stays clean; a real send makes one raid party toward the block and draws its warriors from
+  the pool). These pin behaviour that already held; they are green on the engine before the fixes except those named above. The
+  long-horizon band for a grove under a visitor was `0.0..=1.0` (true of any number): it is `0.75..=1.0`, from the quick run's
+  two seeds (roamer 0.870, worst 0.703; wanderer 0.922, worst 0.766) after MZB-1287.
+- **MZB-1292** (P3.6, text that predates FB-S9-3): `docs/boundary.md` §2 said the bosses' hold was "unchanged"; it now says the Mowzie
+  kinds do not use it, a boss is placed at once with `BossArrival`, and Rule U's removal hold is unchanged. The header of
+  `crates/rtsim-view/tests/fixtures.rs` said "FB-3 the built hold" and "FB-2 no plunder mood"; it says the hold was dropped and the grove
+  has the raider's plunder mood. The camera-shake reset at `camp.rs:2076` that zeroes a handed-over p2 is M12a's fix and is not touched.
+- **MZB-1293** (the coordinator, 2026-10-31, found landing S9 with S5's and S6's fixes): `aReinstallResetsTheSimAndAdoptsTheStrippedDistrictsAgain`
+  failed with "A, B and C are to be adopted again: 8" in the core round of the merged head, as it had on `fix/s7-review`'s second core
+  round. A reset plans the re-adoption of every seeded chunk (UR-1), and `Districts.forgetAllForTest` forgot the districts but not that
+  plan, so the chunks of an earlier test's district that never loaded again were still to adopt again when this test's reset counted
+  them. `forgetAllForTest` now clears the dimension's plan too, so each reset test counts only its own chunks, whatever ran before it.
+  M12a's MZB-1403 fixed one such earlier test; this fixes the count for all of them.
+
+### Build notes
+
+Built on the landed S7 (a4717c1f), first on the recommendations (FB-1 base 6, FB-2 no grove plunder mood, FB-3 the built hold of
+160 blocks and 6,000 ticks, FB-4 the Umvuthi's pressure in the ledger row), then reworked for Ben's answers of 2026-10-30 (the
+section "Ben's answers" above): FB-1 and FB-4 as built; FB-2 yes, the raider's `plunder_mood` block added to `umvuthana.json`
+(MZB-1280 to MZB-1284); FB-3 the hold dropped and a boss's return given an effect (MZB-1272 to MZB-1279). The text below that
+says "the built hold of 160 blocks" or "no plunder mood" describes the first build. FB-1 is `base_days` in `umvuthana.json` (one
+number; `found_cap` and the cap stay); FB-2 is the `plunder_mood` block of the same file (take it out and `rate_grove_cultures`
+in `synth.rs` stays the rate-based control); FB-4's other answer would have dropped `p2` from SITE_STATE and the found tail
+(`rtsim-kernel/src/sites.rs`, `SiteLedger`) and the reset test.
+
+Commits, in order: 4eb3735e (step 1, the warriors on the shared rule, data and culture), f5b82621 (the second pressure in
+SITE_STATE and the found tail, order 42), acfa1674 (the Umvuthi's pressure, march casualties, `found_cap`, RTCF), c503fe01 (a
+reset hands the two pressures over), 9e63fa2c (`sim mowzie` runs 5, 6, 10), 3fd49b2a (census), fda71aec (harness tests), 05f8a281
+(the documents), 823a9f53 (the Java GameTests, `SiteRowPacking`), the clippy fix, and the fixtures.
+
+Where the build differs from the design text above, and why:
+- **`chief_killed_by`'s guard** is `def.chief_body.is_none()` (a culture whose chief has a body), not `renewal.boss`: the first
+  version broke the pool camp goblin chief's "one over cap" rule, whose culture has no boss renewal either.
+- **`found_cap` applies only to a camp found with no members (n == 0)**; a camp found short keeps its own K (K 3 stays 3).
+- **The first wait is read at the first death** (MZB-1214's worked example, corrected above).
+- **The unattended hold needs a livestock surplus.** The harness' village stock is `VillageStock::{Plain, Rich}`: a plain
+  synthetic village has no surplus and raids "find nothing worth taking", so the design's 0.85 to 0.92 does not show on it;
+  the unattended runs use rich villages (`mowzie_world_on`), where an unattended grove holds 0.91 to 0.95 of K (EQUILIBRIUM.md
+  §3.3), not the design's 0.89. A `CampRun` world has no village in plunder reach.
+- **Engine numbers differ a little from the model's**: a cleared grove is back to full in 51, 70 and 88 days for K 5, 7 and 9
+  (the model 54, 73, 91); a grove farmed by a visitor every 2 days yields 5.6, 6.6 and 7.3 a game year at the engine (the harness
+  test replays the chain from the kernel's own `Pressure` and `RenewalRule` rather than comparing with §3.3's 5.8).
+- **A den's farmer** needs its first visit seeded at the `lag` (the presser never starts otherwise); the den's wanderer rate is
+  `2.0/400` per even day.
+- **Save growth**: none in a grove's saved state. The first build's run seemed to show 7 bytes a game day in the rich-village grove; that was the harness's undrained outbox, fixed and tested in MZB-1285. S9's own additions to a save are a pressure and a day (the camp ledger), eight bytes in SITE_STATE and a counter.
+- **Order 42 `CONFLICT_SEND`** takes a u16 frame (41 is S7's SLAY); `a_reset_hands_a_groves_two_pressures_to_the_new_engine`
+  pins p2 through a reset (failing-first: without p2 the heir waits 12 days).
+- **Not built as GameTests**: the Frostmaw killed away and the march of a grove stay with the Rust tests
+  (`tests/grove_renewal.rs`, `tests/mowzie_aloft.rs`); the real-engine GameTests are `GroveRenewalGameTests` (a killed warrior is
+  replaced after the wait, a killed Umvuthi leaves the warriors' pressure alone, a reset keeps both pressures, an Umvuthi heir
+  takes a warrior) and `SiteLedgerGameTests` (a pet's kill at a den is a player loss; `uninstallLeavesHomeBodies` extended).
+- **Core's `SiteLedgerTest`** has no Minecraft classes on its classpath, so the pure part of a row's packing is
+  `SiteRowPacking` and the NBT round trip is the GameTests'.
+- The nine rtsim-conflict tests and the four `sim mowzie` checks MZB-1268 and MZB-1264 name were updated one by one, each with
+  its reason in a comment above it.
+
+### The work split
+
+Lanes by file, with the order they must land in. Each lane is one agent: Opus for the engine, the harness, the GameTests and
+the review (hard work), Sonnet for the mechanical codecs and the document edits (never above `xhigh`, never Fable). The lanes
+may also run in sequence in one session; what matters is the order.
+
+1. **Lane A, the engine (Opus):** MZB-1210 to MZB-1216 (umvuthana.json, `found_cap`, `Camp.chief_pressure`, the cause split,
+   the `chief_killed_by` guard, the `casualties()` bump, K of a found-empty grove), MZB-1219's census kinds, RTCF in
+   `persist.rs`, the `check()` invariants, MZB-1260's Rust tests failing-first, the test inventory of MZB-1268.
+   Files: `data/cultures/umvuthana.json`, `culture.rs`, `engine.rs`, `engine/camp.rs`, `persist.rs`, `synth.rs`.
+2. **Lane B, the ledger and protocol (Sonnet, reviewed by Opus):** MZB-1231 and MZB-1233: `rtsim-kernel/src/sites.rs`,
+   `rtsim-jni` (`orders.rs`, `engine/conflict.rs`), `rtsim-host`, core's `SiteLedger`, `NativeCodec`, `NativeEngine`,
+   `RtsimTests`; MZB-1261's tests. Independent of lane A except the engine's use of `p2` (a one-line hand-over).
+3. **Lane C, the harness (Opus):** MZB-1262 to MZB-1264 and MZB-1266 in `rtsim-cli` (`sim/equilibrium.rs`, `sim/census.rs`,
+   `sim/mowzie.rs`), the 30-seed versions, the bands from the runs. Needs lane A.
+4. **Lane D, the GameTests (Opus):** MZB-1265 in `neoforge/mowziesmobs` (a new `GroveRenewalGameTests`, the extended
+   `SiteLedgerGameTests` and `UmvuthiGameTests`), core's `SiteLedgerTest`. Needs lanes A and B and the native build.
+5. **Lane E, the documents and fixtures (Sonnet):** MZB-1234's edits and the viewer fixtures (after A, B, C). One agent last.
+
+Order: A and B in parallel, then C and D, then E; one merge of the landed S7 main before A starts and one before E. Every lane
+commits early (an uncommitted worktree is lost to an interruption) and none touches `RtsimSession`, `BoundarySession` or
+`Camps` (the U slices' and M5's).
 
 ## Backlog: conflict news gaps from TALK
 
@@ -17295,7 +18198,8 @@ DRAGON_DIED):
   - **Where they differ from the design:** "to the tick" is within 40 ticks (`TOL`): each row is stamped when its
     SITE_STATE is applied, a step after the kill or the found. The uninstall test has no party out (only the
     engine's own decision sends one; the Rust tests book away members Other at the cap) and does not assert a cap
-    wait for the grove (its warriors regrow by recruits, not by a renewal wait); it asserts P unchanged. The lured
+    wait for the grove (its warriors regrow by recruits, not by a renewal wait; S9 extends it, MZB-1265: now
+    the row waits the cap's 96 days); it asserts P unchanged. The lured
     body's three censuses are the hide's recount and two daily recounts (MZB-1015), not `forceRecount`. A reset's
     lair shows no minted dragon by its handed-over row (the wait less the time since, past a fresh lair's 20
     days) and by its row half that wait on; an arriving dragon flies in only near a player, so no body is looked
@@ -17446,3 +18350,263 @@ sweep mixin, the flake fixes MZB-1100 to MZB-1104) into this branch, commit 24fb
   `:core:test` 431 passed), `create -Psec1fx` All 266, `create -PwithMowzie` All 271 (default heap, no out-of-memory), mowziesmobs All
   112, iceandfire All 42. None failed, so no flake this time.
 
+
+### M12a review fixes (MZB-1400 onward)
+
+The Opus review of slice M12a (S3, landed on main as 43062c0b) and its fixes, on `fix/m12a-review` from main a4717c1f (S5, S6
+and S7 landed), one commit each; every behaviour fix has a test that failed on main first, its failure text below. Line numbers
+the review gave are at 43062c0b.
+
+- **MZB-1400** (P1, a home body's UUID after its slot is given a new body; amends MZB-1014's "a slot knows its body's UUID"): a
+  slot learned its body's UUID only from a census that found the body by its tags, or when an ADOPT line was made. A SPAWN or a
+  HAND_BACK answered made the slot a body with no UUID (CAMP_BODIES named none), and a raid member coming home went gone to owed
+  keeping the UUID of the body that set out, though the HAND_BACK's body is a new entity (`Camps.handBack`). So the row named no
+  UUID, or a removed one, until the den's next census (never, for a force-loaded den). After a reset the first left the slot
+  owed, and the found census spawned a second Frostmaw beside the first when that one stood outside the footprint (the mint);
+  the second left the slot expecting a UUID that no longer existed, the real Frostmaw at home was removed as a stray at a full
+  den, and three misses later the slot was written off as a loss nobody caused (the stale UUID).
+  - **The fix, a protocol change:** each CAMP_BODIES line grows by the UUID of the body it left in its slot, 16 to 32 bytes (the
+    record 48 + 32n, a multiple of 8): for a SPAWN, a HAND_BACK or an ADOPT done, the body made, handed back or adopted (the
+    line's holder, `Camps.leftInSlot`); with nothing to do, the body standing with the line's slot and generation
+    (`Camps.tagged`); any other line, or none standing, 0. The engine (`camp_bodies`): when a SPAWN, HAND_BACK or ADOPT answer
+    gives a member slot that was owed or gone its body, the slot takes the answer's UUID, and 0 when nothing stands (an
+    adoption that found no stray). The chief's slot is not in the row and is left alone. `boundary::LineAnswer.uuid`,
+    `ConflictRecords.CampBodies.L_UUID_MOST` and `L_UUID_LEAST`; docs/boundary.md's CAMP_BODIES row. `synth::FakeConflict`
+    names the body with the line's tags, as Java does. No old-size reader (no compatibility before a release): a journal's
+    16-byte lines from before do not decode.
+  - **Not taken: a RECOUNT after a SPAWN or HAND_BACK done at a camp that is in** (the review's other option, engine only). It
+    was built first and is the smaller change, but not a correct one: a recount ends the epoch, so Java answers stale every line
+    it holds (a SPAWN held while a player is near the den, a TAKE held at the throne, MZB-823), and two M11 tests in
+    `tests/mowzie_aloft.rs` failed with it (`the_chief_is_handed_back_at_home`, "held": the held TAKE was answered stale by the
+    recount's census; `a_puppet_killed_while_its_hand_back_is_in_flight_dies_once`, "a chief line"). It also costs a census per
+    spawn, leaves the row without the UUID until that census answers, and a replayed engine would not learn it again (a
+    replayed census books nothing). The answer's UUID is exact, is the same live and replayed, and orders nothing.
+  - **Tests** (`tests/camp.rs`), both failing on main: `a_renewed_member_s_row_names_its_body_so_a_reset_with_it_away_spawns_none`
+    (a player's kill, the arrival's spawn, the row taken, the Frostmaw lured off, `reborn`; on main "assertion `left == right`
+    failed: no second Frostmaw while the first is away, left: 2, right: 1") and
+    `a_member_home_from_a_raid_hands_its_new_body_over_and_a_reset_removes_none` (a raid out and home, the row taken, `reborn`,
+    the den comes in; on main "assertion `left == right` failed: the Frostmaw at home is not removed, left: 1, right: 0").
+    `an_arrival_at_a_camp_that_is_in_counts_first_and_its_census_spawns` also asserts the slot's UUID after the SPAWN's answer;
+    the codec's sample answer carries a UUID.
+- **MZB-1401** (P3 6, a corrupt row's wait left is held to the cap): neither Java's `SiteLedger.parse` nor
+  `FoundRow::decode` bounds a row's wait left, and the hand-overs computed `at + wait` (`camp_restore`, the ecology engine's
+  `found_lair`, and S7's `strain_found` for a broken pool camp, the same shape), which panics in a debug build and wraps in a
+  release one, booking the arrival at a tick far in the past (a mint at once). **Taken: clamp, at each hand-over, to the kind's
+  cap** (`RenewalRule::cap_ticks` for camps and lairs, the refounding rule's cap for a pool camp, the nest's `cap_days` in
+  thousandths of a drilling day; a nest saturated at `u32::MAX` thousandths before, 4.3 million drilling days). No engine
+  waits longer than its cap, so a longer wait can only be a corrupt row's, and the cap is the longest wait it could have meant:
+  it errs toward no mint. **Not taken: refusing the row**, which would throw away its pressure and bodies with the bad field,
+  and make the site found as new (a farmed site then reads unfarmed). Java is unchanged: the engine never trusts a tail
+  (MZB-1011). Tests, each failing on main: `tests/camp.rs::a_rows_wait_past_the_cap_is_held_to_the_cap`,
+  `tests/strain.rs::a_broken_rows_wait_past_the_cap_is_held_to_the_cap` and
+  `rtsim-ecology/tests/lair_renewal.rs::a_rows_wait_past_the_cap_is_held_to_the_cap` ("attempt to add with overflow" at
+  `rtsim-kernel/src/clock.rs:66:14`), `rtsim-ecology/tests/nests.rs::a_nest_rows_wait_past_the_cap_is_held_to_the_cap`
+  ("assertion `left == right` failed: the cap, left: Some(4294967295), right: Some(96000)").
+- **MZB-1402** (P3 4, a grove found without its Umvuthi keeps the pressure its row handed over): `found_empty_heir`, which runs
+  after `camp_restore`, set the camp's pressure to the cap's (`Pressure::at_cap`) whatever the row had handed over, and the
+  census that adopts an untagged Umvuthi before the heir comes set it to none. **The fix:** while the heir waits the camp has
+  the larger of the cap's pressure and its own (the row's, aged; none without a row), so a grove farmed past the cap keeps its
+  history; its own is kept with the heir (`Heir.kept`), and the adoption gives that back, aged by its own half-life, rather
+  than none ("the cap's pressure was only a stand-in", as before). The wait is the cap's either way (`delay_ticks` of a
+  pressure at or past the cap's). An heir that comes after its wait leaves the pressure as it stood, as before. On main the
+  grove's `pressure` is the Umvuthi's (the warriors have no renewal). **On S9's tree** (`feat/eq-s9-mowzie`) the Umvuthi's
+  is `Camp.chief_pressure`, which `camp_restore` sets from the row's second pressure (`row.p2`, aged by the chief culture's
+  half-life), while `Camp.pressure` is the warriors' (from `row.p`): the merge compares the restored `chief_pressure` with the
+  cap's in `found_empty_heir` and keeps the larger there, `Heir.kept` holds the restored `chief_pressure`, and the census that
+  adopts a stray Umvuthi before the heir comes sets `chief_pressure` from it (S9's `camp_census` reset it to none, "the cap's
+  pressure was only a stand-in", at its `camp.rs:2076` at f530c07c, the line this branch's `h.kept` replaces); `pressure` is
+  left alone in both. `tests/grove.rs`'s two tests cover both points; on S9's tree their helper `chief_pressure_at`
+  reads `chief_pressure` instead of `pressure`. **Save:** RTC15, `RTCF`, meta 14: a camp's
+  heir ends with the kept pressure (an f32, refused when not finite and at least 0, and its day); `tests/strain.rs`'s format
+  check names RTCE as the older format. The viewer fixtures are written again once for this branch's formats (MZB-1406).
+  Tests (`tests/grove.rs`), both failing on main:
+  `a_grove_found_empty_keeps_a_handed_over_pressure_above_the_caps` (a row's P 7 against the cap's 5; on main "the row's
+  pressure kept: 5") and `a_grove_found_empty_and_adopting_its_umvuthi_restores_the_handed_over_pressure` (a row's P 2, the
+  cap's 5 while waiting, then an untagged Umvuthi adopted four days on; on main "the row's pressure, aged: 0 against
+  1.9430562").
+- **MZB-1404** (P3 7: fork F3 changed by Ben's answer of 2026-10-30, "They fight to the death"; amends MZB-1014's "at a full
+  camp it is left standing" and MZB-1022): a home body written off as missing that comes back to its full boss's camp, while
+  its replacement holds the slot, fights the replacement until one dies, so the den has one boss again. Before, both stood
+  (`aLuredBodyIsAPlayerLossAndAStraysDeathCounts` asserted it). The engine decides the pairing and Java plays it.
+  - **The protocol: a line action, no size change.** CAMP_RECONCILE's action 9, FIGHT (`boundary::ACTION_FIGHT`,
+    `ConflictRecords.CampReconcile.FIGHT`): slot, generation and body name the replacement (Java finds it by its tags), `a` and
+    `b` the returner's UUID. Answered DONE when both stand and the kind set the fight, NOTHING when either is not there (dead,
+    unloaded, another camp's, a puppet), STALE for a kind with no fight (`CampKind.fight`, false by default); the engine books
+    nothing for the answer (the slot's line clears, as any). Not taken: a flag on an existing line (an ADOPT or a REMOVE flagged
+    "fight" would book that line's fact on its answer, and a line names one body by UUID, not two). docs/boundary.md's
+    CAMP_RECONCILE row.
+  - **The engine** (`camp_census`): a member gone missing seen at its full camp, at a boss's camp (the culture's member
+    renewal has `boss`: the Frostmaw's den), in the footprint (not ELSEWHERE) while a member body found at home by its tags,
+    in the footprint, holds a slot: a FIGHT line on that slot, and the returner goes from `Camp.missing` to `Camp.rivals`
+    (at most K, the oldest dropped). A rival seen again at the full camp is paired again at each census (a mob's target is
+    not saved); seen at a short camp it is home again (adopted, as any missing member); seen ELSEWHERE, or with no holder
+    standing, it is left standing. A member gone missing seen far off is still left standing (no fight from 400 blocks).
+  - **The outcomes.** The replacement dies: while a rival is listed, a member's death not credited to a player (MOB, NONE,
+    OTHER) is the fight's, booked `LossCause::Other` (no pressure: the lure was charged at the write-off); a player's kill
+    (PLAYER, TAKEN) is a player's loss as any. Either way, at a camp that is in, the death sends a RECOUNT, and its census
+    adopts the returner into the room the death left (its UUID, a Body slot; the arrival the death booked is cancelled at
+    once: no renewal owed, no write-off, no SPAWN). A camp that is out adopts it at its next census. The returner dies: a
+    rival's death books nothing whatever killed it (`stray_death`), and it is a rival no longer; the replacement holds the
+    slot. A second record of the same death books nothing.
+  - **The row:** rivals ride in the row's missing (`camp_site_state`), so after a reset each is missing again and is paired
+    again at the full den; a rival's death between a reset and that census is a missing stray's, a player's loss (fork F4).
+  - **Java, the mowziesmobs plugin (D4):** `Camps.fight` (core) finds the two and asks the kind; `DenKind.fight` hands two
+    Frostmaws to `FrostmawFights`, which wakes both (`setActive(true)`) and sets each as the other's target, and every 20 ticks
+    (PLACEHOLDER) sets them again while both stand alive in one level, unless one has a player as its target (a player who
+    joins the fight is fought). A pair one of whose bodies died, unloaded or changed level is over; the next census of the
+    full den pairs them again. **Read from the 1.8.2 jar** (vineflower of `EntityFrostmaw`, `AnimationAreaAttackAI`,
+    `MowzieEntity`): its only target goal is a `NearestAttackableTargetGoal` for players, whose `stop()` clears the target when
+    a player it chased goes; `hurt` never targets an attacker that is a Frostmaw, so the jar alone never lets two fight; a
+    target set from outside stays until it dies or turns invisible (`tick`, lines 230 and 571), and with one an active
+    Frostmaw walks to it and swipes, `hitEntities` striking every living entity in its arc; an asleep one wakes only with an
+    attackable entity within 8 blocks. **No mixin:** the setter and the 20-tick re-assert are enough, since nothing in the jar
+    refuses a Frostmaw target.
+  - **Loot:** vanilla's, the jar's `loot_table/entities/frostmaw.json`: both its pools need `killed_by_player` (the ice
+    crystal when it has one; the Petiole disc without one, in rain), and no pack datapack or KubeJS script overrides it. So a
+    Frostmaw killed by the other drops nothing, and no experience (vanilla drops experience only after a player's hit), unless
+    a player hit it within 100 ticks of its death, which is then a player's kill for the loot as for the credit: a player who
+    lures a Frostmaw home and finishes the loser gets its crystal, as a kill at the den would give (for Ben, if it matters).
+  - **Scope:** boss member slots only (the Frostmaw's den; no other camp culture's member renewal is a boss's). A grove's
+    warrior gone missing back at a full grove is left standing as before (fork F3): the census path is shared but the pairing
+    is gated on `boss`, which keeps the rule where Ben's answer put it. The grove's Umvuthi is the chief's slot, whose
+    write-off retires its generation at a death, so a returning Umvuthi was removed already. Lairs (dragons, S5) are not on
+    this path.
+  - **Save:** rides MZB-1402's RTCF and meta 14 (nothing released between them): a camp's lists end with its rivals, after
+    left behind, and the stats with `camp_fights`. Java's `Camps.fights` counts the lines played.
+  - **Tests** (`tests/camp.rs`; `a_missing_member_back_at_a_full_camp_is_left_standing_and_its_death_counts` replaced):
+    `a_missing_member_back_at_a_full_den_is_set_to_fight_its_replacement` (the pairing, its tags kept or stripped, not
+    removed, a rival handed over as missing, set again at the next census), `the_replacement_dying_in_the_fight_gives_its_slot_to_the_returner`
+    (by a mob or no one: no pressure, no SPAWN, no write-off, no wait, the returner's UUID in the slot; by a player: a
+    player's loss and the returner still takes the slot), `the_returner_dying_books_nothing` (by a mob, stripped, by a
+    player), `a_missing_warrior_back_at_a_full_grove_is_left_standing`; synth's I3 counts a rival as a body no slot holds.
+    mowziesmobs `aLuredBodyIsAPlayerLossAndFightsItsReplacementOnItsReturn` (renamed from
+    `aLuredBodyIsAPlayerLossAndAStraysDeathCounts`): the lured Frostmaw, written off and replaced, loads 400 blocks off and is
+    left standing, missing, with no fight; moved into the den with its AI on, the den's census pairs the two; **both healths
+    are lowered to 30 in the test setup** (the jar's 250 would make a fight of thousands of ticks, a timeout sized to that
+    would be most of the test's budget), and within the logic wait's bound one of the two is left, the row names it at home
+    with count 1 and nobody missing, no wait, and P the write-off's aged; the dead one's CAMP_DEATH names its UUID. Either
+    may win; both outcomes meet the same checks. EQUILIBRIUM.md §2.3's missing members are amended.
+  - **Failing first:** the three den tests, written with main's API (the action as 9, no `rivals`) in a scratch worktree at
+    a4717c1f, fail there: the pairing "assertion `left == right` failed: one pairing, left: 0, right: 1"; the replacement's
+    death "assertion `left == right` failed: the returner holds the slot, left: [0, 0, 0, 0, 0], right: [1, 0, 0, 0, 0]";
+    the returner's death "assertion `left == right` failed: books nothing, left: 2, right: 1" (F4's player's loss).
+- **MZB-1405** (P3 3, the uninstall's GAP rule at a boss den, a test only): `uninstallLeavesHomeBodies`'s pressure check could
+  not fail on main, since the grove's warriors have no member renewal there (`renewal_bump` returns at once for them; S9
+  changes the grove's renewal), so F5's GAP rule (a home body lost while rtsim was out is no one's loss) had no GameTest at a
+  site where it books anything. **Added:** mowziesmobs `uninstallAtADenMakesAFrostmawKilledMeanwhileNoOnesLoss`, a den whose
+  adopted Frostmaw is killed while the session is stopped (the uninstall: a vanilla death, nothing journaled), then the
+  reinstall after a day's gap: the den's tail carries ROW and GAP, the new engine expects the Frostmaw at home by its UUID
+  (count 1) and spawns nothing for it, the found census and two daily recounts miss it, and it is written off as missing with
+  P unchanged and the cap's 192-day wait (within 40 ticks), where a write-off without the gap is a player's loss at P 1 with
+  a 12-day wait (the Rust test `a_write_off_under_the_ledgers_gap_is_no_ones_loss_and_waits_the_cap` has both). The grove's
+  test is unchanged. No behaviour changed, so no test fails on main for it; EQUILIBRIUM.md's S3 row names it.
+- **MZB-1403** (P2, the reinstall gap counted at the reset, and the ledger journal dependent; P3 5; supersedes MZB-1011's "not
+  journal dependent" and MZB-1036's last two points): the gap was counted only at the first `SiteLedger.get` of a server run
+  (the found records' tails, a SITE_STATE), and the marker was deleted at the first overworld save, which waited only for the
+  industry file. (A) An admin reinstalls, boots with no player and stops: no found record and no SITE_STATE, so `gaps` was
+  never bumped and the marker was gone. (B) The ledger's write that carried `gaps + 1` fails and the server crashes before
+  the next good write (the ledger was not tracked by `SavedDataWrites`): the marker was gone too. Either way the rows from
+  before the reinstall read without GAP at the next start, and a home body lost during the uninstall was a player's loss (a
+  12-day wait at P 1) instead of no one's at the cap.
+  - **The fix:** `ReinstallGuard.beforeEngineOpens`, once it has reset, calls `SiteLedger.get` (`countSiteGap`), which takes
+    the gap (`takeSiteGap`, once per reset as before) and marks the ledger dirty; a failure there is logged and leaves the count
+    to the ledger's first use, and never fails the reset. `SiteLedger` implements `JournalDependent` (its `mic_rtsim$remark` is
+    `setDirty()`, docs/choices-journal-barrier.md U-g3 and U-g4), so a failed write of it is recorded, holds the journal's file
+    and is written again at the next world save; and `onOverworldSave` keeps the marker while the industry file's write or the
+    ledger's has failed, the log line naming the file. The second also closes P3 5: a SITE_STATE the journal records as applied
+    (its command sequence) is never sent again, so with the journal's file ahead of a failed ledger write the row was lost for
+    good; now the journal's file waits for it, as for any file that holds an op's effect.
+  - **Costs (D1):** one more file in the marker's wait and in the journal's hold (one map lookup on the IO chain per save while
+    a reset's marker stands); the ledger's write failing holds the journal's file as the industry file's does (U-g1, with its
+    give-up, U-g12).
+  - **Tests** (core GameTests): `ReinstallGameTests.aReinstallResetCountsTheSiteGapBeforeAnySiteIsSeen` (A: the guard's
+    reinstall emulation, then at once, before any site could be found, the ledger has counted the gap and is dirty; a save
+    deletes the marker, and the file on disk has the gap), `SavedDataWriteHoldGameTests.theReinstallMarkerWaitsForAFailedWriteOfTheSiteLedger`
+    (B: a failed write of `mic_rtsim_sites.dat` keeps the marker, and the next save, the file written, deletes it) and
+    `SavedDataWriteHoldGameTests.aFailedWriteOfTheSiteLedgerHoldsTheJournalsFileToo` (P3 5: a real `SiteLedger` through
+    vanilla's `save(File, ...)`, a directory where its file goes: the journal's file stays W0's until the ledger writes again).
+    The first forgets the industry before its reset (`forgetAll`, as the industry tests do at their start) and checks that the
+    reset planned no chunk to adopt again: a reset plans every seeded chunk's re-adoption (UR-1), and the chunks of an earlier
+    test's district that never loads again stayed planned into `aReinstallResetsTheSimAndAdoptsTheStrippedDistrictsAgain`, which
+    ran after it and counts its own three (MZB-1407). Their failures before the fix are in MZB-1407.
+- **MZB-1406** (the viewer fixtures, written again once for this branch's formats; MZB-1039's procedure): MZB-1402's and
+  MZB-1404's RTCF and meta 14, and MZB-1400's 32-byte CAMP_BODIES lines (a journal record, so the journals are new too).
+  `crates/rtsim-view/tests/data/create` is a fresh `create -Psec1fx` round's world at 8da19617, copied to `target/` after its
+  JVM exited (its `rtsim/` with the archive, and `data/mic_rtsim_journal.dat`); `tests/data/core` a fresh core round's at
+  4d43c6ff (8da19617's code; its `rtsim/` without the archive, and the journal); `tests/fixtures.rs`'s header names both. Before, the viewer's
+  `fixtures` and `hashes` tests and rtsim-host's `gametest_worlds_open_in_the_host_with_their_saved_state` failed on the old
+  saves, as a format change makes them ("the conflict's meta page: invalid: meta page version 13, this build reads 14";
+  "conflict: pages dropped").
+- **MZB-1407** (the checks, and P2's tests failing first).
+  - **P2's GameTests failing first:** a core round at 7098aa56 (the tests, not the fix) in a scratch worktree: 191 tests, "4
+    required tests failed": `aReinstallResetCountsTheSiteGapBeforeAnySiteIsSeen` "the reset counted the gap at once (1, then
+    1)", `theReinstallMarkerWaitsForAFailedWriteOfTheSiteLedger` "the site ledger's write failed, so the marker stays on
+    disk", `aFailedWriteOfTheSiteLedgerHoldsTheJournalsFileToo` "SiteLedger is marked for the journal", and
+    `aReinstallResetsTheSimAndAdoptsTheStrippedDistrictsAgain` "A, B and C are to be adopted again: 7", which is not P2's.
+  - **That fourth failure was the new test's**, not a flake: the first core round on the branch (6729227d) failed it alone,
+    with the same text. The new reset test's reset (batch `reinstall_3`, which runs before `reinstall_1`) planned "4 chunks
+    of 1 districts" left by an earlier test, which never load again, so `reinstall_1`'s reset found 3 of its own and 4
+    still planned. 8da19617 makes the new test forget the industry first (MZB-1403).
+  - **Results.** Cargo: the workspace's tests (`--no-fail-fast`) at e7dca238 passed but for the five that read the fixtures,
+    which failed on the old saves (MZB-1406), and pass on the new ones (rtsim-view and rtsim-host at 61bc50ce, every suite);
+    on the branch merged with main 1d7974c0 (S5's review fixes, 2719c453) every suite of the workspace passed (149) and
+    clippy `-D warnings` is clean. `:core:test` (in the core rounds): 440 JUnit tests passed. GameTests from cleared worlds:
+    core "All 191 required tests passed" at 4d43c6ff (the first round, at 6729227d, failed the one above); mowziesmobs "All
+    113 required tests passed" at 8da19617's code; iceandfire "All 54 required tests passed" and `create -Psec1fx` "All 266
+    required tests passed" at 8da19617; `create -PwithMowzie` "All 271 required tests passed" at 61bc50ce (8da19617's code). The GameTest rounds ran before the merge with
+    main 1d7974c0, which merged clean (S5's review fixes are the dragons'; this branch's only ecology change is MZB-1401's
+    clamp in `found_lair`, which the merged head's cargo tests cover); no round ran on the merged head.
+  - **A flake:** mowziesmobs's first round at 8da19617's code failed `anAloftUmvuthiSettlesAndRises` alone ("its restriction
+    centre is the puppet's block (12.165525060596439 off)", the first summons' centre at its fifth step, M11's), and the rerun
+    on the same code passed it with the rest. Nothing on this branch touches a summons' restriction (the chief's slot is
+    outside MZB-1400's UUIDs, and MZB-1404's pairing is for a boss's member slots).
+
+**The merge with S9 and the S7 and M11 review fixes (MZB-1408 onward).** On `integrate/conflict-fixes`: S9
+(`feat/eq-s9-mowzie`, with S5's and S6's review fixes) as the base, `origin/main` 1d7974c0, then `fix/m11-review`,
+`fix/s7-review` and this branch, each a merge commit. What the merge with this branch decided beyond the text:
+
+- **MZB-1408** (MZB-1402 and MZB-1404 on S9's two pressures): as MZB-1402 said it would map. `found_empty_heir` compares the
+  restored `chief_pressure` (the row's `p2`, aged by the chief culture's half-life, `camp_restore`) with the cap's, keeps the
+  larger in `chief_pressure`, and `Heir.kept` holds the restored one; the census that adopts a stray Umvuthi before the heir comes
+  sets `chief_pressure` from `h.kept` (S9's line set it to none). `Camp.pressure`, the warriors', is touched by neither.
+  `tests/grove.rs`'s two MZB-1402 tests read `chief_pressure` (`chief_pressure_at`), hand the Umvuthi's pressure over in the row's
+  `p2` (the row's `p` is the warriors' on S9's tree, so `row.p = 7` there would have tested the warriors), and also hand the
+  warriors 0.5 and assert it stands (aged by the warriors' own half-life) after the found-empty wait and after the adoption. The
+  fight rule's member death (MZB-1404) keeps S9's split: a death while a rival stands that no player struck is `Other`, any other
+  goes by `member_cause` (S9's `renewal_cause` for the members, MZB-1211). Rivals arise only where the members' renewal is a
+  boss's, the den's; the grove's warriors' renewal is no boss's (MZB-1210), so `a_missing_warrior_back_at_a_full_grove_is_left_standing`
+  holds on S9's tree as the pairing's gate reads it.
+- **MZB-1409** (the format): S9 (MZB-1230) and this branch (MZB-1402, MZB-1404) each took RTC15, `RTCF`, meta 14 with different
+  contents. The merged format is **RTC16, `RTCG`, meta 15**: S9's camp ending with `chief_pressure` after its recount, and this
+  branch's heir ending with its kept pressure, the camp's lists with its rivals and the stats with `camp_fights`. `put_camp` and
+  `get_camp` had merged without a conflict (the two branches write different places), so only the magic, the meta version and
+  their documentation changed; `magic_error` names RTCF as the older format and `tests/strain.rs`'s format check asserts it. No
+  reader for RTCF (no compatibility before a release): a save of S9 as it lands on main, or of this branch alone, is refused by
+  name. The viewer fixtures are written again for it (MZB-1411). docs/boundary.md §9.8's pages bullet says so.
+- **MZB-1410** (the reinstall test's count of chunks to adopt again, S7's round too): `aReinstallResetsTheSimAndAdoptsTheStrippedDistrictsAgain`
+  asserts `readoptLeft() == 3` after its reset, and `Districts.forgetAllForTest`, which it calls first, forgot the districts but
+  not `IndustryData.readopt`. So any earlier reinstall reset in the round (UR-1's `planReadopt`) that planned chunks of districts
+  that never load again left them in the count: this branch's first round failed it with 7 (MZB-1407's new gap test), and S7's
+  review round 2 (`fix/s7-review`, `target/s7fix-core2.log` in `mic-rtsim-s7fix`) failed it with 8: there S7's
+  `uninstallLeavesTheOutpostAsVanilla` (batch `mic_rtsim_outposts_uninstall`, `SiteTestHooks.gapRestart`) ran first and planned "3
+  chunks of 2 districts", and the round's world was not a fresh one (the reset read game time 8,210,693; round 1's 127,007), so
+  the later resets of an earlier round may have left more. The same cause as MZB-1407's, from another test; S7's three outpost
+  tests that call `gapRestart` (`_rerun`, `_farmed`, `_uninstall`) and the Mowzie and Ice and Fire site tests can all leave such
+  chunks. **Fix, at the one place:** `forgetAllForTest` also drops the dimension's chunks to adopt again, so a test that forgets
+  every district starts with none planned (the reinstall test, and 8da19617's gap test, whose `readoptLeft() == 0` check the
+  same leftovers could fail). A test hook only; the reset's own planning is unchanged. Not seen failing first on this code: the
+  failure needs a reset of the round to plan chunks that then never load, which the batch order decides. S9 made the same fix on
+  its own branch at the same time (MZB-1293, 02629719, after its merged core round failed the test with 8 too); the merge keeps
+  the one line, S9's comment, and this record's javadoc naming both.
+- **MZB-1411** (the integration's checks and fixtures). Rounds from cleared worlds, queued together: core at d661b04e, 1 of 198
+  failed, `aBigDetectionsLongestTickIsBelowTheOneCallTime` ("the longest spread tick (12920 us) is under the one-call time (11636
+  us)", load near 34), and the rerun from a cleared world at 435785ea (main's S5 two-bodies fix merged, a dragons-engine guard the
+  core tests never reach) passed, "All 198 required tests passed", `:core:test` 446 passed: a flake. `create -Psec1fx` at
+  d661b04e "All 266"; at 435785ea `create -PwithMowzie` "All 271", mowziesmobs "All 126", iceandfire "All 61", ribbits "All 18".
+  The viewer fixtures are written again from the core rerun's world (its `rtsim/` without the archive, and the journal) and the
+  `create -Psec1fx` world (kept aside after its JVM exited, before the next round's server started; `rtsim/` with the archive, and
+  the journal); `tests/fixtures.rs`'s header names both and keeps the history. Before, the five tests that read them failed on
+  the RTCF saves ("meta page version 14, this build reads 15"; "conflict: pages dropped"). Cargo at 0e9883c2: the workspace
+  (`--no-fail-fast`) 2502 passed, 0 failed, 44 ignored (S5's `no_lair_ever_holds_two_bodies_for_one_dragon` among the passed);
+  clippy `-D warnings` clean; every Gradle project (core, create with `-PwithMowzie -Psec1fx`, mowziesmobs, iceandfire, ribbits)
+  compiles.
