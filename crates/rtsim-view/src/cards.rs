@@ -388,6 +388,8 @@ fn target_text(saved: &Saved, t: &Target) -> String {
         Target::Home { player, .. } => format!("the home of player {}", player.to_bits()),
         Target::Herd { herd, .. } => format!("herd {herd}"),
         Target::District { district, .. } => format!("district {district}"),
+        Target::Camp { camp, .. } => format!("camp {camp}"),
+        Target::Larder { district, .. } => format!("the stores of district {district}"),
     }
 }
 

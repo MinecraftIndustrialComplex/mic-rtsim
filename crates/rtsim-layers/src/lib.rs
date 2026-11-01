@@ -416,6 +416,8 @@ pub fn specs() -> Vec<Spec> {
                     ("Home", "#e5484d"),
                     ("Herd", "#7fb069"),
                     ("District", "#b48ead"),
+                    ("Camp", "#c2703d"),
+                    ("Stores", "#5fa8d3"),
                 ]),
             "dragons",
             64,
@@ -1088,6 +1090,8 @@ pub fn target_pos(world: Option<&World>, t: &Target) -> Option<(u16, [f64; 2], u
         Target::Home { frame, x, z, .. } => (frame, [f64::from(x), f64::from(z)], 2),
         Target::Herd { frame, x, z, .. } => (frame, [f64::from(x), f64::from(z)], 3),
         Target::District { frame, x, z, .. } => (frame, [f64::from(x), f64::from(z)], 4),
+        Target::Camp { frame, x, z, .. } => (frame, [f64::from(x), f64::from(z)], 5),
+        Target::Larder { frame, x, z, .. } => (frame, [f64::from(x), f64::from(z)], 6),
     })
 }
 

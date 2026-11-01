@@ -46,6 +46,7 @@ mod persist;
 pub mod prey;
 pub mod species;
 pub mod synth;
+pub mod trophic;
 pub mod tunables;
 
 pub use dragon::{Dragon, DragonId, Lair, LairId, LairKind, Lairs};

@@ -75,11 +75,22 @@ use crate::oil::{OilIndex, Roll};
 use crate::outbox::Outbox;
 use crate::prey::{Item, PreyClass, PreyLedger};
 use crate::species::{Gender, Species};
+use crate::trophic::{CampLoss, CampPrey, Larder};
 use crate::tunables::{DragonTunables, PreyKind};
 
 pub const SYS_DRAGON: SystemId = SystemId::named("ecology.dragon");
 const SYS_HUNT: SystemId = SystemId::named("ecology.hunt");
 const SYS_BREED: SystemId = SystemId::named("ecology.breed");
+
+/// Settlement kinds in [`raid_key`] (EQC557's rest).
+const RAID_VILLAGE: u128 = 1;
+const RAID_CAMP: u128 = 2;
+const RAID_LARDER: u128 = 3;
+
+/// A settlement's key in the rest table: its kind above, its own key below.
+fn raid_key(kind: u128, key: u64) -> u128 {
+    (kind << 64) | u128::from(key)
+}
 /// The stream tribute stacks' op ids are drawn from, keyed by the lair's key.
 const SYS_TRIBUTE: SystemId = SystemId::named("ecology.tribute");
 
@@ -116,6 +127,9 @@ pub const LAIR_KEY_TABLE: u16 = 0x4413;
 pub const LAIR_CELL_TABLE: u16 = 0x4414;
 pub const VILLAGE_CELL_TABLE: u16 = 0x4415;
 pub const ROAD_CELL_TABLE: u16 = 0x4416;
+/// The settlements resting after a raid (EQC557), by [`raid_key`]: a page table of their own, so a
+/// save writes only the rests that changed.
+pub const RAID_REST_TABLE: u16 = 0x441A;
 
 /// Dragons per page. PLACEHOLDER 1, measured (docs/choices-paging-modules.md, PM-D3): most of a
 /// dragon's events change it, and a changed page is pinned until the next save, so a page that
@@ -521,6 +535,24 @@ pub struct Dragons {
     /// Mates drawn since the engine started (EQC555): a young or a Frontier dragon sent to a
     /// lone breeder. Not saved, as `emigrated`.
     pub mates_drawn: u64,
+    /// Camps other engines serve as prey this round (EQC556, [`crate::trophic::Prey`]): a
+    /// snapshot the host sets before the dragons run ([`Dragons::set_camps`]). Not saved.
+    pub(crate) camps: Vec<CampPrey>,
+    /// Members dragons took from camps since the host last took them. Not saved: the host books
+    /// them after each run.
+    pub(crate) camp_losses: Vec<CampLoss>,
+    /// Player districts' stores in reach of the dragon deciding now (EQC556): filled where a
+    /// decision has the infrastructure, empty otherwise. Not saved.
+    pub(crate) larders: Vec<Larder>,
+    /// When each settlement was last raided (EQC557's rest), by [`raid_key`]; only rests not yet
+    /// over are kept (see [`Dragons::rest`]). Saved in pages of their own ([`RAID_REST_TABLE`]),
+    /// so a restored engine raids as the running one would.
+    pub(crate) raided: PagedMap<u128, Tick>,
+    /// Raids on camps and on player districts' stores since the engine started. Not saved.
+    pub camp_raids: u64,
+    pub larder_raids: u64,
+    /// Villagers dragons took from unwatched villages (PP-2 (a)). Not saved.
+    pub villagers_taken: u64,
 }
 
 /// How a lair new to the engine starts its wait ([`Dragons::found_lair`], MZB-1012).
@@ -688,6 +720,13 @@ impl Dragons {
             home_hold: BTreeMap::new(),
             emigrated: 0,
             mates_drawn: 0,
+            camps: Vec::new(),
+            camp_losses: Vec::new(),
+            larders: Vec::new(),
+            raided: PagedMap::new(),
+            camp_raids: 0,
+            larder_raids: 0,
+            villagers_taken: 0,
         }
         .with_oil_flags()
     }
@@ -1154,6 +1193,15 @@ impl Dragons {
                 weight += n * n / k as f64 / mouths(p).max(1.0);
             }
         }
+        // Camps whose members are its prey (EQC551): a stock row, `attack x min(1, F / 400)`.
+        for c in &self.camps {
+            let p = (i64::from(c.pos.x), i64::from(c.pos.z));
+            if c.pos.frame != frame || !holds((lx, lz), p) {
+                continue;
+            }
+            let f = f64::from(c.takeable) * f64::from(self.tun.camp_member_food);
+            weight += self.tun.camp_attack * (f / 400.0).min(1.0) / mouths(p).max(1.0);
+        }
         // The oil row (EQC561): each field with a chunk in the nine regions, once, at its first
         // such chunk, for a species that drinks oil. The oil index's regions are 32 chunks, the
         // lair cells' 512 blocks: one grid.
@@ -1323,6 +1371,80 @@ impl Dragons {
             self.roost(w, d, at);
         }
         d
+    }
+
+    /// The camps other engines serve as prey until the next call (EQC556): the host sets them
+    /// before each run ([`crate::trophic::Prey::camp_prey`]).
+    pub fn set_camps(&mut self, camps: Vec<CampPrey>) {
+        self.camps = camps;
+    }
+
+    /// The members dragons took from camps since the last call, for the host to book
+    /// ([`crate::trophic::Prey::lose_to_predator`]).
+    pub fn take_camp_losses(&mut self) -> Vec<CampLoss> {
+        std::mem::take(&mut self.camp_losses)
+    }
+
+    /// The settlement `key` ([`raid_key`]) was raided at `at` and rests (EQC557); rests over by
+    /// then are dropped.
+    fn rest(&mut self, key: u128, at: Tick) {
+        let span = self.tun.raid_rest_days * TICKS_PER_DAY;
+        let over: Vec<u128> = self
+            .raided
+            .iter()
+            .filter(|(_, t)| at >= **t + span)
+            .map(|(k, _)| *k)
+            .collect();
+        for k in over {
+            self.raided.remove(&k);
+        }
+        self.raided.insert(key, at);
+    }
+
+    /// Whether the settlement `key` ([`raid_key`]) is resting after a raid at `at` (EQC557).
+    fn rested(&self, key: u128, at: Tick) -> bool {
+        self.raided
+            .get(&key)
+            .is_some_and(|&t| at < t + self.tun.raid_rest_days * TICKS_PER_DAY)
+    }
+
+    /// The districts' stores a hungry `d` could raid now (EQC556): the districts within its
+    /// territory with food it eats, through `infra`.
+    fn larders_near(&self, infra: &mut dyn Infrastructure, d: DragonId, at: Tick) -> Vec<Larder> {
+        let x = &self.dragons[d];
+        let sp = self.tun.species(x.species);
+        let origin = match x.lair {
+            Some(l) => self.lairs[l as usize].pos,
+            None => x.position(&self.topo, &self.lairs, at).0,
+        };
+        let stage = x.stage(sp, at);
+        let range = i64::from(sp.territory[stage.index()]) * (1 + i64::from(x.fruitless.min(3)));
+        if range <= 0 {
+            return Vec::new();
+        }
+        let prey = &self.tun.prey;
+        let food = |name: &str, n: i64| match prey.class(name, false) {
+            PreyClass::Food { per_item, .. } => n.saturating_mul(i64::from(per_item)),
+            _ => 0,
+        };
+        infra
+            .districts_near(
+                origin.frame,
+                i64::from(origin.x),
+                i64::from(origin.z),
+                range,
+            )
+            .into_iter()
+            .filter_map(|s| {
+                let f = infra.edible_food(s.id, &food);
+                (f > 0).then_some(Larder {
+                    id: s.id,
+                    pos: s.pos,
+                    watched: s.watched,
+                    food: f,
+                })
+            })
+            .collect()
     }
 
     /// Two dragons of a lair become mates (M1's recommendation). A pair is one breeder, its
@@ -1707,7 +1829,9 @@ impl Dragons {
                     return;
                 }
                 if matches!(self.dragons[d].state, State::Roosting) {
+                    self.larders = self.larders_near(infra, d, at);
                     self.decide(w, d, at, 0);
+                    self.larders.clear();
                 }
             }
             Ev::LegEnd { d, plan } => {
@@ -1945,7 +2069,9 @@ impl Dragons {
             Target::Village { node } => w.nodes[node as usize].pos,
             Target::Home { frame, x, z, .. } => Pos::new(frame, x, z),
             Target::Herd { frame, x, z, .. } => Pos::new(frame, x, z),
-            Target::District { frame, x, z, .. } => Pos::new(frame, x, z),
+            Target::District { frame, x, z, .. }
+            | Target::Camp { frame, x, z, .. }
+            | Target::Larder { frame, x, z, .. } => Pos::new(frame, x, z),
         }
     }
 
@@ -2465,8 +2591,11 @@ impl Dragons {
             if dist > range as f64 {
                 continue;
             }
-            // A village that paid this dragon's lair tribute within a season is left alone.
-            if x.lair.is_some_and(|l| self.pays(node, l, at)) {
+            // A village that paid this dragon's lair tribute within a season is left alone, and
+            // one a dragon raided lately rests (EQC557).
+            if x.lair.is_some_and(|l| self.pays(node, l, at))
+                || self.rested(raid_key(RAID_VILLAGE, n.key), at)
+            {
                 continue;
             }
             let fear = self.village_risk(w, node as usize) as f64 * bend;
@@ -2480,6 +2609,49 @@ impl Dragons {
                 Target::Village { node },
                 PreyKind::Village,
                 food * w_village - fear - cost(n.pos),
+            );
+        }
+        // Camps whose members are its prey (EQC556): one member a raid, weighed as a village.
+        for c in &self.camps {
+            if c.pos.frame != origin.frame
+                || c.takeable == 0
+                || self.rested(raid_key(RAID_CAMP, c.key), at)
+            {
+                continue;
+            }
+            if flight::dist(t, (ox, oz), (i64::from(c.pos.x), i64::from(c.pos.z))) > range as f64 {
+                continue;
+            }
+            let food = f64::from(self.tun.camp_member_food).min(need);
+            offer(
+                Target::Camp {
+                    camp: c.key,
+                    frame: c.pos.frame,
+                    x: c.pos.x,
+                    z: c.pos.z,
+                },
+                PreyKind::Village,
+                food * w_village - self.tun.camp_risk * bend - cost(c.pos),
+            );
+        }
+        // Player districts' stores (EQC556, PP-1 (a)), when the decision has them.
+        for s in &self.larders {
+            if s.pos.frame != origin.frame || self.rested(raid_key(RAID_LARDER, s.id.0), at) {
+                continue;
+            }
+            let food = (s.food as f64).min(need);
+            if food <= 0.0 {
+                continue;
+            }
+            offer(
+                Target::Larder {
+                    district: s.id.0,
+                    frame: s.pos.frame,
+                    x: s.pos.x,
+                    z: s.pos.z,
+                },
+                PreyKind::Village,
+                food * w_village - self.tun.larder_risk * bend - cost(s.pos),
             );
         }
         // Roads.
@@ -2610,6 +2782,8 @@ impl Dragons {
                 .and_then(|h| h.herd(HerdId::from_bits(herd)))
                 .map_or_else(|| format!("herd {herd:#x}"), |x| x.name.clone()),
             Target::District { district, .. } => format!("district {district}"),
+            Target::Camp { camp, .. } => format!("camp {camp}"),
+            Target::Larder { district, .. } => format!("the stores of district {district}"),
         }
     }
 
@@ -2693,6 +2867,9 @@ impl Dragons {
             Purpose::Hunt(t @ Target::District { .. }) => {
                 self.raid_district(w, infra, d, t, at);
             }
+            Purpose::Hunt(t @ Target::Larder { .. }) => {
+                self.raid_larder(w, infra, d, t, at);
+            }
             Purpose::Refuel { field, frame, x, z } => {
                 self.refuel_arrive(w, infra, d, field, frame, x, z, at)
             }
@@ -2735,6 +2912,11 @@ impl Dragons {
             }
             Target::Home { .. } | Target::District { .. } => {
                 (0, Vec::new(), Vec::new(), PreyKind::Grudge)
+            }
+            Target::Larder { .. } => (0, Vec::new(), Vec::new(), PreyKind::Village),
+            Target::Camp { camp, .. } => {
+                let (f, t) = self.hunt_camp(w, d, camp, at);
+                (f, t, Vec::new(), PreyKind::Village)
             }
             Target::Herd { herd, x, z, .. } => {
                 let p = self.wild.as_mut().map_or_else(Default::default, |h| {
@@ -2815,7 +2997,10 @@ impl Dragons {
             Target::Village { node } => u128::from(w.nodes[node as usize].key),
             Target::Home { player, .. } => aid(player),
             Target::Road { .. } => 0,
-            Target::District { district, .. } => u128::from(district),
+            Target::District { district, .. } | Target::Larder { district, .. } => {
+                u128::from(district)
+            }
+            Target::Camp { camp, .. } => u128::from(camp),
         };
         Quarry {
             kind,
@@ -3051,8 +3236,31 @@ impl Dragons {
             food += gained;
             need -= gained;
         }
+        // Livestock short of half its need: one villager (EQC556, Ben's PP-2 (a)), never a
+        // village's last `village_refuge`, a loss no player made; Java removes the body.
+        let full_need =
+            (self.tun.full - self.dragons[d].fullness_at(&self.tun, at)).min(sp.appetite);
+        let members = w.village_members(node);
+        if food * 2 < full_need
+            && members > self.tun.village_refuge
+            && w.village_row(node).is_some()
+        {
+            w.set_members(node, members - 1, at);
+            let p = w.nodes[node].pos;
+            self.outbox.push(Cmd::TakeResident(boundary::TakeResident {
+                village: w.nodes[node].key,
+                dimension: u32::from(p.frame),
+                x: p.x,
+                z: p.z,
+                radius: self.tun.village_take_radius,
+            }));
+            self.villagers_taken += 1;
+            food += self.tun.villager_food;
+            taken.push(("minecraft:villager".to_string(), 1));
+        }
         if food > 0 {
             self.stats.village_raids += 1;
+            self.rest(raid_key(RAID_VILLAGE, w.nodes[node].key), at);
             let village = w.nodes[node].actor;
             let (p, y) = (w.nodes[node].pos, 64);
             let id = w.knowledge.record(Report {
@@ -3069,6 +3277,149 @@ impl Dragons {
             return (food, taken, vec![village]);
         }
         (food, taken, Vec::new())
+    }
+
+    /// A raid on a camp (EQC556): one member, never below the camp's refuge (the snapshot's
+    /// `takeable`), a loss no player made, which the host books with the camp's engine; the camp
+    /// knows it at once and travellers carry it (a `Raid` report, plundered: CL-9).
+    fn hunt_camp(
+        &mut self,
+        w: &mut World,
+        d: DragonId,
+        key: u64,
+        at: Tick,
+    ) -> (i32, Vec<(String, i64)>) {
+        let Some(c) = self
+            .camps
+            .iter_mut()
+            .find(|c| c.key == key && c.takeable > 0)
+        else {
+            return (0, Vec::new());
+        };
+        c.takeable -= 1;
+        let (camp, pos) = (c.actor, c.pos);
+        let predator = self.dragons[d].actor;
+        self.camp_losses.push(CampLoss { key, predator, at });
+        self.rest(raid_key(RAID_CAMP, key), at);
+        self.camp_raids += 1;
+        let id = w.knowledge.record(Report {
+            who: predator,
+            whom: camp,
+            kind: ReportKind::Raid,
+            severity: rtsim_knowledge::report::raid::PLUNDERED,
+            flags: 0,
+            at,
+            place: place(pos, 64),
+        });
+        w.knowledge.witness(camp, id, at);
+        let food = self.tun.camp_member_food;
+        (food, vec![("a camp's member".to_string(), 1)])
+    }
+
+    /// A hungry dragon at a player district's stores (EQC556, Ben's PP-1 (a)). Watched, with a
+    /// player near: Ice and Fire's own dragon, placed there (it hunts by its own AI; nothing is
+    /// resolved abstractly). Unwatched: the goods it eats and nothing else, through the threat
+    /// interface with no carry and no block; no fire and no tamed animal.
+    fn raid_larder(
+        &mut self,
+        w: &mut World,
+        infra: &mut dyn Infrastructure,
+        d: DragonId,
+        t: Target,
+        at: Tick,
+    ) {
+        let Target::Larder {
+            district,
+            frame,
+            x,
+            z,
+        } = t
+        else {
+            return;
+        };
+        let pos = Pos::new(frame, x, z);
+        self.rest(raid_key(RAID_LARDER, district), at);
+        self.larder_raids += 1;
+        let site = infra
+            .districts_near(frame, i64::from(x), i64::from(z), 64)
+            .into_iter()
+            .find(|s| s.id.0 == district);
+        let watched = site.is_some_and(|s| s.watched);
+        if watched
+            && !self.outbox.defer()
+            && let Some(player) = self.player_near(pos, 2 * self.tun.view_radius)
+        {
+            let cruise = self.tun.species(self.dragons[d].species).cruise_y;
+            self.materialize(w, d, player, true, false, Some((pos, cruise)), at);
+            return;
+        }
+        let x0 = &self.dragons[d];
+        let sp = self.tun.species(x0.species).clone();
+        let stage = x0.stage(&sp, at);
+        let need = (self.tun.full - x0.fullness_at(&self.tun, at)).min(sp.appetite);
+        let passes = sp.passes[stage.index()].max(1);
+        let threat = Threat {
+            id: fnv1a64(
+                &[
+                    x0.seed.to_le_bytes(),
+                    at.0.to_le_bytes(),
+                    district.to_le_bytes(),
+                ]
+                .concat(),
+            ),
+            source: ThreatSource::Dragon,
+            class: ThreatClass::Flying,
+            count: passes,
+            strength: f64::from(passes) * sp.strength_per_pass[stage.index()],
+            target: ThreatTarget::District(DistrictId(district)),
+            loads: None,
+            at,
+        };
+        let prey = self.tun.prey.clone();
+        let edible = |name: &str| matches!(prey.class(name, false), PreyClass::Food { .. });
+        // Units: at most a full belly's worth, one point an item at the least.
+        let room = i64::from(need.max(1));
+        let mut taken: Vec<(String, i64)> = Vec::new();
+        let mut food = 0;
+        if let Some(o) = infra.raid_eating(&threat, &edible, room) {
+            for (g, n) in o.stolen.iter() {
+                let name = infra
+                    .good_name(g)
+                    .unwrap_or_else(|| format!("good {}", g.0));
+                let class = prey.class(&name, false);
+                food += self.ledger.take(Item::Industry(g), n, class);
+                taken.push((name, n));
+            }
+        }
+        self.feed(d, at, food, &[]);
+        if need > 0 {
+            self.fold_fed(d, food as f32 / need as f32, at);
+        }
+        let stolen: i64 = taken.iter().map(|(_, n)| *n).sum();
+        self.tape
+            .event_as(
+                kinds::DRAGONS_RAID,
+                if stolen > 0 {
+                    Severity::Major
+                } else {
+                    Severity::Minor
+                },
+                spot(at, pos),
+                did(d),
+                u128::from(district),
+                stolen,
+            )
+            .text(|| {
+                if taken.is_empty() {
+                    "raids a district's stores for food and finds none".to_string()
+                } else {
+                    format!("raids a district's stores for food: {}", items_text(&taken))
+                }
+            });
+        let name = self.target_name(w, t);
+        let quarry = self.quarry(w, t, PreyKind::Village, name);
+        self.record_hunt(at, d, quarry, food, taken);
+        self.after_hunt(w, d, at, food);
     }
 
     /// A grudge raid: the districts with a chunk at the hated player's home (OGC50), through the
@@ -4364,7 +4715,11 @@ impl Dragons {
             Purpose::Claim(l) => Purpose::Claim(l),
             Purpose::Refuel { .. } => purpose,
             Purpose::Hunt(t)
-                if !left && !matches!(t, Target::Home { .. } | Target::District { .. }) =>
+                if !left
+                    && !matches!(
+                        t,
+                        Target::Home { .. } | Target::District { .. } | Target::Larder { .. }
+                    ) =>
             {
                 Purpose::Hunt(t)
             }

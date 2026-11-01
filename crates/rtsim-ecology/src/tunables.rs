@@ -152,6 +152,29 @@ pub struct DragonTunables {
     /// nine regions on oil alone: 800 holds the 4.5 lairs of the real density's nine regions when
     /// the food holds one. TUNABLE.
     pub oil_weight: f64,
+    /// A settlement raided by any dragon is not raided again for this many days (EQC557). TUNABLE.
+    pub raid_rest_days: u64,
+    /// The cultures whose camps' members are dragons' prey (EQC556): those whose members are in
+    /// Ice and Fire's `iceandfire:dragon_targets` tag (`minecraft:pillager`: raiders).
+    pub camp_cultures: Vec<String>,
+    /// Fullness points a villager is worth, and the villagers a village keeps whatever dragons
+    /// take (EQC556, PP-2 (a)).
+    pub villager_food: i32,
+    pub village_refuge: u32,
+    /// The blocks around a village's centre Java looks in for the villager a dragon took.
+    pub village_take_radius: u32,
+    /// A camp's members a dragon never takes: its last ones (EQC556).
+    pub camp_refuge: u32,
+    /// A camp's weight in the gate at a full stock (EQC551: `attack x min(1, F / 400)`, F its
+    /// takeable members' food), shared by mouths as a village's is. TUNABLE.
+    pub camp_attack: f64,
+    /// Fullness points one camp member is worth. TUNABLE.
+    pub camp_member_food: i32,
+    /// What a camp's defenders cost a dragon's weighing, bent by its boldness as a village's
+    /// risk is. TUNABLE.
+    pub camp_risk: f64,
+    /// What a player district's defences cost a dragon's weighing of its stores. TUNABLE.
+    pub larder_risk: f64,
     /// Age in days of a dragon the respawn rule brings in. PLACEHOLDER 30 (stage 2: it grows into
     /// the roost).
     pub respawn_age_days: u64,
@@ -195,6 +218,11 @@ pub struct DragonTunables {
 
 impl Default for DragonTunables {
     fn default() -> Self {
+        // The trophic rows are data (PP-4 (a)): Ice and Fire's set the gate, maintenance, the
+        // settlements' and the oil's weights (`data/trophic/iceandfire.json`).
+        let rows = crate::trophic::TrophicRows::builtin();
+        let attack = |prey: &str| rows.row(prey).map_or(0.0, |r| r.attack);
+        let camp = rows.row("conflict.camp").cloned();
         let pct = |road: i32, village: i32, herd: i32| [road, village, 100, 100, herd];
         let mut season_percent = [[100; PreyKind::COUNT]; 4];
         season_percent[Season::Spring.index()] = pct(100, 80, 110);
@@ -230,16 +258,26 @@ impl Default for DragonTunables {
             respawn_delay_days: 20,
             respawn_cap_days: 192,
             respawn_half_life_days: 96,
-            starve_leave: 0.35,
+            starve_leave: rows.maintenance,
             starve_leave_age_days: 60,
-            arrive_food: 0.5,
+            arrive_food: rows.arrive,
             arrive_recheck_days: 24,
             fed_tau_days: 30.0,
-            gate_village: 150.0,
-            gate_wild: 30.0,
-            gate_half: 200.0,
+            gate_village: attack("village"),
+            gate_wild: attack("wild"),
+            gate_half: rows.half_saturation,
             emigrate_after_days: 10,
-            oil_weight: 800.0,
+            oil_weight: attack("oil.field"),
+            raid_rest_days: rows.row("village").map_or(8, |r| r.rest_days),
+            camp_cultures: camp.as_ref().map_or_else(Vec::new, |c| c.cultures.clone()),
+            camp_refuge: camp.as_ref().map_or(2, |c| c.refuge),
+            camp_member_food: camp.as_ref().map_or(25, |c| c.food_each),
+            camp_attack: camp.as_ref().map_or(0.0, |c| c.attack),
+            villager_food: rows.row("village").map_or(25, |r| r.food_each),
+            village_refuge: rows.row("village").map_or(2, |r| r.refuge),
+            village_take_radius: 48,
+            camp_risk: 5.0,
+            larder_risk: 20.0,
             respawn_age_days: 30,
             respawn_from_blocks: 3_000,
             view_radius: 160,
