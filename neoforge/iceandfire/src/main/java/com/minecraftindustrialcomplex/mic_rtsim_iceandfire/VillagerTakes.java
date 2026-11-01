@@ -40,7 +40,7 @@ public final class VillagerTakes {
     }
 
     /** A villager joining a level: the first within a held take's radius is the one taken (cancel its join). */
-    public boolean takesOnJoin(Villager v) {
+    public boolean takesOnJoin(Villager v, boolean fromDisk) {
         if (held.isEmpty() || !takeable(v))
             return false;
         for (Iterator<Take> it = held.iterator(); it.hasNext();) {

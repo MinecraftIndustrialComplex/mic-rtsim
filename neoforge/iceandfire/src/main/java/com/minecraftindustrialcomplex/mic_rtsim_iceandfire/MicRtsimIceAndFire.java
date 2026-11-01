@@ -112,7 +112,7 @@ public final class MicRtsimIceAndFire {
         if (event.getLevel().isClientSide())
             return;
         if (event.getEntity() instanceof net.minecraft.world.entity.npc.Villager v
-                && DragonBridge.INSTANCE.villagerTakes.takesOnJoin(v)) {
+                && DragonBridge.INSTANCE.villagerTakes.takesOnJoin(v, event.loadedFromDisk())) {
             // A villager a dragon took while its village was unloaded (TAKE_RESIDENT, PP-2 (a)): it never joins.
             event.setCanceled(true);
             v.ejectPassengers();
