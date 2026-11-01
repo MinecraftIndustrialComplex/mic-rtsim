@@ -71,7 +71,10 @@ fn roost(d: &mut Dragons, w: &mut World, key: u64, x: i32, z: i32) -> LairId {
 /// Herds enough that a lair at (5,200, 5,200) would feed two dragons: three flocks in its region.
 fn rich_herds(seed: u64) -> Herds {
     let mut h = Herds::new(seed, HerdTunables::default(), Box::new(Uniform), Tick::ZERO);
-    for (i, pos) in [(5_300, 5_250), (5_100, 5_400), (5_400, 5_050)].into_iter().enumerate() {
+    for (i, pos) in [(5_300, 5_250), (5_100, 5_400), (5_400, 5_050)]
+        .into_iter()
+        .enumerate()
+    {
         h.add_herd(
             NewHerd {
                 name: format!("Flock {i}"),
@@ -120,26 +123,34 @@ fn a_lone_dragon_never_breeds() {
         d.stats.births
     };
     assert_eq!(born(false), 0, "a lone dragon breeds");
-    assert_eq!(born(true), 40, "ten pairs, four clutches each, all at a full share");
+    assert_eq!(
+        born(true),
+        40,
+        "ten pairs, four clutches each, all at a full share"
+    );
 }
 
-/// A lone mature female on rich ground draws a male of her species at her first clutch timer
-/// (day 60) and pairs with him; on ground that feeds no one more (no herd, no village) she draws
-/// none.
+/// A lone mature female whose nine regions hold three villages (the scenario world's at (0, 0),
+/// (700, 0) and (700, 700): 30 + 3 x 150 = 480, 240 a mouth with a mate, above the gate's 200)
+/// draws a male of her species at her first clutch timer (day 60) and pairs with him; on ground
+/// that feeds no one more (no herd, no village) she draws none.
 #[test]
 fn a_surplus_lair_draws_a_mate() {
     let run = |rich: bool| {
-        let mut w = world_without_villages(7);
-        let mut d = Dragons::new(7, sated(), Tick::ZERO);
-        let l = roost(&mut d, &mut w, 1, 5_200, 5_200);
-        let f = d.add_dragon(&mut w, adult("Dam", Gender::Female, l), Tick::ZERO);
-        let mut h = if rich {
-            rich_herds(7)
+        let mut w = if rich {
+            synth::world(7).0
         } else {
-            Herds::new(7, HerdTunables::default(), Box::new(Uniform), Tick::ZERO)
+            world_without_villages(7)
         };
+        let mut d = Dragons::new(7, sated(), Tick::ZERO);
+        let l = roost(&mut d, &mut w, 1, 300, 100);
+        let f = d.add_dragon(&mut w, adult("Dam", Gender::Female, l), Tick::ZERO);
+        let mut h = Herds::new(7, HerdTunables::default(), Box::new(Uniform), Tick::ZERO);
         for day in 1..=70 {
+            // The fed share held full from the day's start (its moving average reads the time
+            // since `fed_at`), so the mate that comes hungry does not starve out.
             d.lairs[l as usize].fed = 1.0;
+            d.lairs[l as usize].fed_at = Tick((day - 1) * TICKS_PER_DAY);
             d.run_until_with_herds(
                 &mut w,
                 &mut NoInfrastructure,
@@ -173,6 +184,7 @@ fn a_mate_comes_before_a_newcomer() {
     let mut h = rich_herds(9);
     for day in 1..=26 {
         d.lairs[held as usize].fed = 1.0;
+        d.lairs[held as usize].fed_at = Tick((day - 1) * TICKS_PER_DAY);
         d.run_until_with_herds(
             &mut w,
             &mut NoInfrastructure,
@@ -212,5 +224,8 @@ fn mouths_share_the_ground() {
     let (one, two) = (gate(false), gate(true));
     eprintln!("W at the empty lair: beside one dragon {one:.1}, beside a pair {two:.1}");
     // Every weight there is held by both lairs' nine regions: W / 2 beside one, W / 3 beside two.
-    assert!((two / one - 2.0 / 3.0).abs() < 1e-6, "{two:.2} against {one:.2}");
+    assert!(
+        (two / one - 2.0 / 3.0).abs() < 1e-6,
+        "{two:.2} against {one:.2}"
+    );
 }
