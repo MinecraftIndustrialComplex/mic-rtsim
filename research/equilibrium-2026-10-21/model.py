@@ -88,6 +88,10 @@ class Params:
     food_gate: bool = False             # TUNABLE (rule): young only from a surplus, food shared
     lair_slots: int = 2                 # lairs a region holds at most
     gate_village: float = 150.0         # TUNABLE: a village's weight, shared (alt_village unshared)
+    oil_weight: float = 0.0             # the oil row (EQC560): a weight per oil region (the nest
+                                        # regions), shared as a village's is; it never depletes
+    oil_breeds: bool = False            # the oil row's conversion: False, oil sustains a dragon
+                                        # (the fed share starve-leave reads) but breeds none
     gate_wild: float = 30.0             # TUNABLE: roads and stray prey, shared (alt_wild unshared)
     breed_days: float = 60.0            # engine: a lair's breeder clutches every 60 days
     mature_age: float = 75.0            # Ice and Fire's isMature: stage 4
@@ -266,6 +270,7 @@ class World:
         self.lair_due = np.full(shp + (L,), INF)
         self.lair_P = Pressure(shp + (L,), p)
         self.lair_fed = np.ones(shp + (L,))
+        self.lair_fed_b = np.ones(shp + (L,))   # the fed share births read (EQC560: food only)
         self.lair_kills = np.zeros(shp + (L,))
         self.lair_events = 0
         # the food gate's young: per seed, (y, x, ready day, last day) of each waiting young
@@ -461,10 +466,16 @@ class World:
         vill = (self.v_ex & (self.v_pop > 0)).astype(float)
         occ = self.lair_occ.sum(-1).astype(float)
         n = sum(shift(occ, dy, dx) for dy, dx in DIR9)     # occupied lairs whose 3 x 3 holds it
-        item = w + p.gate_village * vill
+        oil = p.oil_weight * self.nests.exists.astype(float)
+        item = w + p.gate_village * vill + oil
         W = sum(shift(item / np.maximum(n, 1), dy, dx) for dy, dx in DIR9) + p.gate_wild / np.maximum(n, 1)
         Wn = sum(shift(item / (n + 1), dy, dx) for dy, dx in DIR9) + p.gate_wild / (n + 1)
         iota = W / (W + p.dragon_half)
+        if p.oil_weight > 0 and not p.oil_breeds:
+            Wo = sum(shift(oil / np.maximum(n, 1), dy, dx) for dy, dx in DIR9)
+            food_share = 1.0 - Wo / np.maximum(W, 1e-9)
+        else:
+            food_share = 1.0
         self.iota_new = Wn / (Wn + p.dragon_half)
         c = occ * p.dragon_eat * dt * iota / np.maximum(W, 1e-9)
         demand = (w / np.maximum(n, 1)) * sum(shift(c, dy, dx) for dy, dx in DIR9)
@@ -474,6 +485,8 @@ class World:
         self.A = self.A - np.minimum(kills - ky, self.A)
         a = min(1.0, dt / p.fed_tau)
         self.lair_fed += (iota[..., None] - self.lair_fed) * a * self.lair_occ
+        ib = iota * food_share
+        self.lair_fed_b += (ib[..., None] - self.lair_fed_b) * a * self.lair_occ
         return iota
 
     def mark_extinct(self):
@@ -513,6 +526,7 @@ class World:
         self.lair_occ = self.lair_occ | ready
         self.lair_age = np.where(ready, p.arrive_age, self.lair_age)
         self.lair_fed = np.where(ready, 1.0, self.lair_fed)
+        self.lair_fed_b = np.where(ready, 1.0, self.lair_fed_b)
         self.lair_due = np.where(ready, INF, self.lair_due)
         self.lair_events += int(ready.sum())
         if p.food_gate:
@@ -525,7 +539,7 @@ class World:
         region a step, else leaves at `emigrate_age`. Returns the due lairs still empty."""
         p, rng = self.p, self.rng
         m = p.starve_leave
-        chance = np.clip((self.lair_fed - m) / (1 - m), 0, 1)
+        chance = np.clip((self.lair_fed_b - m) / (1 - m), 0, 1)
         breeders = self.lair_occ & (self.lair_age >= p.mature_age)
         born = rng.poisson(np.where(breeders, chance * dt / p.breed_days, 0.0))
         if born.any():
@@ -552,6 +566,7 @@ class World:
                     self.lair_occ[s, ty, tx, k] = True
                     self.lair_age[s, ty, tx, k] = p.disperse_age
                     self.lair_fed[s, ty, tx, k] = 1.0
+                    self.lair_fed_b[s, ty, tx, k] = 1.0
                     self.lair_due[s, ty, tx, k] = INF
                     free[ty, tx, :] = False        # one a region a step: the next reads it held
                     ready[s, ty, tx, k] = False
@@ -764,6 +779,10 @@ class World:
             "herd_top_share": top,
             "dragons": (self.lair_occ & kn[..., None]).sum((1, 2, 3)),
             "lairs": (self.lair_ex & kn[..., None]).sum((1, 2, 3)),
+            "dragons_oil": (self.lair_occ & (kn & near(self.nests.exists, 1))[..., None]).sum((1, 2, 3)),
+            "lairs_oil": (self.lair_ex & (kn & near(self.nests.exists, 1))[..., None]).sum((1, 2, 3)),
+            "dragons_dry": (self.lair_occ & (kn & ~near(self.nests.exists, 1))[..., None]).sum((1, 2, 3)),
+            "lairs_dry": (self.lair_ex & (kn & ~near(self.nests.exists, 1))[..., None]).sum((1, 2, 3)),
             "known_regions": kn.sum((1, 2)),
             "village_pop": np.where(kn, self.v_pop, 0).sum((1, 2)),
             "village_beds": np.where(kn & self.v_ex, self.v_K, 0).sum((1, 2)),
