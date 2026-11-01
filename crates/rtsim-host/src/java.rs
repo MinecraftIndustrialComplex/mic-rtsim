@@ -1193,6 +1193,8 @@ impl Java {
                         db::Cmd::PlaceLair(_) | db::Cmd::OilSurvey(_) | db::Cmd::PlaceNest(_) => {}
                         // A nest's worms and sorties need its chamber, which never formed.
                         db::Cmd::NestRenew(_) | db::Cmd::NestSortie(_) => {}
+                        // A villager taken (PP-2 (a)): this world has no villager to remove.
+                        db::Cmd::TakeResident(_) => {}
                         db::Cmd::Steer(_) => {}
                     },
                     Err(_) => self.undecoded += 1,
@@ -1710,6 +1712,8 @@ impl Java {
             D::PlaceNest(p) => p.dimension = self.java_dim(p.dimension),
             D::NestRenew(r) => r.dimension = self.java_dim(r.dimension),
             D::NestSortie(o) => o.dimension = self.java_dim(o.dimension),
+            // A villager a dragon took (PP-2 (a)): recorded, in Java's dimension ids.
+            D::TakeResident(t) => t.dimension = self.java_dim(t.dimension),
             D::Steer(_) | D::Depart(_) => {}
             // A puppet settled at its lair: it is a home body now, in place (EQC110).
             D::HandBack(h) => {
