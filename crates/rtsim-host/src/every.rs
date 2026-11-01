@@ -720,6 +720,15 @@ impl Every {
     /// hands nothing over (EQC493).
     pub fn run_to(&mut self, day: u64) {
         while self.day() < day {
+            if !self.second.is_empty() {
+                // A fallen count's second reading at the next hand-over, inside the census
+                // filter's heartbeat of 6,000 ticks: read a day later it is stale, the count is
+                // never confirmed and the village never waits for settlers (EQC497).
+                self.run_ticks_to(self.host.j.game_time - self.host.start_time);
+                for v in std::mem::take(&mut self.second) {
+                    self.census_village(v);
+                }
+            }
             let next = self.day() + 1;
             let at = (self.host.start_time + next as i64 * DAY).max(self.host.j.game_time);
             let o = Options {
