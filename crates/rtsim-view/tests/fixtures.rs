@@ -4,7 +4,10 @@
 //! copied without its `rtsim/archive` (the event timeline): `events.rs` needs a real save with no
 //! archive and writes its own archive onto a copy of this one. The create save keeps its archive.
 //!
-//! - `tests/data/core`: neoforge/core's GameTest world, a fresh one, run from the integration build of
+//! - `tests/data/core`: neoforge/core's GameTest world, a fresh one, run from the predator and prey build of
+//!   `feat/dragon-food-gate` at b64f7bcf (docs/overnight-choices-equilibrium.md EQC550 to EQC576; the dragons' pages move
+//!   to RTDB and their meta page to RTNB, raid rests in page table 0x441A, hunt-target tags 5 and 6), from a cleared world,
+//!   that passed (All 198); before that, a fresh one run from the integration build of
 //!   `integrate/conflict-fixes` at 435785ea (S9 as landed, with the M11, S7 and M12a review fixes merged and main's S5
 //!   two-bodies fix; docs/choices-mowzie-build.md MZB-1408 to MZB-1411; the merged formats: the conflict's pages are RTCG
 //!   (magic `RTCG`) with meta version 15, S9's camp chief pressure and the M12a review's heir pressure kept, rivals and
@@ -142,7 +145,9 @@
 //!   when the server stops: 6638edc's save had one, while both runs of 98d6d34 and main's 7e4042a
 //!   had every herd staying put. So the route layer is not required here; it still has to draw or
 //!   say why.
-//! - `tests/data/create`: neoforge/create's GameTest world, run from the integration build of
+//! - `tests/data/create`: neoforge/create's GameTest world, run from the predator and prey build of
+//!   `feat/dragon-food-gate` at b64f7bcf with `-Psec1fx` (the core save's formats, RTDB and RTNB, as the core entry says;
+//!   a fresh world, copied after its JVM exited; All 266); before that, run from the integration build of
 //!   `integrate/conflict-fixes` at d661b04e with `-Psec1fx` (the core save's formats, RTCG and meta 15, as the core entry
 //!   says; main's S5 two-bodies fix, merged after it at 435785ea, changes no format; a fresh world, kept aside after its JVM
 //!   exited and before the next round's server started, then copied to `target/`); before that, the S9 build of
