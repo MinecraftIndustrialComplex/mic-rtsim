@@ -873,6 +873,7 @@ impl Herds {
                 self.forage.sweep(climate, &subs, at);
                 let keep = Tick(at.0.saturating_sub(subs.year_ticks()));
                 self.ops.retain(|_, t| *t >= keep);
+                self.prune_follows(at);
                 let n = subs.index(at);
                 let next = subs.start((Subs::year(n) + 1) * 12);
                 self.schedule(next.max(at + 1), Ev::Year);
@@ -2668,6 +2669,24 @@ impl Herds {
 
     // ---- prey (the ecology prey interface) -----------------------------------------------------
 
+    /// Drops each follow whose window has passed, and each predator left with none (EQC584). Only
+    /// a follow inside `follow_ticks` is ever read, and the dragons come and go: without this, every
+    /// predator that ever ate stayed in the map, and the herds' meta page grew for ever.
+    fn prune_follows(&mut self, at: Tick) {
+        let window = self.tun.follow_ticks;
+        let herds = &self.herds;
+        self.follows.retain(|&p, hs| {
+            hs.retain(|h| {
+                herds.get(*h).is_some_and(|x| {
+                    x.followers
+                        .iter()
+                        .any(|&(q, t)| q == p && at.0 < t.0 + window)
+                })
+            });
+            !hs.is_empty()
+        });
+    }
+
     /// Herds a predator at (x, z) could hunt at `at`: within `range` of it, or within
     /// `range × follow_factor` if it follows them. Found through the region index (no scan).
     pub fn prey_near(
@@ -2852,6 +2871,9 @@ impl Herds {
             let (p, _) = x_.followers.remove(0);
             if let Some(s) = self.follows.get_mut(&p) {
                 s.remove(&h);
+                if s.is_empty() {
+                    self.follows.remove(&p);
+                }
             }
         }
         self.follows.entry(predator).or_default().insert(h);

@@ -1911,3 +1911,45 @@ fn a_herd_over_a_lowered_k_thins_toward_it() {
     assert!((60..=130).contains(&after), "{after} near K 100 after");
     assert_eq!((l.starved, l.killed, l.eaten), (0, 0, 0), "{l:?}");
 }
+
+/// A predator follows a herd it ate from for `follow_ticks`, then not (EQC584): its entry goes at
+/// the next year's turn, and a predator that never eats again leaves nothing. The dragons come and
+/// go by the hundred a century, and each one that ate left an entry for ever: the every-kind
+/// soak's herds' meta page grew 2.7 KB a game century.
+#[test]
+fn a_predator_that_ate_once_leaves_no_follow_behind() {
+    let mut h = Herds::new(
+        4,
+        HerdTunables::default(),
+        Box::new(Valley::default()),
+        Tick::ZERO,
+    );
+    let herd = h.add_herd(
+        NewHerd {
+            name: "Few".into(),
+            species: rtsim_ecology::herds::HerdSpecies::Goat,
+            frame: 0,
+            pos: (300, 1_700),
+            count: 40,
+            seed: Some(6),
+        },
+        Tick::ZERO,
+    );
+    let mut index = legs();
+    let at = Tick(5_000);
+    h.run_until(&mut index, at);
+    let follows = |h: &Herds| {
+        h.heap_parts()
+            .into_iter()
+            .find(|p| p.0 == "follows")
+            .map_or(0, |p| p.1)
+    };
+    let (px, pz) = h.position(herd, at);
+    for wolf in 0..3u64 {
+        assert_eq!(h.predate(herd, px, pz, at, 100, 0x1_0000_0000 + wolf).animals, 1);
+    }
+    assert!(follows(&h) > 0);
+    // Two years on: every follow's window has passed, and the year's turn has come.
+    h.run_until(&mut index, Tick::from_days(2 * 96));
+    assert_eq!(follows(&h), 0, "follows kept past their window");
+}
