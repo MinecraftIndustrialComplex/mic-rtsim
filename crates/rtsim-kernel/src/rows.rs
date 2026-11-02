@@ -278,6 +278,9 @@ pub struct PagedRows<T: Row> {
     stats: Cell<RowStats>,
     /// Pages lent mutably since the last budget check, to measure again.
     remeasure: Vec<u64>,
+    /// Pages a read found in no store and installed empty, so the next read is free: the next
+    /// budget check drops those still empty (EQC585).
+    misses: RefCell<Vec<u64>>,
     /// Rows in the table, resident or not.
     len: u64,
     /// Rows on the resident pages: when it is `len`, no page that is not resident holds a row, so
@@ -328,6 +331,7 @@ impl<T: Row> PagedRows<T> {
             resident_bytes: Cell::new(0),
             stats: Cell::new(RowStats::default()),
             remeasure: Vec::new(),
+            misses: RefCell::new(Vec::new()),
             len: 0,
             resident_rows: Cell::new(0),
             snapshots: 0,
@@ -494,7 +498,10 @@ impl<T: Row> PagedRows<T> {
                 self.stats.set(s);
                 RowPage::decode(pid, self.per, &raw)?
             }
-            None => RowPage::empty(pid),
+            None => {
+                self.misses.borrow_mut().push(pid);
+                RowPage::empty(pid)
+            }
         };
         Ok(Some(self.install(page)))
     }
@@ -642,7 +649,8 @@ impl<T: Row> PagedRows<T> {
 
     /// Evicts least-recently-used pages whose state is on disk until the resident bytes fit the
     /// budget. Call at step boundaries. A resident table evicts nothing. Returns how many pages
-    /// went.
+    /// went. First, whatever the budget, drops the pages a read installed empty that are still
+    /// empty (not counted as evictions).
     pub fn enforce_budget(&mut self) -> usize {
         for pid in std::mem::take(&mut self.remeasure) {
             if let Some(&p) = self.pages.get_mut().get(&pid) {
@@ -652,6 +660,15 @@ impl<T: Row> PagedRows<T> {
                 page.measure();
                 let after = page.bytes();
                 self.account(after, before);
+            }
+        }
+        for pid in std::mem::take(self.misses.get_mut()) {
+            if let Some(&p) = self.pages.get_mut().get(&pid) {
+                // SAFETY: `&mut self`.
+                let page = unsafe { p.as_ref() };
+                if page.rows.is_empty() && !page.dirty && page.saving == 0 {
+                    self.unload(pid);
+                }
             }
         }
         if self.source.is_none() || self.resident_bytes.get() <= self.budget {
@@ -1606,6 +1623,39 @@ mod tests {
         assert_eq!(a.rows().stats().evictions, 0, "no budget eviction");
         assert!(live.iter().all(|h| a.get(*h).is_some()));
         assert_eq!(a.get(PagedArena::<R>::handle(5)), None, "a row long gone reads as gone");
+        drop(a);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn reading_rows_long_gone_leaves_no_resident_pages_behind() {
+        // A read of a page no store holds installs it empty, so the next read is free; it goes at
+        // the next budget check, whatever the budget (EQC585: a dead dragon's handle, read from a
+        // lair's or a parent's list, kept an empty page resident for ever).
+        let dir = tmpdir("misses");
+        let store = Arc::new(RwLock::new(
+            PageStore::open(&dir, Durability::NoSync).unwrap(),
+        ));
+        let mut a: PagedArena<R> = PagedArena::new(7, 1);
+        a.rows_mut().attach(store.clone(), usize::MAX);
+        let gone: Vec<_> = (0..300u64).map(|k| a.insert(row(k))).collect();
+        let kept = a.insert(row(300));
+        for h in &gone {
+            a.remove(*h);
+        }
+        save(a.rows_mut(), &store);
+        assert_eq!(a.rows().resident_pages(), 1);
+        assert!(gone.iter().all(|h| a.get(*h).is_none()));
+        assert!(a.rows().resident_pages() > 1, "a read installs the page it found in no store");
+        a.rows_mut().enforce_budget();
+        assert_eq!(a.rows().resident_pages(), 1, "only the live row's page");
+        assert_eq!(a.rows().stats().evictions, 0, "no budget eviction");
+        assert_eq!(a.get(kept), Some(&row(300)));
+        // A miss that a change then fills is kept.
+        assert!(a.get(PagedArena::<R>::handle(5)).is_none());
+        a.rows_mut().insert(5, row(5));
+        a.rows_mut().enforce_budget();
+        assert_eq!(a.rows().get(5), Some(&row(5)));
         drop(a);
         std::fs::remove_dir_all(&dir).unwrap();
     }

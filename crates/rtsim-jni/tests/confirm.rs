@@ -385,8 +385,11 @@ fn a_budget_save_waits_for_the_world_saved_of_the_save_under_it() {
         e.stats.budget_saves_held.load(Acquire) > 0,
         "steps that wanted a budget save were held"
     );
+    // The held save pins the pages its rows left until its WORLD_SAVED (an emptied page goes once
+    // its deletion is durable, EQC585), and the unpaged run's saves, confirmed at once, let them
+    // go: a few hundred bytes over the 80 hand-overs.
     assert!(
-        held_peak <= unpaged,
+        held_peak <= unpaged + unpaged / 100,
         "{held_peak} B held, {unpaged} B unpaged"
     );
     let (current, confirmed) = generations(&dir);
