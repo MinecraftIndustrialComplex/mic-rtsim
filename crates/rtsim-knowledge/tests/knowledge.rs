@@ -527,4 +527,15 @@ fn counters_go_with_the_actors_they_name() {
     w.k.remove_holder(caravan);
     assert_eq!(w.k.counters_len(), 1, "the caravan's go with it");
     assert_eq!(w.k.counter(w.player, w.oakford, ReportKind::Robbery), 1);
+    // A report on an actor that died before it expired leaves no counter when it does.
+    let late = w.k.create_notable(0xD2, w.oakford, w.oakford, Tick(0), 1_000 * TICKS_PER_DAY);
+    let c = w.k.record(Report {
+        who: late,
+        at: Tick(200 * TICKS_PER_DAY),
+        ..assault(w.brindle)
+    });
+    w.k.witness(w.brindle, c, Tick(200 * TICKS_PER_DAY));
+    w.k.die(late, Tick(201 * TICKS_PER_DAY));
+    w.k.expire_due(Tick(400 * TICKS_PER_DAY));
+    assert_eq!(w.k.counters_len(), 1, "no counter for a dead actor's report");
 }

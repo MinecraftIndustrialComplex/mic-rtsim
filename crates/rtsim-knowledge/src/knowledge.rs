@@ -441,15 +441,20 @@ impl Knowledge {
         self.reports.next_expiry()
     }
 
-    /// Detail is gone; the count stays (SCALE.md §6). Boards and memories drop the handle.
+    /// Detail is gone; the count stays (SCALE.md §6), unless the actor it is about is gone too: a
+    /// counter on a handle that no longer validates is never read (EQC583). Boards and memories
+    /// drop the handle.
     fn fold(&mut self, id: ReportId, entry: ReportEntry) {
         let Some(report) = entry.row.unpack() else {
             return;
         };
+        let counted = self.actors.get(report.who).is_some();
         for &k in entry.knowers() {
             if let Some(h) = self.holders.get_mut(&k) {
                 h.board.remove(id);
-                self.counters.bump((report.who, k, report.kind));
+                if counted {
+                    self.counters.bump((report.who, k, report.kind));
+                }
             }
             if let Some(n) = self.notables.get_mut(&k) {
                 n.forget(id);
