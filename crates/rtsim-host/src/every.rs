@@ -1646,6 +1646,10 @@ pub struct Bounds {
     pub broken: Vec<String>,
 }
 
+/// The longest a herd range may stay empty before the long run calls it broken (EQC499): the
+/// soak's herd spell window, PROVISIONAL until the calibration.
+pub const HERD_SPELL_DAYS: u64 = 200;
+
 impl Bounds {
     /// Day `day`'s sites, and the dragons' gated arrivals so far.
     pub fn look(&mut self, day: u64, sites: &[SiteNow], gated: u64) {
@@ -1705,7 +1709,11 @@ impl Bounds {
                     Some("not refounded 384 days after its break")
                 }
                 "oil.nest" if quiet > 96 + slack => Some("no worm 96 days after the last change"),
-                "herd.range" if day.is_multiple_of(EVERY_DAYS) => Some("empty at a census"),
+                // A herd may die out by chance and be refounded by dispersers (§3.6); it may not
+                // stay out (EQC499: the soak's herd spell, 200 days).
+                "herd.range" if day - since > HERD_SPELL_DAYS + slack => {
+                    Some("empty 200 days")
+                }
                 "dragon.lair"
                     if day - since > 192 + slack
                         && self.gated_at_empty.get(&s.key).is_some_and(|&g| gated == g) =>

@@ -30,17 +30,52 @@ const SAMPLE: u64 = 10;
 /// The flat rule's significance (EQC438).
 const ALPHA: f64 = 0.001;
 
-/// The kinds whose arrivals are gated by food, which may touch zero for a spell and refill
-/// (EQC485): judged by their spells with no member, not on every sample.
-const FOOD_GATED: [&str; 1] = ["dragon.lair"];
-/// W: at least one lair is held in every window of W game days. Twice the longest spell with
-/// every lair empty, rounded up to the sample step. PROVISIONAL (EQC485): seed 1's first century,
-/// 20 days; the calibration seeds replace it (EQC442).
-const EMPTY_SPELL_WINDOW_DAYS: u64 = 40;
-/// The share of a century's samples with every lair empty: at most twice seed 1's first
-/// century's (5 of 960), and a drift as large as that share is material. PROVISIONAL (EQC485).
-const ALL_EMPTY_SHARE_MAX: f64 = 10.0 / 960.0;
-const ALL_EMPTY_SHARE_DELTA: f64 = 5.0 / 960.0;
+/// A kind judged by its spells, not on every sample (EQC485, EQC499): a spell is a run of samples
+/// on which the kind is short in its own way, which may come but not stay. W: no spell of W game
+/// days or more, twice the longest spell, rounded up to the sample step; a judged century's share
+/// of samples in a spell at most `share_max`, twice the worst century's, and a drift as large as
+/// `share_delta` is material. PROVISIONAL until the calibration seeds replace them (EQC442).
+struct SpellRule {
+    kind: &'static str,
+    /// The spell's name in the checks' names (`level.<kind>.<what>`, `flat.<what>.<kind>`).
+    what: &'static str,
+    window_days: u64,
+    share_max: f64,
+    share_delta: f64,
+}
+
+/// The lairs' spell is every lair empty, their arrivals gated by food (EQC485: seed 1's first
+/// century, a longest spell of 20 days and 5 samples of 960). The herds' is some range empty, a
+/// herd that died out by chance and is refounded by dispersers (§3.6; EQC499: seed 1's first five
+/// centuries, spells of 80, 100 and 50 days, 10 samples of 960 at most).
+const SPELLS: [SpellRule; 2] = [
+    SpellRule {
+        kind: "dragon.lair",
+        what: "all_empty",
+        window_days: 40,
+        share_max: 10.0 / 960.0,
+        share_delta: 5.0 / 960.0,
+    },
+    SpellRule {
+        kind: "herd.range",
+        what: "some_empty",
+        window_days: 200,
+        share_max: 20.0 / 960.0,
+        share_delta: 10.0 / 960.0,
+    },
+];
+
+/// Whether census row `c` of kind `kind` is in its spell ([`SPELLS`]).
+fn in_spell(kind: &str, c: &KindCensus) -> bool {
+    match kind {
+        "herd.range" => c.empty > 0,
+        _ => c.members == 0,
+    }
+}
+
+fn spell_rule(kind: &str) -> Option<&'static SpellRule> {
+    SPELLS.iter().find(|s| s.kind == kind)
+}
 
 /// One run's shape.
 #[derive(Clone, Debug)]
@@ -81,8 +116,10 @@ struct KindWindow {
     /// Samples on which some site was broken, and the largest mean P seen.
     broken_samples: u64,
     max_p: f64,
-    /// Samples on which the kind had no member at all.
+    /// Samples on which the kind had no member at all, and on which it was in its spell
+    /// ([`in_spell`]).
     all_empty: u64,
+    in_spell: u64,
 }
 
 impl KindWindow {
@@ -95,6 +132,7 @@ impl KindWindow {
         }
         self.samples += 1;
         self.all_empty += u64::from(c.members == 0);
+        self.in_spell += u64::from(in_spell(c.kind, c));
         self.fill += every::level(c);
         let sites = f64::from(c.sites.max(1));
         self.empty += f64::from(c.empty) / sites;
@@ -156,11 +194,11 @@ struct Run {
     windows: Vec<Window>,
     /// Sample checks that failed: (day, what).
     sample_failures: Vec<(u64, String)>,
-    /// Samples on which a kind had no member, or a herd range was empty (EQC436 (3)); a
-    /// food-gated kind's are its spells instead.
+    /// Samples on which a kind had no member (EQC436 (3)); a kind judged by its spells is judged
+    /// by them instead.
     dead: Vec<(u64, String)>,
-    /// A food-gated kind's spells with no member after the first window, days: the one running,
-    /// the longest, and how many (EQC485).
+    /// A spell-judged kind's spells after the first window, days: the one running, the longest,
+    /// and how many (EQC485, EQC499).
     spells: BTreeMap<&'static str, (u64, u64, u64)>,
     peak_journal: usize,
     peak_in_flight: u64,
@@ -218,11 +256,8 @@ fn check_sample(
         if c.capacity == 0 {
             out.push((day, format!("{k}: capacity 0")));
         }
-        if day > plan.window && c.members == 0 && !FOOD_GATED.contains(&k) {
+        if day > plan.window && c.members == 0 && spell_rule(k).is_none() {
             dead.push((day, format!("{k}: no member")));
-        }
-        if k == "herd.range" && c.empty > 0 {
-            dead.push((day, format!("herd.range: {} ranges empty", c.empty)));
         }
     }
     if cs.len() != KINDS.len() {
@@ -273,9 +308,9 @@ fn soak(plan: &Plan) -> (Run, Founded) {
             }
         }
         if next > plan.window {
-            for k in FOOD_GATED {
-                let e = run.spells.entry(k).or_default();
-                if every::kind(&cs, k).is_some_and(|c| c.members == 0) {
+            for s in &SPELLS {
+                let e = run.spells.entry(s.kind).or_default();
+                if every::kind(&cs, s.kind).is_some_and(|c| in_spell(s.kind, c)) {
                     e.2 += u64::from(e.0 == 0);
                     e.0 += SAMPLE;
                     e.1 = e.1.max(e.0);
@@ -471,15 +506,15 @@ fn judge(plan: &Plan, run: &Run) -> Vec<Check> {
         ok: run.dead.is_empty(),
         detail: json!({"samples": run.dead.len(), "first": days(&run.dead)}),
     });
-    // A food-gated kind may touch zero, never for long (EQC485): at least one site held in every
-    // window of W days, so no spell with none of W days or more.
-    for k in FOOD_GATED {
-        let (_, longest, spells) = run.spells.get(k).copied().unwrap_or_default();
+    // A spell-judged kind may be short, never for long (EQC485, EQC499): no spell of W days or
+    // more.
+    for s in &SPELLS {
+        let (_, longest, spells) = run.spells.get(s.kind).copied().unwrap_or_default();
         out.push(Check {
-            name: format!("alive.{k}"),
-            ok: longest < EMPTY_SPELL_WINDOW_DAYS,
+            name: format!("alive.{}", s.kind),
+            ok: longest < s.window_days,
             detail: json!({"longest_spell_days": longest, "spells": spells,
-                           "window_days": EMPTY_SPELL_WINDOW_DAYS}),
+                           "window_days": s.window_days, "spell": s.what}),
         });
     }
     let judged: Vec<&Window> = run
@@ -576,26 +611,26 @@ fn judge(plan: &Plan, run: &Run) -> Vec<Check> {
         ok: camp_bad.is_empty(),
         detail: json!({"windows": camp_bad}),
     });
-    // A food-gated kind's share of samples with no member, by judged window (EQC485): in its band,
-    // and no slide toward an absorbing zero.
-    for k in FOOD_GATED {
+    // A spell-judged kind's share of samples in its spell, by judged window (EQC485, EQC499): in
+    // its band, and no slide toward an absorbing zero.
+    for s in &SPELLS {
         let share: Vec<f64> = judged
             .iter()
             .map(|w| {
                 w.kinds
-                    .get(k)
-                    .map_or(0.0, |x| x.all_empty as f64 / x.samples.max(1) as f64)
+                    .get(s.kind)
+                    .map_or(0.0, |x| x.in_spell as f64 / x.samples.max(1) as f64)
             })
             .collect();
         out.push(Check {
-            name: format!("level.{k}.all_empty"),
-            ok: share.iter().all(|&x| x <= ALL_EMPTY_SHARE_MAX),
-            detail: json!({"most": ALL_EMPTY_SHARE_MAX, "values": share}),
+            name: format!("level.{}.{}", s.kind, s.what),
+            ok: share.iter().all(|&x| x <= s.share_max),
+            detail: json!({"most": s.share_max, "values": share}),
         });
         flat_check(
-            format!("flat.all_empty.{k}"),
+            format!("flat.{}.{}", s.what, s.kind),
             &share,
-            ALL_EMPTY_SHARE_DELTA,
+            s.share_delta,
             &mut out,
         );
     }
@@ -818,6 +853,8 @@ fn run_plan(plan: Plan) {
                 || c.name.starts_with("flat.renewals.")
                 || c.name.starts_with("flat.all_empty.")
                 || c.name.ends_with(".all_empty")
+                || c.name.starts_with("flat.some_empty.")
+                || c.name.ends_with(".some_empty")
         }) {
             c.detail["judged"] = json!(false);
             c.detail["would_fail"] = json!(!c.ok);

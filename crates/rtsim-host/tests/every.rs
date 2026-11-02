@@ -277,7 +277,8 @@ fn long_horizon_stability_with_kills() {
         }
     }
     assert!(r.bounds.is_empty(), "{:?}", r.bounds);
-    assert_eq!(means(&r, 0).ranges_alive_min, 1.0);
+    // A herd may die out by chance and be refounded (§3.6): at worst S4's 0.96 (EQC499).
+    assert!(means(&r, 0).ranges_alive_min >= 0.96);
 }
 
 /// EQC417: seeds 1 to 30, 60 years, the roamer against nobody on the same seeds, read over years
@@ -333,7 +334,7 @@ fn long_horizon_stability_with_kills_30_seeds() {
     );
     for m in mr.iter().chain(&mn) {
         need(
-            m.ranges_alive_min == 1.0,
+            m.ranges_alive_min >= 0.96,
             format!("a herd range empty: {m:?}"),
         );
     }
