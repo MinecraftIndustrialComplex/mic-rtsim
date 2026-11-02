@@ -1206,7 +1206,7 @@ const PARENT: [(&str, u64, u64); 3] = [
     (
         "coastal 7 script 30 days",
         0xf921_e4e7_d97f_73b0,
-        0x9c12_2676_a369_67e5,
+        0x411b_04ce_34bf_b263,
     ),
     (
         "sea_havens 1 unattended 96 days",
@@ -1221,7 +1221,8 @@ const PARENT: [(&str, u64, u64); 3] = [
 ];
 
 /// (The world hashes below are slice S6's: the world save now carries every village's renewal row, RTW5; the ships' hashes
-/// are the blockade parent's, unchanged.)
+/// are the blockade parent's, unchanged. The coast's world hash is re-pinned for EQC583: a report on a notable that died
+/// before it expired leaves no knowledge counter, and the scripted player's kills make such reports there.)
 ///
 /// `blockade_days = 0` turns closures off and changes nothing: the ships' and the world's hashes
 /// (of the save bytes after the magic) equal the parent's for the same runs, no port has a state, no lane has heat and no
