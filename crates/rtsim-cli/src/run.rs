@@ -105,6 +105,13 @@ fn parse(args: &[&str]) -> Result<Args, String> {
             "--socket" => socket = Some(PathBuf::from(value(&mut i, "--socket")?)),
             "--allow-tailnet" => allow_tailnet = true,
             "--test" => opts.test = true,
+            "--seed" => {
+                let v = value(&mut i, "--seed")?;
+                opts.seed = Some(
+                    v.parse()
+                        .map_err(|_| format!("--seed {v}: a whole number"))?,
+                );
+            }
             "--no-fsync" => opts.durability = Durability::NoSync,
             "--status-every" => {
                 let v = value(&mut i, "--status-every")?;

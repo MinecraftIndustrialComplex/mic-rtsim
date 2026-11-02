@@ -978,6 +978,47 @@ fn bad(why: &str) -> ExitCode {
 
 /// `rtsim-cli sim killall`: each row on the seeds (1 to 30 by default), one line a row; exits 1
 /// on any FAIL.
+/// `rtsim-cli sim every-world <dir> [--seed N]`: S11's every-kind world made in `<dir>/world`, for
+/// the headless host and its viewer to run (`rtsim-cli run <dir>/world --fork <dir>/fork --seed N`).
+pub fn every_world_cli(rest: &[&str]) -> ExitCode {
+    let mut dir = None;
+    let mut seed = 1u64;
+    let mut it = rest.iter();
+    while let Some(&a) = it.next() {
+        match a {
+            "--seed" => match it.next().and_then(|v| v.parse().ok()) {
+                Some(s) => seed = s,
+                None => return bad("--seed needs a whole number"),
+            },
+            a if a.starts_with("--") => return bad(&format!("unknown option {a}")),
+            a if dir.is_none() => dir = Some(std::path::PathBuf::from(a)),
+            a => return bad(&format!("unexpected argument {a}")),
+        }
+    }
+    let Some(dir) = dir else {
+        return bad("no folder");
+    };
+    let world = dir.join("world");
+    if world.exists() {
+        return bad(&format!("{} exists: make it in a new folder", world.display()));
+    }
+    if let Err(e) = std::fs::create_dir_all(&world) {
+        return bad(&format!("{}: {e}", world.display()));
+    }
+    let f = rtsim_host::every::make(&world, seed, false);
+    println!(
+        "the every-kind world on seed {seed} in {}: {} villages, {} lairs, {} herd ranges; run it with\n  \
+         rtsim-cli run {} --fork {} --seed {seed} --speed max --view",
+        world.display(),
+        f.villages.len(),
+        f.lairs.len(),
+        f.ranges.len(),
+        world.display(),
+        dir.join("fork").display()
+    );
+    ExitCode::SUCCESS
+}
+
 pub fn cli(rest: &[&str]) -> ExitCode {
     let mut rows: Vec<&'static Row> = ROWS.iter().collect();
     let (mut from, mut to) = (1u64, 30u64);

@@ -101,6 +101,10 @@ usage:
       sites, members, capacity, short, empty, broken, mean pressure, renewals since the last
       line. ecology: lairs, oil nests and herds; ships: the pirate haven; conflict: the camp;
       each with its world's villages.
+  rtsim-cli sim every-world <dir> [--seed N]
+      Makes S11's every-kind world (every kind of the census on one map of 56 regions, the soak's
+      world) in <dir>/world on seed N (default 1), saved as a server with nobody online would leave
+      it, for `rtsim-cli run <dir>/world --fork <dir>/fork --seed N --speed max --view`.
   rtsim-cli sim killall [--kind K[,K...]] [--seeds A..B] [--verbose]
       The kill-alls in one place (EQUILIBRIUM.md S11): each kind's alone kill-all on seeds A to B
       (default 1 to 30), one fixed-width line a row (median [5th, 95th] of the days to half, to
@@ -108,6 +112,7 @@ usage:
       band its alone test asserts. Exits 1 if a row fails. Hours in all; --kind picks rows.
   rtsim-cli run <world> --fork <dir> [--speed 1x|10x|max] [--until N|Nd|@N|@Nd] [--season-days N]
                 [--view [addr]] [--socket PATH] [--allow-tailnet] [--stride N] [--test] [--no-fsync]
+                [--seed N]
       The headless host (VIEWER.md §12): exports <world> into <dir> (or resumes the fork there),
       then runs the engine on the fork with the Java side of a server where nobody is online.
       1x and 10x follow the wall clock, max runs flat out; --until stops after N ticks or N game
@@ -117,6 +122,8 @@ usage:
       (loopback 127.0.0.1:8740 by default; tailnet addresses need --allow-tailnet; --socket PATH
       serves a Unix socket instead, for a server where others have shells). Ctrl-C stops
       with a final save; p, s, 1x, 10x, max and q (then Enter) pause, save, set the speed, quit.
+      --seed N: the world seed every module mixes in, for a world made with one (a test world such
+      as `sim every-world`'s); a server's world has none.
   rtsim-cli export <world> <dir>
       Copies <world>'s rtsim state (pages through the read-only open, journal, level.dat) into a
       new fork in <dir>: one whole generation even from a running server; nothing is written
@@ -295,6 +302,7 @@ fn main() -> ExitCode {
         ["sim", "herds", rest @ ..] => sim::herds::cli(rest),
         ["sim", "census", rest @ ..] => sim::census::cli(rest),
         ["sim", "killall", rest @ ..] => sim::killall::cli(rest),
+        ["sim", "every-world", rest @ ..] => sim::killall::every_world_cli(rest),
         ["sim", "conflict", rest @ ..] => sim::conflict::cli(rest),
         ["sim", "mowzie", rest @ ..] => sim::mowzie::cli(rest),
         ["bench", "restore", rest @ ..] => bench::restore::cli(rest),
