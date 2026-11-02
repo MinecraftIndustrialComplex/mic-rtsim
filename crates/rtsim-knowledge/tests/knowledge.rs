@@ -492,3 +492,39 @@ fn only_the_named_reports_gossip_is_dropped() {
     assert_eq!(left[0].report, first, "the other report's write survives");
     assert_eq!(w.k.drop_vanilla_gossip_of(first), 0, "taken already");
 }
+
+/// The counters an expired report leaves go with the actors they name (EQC583): a notable that
+/// died, or a holder removed, is never asked about again (its handle stops validating), so its
+/// counters were dead weight. A world whose dragons, each a notable, come and go kept one more
+/// counter per dragon and village it raided, for ever: the every-kind soak's knowledge grew
+/// 135 KB a game century.
+#[test]
+fn counters_go_with_the_actors_they_name() {
+    let mut w = world(4);
+    let dragon = w.k.create_notable(0xD1, w.oakford, w.oakford, Tick(0), 1_000 * TICKS_PER_DAY);
+    let caravan = w.k.actors_mut().register(ActorKind::Group, 0xCA);
+    w.k.add_holder(caravan, HolderKind::Caravan);
+    let assault = |whom| Report {
+        who: dragon,
+        whom,
+        kind: ReportKind::Assault,
+        severity: SEVERITY_UNIT,
+        flags: 0,
+        at: Tick(0),
+        place: Place::new(0, 100, 64, 200),
+    };
+    let a = w.k.record(assault(w.brindle));
+    w.k.witness(w.brindle, a, Tick(0));
+    w.k.witness(caravan, a, Tick(0));
+    let b = w.k.record(robbery(&w, w.oakford, 0));
+    w.k.witness(caravan, b, Tick(0));
+    w.k.witness(w.oakford, b, Tick(0));
+    w.k.expire_due(Tick(100 * TICKS_PER_DAY));
+    assert_eq!(w.k.counter(dragon, w.brindle, ReportKind::Assault), 1);
+    assert_eq!(w.k.counters_len(), 4);
+    w.k.die(dragon, Tick(100 * TICKS_PER_DAY));
+    assert_eq!(w.k.counters_len(), 2, "the dragon's two counters go with it");
+    w.k.remove_holder(caravan);
+    assert_eq!(w.k.counters_len(), 1, "the caravan's go with it");
+    assert_eq!(w.k.counter(w.player, w.oakford, ReportKind::Robbery), 1);
+}

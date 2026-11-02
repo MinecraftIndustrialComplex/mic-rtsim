@@ -85,6 +85,23 @@ pub(crate) struct Counters {
 }
 
 impl Counters {
+    /// Drops every counter naming `a`, as the one reported on or as the knower (EQC583): an actor
+    /// that died or stopped holding is never asked about again, and a world whose notables come
+    /// and go would keep their counters for ever. A scan, at a death or a removal.
+    fn forget(&mut self, a: ActorId) {
+        let gone: Vec<CounterKey> = self
+            .map
+            .keys()
+            .filter(|k| k.0 == a || k.1 == a)
+            .copied()
+            .collect();
+        for k in gone {
+            if let Some(c) = self.map.remove(&k) {
+                self.by_count.remove(&(c, k));
+            }
+        }
+    }
+
     fn bump(&mut self, key: CounterKey) {
         if let Some(c) = self.map.get_mut(&key) {
             self.by_count.remove(&(*c, key));
@@ -210,7 +227,8 @@ impl Knowledge {
         });
     }
 
-    /// Forgets a holder, with no inheritance (use [`Knowledge::die`] for a notable's death).
+    /// Forgets a holder, with no inheritance (use [`Knowledge::die`] for a notable's death), and
+    /// the counters naming it (EQC583).
     pub fn remove_holder(&mut self, actor: ActorId) {
         if let Some(h) = self.holders.remove(&actor) {
             for id in h.board.iter() {
@@ -218,6 +236,7 @@ impl Knowledge {
             }
         }
         self.notables.remove(&actor);
+        self.counters.forget(actor);
     }
 
     pub fn is_holder(&self, actor: ActorId) -> bool {
@@ -547,10 +566,16 @@ impl Knowledge {
             }
         }
         self.actors.remove(notable);
+        self.counters.forget(notable);
         heir
     }
 
     // ---- Accounting ----
+
+    /// The counters held now (keys of who, knower and kind).
+    pub fn counters_len(&self) -> usize {
+        self.counters.map.len()
+    }
 
     pub fn heap_bytes(&self) -> usize {
         let holders: usize = self
