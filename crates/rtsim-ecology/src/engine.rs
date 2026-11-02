@@ -3281,16 +3281,19 @@ impl Dragons {
         let full_need =
             (self.tun.full - self.dragons[d].fullness_at(&self.tun, at)).min(sp.appetite);
         if self.takes_villager(w, node, f64::from(food), f64::from(full_need), at) {
-            w.member_taken(node, at);
+            // A booked resident not yet placed goes first, withdrawn with no body to remove
+            // (EQC582); else Java removes one.
+            if w.member_taken(node, at) {
+                let p = w.nodes[node].pos;
+                self.outbox.push(Cmd::TakeResident(boundary::TakeResident {
+                    village: w.nodes[node].key,
+                    dimension: u32::from(p.frame),
+                    x: p.x,
+                    z: p.z,
+                    radius: self.tun.village_take_radius,
+                }));
+            }
             self.rest(raid_key(RAID_VILLAGER, w.nodes[node].key), at);
-            let p = w.nodes[node].pos;
-            self.outbox.push(Cmd::TakeResident(boundary::TakeResident {
-                village: w.nodes[node].key,
-                dimension: u32::from(p.frame),
-                x: p.x,
-                z: p.z,
-                radius: self.tun.village_take_radius,
-            }));
             self.villagers_taken += 1;
             food += self.tun.villager_food;
             taken.push(("minecraft:villager".to_string(), 1));

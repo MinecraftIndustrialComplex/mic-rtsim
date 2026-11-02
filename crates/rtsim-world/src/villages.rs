@@ -238,15 +238,35 @@ impl World {
 
     /// A predator took one of village `i`'s members (a dragon's villager, rtsim-ecology's PP-2
     /// take): its count falls and it reconsiders, as after any change, so the growth step booked
-    /// for the old count is booked again for the new one (EQC581). A village with none, or no
-    /// row, is left as it is.
-    pub fn member_taken(&mut self, i: usize, at: Tick) {
+    /// for the old count is booked again for the new one (EQC581). A human village's booked
+    /// resident the bridge has not placed goes first (EQC582): it never became a body, so its
+    /// order is withdrawn ([`Command::Withdraw`]) and no body has to go; else one does. Returns
+    /// whether a body has to go. A village with none, or no row, is left as it is.
+    pub fn member_taken(&mut self, i: usize, at: Tick) -> bool {
         let members = self.village_members(i);
         if members == 0 || !self.villages.contains_key(&i) {
-            return;
+            return false;
+        }
+        let booked = (!self.is_ribbit(i))
+            .then(|| {
+                self.resident_ops
+                    .iter()
+                    .find(|(_, (n, house))| *n == i && !*house)
+                    .map(|(op, _)| *op)
+            })
+            .flatten();
+        if let Some(op) = booked {
+            self.resident_ops.remove(&op);
+            let row = self.villages.get_mut(&i).expect("a row");
+            row.owed = row.owed.saturating_sub(1);
+            if row.owed == 0 {
+                row.owed_at = u64::MAX;
+            }
+            self.outbox.push(Command::Withdraw(op));
         }
         self.set_members(i, members - 1, at);
         self.reconsider(i, at);
+        booked.is_none()
     }
 
     /// The bridge answered a resident op (EQC162). False when the world holds no such op.

@@ -469,6 +469,10 @@ fn put_command(w: &mut Writer, c: &Command) {
             w.u64(p.village);
             w.bytes(p.body.as_bytes());
         }
+        Command::Withdraw(op) => {
+            w.u8(6);
+            w.u64(*op);
+        }
     }
 }
 
@@ -758,6 +762,7 @@ fn get_command(r: &mut Reader<'_>) -> codec::Result<Command> {
             village: r.u64()?,
             body: get_string(r)?,
         }),
+        6 => Command::Withdraw(r.u64()?),
         t => return bad(format!("command {t}")),
     })
 }

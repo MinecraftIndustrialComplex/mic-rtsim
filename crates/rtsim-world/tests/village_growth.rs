@@ -376,3 +376,46 @@ fn ribbit_settlers_below_two() {
     assert!(got.residents.iter().all(|r| r.arrive == Arrive::Refill), "{:?}", got.residents.len());
     assert!(!got.residents.is_empty());
 }
+
+// ---- EQC581, EQC582: a predator's take ------------------------------------------------------------
+
+/// Highmoor, seen alive and full, left unloaded with no resident order ever answered (a server
+/// where nobody comes), loses a member to a predator every 96 days while above half its beds, for
+/// 30 game years. A take books the next growth step (EQC581), and finds a booked resident first,
+/// withdrawing its order (EQC582); a body goes only when nothing is booked. The orders kept for the
+/// bridge are exactly the bookings, never more than the beds above the floor; before, a take never
+/// removed a booking and every take left one more order kept for a load that never came.
+#[test]
+fn a_cropped_village_nobody_loads_keeps_its_orders_bounded() {
+    let (mut w, mut nodes) = world(3);
+    census(&mut w, &mut nodes, HIGHMOOR, 12, 12, day(1));
+    let key = w.nodes[HIGHMOOR].key;
+    let (mut kept, mut withdrawn, mut bodies, mut grown) =
+        (std::collections::BTreeSet::new(), 0, 0, 0);
+    for d in 2..=30 * 96 {
+        w.run_until(day(d));
+        if d % 96 == 0 {
+            let row = *w.village_row(HIGHMOOR).unwrap();
+            if row.members > u32::from(row.k) / 2 && w.member_taken(HIGHMOOR, day(d)) {
+                bodies += 1;
+            }
+        }
+        for c in w.take_commands() {
+            match c {
+                Command::SpawnResident(s) if s.village == key => {
+                    kept.insert(s.op);
+                    grown += 1;
+                }
+                Command::Withdraw(op) => {
+                    assert!(kept.remove(&op), "day {d}: withdrew {op:#x}, never booked");
+                    withdrawn += 1;
+                }
+                _ => {}
+            }
+        }
+        let row = w.village_row(HIGHMOOR).unwrap();
+        assert_eq!(kept.len(), usize::from(row.owed), "day {d}: kept orders and bookings");
+        assert!(row.owed <= row.k / 2, "day {d}: {} kept of {} beds", row.owed, row.k);
+    }
+    assert!(grown > 20 && withdrawn > 10 && bodies > 0, "grown {grown} withdrawn {withdrawn} bodies {bodies}");
+}

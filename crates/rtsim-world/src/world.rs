@@ -262,6 +262,10 @@ pub enum Command {
     PlaceWork(crate::works::PlaceWork),
     /// Spawn a bought work's body (a golem): SPAWN_RESIDENT at the meeting point.
     SpawnWork(crate::works::SpawnWork),
+    /// Withdraw the resident order of this op, unanswered: the booking it was for is gone (a
+    /// predator took the resident before the bridge placed it, EQC582). Nothing goes to Java; the
+    /// link forgets the order, and an answer that comes anyway is for no booking.
+    Withdraw(u64),
 }
 
 impl Command {

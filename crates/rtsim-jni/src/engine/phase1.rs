@@ -756,6 +756,14 @@ impl Link {
         self.resend = self.outbox.iter().cloned().collect();
     }
 
+    /// The world withdrew the order of `op` (EQC582): it leaves the queue, the kept outbox and
+    /// the resends, as if Java had answered it. An answer Java sends anyway finds no booking.
+    fn withdraw(&mut self, op: u64) {
+        self.outbox.retain(|(_, o, _)| *o != op);
+        self.resend.retain(|(_, o, _)| *o != op);
+        self.queue.retain(|c| c.kept_op() != Some(op));
+    }
+
     /// Kept commands still to resend this session (all of them right after [`Self::resume`]).
     pub(super) fn resend_len(&self) -> usize {
         self.resend.len()
@@ -2545,6 +2553,10 @@ fn take_world_commands(st: &mut State) {
                     y_offset: 0,
                 })
             }
+            Command::Withdraw(op) => {
+                st.phase1.withdraw(op);
+                continue;
+            }
             Command::SpawnWork(s) => {
                 let l = &st.phase1;
                 if l.scripted.contains(&s.village) {
@@ -3634,6 +3646,40 @@ mod tests {
     fn state() -> State {
         let (_tx, rx) = std::sync::mpsc::channel();
         State::new(rx, None, None)
+    }
+
+    /// EQC582: an order the world withdraws leaves the queue, the kept outbox and the resends, as
+    /// an answer would take it, and nothing is written for it.
+    #[test]
+    fn a_withdrawn_order_leaves_the_queue_and_the_kept_outbox() {
+        let mut st = state();
+        let cmd = |op| {
+            P1Cmd::SpawnResident(SpawnResidentCmd {
+                op,
+                village: 5,
+                dimension: "minecraft:overworld".to_string(),
+                body: catalog::HUMAN_BODY.to_string(),
+                profession: String::new(),
+                flags: 0,
+                pos: [0.0; 3],
+                house: 0,
+            })
+        };
+        st.phase1.push(cmd(1));
+        st.phase1.push(cmd(2));
+        st.phase1.outbox.push((7, 3, cmd(3)));
+        st.phase1.outbox.push((8, 4, cmd(4)));
+        st.phase1.resend = st.phase1.outbox.iter().cloned().collect();
+        st.phase1.world.outbox.push(Command::Withdraw(1));
+        st.phase1.world.outbox.push(Command::Withdraw(3));
+        take_world_commands(&mut st);
+        let ops = |v: Vec<u64>| v.into_iter().collect::<Vec<_>>();
+        assert_eq!(
+            ops(st.phase1.queue.iter().filter_map(|c| c.kept_op()).collect()),
+            vec![2]
+        );
+        assert_eq!(ops(st.phase1.outbox.iter().map(|e| e.1).collect()), vec![4]);
+        assert_eq!(ops(st.phase1.resend.iter().map(|e| e.1).collect()), vec![4]);
     }
 
     /// Takes a save and commits it as the engine's `commit` does (stale phase 1 pages deleted

@@ -8,6 +8,7 @@
 //!   in person.
 
 use std::cell::RefCell;
+use std::collections::BTreeSet;
 
 use rtsim_ecology::herds::climate::Uniform;
 use rtsim_ecology::herds::{HerdTunables, Herds};
@@ -20,7 +21,7 @@ use rtsim_industry::ids::{DistrictId, Good, GoodVec};
 use rtsim_industry::threat::Threat;
 use rtsim_kernel::clock::{TICKS_PER_DAY, Tick};
 use rtsim_settle::Pos;
-use rtsim_world::{World, WorldConfig};
+use rtsim_world::{Command, World, WorldConfig};
 
 /// The scenario world with every village and road moved 100,000 blocks west.
 fn world_without_villages(seed: u64) -> World {
@@ -299,4 +300,62 @@ fn a_village_grows_again_after_a_take() {
         }
     }
     panic!("no villager taken in 40 days");
+}
+
+/// A take that finds a booked resident the bridge has not placed (a village nobody loads, whose
+/// orders are held and never answered) withdraws that order and sends no TAKE_RESIDENT: the
+/// resident never became a body (EQC582). Every take is a body or a booking, and the orders kept
+/// are the village's bookings. `village_growth.rs` holds the bound over 30 years.
+#[test]
+fn a_take_withdraws_a_booked_resident_before_it_takes_a_body() {
+    let mut w = synth::world_without_livestock(11, &[1]);
+    let v = w.nodes.iter().position(|n| n.key == 1).expect("the village");
+    counted(&mut w, v);
+    // A dragon that stays however little it eats: the bookings are the point, not its diet.
+    let tun = DragonTunables {
+        starve_leave: 0.0,
+        ..DragonTunables::default()
+    };
+    let mut d = Dragons::new(11, tun, Tick::ZERO);
+    let l = lair(&mut d, &mut w, 300, 100);
+    hungry_adult(&mut d, &mut w, l);
+    let mut h = Herds::new(11, HerdTunables::default(), Box::new(Uniform), Tick::ZERO);
+    let (mut booked, mut withdrawn, mut bodies) = (BTreeSet::new(), 0, 0);
+    for day in 1..=2_000 {
+        d.run_until_with_herds(
+            &mut w,
+            &mut NoInfrastructure,
+            &mut h,
+            Tick(day * TICKS_PER_DAY),
+        );
+        bodies += d
+            .take_commands()
+            .iter()
+            .filter(|c| matches!(c, rtsim_ecology::boundary::Cmd::TakeResident(_)))
+            .count();
+        for c in w.take_commands() {
+            match c {
+                Command::SpawnResident(r) => {
+                    booked.insert(r.op);
+                }
+                Command::Withdraw(op) => {
+                    assert!(booked.remove(&op), "withdrew {op:#x}, never booked");
+                    withdrawn += 1;
+                }
+                _ => {}
+            }
+        }
+        let row = w.village_row(v).expect("a row");
+        assert_eq!(
+            booked.len(),
+            usize::from(row.owed),
+            "day {day}: the orders kept are the bookings"
+        );
+    }
+    assert!(withdrawn >= 1 && bodies >= 1, "{withdrawn} withdrawn, {bodies} bodies");
+    assert_eq!(
+        d.villagers_taken,
+        withdrawn + bodies as u64,
+        "every take is a body or a booking"
+    );
 }

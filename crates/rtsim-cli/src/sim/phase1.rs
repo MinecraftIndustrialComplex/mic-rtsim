@@ -710,7 +710,7 @@ pub fn run(o: Options) -> i32 {
                     let now = w.now();
                     w.resident_result(r.op, true, now);
                 }
-                Command::PlaceWork(_) | Command::SpawnWork(_) => {}
+                Command::PlaceWork(_) | Command::SpawnWork(_) | Command::Withdraw(_) => {}
             }
         }
         drain_world(&mut meter, &mut w);
