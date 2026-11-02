@@ -685,8 +685,17 @@ impl<T: Row> PagedRows<T> {
     }
 
     fn evict(&mut self, pid: u64) {
+        if self.unload(pid) {
+            let mut s = self.stats.get();
+            s.evictions += 1;
+            self.stats.set(s);
+        }
+    }
+
+    /// Frees a resident page whose state is on disk.
+    fn unload(&mut self, pid: u64) -> bool {
         let Some(p) = self.pages.get_mut().remove(&pid) else {
-            return;
+            return false;
         };
         // SAFETY: the pointer came from `Box::into_raw` (via `Box::leak`) and leaves the map
         // here, so it is freed once.
@@ -694,9 +703,7 @@ impl<T: Row> PagedRows<T> {
         self.account(0, page.bytes());
         self.resident_rows
             .set(self.resident_rows.get() - page.rows.len() as u64);
-        let mut s = self.stats.get();
-        s.evictions += 1;
-        self.stats.set(s);
+        true
     }
 
     // ---- Saves ----
@@ -748,17 +755,26 @@ impl<T: Row> PagedRows<T> {
     }
 
     /// The commit holding the ticket's pages is durable: they may be evicted, unless a later
-    /// snapshot still holds them.
+    /// snapshot still holds them. A page with no row left goes now, whatever the budget: its
+    /// deletion is on disk, and an absent page reads as an empty one. An arena never reuses an
+    /// index, so without this the pages its rows left stayed resident for ever (EQC585).
     pub fn saved(&mut self, ticket: SaveTicket) {
         let (seq, pages) = ticket.into_parts();
+        let mut gone = Vec::new();
         for id in pages {
             if let Some(&p) = self.pages.get_mut().get(&id) {
                 // SAFETY: `&mut self`.
                 let page = unsafe { &mut *p.as_ptr() };
                 if page.saving == seq {
                     page.saving = 0;
+                    if !page.dirty && page.rows.is_empty() {
+                        gone.push(id);
+                    }
                 }
             }
+        }
+        for id in gone {
+            self.unload(id);
         }
     }
 
@@ -1557,6 +1573,41 @@ mod tests {
             six.insert(k, r(k));
             assert_eq!(six.resident_bytes(), page + room * row, "{k}");
         }
+    }
+
+    #[test]
+    fn rows_that_come_and_go_leave_no_resident_pages_behind() {
+        // An arena never reuses an index, so rows that come and go walk up the pages (the dragons,
+        // a few alive and hundreds a century gone, EQC585). A page its rows all left goes from
+        // memory once its deletion is durable, whatever the budget.
+        let dir = tmpdir("churn");
+        let store = Arc::new(RwLock::new(
+            PageStore::open(&dir, Durability::NoSync).unwrap(),
+        ));
+        let mut a: PagedArena<R> = PagedArena::new(7, 8);
+        a.rows_mut().attach(store.clone(), usize::MAX);
+        let mut live = std::collections::VecDeque::new();
+        for k in 0..2_000u64 {
+            live.push_back(a.insert(row(k)));
+            if live.len() > 20 {
+                a.remove(live.pop_front().unwrap());
+            }
+            if k % 50 == 0 {
+                save(a.rows_mut(), &store);
+            }
+        }
+        save(a.rows_mut(), &store);
+        assert!(
+            a.rows().resident_pages() <= 4,
+            "{} pages resident for {} rows",
+            a.rows().resident_pages(),
+            a.len()
+        );
+        assert_eq!(a.rows().stats().evictions, 0, "no budget eviction");
+        assert!(live.iter().all(|h| a.get(*h).is_some()));
+        assert_eq!(a.get(PagedArena::<R>::handle(5)), None, "a row long gone reads as gone");
+        drop(a);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
